@@ -15,6 +15,21 @@ Dedicated to server development; not a daily driver
 
 This is a capable machine. Skylake is old but it is a real desktop i7 with AVX2, and 19 GB is a great deal of headroom for a bot serving 30 people.
 
+## The repository and data must live on ext4
+
+Measured 2026-08-22: the secondary drive `/media/bryan/OptiData1` is **NTFS mounted through ntfs-3g** (`df -T` reports `fuseblk`). Nothing belonging to this project may live there.
+
+- **SQLite WAL cannot work on it.** WAL requires a shared-memory `-shm` file backed by real mmap and POSIX advisory locking. FUSE-mounted NTFS provides neither reliably. The result is not a clean error — it is intermittent locking failures and, eventually, a corrupt database.
+- **Unix permissions do not exist.** `chmod 600 .env` silently succeeds and changes nothing; ntfs-3g applies mount-wide permissions to every file. Secret-file protection is unenforceable.
+- **Unix domain sockets are unsupported**, which the operator CLI depends on (ADR 0013).
+- **Case-insensitive**, which confuses git and can silently merge two distinct source files.
+- **FUSE is slow** on many small files, which is exactly what `node_modules` is.
+- **`/media` mounts attach at login, not at boot**, so a systemd unit pointing there fails on restart — the one moment it most needs to work.
+
+The repository, the database, attachments, and backups all live on the ext4 root filesystem, which has 45 GB free. `~/projects/bananasaurs` — no spaces in the path either, which saves quoting problems in the systemd unit and in scripts.
+
+The NTFS drive is fine for what it is good at: a copy of finished artifacts, media, or an extra backup destination. It is not a place to run a database.
+
 ## What this changes
 
 The 512 MB steady-state target was written to protect a machine we assumed was constrained. Against 19 GB it is not a meaningful ceiling, and treating it as one would distort the design for no benefit.

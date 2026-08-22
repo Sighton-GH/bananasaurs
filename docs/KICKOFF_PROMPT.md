@@ -17,6 +17,8 @@ I may have got something wrong. Check the following and report a pass/fail table
 - `git --version` works, we are inside a git repository, and `git status` is clean or has only expected untracked files.
 - `git remote -v` shows a remote. Tell me if it does not — I intended to add one.
 - Available disk on this filesystem is over 10 GB (`df -h .`).
+- **`df -T .` reports a real Linux filesystem** — `ext4`, `xfs`, or `btrfs`. If it reports `fuseblk`, `ntfs`, `ntfs3`, `exfat`, `vfat`, or any network filesystem, **stop immediately**. SQLite WAL needs mmap-backed shared memory and POSIX advisory locking, which those do not provide; Unix permissions and Unix domain sockets do not work there either. The repository must be moved to the ext4 root filesystem before anything else happens. See `docs/15`.
+- No path component contains a space (`pwd`). Spaces survive most tooling but complicate the systemd unit and shell scripts later.
 
 **Repository hygiene**
 - `.gitignore` exists and covers at minimum: `node_modules/`, `dist/`, `.env`, `*.db`, `*.db-wal`, `*.db-shm`, `data/`, `backups/`, `coverage/`.
