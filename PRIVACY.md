@@ -1,0 +1,121 @@
+# Bananasaurs — Privacy Policy
+
+**Last updated:** 2026-08-22
+**Applies to:** the Bananasaurs bot running in `<SERVER NAME>`
+**Operator:** `<OWNER NAME / CONTACT>`
+
+Bananasaurs is a self-hosted bot built and run by a member of this server. It is not a commercial service, it is not operated by Discord, and no company receives your data from it.
+
+Run `/privacy` in the server at any time to see this policy and the current settings it describes.
+
+---
+
+## The short version
+
+- Bananasaurs stores messages **only from channels the server owner has specifically turned on**. It is off everywhere else by default.
+- It keeps a copy of those messages, including edits and deletions, so the server has a searchable history and a moderation log.
+- When someone asks it a question, small, relevant excerpts may be sent to an external AI provider to generate an answer. Nothing is sent unless someone asks.
+- Nothing is sold, shared, advertised against, or used to train AI models.
+- You can see what is stored about you, and you can ask for it to be removed.
+
+---
+
+## What Bananasaurs stores
+
+**From enabled channels only:**
+
+- Message content, author, channel, timestamps, and edit history
+- Attachments and links, subject to a size limit and file-type rules
+- The fact that a message was deleted, and its content at the time
+
+**Server-wide:**
+
+- Moderation records — warnings, notes, timeouts, kicks, bans — including who acted, on whom, why, and when
+- Automod matches and the action taken
+- Role changes made by the bot, such as reaction-role assignments
+- Join and leave events
+- Commands run against the bot, and the answers it gave
+
+**Not stored:**
+
+- Voice calls or anything spoken in them
+- Direct messages between members
+- Direct messages to the bot, beyond what is needed to answer help questions
+- Anything from channels the bot cannot see, or that the owner has not enabled
+- Your Discord password, email, payment details, or anything else Bananasaurs has no way to access
+
+## Why it stores it
+
+- So members can search the server's own history and find past decisions, links, and discussions
+- So moderators have an accurate record when handling an incident
+- So the bot can answer questions about the club with real sources instead of guesses
+- So the server has a log if something is deleted or changed
+
+That is the whole list. Bananasaurs does not profile members, score them, rank them, or build behavioural models of anyone.
+
+## Where your data goes
+
+**It stays on one computer.** Bananasaurs runs on a machine owned and operated by the server owner. There is no Bananasaurs company, no cloud account holding your messages, and no analytics service receiving them.
+
+**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks. The provider currently in use is listed in `/privacy`.
+
+Bananasaurs only uses providers whose terms state they **do not train models on the data sent to them**. This is both a promise to you and a requirement of Discord's own developer rules, which prohibit using message content to train AI models.
+
+## Who can see it
+
+- **Everyone:** their own data, via `/mydata`
+- **Members:** search results and answers drawn only from channels they can already read in Discord. The bot never reveals content from a channel you do not have access to
+- **Moderators:** moderation records, according to what the owner has granted them
+- **The server owner:** the admin dashboard, which requires a separate login the owner creates. Having Administrator in Discord does **not** grant dashboard access
+
+## How long it is kept
+
+| What | How long |
+|---|---|
+| Messages from enabled channels | Kept until the owner deletes them or changes the policy |
+| Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case |
+| Moderation records | Kept as long as the server needs them for consistent moderation |
+| Bot conversations and answers | Kept until deleted on request |
+| Attachments | Same as the messages they belong to |
+
+Current settings are shown by `/privacy`. If they change, this policy is updated and the change is announced in the server.
+
+## Your choices
+
+| Command | What it does |
+|---|---|
+| `/privacy` | Shows this policy and the current settings |
+| `/mydata` | Shows what Bananasaurs holds about you |
+| `/forgetme` | Asks the owner to delete your stored messages and any notes the bot has built about you |
+
+`/forgetme` does not delete moderation records. A warning or ban record has to survive for moderation to mean anything, the same as it would with any other bot. Everything else can go.
+
+You can also just ask the owner directly. This is a club server, not a helpdesk.
+
+## How this compares to what already applies to you
+
+Discord itself stores your messages, and has its own rules for how long and why — see the [Discord Privacy Policy](https://discord.com/privacy) and [Terms of Service](https://discord.com/terms). Any other bot in this server operates under its own policy too. Bananasaurs is not doing anything unusual for a Discord bot.
+
+The differences worth knowing:
+
+- **It is narrower.** Most bots that log messages log everywhere they can see. Bananasaurs only logs channels that were deliberately turned on.
+- **It is local.** Your messages sit on one machine run by someone in this club, not on a company's servers.
+- **You can see inside it.** `/mydata` and `/forgetme` exist because they should.
+
+None of that makes it harmless. It is a real archive of things people said, and it should be treated that way. Do not post anything in this server you would not want kept — which was already true before this bot existed.
+
+## Security
+
+The database sits on a machine with restricted access, backups are encrypted where practical, and dashboard access requires a separate login. It is a hobby project run by one person, not a hardened data centre. If something goes wrong, members will be told.
+
+## Changes
+
+Material changes are announced in the server, and this document's "last updated" date changes. Continuing to use the server after a change means the new version applies.
+
+## Contact
+
+Ask `<OWNER NAME>` in the server, or DM them. Concerns about how this bot handles your data are legitimate and will get a straight answer.
+
+---
+
+*This policy was drafted for a small private club server and is not legal advice. If Bananasaurs is ever distributed to servers outside this club, or if members from jurisdictions with strict data-protection law join, have it reviewed properly.*

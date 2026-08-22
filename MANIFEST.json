@@ -1,0 +1,28 @@
+{
+  "name": "bananasaurs-planning",
+  "version": "0.6.0",
+  "status": "reviewed 2026-08-22; scope cut to three releases, stack and provider decisions recorded, privacy policy drafted",
+  "sourceConversationId": "6a832b26-6e60-83e8-a1a6-732e2a9a7b32",
+  "principles": [
+    "single-server",
+    "local-first state",
+    "provider-neutral",
+    "explicit invocation",
+    "deterministic moderation independent of AI",
+    "strict guild isolation",
+    "owner-selected archive channels (default-deny)",
+    "tiered deletion retention",
+    "no provider that trains on input receives server content",
+    "subscription credentials never power the runtime",
+    "dashboard access from owner-provisioned accounts only; Discord Administrator grants nothing",
+    "published privacy policy with member visibility and deletion path",
+    "tiered memory catalogue",
+    "self-hosted Linux distribution",
+    "consumer-hardware resource budgets",
+    "configurable server-role capabilities",
+    "automod testing-mode toggles",
+    "no overlapping enforcement during cutover",
+    "Apache-2.0",
+    "three releases, backlog is not a roadmap"
+  ]
+}
