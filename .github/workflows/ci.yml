@@ -1,0 +1,35 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      # `npm ci` runs lifecycle scripts from every dependency. Pinned by the
+      # lockfile, which is why the lockfile is committed and reviewed.
+      - run: npm ci
+
+      - run: npm run typecheck
+      - run: npm run lint
+      - run: npm run test
+
+      # The repository must never carry a secret. This is cheap and catches the
+      # mistake that cannot be undone by a later commit.
+      - name: Assert no .env is tracked
+        run: |
+          if git ls-files --error-unmatch .env 2>/dev/null; then
+            echo "::error::.env is tracked. Rotate the bot token in the Discord Developer Portal."
+            exit 1
+          fi
+          echo "ok: .env is not tracked"

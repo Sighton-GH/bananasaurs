@@ -1,0 +1,57 @@
+# Bananasaurs daemon. See docs/17_OPERATOR_ACCESS.md.
+#
+#   sudo cp deploy/bananasaurs.service /etc/systemd/system/
+#   sudo systemctl daemon-reload && sudo systemctl enable --now bananasaurs
+#
+# Bryan runs those three commands. Nothing in this repository needs root.
+
+[Unit]
+Description=Bananasaurs Discord assistant
+Documentation=https://github.com/Sighton-GH/bananasaurs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bananasaurs
+Group=bananasaurs
+WorkingDirectory=/opt/bananasaurs
+
+# Root-owned, 0640, group bananasaurs. Never in the repository (ADR 0008).
+EnvironmentFile=/etc/bananasaurs/env
+
+# Creates /run/bananasaurs owned by the service user. UMask 0007 gives the
+# admin socket group read/write, which is what puts bananasaurs-ops members
+# in reach of the operator CLI without sudo (ADR 0013).
+RuntimeDirectory=bananasaurs
+RuntimeDirectoryMode=0750
+UMask=0007
+
+ExecStart=/usr/bin/node /opt/bananasaurs/apps/daemon/dist/index.js
+Restart=on-failure
+RestartSec=5s
+
+# The process needs its data directory and nothing else on the filesystem.
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+RestrictNamespaces=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+ReadWritePaths=/opt/bananasaurs/data /opt/bananasaurs/backups
+
+# Discord over HTTPS and a unix socket. Nothing else.
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bananasaurs
+
+[Install]
+WantedBy=multi-user.target

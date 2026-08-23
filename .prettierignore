@@ -1,0 +1,6 @@
+dist/
+coverage/
+drizzle/
+scratchpad/
+package-lock.json
+*.md

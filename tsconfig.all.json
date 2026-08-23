@@ -1,0 +1,16 @@
+{
+  "//": "Type-checks everything the build project excludes: tests and root-level tool config. Used by `npm run typecheck` and by ESLint. Emits nothing.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "composite": false,
+    "declaration": false,
+    "declarationMap": false,
+    "sourceMap": false,
+    "allowJs": true,
+    "checkJs": false,
+    "types": ["node"]
+  },
+  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "*.ts", "*.js"],
+  "exclude": ["node_modules", "**/dist/**", "scratchpad/**"]
+}
