@@ -6,9 +6,11 @@
 
 ## Where the build is
 
-**Release 0 + 1, Phase 2 (planning).** Phase 1 setup verification passed. No application code exists yet.
+**Release 0, WP1 complete** (2026-08-23). Plan accepted and recorded in `docs/19_RELEASE_0_1_PLAN.md`. Work packages defined in `docs/20_AUTONOMOUS_EXECUTION.md`.
 
-Next action: Claude Code produces the Release 0+1 plan per `docs/KICKOFF_PROMPT.md`, Bryan reviews it against `docs/REVIEWING_AGENT_OUTPUT.md`, then Phase 3 begins slice by slice.
+WP1 shipped: npm workspace, Zod config, Pino allowlist logging, CI, systemd unit, SQLite in WAL with two single-writer guards, drizzle-kit migrations, and the fake Discord harness. `typecheck`, `lint`, and 81 tests are green. Six commits, **none pushed**.
+
+Next action: Bryan reviews the WP1 diff, pushes, then starts a fresh session with the WP2 handoff prompt. WP2 is the full Release 1 schema, the event pipeline, and the safety core.
 
 ## Environment as it actually is
 
@@ -31,7 +33,7 @@ Next action: Claude Code produces the Release 0+1 plan per `docs/KICKOFF_PROMPT.
 
 ## Still open
 
-1. **Backup destination** — local second disk, NAS, or encrypted remote. Interim: local path with `restic` or `borg`, plus a documented off-host target. Restore drill happens in Release 1.
+1. ~~**Backup destination**~~ — decided 2026-08-23: local path only in Release 1; encrypted off-host documented but not implemented.
 2. **Monthly AI spend ceiling** — a number, becomes a config value that fails closed. Not needed until Release 3.
 3. **`docs/RELEASE1_CONFIG.md`** — which panels, which roles, which log events, which destinations. Blank slate; nothing imported from Carl-bot. Does not block coding but must exist before cutover.
 4. **Anti-nuke posture** — other members hold Discord Administrator. Decide whether Bananasaurs detects and alerts on privileged-account abuse or stays out of it. Detection is tractable; prevention is not and should not be promised.
