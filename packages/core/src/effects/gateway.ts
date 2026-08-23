@@ -26,7 +26,7 @@ import type { EffectSource, RateLimiter } from './rate-limit.js';
  *   3. circuit breaker    guilds.breaker_state = 'open'        -> refuse
  *   4. panel status       panels.status <> 'enabled'           -> refuse
  *   5. role allowlist     managed_roles                        -> refuse
- *   6. protected target   principals.protected                 -> refuse
+ *   6. protected target   principals.protected (the TARGET)     -> refuse
  *   7. hierarchy + managed  live, immediately before acting    -> refuse
  *   8. rate cap           per-source token bucket; overflow    -> trip breaker
  *   9. idempotency        INSERT OR IGNORE role_effects        -> 0 rows = skip
@@ -121,7 +121,7 @@ export interface EffectGatewayDeps {
     read(): SafetyState | undefined;
     isPanelEnabled(panelId: string): boolean;
     isRoleAllowlisted(roleId: SnowflakeId): boolean;
-    /** The *target*, not the actor. See the note on `AuthzStore.anyProtected`. */
+    /** docs/18 Layer 2. The target being changed, never the actor asking (ADR 0015). */
     isTargetProtected(userId: SnowflakeId, roleId: SnowflakeId): boolean;
     tripBreaker(reason: string, atMs: number): void;
   };

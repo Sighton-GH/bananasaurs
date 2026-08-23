@@ -357,3 +357,21 @@ A reconciliation pass that discovers a thousand drifted members is far more like
 **Unrelated cleanup found while committing.** Four `tsconfig.tsbuildinfo` files were tracked in git from WP1 — build artifacts that change on every compile. `.gitignore` covers `dist/` but these sit next to `tsconfig.json`. Added `*.tsbuildinfo` and untracked them.
 
 451 tests green; typecheck and lint exit 0.
+
+---
+
+## WP2 boundary follow-up — `protected` is target-only — 2026-08-23
+
+Owner review settled the one decision the WP2 report asked for. `protected` means exactly one thing: the bot will not mutate that member or role. It no longer denies capability to an actor.
+
+**Why it mattered.** The plan stated both readings in different sections and never distinguished them, so WP2 implemented both — and the actor-side one surfaced by failing its own test, because marking the acting member protected denied them capability before the target check ran. The anti-nuke property it provided is real, but so is the footgun: protecting the role you administer the bot through locks you out. A safety flag whose misuse causes an outage is a flag people stop setting.
+
+**What changed.** `anyProtected` is removed from the `AuthzStore` port entirely rather than left unused — a dormant method is something the next person wires back up by accident. `'protected-principal'` is gone from `DenialReason` because nothing produces it. The storage implementation is deleted; `isTargetProtected` stays and is now the only meaning.
+
+**The anti-nuke property is not gone, it moved.** ADR 0012 already means Administrator grants nothing, so a compromised role holds capability only if someone explicitly granted it, and `revokeCapability` removes that in one call with an audit row. Disarming a principal is now a deliberate act rather than a side effect of a flag whose primary meaning is something else. ADR 0015 records that if the flag-based version is ever wanted, it needs its own name.
+
+**Broke, to check the test.** 28. Re-added the actor-side check behind an optional `anyProtected` → the new test ("does NOT deny capability to a protected actor") failed. Restored; md5 verified against the pre-mutation copy.
+
+**Documents corrected in place.** `docs/19` §5's sentence claiming `authorize()` refuses protected principals no longer matched the code and would have misled the next reader.
+
+451 tests green; typecheck and lint exit 0.

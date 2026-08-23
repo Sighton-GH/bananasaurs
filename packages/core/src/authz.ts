@@ -28,7 +28,8 @@ import type { GuildId, SnowflakeId } from './ids.js';
  *    is the common failure; it does not make it impossible to *defeat*.
  * 4. **Query level** — grants come only from `capability_grants`. Discord
  *    permission bits are never consulted, so Administrator grants nothing
- *    (ADR 0012). Protected principals are refused here regardless of grants.
+ *    (ADR 0012). Note that `protected` is deliberately NOT consulted here —
+ *    see ADR 0015; it is a property of a *target*, checked in the gateway.
  * 5. **Module level** — the Discord REST port is importable only from
  *    `core/effects` (ADR 0014), so even code holding a forged witness cannot
  *    reach Discord except through the gateway.
@@ -83,7 +84,6 @@ export interface Authorized<C extends Capability> {
 
 export type DenialReason =
   | 'no-grant'
-  | 'protected-principal'
   /** `system` acts without a principal; it is granted only what is wired in. */
   | 'actor-has-no-identity';
 
@@ -102,21 +102,15 @@ export interface PrincipalRef {
 }
 
 export interface AuthzStore {
-  /** True when any of these principals holds `capability` in this guild. */
-  hasGrant(capability: Capability, principals: readonly PrincipalRef[]): boolean;
   /**
-   * docs/18 Layer 2.
+   * True when any of these principals holds `capability` in this guild.
    *
-   * Protection carries two distinct meanings and the plan states both without
-   * naming the difference, so both are implemented and named here:
-   *
-   * - **as actor** (this check, in `authorize`): a protected principal holds no
-   *   capability, whatever `capability_grants` says. This is the anti-nuke
-   *   posture — a compromised privileged role cannot drive the bot.
-   * - **as target** (in the effect gateway, step 5): the bot will not mutate a
-   *   protected member or role, whoever asks.
+   * Deliberately the only question this port answers. `protected` is a
+   * property of a **target**, not of an actor (ADR 0015), so it is checked in
+   * the effect gateway against the member and role being changed — never here
+   * against the member asking.
    */
-  anyProtected(principals: readonly PrincipalRef[]): boolean;
+  hasGrant(capability: Capability, principals: readonly PrincipalRef[]): boolean;
 }
 
 /**
@@ -179,10 +173,9 @@ export function authorize<C extends Capability>(
   const principals = principalsOf(actor);
   if (principals.length === 0) return deny('actor-has-no-identity');
 
-  // Protection is checked BEFORE grants, so a protected principal cannot be
-  // acted on by someone who also happens to hold the capability.
-  if (store.anyProtected(principals)) return deny('protected-principal');
-
+  // No protection check here, deliberately (ADR 0015). Marking a principal
+  // protected must not deny it capability, or protecting the role you act
+  // through locks you out of your own bot.
   if (!store.hasGrant(capability, principals)) return deny('no-grant');
 
   return { ok: true, value: { [witness]: capability, guildId, actor } };

@@ -15,7 +15,6 @@ const member = (over: Partial<Actor> = {}): Actor => ({
 
 const store = (over: Partial<AuthzStore> = {}): AuthzStore => ({
   hasGrant: () => false,
-  anyProtected: () => false,
   ...over,
 });
 
@@ -64,18 +63,16 @@ describe('authorize', () => {
     expect(result.ok).toBe(false);
   });
 
-  it('refuses a protected principal even when it holds the grant', () => {
-    // Checked before grants on purpose: a compromised privileged role that
-    // still holds capability must not be able to drive the bot.
+  it('does not consult `protected` when deciding capability', () => {
+    // ADR 0015. `protected` means "the bot will not mutate this", and nothing
+    // else. If it also denied capability, protecting the role you act through
+    // would lock you out of your own bot — which is how a safety feature
+    // becomes an outage. The target-side check lives in the effect gateway.
     const result = authorize(
-      {
-        store: store({ hasGrant: () => true, anyProtected: () => true }),
-        guildId: GUILD,
-        actor: member(),
-      },
+      { store: store({ hasGrant: () => true }), guildId: GUILD, actor: member() },
       'roles.mutate',
     );
-    expect(result).toMatchObject({ ok: false, error: { reason: 'protected-principal' } });
+    expect(result.ok).toBe(true);
   });
 
   it('refuses an actor with no identity at all', () => {

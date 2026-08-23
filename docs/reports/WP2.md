@@ -1,6 +1,8 @@
 # WP2 boundary report — storage, event pipeline, safety core
 
-Produced 2026-08-23 per `docs/20_AUTONOMOUS_EXECUTION.md`. Nine commits, `aa72be8..4633cbc`, **none pushed**. 451 tests green; `typecheck` and `lint` exit 0.
+Produced 2026-08-23 per `docs/20_AUTONOMOUS_EXECUTION.md`. Eleven commits, `aa72be8..HEAD`, **none pushed**. 451 tests green; `typecheck` and `lint` exit 0.
+
+> **Updated after owner review.** The one decision this report asked for — the meaning of `protected` — was answered *target-only* and is implemented; see §6 and [ADR 0015](../decisions/0015-protected-principals-are-targets.md). Nothing else in the report changed.
 
 ---
 
@@ -266,7 +268,7 @@ WP2 added the rest of the groundwork:
 
 ## 6. What I am least confident about
 
-**`protected` means two things and the plan states both without distinguishing them.** As *target*: the bot will not mutate that member or role. As *actor*: that principal holds no capability at all. I implemented both. The second surfaced by **failing my own test** — marking the acting member protected locked them out before the target check ran. That is the anti-nuke posture working as designed, and it is also a real footgun: **if you mark your own role protected, you lock yourself out of the bot.** This is the item most likely to be wrong, and it is a decision about authorisation, so it is yours. Say the word and I will drop the actor-side check in WP3.
+**~~`protected` means two things~~ — RESOLVED at the boundary.** The plan stated both readings without distinguishing them, so WP2 implemented both, and the actor-side one surfaced by failing its own test: marking the acting member protected locked them out before the target check ran. Bryan chose **target-only**. `anyProtected` is removed from the `AuthzStore` port entirely rather than left dormant, `'protected-principal'` is gone from `DenialReason`, and `docs/19` §5 is corrected. Recorded as [ADR 0015](../decisions/0015-protected-principals-are-targets.md), including why the anti-nuke property this gave up is better served by revoking a grant explicitly, and why a future version of it should be its own flag rather than an overload of this one. A test now asserts a protected actor still authorizes and still acts; mutation 28 re-added the old check and it failed.
 
 **The lint tripwire has a blind spot, and I found it by writing into it.** `undoBatch` first cast its undo witness with `as unknown as Parameters<EffectGateway['applyRoleEffect']>[0]`. That form **slips past** `no-restricted-syntax`, which matches a named type reference rather than an indirect cast. The runtime re-check would still have caught a forged witness — which is exactly amendment 3's point that the type is the weakest layer — but the tripwire is weaker than it reads. I fixed the design rather than broadening the rule, because an indirect cast has infinitely many spellings and chasing them would give false confidence.
 
@@ -384,14 +386,13 @@ including every failure case in docs/REVIEWING_AGENT_OUTPUT.md.
    managed panels by a CHECK, so the remaining N-fetch case is an adopted
    panel with max_roles.
 
-## One decision I need from you before it hardens
+## Settled at the WP2 boundary, do not re-litigate
 
-`protected` currently means two things: the bot will not MUTATE a protected
-member or role, AND a protected principal holds no capability. The second
-means marking your own role protected locks you out of the bot. I implemented
-both because the plan states both; see docs/reports/WP2.md §6. If you want
-only the target-side meaning, say so and drop the anyProtected() check in
-authorize().
+`protected` means exactly one thing: the bot will not mutate that member or
+role. It does NOT deny capability to an actor. ADR 0015 records why, and
+apps/daemon/src/effects.integration.test.ts has a test that fails if someone
+re-adds the actor-side check. If you find yourself wanting the anti-nuke
+behaviour, it needs its own flag with its own name — read the ADR first.
 
 ## Protocol
 

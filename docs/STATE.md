@@ -14,7 +14,7 @@ Three review corrections landed first, two of which changed the design because m
 
 Next action: Bryan reads `docs/reports/WP2.md`, spot-checks the diff, pushes, then starts a fresh session with the WP3 handoff prompt in §8 of that report. **WP3 must delete any existing dev database first** — the migration was regenerated and renamed.
 
-One decision is waiting for Bryan, in `docs/reports/WP2.md` §6: `protected` currently means both "not mutated" and "holds no capability", and the second locks a protected principal out of the bot entirely.
+The one decision the report asked for is settled: `protected` means **target-only** — the bot will not mutate that member or role, and it does not deny capability to an actor. [ADR 0015](decisions/0015-protected-principals-are-targets.md); a test fails if the actor-side check is re-added.
 
 ## Environment as it actually is
 

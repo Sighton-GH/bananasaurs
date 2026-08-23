@@ -40,7 +40,7 @@ const logger = pino({ level: 'silent' });
 
 const actor: Actor = { type: 'member', id: USER, roleIds: [ACTOR_ROLE] };
 
-const permissiveAuthz: AuthzStore = { hasGrant: () => true, anyProtected: () => false };
+const permissiveAuthz: AuthzStore = { hasGrant: () => true };
 
 const witnessFor = (store: AuthzStore = permissiveAuthz): Authorized<'roles.mutate'> => {
   const result = authorize({ store, guildId: GUILD, actor }, 'roles.mutate');
@@ -144,7 +144,7 @@ describe('layer 1 — authorization is re-verified at runtime', () => {
     // produces one for free, so the gateway asks again. This is the control;
     // the type is only the reminder.
     const stale = witnessFor();
-    const revoked = build({ authz: { hasGrant: () => false, anyProtected: () => false } });
+    const revoked = build({ authz: { hasGrant: () => false } });
 
     return expect(revoked.gateway.applyRoleEffect(stale, intent())).resolves.toEqual({
       status: 'refused',
@@ -167,7 +167,7 @@ describe('layer 1 — authorization is re-verified at runtime', () => {
   });
 
   it('makes no Discord call when refused', async () => {
-    const revoked = build({ authz: { hasGrant: () => false, anyProtected: () => false } });
+    const revoked = build({ authz: { hasGrant: () => false } });
     await revoked.gateway.applyRoleEffect(witnessFor(), intent());
     expect(revoked.discord.restCalls()).toHaveLength(0);
   });

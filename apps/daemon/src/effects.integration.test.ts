@@ -283,17 +283,14 @@ describe('the role allowlist is a foreign key, not a guard clause', () => {
 
 describe('the protected principal check reads the real table', () => {
   /**
-   * `protected` carries two meanings, and the plan states both without naming
-   * the difference. Both are implemented, and this block pins the difference
-   * down because it is not obvious and it bit me while writing these tests:
+   * `protected` means exactly one thing (ADR 0015): the bot will not mutate
+   * this member or this role, whoever asks.
    *
-   * - **as target**: the bot will not mutate this member or role.
-   * - **as actor**: this principal holds no capability at all.
-   *
-   * The second is the surprising one. Marking the *acting* member protected
-   * locks them out of the bot entirely — which is the anti-nuke posture working
-   * as designed, and also a real footgun if the owner protects their own role.
-   * Flagged in the WP2 report rather than silently chosen.
+   * The plan was ambiguous and I first implemented a second meaning as well —
+   * that a protected principal holds no capability. Owner review settled it:
+   * target-only. The last test here pins the rejected reading down, because
+   * "protecting the role you act through locks you out of your own bot" is
+   * exactly the kind of thing someone re-adds in good faith later.
    */
   it('refuses to mutate a protected member', async () => {
     authzRepo.upsertPrincipal(scope, {
@@ -319,7 +316,9 @@ describe('the protected principal check reads the real table', () => {
     });
   });
 
-  it('also denies capability to a protected ACTOR, which locks them out', () => {
+  it('does NOT deny capability to a protected actor', async () => {
+    // Protecting yourself must not lock you out. The actor here is protected
+    // and still acts; only the target side refuses.
     authzRepo.upsertPrincipal(scope, {
       principalType: 'user',
       principalId: USER,
@@ -330,7 +329,12 @@ describe('the protected principal check reads the real table', () => {
       { store: authzStoreFor(scope), guildId: GUILD, actor },
       'roles.mutate',
     );
-    expect(result).toMatchObject({ ok: false, error: { reason: 'protected-principal' } });
+    expect(result.ok).toBe(true);
+
+    // ...and can still change someone else's roles.
+    expect(await gateway.applyRoleEffect(witness(), intent({ userId: TARGET }))).toMatchObject({
+      status: 'applied',
+    });
   });
 });
 

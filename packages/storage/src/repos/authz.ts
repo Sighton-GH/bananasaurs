@@ -110,29 +110,15 @@ export const authzStoreFor = (scope: GuildScope): AuthzStore => ({
       return row !== undefined;
     });
   },
-
-  anyProtected(refs) {
-    if (refs.length === 0) return false;
-    return read(scope, (db) => {
-      const match = matchesAny(refs, principals.principalType, principals.principalId);
-      if (!match) return false;
-      const row = db
-        .select({ principalId: principals.principalId })
-        .from(principals)
-        .where(scope.only(principals, eq(principals.protected, 1), match))
-        .get();
-      return row !== undefined;
-    });
-  },
 });
 
 /**
- * Is this *target* protected? (docs/18 Layer 2, target side.)
+ * Is this target protected? (docs/18 Layer 2.)
  *
- * Distinct from `AuthzStore.anyProtected`, which asks whether an *actor* is
- * protected. The two share a table and mean different things: an actor that is
- * protected holds no capability; a target that is protected is not mutated,
- * whoever asks.
+ * The only meaning `protected` carries, per ADR 0015: the bot will not mutate
+ * this member or this role, whoever asks. It is deliberately *not* consulted
+ * when deciding whether an actor holds capability — protecting the role you
+ * act through would otherwise lock you out of your own bot.
  */
 export const isTargetProtected = (
   scope: GuildScope,
