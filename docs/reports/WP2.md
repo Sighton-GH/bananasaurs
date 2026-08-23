@@ -388,11 +388,31 @@ including every failure case in docs/REVIEWING_AGENT_OUTPUT.md.
 
 ## Settled at the WP2 boundary, do not re-litigate
 
-`protected` means exactly one thing: the bot will not mutate that member or
-role. It does NOT deny capability to an actor. ADR 0015 records why, and
-apps/daemon/src/effects.integration.test.ts has a test that fails if someone
-re-adds the actor-side check. If you find yourself wanting the anti-nuke
-behaviour, it needs its own flag with its own name — read the ADR first.
+1. `protected` means exactly one thing: the bot will not mutate that member
+   or role. It does NOT deny capability to an actor. ADR 0015 records why,
+   and apps/daemon/src/effects.integration.test.ts has a test that fails if
+   someone re-adds the actor-side check. If you find yourself wanting the
+   anti-nuke behaviour, it needs its own flag with its own name — read the
+   ADR first.
+
+2. THE ADOPTION PASS REFUSES WITHOUT AN ALLOWANCE, and that is the finished
+   behaviour for WP3. Slice 8 computes and stores the change list, sets
+   adoption_pass_state='pending', and does nothing until
+   RateLimiter.grantAllowance is called with the exact count. In WP3 the
+   tests grant it directly; the CLI that lets Bryan grant it for real is
+   slice 13, in WP5. Do NOT build a Discord-side confirmation to close that
+   gap — a mass-role-grant trigger in Discord is exactly the surface docs/18
+   wants smallest. The server has one reaction panel and Bryan is content to
+   adopt it in WP5.
+
+3. THE REAL DISCORD ADAPTER STAYS IN WP5 (slice 6). WP3 and WP4 build
+   entirely against the fake harness in packages/testkit. Do not pull client
+   construction forward. The risk this carries — that the fake is my model of
+   Discord rather than Discord — is known and accepted; slice 6's own gate
+   requires `doctor` to assert both privileged intents are granted AT RUNTIME
+   rather than trusting the Developer Portal, which covers the most likely
+   nasty surprise (partials misconfigured, so reactions on uncached messages
+   silently never arrive).
 
 ## Protocol
 
