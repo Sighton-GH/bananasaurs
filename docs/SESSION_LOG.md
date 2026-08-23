@@ -529,3 +529,25 @@ Slice 9 split again on the 400-line rule: 9a is the interaction port, the harnes
 **One limitation worth stating.** The fake's clock is manual, so mutation 40 was caught by the explicit ordering assertion rather than by the deadline firing. The harness can prove *that we defer first*; it cannot prove *we are fast enough*, because it does not model latency. That is the right division — real latency is not measurable here — but "the panel responds in time" remains a live smoke test, not a covered one.
 
 637 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 10 — every behaviour, including its refusal path — 2026-08-23
+
+Almost no new implementation: the behaviours were built in slice 7c as one rule with the ends clipped, and slice 9b covered them on managed panels. This slice is the reaction side end to end, and it is where the design was checked rather than assumed.
+
+**`add_only` makes no REST call for an un-react**, rather than calling and being refused. Worth its own test: "the role stays" is satisfied by both a correct filter and a broken one that calls `removeRole` and gets a 403.
+
+**`remove_only` revokes on un-react and refuses to grant on react.** The symmetry falls out of the direction filter rather than being coded twice.
+
+**`max_roles` on an adopted panel is amendment 6's one expensive path**, and now has an end-to-end test asserting that `fetchReactionUsers` **is** called — the mirror of slice 7c's test asserting it is *not* called for a plain toggle. Between them they pin the amendment down in both directions. There is also a test that a withdrawn reaction frees the slot and the next pass takes it, which only works because convergence reads the whole set.
+
+**Memoisation is asserted by counting**: three mapped emoji, one pass, at most one paged read each. Counting calls rather than trusting the cache means a regression that refetches per emoji per event is a failing test, not a slow log.
+
+**`required_role_id` and blocked roles were exercised across the transitions**, not just in one state: losing the required role stops the panel responding *without stripping* what it already granted, and acquiring a blocked role likewise. That direction matters — the alternative reading would turn a timeout role into a silent mass revocation.
+
+**A panel-level refusal writes no `role_effects` row**, because the refusal happens in convergence before any intent exists. Inventing a row would make that table a log of things that never happened, which is the opposite of what it is for.
+
+**Broke, to check the tests.** 42. Dropped `held` from the `add_only` union, so it began revoking → 3 failed. 43. Disabled the blocked-role gate → 5 failed across the unit and integration suites. Both restored; md5 verified.
+
+655 tests green; typecheck and lint exit 0.
