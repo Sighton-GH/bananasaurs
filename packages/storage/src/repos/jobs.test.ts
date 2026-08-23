@@ -64,6 +64,62 @@ describe('enqueue', () => {
     put(a);
     expect(put(b).enqueued).toBe(true);
   });
+
+  /**
+   * ADR 0016. The dedupe key collapses work that is still *pending*; it is not
+   * a permanent record that this work was once done.
+   *
+   * WP2 shipped `jobs_dedupe` as an unconditional UNIQUE, and job rows are
+   * never deleted, so a key was single-use for the life of the database. The
+   * second gateway gap ever would enqueue nothing —
+   * `createConnectionSubscriber` always passes `reconcile_guild:gateway-gap` —
+   * and the drift that outage caused would never be repaired. Silently: a
+   * collapse and a permanent block are the same `{enqueued: false}` at the
+   * call site.
+   */
+  describe('dedupe is over pending work, not history (ADR 0016)', () => {
+    it('still collapses a second request while the first is queued', () => {
+      put(a);
+      expect(put(a).enqueued).toBe(false);
+      expect(countByState(a)).toEqual({ queued: 1 });
+    });
+
+    it('still collapses a second request while the first is running', () => {
+      put(a);
+      claimNext(a, 1000);
+      expect(put(a).enqueued).toBe(false);
+      expect(countByState(a)).toEqual({ running: 1 });
+    });
+
+    it('accepts the same work again once the first has completed', () => {
+      put(a);
+      const claimed = claimNext(a, 1000);
+      completeJob(a, claimed?.jobId ?? -1, 1100);
+
+      const again = put(a, { now: 2000 });
+      expect(again.enqueued).toBe(true);
+      expect(again.jobId).toBeDefined();
+      expect(countByState(a)).toEqual({ done: 1, queued: 1 });
+    });
+
+    it('accepts the same work again once the first has permanently failed', () => {
+      // A reconciliation pass that exhausted its attempts must not disable
+      // reconciliation for the lifetime of the database.
+      const first = put(a, { maxAttempts: 1 });
+      claimNext(a, 1000);
+      const outcome = failJob(a, first.jobId ?? -1, 'boom', 1100);
+      expect(outcome.willRetry).toBe(false);
+
+      expect(put(a, { now: 2000 }).enqueued).toBe(true);
+      expect(countByState(a)).toEqual({ failed: 1, queued: 1 });
+    });
+
+    it('accepts the same work again once the first was cancelled', () => {
+      const first = put(a);
+      cancelJob(a, first.jobId ?? -1, 1100);
+      expect(put(a, { now: 2000 }).enqueued).toBe(true);
+    });
+  });
 });
 
 describe('claimNext', () => {

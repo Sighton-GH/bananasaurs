@@ -437,7 +437,17 @@ export const jobs = sqliteTable(
   },
   (t) => [
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
-    uniqueIndex('jobs_dedupe').on(t.guildId, t.dedupeKey),
+    // Partial, over pending work only (ADR 0016).
+    //
+    // The dedupe key exists so a flapping connection queues one reconciliation
+    // rather than one per reconnect. Unconditional, it did something else:
+    // rows are never deleted, so a key was single-use for the lifetime of the
+    // database and the *second* gateway gap ever enqueued nothing at all.
+    // Uniqueness over `queued`/`running` keeps the collapse and drops the
+    // permanent block.
+    uniqueIndex('jobs_dedupe')
+      .on(t.guildId, t.dedupeKey)
+      .where(sql`${t.state} IN ('queued','running')`),
     // Partial, so the index holds only claimable work rather than every job
     // ever run.
     //

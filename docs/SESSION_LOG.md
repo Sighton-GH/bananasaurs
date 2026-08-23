@@ -375,3 +375,29 @@ Owner review settled the one decision the WP2 report asked for. `protected` mean
 **Documents corrected in place.** `docs/19` §5's sentence claiming `authorize()` refuses protected principals no longer matched the code and would have misled the next reader.
 
 451 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 7a — a job dedupe key collapses pending work, not history — 2026-08-23
+
+Found before writing a line of WP3, by probing the queue WP3 was about to build on rather than reading it.
+
+**`jobs_dedupe` was `UNIQUE (guild_id, dedupe_key)` over every state, and job rows are never deleted.** So a dedupe key was single-use for the lifetime of the database:
+
+```
+first enqueue                  : {"enqueued":true,"jobId":1}
+job state after completion     : done
+second enqueue after completion: {"enqueued":false}
+```
+
+**What that breaks is exactly WP3's work.** `createConnectionSubscriber` always enqueues with `reconcile_guild:gateway-gap`. The second gateway gap ever would enqueue nothing, and the reaction drift that outage caused would never be repaired — while the log line said `reconcile-already-queued` about a job that finished days ago. The periodic timer pass could run once. The adoption pass could run once per panel, forever.
+
+**The bug was in the index, not the callers.** Every caller is written the way the dedupe key is documented to work, and the failure is silent by construction: `onConflictDoNothing` is how the collapse is implemented, so a collapse and a permanent block are the same `{enqueued: false}` at the call site.
+
+**Fixed as a partial unique index** over `state IN ('queued','running')` — ADR 0016. Second request while queued or running still collapses, which is the property the key exists for; a request for finished, failed or cancelled work enqueues afresh, which is the property the callers assume. Still leads with `guild_id`, so the schema invariant holds.
+
+Shipped as `0001_bright_the_leader.sql` rather than by editing `0000`, which has already been applied to a database.
+
+**Broke, to check the tests.** 29. The mutation was the pre-fix state itself: tests written first against the unconditional index, 3 of 5 failed (`accepts the same work again once the first has completed` / `has permanently failed` / `was cancelled`), and the two asserting the collapse passed throughout — so the tests distinguish the property being kept from the one being fixed, rather than just tracking the change.
+
+456 tests green; typecheck and lint exit 0.
