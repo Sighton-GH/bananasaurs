@@ -35,6 +35,14 @@ https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot%20a
 
 **Deliberately absent:** Manage Messages, Manage Channels, Manage Server, Kick, Ban, Moderate Members, Manage Webhooks, Mention Everyone, Administrator.
 
+> **Amendment, 2026-08-22 — one feature is given up to keep this list short.**
+>
+> Removing *another member's* reaction requires Manage Messages. Without it, a `single_choice` **adopted** panel cannot clear the stale reaction when someone switches roles: the reaction stays, the next reconciliation reads it as intent and re-grants the old role, and the panel flaps between two states forever.
+>
+> Rather than grant Manage Messages, **`single_choice` is restricted to managed (button) panels**, where there is no reaction residue and the problem does not exist. The dashboard and CLI refuse the `single_choice` + `adopted` combination and say why. Toggle, add-only, and remove-only work correctly on adopted panels.
+>
+> This is the trade being made deliberately: a narrower feature set in exchange for a permission wall that a bug cannot defeat. Layer 1 is the only layer Discord enforces rather than our code, and it is worth more than one panel behaviour.
+
 A Release 1 Bananasaurs that goes completely haywire **cannot delete a message, kick anyone, ban anyone, or alter a channel.** It is not restraint — it is incapacity. Grant new permissions only when the release that needs them arrives, and never grant Administrator to save time.
 
 Place the bot's role high enough to manage the panel roles and no higher. Discord will not let it touch anything above itself.
@@ -59,6 +67,18 @@ This is the control that specifically stops "goes haywire."
 - **Exceeding it trips a circuit breaker**: the module stops acting entirely, keeps recording what it *would* have done, writes a loud log line, and raises a dashboard and `bananasaurs status` alert. It does not resume on its own. A human clears it.
 - **Consecutive-error breaker:** N failed Discord calls in a row trips the same way, so a permission change or an outage produces one alert rather than a thousand retries.
 - **Reconciliation budget:** any reconciliation pass computes its full change list *before* acting. If the list exceeds a threshold, it refuses and asks for confirmation instead of proceeding. A correct reconciliation after a 30-minute outage touches a handful of members; one touching 200 is a bug, and the right response is to stop.
+
+> **Amendment, 2026-08-22 — the cap is per-source, and named allowances may exceed it.**
+>
+> As originally written, this layer promised a single global ceiling that no source may exceed. That promise is incompatible with the adoption pass: adopting a panel that already has thirty reactors legitimately needs thirty grants, which trips the breaker partway through and leaves roles half-applied. The reconciliation budget refuses the same work for the same reason.
+>
+> The layer now distinguishes **expected bulk** from **unexpected bulk**:
+>
+> - An operation that knows its own size — adoption, and a reconciliation after a long outage — computes its full change list *before acting* and shows it to the owner: *"This will grant 47 roles to 31 members. Proceed?"*
+> - Confirmation through the CLI (`--confirm`) or the dashboard writes an allowance sized to **that exact change list**, and the operation spends the allowance instead of the standing cap, throttled, as a resumable job.
+> - One role beyond the approved count trips the breaker normally. An unconfirmed operation never gets an allowance at all.
+>
+> Stated honestly, this is a weaker guarantee than "no source may exceed the cap." It is now "no source exceeds the cap unless a human saw the exact change list and approved it." That is the only version under which adoption can work, and the preview is what keeps it a real control rather than an exemption.
 
 The bias throughout: **when something looks wrong, do nothing and tell someone.** A bot that stops is an inconvenience. A bot that keeps going is an incident.
 

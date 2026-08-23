@@ -154,7 +154,9 @@ These are the things that cause rework when found late. Each one is a small addi
 
 **C14. Secrets handling is unspecified in practice.** On one Mint box: a root-owned `.env` at mode 0600 loaded via systemd `EnvironmentFile=`, never in the repo, never in the config export, never in a diagnostics bundle. Add the redaction requirement to the diagnostics bundle spec in `docs/08` M10 — it is mentioned there but not defined.
 
-**C15. Dashboard authentication is not specified anywhere.** Recommendation: Discord OAuth2 (`identify` + `guilds`) with the owner's user ID allowlisted at first. It gives you login, identity, and live role membership from one integration, which is exactly what the capability-mapping model in `docs/06` needs.
+**C15. Dashboard authentication is not specified anywhere.** ~~Recommendation: Discord OAuth2 (`identify` + `guilds`) with the owner's user ID allowlisted at first.~~
+
+**Superseded 2026-08-22 by ADR 0012.** The recommendation was written before the reviewer knew that other members of the club server hold Discord Administrator. Once that is true, Discord permission bits cannot gate the control plane — the dashboard exposes the archive, credentials, moderation history, purge, and the kill switch. Dashboard auth is **owner-provisioned local accounts**: Argon2id, DB-backed revocable sessions, a one-time bootstrap token, TOTP on credential and purge capabilities. Discord Administrator grants nothing. The original recommendation is kept here because the reasoning that made it wrong is worth more than the recommendation was.
 
 **C16. Citations can leak the existence of hidden content.** `/find` and `/ask` return Discord message links (`https://discord.com/channels/{guild}/{channel}/{message}`). If the archive contains a channel the *asker* cannot see, a citation reveals that the message exists even if the content is withheld. Permission-filter citations and source lists, not just content. `docs/14` implies this; make it an explicit test case.
 
@@ -186,8 +188,9 @@ Replaces `docs/08`. Three releases, each ending in something the club actually u
 - Event pipeline with the dedupe mechanism from C8.
 - Reaction/button/select role panels, with hierarchy validation and the C9 self-check.
 - Reconciliation after downtime: missed reaction events, deleted panel messages, renamed/deleted roles.
+- **Message, member, and role logging.** *(Added 2026-08-22: logging moved from Release 2 to Release 1 per the Addendum below and `docs/08_ROADMAP.md`. It is one of the three things Carl-bot currently does, it carries no enforcement risk, and it is nearly free once the event pipeline exists.)*
 - Audit log for every role mutation, with before/after state.
-- One dashboard page: health, panel config, audit table, kill switch. Discord OAuth2 login, owner allowlisted.
+- One dashboard page: health, panel config, audit table, kill switch. ~~Discord OAuth2 login, owner allowlisted.~~ **Superseded by ADR 0012:** owner-provisioned local accounts.
 - Privacy surface from A3: pinned notice, `/privacy`.
 - Backup and a **tested restore**.
 
@@ -202,7 +205,7 @@ Replaces `docs/08`. Three releases, each ending in something the club actually u
 - Native Discord AutoMod integration where it blocks earlier — do not duplicate it blindly.
 - Moderation cases, notes, warnings, timeout/untimeout, kick, ban/unban, bounded purge (as the C2 background job), protected roles, hierarchy checks, mod log.
 - Per-rule cutover tracking from A4.
-- Message/member/role logging.
+- ~~Message/member/role logging.~~ **Moved to Release 1** (see above).
 
 **Done when:** every legacy automod rule has a Bananasaurs equivalent that ran observe-only for at least two weeks with an acceptable false-positive rate, cutover happened one rule at a time, and the whole thing works with every AI provider unreachable — because there is no AI yet.
 

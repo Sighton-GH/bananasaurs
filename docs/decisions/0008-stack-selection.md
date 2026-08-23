@@ -1,6 +1,7 @@
 # ADR 0008: Initial technology stack
 
-Status: proposed (2026-08-22)
+Status: accepted (2026-08-22)
+Amended: 2026-08-22 — dashboard auth superseded by ADR 0012
 
 ## Context
 
@@ -20,7 +21,7 @@ Milestone 0 in `docs/08` deferred this choice. Deferring it further is now the m
 | Jobs | **Database-backed job table**, one in-process worker, `dedupe_key` unique constraint | `docs/02` explicitly permits this before a broker. Gives idempotency and restart-safety for free. |
 | HTTP API | **Fastify** | Small, fast, first-class TypeScript, good plugin story for auth and CSRF. |
 | Dashboard | **React + Vite**, built to static files, served by Fastify | Satisfies `docs/15`'s "static/cacheable, no separate always-running dev server." |
-| Dashboard auth | **Discord OAuth2** (`identify`, `guilds`), owner user ID allowlisted, signed session cookies | One integration provides login, identity, and live role membership — exactly what the capability model needs. |
+| Dashboard auth | ~~Discord OAuth2~~ → **owner-provisioned local accounts** (ADR 0012) | **Superseded 2026-08-22.** Other club members hold Discord Administrator, so a Discord permission bit must not imply control-plane access. Argon2id passwords, DB-backed sessions, one-time bootstrap token. Discord Administrator grants nothing. |
 | Validation | **Zod** at every boundary: config, HTTP, Discord interaction options, and all model output | Model output is untrusted input; it must pass the same validator as a human-submitted form. |
 | Tests | **Vitest** + a hand-written fake Discord gateway/REST harness | Enables real tests without a live Discord connection. See `docs/16`. |
 | Logging | **Pino**, JSON, with a redaction allowlist | Structured logs with secrets and prompt bodies excluded by construction. |

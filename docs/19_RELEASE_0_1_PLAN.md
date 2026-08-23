@@ -1,13 +1,15 @@
 # Release 0 + 1 implementation plan
 
-> ## ⚠ STATUS: DRAFT — awaiting owner review
+> ## ✅ STATUS: ACCEPTED — 2026-08-22
 >
-> Nothing in this document is agreed. It is the Phase 2 output of the kickoff
-> prompt in `docs/KICKOFF_PROMPT.md`, written to be argued with. No application
-> code exists and none will be written until this is marked accepted.
+> Reviewed by Bryan and accepted with amendments. The four open decisions are
+> resolved below; six technical corrections and several additions are folded in.
+> Implementation proceeds under `docs/20_AUTONOMOUS_EXECUTION.md`, which groups
+> the sixteen slices into six work packages with a hard stop at each boundary.
 
-**Status:** DRAFT
+**Status:** ACCEPTED (2026-08-22)
 **Written:** 2026-08-22
+**Amended:** 2026-08-22 — owner review; see [Amendments](#amendments-from-owner-review)
 **Scope:** Release 0 and Release 1 only, per `docs/08_ROADMAP.md`. No AI, no archive, no automod, no memory, no provider integration. One dashboard page.
 **Stack:** fixed by ADR 0008, not reconsidered here.
 **Supersedes:** nothing. **Depends on:** ADRs 0001–0013, `REVIEW.md`, `docs/01`–`docs/18`.
@@ -16,7 +18,8 @@
 
 ## Contents
 
-- [Decisions I need from you](#decisions-i-need-from-you)
+- [Decisions — resolved](#decisions--resolved)
+- [Amendments from owner review](#amendments-from-owner-review)
 - [The ADR 0013 rule, in my own words](#the-adr-0013-rule-in-my-own-words)
 - [1. Repository layout](#1-repository-layout)
 - [2. Database schema — Release 1 only](#2-database-schema--release-1-only)
@@ -31,16 +34,88 @@
 
 ---
 
-## Decisions I need from you
+## Decisions — resolved
 
-Four blocking, in the order they bite. Everything else in this plan I can decide and document myself.
+All four were resolved at owner review on 2026-08-22. Three went to the recommendation; one was reversed, with reasoning I did not have.
 
-| # | Decision | Why it is yours | My recommendation |
-|---|---|---|---|
-| 1 | **`single_choice` on adopted panels** | Removing another member's reaction needs Manage Messages, which `docs/18` Layer 1 deliberately withholds. Without it, single-choice adopted panels enter a grant/revoke flap loop. Granting the permission weakens the one wall Discord enforces rather than our code. | Restrict `single_choice` to managed (button) panels; refuse the combination in the dashboard and CLI. See [§6.3](#63-role-panels--two-kinds). |
-| 2 | **Adoption allowance vs. the rate cap** | Adopting a panel with more than 20 existing reactors trips the circuit breaker mid-pass and halts the module with roles half-applied. Fixing it changes `docs/18` Layer 3, not just an implementation detail. | Per-source rate budgets; adoption spends an owner-previewed, owner-confirmed allowance sized to the exact change list. See [§6.4](#64-adoption-pass). |
-| 3 | **Do deleted-message logs include the original content?** | It is a privacy default, it belongs in `PRIVACY.md`, and it decides whether we need the `MESSAGE_CONTENT` privileged intent at all. | Metadata-only. It is the reversible direction: content can be switched on later, but content already posted to a Discord log channel cannot be unlogged. |
-| 4 | **Backup destination** | `docs/12` still-needed item 2. An off-host target sends server content somewhere new, which `CLAUDE.md` says is your call. | Local path only in Release 1, with an encrypted off-host target documented but not implemented. See [§6.12](#612-backup-and-restore). |
+| # | Decision | Outcome |
+|---|---|---|
+| 1 | `single_choice` on adopted panels | **Restricted to managed panels.** Dashboard and CLI refuse the combination with a message that says why and points at button panels. `CHECK` constraint added. Recorded in `docs/18` and the panel docs. A fourth option is documented and rejected in [6.3](#63-role-panels--two-kinds). |
+| 2 | Adoption allowance vs. the rate cap | **Per-source rate budgets**, owner-previewed and owner-confirmed, sized to the exact change list. Anything beyond the approved count trips the breaker normally. Written into `docs/18` Layer 3 as an amendment, because it changes what that layer means. |
+| 3 | Deleted-message content logging | **Reversed: content is included**, per-route, defaulting on for `message_delete` and `message_edit`. See [Amendments](#amendments-from-owner-review) for why my recommendation was wrong. `include_content` stays exactly as designed so any route can turn it off. `MESSAGE_CONTENT` intent stays. |
+| 4 | Backup destination | **Local path only** in Release 1. The encrypted off-host option is documented, not implemented. |
+
+---
+
+## Amendments from owner review
+
+Recorded 2026-08-22. Six technical corrections and one reversed recommendation. Each is folded into the body of the plan; this section records what changed and why, so the reasoning is not lost in a diff.
+
+### Why my recommendation on content logging was wrong
+
+I recommended metadata-only for deleted-message logs on the grounds that it is the reversible direction — content can be switched on later, but content already posted to a log channel cannot be unlogged.
+
+That reasoning is sound in the abstract and wrong here, because I never established the baseline. **Carl-bot already logs message content to a log channel and has done for a long time.** Metadata-only is therefore not a neutral safe default; it is a functional regression from what the server has today, and it would be a regression members never asked for, justified by a privacy improvement they never requested. The content is already flowing to that channel. Withholding it changes nothing about exposure and removes the thing the module exists to provide.
+
+Content is included, per route, defaulting on for `message_delete` and `message_edit`. The `include_content` column is unchanged, so any route can be turned off individually. `MESSAGE_CONTENT` intent stays.
+
+`docs/STATE.md` records both privileged intents as already enabled in the Developer Portal. I am taking that at its word — I cannot see the portal — and slice 6 still asserts the intent is actually granted at runtime rather than trusting configuration.
+
+### Correction 1 — `fs.flockSync` does not exist
+
+Verified: Node exposes neither `fs.flock` nor `fs.flockSync`. My single-writer section called a function that is not in the runtime. That is a straightforward error and the guard would have failed at first run.
+
+Adopting the socket-bind guard: binding a Unix socket path already served by a live process fails with `EADDRINUSE`, verified locally. It is free, since the daemon binds that socket anyway, and it needs no dependency.
+
+One gap it does not close, which I am completing rather than disputing. The socket guards *a second daemon on the same socket path*. It does not guard the resource we actually care about, which is the database file. `docs/15` gives dev and production **different** socket paths and different data directories — so a dev daemon misconfigured to point at the production `BANANASAURS_DB_PATH` while keeping its own socket path binds successfully and opens the database as a second writer. `drizzle-kit` and a stray `sqlite3` shell have the same shape.
+
+So: socket bind as the instance guard, plus an `O_EXCL` PID lockfile keyed to the **database path**, holding the pid and the socket path. Both are `fs.openSync(path, 'wx')` and `process.kill(pid, 0)` — Node core, no dependency, no native module. A stale file from a crash is detected by probing the recorded pid and reclaimed with a logged warning; a live one aborts startup naming the other instance's socket.
+
+I considered `PRAGMA locking_mode = EXCLUSIVE`, which would have SQLite enforce this itself, and rejected it: it locks out every other reader including backup tooling, and it is a much larger behavioural change than the problem warrants.
+
+### Correction 2 — `SO_PEERCRED` is not reachable from Node core either
+
+Also correct, and worse than the first error because I made a security claim on it. I wrote that the invoking Unix user is "read from the kernel, not from a flag the caller could lie about." Node's `net.Socket` exposes no peer credentials, so that is not achievable without a native addon, and the stronger guarantee I implied does not exist.
+
+The real access control is the socket's filesystem permissions: `bananasaurs:bananasaurs-ops`, mode `0660`. Anyone in that group can connect; the identity they report is an assertion.
+
+The schema now says so. The column is `actor_unix_user_claimed`, and `bananasaurs audit tail` renders it as claimed rather than as established fact — the same discipline already applied to inferred deletion attribution. Naming a trust level honestly in the column is worth more than a comment nobody reads, because the next person to build on that column inherits the caveat automatically.
+
+### Correction 3 — a branded type is not a security boundary
+
+`Authorized<C>` is erased at runtime, so `as unknown as Authorized<'roles.mutate'>` defeats it entirely — and that is precisely the line someone writes to make a test compile, which means it arrives with good intentions and survives review.
+
+Two changes, in order of what actually does the work:
+
+1. **`applyRoleEffect` re-verifies the capability at runtime**, calling the same `authorize()` query against `capability_grants`. The witness already carries the actor and guild, so this is one indexed lookup on a table with a composite primary key. This is the control.
+2. **An ESLint rule bans casts to authz types**, `no-restricted-syntax` matching `TSAsExpression` onto the `Authorized` family. This is the tripwire, not the control — an `eslint-disable` comment defeats it, which is fine, because the point is to make the bypass visible in a diff rather than impossible.
+
+The type still earns its place: it makes the check impossible to *forget*, which is the common failure. It just does not make it impossible to *defeat*, which is what I implied.
+
+### Correction 4 — convergence diffs against actual Discord roles
+
+Stated explicitly because leaving it implicit would have produced a real bug. Convergence compares the desired role set against **the member's live Discord roles**, fetched at convergence time — not against `managed_role_assignments`.
+
+Diffing against our own table means a role removed manually in Discord leaves the table still reading "granted," so convergence computes an empty change set and the drift is never repaired. The `dedupe_key` would skip it a second time even if it were computed, because as far as the effect log is concerned that grant already happened.
+
+This changes what `managed_role_assignments` is *for*. It is a provenance record — which panel granted this, when, under which effect — not the source of truth for current state. Discord is the source of truth for current state, which is the same principle that makes adopted panels work at all.
+
+### Correction 5 — `GUILD_MEMBER_UPDATE` for prompt drift detection
+
+It was in the harness list and absent from the design. Subscribing closes the window between a manual role change and the periodic reconciliation.
+
+The subtlety worth writing down: **it also fires for our own mutations.** Naively repairing on every `GUILD_MEMBER_UPDATE` produces a feedback loop where the bot reacts to its own grant. The handler therefore ignores an update whose role delta matches a `role_effects` row for that `(guild_id, user_id, role_id)` completed inside a short window, and only treats the remainder as external drift.
+
+### Correction 6 — fetch reaction state only when the behaviour needs it
+
+Convergence for `single_choice` or a panel with `max_roles` set needs the member's reaction state across *every* mapped emoji, which is N REST calls per event. `toggle`, `add_only`, and `remove_only` are decidable from the single emoji the event carried.
+
+So the fetch is conditional on behaviour, and within one convergence pass the per-message reaction state is memoised so a burst of events on the same panel does not refetch. With `single_choice` now restricted to managed panels (decision 1), the remaining N-fetch case is an adopted panel with `max_roles`, which is the narrow case worth paying for.
+
+### Smaller additions
+
+- **`event_dedupe` sweep.** The table grows without bound. A sweep job on the retention window lands in slice 4 alongside the pipeline that fills it.
+- **Dashboard binding.** `DASHBOARD_BIND=127.0.0.1` means reaching the dashboard from anywhere but the box needs SSH port forwarding or Tailscale. Recorded in the dashboard section and in the operator docs, because "the dashboard doesn't load" is otherwise a confusing first experience.
 
 ---
 
@@ -291,7 +366,7 @@ CREATE TABLE audit_events (
   actor_type   TEXT    NOT NULL
                CHECK (actor_type IN ('member','owner','operator_cli','dashboard','system','doctor')),
   actor_id     TEXT,
-  actor_unix_user TEXT,                      -- ADR 0013: CLI writes the invoking Unix user
+  actor_unix_user_claimed TEXT,              -- CLI-asserted, NOT kernel-verified; see amendment 2
   via          TEXT,                         -- 'ssh' | 'http' | 'gateway'
   action       TEXT    NOT NULL,
   subject_type TEXT    NOT NULL,
@@ -313,7 +388,7 @@ CREATE TABLE log_routes (
   guild_id        TEXT    NOT NULL,
   event_kind      TEXT    NOT NULL,   -- 'message_edit'|'message_delete'|'member_join'|...
   channel_id      TEXT    NOT NULL,
-  include_content INTEGER NOT NULL DEFAULT 0,   -- privacy-relevant default; decision 3
+  include_content INTEGER NOT NULL DEFAULT 1,   -- decision 3: on for delete/edit; per-route off
   enabled         INTEGER NOT NULL DEFAULT 1,
   PRIMARY KEY (guild_id, event_kind),
   FOREIGN KEY (guild_id) REFERENCES guilds(guild_id) ON DELETE CASCADE
@@ -512,6 +587,10 @@ Reactions are the hard case, because `(message, user, emoji, action)` is not uni
 
 **So reactions are not deduplicated at the event layer at all. They are treated as level-triggered, not edge-triggered.** A reaction event is a hint that a message's reaction state may have changed; the handler recomputes the member's desired role set from panel configuration plus live reaction state and converges toward it. Convergence is naturally idempotent — running it twice produces the same state, and the second run issues no REST call because the state already matches.
 
+**Convergence diffs the desired role set against the member's live Discord roles**, fetched at convergence time — never against `managed_role_assignments`. Diffing against our own table means a role removed manually in Discord leaves the table still reading "granted," convergence computes an empty change set, and the drift is never repaired. That makes `managed_role_assignments` a *provenance* record — which panel granted this, when, under which effect — rather than the source of truth for current state. Discord holds current state, which is the same principle that makes adopted panels work at all. See amendment 4.
+
+`GUILD_MEMBER_UPDATE` is subscribed so manual role changes are caught promptly instead of waiting for the periodic pass. It fires for our own mutations too, so the handler ignores any delta matching a `role_effects` row for that `(guild_id, user_id, role_id)` completed inside a short window, and treats only the remainder as external drift. Without that filter the bot reacts to its own grants in a loop. See amendment 5.
+
 This is a better design than event dedupe anyway: it is the *same code path* that handles reconciliation after downtime, so drift repair in Release 1 is not a separate feature with its own bugs.
 
 Idempotency for the audit trail and the outbound call is then enforced one layer down, at the effect gateway, by `role_effects.dedupe_key`:
@@ -556,11 +635,13 @@ export async function applyRoleEffect(
 ): Promise<EffectOutcome>
 ```
 
-Three enforcement points, in order:
+**The type is not the boundary.** `Authorized<C>` is erased at runtime, so `as unknown as Authorized<'roles.mutate'>` defeats it — and that is the exact line someone writes to make a test compile. See amendment 3. So the check is enforced four ways, and the type is the weakest of them:
 
-1. **Type level** — you cannot call the executor without the witness. There is no overload without `auth`, `Authorized` has no public constructor, and the branded symbol is not exported.
-2. **Query level** — `authorize()` resolves the actor's Discord roles against `capability_grants` for that guild. Discord permission bits are never consulted, so Administrator grants nothing (ADR 0012). Protected principals are refused here regardless of grants.
-3. **Module level** — the Discord REST port is not exported from `packages/discord`'s public entrypoint. Only `core/effects` can import it, enforced by `dependency-cruiser` in `npm run lint`. Even code that somehow obtained a witness cannot reach Discord except through the gateway.
+1. **Runtime re-verification (the actual control)** — `applyRoleEffect` calls `authorize()` again against `capability_grants` before acting. The witness carries the actor and guild, so this is one indexed lookup on a composite primary key. A forged witness fails here.
+2. **Lint tripwire** — `no-restricted-syntax` bans casts onto the `Authorized` family. An `eslint-disable` defeats it, which is fine: the point is to make the bypass visible in a diff, not impossible.
+3. **Type level** — you cannot call the executor without the witness. There is no overload without `auth`, `Authorized` has no public constructor, and the branded symbol is not exported. This makes the check impossible to *forget*, which is the common failure; it does not make it impossible to *defeat*.
+4. **Query level** — `authorize()` resolves the actor's Discord roles against `capability_grants` for that guild. Discord permission bits are never consulted, so Administrator grants nothing (ADR 0012). Protected principals are refused here regardless of grants.
+5. **Module level** — the Discord REST port is not exported from `packages/discord`'s public entrypoint. Only `core/effects` can import it, enforced by `dependency-cruiser` in `npm run lint`. Even code that somehow obtained a witness cannot reach Discord except through the gateway.
 
 Capabilities for Release 1: `roles.mutate`, `panels.manage`, `logging.manage`, `config.read`, `config.write`, `audit.read`, `killswitch.toggle`, `undo.execute`.
 
@@ -636,19 +717,21 @@ The exact set of limitable managers gets verified against discord.js **14.27.0**
 
 Three distinct threats. The planning documents treat them as one.
 
-**Threat A — a second process.** The operator CLI is already handled by ADR 0013's socket design, but `drizzle-kit`, a stray `sqlite3` shell, or a dev instance pointed at the production path are all real. Handled at startup with an OS-level exclusive lock held for the process lifetime.
+**Threat A — a second process.** The operator CLI is already handled by ADR 0013's socket design, but `drizzle-kit`, a stray `sqlite3` shell, or a dev instance pointed at the production path are all real.
+
+Two guards, neither needing a dependency. `fs.flockSync` does not exist in Node — see amendment 1.
+
+*Instance guard:* the daemon binds its Unix socket before opening the database. A second daemon on the same socket path fails with `EADDRINUSE`, verified.
+
+*Database guard:* an `O_EXCL` PID lockfile keyed to the database path, which is the resource actually at risk — dev and production use different socket paths but could be misconfigured onto the same `BANANASAURS_DB_PATH`.
 
 ```ts
 export function openDatabase(path: string, opts: { readonly: boolean }): Db {
   if (handle) throw new Error('database already open in this process');
-  lockFd = fs.openSync(`${path}.lock`, 'w');
-  try {
-    flockSync(lockFd, LOCK_EX | LOCK_NB);        // fails immediately if held
-  } catch {
-    throw new Error(
-      `another Bananasaurs process already owns ${path}. ` +
-      `Check: systemctl status bananasaurs`);
-  }
+  claimDbLock(`${path}.lock`);   // O_EXCL create; on EEXIST, probe the recorded
+                                 // pid with process.kill(pid, 0). Alive -> abort
+                                 // naming the other instance's socket. Dead ->
+                                 // reclaim with a logged warning.
   const db = new Database(path);
   db.pragma('journal_mode = WAL');
   db.pragma('busy_timeout = 5000');
@@ -718,12 +801,15 @@ Three ways out:
 1. Grant Manage Messages — weakens the outer wall that Layer 1 exists to provide, and it is the one wall Discord enforces rather than our code. Recommended against.
 2. **Restrict `single_choice` to managed panels**, and have the dashboard and CLI refuse the combination with a clear message. Buttons have no residue, so the problem disappears entirely. The `CHECK` constraint in the `panels` DDL is a natural extension of this.
 3. Accept the drift and document it — a flap loop is not documentable.
+4. **Treat the database as truth for single-choice adopted panels** — ignore live reaction state and drive roles from `managed_role_assignments`. Rejected at review. A member would see two reactions on the message and hold one role, with no way to tell which counted, and no repair path at all when an event is missed: the database would be confidently wrong and nothing would ever correct it. Refusing the combination is a smaller harm than a silent permanent inconsistency.
 
-**Recommendation: option 2.** But it trades away a feature explicitly requested on the panel type described as "the primary thing I want," so it is the owner's call. Toggle, add-only, and remove-only all work correctly on adopted panels.
+**Accepted: option 2.** Toggle, add-only, and remove-only all work correctly on adopted panels. The dashboard and CLI refuse `single_choice` + `adopted` with a message that says why and points at button panels, rather than failing a constraint with a raw SQL error. Recorded in `docs/18` and the panel documentation.
 
 ### 6.4 Adoption pass
 
 On adopt: enqueue a job that pages `fetchReactionUsers` (100 per page) for each mapped emoji, computes the full desired role set, and converges. Existing reaction state is the intended role state.
+
+For live events afterwards, reaction state across *all* mapped emoji is fetched only when the behaviour needs it — a panel with `max_roles` set. `toggle`, `add_only`, and `remove_only` are decidable from the single emoji the event carried, and `single_choice` no longer occurs on adopted panels. Within one convergence pass the per-message reaction state is memoised so a burst on the same panel does not refetch. See amendment 6.
 
 #### Collision 2 — the adoption pass and the rate cap contradict each other
 
@@ -737,7 +823,9 @@ The fix is to distinguish **expected** bulk from **unexpected** bulk, which the 
 - The pass then spends that allowance instead of the standing rate cap, at a throttled pace, as a resumable job.
 - Anything beyond the allowance — one more role than the owner approved — trips the breaker normally.
 
-So the cap becomes per-source rather than global, and the only source that may exceed it is one a human sized and approved. Unexpected bulk still trips. **This is a change to `docs/18`, not an implementation detail.**
+So the cap becomes per-source rather than global, and the only source that may exceed it is one a human sized and approved. Unexpected bulk still trips.
+
+**Accepted, and written into `docs/18` Layer 3 as an amendment rather than a footnote**, because it changes what that layer means. Layer 3 was "a global ceiling no source may exceed." It is now "a global ceiling, plus named allowances a human sized and approved for a specific change list." That is a weaker guarantee stated honestly, and it is the only version that lets adoption work at all.
 
 ### 6.5 Reaction drift
 
@@ -811,7 +899,7 @@ Unix socket at `BANANASAURS_SOCKET_PATH`, newline-delimited JSON, request/respon
 
 - Every command is guild-scoped (`--guild`, or the sole allowlisted guild).
 - `--json` on everything.
-- Writes require `--confirm` and emit an audit row with `actor_type='operator_cli'`, `actor_unix_user` from `SO_PEERCRED` on the socket — read from the kernel, not from a flag the caller could lie about — and `via='ssh'`.
+- Writes require `--confirm` and emit an audit row with `actor_type='operator_cli'`, `actor_unix_user_claimed` sent by the CLI, and `via='ssh'`. The username is an **assertion, not a kernel-verified fact** — Node cannot read `SO_PEERCRED`. The real access control is the socket's `0660 bananasaurs:bananasaurs-ops` permissions; group membership is what grants access. `audit tail` renders the field as claimed. See amendment 2.
 - `config get` on any key in the secret allowlist returns `<redacted>` unconditionally; there is no override flag.
 - `BANANASAURS_READONLY=1` makes `write()` itself throw, so it is enforced in storage rather than per-command.
 
@@ -820,6 +908,8 @@ Release 1 surface is exactly the list in `docs/17`.
 ### 6.10 Dashboard — one page
 
 Health · log routing · panel config · audit table · kill switch. React + Vite, static, served by Fastify, bound to `127.0.0.1` by default.
+
+**Reaching it from anywhere but the box therefore needs SSH port forwarding (`ssh -L 8787:127.0.0.1:8787 …`) or Tailscale.** Worth stating plainly in the operator docs — "the dashboard doesn't load" is otherwise a confusing first experience, and the fix is not to change the bind.
 
 **First-account bootstrap:**
 
@@ -853,35 +943,56 @@ Open decision 4: local-path is safe and is the default. An off-host or encrypted
 
 ## 7. Ordered work plan
 
-Each slice ends compiling, tested, and demonstrable.
+Each slice ends compiling, tested, and demonstrable. Slices are grouped into the six work packages of `docs/20_AUTONOMOUS_EXECUTION.md`; each package boundary is a hard stop.
+
+| Package | Slices |
+|---|---|
+| **WP1** — skeleton + harness | 1, 2a, 3 |
+| **WP2** — storage, pipeline, safety core | 2b, 4, 5 |
+| **WP3** — role panels | 7, 8, 9, 10, 11 |
+| **WP4** — logging | 12 |
+| **WP5** — CLI, dashboard, `/privacy` | 6, 13, 14, 15 |
+| **WP6** — backup, restore, hardening | 16 |
+
+**Where the grouping and my slice order disagreed.** The proposed mapping put slice 2 (storage) in WP2 and slice 3 (harness) in WP1, which would have WP1 skip over slice 2 and break slice order. But `docs/20`'s own WP1 description names "Drizzle + migrations" as WP1 content, while WP2 is described as "**full** Release 1 schema."
+
+Both are satisfied by splitting slice 2 rather than reordering:
+
+- **2a — database plumbing (WP1).** better-sqlite3, WAL pragmas, the two single-writer guards, drizzle-kit wired up, `db:generate` and `db:migrate` working end to end, and the `guilds` table alone so the migration pipeline is demonstrably real rather than scaffolded.
+- **2b — the schema (WP2).** The remaining sixteen tables, the guild-scoped repository factory, the `write()` guard, and the schema invariant test.
+
+Slice order is preserved (1, 2a, 3 …) and no package contains a slice from a later one. Handing over a workspace whose `db:migrate` does not run would be a half-built thing to review.
+
+**WP5 contains slice 6** (the Discord adapter), which sits far earlier in slice order than 13–15. That is deliberate in the grouping and I have kept it: slices 7–12 are developed against the fake harness and do not need a live gateway, so the real client construction can land later without blocking them. The risk is that the adapter is the least-tested-in-anger component and it arrives late. Flagged rather than silently reordered.
 
 ### Release 0 — skeleton
 
-| # | Slice | Demonstrable |
-|---|---|---|
-| 1 | Workspace, TS strict, ESLint + dependency-cruiser, Vitest, Pino with redaction allowlist, Zod config loader, `docs/PROVENANCE.md` | `npm run typecheck && lint && test` green; app refuses to start on a bad `.env` and says which field |
-| 2 | Storage: better-sqlite3, WAL, process lock, Drizzle + migrations, `write()` guard, guild-scoped repo factory, **schema invariant test** | Migrate up; a second process refuses to start; an `async` transaction fails to compile |
-| 3 | **Fake Discord harness** + `DiscordPort` | A test drives all six conditions: duplicate, gap, 429, 403, hierarchy, uncached reaction |
-| 4 | Event pipeline, dedupe fingerprints, job table, worker, `gateway_gaps` | Duplicate event -> one effect, one audit row; a fresh reconnect writes a gap and enqueues reconciliation |
+| # | Slice | WP | Demonstrable |
+|---|---|---|---|
+| 1 | Workspace, TS strict, ESLint + dependency-cruiser, Vitest, Pino with redaction allowlist, Zod config loader, `docs/PROVENANCE.md`, CI, systemd unit | 1 | `npm run typecheck && lint && test` green; app refuses to start on a bad `.env` and says which field |
+| 2a | better-sqlite3, WAL pragmas, socket + `O_EXCL` single-writer guards, drizzle-kit wired, `guilds` table | 1 | `db:migrate` runs; a second daemon refuses to start naming the first |
+| 2b | Remaining schema, `write()` guard, guild-scoped repo factory, **schema invariant test** | 2 | An `async` transaction fails to compile; the invariant test fails on a table missing `guild_id` |
+| 3 | **Fake Discord harness** + `DiscordPort` | 1 | A test drives all six conditions: duplicate, gap, 429, 403, hierarchy, uncached reaction |
+| 4 | Event pipeline, dedupe fingerprints, job table, worker, `gateway_gaps`, `event_dedupe` sweep job | 2 | Duplicate event -> one effect, one audit row; a fresh reconnect writes a gap and enqueues reconciliation; the dedupe table is bounded rather than growing forever |
 
 **Release 0 gate:** the harness can drive a test that fails when the implementation is broken.
 
 ### Release 1
 
-| # | Slice | Demonstrable |
-|---|---|---|
-| 5 | Effect gateway + all seven safety layers + audit + batches + undo, tested against a synthetic effect before any real feature | Breaker trips on abuse; dry-run writes zero REST calls; undo restores prior state |
-| 6 | Discord adapter: real client construction, `ClientOptions` assertion, allowlist, `GUILD_CREATE` -> leave, `doctor` v1 | Bot connects to test guild; leaves an unlisted guild; `doctor` reports partials and intents |
-| 7 | Adopted panels: config, emoji canonicalisation, seed reactions, add/remove -> converge | React on a real message in the test guild -> role appears |
-| 8 | Adoption pass with owner-confirmed allowance | Pre-reacted message -> everyone gets their role; the count is previewed first |
-| 9 | Managed panels: post, buttons, select, ephemeral confirm, edit | Click a button -> role + "You now have @X" |
-| 10 | Behaviours: toggle / add-only / remove-only / single-choice, limits, required + blocked | Each behaviour tested including its refusal path |
-| 11 | Reconciliation: timer + post-gap, budget refusal, deleted panel message, deleted role | 30-minute outage with offline reactions -> state correct on return |
-| 12 | Logging module + inferred deletion attribution + gap markers | Edits and deletes appear in the log channel, correctly labelled |
-| 13 | Operator CLI + socket + `SO_PEERCRED` + `--json` + readonly | `bananasaurs status`, `audit tail`, `panel sync`, `killswitch` over SSH |
-| 14 | Dashboard: bootstrap, login, sessions, the one page | Bootstrap from a printed token; a second admin cannot reach it |
-| 15 | `/privacy` with feature-state-aware substitution | Command renders live settings, claims nothing untrue |
-| 16 | Backup, restore drill, systemd unit, `docs/SMOKE_TESTS.md` | Restore performed from a real backup |
+| # | Slice | WP | Demonstrable |
+|---|---|---|---|
+| 5 | Effect gateway + all seven safety layers + audit + batches + undo, tested against a synthetic effect before any real feature | 2 | Breaker trips on abuse; dry-run writes zero REST calls; undo restores prior state |
+| 6 | Discord adapter: real client construction, `ClientOptions` assertion, allowlist, `GUILD_CREATE` -> leave, `doctor` v1 | 5 | Bot connects to test guild; leaves an unlisted guild; `doctor` reports partials and asserts both privileged intents are actually granted at runtime, not merely configured |
+| 7 | Adopted panels: config, emoji canonicalisation, seed reactions, add/remove -> converge | 3 | React on a real message in the test guild -> role appears |
+| 8 | Adoption pass with owner-confirmed allowance | 3 | Pre-reacted message -> everyone gets their role; the count is previewed first |
+| 9 | Managed panels: post, buttons, select, ephemeral confirm, edit | 3 | Click a button -> role + "You now have @X" |
+| 10 | Behaviours: toggle / add-only / remove-only / single-choice, limits, required + blocked | 3 | Each behaviour tested including its refusal path |
+| 11 | Reconciliation: timer + post-gap, budget refusal, deleted panel message, deleted role | 3 | 30-minute outage with offline reactions -> state correct on return |
+| 12 | Logging module + inferred deletion attribution + gap markers | 4 | Edits and deletes appear in the log channel, correctly labelled |
+| 13 | Operator CLI + socket + claimed-identity audit + `--json` + readonly | 5 | `bananasaurs status`, `audit tail`, `panel sync`, `killswitch` over SSH |
+| 14 | Dashboard: bootstrap, login, sessions, the one page | 5 | Bootstrap from a printed token; a second admin cannot reach it |
+| 15 | `/privacy` with feature-state-aware substitution | 5 | Command renders live settings, claims nothing untrue |
+| 16 | Backup, restore drill, systemd unit, `docs/SMOKE_TESTS.md` | 6 | Restore performed from a real backup |
 
 ---
 
@@ -899,7 +1010,19 @@ Beyond the harness fork in section 3 and the single-choice fork in 6.3:
 
 ## 9. What I think is wrong in the planning documents
 
-Ordered by how much damage each would do if discovered during implementation.
+Ordered by how much damage each would do if discovered during implementation. All fourteen were reviewed on 2026-08-22; status recorded against each.
+
+| Finding | Status |
+|---|---|
+| 1 — no `discord_event_id` on gateway dispatches | Resolved by the convergence design in section 4 |
+| 2 — "misses no log events" gate | Restated as gap markers; `docs/08` to update at WP4 |
+| 3 — adoption vs. rate cap | Resolved by decision 2; `docs/18` Layer 3 amended |
+| 4 — `/privacy` would be materially false | Resolved by feature-state-aware rendering, 6.11 |
+| 5 — single-choice flap | Resolved by decision 1 |
+| 6 — `role.managed` missing | Folded into 6.6 |
+| 7–12 | **Confirmed by the owner and fixed in place**, one commit, before WP1 |
+| 13 — backup destination | Resolved by decision 4 |
+| 14 — privileged intents unverified | `docs/STATE.md` records both as enabled in the portal; slice 6 asserts them at runtime |
 
 1. **`(guild_id, discord_event_id)` describes a field Discord does not send.** `docs/02`, `docs/08`, `REVIEW` C8. Gateway dispatches carry no event ID; `s` is per-session. Six documents build on it. Section 4 has the replacement.
 2. **`docs/08`'s "misses no log events" gate is unachievable.** Events during a disconnect are not replayed after a fresh `IDENTIFY` and cannot be recovered. Section 6.7 proposes gap markers instead.
@@ -925,7 +1048,7 @@ Ordered by how much damage each would do if discovered during implementation.
 - **Emoji identity.** `✔️` (U+2714 U+FE0F) and `✔` (U+2714) are different reaction keys, and members' clients send whichever their platform produces. Skin-tone modifiers compound it. Canonicalising to `u:<codepoints>` / `c:<id>` at config time and again at event time is a small function with an outsized capacity to make a panel look dead for exactly one person. Expect to get this wrong once.
 - **Hierarchy checks under a reaction storm.** A 50-entry member cache means fetching members on demand; thirty reactions in ten seconds is thirty fetches against a rate limit. Needs a short-TTL role-position cache invalidated on `GUILD_ROLE_UPDATE` — a cache with an invalidation rule, which is its own bug surface.
 - **Undo's conflict policy is unspecified.** If a member changed roles manually after a batch, does undo clobber them? `docs/18` does not say. Leaning toward refusing per-effect where current state no longer matches `had_role_before`, and reporting what was skipped — but that is a decision, not a detail.
-- **`SO_PEERCRED` plus systemd socket permissions.** `RuntimeDirectoryMode=0750`, `UMask=0007`, group `bananasaurs-ops`. Every piece is simple; getting all of them right on the first try is not, and the failure mode is a socket nobody can reach.
+- **Systemd socket permissions.** `RuntimeDirectoryMode=0750`, `UMask=0007`, group `bananasaurs-ops`. Every piece is simple; getting all of them right on the first try is not, and the failure mode is a socket nobody can reach. This matters more now that group membership is the *only* access control on the CLI rather than a second layer behind kernel-verified credentials.
 - **Native modules.** `better-sqlite3` and Argon2 both compile against the Node ABI. A Node upgrade breaks them silently until something calls them. Pin Node 22 in the systemd unit and CI.
 - **The restore drill while the daemon holds the file.** The stop/move/copy/start ordering has to be exactly right, and the one time it matters is the one time nobody wants to be improvising.
 - **discord.js cache limiting.** A few managers throw when limited and the set shifts across minor versions. The `ClientOptions` test makes it a build failure rather than a runtime surprise, but expect the first attempt at slice 6 to hit it.
@@ -937,3 +1060,4 @@ Ordered by how much damage each would do if discovered during implementation.
 | Date | Reviewer | Outcome |
 |---|---|---|
 | 2026-08-22 | — | Draft written, awaiting owner review |
+| 2026-08-22 | Bryan | **Accepted with amendments.** Four decisions resolved (one reversed: content logging). Six technical corrections folded in — two of them errors in my single-writer and CLI-identity designs that called Node APIs which do not exist. Findings 7–12 confirmed and scheduled for in-place fixes before WP1. Execution proceeds under `docs/20_AUTONOMOUS_EXECUTION.md`. |
