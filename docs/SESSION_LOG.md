@@ -339,3 +339,21 @@ The witness itself is built around a **real runtime symbol**, not `declare const
 26. Rate cap refused without tripping the breaker → 1 failed.
 
 445 tests green; typecheck and lint exit 0.
+
+---
+
+## WP2 / slice 5 addendum — the reconciliation budget — 2026-08-23
+
+**The budget is a count checked before acting; the rate cap is a rate enforced during.** They are easy to conflate and the difference is the point. By the time the rate cap refuses, some actions have already happened. The budget refuses the whole change list before any of it happens.
+
+A reconciliation pass that discovers a thousand drifted members is far more likely to be a bug in our diff, a mid-outage Discord API, or a role deleted and recreated, than a thousand members who each independently changed their mind. Applying the first twenty-five and stopping would leave the guild in a state nobody chose — so an oversized list is refused **outright**. Refusing does not discard the finding: the count is reported so a human can preview it and, if it is genuinely correct, approve it as a named allowance.
+
+`checkReconcileBudget` takes the whole change list rather than a count, so a caller cannot pass a number it computed from something other than the work it is about to do.
+
+**Broke, to check the tests.** 27. Removed the over-budget branch so the check always passed → 2 failed.
+
+**And the slice 3a lesson repeated itself.** `git checkout -- budget.ts` silently did nothing, because the file was untracked and git had nothing to restore. Caught by checking `git status` after the restore rather than trusting the command's exit code. Restoring untracked files needs a real copy, every time.
+
+**Unrelated cleanup found while committing.** Four `tsconfig.tsbuildinfo` files were tracked in git from WP1 — build artifacts that change on every compile. `.gitignore` covers `dist/` but these sit next to `tsconfig.json`. Added `*.tsbuildinfo` and untracked them.
+
+451 tests green; typecheck and lint exit 0.

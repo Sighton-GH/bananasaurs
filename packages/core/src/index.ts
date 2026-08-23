@@ -127,3 +127,4 @@ export {
   type UndoPorts,
   type UndoResult,
 } from './effects/undo.js';
+export { checkReconcileBudget, type BudgetDecision } from './effects/budget.js';
