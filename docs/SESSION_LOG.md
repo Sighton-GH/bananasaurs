@@ -177,3 +177,31 @@ Restored from a verified copy; 30 boundary tests green.
 **Scope note.** `apps/daemon` is deliberately *not* restricted from the REST port. The composition root has to know concrete implementations — that is its stated purpose in `docs/19` §1. If WP5 finds the daemon can take a factory from the public entrypoint instead, tighten it then; I am not writing a rule I already expect to need disabling.
 
 143 tests green; typecheck and lint pass.
+
+---
+
+## WP2 / slice 2b — the invariant test first, then the twenty tables — 2026-08-23
+
+Correction 2: the schema invariant test was written and committed **before** any of the tables it governs, against `guilds` alone, and the tables were added in five groups with the test run after each.
+
+**Why the order matters, demonstrated rather than argued.** When the auth group landed, the test failed immediately on `dashboard_sessions` — its primary key is the session token and does not lead with `guild_id`. Written afterwards, that would have been a line in an audit I performed on my own work and could have rationalised. Written first, it stopped the build and forced the exemption to be a deliberate edit with a reason attached: a session is looked up by its token *before* the guild is known, so guild-scoping that index would mean trusting a client-supplied guild in order to authenticate the session. That is the only entry in `UNIQUE_BY_DESIGN`.
+
+**Verified the test catches, before trusting it with twenty tables.** A probe table with no `guild_id`, a unique index led by the wrong column, an unchecked snowflake column, and STRICT stripped from its migration failed four separate assertions. Removed, and the schema regenerated clean.
+
+**The five invariants**, read from the live schema rather than from `schema.ts`: every table STRICT; every guild-partitioned table carries `guild_id TEXT NOT NULL`; every foreign key into a guild-partitioned table includes `guild_id`; every unique index leads with `guild_id`; every snowflake column has a format CHECK. Plus two guards against vacuous success — an empty table list would make every loop trivially true.
+
+**Groups, in order:** panels (`managed_roles`, `panels`, `panel_options`, `panel_blocked_roles`) → 27 green; effects and idempotency (`effect_batches`, `role_effects`, `managed_role_assignments`) → 42; pipeline, jobs and audit (`event_dedupe`, `gateway_gaps`, `jobs`, `audit_events`) → 62; log routing and dashboard auth (`log_routes`, `log_excluded_channels`, `dashboard_accounts`, `account_guild_access`, `dashboard_sessions`, `bootstrap_tokens`, `principals`, `capability_grants`) → 96.
+
+**Three deliberate deviations from the plan's SQL.**
+
+1. `account_guild_access` is keyed `(guild_id, account_id)` rather than `(account_id, guild_id)`, so the partition key leads and no exemption is needed. The reversed order costs nothing: the table holds a handful of rows and the login-time query is not hot.
+2. Two constraints added that the plan expressed only in prose. `panels_single_choice_is_managed` enforces collision 1 from §6.3 — `single_choice` cannot work on an adopted panel, because removing another emoji's reaction on someone else's behalf is not possible. `panels_max_roles_positive` rejects a nonsense limit. Both were code-level validations in the plan; a CHECK cannot be forgotten.
+3. Two indexes the plan does not name. `role_effects_recent (guild_id, user_id, role_id, completed_at)` supports amendment 5's feedback-loop filter — the `GUILD_MEMBER_UPDATE` handler has to look for a recent effect on that triple, and without an index that is a scan on the busiest table. `dashboard_sessions_by_account (guild_id, account_id)` supports session listing and revocation.
+
+**No foreign key on `event_dedupe` or `gateway_gaps`, deliberately**, matching the plan. Both are written by the pipeline at a point where the `guilds` row may not exist yet — a reconnect delivers events around `GUILD_CREATE` — and a constraint failure there would drop the very event being recorded. `event_dedupe` is bounded by the sweep job instead.
+
+**One migration, not five.** The incremental migrations from each group were consolidated into a single `0000_white_living_lightning.sql`: 20 CREATE TABLE, 20 STRICT. Nothing is deployed, so four intermediate states that have never existed anywhere are noise, and the WP6 restore drill is simpler against one file.
+
+**Verified against a real file database**, not only in-memory: `npm run build && BANANASAURS_DB_PATH=… npm run db:migrate` produces 20 tables, all STRICT, in WAL.
+
+239 tests green; typecheck and lint pass.

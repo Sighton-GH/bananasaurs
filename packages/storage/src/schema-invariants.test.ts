@@ -33,10 +33,14 @@ const INSTANCE_LEVEL = new Set<string>(['dashboard_accounts', 'bootstrap_tokens'
  * Same rule: adding an entry is an edit to this file with a reason attached.
  */
 const UNIQUE_BY_DESIGN = new Map<string, string>([
-  // Not yet needed. dashboard_sessions lands in WP5 and will need an entry:
-  // a session is looked up by its token before the guild is known, so
-  // guild-scoping that index would mean trusting a client-supplied guild to
-  // authenticate the session.
+  [
+    'sqlite_autoindex_dashboard_sessions_1',
+    'dashboard_sessions primary key. A session is looked up by its token before ' +
+      'the guild is known — guild-scoping this index would mean trusting a ' +
+      'client-supplied guild in order to authenticate the session, which is ' +
+      'backwards. The session row still carries guild_id, and every query that ' +
+      'reads guild data through a session checks it (ADR 0012).',
+  ],
 ]);
 
 /** SQLite's own tables, and drizzle's migration bookkeeping. */
