@@ -50,3 +50,11 @@ export {
   resolveAssignability,
   type Assignability,
 } from './discord/assignability.js';
+export { fingerprintOf, isLevelTriggered } from './pipeline/fingerprint.js';
+export {
+  Pipeline,
+  type DedupeStore,
+  type DispatchOutcome,
+  type PipelineDeps,
+  type Subscriber,
+} from './pipeline/pipeline.js';

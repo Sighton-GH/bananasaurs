@@ -53,6 +53,12 @@ export interface MemberEvent extends Base {
   roleIds: readonly Snowflake[];
   /** Populated on memberUpdate so drift detection can diff without a fetch. */
   previousRoleIds: readonly Snowflake[] | undefined;
+  /**
+   * When the member joined, if Discord told us. Used to fingerprint an add or
+   * a remove, since neither dispatch carries an id of its own. Frequently
+   * absent on memberRemove, where the fingerprint falls back to a time bucket.
+   */
+  joinedAtMs: number | undefined;
 }
 
 export interface RoleEvent extends Base {

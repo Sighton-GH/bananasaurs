@@ -233,3 +233,42 @@ A fabricated scope — a plain object satisfying the interface — throws rather
 **One design note worth keeping.** `upsertGuild`'s conflict clause is deliberately narrow — name and timestamp only. A reconnect replays `GUILD_CREATE` for every guild, so a broad upsert would silently re-enable a bot someone had deliberately kill-switched, on every reconnect. Kill switch, dry-run and breaker state are operator state, not gateway state.
 
 260 tests green; typecheck and lint pass.
+
+---
+
+## WP2 / slice 4a — the event pipeline and the dedupe that could not exist as specified — 2026-08-23
+
+**The most load-bearing error in the planning documents, fixed.** `docs/02`, `docs/08` and `REVIEW.md` C8 all prescribe *"a unique index on `(guild_id, discord_event_id)`"*. That cannot be implemented: **Discord gateway dispatches carry no event ID.** `MESSAGE_REACTION_ADD` has no id field at all, and the `s` sequence number is per-session and resets on reconnect — so it identifies nothing across the reconnect that deduplication exists to survive. Six documents build on this.
+
+What replaced it is a fingerprint derived per event kind, and — for the kinds where no honest fingerprint exists — no deduplication at all.
+
+| Event | Fingerprint |
+|---|---|
+| `interaction` | the interaction id, a real snowflake |
+| `messageUpdate` | sha256(message ‖ editedTimestamp) |
+| `messageDelete` | sha256(message) — deletion is terminal |
+| `memberAdd` / `memberRemove` | sha256(kind ‖ user ‖ joinedAt, or a one-minute bucket) |
+| `roleCreate` / `roleDelete` | sha256(kind ‖ role) — a role id is created and deleted once |
+| everything else | **not deduplicated** |
+
+**Reactions are deliberately absent and that is the decision worth defending.** `(message, user, emoji, action)` is not unique over time — a member may add, remove and re-add a reaction, all legitimately. Any time bucket is a guess, and a wrong guess silently drops a real action. So reactions are level-triggered: the event is a hint that state may have changed, and convergence recomputes. `memberUpdate`, `roleUpdate` and `guildCreate` are level-triggered for the same reason — `guildCreate` fires on every reconnect and we *want* the allowlist re-checked each time.
+
+**Gate ordering is load-bearing and is tested as such.** The allowlist runs before deduplication because deduplication *writes*, and writing rows for a guild we are leaving is exactly what the allowlist exists to prevent. A separate test asserts no dedupe row is created for an unlisted guild.
+
+**Two behaviours that are easy to get wrong.** The pipeline leaves an unlisted guild once, not once per event — without that, a busy unlisted guild produces one REST call per dispatch. And the departure set is process-local on purpose, so a failed leave is retried after a restart; a test drives a failing leave followed by a successful one.
+
+**Subscribers are isolated.** The logging module going wrong must not take role panels down with it. A throwing subscriber does not roll back the dedupe row either — retry belongs to the job table, not to redelivery through a subscriber that will probably throw again.
+
+`joinedAtMs` was added to `MemberEvent`, since neither `GUILD_MEMBER_ADD` nor `GUILD_MEMBER_REMOVE` carries an id and the join timestamp is what identifies them. The compiler caught the fake harness immediately, which is the `implements DiscordPort` discipline from slice 3b paying off; `emitMemberAdd` and `emitMemberRemove` were added alongside.
+
+**Broke, to check the tests.**
+
+11. Removed the subscriber try/catch → 3 failed.
+12. Dropped the leave-once guard → 1 failed.
+13. Invented a reaction fingerprint — the exact "fix" someone would apply → 3 failed across both files.
+14. Ran the dedupe gate before the allowlist gate → 6 failed.
+15. `recordFirstSight` always returned true → 1 failed.
+
+**A green suite is not evidence, demonstrated on my own work.** My fingerprint test helpers took `Partial<Extract<DomainEvent, { kind: 'memberAdd' }>>`, which looks right and resolves to `never` — `MemberEvent['kind']` is itself a union, so `MemberEvent` is not assignable to `{ kind: 'memberAdd' }`. Vitest ran 21 tests happily against it because types are erased; `tsc` and eslint produced 24 errors between them. Caught only because the protocol runs all three. The helpers now take the concrete interfaces.
+
+307 tests green; typecheck and lint exit 0.

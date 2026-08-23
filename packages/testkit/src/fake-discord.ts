@@ -294,6 +294,45 @@ export class FakeDiscord implements DiscordPort {
       userId: p.userId,
       roleIds: p.roleIds,
       previousRoleIds: p.previousRoleIds,
+      // GUILD_MEMBER_UPDATE carries the member object, so joined_at is present
+      // on the wire. It is unused for this kind — memberUpdate is
+      // level-triggered and carries no fingerprint — but omitting it here
+      // would make the fake diverge from what the adapter will produce.
+      joinedAtMs: undefined,
+    });
+  }
+
+  /** GUILD_MEMBER_ADD. `joinedAtMs` is what fingerprints it. */
+  async emitMemberAdd(p: {
+    userId: Snowflake;
+    roleIds?: Snowflake[];
+    joinedAtMs?: number;
+  }): Promise<void> {
+    await this.emit({
+      kind: 'memberAdd',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      userId: p.userId,
+      roleIds: p.roleIds ?? [],
+      previousRoleIds: undefined,
+      joinedAtMs: p.joinedAtMs ?? this.clock,
+    });
+  }
+
+  /**
+   * GUILD_MEMBER_REMOVE. `joinedAtMs` is frequently absent on the wire, which
+   * is why the fingerprint has a time-bucket fallback at all — leaving it
+   * undefined here is the realistic case, not a shortcut.
+   */
+  async emitMemberRemove(p: { userId: Snowflake; joinedAtMs?: number }): Promise<void> {
+    await this.emit({
+      kind: 'memberRemove',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      userId: p.userId,
+      roleIds: [],
+      previousRoleIds: undefined,
+      joinedAtMs: p.joinedAtMs,
     });
   }
 
