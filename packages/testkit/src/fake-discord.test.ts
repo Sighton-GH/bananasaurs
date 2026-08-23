@@ -177,6 +177,68 @@ describe('reaction pagination', () => {
   });
 });
 
+describe('interaction deadlines, which Discord enforces strictly', () => {
+  /**
+   * "Interaction times out" is in `docs/REVIEWING_AGENT_OUTPUT.md` for a
+   * reason: three seconds to acknowledge, fifteen minutes to follow up, and a
+   * missed acknowledgement discards the token rather than queueing. The handler
+   * must defer first and act afterwards, so the fake has to be able to punish
+   * doing it the other way round.
+   */
+  it('accepts a defer inside three seconds', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    await expect(
+      d.deferInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { ephemeral: true }),
+    ).resolves.toBeUndefined();
+    expect(d.wasDeferred(id)).toBe(true);
+  });
+
+  it('refuses a defer after three seconds', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    d.advance(3_001);
+    await expect(
+      d.deferInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { ephemeral: true }),
+    ).rejects.toMatchObject({ code: 10062 });
+  });
+
+  it('refuses a slow first response that never deferred', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    d.advance(3_001);
+    await expect(
+      d.respondToInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { content: 'hi' }),
+    ).rejects.toMatchObject({ code: 10062 });
+  });
+
+  it('allows a slow follow-up once deferred', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    await d.deferInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { ephemeral: true });
+    d.advance(60_000);
+    await d.respondToInteraction(
+      GUILD,
+      { interactionId: id, token: `tok-${id}` },
+      { content: 'hi' },
+    );
+    expect(d.interactionReplies(id)).toEqual([{ content: 'hi' }]);
+    expect(d.wasEphemeral(id)).toBe(true);
+  });
+
+  it('refuses a follow-up after fifteen minutes', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    await d.deferInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { ephemeral: true });
+    d.advance(15 * 60_000 + 1);
+    await expect(
+      d.respondToInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { content: 'hi' }),
+    ).rejects.toMatchObject({ code: 10062 });
+  });
+
+  it('refuses a wrong token, as Discord does', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    await expect(
+      d.deferInteraction(GUILD, { interactionId: id, token: 'guessed' }, { ephemeral: true }),
+    ).rejects.toMatchObject({ code: 10062 });
+  });
+});
+
 describe('guild scope', () => {
   it('refuses a call for another guild rather than quietly answering', async () => {
     await expect(d.fetchMember('888888888888888888', USER)).rejects.toThrow(/scoped to guild/);

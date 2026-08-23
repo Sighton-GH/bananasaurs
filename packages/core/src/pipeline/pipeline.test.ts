@@ -40,6 +40,7 @@ const interactionOn = (guildId: string, interactionId: string): DomainEvent => (
   guildId,
   receivedAtMs: 1_700_000_000_000,
   interactionId,
+  token: `tok-${interactionId}`,
   channelId: '222222222222222222',
   messageId: '333333333333333333',
   userId: '444444444444444444',

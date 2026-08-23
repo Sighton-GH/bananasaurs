@@ -30,6 +30,15 @@ export interface InteractionEvent extends Base {
   kind: 'interaction';
   /** A real snowflake, unique per click. The only event with a usable id. */
   interactionId: Snowflake;
+  /**
+   * The interaction token, which is how a response is addressed.
+   *
+   * **A short-lived credential.** It is absent from `LOGGABLE_FIELDS`, so
+   * `safeLogFields` drops it, and pino's redaction covers `token` as well —
+   * belt and braces, because a token in a log file is a token anyone reading
+   * the log can act with for the next fifteen minutes.
+   */
+  token: string;
   channelId: Snowflake;
   messageId: Snowflake;
   userId: Snowflake;

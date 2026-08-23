@@ -8,6 +8,12 @@ export const DiscordErrorCode = {
   UnknownRole: 10011,
   MissingAccess: 50001,
   MissingPermissions: 50013,
+  /**
+   * The interaction token is gone: not acknowledged within three seconds, or
+   * followed up more than fifteen minutes later. Discord discards the token
+   * rather than queueing, so this is unrecoverable — the member sees nothing.
+   */
+  UnknownInteraction: 10062,
   /** Target's highest role is at or above the bot's. Discord reports 50013. */
   RateLimited: 429,
 } as const;
@@ -51,6 +57,11 @@ export class DiscordApiError extends Error {
       this.code === DiscordErrorCode.UnknownMember ||
       this.code === DiscordErrorCode.UnknownRole
     );
+  }
+
+  /** We were too slow to acknowledge. The role change may still have happened. */
+  get isExpiredInteraction(): boolean {
+    return this.code === DiscordErrorCode.UnknownInteraction;
   }
 }
 

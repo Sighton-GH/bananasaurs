@@ -7,6 +7,7 @@ import {
   type DiscordPort,
   type DiscordRole,
   type DomainEvent,
+  type InteractionRef,
   type EmojiKey,
   type OutgoingMessage,
   type ReactionUserPage,
@@ -37,6 +38,14 @@ interface FakeMessage {
   reactions: Map<EmojiKey, Snowflake[]>;
   cached: boolean;
   deleted: boolean;
+}
+
+interface FakeInteraction {
+  token: string;
+  createdAtMs: number;
+  deferred: boolean;
+  ephemeral: boolean;
+  replies: OutgoingMessage[];
 }
 
 interface FakeMember {
@@ -71,6 +80,7 @@ export class FakeDiscord implements DiscordPort {
   private auditLog: AuditLogEntry[] = [];
   private botPosition: number;
 
+  private interactions = new Map<Snowflake, FakeInteraction>();
   private failures = new Map<PortMethod, Failure>();
   private calls: RestCall[] = [];
   private listeners: Array<(e: DomainEvent) => void | Promise<void>> = [];
@@ -183,6 +193,9 @@ export class FakeDiscord implements DiscordPort {
   static unknownMember(): DiscordApiError {
     return new DiscordApiError(404, DiscordErrorCode.UnknownMember, 'Unknown Member');
   }
+  static unknownInteraction(): DiscordApiError {
+    return new DiscordApiError(404, DiscordErrorCode.UnknownInteraction, 'Unknown interaction');
+  }
 
   // ── inspection ─────────────────────────────────────────────────────────
   restCalls(method?: PortMethod): readonly RestCall[] {
@@ -266,11 +279,23 @@ export class FakeDiscord implements DiscordPort {
     interactionId?: Snowflake;
   }): Promise<Snowflake> {
     const interactionId = p.interactionId ?? this.nextId();
+    const token = `tok-${interactionId}`;
+    // Recorded before the emit, because the handler responds during it.
+    if (!this.interactions.has(interactionId)) {
+      this.interactions.set(interactionId, {
+        token,
+        createdAtMs: this.clock,
+        deferred: false,
+        ephemeral: false,
+        replies: [],
+      });
+    }
     await this.emit({
       kind: 'interaction',
       guildId: this.guildId,
       receivedAtMs: this.clock,
       interactionId,
+      token,
       channelId: p.channelId,
       messageId: p.messageId,
       userId: p.userId,
@@ -278,6 +303,17 @@ export class FakeDiscord implements DiscordPort {
       values: p.values,
     });
     return interactionId;
+  }
+
+  /** What the member actually saw, and whether only they saw it. */
+  interactionReplies(interactionId: Snowflake): readonly OutgoingMessage[] {
+    return this.interactions.get(interactionId)?.replies ?? [];
+  }
+  wasDeferred(interactionId: Snowflake): boolean {
+    return this.interactions.get(interactionId)?.deferred ?? false;
+  }
+  wasEphemeral(interactionId: Snowflake): boolean {
+    return this.interactions.get(interactionId)?.ephemeral ?? false;
   }
 
   async emitMemberUpdate(p: {
@@ -495,6 +531,41 @@ export class FakeDiscord implements DiscordPort {
     if (m.authorId !== BOT_USER_ID) throw FakeDiscord.missingPermissions();
   }
 
+  /**
+   * Three seconds. Discord discards the token rather than queueing, so being
+   * late is unrecoverable and the member sees "This interaction failed".
+   */
+  async deferInteraction(
+    guildId: Snowflake,
+    ref: InteractionRef,
+    options: { ephemeral: boolean },
+  ): Promise<void> {
+    this.record('deferInteraction', [guildId, { interactionId: ref.interactionId }, options]);
+    this.check('deferInteraction', guildId);
+    const state = this.mustInteraction(ref);
+    if (this.clock - state.createdAtMs > ACK_DEADLINE_MS) {
+      throw FakeDiscord.unknownInteraction();
+    }
+    state.deferred = true;
+    state.ephemeral = options.ephemeral;
+  }
+
+  async respondToInteraction(
+    guildId: Snowflake,
+    ref: InteractionRef,
+    message: OutgoingMessage,
+  ): Promise<void> {
+    this.record('respondToInteraction', [guildId, { interactionId: ref.interactionId }, message]);
+    this.check('respondToInteraction', guildId);
+    const state = this.mustInteraction(ref);
+    const age = this.clock - state.createdAtMs;
+    // Undeferred, the initial-response window still applies. Deferred, there
+    // are fifteen minutes to follow up.
+    if (!state.deferred && age > ACK_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
+    if (age > FOLLOWUP_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
+    state.replies.push(message);
+  }
+
   async fetchAuditLog(
     guildId: Snowflake,
     options: { actionType: AuditLogEntry['actionType']; limit?: number | undefined },
@@ -531,6 +602,14 @@ export class FakeDiscord implements DiscordPort {
     f.remaining -= 1;
     if (f.remaining <= 0) this.failures.delete(method);
     throw f.error;
+  }
+
+  private mustInteraction(ref: InteractionRef): FakeInteraction {
+    const state = this.interactions.get(ref.interactionId);
+    if (!state) throw FakeDiscord.unknownInteraction();
+    // A wrong token is a wrong interaction as far as Discord is concerned.
+    if (state.token !== ref.token) throw FakeDiscord.unknownInteraction();
+    return state;
   }
 
   private mustMessage(ref: DiscordMessageRef): FakeMessage {
@@ -570,6 +649,11 @@ export class FakeDiscord implements DiscordPort {
 }
 
 export const BOT_USER_ID = '999999999999999999';
+
+/** Discord's initial-response window. Missing it discards the token. */
+export const ACK_DEADLINE_MS = 3_000;
+/** How long a deferred interaction may be followed up. */
+export const FOLLOWUP_DEADLINE_MS = 15 * 60_000;
 
 function key(channelId: Snowflake, messageId: Snowflake): string {
   return `${channelId}/${messageId}`;

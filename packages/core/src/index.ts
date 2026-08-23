@@ -24,6 +24,7 @@ export type {
   DiscordPort,
   DiscordRole,
   EmojiKey,
+  InteractionRef,
   OutgoingMessage,
   ReactionUserPage,
   Snowflake,
@@ -186,3 +187,19 @@ export {
   type AdoptionStatus,
 } from './panels/adoption.js';
 export { applyPlan } from './panels/reactions.js';
+export {
+  buildComponents,
+  buildCustomId,
+  buildSelectCustomId,
+  CUSTOM_ID_PREFIX,
+  isSelectCustomId,
+  parseCustomId,
+  renderPanelMessage,
+  type ParsedCustomId,
+} from './panels/components.js';
+export {
+  editManagedPanel,
+  postManagedPanel,
+  type PanelPublisher,
+  type PublishDeps,
+} from './panels/publish.js';

@@ -49,6 +49,18 @@ export interface AuditLogEntry {
   reason: string | undefined;
 }
 
+/**
+ * How a response to an interaction is addressed.
+ *
+ * The token is a short-lived credential and travels only between the adapter
+ * and this port. It is not in `LOGGABLE_FIELDS`, so it cannot reach a log line
+ * through `safeLogFields`.
+ */
+export interface InteractionRef {
+  interactionId: Snowflake;
+  token: string;
+}
+
 export interface OutgoingMessage {
   content?: string | undefined;
   embeds?: readonly unknown[] | undefined;
@@ -93,6 +105,30 @@ export interface DiscordPort {
     message: OutgoingMessage,
   ): Promise<DiscordMessageRef>;
   editMessage(guildId: Snowflake, ref: DiscordMessageRef, message: OutgoingMessage): Promise<void>;
+
+  // --- interactions ------------------------------------------------------
+  /**
+   * Acknowledges an interaction. **Three seconds, and Discord is strict.**
+   *
+   * Miss it and the token is discarded — not queued, not retried — and the
+   * member sees "This interaction failed" no matter what the bot does
+   * afterwards. A role change takes a member fetch, a role fetch and a REST
+   * call, so the acknowledgement cannot wait for it: defer first, act, then
+   * follow up. `ephemeral` makes the eventual reply visible only to the member
+   * who clicked, which is what a role confirmation should be.
+   */
+  deferInteraction(
+    guildId: Snowflake,
+    ref: InteractionRef,
+    options: { ephemeral: boolean },
+  ): Promise<void>;
+
+  /** The follow-up, after a defer. Fifteen minutes from the interaction. */
+  respondToInteraction(
+    guildId: Snowflake,
+    ref: InteractionRef,
+    message: OutgoingMessage,
+  ): Promise<void>;
 
   // --- audit log ---------------------------------------------------------
   /** Attribution for MESSAGE_DELETE, which carries no actor of its own. */

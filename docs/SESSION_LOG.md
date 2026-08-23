@@ -489,3 +489,23 @@ This is exactly the failure `docs/20` describes: a test that passes regardless o
 **Broke, to check the tests.** 35. Removed the allowance gate → 5 failed, including the ADR 0016 cycle test. 36. Made `pageReactors` return after the first page → the paging test failed (a real panel would have adopted only its first 100 reactors). 37. Removed the bot filter → passed twice, then failed once the fake and the test were corrected. All restored; md5 verified.
 
 584 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 9a — what a managed panel looks like on Discord — 2026-08-23
+
+Slice 9 split again on the 400-line rule: 9a is the interaction port, the harness's interaction deadlines, custom ids, component rendering and posting/editing; 9b is the interaction handler itself.
+
+**`InteractionEvent` now carries a `token`, which is a credential.** It is how a response is addressed, it is valid for fifteen minutes, and anyone holding it can act with it. It is deliberately absent from `LOGGABLE_FIELDS`, so `safeLogFields` drops it, and pino's `redact` covers `token` as a second layer. The port takes an `InteractionRef` of `{interactionId, token}` so the token travels only between the adapter and the port.
+
+**The harness now enforces Discord's interaction deadlines**, which `docs/REVIEWING_AGENT_OUTPUT.md` lists as a trap: three seconds to acknowledge, fifteen minutes to follow up, and a missed acknowledgement **discards the token** rather than queueing — the member sees "This interaction failed" whatever the bot does next. The fake refuses a late defer with 10062, refuses an undeferred slow reply, allows a slow follow-up once deferred, and refuses a wrong token. Without this the handler could do the work first and reply second and every test would pass.
+
+**A custom id is a lookup key, never an instruction.** It is the only thing Discord returns from a click, and it comes back *from the client*, so a crafted interaction can carry anything. Parsing is a Zod schema rather than a `split(':')`, and the ids it yields are then looked up in the panel's own configuration — a custom id naming a panel that does not exist resolves to nothing. Tests cover another bot's component, missing segments, empty ids, an over-length id, and an extra segment a crafted payload could append.
+
+**Components are wire shapes, not discord.js builders**, because `core` may not import discord.js (ADR 0014). That also makes a panel's rendering assertable with no client: buttons wrap at five to a row, a select menu gets `min_values: 0` so a choice is not a one-way door, and `single_choice` caps `max_values` at 1. Canonical emoji keys are turned back into what Discord expects — `u:1f9e0` to the character, `c:<id>` to `{id}` — and an option with no emoji omits the field rather than sending null, which Discord rejects.
+
+**Posting and editing prove the asymmetry that justifies two panel kinds.** A bot may edit its own message and no one else's, so `editManagedPanel` refuses an adopted panel with a stated reason rather than letting Discord answer 50013. There is a test at the port level showing Discord's actual refusal, next to the one showing our earlier and clearer one.
+
+**Broke, to check the tests.** 38. Loosened custom id parsing from `parts.length !== 3` to `< 3`, accepting appended segments → the crafted-payload test failed. 39. Removed the three-second check from the fake's `deferInteraction` → the deadline test failed, which matters because that check is what will make 9b's "defer first" testable at all. Both restored; md5 verified.
+
+619 tests green; typecheck and lint exit 0.
