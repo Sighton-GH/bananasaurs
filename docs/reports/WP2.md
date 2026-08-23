@@ -310,8 +310,8 @@ WP2 is reviewed and accepted. Begin WP3: role panels.
 
 ## Where the repo is
 
-/home/bryan/projects/bananasaurs, branch main, HEAD 4633cbc (or later if you
-pushed). npm workspace, Node 22, TypeScript strict. 451 tests green;
+/home/bryan/projects/bananasaurs, branch main, HEAD 85dd7e3. npm workspace,
+Node 22, TypeScript strict. 451 tests green;
 `npm run typecheck && npm run lint && npm run test` must all pass before you
 claim anything is done.
 
