@@ -439,10 +439,15 @@ export const jobs = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     uniqueIndex('jobs_dedupe').on(t.guildId, t.dedupeKey),
     // Partial, so the index holds only claimable work rather than every job
-    // ever run. Not led by guild_id on purpose: the worker claims across every
-    // guild, and a guild-led index would make that a scan.
+    // ever run.
+    //
+    // Led by guild_id, unlike the plan's `(state, run_after)`. The plan's form
+    // anticipated a worker claiming across every guild; the claim in
+    // `repos/jobs.ts` is guild-scoped instead, because a cross-guild claim
+    // would be the one query in the system able to omit the partition key.
+    // Index what is actually queried, not what was once imagined.
     index('jobs_claim')
-      .on(t.state, t.runAfter)
+      .on(t.guildId, t.state, t.runAfter)
       .where(sql`${t.state} = 'queued'`),
     check('jobs_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('jobs_state', sql`${t.state} IN ('queued','running','done','failed','cancelled')`),

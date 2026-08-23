@@ -58,3 +58,29 @@ export {
   type PipelineDeps,
   type Subscriber,
 } from './pipeline/pipeline.js';
+export {
+  JobWorker,
+  type AnyJobHandler,
+  type ClaimedJob,
+  type FailOptions,
+  type JobContext,
+  type JobHandler,
+  type JobStore,
+  type JobWorkerDeps,
+  type PayloadSchema,
+  type RunOutcome,
+} from './jobs/worker.js';
+export {
+  JOB_KINDS,
+  reconcileDedupeKey,
+  reconcileGuildPayload,
+  sweepDedupeKey,
+  sweepEventDedupePayload,
+  type JobKind,
+  type ReconcileGuildPayload,
+  type SweepEventDedupePayload,
+} from './jobs/kinds.js';
+export {
+  createConnectionSubscriber,
+  type ConnectionPorts,
+} from './pipeline/connection-subscriber.js';

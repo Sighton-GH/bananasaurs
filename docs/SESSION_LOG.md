@@ -272,3 +272,33 @@ What replaced it is a fingerprint derived per event kind, and — for the kinds 
 **A green suite is not evidence, demonstrated on my own work.** My fingerprint test helpers took `Partial<Extract<DomainEvent, { kind: 'memberAdd' }>>`, which looks right and resolves to `never` — `MemberEvent['kind']` is itself a union, so `MemberEvent` is not assignable to `{ kind: 'memberAdd' }`. Vitest ran 21 tests happily against it because types are erased; `tsc` and eslint produced 24 errors between them. Caught only because the protocol runs all three. The helpers now take the concrete interfaces.
 
 307 tests green; typecheck and lint exit 0.
+
+---
+
+## WP2 / slice 4b — the job table, the worker, and the sweep — 2026-08-23
+
+**Two decisions in the job table that are easy to get backwards.**
+
+*`attempts` increments on claim, not on failure.* A job that crashes the process — or is killed mid-run — never reaches a failure handler. Counting on failure means it is retried forever and takes the process down every single time. Counting on claim bounds that at `max_attempts`. `requeueStranded` at startup deliberately leaves the incremented count alone for the same reason, so a job that kills the process on every start still terminates rather than looping.
+
+*A failure that a retry cannot fix is marked permanent immediately.* An unregistered job kind will still be unregistered in a minute, and a payload that does not validate never will. Retrying those to exhaustion burns twenty minutes of backoff to reach the same answer and buries the real error under four duplicates. Everything else gets exponential backoff, capped at five minutes so a poisoned job cannot recede beyond notice. An exhausted job stays in the table as `failed` rather than being deleted — silently dropping work is how an outage becomes invisible.
+
+**The claim is guild-scoped, which changed an index.** The plan's `jobs_claim` index was `(state, run_after)`, shaped for a worker claiming across every guild. A cross-guild claim would be the one query in the system able to omit the partition key, which `CLAUDE.md` rule 2 calls a bug even when every caller behaves. The claim is per-guild and the index is now `(guild_id, state, run_after) WHERE state = 'queued'` — indexing what is actually queried rather than what was once imagined.
+
+**A type I got wrong twice before getting right.** `JobWorkerDeps.handlers` was `readonly JobHandler<never>[]`, which looks like the correct existential and is not: `payload` is `PayloadSchema<T>` whose `parse` returns `T`, so `T` is covariant and `JobHandler<{ x: number }>` is not assignable to `JobHandler<never>`. `AnyJobHandler = JobHandler<unknown>` works in both positions — the return type widens, and `run` is declared as a method so its parameter is bivariant. It also deleted three `as unknown as` casts from the test, which is the tell that the first version was wrong rather than merely awkward.
+
+**The worker owns retry, not scheduling.** There is no timer in `core` — only `runOnce` and `drain`. The daemon decides when to call them. `drain` takes a limit because a handler that enqueues its own successor (a resumable pass) would otherwise spin forever and starve the process.
+
+**Integration, against the real database.** The unit tests use in-memory fakes for both stores, which is right for testing behaviour but proves nothing about the SQL — a fake agreeing with itself is not evidence. `apps/daemon/src/pipeline.integration.test.ts` wires the real pipeline, the real repositories and the real worker, and asserts the three outcomes `docs/19` names for this slice: a duplicate produces one delivery (and still does across a simulated restart, because the fingerprint is durable), a fresh IDENTIFY writes a gap and queues reconciliation while a RESUMED one writes the gap and queues nothing, and the dedupe table is swept by a real job. It lives in the daemon because the composition root is the only package allowed to know both `core` and `storage` (ADR 0014). `@bananasaurs/storage/test-support` became a real subpath export to make that possible.
+
+**A flapping connection queues one pass, not one per reconnect** — but every gap is still recorded, because three outages did happen and claiming otherwise would be a lie.
+
+**Broke, to check the tests.**
+
+16. `attempts` incremented on failure instead of claim → 3 failed.
+17. `failJob` ignored the permanent flag → 2 failed, one of them in the integration test.
+18. Connection subscriber reconciled even on RESUMED → 1 failed.
+19. `enqueue` reported success even when deduped → 1 failed.
+20. Worker treated an unregistered kind as retryable → 1 failed.
+
+358 tests green; typecheck and lint exit 0.

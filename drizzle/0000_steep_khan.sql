@@ -164,7 +164,7 @@ CREATE TABLE `jobs` (
 ) STRICT;
 --> statement-breakpoint
 CREATE UNIQUE INDEX `jobs_dedupe` ON `jobs` (`guild_id`,`dedupe_key`);--> statement-breakpoint
-CREATE INDEX `jobs_claim` ON `jobs` (`state`,`run_after`) WHERE "jobs"."state" = 'queued';--> statement-breakpoint
+CREATE INDEX `jobs_claim` ON `jobs` (`guild_id`,`state`,`run_after`) WHERE "jobs"."state" = 'queued';--> statement-breakpoint
 CREATE TABLE `log_excluded_channels` (
 	`guild_id` text NOT NULL,
 	`channel_id` text NOT NULL,

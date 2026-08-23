@@ -11,6 +11,7 @@ export default defineConfig({
     // hard way: a new export was invisible to the suite until `npm run build`.
     alias: {
       '@bananasaurs/core': src('./packages/core/src/index.ts'),
+      '@bananasaurs/storage/test-support': src('./packages/storage/src/test-support.ts'),
       '@bananasaurs/storage': src('./packages/storage/src/index.ts'),
       '@bananasaurs/testkit': src('./packages/testkit/src/index.ts'),
     },

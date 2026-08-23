@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "e4ccdb32-eb34-4ec9-966e-863e7887a9a9",
+  "id": "0d5fe581-94d3-4c1b-b8e1-7d9346d09fc4",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "account_guild_access": {
@@ -1038,6 +1038,7 @@
         "jobs_claim": {
           "name": "jobs_claim",
           "columns": [
+            "guild_id",
             "state",
             "run_after"
           ],
