@@ -205,3 +205,31 @@ Correction 2: the schema invariant test was written and committed **before** any
 **Verified against a real file database**, not only in-memory: `npm run build && BANANASAURS_DB_PATH=… npm run db:migrate` produces 20 tables, all STRICT, in WAL.
 
 239 tests green; typecheck and lint pass.
+
+---
+
+## WP2 / slice 2b (3/3) — the write() guard and guild-scoped repositories — 2026-08-23
+
+**`write()` makes the dangerous thing unrepresentable rather than discouraged.** The threat is threat B from `docs/19` §6.2, and it is the one neither ADR 0008 nor `docs/02` mentions: better-sqlite3 being synchronous does not protect a transaction that stays open across an `await`. `db.exec('BEGIN')` → `await discord.addRole(...)` → `COMMIT` yields the event loop with the transaction open, and another task's writes land inside it.
+
+The callback's return type is `NotPromise<T>`, so `Promise<T>` resolves to `never` and an async callback is not assignable. There is no runtime check to forget and no lint rule to disable. Verified both ways: `@ts-expect-error` on the async call site, and a second case for a plain function that returns a promise without the `async` keyword — the keyword is not what is caught, the return type is.
+
+**Guild scope is structural in two ways that were not true before.**
+
+1. The database handle is unreachable outside the storage package. `dbOf` is not re-exported from `index.ts`, so `core`, `http` and `cli` can only read a row through a repository function, and every repository function takes a `GuildScope` first. The handle rides on a WeakMap rather than a property, because a property named `db` on the scope would be reachable by anything holding a scope — which is precisely what the boundary exists to prevent.
+2. `scope.only(table)` accepts only tables carrying a `guild_id` column, so passing an instance-level table is a compile error rather than a silently unscoped query. Asserted with `@ts-expect-error` against `dashboard_accounts`.
+
+A fabricated scope — a plain object satisfying the interface — throws rather than reaching an arbitrary database.
+
+**Broke, to check the tests.**
+
+7. Removed the readonly check from `write()` → 2 failed.
+8. `scope.only()` dropped the guild predicate → 2 failed.
+9. `NotPromise<T>` replaced with `T` → typecheck failed on both `@ts-expect-error` directives becoming unused. This is the mutation that matters: the guard is a type, so its test is a typecheck, and it is worth knowing that it fails loudly.
+10. `upsertGuild` reset `killswitch`, `dry_run` and `breaker_state` on conflict → 3 failed.
+
+**Mutation 8 found a hole in my own test, which is the point of doing this.** Dropping the guild predicate only broke the calls that passed extra conditions; the isolation test, which passes none, still passed — because `and()` with no arguments returns undefined and fell through to the fallback. So the isolation test was not yet proven to be anything more than decoration. Mutation 8b made `only()` a tautology in every case, and it failed. Recorded because a mutation that only half-fails is a weaker signal than it looks.
+
+**One design note worth keeping.** `upsertGuild`'s conflict clause is deliberately narrow — name and timestamp only. A reconnect replays `GUILD_CREATE` for every guild, so a broad upsert would silently re-enable a bot someone had deliberately kill-switched, on every reconnect. Kill switch, dry-run and breaker state are operator state, not gateway state.
+
+260 tests green; typecheck and lint pass.

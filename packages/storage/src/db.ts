@@ -3,6 +3,7 @@ import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3'
 import path from 'node:path';
 import fs from 'node:fs';
 import { claimDatabaseLock, type DbLock } from './lock.js';
+import { createScopeFactory, type ScopeFactory } from './scope.js';
 import * as schema from './schema.js';
 
 export type Db = BetterSQLite3Database<typeof schema>;
@@ -20,6 +21,12 @@ export interface OpenedDatabase {
   db: Db;
   raw: Database.Database;
   lock: DbLock;
+  /**
+   * The only source of guild scopes, and therefore the only route to guild
+   * data. It carries the readonly flag so `write()` can refuse without every
+   * caller having to remember to check.
+   */
+  scopes: ScopeFactory;
   close(): void;
 }
 
@@ -54,6 +61,7 @@ export function openDatabase(options: OpenOptions): OpenedDatabase {
     db,
     raw,
     lock,
+    scopes: createScopeFactory(db, { readonly: options.readonly === true }),
     close() {
       openInThisProcess = false;
       try {
@@ -88,8 +96,14 @@ export function applyPragmas(raw: Database.Database): void {
 }
 
 /** In-memory database for tests. No lock, no file, same pragmas that apply. */
-export function openTestDatabase(): { db: Db; raw: Database.Database; close(): void } {
+export function openTestDatabase(): {
+  db: Db;
+  raw: Database.Database;
+  scopes: ScopeFactory;
+  close(): void;
+} {
   const raw = new Database(':memory:');
   raw.pragma('foreign_keys = ON');
-  return { db: drizzle(raw, { schema }), raw, close: () => raw.close() };
+  const db = drizzle(raw, { schema });
+  return { db, raw, scopes: createScopeFactory(db, { readonly: false }), close: () => raw.close() };
 }

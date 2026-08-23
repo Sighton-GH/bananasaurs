@@ -4,6 +4,7 @@ import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { fileURLToPath } from 'node:url';
 import * as schema from './schema.js';
 import type { Db } from './db.js';
+import { createScopeFactory, type ScopeFactory } from './scope.js';
 
 /** Repo-root `drizzle/`. Tests run against the real migrations, never a copy. */
 export const MIGRATIONS_FOLDER = fileURLToPath(new URL('../../../drizzle', import.meta.url));
@@ -11,6 +12,7 @@ export const MIGRATIONS_FOLDER = fileURLToPath(new URL('../../../drizzle', impor
 export interface MigratedTestDatabase {
   db: Db;
   raw: Database.Database;
+  scopes: ScopeFactory;
   close(): void;
 }
 
@@ -27,5 +29,5 @@ export function openMigratedTestDatabase(): MigratedTestDatabase {
   raw.pragma('foreign_keys = ON');
   const db = drizzle(raw, { schema });
   migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-  return { db, raw, close: () => raw.close() };
+  return { db, raw, scopes: createScopeFactory(db, { readonly: false }), close: () => raw.close() };
 }
