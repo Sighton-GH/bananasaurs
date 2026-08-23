@@ -167,7 +167,11 @@ bananasaurs/
 
 Panels and logging will be two plain objects that subscribe to the event pipeline. If a third module arrives in Release 2 and the shape repeats, the runtime can be extracted from three working examples instead of guessed at from zero.
 
-Boundaries are enforced mechanically, not by convention: `core/package.json` lists neither `discord.js` nor `better-sqlite3`, so importing them fails typecheck, and `dependency-cruiser` runs in `npm run lint` with the layering rules encoded.
+Boundaries are enforced mechanically, not by convention — but **not by the mechanism this section originally claimed**, which does not work. See [ADR 0014](decisions/0014-package-boundary-enforcement.md).
+
+The original claim was that `core/package.json` listing neither `discord.js` nor `better-sqlite3` makes importing them fail typecheck. It does not. npm workspaces symlinks every workspace package into the root `node_modules` and hoists external dependencies there, so both Node and TypeScript resolve through the root regardless of what any package manifest says. Measured in WP2: `packages/core` importing `better-sqlite3`, and `packages/testkit` importing `@bananasaurs/storage`, both typecheck cleanly with neither dependency declared. **A manifest that omits a dependency prevents nothing.**
+
+What is actually enforced: per-directory `@typescript-eslint/no-restricted-imports` blocks in `eslint.config.js`, running in `npm run lint`, with `packages/core/src/boundaries.test.ts` asserting each rule still exists so deleting one fails the suite rather than only the lint step. `dependency-cruiser` was considered and rejected — it would work, but every rule here is a direct-import statement, and ESLint already runs. It becomes the right answer if a rule ever needs transitive reachability.
 
 ---
 
@@ -641,7 +645,7 @@ export async function applyRoleEffect(
 2. **Lint tripwire** — `no-restricted-syntax` bans casts onto the `Authorized` family. An `eslint-disable` defeats it, which is fine: the point is to make the bypass visible in a diff, not impossible.
 3. **Type level** — you cannot call the executor without the witness. There is no overload without `auth`, `Authorized` has no public constructor, and the branded symbol is not exported. This makes the check impossible to *forget*, which is the common failure; it does not make it impossible to *defeat*.
 4. **Query level** — `authorize()` resolves the actor's Discord roles against `capability_grants` for that guild. Discord permission bits are never consulted, so Administrator grants nothing (ADR 0012). Protected principals are refused here regardless of grants.
-5. **Module level** — the Discord REST port is not exported from `packages/discord`'s public entrypoint. Only `core/effects` can import it, enforced by `dependency-cruiser` in `npm run lint`. Even code that somehow obtained a witness cannot reach Discord except through the gateway.
+5. **Module level** — the Discord REST port lives behind the `@bananasaurs/discord/rest` subpath, which `package.json` `exports` makes the only reachable path into it. Only `core/effects` and the composition root in `apps/daemon` may import it, enforced by per-directory `@typescript-eslint/no-restricted-imports` in `npm run lint` and asserted by `packages/core/src/boundaries.test.ts`. Even code that somehow obtained a witness cannot reach Discord except through the gateway. (Not `dependency-cruiser`, and not package manifests, neither of which can express this — see [ADR 0014](decisions/0014-package-boundary-enforcement.md).)
 
 Capabilities for Release 1: `roles.mutate`, `panels.manage`, `logging.manage`, `config.read`, `config.write`, `audit.read`, `killswitch.toggle`, `undo.execute`.
 

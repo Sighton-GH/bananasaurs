@@ -148,3 +148,32 @@ Each restored from a verified copy and re-run; md5 checked against the pre-mutat
 **Gotcha worth recording.** `drizzle-kit generate` fails if `drizzle/meta/` exists but is empty; it wants the directory absent or holding a journal. Deleting the journal alone leaves generation broken with an unhelpful `open` error.
 
 113 tests green; typecheck and lint pass.
+
+---
+
+## WP2 / correction 3 — what actually enforces a package boundary — 2026-08-23
+
+Bryan asked me to choose between packaging the REST port so only `core/effects` can structurally depend on it, or accepting `dependency-cruiser` as a justified devDependency. I measured the premise first and neither option is the right answer, because the premise — that workspace manifests already enforce the simpler boundaries — is false.
+
+**The measurement.** `packages/core/src/boundary-probe.ts` importing `better-sqlite3`, which `core/package.json` does not list: `npx tsc -p packages/core/tsconfig.json` exits 0. `packages/testkit` importing `@bananasaurs/storage`, which testkit does not list: exits 0. `node_modules/@bananasaurs/` holds a symlink to every workspace package, and external deps are hoisted to the root. **Both Node and TypeScript resolve through the root regardless of any manifest.** WP1 shipped with no boundary enforcement of any kind, and `docs/19` §1 asserted an enforcement mechanism that has never worked.
+
+**Why not a package split.** `package.json` `exports` controls which subpaths are importable, uniformly, by everyone. It has no notion of who is importing. There is no arrangement of packages under npm workspaces in which `core/effects` can reach a module and `http` cannot.
+
+**Why not `dependency-cruiser`.** It would work. It is also a new devDependency and `docs/20` makes that a stop-and-ask, and it is not worth spending that stop when every rule we actually have is a direct-import statement that ESLint already expresses.
+
+**What landed.** ADR 0014, plus per-directory `@typescript-eslint/no-restricted-imports` blocks in `eslint.config.js` covering `core`, `core/src/effects`, `http`, `cli`, `dashboard`, `discord` and `testkit`. Rules for packages that do not exist yet resolve fine and bite the moment the directory appears, which is what Bryan asked for — WP5 inherits enforcement rather than remembering to add it. `packages/discord`'s `exports` will expose exactly `.` and `./rest`, so `exports` handles "no sneaking in by file path" and the lint rule handles "who".
+
+**A regression I nearly shipped, and the test that now catches it.** My first version used the base `no-restricted-imports` rule id for the boundary blocks. Flat config resolves a repeated rule id by last-wins *per rule*, so every per-directory block would have silently replaced the global ADR 0013 `child_process` ban — removing it from exactly the directories that most need it. Switching the boundary rules to the `@typescript-eslint/` rule id keeps both. `packages/core/src/boundaries.test.ts` asserts the process ban survives in four directories that also carry boundary rules.
+
+**Broke, to check the tests.**
+
+5. Removed the REST-port ban from the `packages/http` block → `http cannot import it` failed.
+6. Reverted the boundary rules to the base rule id → 28 tests failed, including all four `child_process is still banned in …` assertions. That is the regression above, reproduced deliberately.
+
+Restored from a verified copy; 30 boundary tests green.
+
+**Also corrected in place.** `docs/19` §1's enforcement sentence and §5's fifth layer both described `dependency-cruiser` and manifest-based enforcement. Both now describe what is true and link ADR 0014.
+
+**Scope note.** `apps/daemon` is deliberately *not* restricted from the REST port. The composition root has to know concrete implementations — that is its stated purpose in `docs/19` §1. If WP5 finds the daemon can take a factory from the public entrypoint instead, tighten it then; I am not writing a rule I already expect to need disabling.
+
+143 tests green; typecheck and lint pass.
