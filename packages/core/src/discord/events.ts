@@ -1,0 +1,87 @@
+import type { EmojiKey, Snowflake } from './port.js';
+
+/**
+ * Gateway events normalised into domain shape. Every one carries `guildId`
+ * explicitly; an event that cannot be attributed to a guild is dropped at the
+ * adapter rather than travelling with an optional scope.
+ */
+
+interface Base {
+  guildId: Snowflake;
+  /** When the adapter observed it. Not Discord's timestamp. */
+  receivedAtMs: number;
+}
+
+export interface ReactionEvent extends Base {
+  kind: 'reactionAdd' | 'reactionRemove';
+  channelId: Snowflake;
+  messageId: Snowflake;
+  userId: Snowflake;
+  emoji: EmojiKey;
+  /**
+   * True when the event arrived for a message outside the client cache and had
+   * to be hydrated. Without partials configured these events never arrive at
+   * all, which is the single most likely cause of a panel appearing dead.
+   */
+  wasPartial: boolean;
+}
+
+export interface InteractionEvent extends Base {
+  kind: 'interaction';
+  /** A real snowflake, unique per click. The only event with a usable id. */
+  interactionId: Snowflake;
+  channelId: Snowflake;
+  messageId: Snowflake;
+  userId: Snowflake;
+  customId: string;
+  values?: readonly string[] | undefined;
+}
+
+export interface MessageEvent extends Base {
+  kind: 'messageUpdate' | 'messageDelete';
+  channelId: Snowflake;
+  messageId: Snowflake;
+  authorId: Snowflake | undefined;
+  /** Absent when the message was not cached, or when content logging is off. */
+  content: string | undefined;
+  editedTimestampMs: number | undefined;
+}
+
+export interface MemberEvent extends Base {
+  kind: 'memberAdd' | 'memberRemove' | 'memberUpdate';
+  userId: Snowflake;
+  roleIds: readonly Snowflake[];
+  /** Populated on memberUpdate so drift detection can diff without a fetch. */
+  previousRoleIds: readonly Snowflake[] | undefined;
+}
+
+export interface RoleEvent extends Base {
+  kind: 'roleCreate' | 'roleUpdate' | 'roleDelete';
+  roleId: Snowflake;
+}
+
+export interface GuildEvent extends Base {
+  kind: 'guildCreate' | 'guildDelete';
+}
+
+/**
+ * Emitted on every reconnect. `resumed: false` means a fresh IDENTIFY, so
+ * events in the gap were lost and are not replayed. Reaction state is
+ * recoverable by reconciliation; message edits and deletions are not.
+ */
+export interface ConnectionEvent extends Base {
+  kind: 'connection';
+  resumed: boolean;
+  disconnectedAtMs: number;
+}
+
+export type DomainEvent =
+  | ReactionEvent
+  | InteractionEvent
+  | MessageEvent
+  | MemberEvent
+  | RoleEvent
+  | GuildEvent
+  | ConnectionEvent;
+
+export type DomainEventKind = DomainEvent['kind'];
