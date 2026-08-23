@@ -401,3 +401,23 @@ Shipped as `0001_bright_the_leader.sql` rather than by editing `0000`, which has
 **Broke, to check the tests.** 29. The mutation was the pre-fix state itself: tests written first against the unconditional index, 3 of 5 failed (`accepts the same work again once the first has completed` / `has permanently failed` / `was cancelled`), and the two asserting the collapse passed throughout — so the tests distinguish the property being kept from the one being fixed, rather than just tracking the change.
 
 456 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 7b — what a panel is, and where it lives — 2026-08-23
+
+Slice 7 as planned was about 770 lines of implementation. `docs/20` says a slice needing more than roughly 400 means the slice was mis-sized, so it was split rather than written: **7b is the panel model and its storage**, 7c is reaction convergence.
+
+**`PanelConfig` and `panelDefinitionSchema` in `core/src/panels/model.ts`.** One validator every panel definition passes, whether it arrives from the CLI, the dashboard, or a row written by an older version of this process — `CLAUDE.md` rule 3 does not distinguish those.
+
+**Several rules are both a validator and a CHECK, deliberately.** The constraint is the guarantee: it cannot be forgotten by a caller written next year. The validator is the *explanation*. `docs/19` §6.3 asks that `single_choice` + adopted be refused "with a message that says why and points at button panels, rather than failing a constraint with a raw SQL error" — so the message names Manage Messages, says the reaction would stay and the next reconciliation would re-grant the old role, and points at button panels. A test asserts the message content, not just the refusal.
+
+**The repository takes `PanelDefinition`, not an object literal.** That is the Zod *output* type, which carries branded snowflakes and cannot be constructed without parsing. So passing an unvalidated panel to `createPanel` is a compile error rather than a convention.
+
+**`createPanel` is one `write()`.** Not tidiness: a panel visible with two of its three options has a smaller desired set than it should, and convergence would revoke the third role. There is a test that inserts a panel whose last option names a non-allowlisted role and asserts the panel is not visible at all afterwards.
+
+**Reads parse rather than assert.** A snowflake coming back out of SQLite goes through `parseSnowflakeId`, because a row written by an older version is input from outside the function. Casting to `SnowflakeId` is banned by the lint tripwire anyway, and this is exactly the spot where someone would have written one.
+
+**Broke, to check the tests.** 30. Removed `scope.only(...)` from `findPanel`'s WHERE, leaving the bare `panel_id` predicate — the "every current caller passes it" bug `CLAUDE.md` rule 2 describes → 2 failed (`does not find another guild's panel by id`, `permits the same panel id in two guilds`). 31. Disabled the collision-1 refinement → 2 failed, including the one asserting the owner-facing message. Both restored; md5 verified against pre-mutation copies.
+
+512 tests green; typecheck and lint exit 0.

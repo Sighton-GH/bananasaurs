@@ -128,3 +128,25 @@ export {
   type UndoResult,
 } from './effects/undo.js';
 export { checkReconcileBudget, type BudgetDecision } from './effects/budget.js';
+export {
+  emojiKeySchema,
+  optionByEmoji,
+  optionById,
+  orderedOptions,
+  panelDefinitionSchema,
+  panelRoleIds,
+  ADOPTION_PASS_STATES,
+  MAX_PANEL_OPTIONS,
+  PANEL_BEHAVIOURS,
+  PANEL_COMPONENTS,
+  PANEL_KINDS,
+  PANEL_STATUSES,
+  type AdoptionPassState,
+  type PanelBehaviour,
+  type PanelComponent,
+  type PanelConfig,
+  type PanelDefinition,
+  type PanelKind,
+  type PanelOption,
+  type PanelStatus,
+} from './panels/model.js';
