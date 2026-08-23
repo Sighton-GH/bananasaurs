@@ -85,3 +85,29 @@ Slice 3 was split. `docs/20` stops at roughly 400 lines of new implementation pe
 **A restore that did not restore.** The first attempt used `git checkout -- emoji.ts` on a file that had never been committed, so git had nothing to restore and my `|| true` swallowed the error. The second mutation then ran against an already-broken file and produced a misleading identical result. Rewrote the file, re-ran both mutations against a verified-clean baseline, and switched to a file copy for untracked files. Worth recording because the failure looked like a passing mutation check.
 
 56 tests green; typecheck and lint pass.
+
+---
+
+## WP1 / slice 3b — the fake Discord harness — 2026-08-23
+
+**Changed.** `packages/testkit`: `FakeDiscord`, an in-memory Discord implementing `DiscordPort`, plus `checkRoleAssignable` in core as its first real consumer. 81 tests total.
+
+The fake holds a guild — roles with positions and `managed` flags, members with role sets, messages with ordered reaction lists — and can be told to fail on demand. All six required conditions are driven by tests: duplicate event, reconnect gap with a fresh IDENTIFY, 429 with `retryAfter`, 403/50013, role-hierarchy failure, and a reaction on an uncached message arriving flagged `wasPartial`.
+
+Two behaviours worth calling out because they encode Discord constraints rather than our choices. `fetchReactionUsers` caps a page at 100 regardless of the requested limit, so a 250-reactor panel takes three calls — this is why the adoption pass is a resumable job. And `editMessage` refuses a message the bot did not author, which is the API limit that makes adopted panels reaction-only.
+
+**WP1's gate is met.** `checkRoleAssignable` is production code in core, driven by the fake. Three mutations, each caught by the test written for it:
+
+1. `>=` to `>` on the hierarchy comparison → the at-exactly-bot-position test failed. That off-by-one is the one that breaks panels after a role reorder.
+2. Dropped the `managed` branch → the integration-role test failed.
+3. Cached roles instead of re-reading per call → 4 tests failed, which is the point of checking immediately before every mutation rather than at startup.
+
+**Two problems found by running it, not by tests.**
+
+*The fake did not implement its own port.* World-building `addRole(role)` collided with the port's `addRole(guildId, userId, roleId)`. Setters are now `defineRole` / `defineMember` / `defineMessage`, and the class carries `implements DiscordPort` so the compiler enforces the contract.
+
+*Vitest was resolving workspace packages to `dist/`.* A newly exported function was invisible to the suite until `npm run build`, and the earlier tests had been running against stale build output without anyone noticing. `vitest.config.ts` now aliases the three packages to `src`. This one is worth remembering: it means a test could have passed against code that no longer existed.
+
+**Deferred.** `require-await` is disabled for testkit — a fake implementing an async port is synchronous underneath, so the async signature is required by the interface and there is nothing to await.
+
+**Size.** `fake-discord.ts` is 531 lines against `docs/20`'s ~400 guidance. Slice 3 was already split into 3a and 3b for this reason; the fake is one cohesive object implementing one interface and splitting it further would produce two halves neither of which works alone. Flagged rather than quietly exceeded.

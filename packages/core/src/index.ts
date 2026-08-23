@@ -36,3 +36,8 @@ export {
   isCustomEmojiKey,
   unicodeEmojiKey,
 } from './discord/emoji.js';
+export {
+  checkRoleAssignable,
+  resolveAssignability,
+  type Assignability,
+} from './discord/assignability.js';

@@ -59,7 +59,13 @@ export default tseslint.config(
   },
   {
     files: ['**/*.test.ts', 'packages/testkit/**/*.ts'],
-    rules: { '@typescript-eslint/no-unsafe-assignment': 'off' },
+    rules: {
+      '@typescript-eslint/no-unsafe-assignment': 'off',
+      // A fake implementing an async port is synchronous underneath. The async
+      // signature is required by the interface, so there is nothing to await
+      // and the rule is a false positive here.
+      '@typescript-eslint/require-await': 'off',
+    },
   },
   {
     // Tool config files pull in untyped plugin exports; type-aware rules add

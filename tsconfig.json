@@ -8,6 +8,9 @@
       "path": "packages/storage"
     },
     {
+      "path": "packages/testkit"
+    },
+    {
       "path": "apps/daemon"
     }
   ]
