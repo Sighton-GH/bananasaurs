@@ -1,16 +1,20 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-08-22.
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-08-23.
 
 ---
 
 ## Where the build is
 
-**Release 0, WP1 complete** (2026-08-23). Plan accepted and recorded in `docs/19_RELEASE_0_1_PLAN.md`. Work packages defined in `docs/20_AUTONOMOUS_EXECUTION.md`.
+**Release 0/1, WP2 complete** (2026-08-23). Plan in `docs/19_RELEASE_0_1_PLAN.md`; work packages in `docs/20_AUTONOMOUS_EXECUTION.md`.
 
-WP1 shipped: npm workspace, Zod config, Pino allowlist logging, CI, systemd unit, SQLite in WAL with two single-writer guards, drizzle-kit migrations, and the fake Discord harness. `typecheck`, `lint`, and 81 tests are green. Six commits, **none pushed**.
+WP1 shipped the skeleton, database plumbing and the fake Discord harness. WP2 shipped the full Release 1 schema (20 tables, all STRICT), the guild-scoped repository layer, the event pipeline, the durable job table and worker, and the safety core — `authorize()`, the twelve-layer effect gateway, rate limiting, audit, batches, undo and the reconciliation budget. `typecheck`, `lint` and **451 tests** are green. Nine WP2 commits, **none pushed**.
 
-Next action: Bryan reviews the WP1 diff, pushes, then starts a fresh session with the WP2 handoff prompt. WP2 is the full Release 1 schema, the event pipeline, and the safety core.
+Three review corrections landed first, two of which changed the design because measuring the premise showed it did not hold — see `docs/reports/WP2.md` §0. The short version: STRICT does not protect snowflakes (a parse-boundary refusal does), and npm workspace manifests enforce no package boundaries at all (ADR 0014 replaces them with per-directory lint rules).
+
+Next action: Bryan reads `docs/reports/WP2.md`, spot-checks the diff, pushes, then starts a fresh session with the WP3 handoff prompt in §8 of that report. **WP3 must delete any existing dev database first** — the migration was regenerated and renamed.
+
+One decision is waiting for Bryan, in `docs/reports/WP2.md` §6: `protected` currently means both "not mutated" and "holds no capability", and the second locks a protected principal out of the bot entirely.
 
 ## Environment as it actually is
 
@@ -36,7 +40,7 @@ Next action: Bryan reviews the WP1 diff, pushes, then starts a fresh session wit
 1. ~~**Backup destination**~~ — decided 2026-08-23: local path only in Release 1; encrypted off-host documented but not implemented.
 2. **Monthly AI spend ceiling** — a number, becomes a config value that fails closed. Not needed until Release 3.
 3. **`docs/RELEASE1_CONFIG.md`** — which panels, which roles, which log events, which destinations. Blank slate; nothing imported from Carl-bot. Does not block coding but must exist before cutover.
-4. **Anti-nuke posture** — other members hold Discord Administrator. Decide whether Bananasaurs detects and alerts on privileged-account abuse or stays out of it. Detection is tractable; prevention is not and should not be promised.
+4. **Anti-nuke posture** — other members hold Discord Administrator. Partly answered by WP2: ADR 0012 is enforced (Administrator grants nothing; capability comes only from `capability_grants`), and a `protected` principal holds no capability. Whether Bananasaurs *alerts* on privileged-account abuse is still open. Detection is tractable; prevention is not and should not be promised.
 5. **Release 2 scope check** — the club's automod is Carl-bot defaults. Configure Discord's native AutoMod first and see what's left; the custom rule engine may not need to exist.
 
 ## Decisions made in conversation, now recorded in the repo
