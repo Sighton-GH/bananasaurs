@@ -3,7 +3,17 @@ import tseslint from 'typescript-eslint';
 import prettier from 'eslint-config-prettier';
 
 export default tseslint.config(
-  { ignores: ['**/dist/**', 'node_modules/**', 'scratchpad/**', 'coverage/**', 'drizzle/**'] },
+  {
+    ignores: [
+      '**/dist/**',
+      'node_modules/**',
+      'scratchpad/**',
+      'coverage/**',
+      'drizzle/**',
+      // Plain-JS build helper. Covered by prettier; no type-aware rules apply.
+      'scripts/**',
+    ],
+  },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
@@ -54,7 +64,13 @@ export default tseslint.config(
   {
     // Tool config files pull in untyped plugin exports; type-aware rules add
     // noise here and catch nothing.
-    files: ['eslint.config.js', 'vitest.config.ts', '*.config.js', '*.config.ts'],
+    files: [
+      'eslint.config.js',
+      'vitest.config.ts',
+      '*.config.js',
+      '*.config.ts',
+      'scripts/**/*.mjs',
+    ],
     ...tseslint.configs.disableTypeChecked,
   },
   prettier,

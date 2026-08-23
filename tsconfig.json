@@ -1,4 +1,14 @@
 {
   "files": [],
-  "references": [{ "path": "packages/core" }, { "path": "apps/daemon" }]
+  "references": [
+    {
+      "path": "packages/core"
+    },
+    {
+      "path": "packages/storage"
+    },
+    {
+      "path": "apps/daemon"
+    }
+  ]
 }

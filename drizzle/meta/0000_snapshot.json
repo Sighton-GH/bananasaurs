@@ -1,0 +1,151 @@
+{
+  "version": "6",
+  "dialect": "sqlite",
+  "id": "85d24665-24df-4ca5-b646-42a65df94a2a",
+  "prevId": "00000000-0000-0000-0000-000000000000",
+  "tables": {
+    "guilds": {
+      "name": "guilds",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "killswitch": {
+          "name": "killswitch",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "dry_run": {
+          "name": "dry_run",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "role_rate_per_min": {
+          "name": "role_rate_per_min",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 20
+        },
+        "reconcile_budget": {
+          "name": "reconcile_budget",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 25
+        },
+        "breaker_threshold": {
+          "name": "breaker_threshold",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 5
+        },
+        "breaker_state": {
+          "name": "breaker_state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'closed'"
+        },
+        "breaker_tripped_at": {
+          "name": "breaker_tripped_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "breaker_reason": {
+          "name": "breaker_reason",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "guilds_guild_id_snowflake": {
+          "name": "guilds_guild_id_snowflake",
+          "value": "(\"guilds\".\"guild_id\" GLOB '[0-9]*' AND length(\"guilds\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "guilds_breaker_state": {
+          "name": "guilds_breaker_state",
+          "value": "\"guilds\".\"breaker_state\" IN ('closed','open')"
+        },
+        "guilds_enabled_bool": {
+          "name": "guilds_enabled_bool",
+          "value": "\"guilds\".\"enabled\" IN (0,1)"
+        },
+        "guilds_killswitch_bool": {
+          "name": "guilds_killswitch_bool",
+          "value": "\"guilds\".\"killswitch\" IN (0,1)"
+        },
+        "guilds_dry_run_bool": {
+          "name": "guilds_dry_run_bool",
+          "value": "\"guilds\".\"dry_run\" IN (0,1)"
+        },
+        "guilds_positive_limits": {
+          "name": "guilds_positive_limits",
+          "value": "\"guilds\".\"role_rate_per_min\" > 0 AND \"guilds\".\"reconcile_budget\" > 0 AND \"guilds\".\"breaker_threshold\" > 0"
+        }
+      }
+    }
+  },
+  "views": {},
+  "enums": {},
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "indexes": {}
+  }
+}
