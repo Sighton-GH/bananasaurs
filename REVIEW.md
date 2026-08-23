@@ -262,13 +262,13 @@ lscpu | head -20; free -h; df -h /; uname -a; lsb_release -a
 | `docs/01_PRODUCT.md` | Add the member privacy surface from A3 to first-release scope |
 | `docs/02_ARCHITECTURE.md` | Name SQLite + WAL + single-writer (C12); concrete idempotency mechanism (C8) |
 | `docs/04_CLUB_BEHAVIOR.md` | Add `/privacy`, `/mydata`, `/forgetme`; note the 14-day/28-day/3-second constraints (C2, C3, C7) |
-| `docs/06_DASHBOARD.md` | Rename to `06_DASHBOARD_TARGET.md`; add a Release 1 one-page scope at the top |
+| `docs/06_DASHBOARD.md` | **Done 2026-08-22.** Renamed to `docs/06_DASHBOARD_TARGET.md`, with the Release 1 one-page scope in a blockquote at the top. The path in the left column no longer exists on disk; it is retained here as the record of what was renamed. |
 | `docs/07_SECURITY_OPERATIONS.md` | Concrete injection controls (C13); secrets on disk (C14); dashboard auth (C15) |
 | `docs/08_ROADMAP.md` | Replace with the three releases in §E; delete Milestone 9 |
 | `docs/10_MODERATION_AUTOMATION.md` | Add the no-overlapping-enforcement rule (A4); label audit-log attribution as inferred (C4, C5) |
 | `docs/11_OPEN_SOURCE_REUSE.md` | Record the Apache-2.0 decision and the resulting hard rule: YAGPDB yes, Red no, Zeppelin no |
 | `docs/15_LINUX_RESOURCE_BUDGETS.md` | Resolve the embeddings-vs-512MB contradiction (C11); add host profile once measured |
-| `CLAUDE.md` | Replace with the version in `CLAUDE.proposed.md` |
+| `CLAUDE.md` | **Done 2026-08-22.** Replaced with the proposed version. `CLAUDE.proposed.md` was the staging filename and no longer exists; the superseded original is kept at `docs/archive/CLAUDE.original.md`. |
 
 ---
 

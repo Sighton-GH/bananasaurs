@@ -4,6 +4,12 @@
 
 A simple, friendly logo derived from the visual idea of a banana-shaped dinosaur plush. It must read as a mark at Discord-avatar size, not as a detailed mascot illustration.
 
+## Current mark
+
+`branding/logo.png` is the current mark: 1254 x 1254 PNG, 8-bit RGB, no alpha channel, 968 KB. It was generated with OpenAI Codex image tooling on 2026-08-18 and was previously sitting at the repository root under its original export filename. It is small enough to upload as the Discord application avatar unchanged, since Discord downscales server-side.
+
+It does not yet satisfy the deliverables listed at the bottom of this file. Most immediately, it has no transparent background, so it will show a solid square behind the mark anywhere Discord renders a non-circular crop, and there is no one-colour variant. Treat it as the working mark, not the finished one.
+
 ## Primary concept: Banana-saur silhouette
 
 - One curved banana body forming the dinosaur’s back and tail.

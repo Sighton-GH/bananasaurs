@@ -12,3 +12,4 @@ backups/
 run/
 coverage/
 .DS_Store
+scratchpad/

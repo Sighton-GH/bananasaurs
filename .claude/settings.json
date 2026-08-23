@@ -13,6 +13,8 @@
     "deny": [
       "Bash(git push*)",
       "Bash(rm -rf *)",
+      "Bash(sudo *)",
+      "Bash(su *)",
       "Read(./.env)",
       "Read(./data/**)",
       "Read(./backups/**)"
