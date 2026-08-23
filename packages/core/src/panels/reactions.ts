@@ -125,11 +125,25 @@ export interface ConvergeMemberInput {
   readonly batchId?: string | undefined;
 }
 
+export interface AppliedChange {
+  readonly roleId: SnowflakeId;
+  readonly action: 'grant' | 'revoke';
+}
+
 export interface ConvergeMemberResult {
   readonly plan: ConvergencePlan;
   readonly applied: number;
   readonly skipped: number;
   readonly refused: number;
+  /**
+   * What the gateway actually did, as opposed to what the plan wanted.
+   *
+   * The two differ under dry run, under a refusal, and when the member's live
+   * roles moved between planning and applying. A confirmation message built
+   * from the *plan* would tell a member "you now have @X" while the kill switch
+   * was on; built from this, it cannot.
+   */
+  readonly appliedChanges: readonly AppliedChange[];
 }
 
 /**
@@ -182,7 +196,7 @@ export async function applyPlan(
       }),
       'convergence found nothing to do',
     );
-    return { plan, applied: 0, skipped: 0, refused: 0 };
+    return { plan, applied: 0, skipped: 0, refused: 0, appliedChanges: [] };
   }
 
   // Opened only when there is work, so a quiet panel does not accumulate empty
@@ -194,6 +208,7 @@ export async function applyPlan(
   let applied = 0;
   let skipped = 0;
   let refused = 0;
+  const appliedChanges: AppliedChange[] = [];
 
   try {
     for (const intent of intentsFor(plan, {
@@ -208,6 +223,7 @@ export async function applyPlan(
       switch (outcome.status) {
         case 'applied':
           applied += 1;
+          appliedChanges.push({ roleId: intent.roleId, action: intent.action });
           // Provenance, written after the fact and never read for state.
           if (intent.action === 'grant') {
             deps.effects.recordGranted({
@@ -247,7 +263,7 @@ export async function applyPlan(
     if (ownsBatch) deps.effects.closeBatch(batchId);
   }
 
-  return { plan, applied, skipped, refused };
+  return { plan, applied, skipped, refused, appliedChanges };
 }
 
 /**

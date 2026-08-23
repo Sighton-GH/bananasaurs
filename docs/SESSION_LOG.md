@@ -509,3 +509,23 @@ Slice 9 split again on the 400-line rule: 9a is the interaction port, the harnes
 **Broke, to check the tests.** 38. Loosened custom id parsing from `parts.length !== 3` to `< 3`, accepting appended segments → the crafted-payload test failed. 39. Removed the three-second check from the fake's `deferInteraction` → the deadline test failed, which matters because that check is what will make 9b's "defer first" testable at all. Both restored; md5 verified.
 
 619 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 9b — a click becomes a role, and the member is told the truth — 2026-08-23
+
+**Identify, then defer, then work.** Discord gives three seconds to acknowledge and discards the token if it is missed. A role change is a member fetch, a role fetch and a REST call, so acknowledgement cannot wait for it. Identification comes *before* the defer and is entirely in-process — parse the custom id, look the panel up by message — so we never acknowledge an interaction belonging to another bot.
+
+**The message is the authority, not the custom id.** The panel is resolved from `findPanelByMessage`, and the custom id must agree with it. A crafted interaction naming a different panel is logged and dropped. An option the panel no longer offers — a button left on a message from before an edit — is dropped too.
+
+**The confirmation is built from what the gateway did, never from what the plan wanted.** `applyPlan` now returns `appliedChanges`, the intents that actually came back `applied`. Under dry run, a tripped breaker or a hierarchy refusal, the plan is full of intentions and nothing happened; a reply built from the plan would tell a member "You now have @Alpha" while they can see they do not. Two tests assert exactly that, and mutation 41 proved they catch it.
+
+**A managed panel's current selection is the roles the member holds.** There are no reactions to read, so `selectionAfterClick` derives the selection from live roles and flips the clicked option — no REST call beyond the member fetch convergence already needs. `single_choice` is not a toggle: clicking B means "B", not "B as well".
+
+**A select menu speaks for the whole panel**, so its convergence is unlimited and deselecting revokes. A button on an independent-option panel is limited to the option it named (amendment 6). Values arriving from the client are filtered against the panel's own options first.
+
+**Broke, to check the tests.** 40. Moved the defer after the convergence — the classic three-second bug → 2 failed. 41. Built the reply from `plan.grants` instead of `appliedChanges` → the dry-run and gateway-refusal honesty tests failed. Both restored; md5 verified.
+
+**One limitation worth stating.** The fake's clock is manual, so mutation 40 was caught by the explicit ordering assertion rather than by the deadline firing. The harness can prove *that we defer first*; it cannot prove *we are fast enough*, because it does not model latency. That is the right division — real latency is not measurable here — but "the panel responds in time" remains a live smoke test, not a covered one.
+
+637 tests green; typecheck and lint exit 0.

@@ -173,6 +173,7 @@ export {
   ReactionStateCache,
   selectionFromReactions,
   type ConvergeMemberInput,
+  type AppliedChange,
   type ConvergeMemberResult,
   type ReactionSubscriberDeps,
 } from './panels/reactions.js';
@@ -197,6 +198,13 @@ export {
   renderPanelMessage,
   type ParsedCustomId,
 } from './panels/components.js';
+export {
+  createInteractionSubscriber,
+  describeResult,
+  selectionAfterClick,
+  type InteractionSubscriberDeps,
+  type PanelResponder,
+} from './panels/interactions.js';
 export {
   editManagedPanel,
   postManagedPanel,
