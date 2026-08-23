@@ -71,11 +71,14 @@ export {
   type RunOutcome,
 } from './jobs/worker.js';
 export {
+  adoptDedupeKey,
+  adoptPanelPayload,
   JOB_KINDS,
   reconcileDedupeKey,
   reconcileGuildPayload,
   sweepDedupeKey,
   sweepEventDedupePayload,
+  type AdoptPanelPayload,
   type JobKind,
   type ReconcileGuildPayload,
   type SweepEventDedupePayload,
@@ -173,3 +176,13 @@ export {
   type ReactionSubscriberDeps,
 } from './panels/reactions.js';
 export { seedPanelReactions, type SeedResult } from './panels/seed.js';
+export {
+  adoptionCursorSchema,
+  runAdoptionPass,
+  type AdoptionCursor,
+  type AdoptionInput,
+  type AdoptionOutcome,
+  type AdoptionPorts,
+  type AdoptionStatus,
+} from './panels/adoption.js';
+export { applyPlan } from './panels/reactions.js';

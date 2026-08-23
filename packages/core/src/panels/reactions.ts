@@ -152,6 +152,24 @@ export async function convergeMember(
     limitToOptionIds: input.limitToOptionIds,
   });
 
+  return applyPlan(deps, { ...input, plan });
+}
+
+/**
+ * Applies a plan that was computed earlier.
+ *
+ * Split out for the adoption pass, which computes every member's plan first so
+ * it can show the owner one total before anything happens (`docs/19` §6.4). A
+ * plan can be stale by the time it is applied — somebody may have left, or a
+ * role may have been deleted — and that is safe: the gateway re-reads live
+ * roles and degrades a stale intent to `skipped`, not to a wrong write.
+ */
+export async function applyPlan(
+  deps: ReactionSubscriberDeps,
+  input: ConvergeMemberInput & { plan: ConvergencePlan },
+): Promise<ConvergeMemberResult> {
+  const { plan } = input;
+
   if (isEmptyPlan(plan)) {
     deps.logger.debug(
       safeLogFields({

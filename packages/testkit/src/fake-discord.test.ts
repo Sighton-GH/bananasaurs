@@ -163,12 +163,17 @@ describe('reaction pagination', () => {
     expect(page.userIds).toHaveLength(100);
   });
 
-  it('excludes the bot seed reaction from the reactor list', async () => {
+  it('includes the bot seed reaction in the reactor list, as Discord does', async () => {
+    // Discord returns every user who reacted, bots included. Excluding the bot
+    // here — which this fake originally did — makes the adoption pass's own
+    // filter untestable, and a pass without that filter grants the bot every
+    // role on the panel it just seeded. The exclusion belongs in the
+    // application, and the harness must not do its job for it.
     await d.createReaction(GUILD, ref, BRAIN);
     d.offlineReactionAdd({ ...ref, userId: USER, emoji: BRAIN });
     const page = await d.fetchReactionUsers(GUILD, ref, BRAIN);
-    expect(page.userIds).toEqual([USER]);
-    expect(page.userIds).not.toContain(BOT_USER_ID);
+    expect(page.userIds).toContain(BOT_USER_ID);
+    expect(page.userIds).toContain(USER);
   });
 });
 

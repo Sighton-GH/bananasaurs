@@ -457,3 +457,35 @@ Written that way rather than as three branches because the symmetry is the prope
 **Worth recording about mutation 34.** "A replayed reaction is free" did *not* fail under it, because that property is enforced by the effect gateway's no-op check rather than by convergence. That is the correct division of labour, but it means the replay tests do not test convergence — the ones that do are the revoke tests.
 
 565 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 8 — the adoption pass, and a fake that was lying — 2026-08-23
+
+Collision 2 from `docs/19` §6.4, plus the most useful thing the mutation check has found so far.
+
+**The pass computes its whole change list before touching anything.** Existing reactions *are* the intended role state, so adoption pages `fetchReactionUsers` for every mapped emoji, fetches each reactor's live roles, and runs the same `planConvergence` that live events use. Only then does it look at the allowance.
+
+**Without an allowance it does nothing at all** — not "starts and stops", *nothing*. It stores the change list, sets `adoption_pass_state='pending'` and returns. Tests assert zero REST calls, zero effect rows and zero roles changed. An allowance one short of the list is still a refusal.
+
+**The allowance is spent instead of the standing cap**, which is what makes adoption possible under a 20/minute ceiling at all. The test for that started out weak: `available()` reads 20 whether the bucket spent 12 allowance or 12 standing tokens, because it returns tokens + allowance either way. Rewritten to drain the bucket and count — the standing 20 must all still be there.
+
+**Refusing is the finished behaviour for WP3.** The CLI that lets Bryan size and grant the allowance is slice 13 in WP5. No Discord-side confirmation was built, deliberately: a mass-role-grant trigger reachable from Discord is exactly the surface `docs/18` wants smallest.
+
+**ADR 0016 turned out to be load-bearing here too.** The whole cycle is *run → refuse → owner grants → run again*, and the second run is a second job with the same dedupe key. Under the WP2 index that enqueue was a silent no-op, so adoption could never have completed. There is now a test for the full cycle.
+
+### The fake was modelling Discord wrongly, and a decoration test hid it
+
+**Mutation 37 removed the filter that drops the bot's own seeded reactions — and every test still passed.**
+
+Two independent faults, both of which had to be fixed before the mutation would bite:
+
+1. **`FakeDiscord.fetchReactionUsers` filtered out `BOT_USER_ID`**, and WP1 wrote a test asserting it *should*. Discord does no such thing: `GET /reactions` returns every user who reacted, bot accounts included. The harness was doing the application's job, so the application's filter was never exercised. Without it, adopting a panel grants the bot every role it just seeded. Fake corrected, and its test now asserts the bot **is** returned, with the reason written down.
+
+2. **Even against the corrected fake the test still passed**, because it only asserted `memberRoles(BOT_USER_ID) === []`. With the bot counted, the change list became 13 against an allowance of 12, so the pass refused — and refusing also leaves the bot without roles. The test was watching the allowance gate fire and reading it as the filter working. Rewritten to grant a generous allowance and assert `memberCount` and `changeCount` directly.
+
+This is exactly the failure `docs/20` describes: a test that passes regardless of whether the feature works. It took three attempts at the same mutation to get a test that fails for the right reason, and it is worth saying that the first two attempts *looked* fine.
+
+**Broke, to check the tests.** 35. Removed the allowance gate → 5 failed, including the ADR 0016 cycle test. 36. Made `pageReactors` return after the first page → the paging test failed (a real panel would have adopted only its first 100 reactors). 37. Removed the bot filter → passed twice, then failed once the fake and the test were corrected. All restored; md5 verified.
+
+584 tests green; typecheck and lint exit 0.

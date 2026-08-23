@@ -14,6 +14,8 @@ export const JOB_KINDS = {
   sweepEventDedupe: 'sweep_event_dedupe',
   /** Repairs drift after a gateway gap, or on the periodic timer. */
   reconcileGuild: 'reconcile_guild',
+  /** Turns a panel's existing reactions into roles, once an owner sized it. */
+  adoptPanel: 'adopt_panel',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -43,3 +45,18 @@ export const reconcileDedupeKey = (reason: ReconcileGuildPayload['reason']): str
 
 /** One sweep pending at a time is enough; the next run picks up what it missed. */
 export const sweepDedupeKey = (): string => JOB_KINDS.sweepEventDedupe;
+
+export const adoptPanelPayload = z.object({
+  panelId: z.string().min(1).max(64),
+});
+export type AdoptPanelPayload = z.infer<typeof adoptPanelPayload>;
+
+/**
+ * One pending adoption per panel.
+ *
+ * Per panel rather than global: adopting two panels are independent pieces of
+ * work and collapsing them would silently drop one. Re-enqueueable once the
+ * first has finished — see ADR 0016, which is what makes "grant the allowance,
+ * then run the pass again" possible at all.
+ */
+export const adoptDedupeKey = (panelId: string): string => `${JOB_KINDS.adoptPanel}:${panelId}`;

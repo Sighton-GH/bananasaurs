@@ -452,7 +452,14 @@ export class FakeDiscord implements DiscordPort {
     const m = this.mustMessage(ref);
     if (m.deleted) throw FakeDiscord.unknownMessage();
 
-    const all = (m.reactions.get(emoji) ?? []).filter((u) => u !== BOT_USER_ID);
+    // The bot is NOT filtered out. Discord's GET /reactions returns every user
+    // who reacted, bot accounts included — there is no server-side exclusion.
+    // Filtering here would have hidden a real bug class: the adoption pass must
+    // drop its own seeded reactions itself, or it grants the bot every role on
+    // the panel it just seeded. WP1 modelled this the other way and a WP3
+    // mutation check found it, because removing the application's filter
+    // changed nothing.
+    const all = m.reactions.get(emoji) ?? [];
     // Discord caps a page at 100 regardless of what you ask for.
     const limit = Math.min(options.limit ?? 100, 100);
     const start = options.after ? all.indexOf(options.after) + 1 : 0;
