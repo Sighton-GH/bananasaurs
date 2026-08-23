@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "85d24665-24df-4ca5-b646-42a65df94a2a",
+  "id": "d8f95314-f741-463d-8c39-01fa1d32a024",
   "prevId": "00000000-0000-0000-0000-000000000000",
   "tables": {
     "guilds": {
@@ -113,7 +113,7 @@
       "checkConstraints": {
         "guilds_guild_id_snowflake": {
           "name": "guilds_guild_id_snowflake",
-          "value": "(\"guilds\".\"guild_id\" GLOB '[0-9]*' AND length(\"guilds\".\"guild_id\") BETWEEN 17 AND 20)"
+          "value": "(\"guilds\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"guilds\".\"guild_id\") BETWEEN 17 AND 20)"
         },
         "guilds_breaker_state": {
           "name": "guilds_breaker_state",

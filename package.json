@@ -19,7 +19,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "node --env-file=.env --watch apps/daemon/src/index.ts",
-    "db:generate": "drizzle-kit generate",
+    "db:generate": "drizzle-kit generate && node scripts/strictify.mjs",
     "db:migrate": "node scripts/migrate.mjs"
   },
   "devDependencies": {

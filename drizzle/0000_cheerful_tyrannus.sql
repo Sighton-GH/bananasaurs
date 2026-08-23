@@ -12,10 +12,10 @@ CREATE TABLE `guilds` (
 	`breaker_reason` text,
 	`created_at` integer NOT NULL,
 	`updated_at` integer NOT NULL,
-	CONSTRAINT "guilds_guild_id_snowflake" CHECK(("guilds"."guild_id" GLOB '[0-9]*' AND length("guilds"."guild_id") BETWEEN 17 AND 20)),
+	CONSTRAINT "guilds_guild_id_snowflake" CHECK(("guilds"."guild_id" NOT GLOB '*[^0-9]*' AND length("guilds"."guild_id") BETWEEN 17 AND 20)),
 	CONSTRAINT "guilds_breaker_state" CHECK("guilds"."breaker_state" IN ('closed','open')),
 	CONSTRAINT "guilds_enabled_bool" CHECK("guilds"."enabled" IN (0,1)),
 	CONSTRAINT "guilds_killswitch_bool" CHECK("guilds"."killswitch" IN (0,1)),
 	CONSTRAINT "guilds_dry_run_bool" CHECK("guilds"."dry_run" IN (0,1)),
 	CONSTRAINT "guilds_positive_limits" CHECK("guilds"."role_rate_per_min" > 0 AND "guilds"."reconcile_budget" > 0 AND "guilds"."breaker_threshold" > 0)
-);
+) STRICT;

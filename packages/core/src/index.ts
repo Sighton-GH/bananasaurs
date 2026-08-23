@@ -6,6 +6,15 @@ export {
   type SecretConfigKey,
 } from './config/schema.js';
 export { parseConfig, redactConfig, ConfigError } from './config/load.js';
+export {
+  guildIdSchema,
+  isSnowflakeId,
+  parseGuildId,
+  parseSnowflakeId,
+  snowflakeIdSchema,
+  type GuildId,
+  type SnowflakeId,
+} from './ids.js';
 export { createLogger, safeLogFields, type Logger } from './obs/logger.js';
 export { DiscordApiError, DiscordErrorCode, RoleHierarchyError } from './discord/errors.js';
 export type {

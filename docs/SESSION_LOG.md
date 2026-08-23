@@ -111,3 +111,40 @@ Two behaviours worth calling out because they encode Discord constraints rather 
 **Deferred.** `require-await` is disabled for testkit — a fake implementing an async port is synchronous underneath, so the async signature is required by the interface and there is nothing to await.
 
 **Size.** `fake-discord.ts` is 531 lines against `docs/20`'s ~400 guidance. Slice 3 was already split into 3a and 3b for this reason; the fake is one cohesive object implementing one interface and splitting it further would produce two halves neither of which works alone. Flagged rather than quietly exceeded.
+
+---
+
+## WP2 / correction 1 — snowflake type safety, and what STRICT actually does — 2026-08-23
+
+Bryan's review reversed my WP1 decision to drop STRICT and gave me two options: hand-edit the migrations, or add a runtime guard plus a branded Zod type. I built both, because measuring first showed each closes a different hole and neither closes the other's.
+
+**What I measured before changing anything.** Three probes against better-sqlite3:
+
+1. **STRICT does not reject a number in a TEXT column.** `INSERT INTO strict_table(text_col) VALUES (<number>)` is ACCEPTED and stored as `"1.2345678901234568e+18"`. SQLite's STRICT rules permit lossless INTEGER/REAL-to-TEXT conversion, which is the same coercion affinity performs. So the stated mechanism for the snowflake half of the correction does not hold.
+2. **What actually rejected the number under the WP1 schema was the format CHECK**, and by accident. better-sqlite3 binds an unsafe JS integer as REAL, REAL-to-TEXT renders exponential notation, and that fails the GLOB. Correct outcome, reasoning I never did.
+3. **The undetectable path is neither.** `String(Number(1234567890123456789n))` is `"1234567890123456800"` — nineteen digits, digits only, passes every check we could write, and is the wrong id. No constraint can catch it. Only a refusal at the point where the value was still a number can.
+
+**So the layers are, weakest last.**
+
+- `parseSnowflakeId` / `parseGuildId` in `packages/core/src/ids.ts` refuse a `number` or `bigint` at any parse boundary with a message saying the digits are already unrecoverable. **This is the control.** Branded output, so the parse is hard to forget; the brand is not a boundary and the lint rule now bans casts onto `SnowflakeId` alongside `Authorized`, `GuildScope`, `GuildId`.
+- The `snowflake()` column is now a drizzle `customType` whose `toDriver` throws `SnowflakeTypeError` naming the column. Defence in depth on the write path, and the useful-message-at-the-call-site property Bryan wanted.
+- The format CHECK is tightened. `GLOB '[0-9]*'` anchored only the first character, so `'1234567890123456abc'` and `'123456789012345 78'` both passed it in WP1. Now `NOT GLOB '*[^0-9]*'`.
+- STRICT is back, for the reason the correction's second half gives and the first half does not: `attempts = 'lots'` into an INTEGER column was accepted and is now `SQLITE_CONSTRAINT_DATATYPE`.
+- A fourth layer found by accident: eslint's `no-loss-of-precision` rejects a snowflake *literal* in source. It fired on my own test fixtures, which is why they now compute the corruption via `Number(REAL)` rather than writing it out. It only sees literals, so it is a bonus, not a control.
+
+**STRICT is tooling, not a hand-edit.** `scripts/strictify.mjs` rewrites drizzle-kit's output after generation and is wired into `npm run db:generate`. Hand-editing works — the drizzle migrator gates on `created_at` from the journal and never re-hashes an applied migration, so an edited file is safe — but it has to be remembered on every future migration. The script makes it the default and the invariant test (next slice) makes a regression a build failure.
+
+**Broke, to check the tests.**
+
+1. `toDriver` returns the value unguarded → 3 tests failed (number refused, message names the column, bigint refused).
+2. CHECK reverted to `GLOB '[0-9]*'` → 2 failed (digits-then-letters, digits-with-a-space).
+3. STRICT stripped from the migration SQL → 1 failed (text into an INTEGER column).
+4. Number branch removed from the Zod error map → 4 failed, including the JSON-payload round-trip test.
+
+Each restored from a verified copy and re-run; md5 checked against the pre-mutation baseline, per the slice 3a lesson.
+
+**One migration, regenerated.** WP1's `0000_flat_orphan.sql` is replaced by a single `0000_cheerful_tyrannus.sql` rather than a follow-up migration. Nothing is deployed, so the incremental record would encode only the order I happened to write things. **Any existing dev database must be deleted and re-migrated** — the migration name changed, so `db:migrate` on an old file will not do the right thing.
+
+**Gotcha worth recording.** `drizzle-kit generate` fails if `drizzle/meta/` exists but is empty; it wants the directory absent or holding a journal. Deleting the journal alone leaves generation broken with an unhelpful `open` error.
+
+113 tests green; typecheck and lint pass.

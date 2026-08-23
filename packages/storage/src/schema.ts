@@ -8,7 +8,9 @@ import { boolCheck, snowflake, snowflakeCheck } from './columns.js';
  * the guild-scope invariant test that governs them.
  *
  * Snowflakes are TEXT because they exceed Number.MAX_SAFE_INTEGER. Timestamps
- * are INTEGER epoch-millis.
+ * are INTEGER epoch-millis. Every table is STRICT — drizzle-kit cannot emit it,
+ * so `scripts/strictify.mjs` adds it after generation and the schema invariant
+ * test fails the build if a table ever loses it.
  */
 export const guilds = sqliteTable(
   'guilds',

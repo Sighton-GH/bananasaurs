@@ -50,7 +50,7 @@ export default tseslint.config(
         'error',
         {
           selector:
-            'TSAsExpression > TSTypeReference > Identifier[name=/^(Authorized|GuildScope|GuildId)$/]',
+            'TSAsExpression > TSTypeReference > Identifier[name=/^(Authorized|GuildScope|GuildId|SnowflakeId)$/]',
           message:
             'Casting to an authorization or guild-scope type defeats the check it exists to make. Obtain the value from authorize() or forGuild().',
         },
