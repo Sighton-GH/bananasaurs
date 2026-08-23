@@ -79,7 +79,11 @@ export function applyPragmas(raw: Database.Database): void {
   // durability guarantee a Discord bot does not need.
   raw.pragma('synchronous = NORMAL');
   // Composite foreign keys carry guild scope, so they are load-bearing rather
-  // than decorative. SQLite defaults this OFF, per connection.
+  // than decorative. Raw SQLite defaults this OFF per connection; better-sqlite3
+  // already turns it on, so this line is belt-and-braces against that default
+  // changing or a connection being opened by something else. Deleting it does
+  // not currently change behaviour — see the guild-scope FK test, which asserts
+  // the outcome rather than this pragma's value.
   raw.pragma('foreign_keys = ON');
 }
 

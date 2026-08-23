@@ -28,10 +28,42 @@ describe('applyPragmas', () => {
     raw.close();
   });
 
-  it('enables foreign keys, without which composite guild-scope FKs do nothing', () => {
+  /**
+   * This asserts the BEHAVIOUR, not the pragma value.
+   *
+   * The original test read `pragma('foreign_keys') === 1` and passed with the
+   * pragma line deleted, because better-sqlite3 turns foreign keys on by
+   * default (raw SQLite does not). It was asserting the library's default, so
+   * it could never fail against a broken implementation.
+   *
+   * What actually matters is that a child row cannot reference a parent in
+   * another guild, which is the invariant the whole Release 1 schema rests on.
+   * That is worth guarding whatever the cause of a regression: our pragma, a
+   * library upgrade changing its default, or a connection opened elsewhere.
+   */
+  it('rejects a foreign key that crosses guild scope', () => {
     const raw = new Database(dbPath);
     applyPragmas(raw);
-    expect(raw.pragma('foreign_keys', { simple: true })).toBe(1);
+    raw.exec(`
+      CREATE TABLE parent (guild_id TEXT NOT NULL, item_id TEXT NOT NULL,
+                           PRIMARY KEY (guild_id, item_id));
+      CREATE TABLE child  (guild_id TEXT NOT NULL, item_id TEXT NOT NULL, note TEXT,
+                           FOREIGN KEY (guild_id, item_id)
+                             REFERENCES parent (guild_id, item_id));
+    `);
+    raw.prepare('INSERT INTO parent VALUES (?, ?)').run('111111111111111111', 'item-a');
+
+    // Same guild, existing parent: allowed.
+    expect(() =>
+      raw.prepare('INSERT INTO child VALUES (?, ?, ?)').run('111111111111111111', 'item-a', 'ok'),
+    ).not.toThrow();
+
+    // Same item id, DIFFERENT guild. Without enforcement this silently succeeds
+    // and one guild's row points at another guild's parent.
+    expect(() =>
+      raw.prepare('INSERT INTO child VALUES (?, ?, ?)').run('222222222222222222', 'item-a', 'leak'),
+    ).toThrow(/FOREIGN KEY/i);
+
     raw.close();
   });
 
