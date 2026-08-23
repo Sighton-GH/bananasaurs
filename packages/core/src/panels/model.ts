@@ -219,9 +219,15 @@ export const orderedOptions = (panel: PanelConfig): readonly PanelOption[] =>
     a.position === b.position ? a.optionId.localeCompare(b.optionId) : a.position - b.position,
   );
 
-/** The roles this panel offers. A panel never touches a role outside this set. */
-export const panelRoleIds = (panel: PanelConfig): ReadonlySet<SnowflakeId> =>
-  new Set(panel.options.map((o) => o.roleId));
+/**
+ * The roles this panel offers. A panel never touches a role outside this set.
+ *
+ * Widened to `string` deliberately: callers test membership of role ids that
+ * arrived from Discord, and narrowing the set would force a cast onto
+ * `SnowflakeId` at every call site — which the lint tripwire bans, and rightly.
+ */
+export const panelRoleIds = (panel: PanelConfig): ReadonlySet<string> =>
+  new Set<string>(panel.options.map((o) => o.roleId));
 
 export const optionByEmoji = (panel: PanelConfig, emoji: EmojiKey): PanelOption | undefined =>
   panel.options.find((o) => o.emojiKey === emoji);

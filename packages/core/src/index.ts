@@ -150,3 +150,26 @@ export {
   type PanelOption,
   type PanelStatus,
 } from './panels/model.js';
+export {
+  intentsFor,
+  isEmptyPlan,
+  needsFullReactionState,
+  planConvergence,
+  type ConvergenceInput,
+  type ConvergencePlan,
+  type DeclinedOption,
+  type IntentContext,
+  type PanelRefusal,
+} from './panels/convergence.js';
+export type { PanelDiscordReader, PanelEffects, PanelStore } from './panels/ports.js';
+export {
+  convergeMember,
+  createReactionSubscriber,
+  pageReactors,
+  ReactionStateCache,
+  selectionFromReactions,
+  type ConvergeMemberInput,
+  type ConvergeMemberResult,
+  type ReactionSubscriberDeps,
+} from './panels/reactions.js';
+export { seedPanelReactions, type SeedResult } from './panels/seed.js';

@@ -421,3 +421,39 @@ Slice 7 as planned was about 770 lines of implementation. `docs/20` says a slice
 **Broke, to check the tests.** 30. Removed `scope.only(...)` from `findPanel`'s WHERE, leaving the bare `panel_id` predicate — the "every current caller passes it" bug `CLAUDE.md` rule 2 describes → 2 failed (`does not find another guild's panel by id`, `permits the same panel id in two guilds`). 31. Disabled the collision-1 refinement → 2 failed, including the one asserting the owner-facing message. Both restored; md5 verified against pre-mutation copies.
 
 512 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 7c — a reaction becomes a role — 2026-08-23
+
+The convergence core, the reaction subscriber, emoji seeding, and the first end-to-end panel on the fake gateway.
+
+**One convergence function, three callers.** `planConvergence` is pure and takes the panel, the member's selection and the member's **live Discord roles**. Live events, the adoption pass and reconciliation all call it — `docs/19` §4's point that drift repair is the same code path, not a second implementation with its own bugs. Because it is pure, its tests are a table rather than a harness.
+
+**The three behaviours turned out to be one rule with the ends clipped.**
+
+```
+toggle       desired = asked
+add_only     desired = asked ∪ held    — never revokes
+remove_only  desired = asked ∩ held    — never grants
+```
+
+Written that way rather than as three branches because the symmetry is the property worth keeping: "add_only un-reacting must not revoke" and "remove_only reacting must not grant" are the same statement, and three branches would let them drift apart.
+
+**Amendment 6 is a parameter, not a special case.** `limitToOptionIds` restricts a pass to the options it actually looked at. A toggle/add_only/remove_only panel without `max_roles` decides each option independently, so a reaction event is limited to the single emoji it carried and costs **no** REST call — a test asserts `fetchReactionUsers` is never called. Without the limit, a reaction on one emoji would compute an empty selection for every *other* option and revoke them all: every reaction would strip every other role on the panel. That is the bug the parameter exists to make impossible, and it has its own test.
+
+**`max_roles` clamps by stability, not by position.** Roles the member already holds and still wants keep their place; the remainder fills in display order. Clamping by position alone would revoke a role held for a month because somebody reacted to an option that sorts earlier. There is a test that runs the pass over its own output and asserts nothing changes — without stability, convergence would flap.
+
+**Panel-level refusals keep what the member already has.** A disabled panel, a missing required role or a blocked role means "this member may not use this panel right now", not "this member should hold nothing from it". Stripping would turn acquiring a blocked role into a silent mass revocation.
+
+**Panels get a narrower Discord port than the gateway does.** `PanelDiscordReader` has `fetchMember`, `fetchMessage`, `createReaction` and `fetchReactionUsers` — and no `addRole` or `removeRole`. `DiscordPort` structurally satisfies it, so the daemon hands over the same object, but the type panel code sees cannot mutate a role. "Panels change roles only through the gateway" becomes a property of the signature rather than a rule to remember, with ADR 0014's lint rule and the gateway's runtime re-verification still underneath.
+
+**The actor for a panel change is `system`, not the member.** A member holds no `roles.mutate` grant and must not need one; requiring it would mean granting every member the capability to change roles. The authorization is the panel — an owner with `panels.manage` created it, enabled it, and chose its roles. Nothing about who acted is lost: the member is the audit row's subject, which for a panel is the same person.
+
+**Memoisation is per pass, and deliberately not shared across live events.** `docs/19` §6.4 asks for memoising so "a burst on the same panel does not refetch". Per pass — adoption or reconciliation walking many members against one snapshot — that is exactly what `ReactionStateCache` does. Carrying it across separate live events would be a correctness bug, not an optimisation: the next event is usually the very member whose reaction is missing from the cached set, and they would be silently denied the role they just asked for.
+
+**Broke, to check the tests.** 32. Made `inScope` return true unconditionally, ignoring `limitToOptionIds` → 3 failed, including the end-to-end "leaves a role from another option alone". 33. Removed the bot-user filter from the subscriber → "ignores our own seeded reaction" failed, which is the bot granting itself a role the moment it seeds a panel. 34. Replaced `currentRoleIds: new Set(member.roleIds)` with an empty set — convergence no longer reading live Discord roles, i.e. amendment 4 undone → 3 failed. All restored; md5 verified against pre-mutation copies, full suite re-run green.
+
+**Worth recording about mutation 34.** "A replayed reaction is free" did *not* fail under it, because that property is enforced by the effect gateway's no-op check rather than by convergence. That is the correct division of labour, but it means the replay tests do not test convergence — the ones that do are the revoke tests.
+
+565 tests green; typecheck and lint exit 0.
