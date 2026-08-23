@@ -84,3 +84,46 @@ export {
   createConnectionSubscriber,
   type ConnectionPorts,
 } from './pipeline/connection-subscriber.js';
+export {
+  authorize,
+  capabilityOf,
+  principalsOf,
+  CAPABILITIES,
+  type Actor,
+  type ActorType,
+  type Authorized,
+  type AuthorizeInput,
+  type AuthzStore,
+  type Capability,
+  type Denied,
+  type DenialReason,
+  type PrincipalRef,
+  type Result,
+} from './authz.js';
+export {
+  RateLimiter,
+  TokenBucket,
+  type EffectSource,
+  type TokenBucketOptions,
+} from './effects/rate-limit.js';
+export {
+  dedupeKeyFor,
+  EffectGateway,
+  type AuditInput,
+  type ClaimedEffect,
+  type EffectGatewayDeps,
+  type EffectOutcome,
+  type EffectRecordInput,
+  type RefusalReason,
+  type RoleIntent,
+  type SafetyState,
+} from './effects/gateway.js';
+export {
+  inverseOf,
+  undoBatch,
+  type UndoableEffect,
+  type UndoAuthorization,
+  type UndoInput,
+  type UndoPorts,
+  type UndoResult,
+} from './effects/undo.js';

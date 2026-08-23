@@ -10,5 +10,8 @@
   "dependencies": {
     "@bananasaurs/core": "*",
     "@bananasaurs/storage": "*"
+  },
+  "devDependencies": {
+    "@bananasaurs/testkit": "*"
   }
 }

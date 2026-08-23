@@ -302,3 +302,40 @@ What replaced it is a fingerprint derived per event kind, and — for the kinds 
 20. Worker treated an unregistered kind as retryable → 1 failed.
 
 358 tests green; typecheck and lint exit 0.
+
+---
+
+## WP2 / slice 5 — the effect gateway, the safety layers, audit, batches, undo — 2026-08-23
+
+**One chokepoint, twelve layers, in a deliberate order.** Cheap local refusals come before anything costing a REST call; the hierarchy check comes as late as possible because it must reflect the guild *now*; the idempotency claim comes *before* the Discord call, so a process death between claim and call leaves the effect recorded and a replay skips it — the failure direction that does not double-grant.
+
+**Amendment 3, implemented as the control rather than as a type.** `applyRoleEffect` re-runs `authorize()` against `capability_grants` before acting, so a witness obtained by casting fails at runtime. Verified by mutation: deleting the re-check breaks three tests, including one where the grant is revoked after the witness is issued.
+
+The witness itself is built around a **real runtime symbol**, not `declare const`. That distinction earns its keep: with a declared-only symbol, `authorize` would have had to cast to construct a witness, and the one cast in the codebase would sit in the module whose whole job is to be uncastable. A real, unexported symbol means the witness is built honestly and no other module can produce the shape with an object literal.
+
+**The lint tripwire bites.** With `Authorized` now existing, `{} as unknown as Authorized<'roles.mutate'>` produces the expected `no-restricted-syntax` error. Confirmed directly rather than assumed.
+
+**A cast I wrote and then removed, worth recording.** `undoBatch` first took `Authorized<'undo.execute'>` and cast it to the gateway's parameter type with `as unknown as Parameters<EffectGateway['applyRoleEffect']>[0]`. That form **slips past the lint rule**, which matches a named type reference rather than an indirect cast — a real blind spot in the tripwire. The runtime re-check would still have caught a forged witness, but the honest fix was to model what is actually required: undoing role effects needs the right to undo *and* the right to mutate roles, so `UndoAuthorization` carries both. The undo actor is now read from the undo witness rather than from caller-supplied input, so the audit trail records who was authorized rather than who claimed to be.
+
+**Undo is a replay of the inverse through the same gateway**, not a separate path. The kill switch, breaker, hierarchy check, rate cap and dry-run all apply to an undo exactly as to the action it reverses — an undo that could bypass the kill switch would be a second, unaudited way to change roles. Tested directly.
+
+**`had_role_before` is the whole basis of the inverse**, and the truth table is exported and tested on its own: reverse a grant only if we actually added the role, reverse a revoke only if we actually removed one, and never reverse a dry run, a failure or a skip. The failure it prevents is stripping a role a member has held for a year because an unrelated batch happened to touch it.
+
+**The rate cap and the adoption allowance.** docs/18 Layer 3 as amended: a standing per-source ceiling plus named allowances a human sized and approved for a specific change list. Allowance is spent *before* the standing budget, deliberately — otherwise an approved batch competes with ordinary member activity halfway through and finishes late or not at all. Overflow trips the breaker durably rather than waiting, because overflow is evidence something is wrong.
+
+**A no-op costs nothing.** Convergence runs constantly and is mostly no-ops; charging rate budget for them would exhaust the cap without a single real change. Tested.
+
+**`protected` means two things, and the plan states both without naming the difference.** Both are implemented: as *target*, the bot will not mutate that member or role; as *actor*, that principal holds no capability at all. The second surfaced by failing my own test — marking the acting member protected locked them out before the target check ran. That is the anti-nuke posture working as designed, and also a real footgun if the owner protects their own role. Flagged in the report rather than silently chosen.
+
+**Two test layers, deliberately.** `packages/testkit/src/gateway.integration.test.ts` (46 tests) proves the ordering of the layers with in-memory ports and the fake Discord harness. `apps/daemon/src/effects.integration.test.ts` (16 tests) proves the parts only SQL can: that `role_effects_dedupe` really makes a replay a no-op, that the foreign key into `managed_roles` really is the allowlist, that a cross-guild batch reference really raises `SQLITE_CONSTRAINT_FOREIGNKEY`, and that an audit row is really written. A fake claiming "already claimed" agrees with itself for free; a UNIQUE index either exists or it does not.
+
+**Broke, to check the tests.**
+
+21. Gateway trusted the witness instead of re-verifying → 3 failed.
+22. Dry run still made the REST call → 3 failed across both test layers.
+23. Idempotency claim moved after the REST call → 2 failed, including the real-SQL one.
+24. `inverseOf` ignored `had_role_before` → 4 failed, including "does not strip a role the member already had".
+25. Kill switch check removed → 2 failed, one of them the undo path.
+26. Rate cap refused without tripping the breaker → 1 failed.
+
+445 tests green; typecheck and lint exit 0.
