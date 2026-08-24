@@ -437,6 +437,16 @@ partial delivery, out-of-order dispatches, or a reconnect that fails halfway.
 
 ## 8. Handoff prompt for WP4
 
+> **Ordering changed at this boundary, 2026-08-23.** Bryan took §6's
+> recommendation: **WP5 slice 6 — the real Discord adapter — runs first**, so
+> the harness is validated against real Discord before another package rests on
+> it. Its prompt is in
+> [`docs/reports/WP5-slice-6-handoff.md`](WP5-slice-6-handoff.md), and what
+> Bryan does with the result is in
+> [`docs/21_TESTING_THE_BOT.md`](../21_TESTING_THE_BOT.md). The WP4 prompt below
+> is unchanged and runs after it.
+
+
 ```
 Begin WP4 of the Bananasaurs project — the LOGGING MODULE. You are picking up
 from a completed WP3.
