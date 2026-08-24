@@ -40,13 +40,38 @@ export interface ReactionUserPage {
   nextAfter: Snowflake | undefined;
 }
 
+/**
+ * One guild audit log entry. See [ADR 0019](../../../../docs/decisions/0019-audit-log-entries-are-coalesced-and-late.md),
+ * which is required reading before writing anything that correlates these with
+ * a gateway event: they are coalesced, they arrive late, and a self-deletion
+ * produces no entry at all.
+ */
 export interface AuditLogEntry {
   /** Best-effort and frequently absent; never presented as established fact. */
   actorUserId: Snowflake | undefined;
+  /**
+   * **What this identifies depends on the action.** For `message_delete` it is
+   * the *author of the deleted messages*, not the message — a `MESSAGE_DELETE`
+   * entry carries no message id at all, so nothing can correlate on one
+   * (ADR 0019). For `member_kick`, `member_ban` and `role_update` it is the
+   * member acted on.
+   */
   targetId: Snowflake | undefined;
   actionType: 'message_delete' | 'member_kick' | 'member_ban' | 'role_update';
   createdAtMs: number;
   reason: string | undefined;
+  /**
+   * Running total on a **coalesced** entry.
+   *
+   * Discord updates one entry's `count` when the same actor deletes several
+   * messages by the same author in the same channel, rather than writing an
+   * entry each time. So an entry describes a *run* of deletions, and the only
+   * evidence that a new one joined the run is that this number went up since
+   * the last look. Undefined when Discord sent no `options` for the action.
+   */
+  count: number | undefined;
+  /** The channel a coalesced `message_delete` run belongs to, when Discord says. */
+  channelId: Snowflake | undefined;
 }
 
 /**

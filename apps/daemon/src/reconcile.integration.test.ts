@@ -707,6 +707,38 @@ describe('amendment 5: GUILD_MEMBER_UPDATE', () => {
     expect(discord.memberRoles(ALICE).sort()).toEqual([ROLE_A, ROLE_B].sort());
   });
 
+  /**
+   * `previousRoleIds` is unknown whenever discord.js had no cached copy of the
+   * member to diff against — routine on a live gateway, and something this fake
+   * could not express until WP5 slice 6.
+   *
+   * Unknown is not empty. Read as empty, every role the member already holds
+   * looks newly granted, and each one no reaction backs is revoked: a cache
+   * miss turned into a mass revoke. The timer pass does not undo that either —
+   * it visits members who reacted or whom the bot granted a role, and a member
+   * whose roles were taken away on a phantom delta is in neither list.
+   */
+  it('does nothing when the previous roles are unknown, unlike a known delta', async () => {
+    await grantByHand(ALICE, ROLE_A);
+    discord.resetCalls();
+
+    await discord.emitMemberUpdate({
+      userId: ALICE,
+      roleIds: [ROLE_A],
+      previousRoleIds: undefined,
+    });
+
+    expect(discord.restCalls('fetchReactionUsers')).toEqual([]);
+    expect(discord.memberRoles(ALICE)).toEqual([ROLE_A]);
+
+    // The same roles with a known "before" *are* a delta, and this one is drift
+    // the subscriber takes away. What the guard protects is not whether the
+    // role is wrong; it is whether there is any evidence that it changed.
+    await discord.emitMemberUpdate({ userId: ALICE, roleIds: [ROLE_A], previousRoleIds: [] });
+
+    expect(discord.memberRoles(ALICE)).toEqual([]);
+  });
+
   it('does nothing for a member update that changed no roles', async () => {
     discord.resetCalls();
     await discord.emitMemberUpdate({ userId: ALICE, roleIds: [], previousRoleIds: [] });

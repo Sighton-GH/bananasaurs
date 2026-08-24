@@ -1,5 +1,10 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { DiscordApiError, unicodeEmojiKey, type DomainEvent } from '@bananasaurs/core';
+import {
+  DiscordApiError,
+  unicodeEmojiKey,
+  type AuditLogEntry,
+  type DomainEvent,
+} from '@bananasaurs/core';
 import { BOT_USER_ID, FakeDiscord } from './fake-discord.js';
 
 const GUILD = '111111111111111111';
@@ -298,5 +303,208 @@ describe('call recording', () => {
     d.failNext('addRole', FakeDiscord.rateLimited());
     await expect(d.addRole(GUILD, USER, ROLE, 'x')).rejects.toBeInstanceOf(DiscordApiError);
     expect(d.restCalls('addRole')).toHaveLength(1);
+  });
+});
+
+/**
+ * The audit log, which was the least-modelled part of this fake and the part
+ * WP4 is built entirely on.
+ *
+ * Before this it was a hand-populated array with a filter over it, and
+ * **nothing in the suite called it** — `defineAuditLogEntry` and
+ * `fetchAuditLog` had no callers at all. It modelled none of the four
+ * behaviours in ADR 0019, each of which changes the design of inferred
+ * deletion attribution. A fixture that makes the problem look easy is how you
+ * ship a bot that confidently names the wrong moderator.
+ */
+describe('the audit log, per ADR 0019', () => {
+  const AUTHOR = '666666666666666666';
+  const OTHER_AUTHOR = '661666666666666666';
+  const MODERATOR = '777777777777777777';
+  const OTHER_MODERATOR = '771777777777777777';
+
+  /**
+   * Author a message and delete it as `actorUserId`. Nothing useful comes
+   * back: a MESSAGE_DELETE entry carries no message id, so there is no handle
+   * on the deletion to return.
+   */
+  const deleteOne = async (actorUserId: string, authorId = AUTHOR): Promise<void> => {
+    const messageId = d.nextId();
+    d.defineMessage({ channelId: CHANNEL, messageId, authorId });
+    await d.deleteMessageAs({ channelId: CHANNEL, messageId, actorUserId });
+  };
+
+  const deletions = async (): Promise<readonly AuditLogEntry[]> =>
+    d.fetchAuditLog(GUILD, { actionType: 'message_delete' });
+
+  it('records a moderator deletion against the message AUTHOR, not the message', async () => {
+    await deleteOne(MODERATOR);
+    d.advance(5_000);
+
+    const entries = await deletions();
+    expect(entries).toHaveLength(1);
+    // There is no message id anywhere in a MESSAGE_DELETE entry, so nothing
+    // can correlate on one. This is the fact ADR 0019 exists to record.
+    expect(entries[0]?.targetId).toBe(AUTHOR);
+    expect(entries[0]?.channelId).toBe(CHANNEL);
+    expect(entries[0]?.actorUserId).toBe(MODERATOR);
+    expect(entries[0]?.count).toBe(1);
+  });
+
+  /**
+   * The delete dispatch arrives before the entry exists, so a fetch issued on
+   * receipt is expected to find nothing — and finding nothing is not evidence
+   * that there was no actor.
+   */
+  it('dispatches the delete before the entry exists', async () => {
+    await deleteOne(MODERATOR);
+
+    expect(seen.filter((e) => e.kind === 'messageDelete')).toHaveLength(1);
+    expect(await deletions()).toEqual([]);
+
+    d.advance(5_000);
+    expect(await deletions()).toHaveLength(1);
+  });
+
+  /**
+   * MESSAGE_DELETE carries id, channel and guild and nothing else; discord.js
+   * fills the author in from its cache when it has one. An uncached message
+   * therefore names nobody, which is the case WP4 has to survive.
+   */
+  it('dispatches no author when the deleted message was not cached', async () => {
+    const messageId = d.nextId();
+    d.defineMessage({ channelId: CHANNEL, messageId, authorId: AUTHOR, cached: false });
+    await d.deleteMessageAs({ channelId: CHANNEL, messageId, actorUserId: MODERATOR });
+
+    const event = seen.find((e) => e.kind === 'messageDelete');
+    expect(event).toBeDefined();
+    expect(event?.kind === 'messageDelete' ? event.authorId : 'wrong kind').toBeUndefined();
+
+    // The audit entry still knows the author. The gateway is the impoverished
+    // side here, not the log.
+    d.advance(5_000);
+    expect((await deletions())[0]?.targetId).toBe(AUTHOR);
+  });
+
+  /**
+   * "Actor unknown" is a common outcome, not an edge case. If this produced an
+   * entry, WP4 could attribute every self-deletion to whoever happened to be
+   * nearest in the log.
+   */
+  it('produces NO entry at all when a member deletes their own message', async () => {
+    await deleteOne(AUTHOR);
+    d.advance(60_000);
+
+    expect(await deletions()).toEqual([]);
+  });
+
+  /**
+   * The one most likely to break the design. Discord updates ONE entry's count
+   * rather than writing an entry per message, so an entry describes a *run* of
+   * deletions and the only evidence a new one joined is that the count went up.
+   */
+  it('coalesces repeated deletions into one entry with a rising count', async () => {
+    for (let i = 0; i < 3; i += 1) {
+      await deleteOne(MODERATOR);
+      d.advance(1_000);
+    }
+    d.advance(5_000);
+
+    const entries = await deletions();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.count).toBe(3);
+  });
+
+  /**
+   * The entry's id is minted once, so its timestamp is the FIRST deletion in
+   * the run and not the latest. Correlating "the newest entry" against "the
+   * delete that just arrived" therefore compares against a timestamp that can
+   * be arbitrarily old.
+   */
+  it('keeps the timestamp of the first deletion in a coalesced run', async () => {
+    await deleteOne(MODERATOR);
+    const firstAt = d.now();
+
+    d.advance(10_000);
+    await deleteOne(MODERATOR);
+    d.advance(5_000);
+
+    const entries = await deletions();
+    expect(entries).toHaveLength(1);
+    expect(entries[0]?.count).toBe(2);
+    expect(entries[0]?.createdAtMs).toBe(firstAt);
+  });
+
+  /**
+   * A consequence of the last one, stated on its own because it is the trap:
+   * an entry updated a second ago can sit *below* an older entry, so "read the
+   * newest entry" is not a way to find the deletion that just happened.
+   */
+  it('does not move a coalesced entry to the front when its count rises', async () => {
+    await deleteOne(MODERATOR);
+    const firstAt = d.now();
+
+    d.advance(30_000);
+    await deleteOne(OTHER_MODERATOR);
+    const secondAt = d.now();
+
+    d.advance(10_000);
+    await deleteOne(MODERATOR); // joins the FIRST run
+    d.advance(5_000);
+
+    const entries = await deletions();
+    expect(entries.map((e) => e.createdAtMs)).toEqual([secondAt, firstAt]);
+    expect(entries.map((e) => e.count)).toEqual([1, 2]);
+  });
+
+  it('does not coalesce across different actors', async () => {
+    await deleteOne(MODERATOR);
+    await deleteOne(OTHER_MODERATOR);
+    d.advance(5_000);
+
+    expect(await deletions()).toHaveLength(2);
+  });
+
+  it('does not coalesce across different authors', async () => {
+    await deleteOne(MODERATOR, AUTHOR);
+    await deleteOne(MODERATOR, OTHER_AUTHOR);
+    d.advance(5_000);
+
+    expect(await deletions()).toHaveLength(2);
+  });
+
+  it('does not coalesce once the window has passed', async () => {
+    await deleteOne(MODERATOR);
+    d.advance(10 * 60_000);
+    await deleteOne(MODERATOR);
+    d.advance(5_000);
+
+    const entries = await deletions();
+    expect(entries).toHaveLength(2);
+    expect(entries.map((e) => e.count)).toEqual([1, 1]);
+  });
+
+  it('returns the newest entry first, as Discord does', async () => {
+    await deleteOne(MODERATOR);
+    d.advance(10 * 60_000);
+    await deleteOne(MODERATOR);
+    const secondAt = d.now();
+    d.advance(5_000);
+
+    expect((await deletions())[0]?.createdAtMs).toBe(secondAt);
+  });
+
+  it('filters by action type and honours the limit', async () => {
+    await deleteOne(MODERATOR);
+    d.defineAuditLogEntry({ actionType: 'member_kick', actorUserId: MODERATOR, targetId: USER });
+    d.advance(5_000);
+
+    const kicks = await d.fetchAuditLog(GUILD, { actionType: 'member_kick' });
+    expect(kicks).toHaveLength(1);
+    expect(kicks[0]?.targetId).toBe(USER);
+    // A kick entry has no options, so it has no count — an absent field, not a
+    // fabricated one.
+    expect(kicks[0]?.count).toBeUndefined();
+    expect(await d.fetchAuditLog(GUILD, { actionType: 'message_delete', limit: 0 })).toEqual([]);
   });
 });

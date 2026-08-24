@@ -40,6 +40,37 @@ interface FakeMessage {
   deleted: boolean;
 }
 
+/**
+ * How long an audit log entry takes to appear after the action (ADR 0019 §3).
+ *
+ * The gateway dispatch beats the entry, every time. The exact figure is not
+ * documented and is not the point: what the fake has to model is that a fetch
+ * issued on receipt of the delete finds nothing, so that no code can be
+ * written that assumes otherwise.
+ */
+export const AUDIT_LOG_LAG_MS = 2_000;
+
+/**
+ * How long a MESSAGE_DELETE run stays open to further deletions (ADR 0019 §2).
+ *
+ * Sliding: each deletion that joins the run extends it. Discord does not
+ * document the real window, and this is a chosen approximation — but the
+ * behaviour it exists to reproduce is not approximate. A run's entry keeps the
+ * timestamp it was minted with while its count goes on rising, so an entry
+ * whose count changed a second ago can sit arbitrarily far down a log ordered
+ * by id.
+ */
+export const AUDIT_LOG_COALESCE_WINDOW_MS = 60_000;
+
+/**
+ * An audit log entry plus the two things Discord never shows: when it becomes
+ * visible, and when its run was last extended.
+ */
+interface FakeAuditEntry extends AuditLogEntry {
+  availableAtMs: number;
+  lastActionAtMs: number;
+}
+
 interface FakeInteraction {
   token: string;
   createdAtMs: number;
@@ -97,7 +128,7 @@ export class FakeDiscord implements DiscordPort {
   private roles = new Map<Snowflake, DiscordRole>();
   private members = new Map<Snowflake, FakeMember>();
   private messages = new Map<string, FakeMessage>();
-  private auditLog: AuditLogEntry[] = [];
+  private auditLog: FakeAuditEntry[] = [];
   private botPosition: number;
 
   private interactions = new Map<Snowflake, FakeInteraction>();
@@ -182,8 +213,24 @@ export class FakeDiscord implements DiscordPort {
   deleteMessage(ref: DiscordMessageRef): void {
     this.mustMessage(ref).deleted = true;
   }
-  defineAuditLogEntry(entry: AuditLogEntry): void {
-    this.auditLog.unshift(entry);
+  /**
+   * Place an entry directly, for the action types the fake has no verb for.
+   * Subject to the same lag as any other: it is not visible until the clock
+   * has moved past `AUDIT_LOG_LAG_MS`.
+   */
+  defineAuditLogEntry(entry: Partial<AuditLogEntry> & Pick<AuditLogEntry, 'actionType'>): void {
+    const createdAtMs = entry.createdAtMs ?? this.clock;
+    this.auditLog.push({
+      actorUserId: entry.actorUserId,
+      targetId: entry.targetId,
+      actionType: entry.actionType,
+      createdAtMs,
+      reason: entry.reason,
+      count: entry.count,
+      channelId: entry.channelId,
+      availableAtMs: createdAtMs + AUDIT_LOG_LAG_MS,
+      lastActionAtMs: createdAtMs,
+    });
   }
 
   // ── failure injection ──────────────────────────────────────────────────
@@ -338,10 +385,20 @@ export class FakeDiscord implements DiscordPort {
     return this.interactions.get(interactionId)?.ephemeral ?? false;
   }
 
+  /**
+   * GUILD_MEMBER_UPDATE.
+   *
+   * `previousRoleIds` is `undefined` when discord.js had no cached copy of the
+   * member to diff against, which is routine on a live gateway and is what the
+   * adapter reports (`packages/discord/src/events.ts`, `before.partial`). The
+   * key is required rather than optional so that passing `undefined` is a
+   * decision: unknown and empty are different facts, and code that confuses
+   * them revokes roles it has no evidence about.
+   */
   async emitMemberUpdate(p: {
     userId: Snowflake;
     roleIds: Snowflake[];
-    previousRoleIds: Snowflake[];
+    previousRoleIds: Snowflake[] | undefined;
   }): Promise<void> {
     const m = this.members.get(p.userId);
     if (m) m.roleIds = new Set(p.roleIds);
@@ -427,6 +484,70 @@ export class FakeDiscord implements DiscordPort {
       roleIds: [],
       previousRoleIds: undefined,
       joinedAtMs: p.joinedAtMs,
+    });
+  }
+
+  /**
+   * Someone deletes a message: the dispatch now, the audit log entry later.
+   *
+   * All four of ADR 0019's facts live here, because all four of them are
+   * consequences of this one act. The delete event goes out immediately and
+   * carries no actor — it never does, that is the whole reason WP4 has to
+   * consult the audit log. The entry, if there is one, becomes visible
+   * `AUDIT_LOG_LAG_MS` later, is keyed on the message's *author* rather than
+   * the message, joins an open run by the same actor rather than standing
+   * alone, and does not exist at all when the author deleted their own message.
+   */
+  async deleteMessageAs(p: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    actorUserId: Snowflake;
+    reason?: string | undefined;
+  }): Promise<void> {
+    const message = this.mustMessage(p);
+    message.deleted = true;
+
+    // A member deleting their own message writes nothing. "No entry" and "not
+    // yet" are indistinguishable at the moment of the fetch, and only one of
+    // them is safe to assert.
+    if (p.actorUserId !== message.authorId) {
+      const run = this.auditLog.find(
+        (e) =>
+          e.actionType === 'message_delete' &&
+          e.actorUserId === p.actorUserId &&
+          e.targetId === message.authorId &&
+          e.channelId === p.channelId &&
+          this.clock - e.lastActionAtMs <= AUDIT_LOG_COALESCE_WINDOW_MS,
+      );
+      if (run) {
+        // Only the count moves. Not the id, not the timestamp, not the
+        // position in the log.
+        run.count = (run.count ?? 0) + 1;
+        run.lastActionAtMs = this.clock;
+      } else {
+        this.defineAuditLogEntry({
+          actionType: 'message_delete',
+          actorUserId: p.actorUserId,
+          targetId: message.authorId,
+          channelId: p.channelId,
+          count: 1,
+          reason: p.reason,
+        });
+      }
+    }
+
+    await this.emit({
+      kind: 'messageDelete',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      channelId: p.channelId,
+      messageId: p.messageId,
+      // MESSAGE_DELETE carries id, channel and guild and nothing else.
+      // discord.js fills the author in from its cache when it has one, so an
+      // uncached message names nobody.
+      authorId: message.cached ? message.authorId : undefined,
+      content: undefined,
+      editedTimestampMs: undefined,
     });
   }
 
@@ -644,9 +765,17 @@ export class FakeDiscord implements DiscordPort {
   ): Promise<readonly AuditLogEntry[]> {
     this.record('fetchAuditLog', [guildId, options]);
     this.check('fetchAuditLog', guildId);
-    return this.auditLog
-      .filter((e) => e.actionType === options.actionType)
-      .slice(0, options.limit ?? 50);
+    return (
+      this.auditLog
+        .filter((e) => e.actionType === options.actionType && e.availableAtMs <= this.clock)
+        // Discord orders by entry id, which is minted once. A coalesced entry
+        // therefore does not rise to the top when its count changes.
+        .sort((a, b) => b.createdAtMs - a.createdAtMs)
+        .slice(0, options.limit ?? 50)
+        .map(
+          ({ availableAtMs: _availableAtMs, lastActionAtMs: _lastActionAtMs, ...entry }) => entry,
+        )
+    );
   }
 
   async leaveGuild(guildId: Snowflake): Promise<void> {

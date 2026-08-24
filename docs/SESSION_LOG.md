@@ -660,3 +660,44 @@ Every gateway dispatch Release 1 cares about, normalised into `packages/core/src
 ### Deferred
 
 - Teaching `FakeDiscord.emitMemberUpdate` to model an unknown `previousRoleIds` so the degraded path is coverable. It is a fake change with no consumer in this slice, and belongs with the audit-log corrections rather than bolted onto event translation.
+
+---
+
+## WP5 slice 6b-iii — the audit log, which the fake barely modelled — 2026-08-24
+
+The handoff named the audit log as the least-modelled part of `FakeDiscord` and the part WP4 rests on entirely, and asked for it to be checked against discord.js before anything was built on it. It was. **`defineAuditLogEntry` and `fetchAuditLog` had no callers anywhere in the suite** — 795 tests, not one of them touched the audit log. What existed was an array with `unshift` on one side and a filter on the other, and it modelled none of the four behaviours that make deletion attribution hard.
+
+**ADR 0019 — audit log entries are coalesced, late, and not about the message.** Four facts, each read out of the installed discord.js 14.27.0 rather than out of the API docs:
+
+1. **`target_id` on a `MESSAGE_DELETE` entry is the message *author*.** `GuildAuditLogsEntry.js:326-331` resolves `Targets.Message` through `guild.client.users.cache` for `MessageDelete` and through `guild.channels.cache` for `MessageBulkDelete`. **There is no message id anywhere in the entry.** A correlation keyed on message id cannot be written at all — and that was the obvious design.
+2. **Entries coalesce.** `GuildAuditLogsEntry.js:203-209`: `MESSAGE_DELETE` carries `options.count` and `options.channel_id`. Discord bumps one entry's `count` when the same actor deletes several messages by the same author in the same channel. An entry describes a *run*, and the only evidence a new deletion joined it is that the number went up since the last look.
+3. **Entries appear after the dispatch.** A fetch issued on receipt of the delete is expected to find nothing.
+4. **A self-deletion writes nothing at all.** "Actor unknown" is the common case, not the edge case.
+
+**The port gained two fields and no behaviour.** `AuditLogEntry` now carries `count` and `channelId`, both optional because Discord sends `options` only for the actions that have it, and a field invented when absent is worse than one missing. No correlation logic, no count diffing, no polling — that is a judgement, it belongs above the port, and ADR 0019 says so explicitly so that WP4 does not find it in the adapter later and assume it is settled.
+
+**`FakeDiscord` now models all four.** `deleteMessageAs()` is the new verb: it marks the message deleted, emits `messageDelete` immediately, and writes the entry — if there is one — to become visible `AUDIT_LOG_LAG_MS` later, keyed on the author, joining an open run rather than standing alone. `fetchAuditLog` filters on visibility and orders by `createdAtMs` descending, which is what makes the sharpest of the new tests possible: **a coalesced entry does not rise to the top of the log when its count changes**, so "read the newest entry" is not a way to find the deletion that just happened.
+
+The coalescing window is a chosen approximation — Discord documents no figure — and the code says so. The behaviour it reproduces is not approximate.
+
+**Also cleared the deferred item from 6b-ii.** `emitMemberUpdate` now takes `previousRoleIds: Snowflake[] | undefined`, with the key required rather than optional so that passing `undefined` is a decision rather than an omission. The degraded path at `reconcile.ts:360` had been correct and **unreachable through the fake since it was written**; it now has an integration test, and mutation 66 confirms the test can see it.
+
+**Broke, to check the tests.** 59. Wrote an entry for a self-deletion → 1 failed. 60. Targeted the message instead of its author → 5 failed. 61. Removed the lag → 1 failed. 62. Never coalesced → 3 failed. 63. Let a coalesced entry adopt the latest timestamp → 2 failed. 64. Dropped the actor from the coalescing key → 2 failed. 65. Named the author on a delete dispatch for an uncached message → 1 failed. 66. Treated unknown previous roles as no roles at all → the new integration test failed. All eight killed, all restored by file copy.
+
+808 tests green; typecheck and lint exit 0.
+
+### Divergences found between the fake and real Discord
+
+**10. A `MESSAGE_DELETE` audit entry identifies the message's author, and the fake's `targetId` was documented as nothing in particular.** The port's field means a different kind of thing per action type — an author for `message_delete`, a member for the other three — and nothing said so. Now documented on the type itself, because the compiler cannot say it and a wrong guess here names an innocent moderator in the audit trail.
+
+**11. Entries coalesce, and the fake wrote one entry per call.** The old fake made "which deletion is this entry about?" a question with an answer. Against Discord it is not one. **Fixed in the fake**, and this is the finding most likely to change what WP4 builds: the available key is (actor, author, channel, time, count-delta) and every part of it is approximate.
+
+**12. Entries arrive after the dispatch, and the fake's were visible instantly.** A synchronous "delete arrives, fetch the log, name the actor" implementation would have passed every test against the old fake and found nothing at all against Discord. **Fixed in the fake**, and the test that pins it asserts the empty fetch before the advance, not merely the populated one after.
+
+**13. A self-deletion produces no entry, and the fake had no way to express one.** Every entry in the old fake was hand-placed, so a self-deletion could only be modelled by remembering not to place one — which is not a model, it is a convention. **Fixed in the fake**: `deleteMessageAs` writes nothing when the actor is the author, so the case arises from the world rather than from the test author's memory.
+
+**14. `MESSAGE_DELETE` carries no author on the wire.** discord.js fills it in from its cache, so an uncached message names nobody — the same cache limit that produces divergence 9. The fake now honours its own `cached` flag on the delete dispatch. WP4 therefore cannot assume it knows whose message was deleted *even before* it asks who deleted it.
+
+### Consequence for WP4, stated plainly
+
+Deletion attribution has to tolerate: no author on the event, no entry yet when it looks, no entry ever if it was a self-deletion, and an entry that describes a run rather than a message. The gate in `docs/20` — "a missing actor degrades to 'unknown,' never to a guess presented as fact" — now has a fixture that can actually produce every one of those states. Before this slice it had a fixture that produced none of them.

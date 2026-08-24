@@ -301,14 +301,24 @@ function toAuditLogEntry(
   entry: APIAuditLogEntry,
   actionType: AuditLogEntry['actionType'],
 ): AuditLogEntry {
+  // `options` is present only for the action types that have it. Reported as
+  // undefined rather than defaulted: ADR 0019 turns on a count *changing*, and
+  // an invented zero would read as "nothing has been deleted yet".
+  const options = entry.options as { count?: string; channel_id?: string } | undefined;
+  const count = options?.count === undefined ? undefined : Number(options.count);
+
   return {
     // Absent when Discord recorded no actor — a self-deletion produces no entry
     // at all, and some entries carry none. Never guessed.
     actorUserId: entry.user_id ?? undefined,
+    // For message_delete this is the message AUTHOR. There is no message id in
+    // the entry at all, which is why ADR 0019 exists.
     targetId: entry.target_id ?? undefined,
     actionType,
     createdAtMs: snowflakeToMs(entry.id),
     reason: entry.reason ?? undefined,
+    count: Number.isFinite(count) ? count : undefined,
+    channelId: options?.channel_id,
   };
 }
 
