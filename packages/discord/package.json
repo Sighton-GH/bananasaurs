@@ -1,0 +1,19 @@
+{
+  "name": "@bananasaurs/discord",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "exports": {
+    ".": "./dist/index.js",
+    "./rest": "./dist/rest/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@bananasaurs/core": "*",
+    "discord.js": "^14.27.0"
+  }
+}

@@ -575,3 +575,29 @@ The last WP3 slice: drift repair on the timer and after a gateway gap, the `reco
 **One limitation.** `listManagedRoles` was written and then deleted unused — the doctor that would read it is WP5. Shipping it now would be a speculative export with no caller and no test.
 
 696 tests green; typecheck and lint exit 0.
+
+---
+
+## WP5 slice 6a — packages/discord, client construction, and the ClientOptions assertion — 2026-08-23
+
+The package that has had lint rules waiting for it since ADR 0014 now exists, along with `buildClientOptions` and an assertion that refuses to start on a configuration which would fail silently. `discord.js@14.27.0` is added; ADR 0008 already names it, so no new justification. No connection, no event translation, no REST — those are 6b.
+
+**The assertion reads limits back out of `makeCache`, not out of our own settings object.** `Options.cacheWithLimits` matches a manager **by name** (`node_modules/discord.js/src/util/Options.js:157`), so the settings object is a set of *requests*, not a contract. Asserting on it would agree with a typo. `assertClientOptions` instead calls the configured factory the same way `CachedManager` does and checks the `maxSize` that comes back, so a name discord.js does not recognise shows up as an unlimited `Collection` and fails.
+
+**`client.user` does not exist until READY, so `botUserId` stays a thunk**, and there is now a test that fails if it stops being one: it captures `keepOverLimit` while the id is still `undefined`, then sets it, and asserts the predicate changed its mind. Mutation 48 (reading the id eagerly into a `const`) is invisible to typecheck and to every other test in the file.
+
+**Broke, to check the tests.** 46. Dropped `Partials.Reaction` → 2 failed. 47. Misspelt `ReactionUserManager` as `ReactionUsersManager` → 2 failed, *and* typecheck failed on `CacheSettings`, so that one is caught twice independently. 48. Read `botUserId()` eagerly instead of at call time → 1 failed, the thunk test, alone. 49. Added `GatewayIntentBits.DirectMessages` → 2 failed. All restored by file copy from a backup taken before the first mutation, per the note at the end of slice 11.
+
+735 tests green (696 before this slice); typecheck and lint exit 0.
+
+### Divergences found between the documents, the fake, and real discord.js
+
+These are the point of taking this slice early. Three findings, all measured against the installed 14.27.0 rather than assumed.
+
+**1. `docs/19` §6.1 is wrong about what an unsupported cache limit does, and the truth is worse.** The plan says "a few managers throw when limited". They do not throw. `GuildManager`, `ChannelManager`, `GuildChannelManager`, `RoleManager` and `PermissionOverwriteManager` call `process.emitWarning(..., 'UnsupportedCacheOverwriteWarning')` and then **apply the limit anyway** — measured: a client built with `GuildManager: 5` constructs fine and `client.guilds.cache` is a `LimitedCollection`. So the failure mode is not a crash at startup; it is a bot that runs, looks healthy, and quietly drops guilds, channels and roles out of cache. Worse, three of the five are per-guild managers whose warning does not fire until a guild arrives — after startup, into a process that logs through pino and never reads `process.on('warning')`. `docs/19` §6.1 is amended in place. The five names are exactly the entries commented out of discord.js's own `Caches` interface (`typings/index.d.ts:5976`), so naming one is also a type error; `assertClientOptions` checks it at runtime as well, because the type only helps code that is typechecked.
+
+**2. A cache limit naming a manager that does not exist is silently ignored.** Measured: a client built with `makeCache: Options.cacheWithLimits({ MesageManager: 25 })` constructs with no error and no warning, and gets an unlimited message cache. This is the failure ADR 0008's memory budget is most likely to die of — a rename across a discord.js minor, or a plain typo, neither of which anything in discord.js reports. It is why the assertion resolves names through the library rather than trusting a string literal.
+
+**3. The `MessageManager` limit covers more managers than it names.** `MessageManager`, `GuildMessageManager`, `DMMessageManager` and `PartialGroupDMMessageManager` all resolve to the `MessageManager` setting through `MakeCacheOverrideSymbol` (`src/managers/MessageManager.js:22`), and `ThreadManager` likewise. Worth recording because the obvious reading — that `GuildMessageManager` needs its own entry — would add a settings key that is never consulted, and the assertion in this slice would then correctly reject it.
+
+Nothing here contradicts the fake yet: `FakeDiscord` is a *port*-level fake and has no client options to be wrong about. The fake-versus-real audit proper is slice 6b's and the audit-log work.

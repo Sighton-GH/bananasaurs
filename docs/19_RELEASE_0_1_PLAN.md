@@ -715,7 +715,20 @@ Two deliberate departures from ADR 0008, both flagged rather than slipped in:
 
 `botUserId()` is a thunk rather than a value because `client.user` does not exist until `READY`, and the naive `m.id === client.user.id` closure is a well-known crash-on-startup footgun.
 
-The exact set of limitable managers gets verified against discord.js **14.27.0** in slice 6 — a few managers throw when limited, and the set has changed across minors. The `ClientOptions` assertion test is what makes that verification permanent rather than a one-time check.
+The exact set of limitable managers gets verified against discord.js **14.27.0** in slice 6 — a few managers do not support being limited, and the set has changed across minors. The `ClientOptions` assertion test is what makes that verification permanent rather than a one-time check.
+
+#### Amended 2026-08-23 (slice 6a) — they do not throw, and that is worse
+
+This section originally said "a few managers throw when limited". Measured against the installed 14.27.0, they do not.
+
+`GuildManager`, `ChannelManager`, `GuildChannelManager`, `RoleManager` and `PermissionOverwriteManager` call `process.emitWarning(..., 'UnsupportedCacheOverwriteWarning')` and then **apply the limit anyway**. A client built with `GuildManager: 5` constructs cleanly and its `guilds.cache` is a `LimitedCollection`. So the failure mode is not a crash at startup but a bot that runs, looks healthy, and quietly drops guilds, channels and roles out of cache — and three of the five are per-guild managers whose warning does not fire until a guild arrives, into a process that logs through pino and never reads `process.on('warning')`.
+
+Two consequences for the configuration above, both now enforced:
+
+- Those five names are exactly the entries commented out of discord.js's own `Caches` interface, so naming one is a type error as well as an assertion failure.
+- **A settings key that names no real manager is silently ignored.** `Options.cacheWithLimits` matches by name, so `MesageManager: 25` is not an error anywhere — the cache is simply unlimited, and the ADR 0008 memory budget goes unenforced with nothing to show for it. The assertion therefore reads each limit back out through the configured `makeCache` factory rather than trusting the settings object, which would agree with the typo.
+
+Also measured: `MessageManager` covers `GuildMessageManager`, `DMMessageManager` and `PartialGroupDMMessageManager` through `MakeCacheOverrideSymbol`, so those need no entry of their own — and would be rejected by the assertion if given one.
 
 ### 6.2 SQLite, WAL, and one writer
 
