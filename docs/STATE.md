@@ -6,15 +6,15 @@
 
 ## Where the build is
 
-**Release 0/1, WP2 complete** (2026-08-23). Plan in `docs/19_RELEASE_0_1_PLAN.md`; work packages in `docs/20_AUTONOMOUS_EXECUTION.md`.
+**Release 0/1, WP3 complete** (2026-08-23). Plan in `docs/19_RELEASE_0_1_PLAN.md`; work packages in `docs/20_AUTONOMOUS_EXECUTION.md`.
 
-WP1 shipped the skeleton, database plumbing and the fake Discord harness. WP2 shipped the full Release 1 schema (20 tables, all STRICT), the guild-scoped repository layer, the event pipeline, the durable job table and worker, and the safety core — `authorize()`, the twelve-layer effect gateway, rate limiting, audit, batches, undo and the reconciliation budget. `typecheck`, `lint` and **451 tests** are green. Nine WP2 commits, **none pushed**.
+WP1 shipped the skeleton, database plumbing and the fake Discord harness. WP2 shipped the full Release 1 schema (20 tables, all STRICT), the guild-scoped repository layer, the event pipeline, the durable job table and worker, and the safety core — `authorize()`, the twelve-layer effect gateway, rate limiting, audit, batches, undo and the reconciliation budget. WP3 shipped role panels: adopted (reaction) and managed (button and select) panels, all four behaviours with limits and required/blocked roles, the adoption pass, and reconciliation for drift and downtime. `typecheck`, `lint` and **696 tests** are green. Eight WP3 commits, **none pushed**.
 
-Three review corrections landed first, two of which changed the design because measuring the premise showed it did not hold — see `docs/reports/WP2.md` §0. The short version: STRICT does not protect snowflakes (a parse-boundary refusal does), and npm workspace manifests enforce no package boundaries at all (ADR 0014 replaces them with per-directory lint rules).
+WP3 found two defects that were not in the plan. A job dedupe key was single-use for the life of the database, so **the second gateway gap ever would have enqueued no reconciliation** — silently, forever ([ADR 0016](decisions/0016-job-dedupe-collapses-pending-work.md)). And a reaction withdrawn during an outage was unrepairable, because the member is in no reaction set and there is no other record; the panel's provenance table now supplies reconciliation's *candidate list* while both sides of the diff stay live ([ADR 0017](decisions/0017-provenance-names-candidates-never-decides.md)). Amendment 5's self-mutation filter also needed a direction: our own grant made a *removal* of the same role look like ours too.
 
-Next action: Bryan reads `docs/reports/WP2.md`, spot-checks the diff, pushes, then starts a fresh session with the WP3 handoff prompt in §8 of that report. **WP3 must delete any existing dev database first** — the migration was regenerated and renamed.
+The harness was wrong about Discord twice, both found by mutation testing rather than by reading. That is the thing to watch: every WP3 conclusion is conditional on the fake being right. **The highest-value next step is running the WP5 smoke tests against the real test guild early**, rather than after WP4 — see `docs/reports/WP3.md` §6.
 
-The one decision the report asked for is settled: `protected` means **target-only** — the bot will not mutate that member or role, and it does not deny capability to an actor. [ADR 0015](decisions/0015-protected-principals-are-targets.md); a test fails if the actor-side check is re-added.
+Next action: Bryan reads `docs/reports/WP3.md`, spot-checks the diff, pushes, then starts a fresh session with the WP4 handoff prompt in §8 of that report. WP4 is the **logging module**, and two of its requirements are already known to be hard: `MESSAGE_DELETE` carries no actor (attribution is inferred and must be labelled so everywhere), and the "miss no log events" gate is unachievable as written — the accepted restatement is an explicit gap marker in the log channel.
 
 ## Environment as it actually is
 
