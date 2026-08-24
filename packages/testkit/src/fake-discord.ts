@@ -65,6 +65,26 @@ interface Failure {
   remaining: number;
 }
 
+/**
+ * A GUILD_MEMBER_UPDATE that Discord would dispatch because a role changed.
+ *
+ * Discord fires it for *every* role change, including ones this bot just made
+ * over REST — which is the whole reason amendment 5's self-mutation filter
+ * exists. Modelling only the human-made ones would make the fake agree with a
+ * broken implementation.
+ *
+ * Queued rather than emitted inline, because the real event arrives over the
+ * gateway *after* the REST call returns, not during it. Emitting synchronously
+ * inside `addRole` would re-enter the pipeline from the middle of the effect
+ * gateway's execute step — an ordering that cannot happen against Discord, and
+ * one that would make a passing test meaningless.
+ */
+interface MemberUpdateEcho {
+  userId: Snowflake;
+  roleIds: Snowflake[];
+  previousRoleIds: Snowflake[];
+}
+
 export interface FakeDiscordOptions {
   guildId: Snowflake;
   /** Where the bot's own highest role sits. Roles at or above are unassignable. */
@@ -84,6 +104,8 @@ export class FakeDiscord implements DiscordPort {
   private failures = new Map<PortMethod, Failure>();
   private calls: RestCall[] = [];
   private listeners: Array<(e: DomainEvent) => void | Promise<void>> = [];
+
+  private pendingEchoes: MemberUpdateEcho[] = [];
 
   private connected = true;
   private disconnectedAtMs = 0;
@@ -338,6 +360,42 @@ export class FakeDiscord implements DiscordPort {
     });
   }
 
+  /** How many GUILD_MEMBER_UPDATE dispatches are waiting to be delivered. */
+  pendingMemberUpdates(): number {
+    return this.pendingEchoes.length;
+  }
+
+  /**
+   * Delivers the GUILD_MEMBER_UPDATE dispatches queued by role changes.
+   *
+   * A test that never calls this is a test where the gateway subscription is
+   * not the thing under examination; the queue still holds what Discord would
+   * have sent, so `pendingMemberUpdates()` can assert the count without
+   * pretending the events do not exist.
+   */
+  async flushMemberUpdates(): Promise<number> {
+    let delivered = 0;
+    // Draining in a loop rather than iterating a snapshot: handling an echo can
+    // cause another role change, which is exactly the feedback loop amendment 5
+    // is about. A loop makes a runaway visible as a hang or a huge count rather
+    // than quietly stopping after one round.
+    while (this.pendingEchoes.length > 0 && delivered < 1000) {
+      const echo = this.pendingEchoes.shift();
+      if (echo === undefined) break;
+      delivered += 1;
+      await this.emit({
+        kind: 'memberUpdate',
+        guildId: this.guildId,
+        receivedAtMs: this.clock,
+        userId: echo.userId,
+        roleIds: echo.roleIds,
+        previousRoleIds: echo.previousRoleIds,
+        joinedAtMs: undefined,
+      });
+    }
+    return delivered;
+  }
+
   /** GUILD_MEMBER_ADD. `joinedAtMs` is what fingerprints it. */
   async emitMemberAdd(p: {
     userId: Snowflake;
@@ -418,7 +476,11 @@ export class FakeDiscord implements DiscordPort {
       throw FakeDiscord.missingPermissions();
     }
     if (member.isGuildOwner) throw FakeDiscord.missingPermissions();
+    const before = [...member.roleIds];
     member.roleIds.add(roleId);
+    if (member.roleIds.size !== before.length) {
+      this.pendingEchoes.push({ userId, roleIds: [...member.roleIds], previousRoleIds: before });
+    }
   }
 
   async removeRole(
@@ -435,7 +497,10 @@ export class FakeDiscord implements DiscordPort {
     if (role && (role.position >= this.botPosition || role.managed)) {
       throw FakeDiscord.missingPermissions();
     }
-    member.roleIds.delete(roleId);
+    const before = [...member.roleIds];
+    if (member.roleIds.delete(roleId)) {
+      this.pendingEchoes.push({ userId, roleIds: [...member.roleIds], previousRoleIds: before });
+    }
   }
 
   async fetchRoles(guildId: Snowflake): Promise<readonly DiscordRole[]> {

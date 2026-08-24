@@ -217,7 +217,7 @@ export const findEffect = (scope: GuildScope, effectId: string): EffectRow | und
  */
 export const wasRecentlyApplied = (
   scope: GuildScope,
-  input: { userId: string; roleId: string; sinceMs: number },
+  input: { userId: string; roleId: string; sinceMs: number; action?: 'grant' | 'revoke' },
 ): boolean =>
   read(scope, (db) => {
     const row = db
@@ -231,6 +231,14 @@ export const wasRecentlyApplied = (
             eq(roleEffects.roleId, input.roleId),
             eq(roleEffects.state, 'applied'),
             gte(roleEffects.completedAt, input.sinceMs),
+            // Optional, and the caller that matters always passes it. Without a
+            // direction, our own grant of a role makes a *removal* of that same
+            // role inside the window look like ours too — so a moderator taking
+            // the role away seconds later is silently ignored until the timer
+            // pass. Matching the direction keeps the loop suppressed (our grant
+            // echoes as an addition, and we did grant) while leaving the
+            // opposite move visible as the external change it is.
+            input.action === undefined ? undefined : eq(roleEffects.action, input.action),
           ),
         ),
       )
@@ -273,6 +281,30 @@ export const recordAssignment = (
       })
       .run();
   });
+
+/**
+ * The members this panel is known to have granted a role to.
+ *
+ * **A candidate list, not a diff.** Amendment 4 forbids deciding what to change
+ * by comparing against this table, and this does not: it answers "who is worth
+ * looking at", after which reconciliation reads the member's live roles and the
+ * message's live reactions and diffs *those*. The distinction matters because
+ * without it a reaction withdrawn while the bot was offline is unrepairable —
+ * the member is in no reaction set, so a pass driven only by reactors never
+ * visits them and the role stays forever.
+ *
+ * A row is deleted as soon as the role is revoked, so the list stays the size
+ * of the panel's current membership rather than growing with its history.
+ */
+export const listAssignedUsers = (scope: GuildScope, panelId: string): string[] =>
+  read(scope, (db) =>
+    db
+      .selectDistinct({ userId: managedRoleAssignments.userId })
+      .from(managedRoleAssignments)
+      .where(scope.only(managedRoleAssignments, eq(managedRoleAssignments.panelId, panelId)))
+      .all()
+      .map((r) => r.userId),
+  );
 
 export const removeAssignment = (
   scope: GuildScope,

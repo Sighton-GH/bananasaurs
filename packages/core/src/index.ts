@@ -211,3 +211,11 @@ export {
   type PanelPublisher,
   type PublishDeps,
 } from './panels/publish.js';
+export {
+  createMemberUpdateSubscriber,
+  reconcileGuild,
+  type MemberUpdatePorts,
+  type ReconcileOutcome,
+  type ReconcilePorts,
+  type ReconcileStatus,
+} from './panels/reconcile.js';

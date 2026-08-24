@@ -22,4 +22,5 @@ export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
 export * as panelRepo from './repos/panels.js';
 export * as pipelineRepo from './repos/pipeline.js';
+export * as roleRepo from './repos/roles.js';
 export * as schema from './schema.js';

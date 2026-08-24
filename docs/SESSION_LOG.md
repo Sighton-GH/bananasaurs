@@ -551,3 +551,27 @@ Almost no new implementation: the behaviours were built in slice 7c as one rule 
 **Broke, to check the tests.** 42. Dropped `held` from the `add_only` union, so it began revoking → 3 failed. 43. Disabled the blocked-role gate → 5 failed across the unit and integration suites. Both restored; md5 verified.
 
 655 tests green; typecheck and lint exit 0.
+
+---
+
+## WP3 slice 11 — reconciliation, and two things the tests caught — 2026-08-23
+
+The last WP3 slice: drift repair on the timer and after a gateway gap, the `reconcile_guild` job, and amendment 5's `GUILD_MEMBER_UPDATE` handler. Two of the slice's tests failed on their first run for reasons that were defects rather than wrong expectations, and both are now decisions on the record.
+
+**A pass driven by reactors cannot see a reaction that was withdrawn.** The slice-11 demonstrable is "a 30-minute outage with offline reactions leaves the state correct on return", and half of it failed immediately: a member who un-reacted while the bot was down is in no reaction set, so the pass never visited them and the role stayed. There is no other trace — after a fresh IDENTIFY the dispatch is gone for good. `managed_role_assignments` is the only record that the member ever had the role, and amendment 4 forbids diffing against it. ADR 0017 draws the line the code now follows: the table supplies **the list of members worth looking at**, and nothing else; both sides of the diff are still read live. A stale row makes the pass look at the wrong person, which the gateway's no-op check absorbs for free. It cannot make the pass do the wrong thing.
+
+**The self-mutation filter was too coarse in one direction.** Amendment 5 says to use `effectRepo.wasRecentlyApplied(scope, {userId, roleId, sinceMs})`, and testing it against a real loop — which is what the amendment asked for — showed it answers for the wrong question. Our own grant of a role makes a *removal* of that same role inside the window look like ours too, so a moderator undoing the bot five seconds later was silently ignored until the timer pass. The lookup now takes the direction as well, and the handler carries it with each role in the delta. The loop stays suppressed for the same reason as before (our grant echoes as an addition, and we did grant); the opposite move is visible as the external change it is. Same index, one more predicate.
+
+**The fake now models the echo.** Discord fires `GUILD_MEMBER_UPDATE` for *every* role change, including ones the bot just made over REST — that is the whole reason amendment 5 exists, and a fake that only echoed human changes would have agreed with a broken implementation. `FakeDiscord` queues the dispatch rather than emitting it inline, because the real event arrives over the gateway *after* the REST call returns; emitting synchronously from inside `addRole` would re-enter the pipeline from the middle of the gateway's execute step, an ordering that cannot happen against Discord. `flushMemberUpdates()` drains in a loop, so a runaway shows up as a huge count rather than quietly stopping after one round.
+
+**The budget takes the whole list, before anything.** A pass that finds a thousand drifted members is far likelier to be a bug in our diff, a mid-outage API, or a role deleted and recreated, than a thousand members who each changed their mind. Over budget applies **none** of it, and the job deliberately does not clear the gateway gap it was created for — a guild that needs an owner to look at it must not be hidden behind a job that reported success. Raising the budget takes effect on the next pass with no restart, because the value is read per pass.
+
+**Reconciliation covers adopted panels only.** A managed panel has no independent record of member intent: the only durable trace of a member's last choice *is* the role they hold. Re-adding a role a moderator removed by hand would be the bot overruling a human on the strength of nothing. This is a deliberate narrowing of a `docs/19` §6.3 table cell and is reported in §4 of the WP3 boundary report.
+
+**A panel that can no longer work says so.** A deleted message means no reaction can ever arrive and there is nothing to re-seed, so the panel is disabled by the doctor with a reason and its configuration kept, ready to be pointed at a new message. A deleted role is flagged in `managed_roles` with `unassignable_reason = 'deleted'` — a diagnosis, never a control: the gateway still re-checks hierarchy live before every mutation, and the panel's other options keep working.
+
+**Broke, to check the tests.** 44. Removed the direction predicate from `wasRecentlyApplied` → 3 failed, across the repository test and both repair tests. 45. Dropped the provenance candidates from the reconciliation visit set → 2 failed, including the slice demonstrable. Both restored; md5 verified. (Restoring 44 with `git checkout` also discarded the slice's own edits to that file, which is a mistake worth writing down: mutation restore takes a file copy, not a VCS command.)
+
+**One limitation.** `listManagedRoles` was written and then deleted unused — the doctor that would read it is WP5. Shipping it now would be a speculative export with no caller and no test.
+
+696 tests green; typecheck and lint exit 0.
