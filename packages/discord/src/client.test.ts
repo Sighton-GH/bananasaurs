@@ -222,6 +222,35 @@ describe('sweepers', () => {
   });
 });
 
+describe('ADR 0018 — the REST client refuses rather than retries or waits', () => {
+  /**
+   * `@discordjs/rest` defaults to `retries: 3` and `rejectOnRateLimit: null`,
+   * so out of the box the adapter both retries silently and waits out rate
+   * limits invisibly — the two things `docs/19` §6.1's rule forbids. The port
+   * shares `client.rest`, so this has to be set here: a second REST instance
+   * would keep its own buckets and the two would race past Discord's global cap.
+   */
+  it('does not retry underneath the effect gateway', () => {
+    expect(buildClientOptions(() => botId).rest?.retries).toBe(0);
+  });
+
+  it('reports rate limits instead of queueing through them', () => {
+    const reject = buildClientOptions(() => botId).rest?.rejectOnRateLimit;
+    if (typeof reject !== 'function')
+      throw new Error('rejectOnRateLimit must be a filter function');
+    // Every route, not just global: per-route buckets are where role mutations
+    // land, and a four-second wait on the defer call costs a dead interaction
+    // token and a member-visible failure with nothing in the log to explain it.
+    expect(reject({ route: '/guilds/:id/members/:id/roles/:id' } as never)).toBe(true);
+    expect(reject({ route: '/channels/:id/messages' } as never)).toBe(true);
+  });
+
+  it('survives the round trip into the constructed client', () => {
+    const client = new Client(buildClientOptions(() => botId));
+    expect(client.rest.options.retries).toBe(0);
+  });
+});
+
 describe('assertClientOptions accepts what buildClientOptions produces', () => {
   it('does not throw on the real thing', () => {
     expect(() => assertClientOptions(buildClientOptions(() => botId))).not.toThrow();

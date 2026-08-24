@@ -601,3 +601,32 @@ These are the point of taking this slice early. Three findings, all measured aga
 **3. The `MessageManager` limit covers more managers than it names.** `MessageManager`, `GuildMessageManager`, `DMMessageManager` and `PartialGroupDMMessageManager` all resolve to the `MessageManager` setting through `MakeCacheOverrideSymbol` (`src/managers/MessageManager.js:22`), and `ThreadManager` likewise. Worth recording because the obvious reading — that `GuildMessageManager` needs its own entry — would add a settings key that is never consulted, and the assertion in this slice would then correctly reject it.
 
 Nothing here contradicts the fake yet: `FakeDiscord` is a *port*-level fake and has no client options to be wrong about. The fake-versus-real audit proper is slice 6b's and the audit-log work.
+
+---
+
+## WP5 slice 6b-i — the REST port, and what it refuses to do — 2026-08-23
+
+All fourteen `DiscordPort` methods over discord.js's REST client, behind the `@bananasaurs/discord/rest` subpath that `package.json` `exports` and the ADR 0014 lint rules already govern. The port was not widened: fourteen methods in, fourteen methods out.
+
+**ADR 0018 — the port refuses rather than retries or waits.** `@discordjs/rest` defaults to `retries: 3` and `rejectOnRateLimit: null`, so out of the box it does both things `docs/19` §6.1's rule forbids: it retries a 5xx three times against a rate cap that authorised one call, and it *waits out* rate limits rather than reporting them, which the breaker above can never count. Now `retries: 0` and `rejectOnRateLimit: () => true`. The clinching case is the interaction path: a silent four-second wait on the defer costs a dead token and a member-visible "This interaction failed" with nothing in the log to explain it. Set on the client rather than on a REST instance of the port's own, because two REST instances keep separate buckets and would race past Discord's global cap.
+
+**Raw routes, not discord.js structures.** The structure API resolves through the client cache that slice 6a deliberately made tiny, so a structure call can silently become a fetch no rate cap authorised. Raw routes keep every request explicit and make `DiscordAPIError` the single shape to map.
+
+**Tested through the real `@discordjs/rest` stack with only the socket replaced**, via the documented `makeRequest` injection point. Route building, query serialisation, rate-limit accounting and error construction are all the library's own — so the error mapping is tested against discord.js's actual errors rather than against errors we invented, which is the whole job of that module.
+
+**Broke, to check the tests.** 50. Removed `encodeURIComponent` from the emoji route — **and every test still passed.** That is a finding about the tests, not the code: `new URL()` percent-encodes a raw emoji in a path anyway, so the obvious assertion could not fail. The test was decoration and is rewritten to assert the *decoded* path, which catches double encoding — the failure that can actually happen. 50b. Double-encoded instead → 2 failed. 51. Never offered a pagination cursor → 1 failed. 52. Ignored the remembered ephemeral flag on follow-up → 1 failed. 53. Computed the bot's highest role from all roles rather than the ones it holds → 2 failed. 54. Dropped the `RateLimitError` branch from the error mapping → the ADR 0018 test failed. All restored by file copy.
+
+779 tests green; typecheck and lint exit 0.
+
+### Divergences found between the fake and real Discord
+
+**4. `fetchReactionUsers` cannot know it has reached the last page — the fake could, and did.** `GET /reactions` returns users and nothing else: no total, no "has more". So an adapter over the real API must offer a cursor whenever a page comes back *full*, and learn the truth by asking again and getting an empty page. `FakeDiscord` was answering `nextAfter: undefined` as soon as the page exhausted its array, which is knowledge that never arrives on the wire. **Fixed in the fake**, with a test pinning the corrected semantics. Nothing broke, which is the uncomfortable part: the old behaviour was not wrong enough to fail anything, it just let a caller depend on something real Discord does not provide. `pageReactors` already tolerates the extra empty page, so the cost is one extra request on an exactly-100-reactor panel.
+
+**5. The fake enforces guild scope on channel-addressed calls. Discord does not.** `FakeDiscord.check()` throws if the guild id does not match, for every method. But Discord's channel, message and interaction routes carry **no guild id in the URL** — the seven affected port methods take `_guildId` in the adapter because there is nowhere to put it. So a caller that passed a mismatched channel/guild pair would be refused by the fake and *obeyed* by Discord. Guild scope is still enforced where CLAUDE.md rule 2 says to enforce it — the port signature — and the fake's extra strictness is worth keeping precisely because Discord has none. Recorded rather than changed.
+
+**6. `role_update` was undefined, and is now `MemberRoleUpdate` (25), not `RoleUpdate` (31).** Nothing consumed the port's `role_update` action type before this slice, so the mapping was a genuine choice. The other three action types target a member or a message, and `MemberRoleUpdate` targets a user id the same way — "who changed this member's roles", which is what amendment 5's drift detection and WP4's role logging need. `RoleUpdate` targets a *role* and describes its own settings changing, which nothing in Release 1 logs.
+
+### Deferred, with reasons
+
+- **Custom-emoji reaction routes are unverified.** `EmojiKey` carries a custom emoji's id but not its name, and Discord documents the reaction route as `name:id`. The adapter sends `_:<id>`. Discord is understood to key off the id alone, but that cannot be checked without a connection. **On the smoke-test list.**
+- **Super (burst) reactions are not fetched.** `GET /reactions` defaults to `type=0` (normal), and burst reactors are a disjoint set. A member who super-reacts to a panel would be seen by the gateway event but *not* by `fetchReactionUsers`, so reconciliation could remove the role it just granted — the role-flicker symptom `docs/21` exercise 4 calls a stop-everything bug. Handling it means a second paged fetch per emoji, doubling the cost of the one expensive path amendment 6 already flags. Not fixed here because it needs the port widened, which this slice must not do. **Belongs in WP4 or a follow-up slice, and is on the smoke-test list.**

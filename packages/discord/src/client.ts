@@ -4,6 +4,7 @@ import {
   Options,
   Partials,
   type ClientOptions,
+  type RESTOptions,
   type SweeperOptions,
 } from 'discord.js';
 
@@ -162,11 +163,33 @@ export function buildSweeperSettings(botUserId: () => string | undefined): Sweep
   };
 }
 
+/**
+ * ADR 0018: the REST client refuses rather than retries or waits.
+ *
+ * `@discordjs/rest` defaults to `retries: 3` and `rejectOnRateLimit: null`, so
+ * out of the box it does both of the things `docs/19` §6.1's rule forbids —
+ * retries a 5xx three times against a rate cap that authorised one call, and
+ * *waits out* a rate limit rather than reporting it, which the circuit breaker
+ * above can never count.
+ *
+ * These belong on the client rather than on a REST instance of the port's own,
+ * because the port shares `client.rest`: two REST instances would keep separate
+ * buckets and race each other past Discord's global cap.
+ */
+export const REST_OPTIONS = {
+  retries: 0,
+  // Every route, not only global. Per-route buckets are where role mutations
+  // land, and a silent four-second wait on the interaction defer costs a dead
+  // token and a member-visible failure with nothing in the log to explain it.
+  rejectOnRateLimit: () => true,
+} as const satisfies Partial<RESTOptions>;
+
 /** Exported separately so a test can assert on it without connecting. */
 export function buildClientOptions(botUserId: () => string | undefined): ClientOptions {
   return {
     intents: [...REQUIRED_INTENTS],
     partials: [...REQUIRED_PARTIALS],
+    rest: { ...REST_OPTIONS },
     makeCache: Options.cacheWithLimits({
       ...Options.DefaultMakeCacheSettings,
       ...buildCacheSettings(botUserId),

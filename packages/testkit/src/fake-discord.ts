@@ -565,8 +565,15 @@ export class FakeDiscord implements DiscordPort {
     const limit = Math.min(options.limit ?? 100, 100);
     const start = options.after ? all.indexOf(options.after) + 1 : 0;
     const page = all.slice(start, start + limit);
-    const consumed = start + page.length;
-    return { userIds: page, nextAfter: consumed < all.length ? page[page.length - 1] : undefined };
+    // A FULL page always yields a cursor, even when it happens to have
+    // exhausted the reactors. Discord's GET /reactions returns users and
+    // nothing else — no total, no "has more" — so no adapter over the real API
+    // can know it has finished until it asks again and gets an empty page.
+    // This fake previously answered `undefined` early, because it can see the
+    // whole array; that let a caller look correct while depending on knowledge
+    // real Discord never sends. Found in WP5 slice 6b while writing the
+    // adapter's own pagination.
+    return { userIds: page, nextAfter: page.length === limit ? page[page.length - 1] : undefined };
   }
 
   async sendMessage(

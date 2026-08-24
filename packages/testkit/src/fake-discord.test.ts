@@ -151,6 +151,32 @@ describe('reaction pagination', () => {
     expect(collected).toEqual(ids);
   });
 
+  /**
+   * Discord's `GET /reactions` returns users and nothing else — no total, no
+   * "has more" flag — so a full page is indistinguishable from a full page that
+   * happened to be the last one. Every adapter over the real API therefore has
+   * to offer a cursor whenever the page came back full, and find out by getting
+   * an empty page next.
+   *
+   * This fake used to answer `undefined` here, because it can see the whole
+   * array and real Discord cannot. That let a caller look correct while relying
+   * on knowledge that never arrives on the wire. Corrected in WP5 slice 6b while
+   * writing the adapter's own pagination; `pageReactors` already loops in a way
+   * that tolerates the extra empty page.
+   */
+  it('still offers a cursor when a full page exactly exhausts the reactors', async () => {
+    const ids = Array.from({ length: 100 }, (_, i) => String(600000000000000000n + BigInt(i)));
+    for (const id of ids) d.offlineReactionAdd({ ...ref, userId: id, emoji: BRAIN });
+
+    const first = await d.fetchReactionUsers(GUILD, ref, BRAIN);
+    expect(first.userIds).toHaveLength(100);
+    expect(first.nextAfter).toBe(ids[99]);
+
+    const second = await d.fetchReactionUsers(GUILD, ref, BRAIN, { after: first.nextAfter });
+    expect(second.userIds).toEqual([]);
+    expect(second.nextAfter).toBeUndefined();
+  });
+
   it('ignores a request for more than 100', async () => {
     for (let i = 0; i < 150; i += 1) {
       d.offlineReactionAdd({
