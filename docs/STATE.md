@@ -14,6 +14,8 @@ WP3 found two defects that were not in the plan. A job dedupe key was single-use
 
 The harness was wrong about Discord twice, both found by mutation testing rather than by reading. That is the thing to watch: every WP3 conclusion is conditional on the fake being right. **The highest-value next step is running the WP5 smoke tests against the real test guild early**, rather than after WP4 — see `docs/reports/WP3.md` §6.
 
+Settled at this boundary: **reconciliation covers adopted panels only**, and the `docs/19` §6.3 table cell is amended to match (Bryan, 2026-08-23). A managed panel has no independent record of member intent, so re-adding a hand-removed role would be the bot overruling a human on the strength of nothing.
+
 Next action: Bryan reads `docs/reports/WP3.md`, spot-checks the diff, pushes, then starts a fresh session with the WP4 handoff prompt in §8 of that report. WP4 is the **logging module**, and two of its requirements are already known to be hard: `MESSAGE_DELETE` carries no actor (attribution is inferred and must be labelled so everywhere), and the "miss no log events" gate is unachievable as written — the accepted restatement is an explicit gap marker in the log channel.
 
 ## Environment as it actually is

@@ -324,9 +324,13 @@ restores what the member asked for. A managed panel has no such record: the only
 durable trace of a member's last choice **is** the role they hold. If a
 moderator removes it by hand, re-adding it would be the bot overruling a human on
 the strength of nothing. `managed_role_assignments` is not consulted for this,
-because that would be the exact bug amendment 4 forbids. This is the narrowing I
-am most confident is right and least confident you will agree with, so it has its
-own test asserting the behaviour rather than being left implicit.
+because that would be the exact bug amendment 4 forbids. It has its own test
+asserting the behaviour rather than being left implicit.
+
+> **Approved by Bryan, 2026-08-23**, at this boundary: the §6.3 table cell is
+> amended to match. Settled — a later package that wants drift repair for
+> managed panels needs a new decision and a new ADR, not an extension of this
+> pass.
 
 **Provenance names reconciliation's candidates (ADR 0017).** Described in §4 and
 in the ADR. I found it by a failing test, not by design, and wrote the ADR after

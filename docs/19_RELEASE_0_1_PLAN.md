@@ -792,7 +792,26 @@ Shared: behaviour (`toggle` / `add_only` / `remove_only` / `single_choice`), `ma
 | Bot may edit text | No — a bot can only edit its own messages | Yes |
 | Confirmation | None possible | Ephemeral reply |
 | Missed events | Yes, when offline | No — interactions are request/response |
-| Needs reconciliation | Yes, periodically | Only for role drift |
+| Needs reconciliation | Yes, periodically | **No** — see the note below |
+
+#### Amended 2026-08-23 — managed panels are not reconciled at all
+
+This table originally said a managed panel needs reconciliation "only for role
+drift". WP3 narrowed that to **none**, and Bryan approved the narrowing at the
+WP3 boundary.
+
+An adopted panel has an independent, member-owned record of intent — the
+reactions on the message — so "the role does not match the reactions" is
+unambiguous drift, and repairing it restores what the member asked for. A
+managed panel has no such record. The only durable trace of a member's last
+choice **is** the role they hold. If a moderator removes it by hand, re-adding
+it would be the bot overruling a human on the strength of nothing.
+
+`managed_role_assignments` is deliberately not consulted to decide this — that
+is the bug amendment 4 forbids, and it is the same reasoning that rejected
+option 4 below. See `docs/reports/WP3.md` §5 and ADR 0017. A later package that
+wants drift repair for managed panels needs a new decision and a new ADR, not an
+extension of the existing pass.
 
 #### Collision 1 — `single_choice` on adopted panels does not work
 
