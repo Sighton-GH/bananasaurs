@@ -13,6 +13,37 @@ silently reordered."_ This is the un-reordering.
 
 WP4 (logging) follows, using the prompt in `docs/reports/WP3.md` §8.
 
+## Why not simply wait for the CLI and dashboard
+
+Bryan asked the obvious question: slice 6 needs a throwaway seed script to be
+testable at all, so why not run WP4 and WP5 in order and test everything once
+the real configuration surfaces exist? Two things settle it.
+
+**Panel configuration is slice 14, not slice 13.** `docs/19` §6.10 puts panel
+config on the dashboard page; the CLI's `panel sync` (slice 13) pushes existing
+configuration to Discord rather than authoring it. So "wait for the tooling"
+means waiting until the second-to-last slice of the release, with WP4 and the
+whole operator CLI built and never once exercised against real Discord. That is
+the failure mode the slice-and-demonstrable structure exists to prevent. The
+seed script is not bridging a short wait; it is the difference between
+validating at slice 6 and validating at slice 14.
+
+**WP4 is the package most exposed to the fake being wrong, and in the least
+modelled place.** `FakeDiscord.fetchAuditLog` is a hand-populated array with a
+filter over it. It models none of the real audit log's behaviour: entries appear
+with a lag, self-deletions produce no entry at all, and — the one most likely to
+break the design — Discord **coalesces** `MESSAGE_DELETE` entries, updating a
+single entry's `count` when several messages by the same author in the same
+channel are deleted, rather than emitting one entry per message. `AuditLogEntry`
+in `packages/core/src/discord/port.ts` has no `count` field, because nothing has
+ever needed one.
+
+WP4's hardest requirement is inferred deletion attribution, fuzzy-matched on
+target and timestamp. Building that against a fixture that makes the problem
+look easy is how you ship a bot that confidently names the wrong moderator.
+Correcting the audit-log model is therefore explicitly part of this slice — see
+"THE THINGS MOST LIKELY TO GO WRONG" item 7.
+
 ---
 
 ```
@@ -182,6 +213,24 @@ THE THINGS MOST LIKELY TO GO WRONG
   6. RATE LIMITS. discord.js queues internally; our rate limiter and circuit
      breaker sit ABOVE it. Do not let the adapter silently retry — a refusal
      the gateway can see is worth more than a retry it cannot.
+
+  7. THE AUDIT LOG IS THE LEAST-MODELLED PART OF THE FAKE, AND WP4 IS BUILT
+     ENTIRELY ON IT. `FakeDiscord.fetchAuditLog` is a hand-populated array with
+     a filter. Real Discord differs in at least three ways that change the
+     design of the thing WP4 has to build:
+       - Entries appear with a LAG. The delete event arrives before the audit
+         entry exists, so correlation cannot be synchronous.
+       - Self-deletions produce NO ENTRY AT ALL. "Actor unknown" is a real and
+         common outcome, not an edge case.
+       - MESSAGE_DELETE entries COALESCE. Deleting several messages by the same
+         author in the same channel updates ONE entry's `count` field rather
+         than creating one entry per message. `AuditLogEntry` in
+         packages/core/src/discord/port.ts has no `count` field today.
+     Read discord.js's `GuildAuditLogsEntry` types and check each of these
+     against the fake. Whatever you find, fix the fake and say so in the session
+     log — this is the single highest-value thing this slice can hand to WP4.
+     If the port's `AuditLogEntry` needs a new field, that is a finding worth
+     more than the adapter code, and it belongs in an ADR.
 
 SETTLED — DO NOT RE-LITIGATE
   1. `DirectMessages` intent is deliberately NOT included. Release 1 has no DM
