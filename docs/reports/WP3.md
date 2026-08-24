@@ -384,9 +384,18 @@ bot-filter lie; slice 11 found that the fake did not echo `GUILD_MEMBER_UPDATE`
 for our own mutations, which is the single fact amendment 5 exists to handle. I
 fixed both, but the base rate is what concerns me: two modelling errors found by
 accident in one package suggests others remain. Every WP3 conclusion is
-conditional on the fake being right about Discord. **The highest-value thing you
-can do at this boundary is run the WP5 smoke tests against a real test guild
-early**, rather than after WP4.
+conditional on the fake being right about Discord.
+
+The remedy is not a smoke test — there is nothing to run. There is no discord.js
+dependency, no adapter, and no `npm run smoke` script (CLAUDE.md lists one
+aspirationally; `package.json` has no such target). The real remedy is a
+**scheduling** decision that belongs to Bryan: **pull WP5 slice 6 — the real
+discord.js adapter — forward, ahead of WP4**, so the harness is validated
+against real Discord in the test guild before another package is built on top of
+it. Step 1 of `docs/18`'s rollout sequence ("test guild, dry-run off; break
+things deliberately") is exactly that exercise. The cost of doing it after WP4
+instead is that a harness error would then have two packages of work resting on
+it rather than one.
 
 **Rate-cap interaction under concurrent load is untested.** All tests are
 single-threaded with a manual clock. Reconciliation opening one batch while an
