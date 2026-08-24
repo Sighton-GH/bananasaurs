@@ -11,6 +11,7 @@ import {
 } from '@bananasaurs/core';
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
 import { guildRepo, pipelineRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
+import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 
 /**
@@ -220,6 +221,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   client.on(Events.ClientReady, () => {
     checkBotIdentity(client, config, logger, deps.onFatal);
     recordGuildMembership(client, byGuild, logger, now());
+    // `doctor` on every start, not only when asked. Its findings — a missing
+    // partial, an ungranted intent, a bot below the roles it manages — all look
+    // identical from the outside: nothing happens and nothing says why.
+    reportHealth(client, config, logger);
     connectionEvent(false);
   });
   client.on(Events.ShardResume, () => {
@@ -325,6 +330,34 @@ function applyConfiguredDryRun(
       ? 'dry run turned ON by configuration; no Discord side effect will be performed'
       : 'dry run turned OFF by configuration; Discord side effects are live',
   );
+}
+
+/**
+ * `doctor` on every start, wrapped.
+ *
+ * Everything it looks for — a missing partial, an ungranted intent, a bot below
+ * the roles it manages — presents identically from the outside: nothing happens
+ * and nothing says why. So it runs unasked rather than only when an operator
+ * thinks to ask.
+ *
+ * Wrapped because it reads discord.js structures that compute lazily and throw:
+ * `GuildMember.permissions` builds a bitfield from every cached role and a role
+ * delivered without a `permissions` field makes it throw. A diagnostic that can
+ * take the process down on startup is worse than no diagnostic at all.
+ */
+function reportHealth(client: Client, config: Config, logger: Logger): void {
+  try {
+    const report = buildDoctorReport(client, config);
+    logger[report.ok ? 'info' : 'warn'](
+      { doctor: formatDoctorReport(report) },
+      report.ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND',
+    );
+  } catch (err) {
+    logger.error(
+      safeLogFields({ component: 'startup', err, outcome: 'doctor-failed' }),
+      'could not build the startup health report',
+    );
+  }
 }
 
 /**

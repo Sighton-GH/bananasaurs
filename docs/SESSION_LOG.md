@@ -739,3 +739,42 @@ Fixed with one promise chain per guild — guild rather than global, because gui
 - **The daemon refuses an unmigrated database rather than migrating one**, and names the command. A process that migrates on start can migrate the wrong database on start.
 - **Two things it deliberately does not do**, named so they are not mistaken for oversights: nothing enqueues the periodic `reconcileGuild` timer pass (slice 11) or the `sweepEventDedupe` job. Both handlers are registered — an unregistered handler fails a job that arrives — but their producer is a scheduler this slice does not build.
 - **`assertMigrated` and the signal handlers are untested**, because they live in `index.ts` above the seam and testing them means running the process. Named here rather than left to be discovered.
+
+---
+
+## WP5 slice 6d — doctor v1, and a script that refuses to run in production — 2026-08-24
+
+**`doctor` reports exactly what `docs/21` exercise 1 step 3 asks for**: partials configured, both privileged intents granted *at runtime*, the bot's own highest role position, and which of the allowlisted guilds it is actually in. It also checks the `docs/18` layer 1 permission set in both directions, which the exercise does not ask for and which is free once the guild is in hand.
+
+**"At runtime" is the whole point, and the assertion is the session itself.** Discord closes the socket with **4014 Disallowed intents** when an IDENTIFY asks for a privileged intent the application has not been granted — so a live session carrying those bits *is* the grant, and it is the only thing in the process that constitutes one. The report therefore refuses to say anything about intents before the client is ready: a client that has not connected has not been told anything, and printing "configured" where an operator will read "granted" is the exact confusion the exercise exists to catch. Mutation 73 — treat a configured intent as a granted one — is what pins that.
+
+**Two ways to run it.** It runs unasked on every READY, because everything it looks for presents identically from the outside: nothing happens, and nothing says why. And `node apps/daemon/dist/index.js --doctor` connects, prints the report, and exits — the operator CLI that would host it is slice 13, a flag costs nothing, and it deliberately **does not open the database**, so it can be run against a guild while the daemon is running.
+
+**Broke, to check the tests.** 73. Treated a configured intent as granted → 1 failed. 74. Stopped checking the required partials → 1 failed. 75. Reported an absent guild as present → 1 failed. 76. Used discord.js's computed role index instead of Discord's position → 1 failed. 77. Stopped noticing a missing permission → 1 failed. 78. Treated Administrator as an ordinary extra → 1 failed. All restored by file copy.
+
+834 tests green; typecheck and lint exit 0.
+
+### Divergence found between the fake and real Discord
+
+**15. `Role.position` in discord.js is the role's *index in the sorted cache*, not Discord's `position` field.** Measured: a guild with `@everyone` at raw position 0 and the bot's role at raw position 7 reports `role.position === 1`. Everything else in this system carries Discord's raw value — the REST port reads it straight off the API for both `fetchRoles` and `fetchBotHighestRolePosition`, and `FakeDiscord.defineRole` stores what it is given — so a doctor reporting `position` would have printed a number on a different scale from the one in a hierarchy refusal, and an operator comparing the two would have concluded the bot was below a role it was above.
+
+Caught only because the doctor is the first code to read a *role* through discord.js rather than through the port. **The gateway translation is untouched**: role events carry `roleId` and nothing else, deliberately, so no position ever crosses that boundary. Recorded as a fact about the library rather than fixed in the fake, because the fake's positions are already the raw ones and are right.
+
+### `scripts/seed-test-panel.mjs`
+
+Named as non-optional in the handoff, and it is: `docs/21` exercises 2 to 5 all begin "seed a panel", and at slice 6 nothing member-facing or operator-facing can create one.
+
+It **refuses to run when `BANANASAURS_ENV=production`** (exit 3), and does so *before it imports anything*, so the refusal works on a checkout that has not been built. It prints its own usage. It writes through `panelDefinitionSchema` and `panelRepo.createPanel` rather than composing rows, so a panel it writes is a panel the daemon would have written. **It also allowlists the roles**, which is not incidental: without that the effect gateway refuses every role the panel offers — layer 2 working exactly as designed — and the operator sees a panel that silently does nothing.
+
+Verified by hand against a throwaway database: seeds two options with emoji keys, refuses a duplicate panel id unless `--replace`, refuses a non-snowflake argument, refuses without a guild, and prints whether dry run is on.
+
+### The ADR 0013 tripwire caught one of my own tests, and the tripwire won
+
+The seed script's refusals were first covered by a test that spawned it with `execFileSync`. **ESLint refused the file**: `node:child_process` is banned repo-wide by the ADR 0013 rule, whose message is "application code never spawns processes. If you need the claude binary, you are in the wrong design."
+
+The rule is broader than ADR 0013 strictly requires — a test spawning `node` on a repo script is neither application code nor the claude binary — and a narrow exception would have passed. **The test was deleted instead.** That rule's value is that it is absolute and visible; the first exception is how it stops being either, and a future reader finding one would reasonably conclude exceptions are available. The refusals are verified by hand above and this paragraph is the record. That the tripwire fired on its author is worth more than the coverage it cost.
+
+### Also from this slice
+
+- **`doctor` cannot take the daemon down.** It reads lazily-computed discord.js structures, and those throw: `GuildMember.permissions` builds a bitfield from every cached role, and a role delivered without a `permissions` field makes it throw. Found by an incomplete test fixture, which is a fair way to find it — a diagnostic that crashes the process on startup is worse than no diagnostic. Wrapped, with a test.
+- **`index.ts` remains untested** — `assertMigrated`, the signal handlers, `runDoctor`. They live above the `createDaemon` seam and testing them means running the process. Named rather than left to be discovered.

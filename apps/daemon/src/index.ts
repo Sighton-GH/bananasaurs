@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { Events } from 'discord.js';
 import {
   ConfigError,
   createLogger,
@@ -12,6 +13,7 @@ import { createDiscordClient } from '@bananasaurs/discord';
 import { createDiscordRestPort } from '@bananasaurs/discord/rest';
 import { DatabaseLockedError, openDatabase, type OpenedDatabase } from '@bananasaurs/storage';
 import { createDaemon } from './runtime/daemon.js';
+import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
 
 /**
  * The process.
@@ -83,6 +85,35 @@ function openOrFail(config: Config, log: Logger): OpenedDatabase {
   }
 }
 
+/**
+ * `doctor` as a mode: connect, report, exit.
+ *
+ * `docs/21` exercise 1 step 3 says "Run `doctor`", and the operator CLI that
+ * would host it is slice 13. A flag costs nothing, reuses the same asserted
+ * client construction, and — crucially — **does not open the database**, so it
+ * can be run against a guild while the daemon is running.
+ *
+ * It has to connect. The whole point of the check is that a privileged intent
+ * being *granted* is only observable from a session Discord accepted.
+ */
+async function runDoctor(config: Config, log: Logger): Promise<never> {
+  const client = createDiscordClient(() => client.user?.id);
+  client.once(Events.ClientReady, () => {
+    const report = buildDoctorReport(client, config);
+    process.stdout.write(`${formatDoctorReport(report)}\n`);
+    void client.destroy().then(() => process.exit(report.ok ? 0 : 1));
+  });
+
+  try {
+    await client.login(config.DISCORD_BOT_TOKEN);
+  } catch (err) {
+    log.error(safeLogFields({ component: 'doctor', err }), 'could not connect to Discord');
+    process.exit(EXIT_UNAVAILABLE);
+  }
+  // The ready handler exits; this keeps the type honest.
+  return await new Promise<never>(() => undefined);
+}
+
 async function main(): Promise<void> {
   const config = loadConfig();
   const log = createLogger({ level: config.BANANASAURS_LOG_LEVEL, env: config.BANANASAURS_ENV });
@@ -108,6 +139,8 @@ async function main(): Promise<void> {
   // every key and logs nothing. redactConfig is the right allowlist here: the
   // key set is exactly the Zod schema and the secret ones are already replaced.
   log.debug({ config: redactConfig(config) }, 'effective configuration');
+
+  if (process.argv.includes('--doctor')) await runDoctor(config, log);
 
   const opened = openOrFail(config, log);
 

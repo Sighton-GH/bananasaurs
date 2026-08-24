@@ -79,8 +79,8 @@ const guildPayload = (id: string, name: string): object => ({
   owner_id: OWNER,
   channels: [{ id: CHANNEL, type: ChannelType.GuildText, name: 'panels', guild_id: id }],
   roles: [
-    { id, name: '@everyone', position: 0, managed: false },
-    { id: ROLE, name: 'alpha', position: 1, managed: false },
+    { id, name: '@everyone', position: 0, permissions: '0', managed: false },
+    { id: ROLE, name: 'alpha', position: 1, permissions: '0', managed: false },
   ],
   members: [],
   emojis: [],
@@ -329,6 +329,32 @@ describe('reconnecting', () => {
     const scope = t.scopes.forGuild(GUILD);
     expect(pipelineRepo.unreconciledGaps(scope)).toHaveLength(1);
     expect(jobRepo.countByState(scope)['queued']).toBeUndefined();
+  });
+});
+
+describe('startup diagnostics', () => {
+  /**
+   * `doctor` runs on every READY, because everything it looks for — a missing
+   * partial, an ungranted intent, a bot below the roles it manages — presents
+   * identically from the outside: nothing happens and nothing says why.
+   *
+   * It reads lazily-computed discord.js structures to do it, and those throw:
+   * `GuildMember.permissions` builds a bitfield from every cached role, and a
+   * role delivered without a `permissions` field makes that throw. A diagnostic
+   * that can take the process down on startup is worse than no diagnostic.
+   */
+  it('does not take the daemon down when the report cannot be built', async () => {
+    internals(client).guilds._add({
+      ...guildPayload(GUILD, 'test guild'),
+      roles: [{ id: GUILD, name: '@everyone', position: 0, managed: false }],
+    });
+    daemon = start();
+
+    expect(() => client.emit(Events.ClientReady, client as Client<true>)).not.toThrow();
+    await daemon.settle();
+
+    // And the rest of READY still happened: the gap is what recovers an outage.
+    expect(pipelineRepo.unreconciledGaps(t.scopes.forGuild(GUILD))).toHaveLength(1);
   });
 });
 
