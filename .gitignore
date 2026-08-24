@@ -14,3 +14,7 @@ run/
 coverage/
 .DS_Store
 scratchpad/
+
+# Git worktrees, which live inside the repo. Untracked by default, but a single
+# `git add -A` would otherwise commit a complete second copy of the tree.
+.claude/worktrees/

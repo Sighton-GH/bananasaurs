@@ -116,6 +116,13 @@ export default tseslint.config(
       'scratchpad/**',
       'coverage/**',
       'drizzle/**',
+      // Git worktrees live inside the repo, so a worktree is a full second copy
+      // of every source file. Without this, eslint walks into it and reports a
+      // parse error per file — the copies are in no tsconfig project, and could
+      // not be: two projects claiming the same logical file is exactly what
+      // `parserOptions.project` refuses. Nothing here needs linting; the
+      // worktree's own checkout lints itself.
+      '.claude/worktrees/**',
       // Plain-JS build helper. Covered by prettier; no type-aware rules apply.
       'scripts/**',
     ],
