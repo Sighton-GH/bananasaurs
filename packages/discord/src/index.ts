@@ -8,8 +8,11 @@
  * Nothing here re-exports it.
  */
 
+export { attachGatewayTranslation, emitConnectionEvents, type TranslationDeps } from './events.js';
+
 export {
   CACHE_LIMITS,
+  REST_OPTIONS,
   ClientOptionsError,
   PRIVILEGED_INTENTS,
   REQUIRED_INTENTS,

@@ -630,3 +630,33 @@ All fourteen `DiscordPort` methods over discord.js's REST client, behind the `@b
 
 - **Custom-emoji reaction routes are unverified.** `EmojiKey` carries a custom emoji's id but not its name, and Discord documents the reaction route as `name:id`. The adapter sends `_:<id>`. Discord is understood to key off the id alone, but that cannot be checked without a connection. **On the smoke-test list.**
 - **Super (burst) reactions are not fetched.** `GET /reactions` defaults to `type=0` (normal), and burst reactors are a disjoint set. A member who super-reacts to a panel would be seen by the gateway event but *not* by `fetchReactionUsers`, so reconciliation could remove the role it just granted — the role-flicker symptom `docs/21` exercise 4 calls a stop-everything bug. Handling it means a second paged fetch per emoji, doubling the cost of the one expensive path amendment 6 already flags. Not fixed here because it needs the port widened, which this slice must not do. **Belongs in WP4 or a follow-up slice, and is on the smoke-test list.**
+
+---
+
+## WP5 slice 6b-ii — gateway event translation, and three more things the fake was wrong about — 2026-08-23
+
+Every gateway dispatch Release 1 cares about, normalised into `packages/core/src/discord/events.ts`. Tested by pushing **raw gateway packets through discord.js's own action handlers** (`client.actions.X.handle(packet)`), which is the real path from websocket to event — so the tests exercise discord.js's partial machinery, guild attribution and emoji parsing rather than hand-made structures that would only encode what we already believe. Given that our beliefs about discord.js had been wrong twice before this package, that distinction is the point.
+
+**Guild attribution happens at the adapter or not at all.** Every `DomainEvent` carries `guildId`; anything that cannot be attributed is dropped here rather than travelling with an optional scope.
+
+**`guildCreate` is deliberately exempt from the allowlist filter.** It is the event the composition root uses to *leave* an unlisted guild. Filtering it here would silence the behaviour `docs/21` exercise 1 calls the single most important in the document — which is exactly what mutation 58 did.
+
+**Translation is wrapped, because discord.js structures are lazy.** `MessageReaction.emoji` dereferences `client.application.emojis` for a custom emoji and throws a `TypeError` when the application is unresolved — measured, not theorised. An exception escaping a gateway listener is an unhandled rejection that takes the daemon down over one malformed event, so every handler reports and drops instead.
+
+**Broke, to check the tests.** 55. Let `@everyone` through in `roleIdsOf` → 4 failed. 56. Diffed `previousRoleIds` against an uncached member instead of reporting unknown → 1 failed. 57. Hard-coded `wasPartial: false` → 1 failed. 58. Applied the allowlist to `guildCreate` too → the leave-an-unlisted-guild test failed. All restored by file copy.
+
+795 tests green; typecheck and lint exit 0.
+
+### Divergences found between the fake and real Discord
+
+**7. `member.roles.cache` includes `@everyone`. The gateway payload never does.** Confirmed at `GuildMemberRoleManager.js:35-37`, which unconditionally inserts the guild id. Passing that upward would inflate every count that matters — a `max_roles: 2` panel would refuse a member's second option having already counted a role nobody chose, and the refusal would name a number the member cannot see. The adapter filters it; `FakeDiscord` never included it, so the fake was right and a naive adapter would have been wrong. **This is the first divergence where the fake was the correct one**, and it is only visible because the adapter now exists to be compared against.
+
+**8. The same accessor silently *drops* roles missing from `guild.roles.cache`** (`GuildMemberRoleManager.js:40-42`). `RoleManager` is one of the five managers discord.js refuses to have limited, `GUILD_CREATE` delivers every role, and a member cannot hold a role that does not exist — so the window is theoretical. Recorded rather than worked around, because the alternative is reading a private field.
+
+**9. `guildMemberUpdate` hands us an `oldMember` with *empty* roles when the member was not cached.** `GuildMemberUpdate.js` builds "old" from the dispatch's `user` alone before patching, so its role collection is empty rather than absent. Reporting `previousRoleIds: []` would tell amendment 5's drift detector that the member had just gained every role they hold, and it would "repair" a change nobody made. `oldMember.partial` is the honest signal and the adapter reports `undefined`, which `reconcile.ts:360` already handles by returning early.
+
+**The operational consequence belongs in the report, not just here.** With `GuildMemberManager` capped at 50 and `keepOverLimit` keeping only the bot itself, a member outside that cache gets no prompt repair when someone strips a role by hand — it falls to the periodic reconciliation pass instead. For a ~30-member club guild the cache covers everyone and this never fires; for a larger guild it would, silently. `FakeDiscord` always supplies `previousRoleIds`, so **every existing test exercises the diffable path and none exercises the degraded one.**
+
+### Deferred
+
+- Teaching `FakeDiscord.emitMemberUpdate` to model an unknown `previousRoleIds` so the degraded path is coverable. It is a fake change with no consumer in this slice, and belongs with the audit-log corrections rather than bolted onto event translation.
