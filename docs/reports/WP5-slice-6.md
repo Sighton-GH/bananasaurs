@@ -155,6 +155,15 @@ Two named exceptions, both in the report above rather than buried: `apps/daemon/
 | `sweepEventDedupe` producer | same scheduler; the handler is registered so an arriving job does not fail | slice 4 follow-up / WP6 |
 | `index.ts` coverage (`assertMigrated`, signals, `runDoctor`) | above the `createDaemon` seam; testing means running the process | WP6 hardening |
 | Seed-script refusal tests | the covering test tripped the ADR 0013 lint rule | replaced by the CLI at slice 13 |
+| **No daemon trigger for `seedPanelReactions`, `postManagedPanel` or `runAdoptionPass`** | all three are built and tested, but their trigger is the operator CLI. Found while writing the test instructions, after the slice was committed | slice 13 (`panel sync`, `panel post`, `panel adopt`) |
+
+**That last row limits what `docs/21` can actually exercise at slice 6**, and it is worth stating plainly rather than leaving Bryan to discover it live:
+
+- **Exercise 1** — fully runnable.
+- **Exercise 2 and 3 items 1–4** — runnable, but the panel's emoji must be put on the message by hand; nothing seeds them.
+- **Exercise 3 item 5 (managed panel, button click)** — **not runnable.** Nothing can post a managed panel, so there is no button to click.
+- **Exercise 4** — runnable except its managed-panel row. Reconciliation triggers on every restart, because a cold start records a gap.
+- **Exercise 5 (adoption)** — the *refusal* is runnable via `seed-test-panel.mjs --adopt`, which enqueues the job as a plain database write. Granting the allowance so the pass can then proceed is slice 13, so step 4 of that exercise is not.
 
 ---
 
@@ -210,13 +219,21 @@ Begin WP4 of the Bananasaurs project — the logging module and inferred
 deletion attribution. This is slice 12 in docs/19 §7, and it is the last
 feature slice before the operator CLI.
 
+START HERE — BRANCH
+
+Before you edit anything, call the EnterWorktree tool with the name
+`wp4-logging`. Do NOT work on `worktree-wp3-role-panels`: that is a stale
+branch left over from WP3 and reused for slice 6, and its work is already
+merged into main. If EnterWorktree is unavailable, run
+`git switch -c wp4-logging` from main instead. Commit on that branch only.
+
 STATE OF THE REPO
 
-You are on branch `worktree-wp3-role-panels`, at commit 468d5c2. Nothing is
-pushed; pushing is Bryan's. WP5 slice 6 was taken out of order and is done:
-the real Discord adapter exists, the daemon is assembled, and doctor v1
-runs. 834 tests pass; `npm run typecheck && npm run lint && npm run test`
-is green.
+`main` carries everything through WP5 slice 6. WP5 slice 6 was taken out of
+order and is done: the real Discord adapter exists, the daemon is
+assembled, doctor v1 runs, and `scripts/seed-test-panel.mjs` can write a
+panel. 834 tests pass; `npm run typecheck && npm run lint && npm run test`
+is green on main.
 
 SETUP
 
@@ -295,7 +312,7 @@ PROTOCOL
     fake-vs-real divergence as a numbered finding continuing from 16.
   - Record consequential choices as ADRs in docs/decisions/ BEFORE
     implementing them. The next free number is 0021.
-  - Commit after each slice. NEVER `git push`.
+  - Commit after each slice, on the `wp4-logging` branch. NEVER `git push`.
 
 SECURITY
 

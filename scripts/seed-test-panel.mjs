@@ -30,6 +30,7 @@ Optional
   --emoji <a>,<b>       one per role; defaults to 🅰️ 🅱️ 🅲 🅳 ...
   --behaviour <name>    toggle (default) | add_only | remove_only
   --replace             overwrite a panel with the same id
+  --adopt               also queue an adoption pass for the panel
 
 Notes
   Run "npm run build && npm run db:migrate" first. Stop the daemon: SQLite has
@@ -38,6 +39,11 @@ Notes
   The roles are added to the role allowlist, because the effect gateway refuses
   to touch a role that is not on it — that refusal is layer 2 working, and
   seeding a panel without it produces a panel that silently does nothing.
+
+  Put the emoji on the message yourself. Nothing in the daemon calls
+  seedPanelReactions yet — its trigger is "panel sync" in the operator CLI,
+  which is slice 13. An adopted panel usually has its reactions already, which
+  is what makes it adoptable.
 `;
 
 const DEFAULT_EMOJI = ['🅰️', '🅱️', '🅲', '🅳', '🅴', '🅵'];
@@ -53,8 +59,8 @@ function parseArgs(argv) {
     const token = argv[i];
     if (!token.startsWith('--')) fail(`unexpected argument: ${token}`);
     const key = token.slice(2);
-    if (key === 'replace') {
-      args.replace = true;
+    if (key === 'replace' || key === 'adopt') {
+      args[key] = true;
       continue;
     }
     const value = argv[i + 1];
@@ -109,9 +115,9 @@ if (emoji.length < roleIds.length) fail('--emoji must give one emoji per role');
 // ── the database, imported only once the arguments are known good ──────────
 // Dynamic, so that the refusals above work on a checkout that has not been
 // built. Imports are hoisted; these are not.
-const { unicodeEmojiKey, panelDefinitionSchema, parseGuildId } =
+const { unicodeEmojiKey, panelDefinitionSchema, parseGuildId, JOB_KINDS, adoptDedupeKey } =
   await import('../packages/core/dist/index.js');
-const { openDatabase, guildRepo, panelRepo, roleRepo } =
+const { openDatabase, guildRepo, jobRepo, panelRepo, roleRepo } =
   await import('../packages/storage/dist/index.js');
 
 const definition = panelDefinitionSchema.parse({
@@ -163,6 +169,21 @@ try {
 
   panelRepo.createPanel(scope, definition, now);
 
+  // The adoption pass has no producer in the daemon either — the CLI's
+  // "panel adopt" is slice 13. Enqueueing the job is a plain database write, so
+  // the script can do it and a running daemon will pick it up within a second.
+  // Expect it to REFUSE and report a change count: an adoption pass that would
+  // move more members than the standing allowance needs an owner to approve it,
+  // and granting that allowance is also slice 13.
+  if (args.adopt) {
+    jobRepo.enqueue(scope, {
+      kind: JOB_KINDS.adoptPanel,
+      payload: JSON.stringify({ panelId: definition.panelId }),
+      dedupeKey: adoptDedupeKey(definition.panelId),
+      now,
+    });
+  }
+
   const dryRun = guildRepo.readSafetyState(scope)?.dryRun !== false;
   process.stdout.write(
     `\nSeeded panel "${definition.panelId}" in guild ${guildId}.\n\n` +
@@ -172,8 +193,9 @@ try {
       `\n\n  message:   ${channelId}/${messageId}\n` +
       `  behaviour: ${definition.behaviour}\n` +
       `  dry run:   ${dryRun ? 'ON — no role will actually change' : 'OFF — roles will change'}\n\n` +
-      '  React to the message with the emoji above once the daemon is running.\n' +
-      '  The daemon seeds the emoji itself on its first reconciliation pass.\n\n',
+      `  adoption:  ${args.adopt ? 'queued — the daemon runs it within a second' : 'not queued (pass --adopt)'}\n\n` +
+      '  Add the emoji above to the message yourself, then react with it.\n' +
+      '  Nothing seeds them yet: that is "panel sync" in the CLI, slice 13.\n\n',
   );
 } finally {
   opened.close();
