@@ -701,3 +701,41 @@ The coalescing window is a chosen approximation — Discord documents no figure 
 ### Consequence for WP4, stated plainly
 
 Deletion attribution has to tolerate: no author on the event, no entry yet when it looks, no entry ever if it was a self-deletion, and an entry that describes a run rather than a message. The gate in `docs/20` — "a missing actor degrades to 'unknown,' never to a guess presented as fact" — now has a fixture that can actually produce every one of those states. Before this slice it had a fixture that produced none of them.
+
+---
+
+## WP5 slice 6c — the composition root, and the race nobody could have seen — 2026-08-24
+
+`apps/daemon/src/index.ts` was still the WP1 skeleton: it parsed config, logged it, and said so. Everything below it had been built and tested for eleven work packages, and **nothing had ever assembled it.**
+
+**ADR 0020** records the four decisions that assembly forced, and one it uncovered.
+
+**`createDaemon({ config, scopes, discord, client, logger, now })`.** An opened database, a `DiscordPort`, and a `Client` that has not logged in — `index.ts` constructs all three and is otherwise thin. That signature is the whole reason this slice has tests at all: the composition root is where the real client, the real database and the real REST port meet, which normally means it is the one part of a system with no coverage. Here a test hands it `FakeDiscord`, an in-memory migrated database and a real discord.js client, then pushes **raw gateway packets** through `client.actions.*`. Everything between the wire and the audit row runs: partial handling, translation, the allowlist gate, the dedupe table, the subscribers, the effect gateway. Only the socket is missing.
+
+**`docs/21` exercise 1 step 2 is now verified before it is attempted.** "Invite it to a second, unlisted server. It must log the guild id and leave" is called the single most important behaviour in that document, and it should not first be tried against a live guild. A `GUILD_CREATE` for an unlisted guild goes through discord.js, through the translation layer that deliberately exempts `guildCreate` from the allowlist filter, into the pipeline's gate, and out as one `leaveGuild` call — once, however many events arrive.
+
+**Every subscriber is wrapped in a guild guard.** None of the four subscribers compares `event.guildId` against the scope it was built with, and that is correct — re-checking the partition key in eleven handlers is the caller discipline CLAUDE.md rule 2 exists to avoid. But it means one `Pipeline` carrying two guilds' subscribers would hand guild B's reaction to guild A's panels, find nothing, log nothing surprising, and hide the fault. Four lines, asserted directly.
+
+**`BANANASAURS_DRY_RUN` now means something.** `guilds.dry_run` is what the effect gateway reads and it defaults to 1; the environment variable was connected to nothing. `docs/21` exercise 3 says "Set `BANANASAURS_DRY_RUN=0`. Restart." — which would have done *nothing at all*, and the operator would have watched a correctly-working bot appear dead. The environment now wins on every start, and only for dry run: the rate cap, budget and breaker threshold stay database-owned because slice 13's CLI is supposed to change them without a restart.
+
+### The finding: gateway dispatches were being handled concurrently
+
+**Discord delivers a shard's dispatches in order and discord.js emits them in order, but nothing awaits a gateway listener.** So a replayed reaction arriving alongside its original had *both* handlers read "the member does not have this role", and both called `addRole`.
+
+The effect gateway cannot collapse that pair. `trigger_ref` is part of the idempotency key deliberately — it is what keeps a member toggling a role off and on again from colliding with a replay — and two concurrent passes carry two pass ids. So this is CLAUDE.md rule 6, "a unique constraint that makes double execution impossible", failing to a race.
+
+It could not have been found earlier. Every test before this one drove the fake's `emit`, awaited it, and moved on; `FakeDiscord.emit` awaits each listener in turn, so **the fake serialises dispatches and the real gateway does not.** That is not a modelling error in the fake so much as a property of the seam: the fake is a *port*-level fake and the concurrency lives above the port, in the composition root that had never existed. The first thing that assembled the daemon found it on its second test.
+
+Fixed with one promise chain per guild — guild rather than global, because guild scope is the partition key everywhere else and two guilds share no state to race over. It stays affordable because the expensive work (an adoption pass, a reconciliation) is a *job* and never runs on this path.
+
+**Broke, to check the tests.** 67. Removed the per-guild subscriber guard → the guild-scope test failed. 68. Dispatched concurrently again → the duplicate-dispatch test failed. 69. Never synced dry run from the environment → 4 failed. 70. Treated a cold start as a resumed session → 2 failed, including the reconciliation the outage exercise depends on. 71. Trusted the configured application id without checking it against the connection → 1 failed. 72. Recorded the guild id in place of its name → 1 failed. All restored by file copy.
+
+821 tests green; typecheck and lint exit 0.
+
+### Smaller things worth knowing
+
+- **The bot's user id is checked against the connection, not assumed.** Discord mints a bot user with its application's snowflake, so `DISCORD_APPLICATION_ID` is it — but they are separate fields, and `botUserId` is what makes the reaction subscriber ignore the bot's *own seeded reactions*. A mismatch would turn every seeded panel reaction into a member request. READY compares them and calls `onFatal` if they differ. (Written with the implementation rather than test-first; mutation 71 is what proves the test discriminates.)
+- **A cold start records a zero-length gap.** A process that was not running cannot know how long it was down. The gap's *existence* is what enqueues the reconciliation that recovers the window, and that is the part exercise 4 needs.
+- **The daemon refuses an unmigrated database rather than migrating one**, and names the command. A process that migrates on start can migrate the wrong database on start.
+- **Two things it deliberately does not do**, named so they are not mistaken for oversights: nothing enqueues the periodic `reconcileGuild` timer pass (slice 11) or the `sweepEventDedupe` job. Both handlers are registered — an unregistered handler fails a job that arrives — but their producer is a scheduler this slice does not build.
+- **`assertMigrated` and the signal handlers are untested**, because they live in `index.ts` above the seam and testing them means running the process. Named here rather than left to be discovered.

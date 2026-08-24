@@ -9,7 +9,9 @@
   },
   "dependencies": {
     "@bananasaurs/core": "*",
-    "@bananasaurs/storage": "*"
+    "@bananasaurs/discord": "*",
+    "@bananasaurs/storage": "*",
+    "discord.js": "^14.27.0"
   },
   "devDependencies": {
     "@bananasaurs/testkit": "*"

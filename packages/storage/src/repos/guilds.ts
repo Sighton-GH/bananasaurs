@@ -63,6 +63,22 @@ export const upsertGuild = (scope: GuildScope, input: UpsertGuild): void =>
       .run();
   });
 
+/**
+ * docs/18 Layer 4. Written from `BANANASAURS_DRY_RUN` at every start.
+ *
+ * Deliberately not folded into `upsertGuild`, whose conflict clause is narrow
+ * precisely so a replayed GUILD_CREATE cannot reset operator state. This is the
+ * opposite case: an explicit statement of intent from the environment, applied
+ * once at startup by the composition root (ADR 0020).
+ */
+export const setDryRun = (scope: GuildScope, on: boolean, now: number): void =>
+  write(scope, ({ db }) => {
+    db.update(guilds)
+      .set({ dryRun: on ? 1 : 0, updatedAt: now })
+      .where(scope.only(guilds))
+      .run();
+  });
+
 /** docs/18 Layer 6. Stops side effects while leaving the process observable. */
 export const setKillswitch = (scope: GuildScope, on: boolean, now: number): void =>
   write(scope, ({ db }) => {

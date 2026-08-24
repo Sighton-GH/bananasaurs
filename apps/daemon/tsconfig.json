@@ -5,6 +5,7 @@
   "exclude": ["src/**/*.test.ts"],
   "references": [
     { "path": "../../packages/core" },
+    { "path": "../../packages/discord" },
     { "path": "../../packages/storage" },
     { "path": "../../packages/testkit" }
   ]
