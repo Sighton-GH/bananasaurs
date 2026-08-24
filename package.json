@@ -19,6 +19,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "node --env-file=.env --watch apps/daemon/src/index.ts",
+    "start": "node --env-file=.env apps/daemon/dist/index.js",
+    "doctor": "node --env-file=.env apps/daemon/dist/index.js --doctor",
     "db:generate": "drizzle-kit generate && node scripts/strictify.mjs",
     "db:migrate": "node scripts/migrate.mjs"
   },

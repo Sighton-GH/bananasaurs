@@ -14,6 +14,8 @@ Full rationale and the mandatory discord.js cache configuration are in `docs/dec
 
 ```bash
 npm run dev          # bot + api + dashboard, watch mode
+npm run start        # the built daemon, reading .env
+npm run doctor       # connect, report intents/partials/permissions, exit
 npm run build        # typecheck + build all packages
 npm run test         # vitest, no network, no live Discord
 npm run test:watch
