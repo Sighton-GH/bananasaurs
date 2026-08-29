@@ -778,3 +778,45 @@ The rule is broader than ADR 0013 strictly requires — a test spawning `node` o
 
 - **`doctor` cannot take the daemon down.** It reads lazily-computed discord.js structures, and those throw: `GuildMember.permissions` builds a bitfield from every cached role, and a role delivered without a `permissions` field makes it throw. Found by an incomplete test fixture, which is a fair way to find it — a diagnostic that crashes the process on startup is worse than no diagnostic. Wrapped, with a test.
 - **`index.ts` remains untested** — `assertMigrated`, the signal handlers, `runDoctor`. They live above the `createDaemon` seam and testing them means running the process. Named rather than left to be discovered.
+
+---
+
+## WP5 slice 6 — live test against the real test guild — 2026-08-29
+
+**The highest-value next step STATE.md named on 2026-08-23 finally ran**, and
+found four things 834 tests and 78 mutations against `FakeDiscord` did not.
+Full account, evidence and a fix-ordered handoff prompt:
+`docs/reports/WP5-slice-6-live-test.md`. Summary here for the log.
+
+Exercises 1–4 (`docs/21`) passed clean on the first attempt, including the
+outage and the rate cap. Exercise 5 (adoption) reproduced the exact failure
+the document defines for it — a mass role grant nobody approved — because
+`reconcileGuild` applies the same change `runAdoptionPass` had just refused
+two seconds earlier, on the same restart. Two further defects (a logging
+redaction bug that hid the first divergence below for five job retries, and
+the seed script's own default emoji beyond A/B not being valid reaction
+targets) and one already-known, already-deferred gap (manual role removal on
+an uncached member, slice 11's job) round it out.
+
+### Divergence found between the fake and real Discord
+
+**16. Discord's per-emoji reaction-listing endpoint does not match on the
+bare codepoints `unicodeEmojiKey()` stores for an emoji whose canonical form
+carries U+FE0F.** `restEmoji()` (`packages/discord/src/rest/port.ts:343-351`)
+reconstructs the REST query from the stripped key and never restores the
+selector. Verified live: the message's own reaction summary reported two
+real, ordinary reactions to 🅱️ while every reactor-listing call the bot's
+code can issue returned zero people — no error, silently indistinguishable
+from "nobody reacted." `FakeDiscord` round-trips whatever key it is given, so
+it cannot express this mismatch; every prior test either drove this exact
+code path against the fake (which cannot fail this way) or a live gateway
+event (a different code path entirely, keyed off the dispatch's own emoji
+field). The function's own comment already named this: "cannot be verified
+without a connection and is on the smoke-test list." This was that
+smoke test.
+
+**Not fixed here.** This session is the test run and the report; the fix
+(and whether `FakeDiscord` should learn to model the same VS16-sensitivity,
+so a regression here fails a test instead of requiring another live
+connection) is the next session's first task per the handoff prompt in
+`docs/reports/WP5-slice-6-live-test.md` §7.

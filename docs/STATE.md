@@ -1,6 +1,6 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-08-23.
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-08-29.
 
 ---
 
@@ -16,7 +16,13 @@ The harness was wrong about Discord twice, both found by mutation testing rather
 
 Settled at this boundary: **reconciliation covers adopted panels only**, and the `docs/19` §6.3 table cell is amended to match (Bryan, 2026-08-23). A managed panel has no independent record of member intent, so re-adding a hand-removed role would be the bot overruling a human on the strength of nothing.
 
-Next action: Bryan reads `docs/reports/WP3.md`, spot-checks the diff, pushes, then starts a fresh session with **`docs/reports/WP5-slice-6-handoff.md`** — the ordering changed at this boundary. Slice 6 (the real discord.js adapter) runs **before** WP4, because the fake harness was found wrong about Discord twice in one package and every WP1–WP3 conclusion is conditional on it being right. `docs/21_TESTING_THE_BOT.md` is what Bryan does with the result: the test-guild exercises from `docs/18` step 1, written before the code so the slice has something to be checked against. WP4 (the logging module) follows, using the prompt in `docs/reports/WP3.md` §8. WP4 is the **logging module**, and two of its requirements are already known to be hard: `MESSAGE_DELETE` carries no actor (attribution is inferred and must be labelled so everywhere), and the "miss no log events" gate is unachievable as written — the accepted restatement is an explicit gap marker in the log channel.
+Next action, superseded below: Bryan reads `docs/reports/WP3.md`, spot-checks the diff, pushes, then starts a fresh session with **`docs/reports/WP5-slice-6-handoff.md`** — the ordering changed at this boundary. Slice 6 (the real discord.js adapter) runs **before** WP4, because the fake harness was found wrong about Discord twice in one package and every WP1–WP3 conclusion is conditional on it being right. `docs/21_TESTING_THE_BOT.md` is what Bryan does with the result: the test-guild exercises from `docs/18` step 1, written before the code so the slice has something to be checked against. WP4 (the logging module) follows, using the prompt in `docs/reports/WP3.md` §8. WP4 is the **logging module**, and two of its requirements are already known to be hard: `MESSAGE_DELETE` carries no actor (attribution is inferred and must be labelled so everywhere), and the "miss no log events" gate is unachievable as written — the accepted restatement is an explicit gap marker in the log channel.
+
+**2026-08-29 — slice 6 live-tested against the real test guild, and it found four things the fake and 834 tests could not.** `docs/21` "Today's run," steps 0–9, run in full for the first time — Exercises 1–4 passed clean, including the outage and the rate cap. Exercise 5 (adoption) did not: it reproduced the exact failure `docs/21` defines for that exercise — a mass role grant nobody approved — because `reconcileGuild` applies the same change `runAdoptionPass` had just correctly refused, two seconds later, on the same restart. Full findings, evidence and a fix-ordered handoff prompt: **`docs/reports/WP5-slice-6-live-test.md`**.
+
+Four findings, in fix order: (1) `restEmoji()` never restores the variation selector U+FE0F, so reactor lookups for 🅰️/🅱️ — the seed script's own defaults — silently return nobody, and the seed script's C-through-F defaults aren't valid reaction emoji at all and hard-error, which an unguarded loop turns into a dead job for the whole guild's reconciliation; (2) job-failure logs always read `error: "<non-error>"` regardless of what failed, because the redaction rule only preserves an `instanceof Error` and the error was already stringified before it got there; (3) the adoption allowance gate above; (4) not a bug — manual role removal on an uncached member doesn't repair promptly, which is slice 11's periodic timer pass, already known and now documented in `docs/21`.
+
+**Next action:** fix findings 1–3 (a new session, prompt in `docs/reports/WP5-slice-6-live-test.md` §7) before starting WP4 — WP4 builds on `reconcileGuild` and inherits finding 3's bypass otherwise. Only after that does WP4 (the logging module) begin, using the still-accurate handoff in `docs/reports/WP5-slice-6.md` §8.
 
 ## Environment as it actually is
 
