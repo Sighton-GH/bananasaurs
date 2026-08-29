@@ -27,7 +27,9 @@ Required
 Optional
   --guild <id>          defaults to the first BANANASAURS_GUILD_ALLOWLIST entry
   --panel-id <name>     defaults to "test-panel"
-  --emoji <a>,<b>       one per role; defaults to 🅰️ 🅱️ 🅲 🅳 ...
+  --emoji <a>,<b>       one per role; defaults to 🅰️ 🅱️ for the first two
+                        roles, and is required beyond that — there is no
+                        valid Discord reaction emoji for "C", "D", ...
   --behaviour <name>    toggle (default) | add_only | remove_only
   --replace             overwrite a panel with the same id
   --adopt               also queue an adoption pass for the panel
@@ -46,7 +48,13 @@ Notes
   is what makes it adoptable.
 `;
 
-const DEFAULT_EMOJI = ['🅰️', '🅱️', '🅲', '🅳', '🅴', '🅵'];
+// Only A and B have an emoji-qualified "button" form in Unicode (alongside O
+// and P, unused here). C-Z are plain enclosed-alphanumeric characters with no
+// emoji presentation at all — Discord's reaction endpoint does not just fail
+// to find them, it refuses them outright with `Unknown Emoji`. Confirmed
+// live (docs/reports/WP5-slice-6-live-test.md finding 2a). --emoji is
+// required past two roles rather than guessing at a substitute.
+const DEFAULT_EMOJI = ['🅰️', '🅱️'];
 
 function fail(message) {
   process.stderr.write(`\n${message}\n${USAGE}`);

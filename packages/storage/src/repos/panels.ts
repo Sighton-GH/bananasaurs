@@ -68,6 +68,7 @@ const panelColumns = {
   requiredRoleId: panels.requiredRoleId,
   status: panels.status,
   adoptionPassState: panels.adoptionPassState,
+  adoptionBlockedCount: panels.adoptionBlockedCount,
 };
 
 type PanelHeaderRow = {
@@ -81,6 +82,7 @@ type PanelHeaderRow = {
   requiredRoleId: string | null;
   status: string;
   adoptionPassState: string;
+  adoptionBlockedCount: number;
 };
 
 /**
@@ -119,6 +121,7 @@ const hydrate = (scope: GuildScope, row: PanelHeaderRow): PanelConfig =>
       blockedRoleIds: blocked,
       status: row.status as PanelStatus,
       adoptionPassState: row.adoptionPassState as AdoptionPassState,
+      adoptionBlockedCount: row.adoptionBlockedCount,
       options,
     };
   });
@@ -147,6 +150,8 @@ export const createPanel = (scope: GuildScope, definition: PanelDefinition, now:
         // starts owing an adoption pass. A managed panel is posted empty and
         // has nothing to adopt.
         adoptionPassState: definition.kind === 'adopted' ? 'pending' : 'done',
+        // Nothing has run yet, so nothing is known to be blocked (ADR 0021).
+        adoptionBlockedCount: 0,
         adoptedAt: definition.kind === 'adopted' ? now : null,
         createdAt: now,
         updatedAt: now,
@@ -262,15 +267,22 @@ export const setPanelStatus = (
       .run();
   });
 
+/**
+ * `blockedCount` is a required parameter, not optional: the two fields must
+ * move together (ADR 0021) or `reconcileGuild`'s selection reads a stale
+ * count against a fresh state. Pass `0` explicitly wherever nothing is known
+ * to be blocked.
+ */
 export const setAdoptionPassState = (
   scope: GuildScope,
   panelId: string,
   state: AdoptionPassState,
+  blockedCount: number,
   now: number,
 ): void =>
   write(scope, ({ db }) => {
     db.update(panels)
-      .set({ adoptionPassState: state, updatedAt: now })
+      .set({ adoptionPassState: state, adoptionBlockedCount: blockedCount, updatedAt: now })
       .where(scope.only(panels, eq(panels.panelId, panelId)))
       .run();
   });

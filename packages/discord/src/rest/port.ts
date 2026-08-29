@@ -13,6 +13,7 @@ import {
   type APIUser,
   type REST,
 } from 'discord.js';
+import { unicodeEmojiChars } from '@bananasaurs/core';
 import type {
   AuditLogEntry,
   DiscordMember,
@@ -334,20 +335,19 @@ function snowflakeToMs(id: string): number {
 /**
  * `EmojiKey` -> what Discord's reaction routes expect.
  *
- * Unicode is the raw characters, url-encoded. Custom is documented as `name:id`
- * — and `EmojiKey` deliberately carries only the id, because the name is not
- * part of an emoji's identity and changes without the reaction changing. `_` is
- * the placeholder name; Discord is understood to key off the id alone, but that
- * cannot be verified without a connection and is on the smoke-test list.
+ * Unicode is the raw characters, url-encoded — restored through
+ * `unicodeEmojiChars`, which reinstates U+FE0F for the codepoints whose
+ * canonical, reaction-matching form requires it (`docs/reports/WP5-slice-6-live-test.md`
+ * finding 1; a bare codepoint silently matched nothing for 🅰️/🅱️). Custom is
+ * documented as `name:id` — and `EmojiKey` deliberately carries only the id,
+ * because the name is not part of an emoji's identity and changes without the
+ * reaction changing. `_` is the placeholder name; Discord is understood to key
+ * off the id alone, but that cannot be verified without a connection and is on
+ * the smoke-test list.
  */
 function restEmoji(key: EmojiKey): string {
   if (key.startsWith('c:')) return `_:${key.slice(2)}`;
-  if (!key.startsWith('u:')) throw new Error(`not an emoji key: ${key}`);
-  const codepoints = key
-    .slice(2)
-    .split('-')
-    .map((point) => Number.parseInt(point, 16));
-  return encodeURIComponent(String.fromCodePoint(...codepoints));
+  return encodeURIComponent(unicodeEmojiChars(key));
 }
 
 /** `OutgoingMessage` is already the Discord shape, minus what we never send. */

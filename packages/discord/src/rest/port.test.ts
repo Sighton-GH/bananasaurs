@@ -258,6 +258,28 @@ describe('messages and reactions', () => {
     );
   });
 
+  /**
+   * Live-verified, `docs/reports/WP5-slice-6-live-test.md` finding 1: 🅱️ is
+   * U+1F171 U+FE0F, `unicodeEmojiKey` strips U+FE0F for storage, and a bare
+   * U+1F171 query against real Discord matched nothing — every reactor query
+   * for the doc's own default emoji silently returned zero people.
+   */
+  it('restores the variation selector for a button emoji whose canonical form needs it', async () => {
+    const { port, requests } = harness();
+    await port.createReaction(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, 'u:1f171');
+    expect(decodeURIComponent(last(requests).path)).toBe(
+      `/api/v10/channels/${CHANNEL}/messages/${MESSAGE}/reactions/🅱️/@me`,
+    );
+  });
+
+  it('restores the selector when fetching reactors too, not only when reacting', async () => {
+    const { port, requests } = harness([{ status: 200, body: [] }]);
+    await port.fetchReactionUsers(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, 'u:1f171', {
+      limit: 100,
+    });
+    expect(decodeURIComponent(last(requests).path)).toContain('/reactions/🅱️');
+  });
+
   it('turns a multi-codepoint emoji key back into the whole sequence', async () => {
     const { port, requests } = harness();
     // U+1F468 U+200D U+1F4BB — one emoji, three codepoints. Splitting on the

@@ -1,3 +1,4 @@
+import { DiscordApiError } from '../discord/errors.js';
 import type { DiscordMessageRef, EmojiKey, Snowflake } from '../discord/port.js';
 import { isSnowflakeId, type GuildId, type SnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
@@ -69,6 +70,39 @@ export class ReactionStateCache {
     const fetched = pageReactors(this.discord, this.guildId, ref, emoji);
     this.#byEmoji.set(key, fetched);
     return fetched;
+  }
+}
+
+/**
+ * `cache.reactors()`, isolated so one option's Unknown Emoji cannot take an
+ * entire pass down for every other option, panel, and guild sharing the job.
+ *
+ * `docs/reports/WP5-slice-6-live-test.md` finding 2b: a bad default emoji
+ * (`scripts/seed-test-panel.mjs`'s own beyond A/B) threw uncaught out of the
+ * whole reconciliation or adoption pass — five retries and the job died,
+ * taking every other panel in the guild out of reconciliation with it.
+ *
+ * Deliberately narrow: only Unknown Emoji is treated as "this option is
+ * broken, skip it." Anything else — a rate limit, a gone message mid-pass, a
+ * network fault — still propagates, because silently returning an empty
+ * reactor list for a systemic failure is exactly the silent-undercount bug
+ * finding 1 already was; the pass must fail loudly and retry rather than
+ * quietly report "nobody reacted."
+ */
+export async function reactorsIsolated(
+  cache: ReactionStateCache,
+  ref: DiscordMessageRef,
+  emoji: EmojiKey,
+  onSkipped: (err: DiscordApiError) => void,
+): Promise<readonly Snowflake[]> {
+  try {
+    return await cache.reactors(ref, emoji);
+  } catch (err) {
+    if (err instanceof DiscordApiError && err.isUnknownEmoji) {
+      onSkipped(err);
+      return [];
+    }
+    throw err;
   }
 }
 

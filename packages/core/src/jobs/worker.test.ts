@@ -1,3 +1,4 @@
+import { Writable } from 'node:stream';
 import { beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { z } from 'zod';
@@ -11,6 +12,18 @@ import {
 } from './worker.js';
 
 const logger = pino({ level: 'silent' });
+
+/** A real pino instance over a captured stream, so redaction runs for real. */
+const capturingLogger = () => {
+  const lines: string[] = [];
+  const stream = new Writable({
+    write(chunk: Buffer, _enc, callback) {
+      lines.push(chunk.toString('utf8'));
+      callback();
+    },
+  });
+  return { logger: pino({ level: 'info' }, stream), lines };
+};
 
 interface Recorded {
   jobId: number;
@@ -159,6 +172,29 @@ describe('failures that a retry cannot fix are permanent', () => {
     s.add({ kind: 'not-registered' });
     const outcome = await build([handlerFor(ran)]).runOnce();
     expect(outcome).toMatchObject({ error: expect.stringContaining('not-registered') as string });
+  });
+
+  it('writes the real error into the log line, not "<non-error>" (finding 2)', async () => {
+    // `#fail` logs `describeError()`'s own output — already a plain string —
+    // under the key `error`. `safeLogFields`'s redaction for that key used to
+    // preserve only `instanceof Error`, so a string was always stomped to
+    // '<non-error>', on every job failure. This is why finding 1 took a live
+    // diagnostic script to find instead of a log line
+    // (docs/reports/WP5-slice-6-live-test.md).
+    const { logger: capturing, lines } = capturingLogger();
+    s.add();
+    const worker = new JobWorker({
+      store: s.store,
+      handlers: [handlerFor(ran, 'throw')],
+      logger: capturing,
+      now: () => 1000,
+    });
+
+    await worker.runOnce();
+
+    const entry = JSON.parse(lines.at(-1) ?? '{}') as { error?: string };
+    expect(entry.error).toBe('Error: handler exploded');
+    expect(entry.error).not.toBe('<non-error>');
   });
 });
 

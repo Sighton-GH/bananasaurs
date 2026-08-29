@@ -52,6 +52,23 @@ describe('safeLogFields — allowlist, not denylist', () => {
     expect(JSON.stringify(out)).not.toContain('secret/path');
   });
 
+  it('passes a string through unredacted under err/error, since a string cannot smuggle extra properties', () => {
+    // packages/core/src/jobs/worker.ts's #fail logs `describeError()`'s own
+    // output under `error` — already a plain string, not a raw Error, so the
+    // instanceof check stomped it to '<non-error>' on every job failure,
+    // regardless of what actually failed (docs/reports/WP5-slice-6-live-test.md
+    // finding 2). The redaction exists to stop a raw Error's extra properties
+    // (a token, a stack path) from reaching the log; a string cannot carry
+    // those, so it is not the thing this key's redaction protects against.
+    const out = safeLogFields({ error: 'DiscordApiError: Unknown Emoji' });
+    expect(out['error']).toBe('DiscordApiError: Unknown Emoji');
+  });
+
+  it('still reduces a non-Error, non-string value under err/error to <non-error>', () => {
+    const out = safeLogFields({ err: { weird: 'object', token: 'leaked' } });
+    expect(out['err']).toBe('<non-error>');
+  });
+
   it('omits droppedFields entirely when nothing was dropped', () => {
     expect(safeLogFields({ guildId: '1' })).not.toHaveProperty('droppedFields');
   });

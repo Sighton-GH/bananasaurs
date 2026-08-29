@@ -39,6 +39,7 @@ const panelWith = (over: Partial<PanelConfig> = {}): PanelConfig => ({
   blockedRoleIds: [],
   status: 'enabled',
   adoptionPassState: 'done',
+  adoptionBlockedCount: 0,
   options: [
     { optionId: 'a', roleId: ROLE.a, emojiKey: 'u:1', label: undefined, position: 0 },
     { optionId: 'b', roleId: ROLE.b, emojiKey: 'u:2', label: undefined, position: 1 },

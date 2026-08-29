@@ -217,6 +217,7 @@ describe('helpers', () => {
     blockedRoleIds: [],
     status: 'enabled',
     adoptionPassState: 'done',
+    adoptionBlockedCount: 0,
     options: [
       {
         optionId: 'b',

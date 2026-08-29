@@ -14,7 +14,9 @@ import {
   RateLimiter,
   reconcileDedupeKey,
   reconcileGuild,
+  runAdoptionPass,
   unicodeEmojiKey,
+  type AdoptionPorts,
   type EffectGatewayDeps,
   type MemberUpdatePorts,
   type PanelDefinition,
@@ -166,6 +168,20 @@ const reconcilePorts = (): ReconcilePorts => ({
       reason: 'deleted',
       now: discord.now(),
     }),
+});
+
+const adoptionPorts = (): AdoptionPorts => ({
+  guildId: GUILD,
+  botUserId: BOT_USER_ID,
+  store: panelStoreFor(scope),
+  discord,
+  effects: panelEffectsFor(scope, gateway, panelAuthorization(scope), () => discord.now()),
+  logger,
+  now: () => discord.now(),
+  newPassId: () => `pass-${passCounter++}`,
+  allowanceFor: (source) => rateLimiter.bucketFor(source, discord.now()).allowance,
+  setAdoptionPassState: (panelId, state, blockedCount) =>
+    panelRepo.setAdoptionPassState(scope, panelId, state, blockedCount, discord.now()),
 });
 
 const memberUpdatePorts = (): MemberUpdatePorts => ({
@@ -454,6 +470,89 @@ describe('the pass itself', () => {
   });
 });
 
+describe('defect 3 — reconciliation must not bypass the adoption allowance gate (ADR 0021)', () => {
+  it('reproduces the live sequence: adoption refuses, then reconcile must not grant the same change behind it', async () => {
+    // One pre-existing reaction — exactly the live repro's shape (count: 1,
+    // limit: 0 with no standing allowance). The bug is not about scale.
+    preReact(E_A, ALICE);
+
+    const adoptionOutcome = await runAdoptionPass(adoptionPorts(), {
+      panelId: 'roles',
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(adoptionOutcome.status).toBe('awaiting-allowance');
+    expect(discord.memberRoles(ALICE)).toEqual([]);
+
+    // The daemon's own restart, two seconds later in the live report: the
+    // same gateway-gap reconnect enqueues reconcile_guild right behind
+    // adopt_panel.
+    discord.resetCalls();
+    const reconcileOutcome = await reconcileGuild(reconcilePorts(), { reason: 'gateway-gap' });
+
+    expect(reconcileOutcome.status).toBe('nothing-to-do');
+    // The mass grant this exercise exists to prevent must not happen via a
+    // different, more permissive gate two seconds after the correct refusal.
+    expect(discord.memberRoles(ALICE)).toEqual([]);
+    expect(discord.restCalls('addRole')).toEqual([]);
+  });
+
+  it('leaves a panel that was never examined by adoption fully reconcilable — not every "pending" panel is blocked', async () => {
+    // The naive fix (exclude every adoptionPassState === 'pending' panel) was
+    // rejected in the ADR: every adopted panel defaults to 'pending' at
+    // creation, and docs/21 exercises 1-4 never run runAdoptionPass at all.
+    // Ordinary drift-repair — this suite's own flagship outage-repair test —
+    // must keep working on a panel nobody has explicitly adopted.
+    expect(panelStoreFor(scope).findPanel('roles')?.adoptionPassState).toBe('pending');
+    preReact(E_A, ALICE);
+
+    const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
+
+    expect(outcome.status).toBe('reconciled');
+    expect(discord.memberRoles(ALICE)).toEqual([ROLE_A]);
+  });
+
+  it('reconciles normally again once the allowance is granted and adoption completes', async () => {
+    preReact(E_A, ALICE);
+    await runAdoptionPass(adoptionPorts(), {
+      panelId: 'roles',
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(discord.memberRoles(ALICE)).toEqual([]);
+
+    rateLimiter.grantAllowance('adoption', 1, discord.now());
+    const adopted = await runAdoptionPass(adoptionPorts(), {
+      panelId: 'roles',
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(adopted.status).toBe('adopted');
+    expect(discord.memberRoles(ALICE)).toEqual([ROLE_A]);
+
+    // Now that the backlog is resolved, ordinary drift-repair covers the
+    // panel exactly as it did before adoption was ever involved.
+    unReactOffline(E_A, ALICE);
+    const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
+    expect(outcome.status).toBe('reconciled');
+    expect(discord.memberRoles(ALICE)).toEqual([]);
+  });
+
+  it('leaves a panel alone while an adoption pass is actively running against it', async () => {
+    // Defensive: today's single-writer, per-guild job ordering (ADR 0020)
+    // makes a literal overlap with reconcileGuild unlikely, but 'running'
+    // means an adoption pass currently owns this panel's convergence, and
+    // that must not depend on the scheduler staying exactly as it is today.
+    preReact(E_A, ALICE);
+    panelRepo.setAdoptionPassState(scope, 'roles', 'running', 0, discord.now());
+
+    const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
+
+    expect(outcome.status).toBe('nothing-to-do');
+    expect(discord.memberRoles(ALICE)).toEqual([]);
+  });
+});
+
 describe('the budget', () => {
   beforeEach(() => {
     write(scope, ({ db }) => {
@@ -514,6 +613,70 @@ describe('the budget', () => {
 
     expect((await reconcileGuild(ports, { reason: 'timer' })).status).toBe('reconciled');
     expect(discord.memberRoles(CARA)).toEqual([ROLE_A]);
+  });
+});
+
+describe('a broken panel option — findings 1 and 2b', () => {
+  const SECOND_MESSAGE = parseSnowflakeId('393939393939393939');
+  const SECOND_ROLE = parseSnowflakeId('959595959595959595');
+  const SECOND_EMOJI = unicodeEmojiKey('🧠');
+
+  beforeEach(() => {
+    // A second, unrelated panel — so the test can show the whole pass keeps
+    // going, not only the rest of the panel whose option broke.
+    discord.defineRole({ id: SECOND_ROLE, name: 'second', position: 13 });
+    discord.defineMessage({ channelId: CHANNEL, messageId: SECOND_MESSAGE, authorId: AUTHOR });
+    roleRepo.allowlistRole(scope, SECOND_ROLE);
+    panelRepo.createPanel(
+      scope,
+      panelDefinitionSchema.parse({
+        panelId: 'second',
+        kind: 'adopted',
+        channelId: CHANNEL,
+        messageId: SECOND_MESSAGE,
+        behaviour: 'toggle',
+        component: 'reaction',
+        options: [{ optionId: 'x', roleId: SECOND_ROLE, emojiKey: SECOND_EMOJI, position: 0 }],
+      }),
+      discord.now(),
+    );
+  });
+
+  it('skips one option Discord refuses to read (Unknown Emoji), instead of failing the whole pass', async () => {
+    preReact(E_A, ALICE); // 🅰️: the injected failure hits this fetch first
+    preReact(E_B, ALICE); // 🅱️ on the same panel: still read normally
+    discord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: SECOND_MESSAGE,
+      userId: BOB,
+      emoji: SECOND_EMOJI,
+    });
+
+    // Before the fix this propagated uncaught out of reconcileGuild entirely:
+    // five job retries and the pass dead for every panel in the guild
+    // (docs/reports/WP5-slice-6-live-test.md finding 2b).
+    discord.failNext('fetchReactionUsers', FakeDiscord.unknownEmoji());
+
+    const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
+
+    expect(outcome.status).toBe('reconciled');
+    expect(outcome.panelsVisited).toBe(2);
+    // 🅰️'s option was skipped this pass — no different from finding no
+    // reactors — so Alice gets only what 🅱️ asked for.
+    expect(discord.memberRoles(ALICE)).toEqual([ROLE_B]);
+    // The second panel, unaffected by the first panel's broken option, still
+    // reconciles normally.
+    expect(discord.memberRoles(BOB)).toEqual([SECOND_ROLE]);
+  });
+
+  it('still fails the pass on an error that is not Unknown Emoji, rather than silently under-counting', async () => {
+    preReact(E_A, ALICE);
+    // A rate limit or a network fault must not be swallowed the same way: a
+    // pass that cannot tell "no reactors" from "could not check" must not
+    // guess. It has to fail loudly so the job retries.
+    discord.failNext('fetchReactionUsers', FakeDiscord.rateLimited());
+
+    await expect(reconcileGuild(reconcilePorts(), { reason: 'timer' })).rejects.toThrow();
   });
 });
 

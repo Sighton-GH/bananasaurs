@@ -44,6 +44,7 @@ export {
   customEmojiKey,
   emojiKeyFromGateway,
   isCustomEmojiKey,
+  unicodeEmojiChars,
   unicodeEmojiKey,
 } from './discord/emoji.js';
 export {

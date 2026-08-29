@@ -6,6 +6,8 @@ export const DiscordErrorCode = {
   UnknownMessage: 10008,
   UnknownMember: 10007,
   UnknownRole: 10011,
+  /** The emoji is not a valid reaction target — malformed or never emoji-qualified. */
+  UnknownEmoji: 10014,
   MissingAccess: 50001,
   MissingPermissions: 50013,
   /**
@@ -57,6 +59,16 @@ export class DiscordApiError extends Error {
       this.code === DiscordErrorCode.UnknownMember ||
       this.code === DiscordErrorCode.UnknownRole
     );
+  }
+
+  /**
+   * Distinct from `isGone`: an emoji can be invalid without ever having
+   * existed (docs/reports/WP5-slice-6-live-test.md finding 2a). Not
+   * retryable, but scoped to the one option that named it — see
+   * `packages/core/src/panels/reactions.ts`'s `reactorsIsolated`.
+   */
+  get isUnknownEmoji(): boolean {
+    return this.code === DiscordErrorCode.UnknownEmoji;
   }
 
   /** We were too slow to acknowledge. The role change may still have happened. */

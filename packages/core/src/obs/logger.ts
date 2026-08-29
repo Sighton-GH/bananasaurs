@@ -93,8 +93,20 @@ export function safeLogFields(fields: Record<string, unknown>): Record<string, u
       continue;
     }
     if (key === 'err' || key === 'error') {
-      out[key] =
-        value instanceof Error ? { name: value.name, message: value.message } : '<non-error>';
+      // The redaction exists to stop a raw Error's extra, unvetted properties
+      // (a token, a stack path) from reaching the log — never to hide the
+      // message itself. A string cannot carry those, so it passes through
+      // unredacted; it is always already-narrowed output (`describeError()`
+      // in `packages/core/src/jobs/worker.ts`), never a raw thrown value.
+      // Stomping it to '<non-error>' hid the real error on every job failure
+      // (docs/reports/WP5-slice-6-live-test.md finding 2).
+      if (value instanceof Error) {
+        out[key] = { name: value.name, message: value.message };
+      } else if (typeof value === 'string') {
+        out[key] = value;
+      } else {
+        out[key] = '<non-error>';
+      }
       continue;
     }
     const t = typeof value;

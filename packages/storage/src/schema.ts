@@ -120,6 +120,14 @@ export const panels = sqliteTable(
     disabledReason: text('disabled_reason'),
     adoptedAt: integer('adopted_at'),
     adoptionPassState: text('adoption_pass_state').notNull().default('pending'),
+    /**
+     * The size of the change list the most recent `runAdoptionPass` computed
+     * and could not apply because the standing allowance did not cover it.
+     * `0` means either "never examined" or "resolved" — `adoption_pass_state`
+     * alone cannot tell those apart, which is what let `reconcileGuild` apply
+     * a grant `runAdoptionPass` had explicitly refused (ADR 0021).
+     */
+    adoptionBlockedCount: integer('adoption_blocked_count').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -146,6 +154,7 @@ export const panels = sqliteTable(
       'panels_adoption_pass_state',
       sql`${t.adoptionPassState} IN ('pending','running','done','refused')`,
     ),
+    check('panels_adoption_blocked_count_nonnegative', sql`${t.adoptionBlockedCount} >= 0`),
     // An adopted panel is reaction-driven and can never carry components.
     check('panels_adopted_is_reaction', sql`${t.kind} <> 'adopted' OR ${t.component} = 'reaction'`),
     // single_choice on an adopted panel cannot work: removing another emoji's
