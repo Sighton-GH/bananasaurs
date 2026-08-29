@@ -517,6 +517,70 @@ describe('the budget', () => {
   });
 });
 
+describe('a broken panel option — findings 1 and 2b', () => {
+  const SECOND_MESSAGE = parseSnowflakeId('393939393939393939');
+  const SECOND_ROLE = parseSnowflakeId('959595959595959595');
+  const SECOND_EMOJI = unicodeEmojiKey('🧠');
+
+  beforeEach(() => {
+    // A second, unrelated panel — so the test can show the whole pass keeps
+    // going, not only the rest of the panel whose option broke.
+    discord.defineRole({ id: SECOND_ROLE, name: 'second', position: 13 });
+    discord.defineMessage({ channelId: CHANNEL, messageId: SECOND_MESSAGE, authorId: AUTHOR });
+    roleRepo.allowlistRole(scope, SECOND_ROLE);
+    panelRepo.createPanel(
+      scope,
+      panelDefinitionSchema.parse({
+        panelId: 'second',
+        kind: 'adopted',
+        channelId: CHANNEL,
+        messageId: SECOND_MESSAGE,
+        behaviour: 'toggle',
+        component: 'reaction',
+        options: [{ optionId: 'x', roleId: SECOND_ROLE, emojiKey: SECOND_EMOJI, position: 0 }],
+      }),
+      discord.now(),
+    );
+  });
+
+  it('skips one option Discord refuses to read (Unknown Emoji), instead of failing the whole pass', async () => {
+    preReact(E_A, ALICE); // 🅰️: the injected failure hits this fetch first
+    preReact(E_B, ALICE); // 🅱️ on the same panel: still read normally
+    discord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: SECOND_MESSAGE,
+      userId: BOB,
+      emoji: SECOND_EMOJI,
+    });
+
+    // Before the fix this propagated uncaught out of reconcileGuild entirely:
+    // five job retries and the pass dead for every panel in the guild
+    // (docs/reports/WP5-slice-6-live-test.md finding 2b).
+    discord.failNext('fetchReactionUsers', FakeDiscord.unknownEmoji());
+
+    const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
+
+    expect(outcome.status).toBe('reconciled');
+    expect(outcome.panelsVisited).toBe(2);
+    // 🅰️'s option was skipped this pass — no different from finding no
+    // reactors — so Alice gets only what 🅱️ asked for.
+    expect(discord.memberRoles(ALICE)).toEqual([ROLE_B]);
+    // The second panel, unaffected by the first panel's broken option, still
+    // reconciles normally.
+    expect(discord.memberRoles(BOB)).toEqual([SECOND_ROLE]);
+  });
+
+  it('still fails the pass on an error that is not Unknown Emoji, rather than silently under-counting', async () => {
+    preReact(E_A, ALICE);
+    // A rate limit or a network fault must not be swallowed the same way: a
+    // pass that cannot tell "no reactors" from "could not check" must not
+    // guess. It has to fail loudly so the job retries.
+    discord.failNext('fetchReactionUsers', FakeDiscord.rateLimited());
+
+    await expect(reconcileGuild(reconcilePorts(), { reason: 'timer' })).rejects.toThrow();
+  });
+});
+
 describe('a panel that can no longer work', () => {
   it('is disabled when its message has been deleted, and its configuration kept', async () => {
     preReact(E_A, ALICE);

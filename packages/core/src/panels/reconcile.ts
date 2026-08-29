@@ -11,6 +11,7 @@ import {
   applyPlan,
   convergeMember,
   ReactionStateCache,
+  reactorsIsolated,
   type ReactionSubscriberDeps,
 } from './reactions.js';
 
@@ -153,7 +154,21 @@ export async function reconcileGuild(
     const selections = new Map<string, Set<string>>();
     for (const option of panel.options) {
       if (option.emojiKey === undefined) continue;
-      for (const userId of await cache.reactors(ref, option.emojiKey)) {
+      const reactors = await reactorsIsolated(cache, ref, option.emojiKey, (err) => {
+        ports.logger.warn(
+          safeLogFields({
+            component: 'panels',
+            guildId: ports.guildId,
+            panelId: panel.panelId,
+            optionId: option.optionId,
+            roleId: option.roleId,
+            outcome: 'option-skipped',
+            err,
+          }),
+          'skipping a panel option Discord refused to read reactions for',
+        );
+      });
+      for (const userId of reactors) {
         if (userId === ports.botUserId) continue;
         const existing = selections.get(userId);
         if (existing) existing.add(option.optionId);

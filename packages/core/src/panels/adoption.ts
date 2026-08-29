@@ -1,11 +1,17 @@
 import { z } from 'zod';
+import type { DiscordApiError } from '../discord/errors.js';
 import type { DiscordMessageRef, Snowflake } from '../discord/port.js';
 import { snowflakeIdSchema, type SnowflakeId } from '../ids.js';
 import { safeLogFields } from '../obs/logger.js';
 import type { EffectSource } from '../effects/rate-limit.js';
 import { isEmptyPlan, planConvergence, type ConvergencePlan } from './convergence.js';
 import type { AdoptionPassState, PanelConfig } from './model.js';
-import { applyPlan, ReactionStateCache, type ReactionSubscriberDeps } from './reactions.js';
+import {
+  applyPlan,
+  ReactionStateCache,
+  reactorsIsolated,
+  type ReactionSubscriberDeps,
+} from './reactions.js';
 
 /**
  * Adopting a panel that already has reactions on it.
@@ -87,11 +93,15 @@ const selectionsByMember = async (
   ref: DiscordMessageRef,
   cache: ReactionStateCache,
   botUserId: Snowflake,
+  onSkipped: (option: PanelConfig['options'][number], err: DiscordApiError) => void,
 ): Promise<Map<string, Set<string>>> => {
   const byMember = new Map<string, Set<string>>();
   for (const option of panel.options) {
     if (option.emojiKey === undefined) continue;
-    for (const userId of await cache.reactors(ref, option.emojiKey)) {
+    const reactors = await reactorsIsolated(cache, ref, option.emojiKey, (err) =>
+      onSkipped(option, err),
+    );
+    for (const userId of reactors) {
       if (userId === botUserId) continue;
       const existing = byMember.get(userId);
       if (existing) existing.add(option.optionId);
@@ -126,7 +136,20 @@ export async function runAdoptionPass(
   // for the whole pass, so a panel with five emoji costs five paged reads no
   // matter how many members reacted.
   const cache = new ReactionStateCache(ports.discord, ports.guildId);
-  const selections = await selectionsByMember(panel, ref, cache, ports.botUserId);
+  const selections = await selectionsByMember(panel, ref, cache, ports.botUserId, (option, err) => {
+    ports.logger.warn(
+      safeLogFields({
+        component: 'panels',
+        guildId: ports.guildId,
+        panelId: panel.panelId,
+        optionId: option.optionId,
+        roleId: option.roleId,
+        outcome: 'option-skipped',
+        err,
+      }),
+      'skipping a panel option Discord refused to read reactions for',
+    );
+  });
 
   // Sorted so the pass is deterministic and a resumed run agrees with the run
   // that was interrupted.

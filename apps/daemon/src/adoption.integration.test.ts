@@ -355,6 +355,48 @@ describe('with an owner-sized allowance', () => {
   });
 });
 
+describe('a broken panel option — findings 1 and 2b', () => {
+  const CARA = parseSnowflakeId('553333333333333333');
+
+  beforeEach(() => {
+    discord.defineMember(CARA, []);
+    discord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      userId: CARA,
+      emoji: CHECK,
+    });
+  });
+
+  it('skips one option Discord refuses to read (Unknown Emoji), instead of failing the whole pass', async () => {
+    // Live evidence, docs/reports/WP5-slice-6-live-test.md finding 2b: a bad
+    // default emoji (scripts/seed-test-panel.mjs's own beyond A/B) threw
+    // uncaught out of runAdoptionPass entirely — five retries and the job
+    // dead. BRAIN is position 0, so this hits its reactor fetch first.
+    discord.failNext('fetchReactionUsers', FakeDiscord.unknownEmoji());
+    rateLimiter.grantAllowance('adoption', 1, discord.now());
+
+    const { outcome } = await runPass();
+
+    expect(outcome.status).toBe('adopted');
+    // BRAIN's option was skipped this pass — no different from finding no
+    // reactors — so none of the twelve reactors are counted or granted.
+    // CHECK, unaffected, still contributes CARA's grant.
+    expect(outcome.changeCount).toBe(1);
+    expect(outcome.applied).toBe(1);
+    expect(discord.memberRoles(CARA)).toEqual([ROLE_B]);
+    for (const userId of REACTORS) expect(discord.memberRoles(userId)).toEqual([]);
+  });
+
+  it('still fails the pass on an error that is not Unknown Emoji, rather than silently under-counting', async () => {
+    // A rate limit or a network fault must not be swallowed the same way: a
+    // pass that cannot tell "no reactors" from "could not check" must not
+    // guess at an owner-facing change count. It has to fail loudly.
+    discord.failNext('fetchReactionUsers', FakeDiscord.rateLimited());
+    await expect(runPass()).rejects.toThrow();
+  });
+});
+
 describe('paging', () => {
   it('reads every reactor across more than one page', async () => {
     // Discord caps a page at 100 whatever you ask for, so a well-used panel is

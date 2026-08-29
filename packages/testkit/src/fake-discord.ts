@@ -265,6 +265,10 @@ export class FakeDiscord implements DiscordPort {
   static unknownInteraction(): DiscordApiError {
     return new DiscordApiError(404, DiscordErrorCode.UnknownInteraction, 'Unknown interaction');
   }
+  /** Confirmed live: `scripts/seed-test-panel.mjs --emoji 🅲` produced exactly this. */
+  static unknownEmoji(): DiscordApiError {
+    return new DiscordApiError(400, DiscordErrorCode.UnknownEmoji, 'Unknown Emoji');
+  }
 
   // ── inspection ─────────────────────────────────────────────────────────
   restCalls(method?: PortMethod): readonly RestCall[] {
