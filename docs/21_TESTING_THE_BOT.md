@@ -86,6 +86,33 @@ Members, Administrator. That absence is a design decision, not an oversight —
 If someone "fixes" a panel problem by granting Manage Messages, they have
 removed a wall, not fixed a bug.
 
+**Where this integer actually goes.** The current Developer Portal has no box
+where you type "2416004288" — that number is what Discord *computes* from
+checkboxes, and it only ever shows up baked into an invite URL. Go to your app
+→ **Installation** → **Default Install Settings** → **Guild Install**, and
+under **Scopes** add `bot` and `applications.commands`. Under **Permissions**,
+add exactly these eight, by name (this is the same list as the table above):
+
+- Add Reactions
+- View Audit Log
+- View Channel
+- Send Messages
+- Embed Links
+- Read Message History
+- Manage Roles
+- Use Application Commands
+
+Then use the **Install Link** on that same page to invite the bot — Discord
+builds `permissions=2416004288` into that URL from your checkboxes; you never
+type the number yourself.
+
+If you already invited the bot with a smaller set (for example, only Manage
+Roles and View Audit Log), you do not need to redo the invite: open your test
+server → **Server Settings → Roles → (the bot's own role)** and turn the
+missing permissions on there directly. Re-inviting with a corrected link also
+updates permissions for a bot already in the server, but editing the role is
+faster.
+
 ### 4. A safe test guild
 
 Make a throwaway server. In it:
@@ -206,13 +233,26 @@ Pick a message in your test guild — right-click → **Copy Message Link** give
 you `.../<guild>/<channel>/<message>` — and **two junk roles**, created for this
 and held by nobody.
 
-In a second terminal:
+In a second terminal, from the repo root:
 
 ```bash
 cd /home/bryan/projects/bananasaurs
 node scripts/seed-test-panel.mjs \
-  --channel <channelId> --message <messageId> \
-  --roles <roleA>,<roleB>
+  --channel CHANNEL_ID --message MESSAGE_ID \
+  --roles ROLE_ID_A,ROLE_ID_B
+```
+
+Replace `CHANNEL_ID`, `MESSAGE_ID`, `ROLE_ID_A`, and `ROLE_ID_B` with the plain
+numeric ids you copied from Discord. **Do not wrap them in `<` and `>`.** Those
+angle brackets are just this document's way of marking "fill this in" — bash
+reads `<` and `>` as redirection operators, not as bracket punctuation, so
+`--channel <1540816151137878028>` fails with `syntax error near unexpected
+token`. A correctly filled-in command looks like this (fake ids below):
+
+```bash
+node scripts/seed-test-panel.mjs \
+  --channel 1540816151137878028 --message 1543352717022601348 \
+  --roles 1543350960577974323,1543350986360225912
 ```
 
 It prints the two emoji it assigned (🅰️ and 🅱️ by default).
@@ -446,8 +486,10 @@ Still dry run **on**.
 > prompt.
 
 1. Seed an adopted panel on a message, with two junk roles:
-   `node scripts/seed-test-panel.mjs --channel <id> --message <id> --roles <a>,<b>`
-   (the script prints its own usage). **Then add the emoji it names to the
+   `node scripts/seed-test-panel.mjs --channel CHANNEL_ID --message MESSAGE_ID --roles ROLE_ID_A,ROLE_ID_B`
+   — swap in your own plain numeric ids for those four placeholders, with no
+   angle brackets (see Step 4 above for why that matters) — (the script prints
+   its own usage). **Then add the emoji it names to the
    message yourself** — nothing in the daemon seeds them, because that is
    `panel sync` in the CLI, slice 13. An adopted panel normally already has its
    reactions, which is what makes it adoptable in the first place.
