@@ -820,3 +820,109 @@ smoke test.
 so a regression here fails a test instead of requiring another live
 connection) is the next session's first task per the handoff prompt in
 `docs/reports/WP5-slice-6-live-test.md` §7.
+
+---
+
+## WP5 live-test fixes — the three defects, fixed — 2026-08-29
+
+Fixed, tested and mutation-checked, in the order the handoff named, on
+`wp5-live-test-fixes`. No live connection: all three were fixable and
+verifiable against `FakeDiscord`, as the report predicted.
+
+**Divergence 16, above, is fixed — and the question it left open has an
+answer.** `unicodeEmojiChars()` (`packages/core/src/discord/emoji.ts`)
+restores U+FE0F for the small, bounded set of codepoints whose canonical
+reaction form requires it — 🅰️/🅱️/🅾️/🅿️, the Enclosed Alphanumeric
+Supplement "button" emoji, which is what this project's panels actually use.
+`restEmoji()` now calls it instead of round-tripping the bare codepoints.
+**`FakeDiscord` does not need to learn to model this.** `packages/discord/src/rest/port.test.ts`
+already tests `restEmoji()` and its callers against the real
+`@discordjs/rest` stack with only the socket replaced (the file's own stated
+reason for existing) — a regression here fails a test with no live
+connection and no fake involved, which is a stronger guarantee than teaching
+the fake a second emoji model to keep in sync with the first.
+
+**The compounding half of finding 1 (2a/2b) is fixed alongside it.**
+`scripts/seed-test-panel.mjs`'s `DEFAULT_EMOJI` is now just `🅰️`/`🅱️` — C
+through Z were never valid Discord reaction emoji, and Discord's own refusal
+for them (`Unknown Emoji`) is why `--emoji` is now required past two roles
+rather than silently handed something that cannot work. And
+`reactorsIsolated()` (`packages/core/src/panels/reactions.ts`) wraps the
+per-option reactor fetch in both `reconcileGuild` and `runAdoptionPass`: an
+`Unknown Emoji` refusal for one option is logged and skipped rather than
+propagating out of the whole pass. Deliberately narrow — only that one
+Discord error code is isolated; a rate limit or a gone message still
+propagates, because silently reporting "no reactors" for a systemic failure
+is the same silent-undercount shape finding 1 already was.
+
+**Finding 2 (the log redaction) was one line wrong, and grepping first
+mattered.** `safeLogFields`'s `err`/`error` redaction preserved only
+`value instanceof Error`; `packages/core/src/jobs/worker.ts`'s `#fail`
+always logs `describeError()`'s own output there, already a plain string,
+so it was stomped to the literal `'<non-error>'` on every job failure — which
+is the actual reason finding 1 needed a live diagnostic script instead of a
+log line. Grepped every `safeLogFields({ ..., err/error: ... })` call site in
+the repo before touching the rule: every other one passes a raw caught value
+from a `catch` block, and the codebase throws nothing but `Error` and its
+subclasses (`grep -rn "^\s*throw "` turns up no bare-string or bare-object
+throw anywhere in `packages/*/src` or `apps/*/src`). So a string under those
+keys is always already-narrowed `describeError()` output, never a raw value
+someone forgot to wrap — letting it through unredacted closes the gap without
+reopening the one the redaction exists for. A new end-to-end test runs a
+real `pino` instance over a captured stream through `JobWorker`, so the
+regression this fixes is caught at the actual log line, not only at
+`safeLogFields`'s return value.
+
+**Finding 3 was the safety-relevant one, and the report's own suggested fix
+was wrong — proven by breaking it deliberately.** `runAdoptionPass` refuses
+correctly and leaves `adoption_pass_state = 'pending'`; `reconcileGuild`
+selected every enabled adopted panel with no check on that state at all,
+recomputed the same missing grant as ordinary drift and applied it under
+`checkReconcileBudget` — a different, far more permissive gate. Reproduced
+live two seconds after the correct refusal, via the daemon's own restart.
+
+The handoff's own suggested direction — "exclude
+`adoptionPassState: 'pending'` panels" — turns out to be a bigger regression
+than the bug: **every** adopted panel defaults to `'pending'` at creation,
+not only one that has been through adoption and found blocked, and `docs/21`
+exercises 1–4 (including the outage-repair flagship this suite's own "a
+30-minute outage" block tests) seed a panel without `--adopt` and rely on
+ordinary reconciliation working on it while `'pending'`. Mutating
+`reconcile.ts` to the naive fix, to check, broke **24 of 37** tests in
+`reconcile.integration.test.ts` — not a subtle edge case, the majority of the
+suite. **ADR 0021** records this and the fix actually shipped: a new column,
+`panels.adoption_blocked_count`, set by `runAdoptionPass` alongside
+`adoption_pass_state` at every transition (now one port call, both fields
+always together, so they cannot go out of sync), and read — never written —
+by `reconcileGuild`'s selection. A panel nobody has examined keeps the count
+at `0` forever and reconciles exactly as before; only a panel with a live,
+explicitly-computed, unresolved backlog is excluded.
+
+**A drizzle-kit migration bug, found and hand-fixed.** Adding the new column
+alongside its `CHECK` constraint forced a full SQLite table rebuild (a plain
+`ALTER TABLE ADD COLUMN` cannot carry a table-level `CHECK`), and the
+generated `INSERT ... SELECT` referenced the new column name on the
+**pre-migration** source table, which does not have it yet —
+`SqliteError: no such column`. Fixed by hand: dropped the new column from
+both the target list and the source `SELECT`, so the new table's
+`DEFAULT 0` populates existing rows instead. Worth recording because it is
+exactly the kind of generated-migration bug that only a real
+`npm run db:migrate` against real SQL catches — the unit tests run against
+`openMigratedTestDatabase()`, which applies the same file, and did catch it.
+
+**Broke, to check the tests, continuing from 78.** 79. Removed the U+FE0F
+restoration from `unicodeEmojiChars` → 5 failed across `emoji.test.ts` and
+`port.test.ts`. 80. Removed the per-option try/catch from `reactorsIsolated`
+entirely → 2 failed (one in each of `reconcile.integration.test.ts` and
+`adoption.integration.test.ts`). 81. Broadened the catch to any
+`DiscordApiError` instead of only `isUnknownEmoji` → 2 failed, the tests
+written specifically to prove a rate limit must still propagate. 82.
+Reverted the logger fix → 2 failed, the unit test and the new end-to-end
+`JobWorker` + real `pino` test. 83. Removed `reconcileGuild`'s new filter
+entirely → 2 failed. 84. Replaced it with the handoff's own suggested naive
+fix (`adoptionPassState !== 'pending'`) → **24 of 37** failed in
+`reconcile.integration.test.ts`. All six restored by file copy, never
+`git checkout`.
+
+834 → 845 (defect 1) → 848 (defect 2) → 853 (defect 3) tests green;
+typecheck and lint exit 0. `npm run db:migrate` applies cleanly.
