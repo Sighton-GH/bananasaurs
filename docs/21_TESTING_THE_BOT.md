@@ -310,8 +310,37 @@ One at a time. Restart the daemon where the line says to.
 - [ ] **The rate cap.** React and un-react about 30 times in 10 seconds. The
       excess is refused rather than queued, and repeated failures trip the
       breaker. Check `guilds.breaker_tripped_at`
+
+      **30 in 10 seconds is not achievable by hand.** The default cap
+      (`BANANASAURS_ROLE_RATE_LIMIT_PER_MIN=20`) gives a burst of 20 actions
+      before anything is refused, and Discord's own reaction UI has enough
+      friction that a human cannot exceed that in 10 seconds — clicking every
+      few seconds just lets the bucket refill as fast as you spend it. Instead,
+      temporarily set `BANANASAURS_ROLE_RATE_LIMIT_PER_MIN=1` in `.env`, restart,
+      then react → un-react → react again in quick succession: the first action
+      succeeds, the very next one should be refused with `reason: "rate-cap"`
+      and trip the breaker. Put the value back afterward (delete the line, or
+      set it to `20`) and clear the breaker (below) before continuing.
 - [ ] **Manual removal.** Remove a role by hand that the bot just granted. It is
       repaired promptly and **does not bounce**
+
+      **This only fires promptly if the member is in the bot's small member
+      cache.** Check `doctor`'s member line — it reports a cached count
+      alongside the total, e.g. `members: 4 (1 cached)`. `GUILD_MEMBER_UPDATE`
+      needs discord.js's cached "before" member to compute which role vanished;
+      for anyone outside that cache the event arrives with no prior role list,
+      and `packages/discord/src/events.ts` reports that as `previousRoleIds:
+      undefined` on purpose rather than guess and risk repairing a change nobody
+      made. The reconciler (`packages/core/src/panels/reconcile.ts`) returns
+      early on `undefined`, so nothing happens until the *next* thing that
+      reconciles that guild — restarting the daemon (a gateway-gap pass, which
+      does not depend on the member cache) rather than a bounce-free live
+      repair. The periodic timer pass that would repair this promptly for any
+      member regardless of cache state is real, tested, and deliberately
+      unscheduled at this slice — it is slice 11's job
+      (`docs/reports/WP5-slice-6.md`, "not testable yet"). If your test account
+      isn't the cached one, expect this item to sit until a restart; that is the
+      documented gap, not a new bug.
 
 > **STOP** if a role flickers on and off repeatedly. That is a feedback loop and
 > it burns the rate cap.
