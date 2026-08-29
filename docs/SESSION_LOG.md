@@ -926,3 +926,59 @@ fix (`adoptionPassState !== 'pending'`) → **24 of 37** failed in
 
 834 → 845 (defect 1) → 848 (defect 2) → 853 (defect 3) tests green;
 typecheck and lint exit 0. `npm run db:migrate` applies cleanly.
+
+---
+
+## WP4 / slice 12a — read-side plumbing, before the hard part — 2026-08-29
+
+ADR 0022 first (`docs/decisions/0022-logging-module-scope-and-deletion-attribution.md`):
+scope is message/member/role logging only — `REVIEW.md`'s Release 1 list
+wins over `docs/20`'s broader "role and channel changes" summary, and the
+codebase agrees (`DomainEvent` has no channel-change variant, `FakeDiscord`
+has no channel verb). No kick/ban attribution either: that is `REVIEW.md`
+Release 2's "mod log," and `FakeDiscord` was extended for `deleteMessageAs`
+specifically and nothing analogous for kicks or bans — evidence the scope
+was meant to stop at message deletion. The ADR also records the message-delete
+correlation algorithm and the log-post idempotency design ahead of slices
+12b–12d, so those slices implement a decision already written down rather
+than inventing one mid-slice.
+
+**`packages/storage/src/repos/logging.ts`** — `findRoute` and
+`isChannelExcluded`, read-only. Neither table has a writer yet; nothing in
+Release 1 configures `log_routes` or `log_excluded_channels` except a future
+operator CLI (WP5 slice 13), so tests seed rows with a direct `db.insert`,
+the same way `write.test.ts` and `columns.test.ts` already do for tables
+with no repo setter.
+
+**`pipelineRepo.forgetFirstSight`** — the release half of the existing
+`recordFirstSight` claim, added because ADR 0022 decision 4 needs it: the
+logging module claims before a Discord send and releases the claim if the
+send throws, deliberately inverting the role-effects "claim before REST,
+never release" pattern, because logging has no reconciliation to fall back
+on and a permanent silent claim would mean a transient failure loses a log
+line forever.
+
+**`RoleEvent` gains `name`** (`packages/core/src/discord/events.ts`,
+`packages/discord/src/events.ts`). Free: discord.js already hands the
+`GuildRoleCreate`/`Update`/`Delete` listener the full `Role` object,
+including on delete, where it is the role's last-known state an instant
+before removal from `guild.roles.cache` — not a second Discord call, just
+translation that was previously discarding it. Proved against the real
+gateway-packet harness (`packages/discord/src/events.test.ts`), including
+that a delete after a rename reports the *renamed* name, since the object
+handed to the delete listener already reflects it.
+
+**Broke, to check the tests, continuing from 84.** 85. `forgetFirstSight`
+filtered only on `eventKind`, dropping the `fingerprint` condition → the new
+"releases only the named fingerprint" test failed (added specifically
+because the original three tests could not have caught this — none of them
+recorded two different fingerprints under one guild and checked that
+forgetting one left the other claimed). 86. `findRoute` hard-coded
+`enabled: true` → "reports enabled: false" failed. 87. `findRoute` dropped
+its `eventKind` filter → "does not confuse two event kinds" failed. 88.
+`isChannelExcluded` always returned `true` → three tests failed, including
+the cross-guild one. 89. The adapter's role-event translation stopped
+reading `role.name`, sending `''` → the new role-name test failed. All five
+restored by file copy.
+
+853 → 870 tests green; typecheck and lint exit 0.

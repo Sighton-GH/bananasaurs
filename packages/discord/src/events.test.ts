@@ -315,6 +315,30 @@ describe('roles and guild lifecycle', () => {
   });
 
   /**
+   * The logging module (WP4, ADR 0022) needs a name to render "Role deleted:
+   * @old-name" rather than a bare id nobody recognises — and discord.js hands
+   * the listener the role's last-known state for free on every one of these
+   * three dispatches, including delete, where it is already gone from
+   * `guild.roles.cache` by the time the handler runs.
+   */
+  it('carries the role name on create, update and delete', () => {
+    const h = harness();
+    const fresh = '888888888888888888';
+    const role = { id: fresh, name: 'beta', position: 2, managed: false, permissions: '0' };
+    h.packet('GuildRoleCreate', { guild_id: GUILD, role });
+    h.packet('GuildRoleUpdate', { guild_id: GUILD, role: { ...role, name: 'renamed' } });
+    h.packet('GuildRoleDelete', { guild_id: GUILD, role_id: fresh });
+
+    expect(h.events.map((e) => (e as { name?: unknown }).name)).toEqual([
+      'beta',
+      'renamed',
+      // discord.js hands the delete listener the role as it stood the instant
+      // before removal — the update above already renamed it.
+      'renamed',
+    ]);
+  });
+
+  /**
    * `guildCreate` is deliberately NOT filtered by the allowlist. It is the event
    * the composition root uses to *leave* an unlisted guild — filtering it here
    * would silence the one behaviour `docs/21` exercise 1 calls the single most

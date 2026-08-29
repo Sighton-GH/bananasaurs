@@ -73,6 +73,16 @@ export interface MemberEvent extends Base {
 export interface RoleEvent extends Base {
   kind: 'roleCreate' | 'roleUpdate' | 'roleDelete';
   roleId: Snowflake;
+  /**
+   * The role's name as of this dispatch — its new name on create and update,
+   * its last-known name on delete. discord.js hands the listener the full
+   * `Role` object on all three, including delete (the role is already gone
+   * from `guild.roles.cache` by the time the handler runs, but the object
+   * passed to it is not). Free, and the only way the logging module (ADR
+   * 0022) can render "Role deleted: @name" instead of a bare, unrecognisable
+   * id — a role that is gone cannot be looked up afterwards.
+   */
+  name: string;
 }
 
 export interface GuildEvent extends Base {

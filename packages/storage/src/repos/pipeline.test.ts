@@ -6,6 +6,7 @@ import { ReadonlyError } from '../write.js';
 import { upsertGuild } from './guilds.js';
 import {
   countEventDedupe,
+  forgetFirstSight,
   markGapReconciled,
   recordFirstSight,
   recordGap,
@@ -71,6 +72,55 @@ describe('recordFirstSight', () => {
   it('refuses in readonly mode rather than pretending to record', () => {
     const ro = createScopeFactory(t.db, { readonly: true }).forGuild(GUILD_A);
     expect(() => sight(ro, 'fp-1')).toThrow(ReadonlyError);
+  });
+});
+
+describe('forgetFirstSight', () => {
+  it('lets a fingerprint be seen again after being forgotten', () => {
+    expect(sight(a, 'fp-1')).toBe(true);
+    expect(sight(a, 'fp-1')).toBe(false);
+    forgetFirstSight(a, { eventKind: 'interaction', fingerprint: 'fp-1' });
+    expect(sight(a, 'fp-1')).toBe(true);
+  });
+
+  it('forgetting a fingerprint that was never recorded is a harmless no-op', () => {
+    forgetFirstSight(a, { eventKind: 'interaction', fingerprint: 'never-seen' });
+    expect(sight(a, 'never-seen')).toBe(true);
+  });
+
+  it('is scoped: forgetting in one guild does not touch another guild', () => {
+    sight(a, 'fp-1');
+    sight(b, 'fp-1');
+    forgetFirstSight(a, { eventKind: 'interaction', fingerprint: 'fp-1' });
+    expect(sight(a, 'fp-1')).toBe(true); // released
+    expect(sight(b, 'fp-1')).toBe(false); // untouched
+  });
+
+  it('releases only the named fingerprint, not every row under the same event kind', () => {
+    sight(a, 'fp-1');
+    sight(a, 'fp-2');
+    forgetFirstSight(a, { eventKind: 'interaction', fingerprint: 'fp-1' });
+    expect(sight(a, 'fp-1')).toBe(true); // released
+    expect(sight(a, 'fp-2')).toBe(false); // untouched
+  });
+
+  it('does not confuse two event kinds sharing a fingerprint', () => {
+    recordFirstSight(a, { eventKind: 'messageUpdate', fingerprint: 'x', atMs: 1 });
+    recordFirstSight(a, { eventKind: 'messageDelete', fingerprint: 'x', atMs: 1 });
+    forgetFirstSight(a, { eventKind: 'messageUpdate', fingerprint: 'x' });
+    expect(recordFirstSight(a, { eventKind: 'messageUpdate', fingerprint: 'x', atMs: 2 })).toBe(
+      true,
+    ); // released
+    expect(recordFirstSight(a, { eventKind: 'messageDelete', fingerprint: 'x', atMs: 2 })).toBe(
+      false,
+    ); // untouched
+  });
+
+  it('refuses in readonly mode rather than pretending to release', () => {
+    const ro = createScopeFactory(t.db, { readonly: true }).forGuild(GUILD_A);
+    expect(() => forgetFirstSight(ro, { eventKind: 'interaction', fingerprint: 'fp-1' })).toThrow(
+      ReadonlyError,
+    );
   });
 });
 

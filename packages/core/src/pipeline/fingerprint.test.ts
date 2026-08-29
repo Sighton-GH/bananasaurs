@@ -73,6 +73,7 @@ const role = (kind: RoleEvent['kind'], roleId = '555555555555555555'): DomainEve
   ...base,
   kind,
   roleId,
+  name: 'a-role',
 });
 
 const guildEvent = (kind: GuildEvent['kind']): DomainEvent => ({ ...base, kind });
