@@ -57,7 +57,11 @@ export type AdoptionCursor = z.infer<typeof adoptionCursorSchema>;
 export interface AdoptionPorts extends ReactionSubscriberDeps {
   /** Unconsumed owner-approved actions. Read, never granted, from here. */
   allowanceFor(source: EffectSource): number;
-  setAdoptionPassState(panelId: string, state: AdoptionPassState): void;
+  /**
+   * `blockedCount` moves with `state`, always — ADR 0021. A blocked change
+   * list `reconcileGuild` cannot see is a blocked change list it can apply.
+   */
+  setAdoptionPassState(panelId: string, state: AdoptionPassState, blockedCount: number): void;
 }
 
 export type AdoptionStatus =
@@ -129,7 +133,9 @@ export async function runAdoptionPass(
   }
 
   const ref: DiscordMessageRef = { channelId: panel.channelId, messageId: panel.messageId };
-  ports.setAdoptionPassState(panel.panelId, 'running');
+  // A fresh run supersedes whatever a previous one left blocked; the accurate
+  // count, if any, is set again below once this run knows it.
+  ports.setAdoptionPassState(panel.panelId, 'running', 0);
 
   // --- 1. read the existing reaction state, once ------------------------
   // Existing reactions *are* the intended role state (docs/19 §6.4). One cache
@@ -180,7 +186,7 @@ export async function runAdoptionPass(
   ]);
 
   if (changes.length === 0) {
-    ports.setAdoptionPassState(panel.panelId, 'done');
+    ports.setAdoptionPassState(panel.panelId, 'done', 0);
     ports.logger.info(
       safeLogFields({
         component: 'panels',
@@ -214,7 +220,9 @@ export async function runAdoptionPass(
   // --- 3. the allowance gate --------------------------------------------
   const allowance = ports.allowanceFor('adoption');
   if (allowance < changes.length) {
-    ports.setAdoptionPassState(panel.panelId, 'pending');
+    // The count that makes this panel invisible to reconcileGuild until an
+    // owner grants an allowance and the pass reruns to completion — ADR 0021.
+    ports.setAdoptionPassState(panel.panelId, 'pending', changes.length);
     ports.logger.warn(
       safeLogFields({
         component: 'panels',
@@ -278,7 +286,7 @@ export async function runAdoptionPass(
     ports.effects.closeBatch(batchId);
   }
 
-  ports.setAdoptionPassState(panel.panelId, 'done');
+  ports.setAdoptionPassState(panel.panelId, 'done', 0);
   ports.logger.info(
     safeLogFields({
       component: 'panels',

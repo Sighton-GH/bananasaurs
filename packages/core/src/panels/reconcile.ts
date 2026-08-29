@@ -95,7 +95,19 @@ export async function reconcileGuild(
   ports: ReconcilePorts,
   input: { reason: 'gateway-gap' | 'timer' | 'operator' },
 ): Promise<ReconcileOutcome> {
-  const panels = ports.store.listAdoptedPanels().filter((p) => p.status === 'enabled');
+  const panels = ports.store.listAdoptedPanels().filter(
+    (p) =>
+      p.status === 'enabled' &&
+      // ADR 0021: a panel with a blocked adoption backlog is a decision not
+      // yet made, not drift to repair — checkReconcileBudget must not
+      // silently authorise what runAdoptionPass's allowance gate refused.
+      // 'running' is excluded too: an adoption pass owns this panel's
+      // convergence while it is in flight. A panel that has never been
+      // through runAdoptionPass keeps adoptionBlockedCount at 0 and is
+      // untouched by this — ordinary drift-repair still applies to it.
+      p.adoptionPassState !== 'running' &&
+      p.adoptionBlockedCount === 0,
+  );
   const disabled: { panelId: string; reason: string }[] = [];
   const plans: MemberPlan[] = [];
 

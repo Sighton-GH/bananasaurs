@@ -42,6 +42,7 @@ const managed = (over: Partial<PanelConfig> = {}): PanelConfig => ({
   blockedRoleIds: [],
   status: 'enabled',
   adoptionPassState: 'done',
+  adoptionBlockedCount: 0,
   options: [{ optionId: 'alpha', roleId: ROLE, emojiKey: undefined, label: 'Alpha', position: 0 }],
   ...over,
 });

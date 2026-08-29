@@ -101,6 +101,9 @@ describe('createPanel', () => {
   it('starts an adopted panel owing an adoption pass', () => {
     createPanel(a, definition(), 1000);
     expect(findPanel(a, 'roles')?.adoptionPassState).toBe('pending');
+    // Owing a pass is not the same as being blocked on one — ADR 0021. A
+    // panel that has never been examined must still reconcile normally.
+    expect(findPanel(a, 'roles')?.adoptionBlockedCount).toBe(0);
   });
 
   it('starts a managed panel with nothing to adopt', () => {
@@ -264,8 +267,15 @@ describe('mutating a panel', () => {
   });
 
   it('advances the adoption pass state', () => {
-    setAdoptionPassState(a, 'roles', 'done', 2000);
+    setAdoptionPassState(a, 'roles', 'done', 0, 2000);
     expect(findPanel(a, 'roles')?.adoptionPassState).toBe('done');
+  });
+
+  it('records the blocked count alongside the state — ADR 0021', () => {
+    setAdoptionPassState(a, 'roles', 'pending', 7, 2000);
+    const panel = findPanel(a, 'roles');
+    expect(panel?.adoptionPassState).toBe('pending');
+    expect(panel?.adoptionBlockedCount).toBe(7);
   });
 
   it('deletes a panel and its options together', () => {

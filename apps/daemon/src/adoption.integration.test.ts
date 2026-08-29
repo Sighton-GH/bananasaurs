@@ -150,8 +150,8 @@ const buildPorts = (): AdoptionPorts => {
     now: () => discord.now(),
     newPassId: () => `pass-${passCounter++}`,
     allowanceFor: (source) => rateLimiter.bucketFor(source, discord.now()).allowance,
-    setAdoptionPassState: (panelId, state) =>
-      panelRepo.setAdoptionPassState(scope, panelId, state, discord.now()),
+    setAdoptionPassState: (panelId, state, blockedCount) =>
+      panelRepo.setAdoptionPassState(scope, panelId, state, blockedCount, discord.now()),
   };
 };
 

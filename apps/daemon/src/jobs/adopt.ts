@@ -35,5 +35,9 @@ export const adoptPanelHandler = (ports: AdoptionPorts): JobHandler<AdoptPanelPa
 /** Binds `setAdoptionPassState` to a scope, for the ports above. */
 export const adoptionStateWriter =
   (scope: GuildScope, now: () => number) =>
-  (panelId: string, state: Parameters<typeof panelRepo.setAdoptionPassState>[2]): void =>
-    panelRepo.setAdoptionPassState(scope, panelId, state, now());
+  (
+    panelId: string,
+    state: Parameters<typeof panelRepo.setAdoptionPassState>[2],
+    blockedCount: Parameters<typeof panelRepo.setAdoptionPassState>[3],
+  ): void =>
+    panelRepo.setAdoptionPassState(scope, panelId, state, blockedCount, now());

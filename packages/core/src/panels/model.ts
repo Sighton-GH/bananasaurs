@@ -99,6 +99,12 @@ export interface PanelConfig {
   readonly blockedRoleIds: readonly SnowflakeId[];
   readonly status: PanelStatus;
   readonly adoptionPassState: AdoptionPassState;
+  /**
+   * The size of the change list the most recent adoption pass computed and
+   * could not apply for lack of allowance. `0` means "no known blocked
+   * backlog" — never examined, or resolved. See ADR 0021.
+   */
+  readonly adoptionBlockedCount: number;
   readonly options: readonly PanelOption[];
 }
 
