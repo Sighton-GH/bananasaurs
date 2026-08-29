@@ -982,3 +982,46 @@ reading `role.name`, sending `''` → the new role-name test failed. All five
 restored by file copy.
 
 853 → 870 tests green; typecheck and lint exit 0.
+
+---
+
+## WP4 / slice 12b — the plain log subscriber — 2026-08-29
+
+`packages/core/src/logging/{format.ts,subscriber.ts}`: `createLoggingSubscriber`
+handles `messageUpdate`, `memberAdd`, `memberRemove`, `roleCreate`,
+`roleUpdate`, `roleDelete`. `messageDelete` falls through untouched — slice
+12c's job, once the audit-log correlation exists.
+
+Per event: look up `log_routes` for the mapped snake_case kind
+(`message_edit`, `member_join`, ...); for a message event, refuse a source
+channel on `log_excluded_channels`; claim a namespaced fingerprint
+(`log:<kind>`, never the bare gateway kind — that PK is already taken by the
+pipeline's own gate 2, and claiming it again would just observe "already
+seen" and never fire); format; send; **release the claim if the send
+throws**, per ADR 0022 decision 4's deliberate inversion of the role-effects
+"claim, never release" pattern. `roleUpdate` gets its own content-based
+fingerprint (`roleId:name`) computed locally, rather than teaching the
+shared `fingerprint.ts` a new case — that module is shared by every future
+consumer of `roleUpdate`, and this one only needs edge-triggered semantics
+for itself.
+
+Tested in `apps/daemon/src/logging.integration.test.ts`, wired against the
+real repositories and `FakeDiscord`, matching how every other subscriber in
+this codebase is tested (none of them have an isolated unit test with
+hand-rolled ports — a fake agreeing with itself proves nothing about the
+`event_dedupe` unique constraint the claim/release pair actually leans on).
+Direct `subscriber.handle()` calls throughout, not `Pipeline.dispatch()` —
+routing through the pipeline would let gate 2's own dedupe silently absorb a
+replay before it ever reached this module, which is exactly the case these
+tests exist to isolate.
+
+**Broke, to check the tests, continuing from 89.** 90. Removed the excluded-
+channel check → failed. 91. Removed the `route.enabled` check → failed. 92.
+Removed the claim gate (posted unconditionally) → 2 failed, including the
+role-update-specific one. 93. Removed the release-on-failure call → the
+retry-after-failure test failed. 94. Dropped `name` from the `roleUpdate`
+fingerprint, leaving only `roleId` → failed the "second, real update with a
+different name" test — without this the module would silently swallow every
+rename after the first. All five restored by file copy.
+
+870 → 895 tests green; typecheck and lint exit 0.

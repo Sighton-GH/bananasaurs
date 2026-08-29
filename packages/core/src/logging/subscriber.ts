@@ -1,0 +1,124 @@
+import type { Snowflake } from '../discord/port.js';
+import type { Logger } from '../obs/logger.js';
+import { safeLogFields } from '../obs/logger.js';
+import type { Subscriber } from '../pipeline/pipeline.js';
+import { fingerprintOf } from '../pipeline/fingerprint.js';
+import {
+  formatMemberJoin,
+  formatMemberLeave,
+  formatMessageEdit,
+  formatRoleCreate,
+  formatRoleDelete,
+  formatRoleUpdate,
+} from './format.js';
+
+/**
+ * The logging module (ADR 0022): message edits, member joins/leaves, and
+ * role create/update/delete. Message deletion is not here — it needs the
+ * audit-log correlation job (slice 12c) and is handled separately.
+ */
+
+export interface LogRoute {
+  channelId: Snowflake;
+  includeContent: boolean;
+  enabled: boolean;
+}
+
+export interface LoggingPorts {
+  readonly guildId: Snowflake;
+  findRoute(eventKind: string): LogRoute | undefined;
+  isChannelExcluded(channelId: Snowflake): boolean;
+  /**
+   * The claim, namespaced under this module's own `eventKind` so it cannot
+   * collide with the pipeline's own gate-2 dedupe row for the bare gateway
+   * kind (ADR 0022 decision 4).
+   */
+  claim(input: { eventKind: string; fingerprint: string }): boolean;
+  /** Released when a send throws, so a later delivery of the same event can retry. */
+  release(input: { eventKind: string; fingerprint: string }): void;
+  sendMessage(channelId: Snowflake, message: { content: string }): Promise<unknown>;
+  readonly logger: Logger;
+}
+
+/** The `log_routes.event_kind` string for each gateway kind this module handles. */
+const ROUTE_KIND = {
+  messageUpdate: 'message_edit',
+  memberAdd: 'member_join',
+  memberRemove: 'member_leave',
+  roleCreate: 'role_create',
+  roleUpdate: 'role_update',
+  roleDelete: 'role_delete',
+} as const;
+
+/**
+ * `roleUpdate` carries no pipeline-level fingerprint (`fingerprint.ts` leaves
+ * it undeduplicated on purpose — it is "level-triggered" for any future
+ * consumer that wants recomputation semantics). This module is not that
+ * consumer: it needs an edge-triggered fingerprint of its own so a real
+ * rename logs once and a resumed-session replay of the identical dispatch
+ * does not log twice. Content-based rather than a version counter, because
+ * `RoleEvent` has none.
+ */
+function fingerprintFor(event: Parameters<Subscriber['handle']>[0]): string | undefined {
+  const fp = fingerprintOf(event);
+  if (fp !== undefined) return fp;
+  if (event.kind === 'roleUpdate') return `${event.roleId}:${event.name}`;
+  return undefined;
+}
+
+export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
+  name: 'logging',
+  async handle(event) {
+    const routeKind = ROUTE_KIND[event.kind as keyof typeof ROUTE_KIND] as string | undefined;
+    if (routeKind === undefined) return; // messageDelete and everything else: not this module's job
+
+    if (event.kind === 'messageUpdate' && ports.isChannelExcluded(event.channelId)) return;
+
+    const route = ports.findRoute(routeKind);
+    if (route === undefined || !route.enabled) return;
+
+    const fingerprint = fingerprintFor(event);
+    if (fingerprint === undefined) return; // unreachable for the six kinds above
+
+    const dedupeKind = `log:${routeKind}`;
+    if (!ports.claim({ eventKind: dedupeKind, fingerprint })) return;
+
+    const content = ((): string => {
+      switch (event.kind) {
+        case 'messageUpdate':
+          return formatMessageEdit(event, route.includeContent);
+        case 'memberAdd':
+          return formatMemberJoin(event);
+        case 'memberRemove':
+          return formatMemberLeave(event);
+        case 'roleCreate':
+          return formatRoleCreate(event);
+        case 'roleUpdate':
+          return formatRoleUpdate(event);
+        case 'roleDelete':
+          return formatRoleDelete(event);
+        default:
+          throw new Error(`unreachable log event kind: ${event.kind}`);
+      }
+    })();
+
+    try {
+      await ports.sendMessage(route.channelId, { content });
+    } catch (err) {
+      // A transient send failure must not blackhole this line forever — this
+      // module has no reconciliation to fall back on (ADR 0022 decision 4).
+      ports.release({ eventKind: dedupeKind, fingerprint });
+      ports.logger.error(
+        safeLogFields({
+          component: 'logging',
+          guildId: ports.guildId,
+          eventKind: event.kind,
+          channelId: route.channelId,
+          err,
+        }),
+        'failed to post a log line; released the claim for a future retry',
+      );
+      throw err;
+    }
+  },
+});

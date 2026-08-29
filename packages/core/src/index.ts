@@ -90,6 +90,15 @@ export {
   type ConnectionPorts,
 } from './pipeline/connection-subscriber.js';
 export {
+  formatMemberJoin,
+  formatMemberLeave,
+  formatMessageEdit,
+  formatRoleCreate,
+  formatRoleDelete,
+  formatRoleUpdate,
+} from './logging/format.js';
+export { createLoggingSubscriber, type LoggingPorts, type LogRoute } from './logging/subscriber.js';
+export {
   authorize,
   capabilityOf,
   principalsOf,
