@@ -6,6 +6,7 @@ import { fingerprintOf } from '../pipeline/fingerprint.js';
 import { MESSAGE_DELETE_ATTRIBUTION_DELAY_MS } from './attribution.js';
 import { logMessageDeleteDedupeKey } from '../jobs/kinds.js';
 import {
+  formatGapMarker,
   formatMemberJoin,
   formatMemberLeave,
   formatMessageEdit,
@@ -32,6 +33,8 @@ export interface LoggingPorts {
   readonly guildId: Snowflake;
   findRoute(eventKind: string): LogRoute | undefined;
   isChannelExcluded(channelId: Snowflake): boolean;
+  /** Every distinct channel enabled for at least one event kind (gap markers). */
+  listEnabledLogChannels(): readonly Snowflake[];
   /**
    * The claim, namespaced under this module's own `eventKind` so it cannot
    * collide with the pipeline's own gate-2 dedupe row for the bare gateway
@@ -75,9 +78,49 @@ function fingerprintFor(event: Parameters<Subscriber['handle']>[0]): string | un
   return undefined;
 }
 
+/**
+ * `docs/19` §6.7's restated gate, generalised (ADR 0022 decision 5): a gap
+ * during which nothing was captured must be a visible marker, never a
+ * silent hole. Every distinct enabled channel gets one, independently of the
+ * others — one channel's send failing must not stop another's.
+ */
+async function postGapMarkers(
+  ports: LoggingPorts,
+  event: { disconnectedAtMs: number; receivedAtMs: number },
+): Promise<void> {
+  const dedupeKind = 'log:gap_marker';
+  for (const channelId of ports.listEnabledLogChannels()) {
+    const fingerprint = `${event.disconnectedAtMs}:${channelId}`;
+    if (!ports.claim({ eventKind: dedupeKind, fingerprint })) continue;
+    try {
+      await ports.sendMessage(channelId, {
+        content: formatGapMarker(event.disconnectedAtMs, event.receivedAtMs),
+      });
+    } catch (err) {
+      ports.release({ eventKind: dedupeKind, fingerprint });
+      ports.logger.error(
+        safeLogFields({
+          component: 'logging',
+          guildId: ports.guildId,
+          eventKind: 'connection',
+          channelId,
+          err,
+        }),
+        'failed to post a gap marker; released the claim for a future retry',
+      );
+    }
+  }
+}
+
 export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
   name: 'logging',
   async handle(event) {
+    if (event.kind === 'connection') {
+      if (event.resumed) return; // nothing lost — the session replayed the gap
+      await postGapMarkers(ports, event);
+      return;
+    }
+
     if (event.kind === 'messageDelete') {
       if (ports.isChannelExcluded(event.channelId)) return;
       const route = ports.findRoute('message_delete');

@@ -12,6 +12,7 @@ import {
   findRoute,
   incrementClaimedCount,
   isChannelExcluded,
+  listEnabledLogChannels,
 } from './logging.js';
 
 /**
@@ -206,5 +207,38 @@ describe('findMessageDeleteAttribution', () => {
       inferred: true,
     });
     expect(findMessageDeleteAttribution(b, MESSAGE)).toBeUndefined();
+  });
+});
+
+describe('listEnabledLogChannels', () => {
+  it('is empty when nothing is configured', () => {
+    expect(listEnabledLogChannels(a)).toEqual([]);
+  });
+
+  it('lists a configured, enabled channel', () => {
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
+    expect(listEnabledLogChannels(a)).toEqual([CHANNEL_A]);
+  });
+
+  it('excludes a disabled route', () => {
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A, enabled: false });
+    expect(listEnabledLogChannels(a)).toEqual([]);
+  });
+
+  it('deduplicates a channel shared by two event kinds', () => {
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
+    seedRoute(a, 'message_edit', { channelId: CHANNEL_A });
+    expect(listEnabledLogChannels(a)).toEqual([CHANNEL_A]);
+  });
+
+  it('lists two distinct channels', () => {
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
+    seedRoute(a, 'member_join', { channelId: CHANNEL_B });
+    expect(listEnabledLogChannels(a).sort()).toEqual([CHANNEL_A, CHANNEL_B].sort());
+  });
+
+  it('is scoped: a route in one guild is invisible from another', () => {
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
+    expect(listEnabledLogChannels(b)).toEqual([]);
   });
 });

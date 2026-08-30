@@ -1098,3 +1098,52 @@ message → failed the label test. All seven restored by file copy.
 895 → 935 tests green; typecheck and lint exit 0. `npm run db:migrate`
 applies the new `message_delete_runs` table cleanly (a plain `CREATE TABLE`,
 not the `ALTER TABLE` rebuild ADR 0021's migration hit).
+
+---
+
+## WP4 / slice 12d — gap markers — 2026-08-29
+
+ADR 0022 decision 5, and the last WP4 slice before wiring. On a non-resumed
+`connection` event the logging subscriber now posts one marker
+("⚠️ Bananasaurs was disconnected from `<t:from:t>` to `<t:to:t>`. Message,
+member, and role events in that window were not captured.") to every
+*distinct* channel `listEnabledLogChannels` (new repo function) returns —
+one marker per channel even when two event kinds route to the same one.
+Discord's own `<t:unix:t>` markup renders in each reader's local time, so
+nobody has to guess a server timezone.
+
+**Corrected one detail from the ADR during implementation, in place, since
+nothing had shipped from it yet:** decision 5 originally said to key the
+per-channel idempotency claim on `(gapId, channelId)`. `gapId` is minted by
+`recordGap`, inside `connection-subscriber.ts` — a *different* subscriber.
+Subscribers share no state and `Pipeline.dispatch` discards each one's
+return value, so there is no way for the logging module to learn the id
+connection-subscriber just assigned. `disconnectedAtMs`, already on the
+event, identifies the same gap exactly as well — a guild cannot have two
+simultaneous disconnections — so the claim key is `(disconnectedAtMs,
+channelId)` instead. Recorded in the ADR text itself rather than as a
+separate entry, since the decision did not change, only which field
+implements it.
+
+Each channel is independent: one channel's send failing must not stop
+another's, so the loop tries every enabled channel and catches per-channel,
+logging and moving on rather than propagating the first failure — the
+opposite of every other path in this module, where a caught failure is
+rethrown so the job/pipeline sees it. That is deliberate: there is nothing
+above this to retry a gap marker (no job, immediate delivery on the
+connection event), so swallowing per-channel and logging is the only way
+one bad channel does not silently cost every other configured channel its
+marker too.
+
+**Broke, to check the tests, continuing from 101.** 102. Removed the
+`event.resumed` early return → posted a marker for a resumed session that
+lost nothing → failed. 103. Removed the per-channel claim check → the no-
+double-post-on-redelivery test failed. 104. Removed the per-channel
+try/catch, letting a send failure propagate → the "still posts to the other
+channel" test failed by throwing instead of completing with both channels
+attempted. 105. Dropped `channelId` from the claim fingerprint, leaving only
+`disconnectedAtMs` → the second of two configured channels silently never
+got its marker, caught by the "posts to every distinct channel configured"
+test. All four restored by file copy.
+
+952 tests green; typecheck and lint exit 0.

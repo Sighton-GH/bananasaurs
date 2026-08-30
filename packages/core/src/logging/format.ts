@@ -75,3 +75,17 @@ export function formatRoleUpdate(event: RoleEvent): string {
 export function formatRoleDelete(event: RoleEvent): string {
   return `Role deleted: **${event.name}** (${event.roleId})`;
 }
+
+/**
+ * `docs/19` §6.7's restated gate: a gap must be a visible marker, never a
+ * silent hole. `<t:unix:t>` is Discord's own timestamp markup — it renders in
+ * each reader's local time, so the channel never has to guess whose
+ * timezone to print in. Every WP4 event kind is a gateway dispatch with no
+ * "what happened while I was away" API (ADR 0022 decision 5), so the marker
+ * names all three, not only messages.
+ */
+export function formatGapMarker(disconnectedAtMs: number, reconnectedAtMs: number): string {
+  const from = Math.floor(disconnectedAtMs / 1000);
+  const to = Math.floor(reconnectedAtMs / 1000);
+  return `⚠️ Bananasaurs was disconnected from <t:${from}:t> to <t:${to}:t>. Message, member, and role events in that window were not captured.`;
+}

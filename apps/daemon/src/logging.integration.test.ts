@@ -4,6 +4,7 @@ import {
   createLoggingSubscriber,
   JOB_KINDS,
   parseGuildId,
+  type ConnectionEvent,
   type LoggingPorts,
   type MemberEvent,
   type MessageEvent,
@@ -77,6 +78,7 @@ beforeEach(() => {
     guildId: GUILD,
     findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+    listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: 0 }),
     release: (input) => pipelineRepo.forgetFirstSight(scope, input),
     sendMessage: (channelId, message) => discord.sendMessage(GUILD, channelId, message),
@@ -358,6 +360,92 @@ describe('roles', () => {
     await subscriber.handle(roleEvent('roleUpdate', 'mods'));
     await subscriber.handle(roleEvent('roleUpdate', 'mods-renamed'));
 
+    expect(discord.restCalls('sendMessage')).toHaveLength(2);
+  });
+});
+
+const connectionEvent = (over: Partial<ConnectionEvent> = {}): ConnectionEvent => ({
+  kind: 'connection',
+  guildId: GUILD,
+  receivedAtMs: 2_000,
+  resumed: false,
+  disconnectedAtMs: 1_000,
+  ...over,
+});
+
+describe('gap markers (ADR 0022 decision 5)', () => {
+  it('posts nothing when no routes are configured', async () => {
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent());
+    expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('posts nothing when the session resumed — nothing was lost', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent({ resumed: true }));
+    expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('posts a marker to a configured, enabled channel', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent());
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[1]).toBe(CHANNEL);
+    const content = (calls[0]?.args[2] as { content: string }).content;
+    expect(content).toContain('<t:1:t>'); // disconnectedAtMs 1_000 -> 1s
+    expect(content).toContain('<t:2:t>'); // receivedAtMs 2_000 -> 2s
+  });
+
+  it('posts once per distinct channel, not once per route sharing a channel', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    seedRoute('message_edit', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent());
+
+    expect(discord.restCalls('sendMessage')).toHaveLength(1);
+  });
+
+  it('posts to every distinct channel configured', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    seedRoute('member_join', { channelId: OTHER_CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent());
+
+    const channels = discord.restCalls('sendMessage').map((c) => c.args[1]);
+    expect(channels.sort()).toEqual([CHANNEL, OTHER_CHANNEL].sort());
+  });
+
+  it('does not double-post the same gap to the same channel on redelivery', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    const event = connectionEvent();
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+
+    expect(discord.restCalls('sendMessage')).toHaveLength(1);
+  });
+
+  it('posts a marker for a later, distinct gap even to the same channel', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent({ disconnectedAtMs: 1_000, receivedAtMs: 2_000 }));
+    await subscriber.handle(connectionEvent({ disconnectedAtMs: 5_000, receivedAtMs: 6_000 }));
+
+    expect(discord.restCalls('sendMessage')).toHaveLength(2);
+  });
+
+  it('still posts to the other channel when one channel fails', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    seedRoute('member_join', { channelId: OTHER_CHANNEL });
+    discord.failNext('sendMessage', FakeDiscord.missingPermissions());
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(connectionEvent());
+
+    // One failed, one succeeded — both attempted, not stopped by the first.
     expect(discord.restCalls('sendMessage')).toHaveLength(2);
   });
 });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js';
 import {
+  formatGapMarker,
   formatMemberJoin,
   formatMemberLeave,
   formatMessageDelete,
@@ -143,5 +144,25 @@ describe('formatRoleDelete', () => {
   it('names the role by its last-known name, not a bare id', () => {
     const text = formatRoleDelete(roleEvent('roleDelete', { name: 'old-name' }));
     expect(text).toContain('old-name');
+  });
+});
+
+describe('formatGapMarker', () => {
+  it('names the window with Discord timestamp markup, not a server-assumed timezone', () => {
+    // 1_700_000_000_000 ms -> 1_700_000_000 s, 1_700_000_060_000 ms -> 1_700_000_060 s.
+    const text = formatGapMarker(1_700_000_000_000, 1_700_000_060_000);
+    expect(text).toContain('<t:1700000000:t>');
+    expect(text).toContain('<t:1700000060:t>');
+  });
+
+  it('says what kind of events were missed, not only "logs"', () => {
+    const text = formatGapMarker(1_700_000_000_000, 1_700_000_060_000).toLowerCase();
+    expect(text).toContain('message');
+    expect(text).toContain('member');
+    expect(text).toContain('role');
+  });
+
+  it('is visibly a warning, not a routine notice', () => {
+    expect(formatGapMarker(0, 1)).toMatch(/^⚠/);
   });
 });

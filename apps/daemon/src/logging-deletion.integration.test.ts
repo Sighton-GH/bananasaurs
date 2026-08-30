@@ -74,6 +74,7 @@ beforeEach(() => {
     guildId: GUILD,
     findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+    listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: discord.now() }),
     release: (input) => pipelineRepo.forgetFirstSight(scope, input),
     sendMessage: (channelId, message) => discord.sendMessage(GUILD, channelId, message),

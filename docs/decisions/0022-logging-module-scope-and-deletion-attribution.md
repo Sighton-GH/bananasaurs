@@ -222,10 +222,14 @@ every *distinct* channel currently enabled in `log_routes` for this guild
 (a channel appearing under two event kinds gets one marker, not two),
 naming the window with Discord's own `<t:unix:t>` timestamp markup so it
 renders in each reader's local time rather than a server-assumed timezone.
-Idempotency key: namespaced claim on `(gapId, channelId)` — a gap is recorded
-once (`gatewayGaps.gapId` is an autoincrement primary key) and the marker
-for it must not double-post if the connection subscriber is ever invoked
-twice for the same gap.
+Idempotency key: namespaced claim on `(disconnectedAtMs, channelId)`, not
+`gapId` — `gapId` is minted by `recordGap`, inside `connection-subscriber.ts`,
+a *different* subscriber; subscribers share no state and pipeline dispatch
+discards each one's return value, so the logging module has no way to learn
+the id connection-subscriber just assigned. `disconnectedAtMs` is already on
+the event and is just as good a key: a guild cannot have two simultaneous
+disconnections, so it identifies the gap exactly as well as the row's
+surrogate key would.
 
 ## Consequences
 

@@ -38,6 +38,22 @@ export const findRoute = (scope: GuildScope, eventKind: string): LogRoute | unde
     };
   });
 
+/**
+ * Every distinct channel currently enabled for at least one event kind.
+ *
+ * For the gap marker (ADR 0022 decision 5): a channel routed under two event
+ * kinds gets one marker, not two.
+ */
+export const listEnabledLogChannels = (scope: GuildScope): string[] =>
+  read(scope, (db) => {
+    const rows = db
+      .selectDistinct({ channelId: logRoutes.channelId })
+      .from(logRoutes)
+      .where(scope.only(logRoutes, eq(logRoutes.enabled, 1)))
+      .all();
+    return rows.map((r) => r.channelId);
+  });
+
 /** True when this source channel must never be logged from, whatever the routes say. */
 export const isChannelExcluded = (scope: GuildScope, channelId: string): boolean =>
   read(scope, (db) => {
