@@ -1110,6 +1110,8 @@ describe('the dashboard recovery path, end to end (ADR 0012)', () => {
         guildIds: [GUILD],
         logger,
         readonly: false,
+        portsFor: daemon.portsFor,
+        instance: daemon.instance,
       },
     });
     const response = await api.inject({
@@ -1134,6 +1136,8 @@ describe('the dashboard recovery path, end to end (ADR 0012)', () => {
         guildIds: [GUILD],
         logger,
         readonly: false,
+        portsFor: daemon.portsFor,
+        instance: daemon.instance,
       },
     });
     await api.inject({

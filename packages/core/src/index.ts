@@ -297,10 +297,17 @@ export {
 } from './ops/dispatch.js';
 export { OPERATOR_COMMANDS } from './ops/registry.js';
 export type {
+  OpsAuditQuery,
+  OpsAuditRow,
+  OpsAuditWrite,
   OpsBatchRow,
   OpsEnqueued,
   OpsGatewayState,
   OpsInstance,
+  OpsJobQuery,
+  OpsJobRow,
+  OpsPanelDetail,
+  OpsPanelSummary,
   OpsPorts,
   OpsPublishResult,
   OpsRetryOutcome,

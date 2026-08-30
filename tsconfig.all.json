@@ -11,6 +11,6 @@
     "checkJs": false,
     "types": ["node"]
   },
-  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "*.ts", "*.js"],
+  "include": ["packages/*/src/**/*.ts", "apps/*/src/**/*.ts", "packages/*/*.ts", "*.ts", "*.js"],
   "exclude": ["node_modules", "**/dist/**", "scratchpad/**"]
 }

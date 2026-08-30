@@ -125,13 +125,28 @@ export default tseslint.config(
       '.claude/worktrees/**',
       // Plain-JS build helper. Covered by prettier; no type-aware rules apply.
       'scripts/**',
+      // tsc --build's declaration-only output for packages/dashboard (ADR: a
+      // Vite app still needs a composite tsconfig for the project-reference
+      // graph, so `tsc --build` emits harmless .d.ts/.js stubs nobody reads —
+      // Vite does the real bundling). Not `dist/`: that name is Vite's own
+      // build output and already ignored.
+      '**/dist-types/**',
     ],
   },
   js.configs.recommended,
   ...tseslint.configs.recommendedTypeChecked,
   {
     languageOptions: {
-      parserOptions: { project: './tsconfig.all.json', tsconfigRootDir: import.meta.dirname },
+      parserOptions: {
+        // Two projects, not one: `packages/dashboard`'s tsconfig pulls in the
+        // DOM lib for `window`/`document`/`fetch`, and TypeScript's DOM lib
+        // and `@types/node`'s own fetch-family globals conflict if merged
+        // into the same program. `tsconfig.all.json` stays Node-only and
+        // covers everything else; typescript-eslint resolves each linted file
+        // against whichever of the two actually includes it.
+        project: ['./tsconfig.all.json', './packages/dashboard/tsconfig.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
     },
     rules: {
       '@typescript-eslint/no-unused-vars': ['error', { argsIgnorePattern: '^_' }],

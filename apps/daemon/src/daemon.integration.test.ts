@@ -260,6 +260,24 @@ describe('guild scope across the composition root', () => {
 
     expect(discord.memberRoles(ALICE)).toEqual([]);
   });
+
+  /**
+   * `daemon.portsFor` is the seam a dashboard session's `GuildScope` crosses
+   * to reach `OpsPorts` (`packages/http`'s `HttpDeps.portsFor`, slice 14). A
+   * session's scope names the guild it was authenticated against — never a
+   * request parameter — so this is the one place left that could still answer
+   * with the wrong guild's data if the lookup inside it ever stopped keying
+   * on `scope.guildId` and answered from whichever guild happened to be built
+   * first instead.
+   */
+  it('portsFor answers the guild named by the scope it is given, not any other', async () => {
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'first guild', now: 0 });
+    guildRepo.upsertGuild(t.scopes.forGuild(SECOND_GUILD), { name: 'second guild', now: 0 });
+    daemon = start({ BANANASAURS_GUILD_ALLOWLIST: `${GUILD},${SECOND_GUILD}` });
+
+    expect(daemon.portsFor(t.scopes.forGuild(GUILD)).guildName()).toBe('first guild');
+    expect(daemon.portsFor(t.scopes.forGuild(SECOND_GUILD)).guildName()).toBe('second guild');
+  });
 });
 
 describe('a reaction, end to end', () => {

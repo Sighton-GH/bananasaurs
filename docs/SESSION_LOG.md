@@ -1818,3 +1818,108 @@ mode into a username oracle, in the one mode where the answer can never be a
 login. Now tested by asserting the two responses are byte-identical.
 
 1502 tests green (from 1359); typecheck and lint exit 0.
+
+## WP5 / slice 14, second half — the dashboard's read and write endpoints, the page, and static serving — 2026-08-30
+
+The Tier B half of slice 14: everything downstream of the guard slices 14a–14d
+built. One Tier A question was still open inside it — ADR 0031, below — and
+everything else is a route, a page, or wiring.
+
+**ADR 0031 decides `OpsAuditWrite`'s one asymmetry.** `actorType` widens to
+`'operator_cli' | 'dashboard'` and `via` to `'ssh' | 'http'`, and `actorId` is
+filled for a dashboard action while staying `undefined` for the CLI — opposite
+answers to the same field, for opposite reasons. The CLI has no verified
+identity (ADR 0024 amendment 2); a dashboard session's `accountId` is the
+primary key of a row the server created after checking an Argon2id hash, which
+*is* verified. `actorUnixUserClaimed` stays `undefined` for a dashboard row —
+there is no Unix user in an HTTP request, and inventing one would be the exact
+mistake amendment 2 exists to prevent.
+
+**The seam is `portsFor`, not a new query.** Every dashboard read and write
+answers with a call already on `OpsPorts` — `bananasaurs status`, `audit
+tail`, `log routing list`, `panel list` answer the same questions. `HttpDeps`
+grows `portsFor: (scope: GuildScope) => OpsPorts` and `instance: OpsInstance`;
+`apps/daemon/src/runtime/daemon.ts` builds both once — the same `OpsInstance`
+the operator dispatcher already used, and a `portsFor` keyed by
+`scope.guildId` against the same `byGuild` map `contextFor` reads — and hands
+them to `startDashboardApi`. `packages/http/src/secrets.ts`, `auth.ts` and
+`policy.ts` are untouched.
+
+**Every route goes through `requireCapability`, a third function beside
+`guard.require`/`requireFresh`, not a fourth guard method.** Session and CSRF
+are one question with two failure statuses (401, 403-csrf); capability is a
+separate question with its own (403-no-grant). `requireCapability` calls
+`authorize()` against `session.scope`, `session.guildId` and `session.actor` —
+never a request parameter, so a route cannot be handed a guild id or a
+capability by its caller even by accident.
+
+**The kill switch keeps ADR 0029's asymmetry in the route, not just in the
+guard.** `on === true` calls `guard.require`; `on === false` calls
+`guard.requireFresh`. The control that stops the bot must never be harder to
+reach than the one that starts it.
+
+**`packages/dashboard`** is React + Vite, one page: health, log routing (read
+plus a form to set a route), a read-only panel list (Release 1 has no
+panel-editing endpoint — `panel show` / `panel sync` already cover it), the
+audit table, and the kill switch, plus a login form and a bootstrap form for
+`/bootstrap?token=…`. It may not import `@bananasaurs/http`, so
+`src/api.ts` hard-codes the CSRF header string; a new test in `packages/http`
+reads the dashboard's source file and asserts the literal agrees with
+`CSRF_HEADER`, which is the one way the two could drift without either
+package importing the other. A 401 `reauth-required` prompts for the password
+and retries the original request rather than logging the user out (ADR 0029);
+a 503 `read-only` renders the server's `message`.
+
+**Static serving is a twenty-line handler, not `@fastify/static`.** Registered
+as Fastify's not-found handler, so every `/api/*` route still matches first;
+GET-only, one directory, no upload path and no directory listing, which is a
+shorter justification than a new dependency (ADR 0008).
+
+**A real `packages/dashboard` meant real boundary-rule fallout.**
+`eslint.config.js`'s `parserOptions.project` became an array of two
+tsconfigs — `packages/dashboard/tsconfig.json` pulls in the DOM lib, and
+merging that into the shared `tsconfig.all.json` collides with `@types/node`'s
+own fetch-family globals. `tsconfig.all.json`'s `include` grew a `*.tsx`
+pattern and a per-package `*.ts` pattern (for `vite.config.ts`).
+`packages/core/src/boundaries.test.ts`'s deferred `lintText` case for the
+dashboard — left as a comment explaining why in the ADR 0014 pass — is filled
+in.
+
+**Verified against the actual built bundle, not only against test doubles.**
+A Fastify instance built with the real production wiring
+(`createServer` + `registerReadRoutes` + `registerWriteRoutes` +
+`registerStaticAssets`) over a real migrated test database, driven with curl:
+login, all four read routes, and the kill switch write — with its CSRF header
+and its correctly attributed `dashboard`/`http` audit row — all round-tripped.
+Live in-browser rendering was not verified: this sandbox's Playwright tool
+needs a `chrome`-channel binary requiring a root-owned system install
+unavailable here, and installing `chromium` instead did not change which
+binary the tool looks for.
+
+**Broke, to check the tests, continuing from 219.** 219. Deleted the
+`requireCapability` call from `GET /api/health` → failed. 220. Same for `GET
+/api/panels/:id` → failed. 221. Made the kill switch use `guard.require` for
+both directions → failed. 222. Deleted the `requireCapability` call from `POST
+/api/log-routes` → failed. 223. `actorId: session.accountId` →
+`actorId: undefined` in the dashboard audit row → failed (both write routes'
+tests). 224. `actorType: 'dashboard'` → `'operator_cli'` → failed. 225.
+`via: 'http'` → `'ssh'` → failed. 226. Inverted `requireCapability`'s `ok`
+check → 26 tests failed. 227. `requireCapability` checks a fixed capability
+regardless of which one was asked for → 18 tests failed. 228. `registerRoutes`
+called without `deps` → 16 tests failed. 229. See below. 230. The static
+handler's content-type lookup always answers `text/html` → failed. 231. The
+static handler's `/api/` early-return removed, so an unmatched API path falls
+through to the SPA shell → failed. All restored by file copy.
+
+**One survivor, a real gap.** 229 — `daemon.ts`'s `portsFor`, the seam a
+dashboard session's `GuildScope` crosses to reach `OpsPorts`, had never been
+exercised against more than one guild. Made it ignore the scope it was given
+and always answer from whichever guild `byGuild` built first; all 285
+`apps/daemon` tests stayed green. `daemon.integration.test.ts` already had a
+"guild scope across the composition root" describe block proving the pipeline
+never crosses guilds — `portsFor` is the same claim about the dashboard's
+seam into the same map, and had no test making it. Added one there: two
+guilds, two distinct names, `daemon.portsFor` asked for each scope in turn.
+Confirmed to fail against the mutation and pass against the real code.
+
+1547 tests green (from 1502); typecheck and lint exit 0.

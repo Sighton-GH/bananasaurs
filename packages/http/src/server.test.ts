@@ -10,6 +10,7 @@ import { issueBootstrapTokenIfNeeded } from './auth.js';
 import { createServer, CSRF_HEADER, SESSION_COOKIE, type HttpDeps } from './server.js';
 import { hashPassword } from './secrets.js';
 import { POLICY } from './policy.js';
+import { testInstanceFor, testPortsFor } from './test-support.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const PASSWORD = 'correct horse battery staple';
@@ -55,6 +56,8 @@ beforeEach(async () => {
     guildIds: [GUILD],
     logger,
     readonly: false,
+    portsFor: (scope) => testPortsFor(scope, () => clock),
+    instance: testInstanceFor(t.scopes.instance(), () => clock),
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'guild', now: clock });
 
@@ -444,6 +447,8 @@ describe('/api/bootstrap does not exist unless it is armed (docs/19 §6.10 step 
       guildIds: [GUILD],
       logger,
       readonly: false,
+      portsFor: (scope) => testPortsFor(scope, () => freshClock),
+      instance: testInstanceFor(fresh.scopes.instance(), () => freshClock),
     };
     const issued = issueBootstrapTokenIfNeeded(freshDeps, { readonly: false });
     return { server: createServer({ deps: freshDeps }), token: issued?.token };
@@ -487,6 +492,8 @@ describe('/api/bootstrap does not exist unless it is armed (docs/19 §6.10 step 
         guildIds: [GUILD],
         logger,
         readonly: false,
+        portsFor: (scope) => testPortsFor(scope, () => clock),
+        instance: testInstanceFor(fresh.scopes.instance(), () => clock),
       },
     });
     const response = await server.inject({

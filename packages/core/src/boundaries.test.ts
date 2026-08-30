@@ -183,13 +183,24 @@ describe('the rules actually fire, not merely resolve', () => {
   });
 
   /**
-   * There is deliberately no `lintText` case for `packages/dashboard` yet.
+   * The `lintText` case for `packages/dashboard`, deferred from the ADR 0014
+   * pass because the directory did not exist yet (see the comment that used to
+   * sit here). Slice 14's second half created it, so the rule can now be shown
+   * to fire against a real file rather than only to resolve for one that might
+   * exist — the same milestone `packages/http`'s case above marks.
    *
-   * `lintText` runs the typed parser, which needs the file to belong to a
-   * tsconfig — so a path inside a directory that does not exist reports a
-   * parse error whose `ruleId` is `null`, and an assertion against it passes or
-   * fails for reasons that have nothing to do with the boundary. The
-   * `calculateConfigForFile` cases above already prove the dashboard's rules
-   * resolve; the firing case belongs with the slice that creates the package.
+   * `eslint.config.js`'s `parserOptions.project` is an array precisely so this
+   * resolves: `packages/dashboard/tsconfig.json` pulls in the DOM lib, which
+   * `tsconfig.all.json` deliberately does not, so the dashboard needs its own
+   * entry rather than folding into the shared one.
    */
+  it('reports @bananasaurs/storage in packages/dashboard', async () => {
+    const results = await eslint.lintText(
+      "import { accountRepo } from '@bananasaurs/storage';\nexport const x = accountRepo;\n",
+      { filePath: path.join(REPO_ROOT, 'packages/dashboard/src/App.tsx') },
+    );
+    const messages = results[0]?.messages ?? [];
+    expect(messages.map((m) => m.ruleId)).toContain(BOUNDARY_RULE);
+    expect(messages[0]?.message).toMatch(/must not import server code/);
+  });
 });

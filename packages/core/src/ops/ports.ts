@@ -18,26 +18,32 @@ import type { OpsSettingChange } from './settings.js';
  */
 
 /**
- * One row for `audit_events`, as the operator surface writes it.
+ * One row for `audit_events`, as the operator surface and the dashboard API
+ * both write it.
  *
- * `actorId` is absent by construction rather than optional-in-practice: the CLI
- * has no verified identity to put there (ADR 0024), and laundering the claimed
- * Unix name into the column every other actor type fills with a *verified*
- * identity is exactly the mistake amendment 2 exists to prevent. The claim goes
- * in `actorUnixUserClaimed`, whose name carries the caveat.
+ * `actorId` is `undefined` for `operator_cli` and filled for `dashboard`, and
+ * that asymmetry is deliberate rather than an inconsistency (ADR 0031). The CLI
+ * has no verified identity to put there (ADR 0024 amendment 2) — laundering the
+ * claimed Unix name into the column every other actor type fills with a
+ * *verified* identity would make the trail read as stronger evidence than it
+ * is, so the claim goes in `actorUnixUserClaimed` instead, whose name carries
+ * the caveat. A dashboard session's `accountId` is the reverse: it is the
+ * primary key of a row the server created after verifying an Argon2id hash, so
+ * it *is* a verified identity and belongs in `actorId`. `actorUnixUserClaimed`
+ * stays `undefined` for a dashboard row — there is no Unix user in an HTTP
+ * request, and inventing one would be the exact mistake amendment 2 prevents.
  */
 export interface OpsAuditWrite {
   readonly at: number;
-  readonly actorType: 'operator_cli';
-  readonly actorId: undefined;
+  readonly actorType: 'operator_cli' | 'dashboard';
+  readonly actorId: string | undefined;
   readonly actorUnixUserClaimed: string | undefined;
   /**
-   * `ssh`, per `docs/19` §6.9 — the column's vocabulary is
-   * `'ssh' | 'http' | 'gateway'` and predates the distinction between an
-   * operator on the box and one over SSH. It means "came in on the operator
-   * socket"; `http` is the dashboard and `gateway` is Discord.
+   * `docs/19` §6.9 — the column's vocabulary is `'ssh' | 'http' | 'gateway'`.
+   * `ssh` means "came in on the operator socket", `http` means the dashboard
+   * API (ADR 0031), and `gateway` means Discord.
    */
-  readonly via: 'ssh';
+  readonly via: 'ssh' | 'http';
   readonly action: string;
   readonly subjectType: string;
   readonly subjectId: string | undefined;

@@ -1,8 +1,34 @@
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
-import { safeLogFields, type Config, type Logger } from '@bananasaurs/core';
-import type { ScopeFactory } from '@bananasaurs/storage';
-import { createServer, issueBootstrapTokenIfNeeded, type HttpDeps } from '@bananasaurs/http';
+import {
+  safeLogFields,
+  type Config,
+  type Logger,
+  type OpsInstance,
+  type OpsPorts,
+} from '@bananasaurs/core';
+import type { GuildScope, ScopeFactory } from '@bananasaurs/storage';
+import {
+  createServer,
+  issueBootstrapTokenIfNeeded,
+  registerReadRoutes,
+  registerWriteRoutes,
+  type HttpDeps,
+} from '@bananasaurs/http';
+import { registerStaticAssets } from './static.js';
+
+/**
+ * `packages/dashboard/dist`, resolved relative to this module's own URL
+ * rather than `process.cwd()` — the same convention `packages/storage/src/
+ * test-support.ts` uses for the migrations folder — so it resolves correctly
+ * whether this file is running from `src/` (`npm run dev`) or from
+ * `dist/` after `tsc --build` (`npm start`); both sit at the same depth
+ * under the repo root.
+ */
+const DASHBOARD_DIST = fileURLToPath(
+  new URL('../../../../packages/dashboard/dist', import.meta.url),
+);
 
 /**
  * The dashboard API, in the daemon's process (ADR 0006 — one process).
@@ -18,6 +44,9 @@ export interface DashboardApiDeps {
   readonly scopes: ScopeFactory;
   readonly logger: Logger;
   readonly now: () => number;
+  /** The daemon's seam into per-guild ports (`apps/daemon/src/runtime/daemon.ts`). */
+  readonly portsFor: (scope: GuildScope) => OpsPorts;
+  readonly instance: OpsInstance;
 }
 
 export interface DashboardApi {
@@ -63,6 +92,8 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     guildIds: deps.config.BANANASAURS_GUILD_ALLOWLIST,
     logger: deps.logger,
     readonly: deps.config.BANANASAURS_READONLY,
+    portsFor: deps.portsFor,
+    instance: deps.instance,
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.
@@ -85,7 +116,19 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     );
   }
 
-  const app = createServer({ deps: httpDeps });
+  const app = createServer({
+    deps: httpDeps,
+    // One hook, two registrations — `createServer`'s own doc comment on
+    // `registerRoutes` says a route module cannot be written without the
+    // guard it is handed, so both calls go through the same parameter rather
+    // than either becoming a second hook.
+    registerRoutes: (instance, guard, routeDeps) => {
+      registerReadRoutes(instance, guard, routeDeps);
+      registerWriteRoutes(instance, guard, routeDeps);
+    },
+  });
+  registerStaticAssets(app, DASHBOARD_DIST);
+
   const host = deps.config.DASHBOARD_BIND;
   await app.listen({ host, port: deps.config.DASHBOARD_PORT });
 
