@@ -32,7 +32,10 @@ export const reconcileGuildHandler = (
   kind: JOB_KINDS.reconcileGuild,
   payload: reconcileGuildPayload,
   async run(payload) {
-    const outcome = await reconcileGuild(ports, { reason: payload.reason });
+    const outcome = await reconcileGuild(ports, {
+      reason: payload.reason,
+      panelId: payload.panelId,
+    });
 
     // An over-budget pass repaired nothing, so the gap is still outstanding and
     // must stay that way: clearing it would hide a guild that needs an owner to
@@ -52,6 +55,7 @@ export const reconcileGuildHandler = (
         guildId: scope.guildId,
         reason: payload.reason,
         gapId: payload.gapId,
+        panelId: payload.panelId,
         outcome: outcome.status,
         count: outcome.changeCount,
         applied: outcome.applied,

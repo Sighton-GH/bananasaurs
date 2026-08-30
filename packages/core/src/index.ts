@@ -82,11 +82,14 @@ export {
   reconcileGuildPayload,
   sweepDedupeKey,
   sweepEventDedupePayload,
+  undoBatchPayload,
+  undoDedupeKey,
   type AdoptPanelPayload,
   type JobKind,
   type LogMessageDeletePayload,
   type ReconcileGuildPayload,
   type SweepEventDedupePayload,
+  type UndoBatchPayload,
 } from './jobs/kinds.js';
 export {
   createConnectionSubscriber,
@@ -290,11 +293,15 @@ export {
 } from './ops/dispatch.js';
 export { OPERATOR_COMMANDS } from './ops/registry.js';
 export type {
+  OpsBatchRow,
+  OpsEnqueued,
   OpsGatewayState,
   OpsInstance,
   OpsPorts,
+  OpsPublishResult,
   OpsRetryOutcome,
   OpsSafetyState,
+  OpsUndoableCount,
 } from './ops/ports.js';
 export {
   findSetting,
@@ -305,6 +312,7 @@ export {
 } from './ops/settings.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
 export { killswitchCommand } from './ops/commands/killswitch.js';
+export { adoptionAllowCommand, panelSyncCommand, undoCommand } from './ops/commands/effects.js';
 export {
   configSetCommand,
   jobsRetryCommand,

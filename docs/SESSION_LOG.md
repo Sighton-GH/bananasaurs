@@ -1550,3 +1550,92 @@ nothing from claiming `guilds.updated_at` changed — and the test asserted
 test now asserts the timestamp. Mutation then failed.
 
 1236 tests green (from 1161); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13e — the write commands that reach Discord — 2026-08-30
+
+**Closes slice 13.** `panel sync`, `undo`, `adoption allow` — the whole
+Release 1 operator surface in `docs/17` §1 now exists.
+
+**ADR 0026, written first, and the arithmetic that forced it.** The CLI gives
+up after thirty seconds (`client.ts:58`). Role effects go through the per-source
+rate cap sequentially and on purpose. At the default twenty a minute, a
+thirty-effect batch takes ninety seconds and a 250-reactor panel takes twelve
+minutes. And a timed-out request does not stop the daemon — the socket handler
+keeps running after the client hangs up. So a synchronous `undo` would print a
+timeout while continuing to reverse role grants in the background, leaving the
+operator unable to say whether it ran, on the command whose whole purpose is to
+repair state during an incident.
+
+So the unbounded half is a job. Each command does the bounded work
+synchronously — validate, refuse, report the size, post the message — and
+returns a job id with the two commands that show what happened to it.
+
+**What each refusal is protecting.** `undo` refuses a batch already undone,
+because the inverse of the inverse is the original change and a careless repeat
+would silently re-apply what was reversed. It refuses a batch with nothing
+reversible, and says why: we granted a role the member already held, so we
+changed nothing and reversing would strip a role that was never ours.
+`panel sync` refuses a panel `doctor` took out of service rather than putting a
+control back in front of members that something decided should not be there.
+
+**`panel sync` gives `postManagedPanel` its first caller.** Like `resetBreaker`
+in 13d, it has been in the tree since WP3 with no caller outside a unit test: a
+managed panel configured in the database could not reach Discord by any shipped
+path. Sync now posts it if unposted, rewrites it if posted — the drift a
+managed panel actually suffers is an option added in configuration while the
+message members can see still shows the old buttons — re-seeds its reactions,
+and queues a reconciliation for the adopted kind only. A button panel carries
+no reaction state to drift.
+
+**`adoption allow` is deliberately not a job.** It grants against `RateLimiter`,
+which is in-memory and per-process, and only the live daemon can reach it. That
+is the concrete reason ADR 0013 puts the CLI on a socket rather than letting it
+open SQLite — a database-writing CLI could not do this at all. It is also lost
+on restart, and the command says so rather than leaving it to be found.
+
+**Undo runs under `operator_cli`, not `system`.** `panels/wiring.ts` runs panel
+effects as `system` because the authorization for a panel-driven change is the
+panel. Undo is the opposite: a human asked for it by name and the batch must say
+so. Both witnesses are obtained honestly — `undoBatch` demands `undo.execute`
+*and* `roles.mutate`, and modelling it with one and casting to the other is the
+shortcut amendment 3 warns about.
+
+**A real bug, found by a test that could not have passed otherwise.**
+`ops/wiring.ts` used `Date.now()` while the daemon runs on an injected clock.
+For 13d's ports that only affected a timestamp. For an enqueue it does not:
+`run_after` is *compared* against the worker's clock by `claimNext`, so the
+undo job was written dated in the future and never claimed. It presents as a
+row sitting in `jobs list` forever with nothing anywhere saying why. `opsPortsFor`
+now takes `now`, like every other wiring function in the tree.
+
+**The ADR 0014 tripwire fired, and it was right.** The new command file was
+called `commands/discord.ts`, and the per-directory `no-restricted-imports` rule
+banning `*discord*` from `packages/core` refused it. Renamed to
+`commands/effects.ts` rather than excepted — a rule weakened for a filename is a
+rule that will not catch the import it exists for.
+
+**Broke, to check the tests, continuing from 178.** 178. Undid a batch already
+undone → 2 failed. 179. Queued a batch with nothing reversible → 2. 180.
+Reported the total as if all of it were reversible → failed. 181. Ran undo with
+no reason → failed. 182. Published a disabled panel → 2 failed. 183. Queued a
+reconciliation for a managed panel → 2 failed. 184–186. See below. 187. Counted
+every effect as reversible → failed. 188. Read `hadRoleBefore` as always false →
+failed. 189. Never marked the batch undone → 2 failed. 190. Granted zero while
+reporting a grant → failed. 191. Read the allowance from nowhere → failed. 192.
+Stopped recording the posted message id → failed. 193. Never seeded reactions →
+failed. 194. Put the ops ports back on the wall clock → 2 failed. 195. See
+below. All restored by file copy.
+
+**Four survivors, all missing tests.** 184: nothing asserted that a
+panel-scoped pass *visits only that panel* — the end-to-end test checked the
+payload carried the id and never that the pass honoured it. 185 and 186: the
+dedupe keys were tested for collapsing a repeat of the same panel or batch, and
+never for *distinguishing* two — a shared key would mean the second sync or the
+second undo silently never happened, which from the terminal is
+indistinguishable from having worked. 195: nothing re-synced an
+already-posted managed panel, so the edit path had no test at all. Four tests
+written; all four mutations then failed.
+
+1278 tests green (from 1236); typecheck and lint exit 0.

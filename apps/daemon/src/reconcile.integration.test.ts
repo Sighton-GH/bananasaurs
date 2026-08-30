@@ -642,6 +642,47 @@ describe('a broken panel option — findings 1 and 2b', () => {
     );
   });
 
+  it('visits only the named panel when one is named (ADR 0026)', async () => {
+    // `bananasaurs panel sync <id>` queues a pass carrying this panel id. A
+    // pass that ignored it would name one panel and reconcile the whole guild —
+    // over-reach the operator would discover only from the audit trail, and the
+    // reason the payload carries a panel at all.
+    preReact(E_A, ALICE);
+    discord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: SECOND_MESSAGE,
+      userId: BOB,
+      emoji: SECOND_EMOJI,
+    });
+
+    const outcome = await reconcileGuild(reconcilePorts(), {
+      reason: 'operator',
+      panelId: 'second',
+    });
+
+    expect(outcome.panelsVisited).toBe(1);
+    // Bob's role came from the panel that was named.
+    expect(discord.memberRoles(BOB)).toContain(SECOND_ROLE);
+    // Alice reacted on the other panel and was not touched by this pass.
+    expect(discord.memberRoles(ALICE)).not.toContain(ROLE_A);
+  });
+
+  it('visits every panel when none is named, which is what the timer does', async () => {
+    preReact(E_A, ALICE);
+    discord.offlineReactionAdd({
+      channelId: CHANNEL,
+      messageId: SECOND_MESSAGE,
+      userId: BOB,
+      emoji: SECOND_EMOJI,
+    });
+
+    const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
+
+    expect(outcome.panelsVisited).toBe(2);
+    expect(discord.memberRoles(ALICE)).toContain(ROLE_A);
+    expect(discord.memberRoles(BOB)).toContain(SECOND_ROLE);
+  });
+
   it('skips one option Discord refuses to read (Unknown Emoji), instead of failing the whole pass', async () => {
     preReact(E_A, ALICE); // 🅰️: the injected failure hits this fetch first
     preReact(E_B, ALICE); // 🅱️ on the same panel: still read normally

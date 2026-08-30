@@ -1,6 +1,9 @@
 import type { Client } from 'discord.js';
 import {
+  JOB_KINDS,
+  reconcileDedupeKey,
   redactConfig,
+  undoDedupeKey,
   type Config,
   type OpsInstance,
   type OpsPorts,
@@ -15,7 +18,9 @@ import {
   roleRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
+import { countUndoable } from '../jobs/undo.js';
 import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
+import type { GuildOperations } from '../runtime/guild.js';
 
 /**
  * The operator surface's ports, bound to one guild.
@@ -25,7 +30,22 @@ import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
  * already uses for the logging, reconciliation and adoption ports. This is the
  * only file in the operator path that knows both the domain and the database.
  */
-export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
+/**
+ * The injected clock, not `Date.now()`.
+ *
+ * Every other wiring function in this tree takes `now` for the reason
+ * `panelEffectsFor` states: it is the same clock the gateway and the job worker
+ * read. For most of these ports that only affects a timestamp — but an
+ * enqueue's `run_after` is *compared* against the worker's clock by
+ * `claimNext`, so a port on the wall clock in a process whose clock is anything
+ * else enqueues a job dated in the future that is never claimed. It shows up as
+ * a row sitting in `jobs list` forever, with nothing anywhere saying why.
+ */
+export const opsPortsFor = (
+  scope: GuildScope,
+  operations: GuildOperations,
+  now: () => number,
+): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
   jobCounts: () => jobRepo.countByState(scope),
@@ -44,7 +64,7 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
       after: input.after,
       dryRun: input.dryRun,
     }),
-  setKillswitch: (on) => guildRepo.setKillswitch(scope, on, Date.now()),
+  setKillswitch: (on) => guildRepo.setKillswitch(scope, on, now()),
 
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
@@ -111,7 +131,7 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
   },
 
   // --- write commands (13d) --------------------------------------------------
-  applySetting: (change) => applySetting(scope, change),
+  applySetting: (change) => applySetting(scope, change, now()),
 
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {
@@ -124,11 +144,59 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
   unexcludeChannel: (channelId) => loggingRepo.unexcludeChannel(scope, channelId),
 
   retryJob: (jobId) => {
-    const outcome = jobRepo.retryJob(scope, jobId, Date.now());
+    const outcome = jobRepo.retryJob(scope, jobId, now());
     // Projected field by field rather than passed through: the repository's
     // success case carries the whole job row, and the port's does not need it.
     return outcome.ok ? { ok: true } : outcome;
   },
+
+  // --- write commands that reach Discord (13e, ADR 0026) ---------------------
+  publishPanel: (panelId) => operations.publishPanel(panelId),
+  grantAdoptionAllowance: (count) => {
+    operations.grantAdoptionAllowance(count);
+  },
+  adoptionAllowance: () => operations.adoptionAllowance(),
+
+  enqueueReconcile: (panelId) =>
+    enqueued(
+      jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.reconcileGuild,
+        payload: JSON.stringify({ reason: 'operator', panelId }),
+        // Per panel, so syncing panel A is not absorbed by a pending sync of
+        // panel B — and so a second sync of the *same* panel is.
+        dedupeKey: reconcileDedupeKey('operator', panelId),
+        now: now(),
+      }),
+    ),
+
+  findBatch: (batchId) => {
+    const row = effectRepo.findBatch(scope, batchId);
+    if (row === undefined) return undefined;
+    return {
+      batchId: row.batchId,
+      source: row.source,
+      actorType: row.actorType,
+      startedAt: row.startedAt,
+      finishedAt: row.finishedAt,
+      undoneAt: row.undoneAt,
+    };
+  },
+  countUndoable: (batchId) => countUndoable(scope, batchId),
+  enqueueUndo: (input) =>
+    enqueued(
+      jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.undoBatch,
+        payload: JSON.stringify({ batchId: input.batchId, reason: input.reason }),
+        dedupeKey: undoDedupeKey(input.batchId),
+        now: now(),
+      }),
+    ),
+});
+
+/** The enqueue result, narrowed to what a command reports. */
+const enqueued = (result: ReturnType<typeof jobRepo.enqueue>) => ({
+  enqueued: result.enqueued,
+  jobId: result.jobId,
 });
 
 /**
@@ -139,8 +207,7 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
  * `OPS_SETTINGS` with no branch here fails `tsc` rather than falling through to
  * a silent no-op (ADR 0025).
  */
-const applySetting = (scope: GuildScope, change: OpsSettingChange): void => {
-  const now = Date.now();
+const applySetting = (scope: GuildScope, change: OpsSettingChange, now: number): void => {
   switch (change.key) {
     case 'dry_run':
       guildRepo.setDryRun(scope, change.value, now);

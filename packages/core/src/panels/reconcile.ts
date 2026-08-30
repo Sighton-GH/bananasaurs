@@ -93,10 +93,15 @@ const isGone = (err: unknown): boolean => err instanceof DiscordApiError && err.
 
 export async function reconcileGuild(
   ports: ReconcilePorts,
-  input: { reason: 'gateway-gap' | 'timer' | 'operator' },
+  input: {
+    reason: 'gateway-gap' | 'timer' | 'operator';
+    /** One panel, for `bananasaurs panel sync <id>`. Absent means every panel. */
+    panelId?: string | undefined;
+  },
 ): Promise<ReconcileOutcome> {
   const panels = ports.store.listAdoptedPanels().filter(
     (p) =>
+      (input.panelId === undefined || p.panelId === input.panelId) &&
       p.status === 'enabled' &&
       // ADR 0021: a panel with a blocked adoption backlog is a decision not
       // yet made, not drift to repair — checkReconcileBudget must not

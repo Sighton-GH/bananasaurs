@@ -118,13 +118,19 @@ tables have had no writer since WP4 shipped.
 
 ### 13e — write commands that reach Discord
 
-`panel sync`, `undo`, `adoption allow`. `panel sync` and `undo` go through the
-existing effect gateway unchanged — kill switch, breaker, hierarchy, rate cap
-and dry-run all still apply. `adoption allow` calls
-`RateLimiter.grantAllowance`, which is **in-memory, per-process**
-(`packages/core/src/effects/rate-limit.ts:43`) — reaching the live daemon's own
-limiter is precisely what the socket makes possible and a database-writing CLI
-could not do.
+`panel sync`, `undo`, `adoption allow`. All three go through the existing effect
+gateway unchanged — kill switch, breaker, hierarchy, rate cap and dry-run all
+still apply. `adoption allow` calls `RateLimiter.grantAllowance`, which is
+**in-memory, per-process** (`packages/core/src/effects/rate-limit.ts:43`) —
+reaching the live daemon's own limiter is precisely what the socket makes
+possible and a database-writing CLI could not do.
+
+Needs **ADR 0026** first. The CLI gives up after thirty seconds and rate-capped
+reversal is unbounded — a thirty-effect batch is ninety seconds, a 250-reactor
+panel is twelve minutes — and a timed-out request does not stop the daemon. So
+`undo` and the reconciliation half of `panel sync` enqueue a job and return its
+id; only the bounded work (validate, refuse, report the size, post the message,
+seed the reactions) happens on the connection.
 
 ### 14a — dashboard API, accounts, sessions, bootstrap
 

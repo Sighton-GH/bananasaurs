@@ -273,7 +273,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     contextFor: (guildId) => {
       const entry = byGuild.get(guildId);
       if (entry === undefined) return undefined;
-      return { guildId: parseGuildId(guildId), now, ports: opsPortsFor(entry.scope) };
+      return {
+        guildId: parseGuildId(guildId),
+        now,
+        ports: opsPortsFor(entry.scope, entry.runtime.ops, now),
+      };
     },
     instance: opsInstanceFor({ config, client, startedAtMs: now() }),
   });

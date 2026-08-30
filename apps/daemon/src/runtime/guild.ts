@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto';
 import {
   createConnectionSubscriber,
+  editManagedPanel,
+  postManagedPanel,
+  seedPanelReactions,
   createInteractionSubscriber,
   createLoggingSubscriber,
   createMemberUpdateSubscriber,
@@ -20,6 +23,7 @@ import {
   type LoggingPorts,
   type MemberUpdatePorts,
   type MessageDeleteAttributionPorts,
+  type OpsPublishResult,
   type ReconcilePorts,
   type Subscriber,
 } from '@bananasaurs/core';
@@ -40,6 +44,7 @@ import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
+import { undoBatchHandler } from '../jobs/undo.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -76,10 +81,29 @@ export interface GuildRuntimeDeps {
   readonly now: () => number;
 }
 
+/**
+ * What the operator surface needs that only the live process holds.
+ *
+ * Everything else `bananasaurs` reaches is a query or a column, and
+ * `ops/wiring.ts` builds those from a `GuildScope` alone. These three are
+ * different: two of them need the Discord port and the panel renderer, and the
+ * third needs the `RateLimiter` **object**, which is in-memory and per-process.
+ * That last one is the concrete reason ADR 0013 puts the CLI on a socket rather
+ * than letting it open the database — a CLI that wrote SQLite could not reach
+ * a live allowance at all.
+ */
+export interface GuildOperations {
+  /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
+  publishPanel(panelId: string): Promise<OpsPublishResult>;
+  grantAdoptionAllowance(count: number): void;
+  adoptionAllowance(): number;
+}
+
 export interface GuildRuntime {
   readonly guildId: string;
   readonly subscribers: readonly Subscriber[];
   readonly worker: JobWorker;
+  readonly ops: GuildOperations;
 }
 
 /**
@@ -290,6 +314,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
       logMessageDeleteHandler(deletionAttributionPorts),
+      undoBatchHandler(scope, { guildId, gateway, logger, now }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this
       // slice does not build (ADR 0020).
@@ -299,5 +324,65 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     now,
   });
 
-  return { guildId, subscribers, worker };
+  /**
+   * The publish deps, shared by the post and edit paths.
+   *
+   * `setPanelMessage` is what makes a posted panel resolvable from an
+   * interaction: until it lands, a click on the message cannot be traced back
+   * to a panel and the buttons do nothing.
+   */
+  const publishDeps = {
+    guildId,
+    discord,
+    logger,
+    setPanelMessage: (panelId: string, messageId: string) =>
+      panelRepo.setPanelMessage(scope, panelId, messageId, now()),
+  };
+
+  const ops: GuildOperations = {
+    async publishPanel(panelId) {
+      const panel = panelRepo.findPanel(scope, panelId);
+      if (panel === undefined) throw new Error(`no panel ${panelId} in guild ${guildId}`);
+
+      let action: OpsPublishResult['action'];
+      if (panel.kind !== 'managed') {
+        // A bot may only edit its own messages, and that asymmetry is the whole
+        // reason there are two kinds of panel. Not a failure: an adopted panel
+        // is reaction-driven, and re-seeding plus reconciling is its sync.
+        action = 'not-managed';
+      } else if (panel.messageId === undefined) {
+        await postManagedPanel(panel, publishDeps);
+        action = 'posted';
+      } else {
+        // Rewritten every sync, not only when something changed. The message is
+        // rendered from the configuration, so an edit is idempotent, and the
+        // alternative — comparing rendered output to what Discord holds —
+        // would need a fetch to answer a question the rewrite settles.
+        await editManagedPanel(panel, publishDeps);
+        action = 'edited';
+      }
+
+      // Re-read, because posting has just written a message id and the seeder
+      // refuses a panel without one.
+      const posted = panelRepo.findPanel(scope, panelId);
+      const seed =
+        posted?.messageId === undefined
+          ? { seeded: 0, failed: [] }
+          : await seedPanelReactions(posted, { guildId, discord, logger });
+
+      return {
+        action,
+        messageId: posted?.messageId,
+        reactionsSeeded: seed.seeded,
+        reactionsFailed: seed.failed,
+      };
+    },
+
+    grantAdoptionAllowance: (count) => {
+      rateLimiter.grantAllowance('adoption', count, now());
+    },
+    adoptionAllowance: () => rateLimiter.bucketFor('adoption', now()).allowance,
+  };
+
+  return { guildId, subscribers, worker, ops };
 }

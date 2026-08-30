@@ -197,6 +197,72 @@ export interface OpsPorts {
   /** Returns whether there was an exclusion to remove. */
   unexcludeChannel(channelId: string): boolean;
   retryJob(jobId: number): OpsRetryOutcome;
+
+  // --- write commands that reach Discord (13e, ADR 0026) ---------------------
+  /**
+   * Posts or edits a managed panel's message and re-seeds its reactions.
+   *
+   * The **bounded** half of `panel sync`: one message and at most twenty
+   * reactions, none of it through the role rate cap. The unbounded half — the
+   * reconciliation pass — is a job, because a 250-reactor panel takes twelve
+   * minutes at the default cap and the CLI gives up after thirty seconds.
+   */
+  publishPanel(panelId: string): Promise<OpsPublishResult>;
+  /** Queues the reconciliation half. Absent `panelId` would mean every panel. */
+  enqueueReconcile(panelId: string): OpsEnqueued;
+  /** The batch row, so `undo` can refuse one that does not exist or is done. */
+  findBatch(batchId: string): OpsBatchRow | undefined;
+  /**
+   * How much of a batch can actually be reversed, without reversing it.
+   *
+   * `hadRoleBefore` is what makes this answerable: an effect that granted a
+   * role the member already had changed nothing, and reversing it would strip
+   * a role that was never ours to strip.
+   */
+  countUndoable(batchId: string): OpsUndoableCount;
+  enqueueUndo(input: { batchId: string; reason: string }): OpsEnqueued;
+  /**
+   * Grants an adoption allowance on the **live process's** rate limiter.
+   *
+   * In-memory and per-process, which is the whole reason ADR 0013 puts the CLI
+   * on a socket rather than letting it open the database: a CLI that wrote
+   * SQLite could not reach this at all. Lost on restart, and the command says
+   * so rather than leaving it to be discovered.
+   */
+  grantAdoptionAllowance(count: number): void;
+  /** Unconsumed approved actions, before and after a grant. */
+  adoptionAllowance(): number;
+}
+
+/** A job this command queued, or the one already pending that absorbed it. */
+export interface OpsEnqueued {
+  readonly enqueued: boolean;
+  readonly jobId: number | undefined;
+}
+
+/** One row of `effect_batches`, as `undo` reads it. */
+export interface OpsBatchRow {
+  readonly batchId: string;
+  readonly source: string;
+  readonly actorType: string;
+  readonly startedAt: number;
+  readonly finishedAt: number | null;
+  readonly undoneAt: number | null;
+}
+
+export interface OpsUndoableCount {
+  readonly total: number;
+  /** Effects that actually landed and changed something, so have an inverse. */
+  readonly reversible: number;
+}
+
+export interface OpsPublishResult {
+  /** `posted`, `edited`, or `not-managed` for an adopted panel we cannot edit. */
+  readonly action: 'posted' | 'edited' | 'not-managed';
+  readonly messageId: string | undefined;
+  readonly reactionsSeeded: number;
+  /** Emoji Discord refused, usually a custom emoji from a guild we have left. */
+  readonly reactionsFailed: readonly { emojiKey: string; error: string }[];
 }
 
 /**

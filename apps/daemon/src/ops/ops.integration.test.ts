@@ -4,9 +4,23 @@ import path from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { Client } from 'discord.js';
-import { parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
+import {
+  panelDefinitionSchema,
+  parseConfig,
+  parseGuildId,
+  parseSnowflakeId,
+  unicodeEmojiKey,
+  type Config,
+} from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { effectRepo, guildRepo, jobRepo, loggingRepo } from '@bananasaurs/storage';
+import {
+  effectRepo,
+  guildRepo,
+  jobRepo,
+  loggingRepo,
+  panelRepo,
+  roleRepo,
+} from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { run } from '@bananasaurs/cli';
@@ -686,6 +700,365 @@ describe('the operator CLI, end to end', () => {
         expect(result.code, `${line}: ${result.err}`).toBe(0);
         expect(() => JSON.parse(result.out) as unknown, line).not.toThrow();
       }
+    });
+  });
+  /**
+   * The write commands that reach Discord (slice 13e).
+   *
+   * Every one of them queues the unbounded half rather than awaiting it
+   * (ADR 0026), so these tests run the job too — `daemon.drainJobs()` — and
+   * then assert against `FakeDiscord`, which is the only place a role actually
+   * changing is observable. Asserting on the command's own output would prove
+   * that it printed a sentence.
+   */
+  describe('the write commands that reach Discord', () => {
+    const scope = () => t.scopes.forGuild(GUILD);
+    const CHANNEL = parseSnowflakeId('456789012345678901');
+    const MESSAGE = parseSnowflakeId('567890123456789012');
+    const ROLE = parseSnowflakeId('678901234567890123');
+    const MEMBER = parseSnowflakeId('789012345678901234');
+
+    const seed = (): void => {
+      guildRepo.upsertGuild(scope(), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+      roleRepo.allowlistRole(scope(), ROLE);
+      discord.defineRole({ id: ROLE, position: 1 });
+      discord.setBotHighestRolePosition(10);
+      discord.defineMember(MEMBER, [ROLE]);
+    };
+
+    const seedPanel = (over: Record<string, unknown> = {}): void => {
+      discord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE, authorId: MEMBER });
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'roles',
+          kind: 'adopted',
+          channelId: CHANNEL,
+          messageId: MESSAGE,
+          behaviour: 'toggle',
+          component: 'reaction',
+          options: [
+            { optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 },
+          ],
+          ...over,
+        }),
+        discord.now(),
+      );
+    };
+
+    /** One string field out of a job payload, without an `any` in the assertion. */
+    const payloadField = (payload: string, key: string): string => {
+      const parsed = JSON.parse(payload) as Record<string, unknown>;
+      const value = parsed[key];
+      return typeof value === 'string' ? value : `<${key} missing>`;
+    };
+
+    /** A batch holding one applied grant, as a member's click would leave it. */
+    const seedAppliedGrant = (dedupeKey = 'reaction:brain:once'): string => {
+      const batchId = effectRepo.openBatch(scope(), {
+        source: 'reaction',
+        actorType: 'system',
+        actorId: undefined,
+        now: discord.now(),
+      });
+      const claim = effectRepo.claimEffect(scope(), {
+        dedupeKey,
+        batchId,
+        userId: MEMBER,
+        roleId: ROLE,
+        action: 'grant',
+        // The whole basis of the inverse: we added it, they did not have it.
+        hadRoleBefore: false,
+        panelId: undefined,
+        now: discord.now(),
+      });
+      effectRepo.recordOutcome(scope(), {
+        effectId: claim.effectId,
+        state: 'applied',
+        completedAt: discord.now(),
+        errorCode: undefined,
+      });
+      effectRepo.closeBatch(scope(), batchId, discord.now());
+      return batchId;
+    };
+
+    it('`undo` queues the reversal and the job actually removes the role', async () => {
+      startDaemon();
+      seed();
+      const batchId = seedAppliedGrant();
+      expect(discord.memberRoles(MEMBER)).toContain(ROLE);
+
+      const result = await cli(`undo ${batchId} --confirm`);
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatch(/1 of 1/);
+
+      // Queued, not done — the command returned before anything reached Discord.
+      expect(discord.memberRoles(MEMBER)).toContain(ROLE);
+
+      await daemon.drainJobs();
+      expect(discord.memberRoles(MEMBER)).not.toContain(ROLE);
+      expect(effectRepo.findBatch(scope(), batchId)?.undoneAt).not.toBeNull();
+    });
+
+    it('`undo` refuses the same batch a second time, once the job has run', async () => {
+      startDaemon();
+      seed();
+      const batchId = seedAppliedGrant();
+      await cli(`undo ${batchId} --confirm`);
+      await daemon.drainJobs();
+
+      const again = await cli(`undo ${batchId} --confirm`);
+      expect(again.code).toBe(1);
+      expect(again.err).toMatch(/already undone/);
+    });
+
+    it('a queued undo still obeys the kill switch, like every other role change', async () => {
+      // Undo is a replay of the inverse through `applyRoleEffect`, not a second
+      // path with its own permissions. An undo that could bypass the kill switch
+      // would be an unaudited way to change roles.
+      startDaemon();
+      seed();
+      const batchId = seedAppliedGrant();
+      await cli(`undo ${batchId} --confirm`);
+      await cli('killswitch on --confirm');
+
+      await daemon.drainJobs();
+      expect(discord.memberRoles(MEMBER)).toContain(ROLE);
+    });
+
+    it('`undo` refuses a batch whose effects changed nothing', async () => {
+      startDaemon();
+      seed();
+      const batchId = effectRepo.openBatch(scope(), {
+        source: 'reaction',
+        actorType: 'system',
+        actorId: undefined,
+        now: discord.now(),
+      });
+      const claim = effectRepo.claimEffect(scope(), {
+        dedupeKey: 'reaction:brain:noop',
+        batchId,
+        userId: MEMBER,
+        roleId: ROLE,
+        action: 'grant',
+        // They already had it, so we changed nothing and there is no inverse.
+        hadRoleBefore: true,
+        panelId: undefined,
+        now: discord.now(),
+      });
+      effectRepo.recordOutcome(scope(), {
+        effectId: claim.effectId,
+        state: 'applied',
+        completedAt: discord.now(),
+        errorCode: undefined,
+      });
+
+      const result = await cli(`undo ${batchId} --confirm`);
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/nothing to undo/);
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    it('`panel sync` seeds the reactions and queues a pass for that panel only', async () => {
+      startDaemon();
+      seed();
+      seedPanel();
+
+      const result = await cli('panel sync roles --confirm');
+      expect(result.code, result.err).toBe(0);
+      // The bounded half happened synchronously, at Discord.
+      expect(discord.restCalls('createReaction')).toHaveLength(1);
+
+      const queued = jobRepo.listJobs(scope(), {});
+      expect(queued).toHaveLength(1);
+      expect(queued[0]?.kind).toBe('reconcile_guild');
+      expect(JSON.parse(queued[0]?.payload ?? '{}')).toMatchObject({
+        reason: 'operator',
+        panelId: 'roles',
+      });
+    });
+
+    it('`panel sync` twice queues one pass, not two', async () => {
+      // The dedupe key is per panel and partial over queued/running (ADR 0016),
+      // so a repeat collapses rather than doubling the work.
+      startDaemon();
+      seed();
+      seedPanel();
+      await cli('panel sync roles --confirm');
+      await cli('panel sync roles --confirm');
+      expect(jobRepo.listJobs(scope(), {})).toHaveLength(1);
+    });
+
+    it('`panel sync` on two panels queues two passes, not one', async () => {
+      // The dedupe key is per panel. Without that, syncing panel B would be
+      // absorbed by panel A's pending pass and silently never happen —
+      // indistinguishable, from the terminal, from having worked.
+      startDaemon();
+      seed();
+      seedPanel();
+      const SECOND_MESSAGE = parseSnowflakeId('890123456789012345');
+      discord.defineMessage({ channelId: CHANNEL, messageId: SECOND_MESSAGE, authorId: MEMBER });
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'other',
+          kind: 'adopted',
+          channelId: CHANNEL,
+          messageId: SECOND_MESSAGE,
+          behaviour: 'toggle',
+          component: 'reaction',
+          options: [
+            { optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 },
+          ],
+        }),
+        discord.now(),
+      );
+
+      await cli('panel sync roles --confirm');
+      await cli('panel sync other --confirm');
+
+      const queued = jobRepo.listJobs(scope(), {});
+      expect(queued).toHaveLength(2);
+      expect(queued.map((j) => payloadField(j.payload, 'panelId')).sort()).toEqual([
+        'other',
+        'roles',
+      ]);
+    });
+
+    it('`undo` on two batches queues two reversals, not one', async () => {
+      // Per batch, for the same reason. A shared key would mean the second
+      // batch was never reversed and the command said it would be.
+      startDaemon();
+      seed();
+      const first = seedAppliedGrant();
+      const second = seedAppliedGrant('reaction:brain:twice');
+
+      await cli(`undo ${first} --confirm`);
+      await cli(`undo ${second} --confirm`);
+
+      const queued = jobRepo.listJobs(scope(), {});
+      expect(queued).toHaveLength(2);
+      expect(queued.map((j) => payloadField(j.payload, 'batchId')).sort()).toEqual(
+        [first, second].sort(),
+      );
+    });
+
+    it('`panel sync` rewrites an already-posted managed panel to match its options', async () => {
+      // The drift a managed panel actually suffers: an option was added in the
+      // configuration and the message members can see still shows the old
+      // buttons. A sync that only posted would repair the never-posted case and
+      // leave this one broken forever.
+      startDaemon();
+      seed();
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'buttons',
+          kind: 'managed',
+          channelId: CHANNEL,
+          behaviour: 'toggle',
+          component: 'button',
+          options: [{ optionId: 'brain', roleId: ROLE, label: 'Brain', position: 0 }],
+        }),
+        discord.now(),
+      );
+      await cli('panel sync buttons --confirm');
+      expect(discord.restCalls('editMessage')).toEqual([]);
+
+      discord.resetCalls();
+      const again = await cli('panel sync buttons --confirm');
+      expect(again.code, again.err).toBe(0);
+      expect(again.out).toMatch(/Rewrote panel/);
+      expect(discord.restCalls('editMessage')).toHaveLength(1);
+      // Posted once, not twice: the second sync edits the message it already has.
+      expect(discord.restCalls('sendMessage')).toEqual([]);
+    });
+
+    it('`panel sync` posts a managed panel that has never been posted', async () => {
+      // Nothing else in the shipped product ever calls `postManagedPanel`, so
+      // before this command a configured managed panel could not reach Discord.
+      startDaemon();
+      seed();
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'buttons',
+          kind: 'managed',
+          channelId: CHANNEL,
+          behaviour: 'toggle',
+          component: 'button',
+          options: [{ optionId: 'brain', roleId: ROLE, label: 'Brain', position: 0 }],
+        }),
+        discord.now(),
+      );
+
+      const result = await cli('panel sync buttons --confirm');
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatch(/Posted panel/);
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+      // Recorded, or an interaction on the message could not find the panel.
+      expect(panelRepo.findPanel(scope(), 'buttons')?.messageId).toBeDefined();
+      // A button panel has no reactions to drift, so no pass is queued.
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    it('`panel sync` refuses a panel `doctor` took out of service', async () => {
+      startDaemon();
+      seed();
+      seedPanel();
+      panelRepo.setPanelStatus(
+        scope(),
+        'roles',
+        'disabled_by_doctor',
+        'role above bot',
+        discord.now(),
+      );
+
+      const result = await cli('panel sync roles --confirm');
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/Re-enable it first/);
+      expect(discord.restCalls('createReaction')).toEqual([]);
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    it('`adoption allow` reaches the live process, which a database CLI could not', async () => {
+      // The concrete reason ADR 0013 puts the CLI on a socket: the allowance
+      // lives in `RateLimiter`, in this process's memory, and nothing that
+      // wrote SQLite could touch it.
+      startDaemon();
+      seed();
+      const first = await cli('adoption allow 250 --confirm');
+      expect(first.code, first.err).toBe(0);
+      expect(first.out).toMatch(/now 250/);
+
+      // Cumulative against the same live bucket, not a fresh one per request.
+      const second = await cli('adoption allow 50 --confirm');
+      expect(second.out).toMatch(/now 300/);
+
+      const rows = effectRepo.tailAudit(scope());
+      expect(rows[0]).toMatchObject({ action: 'adoption.allowance_granted' });
+      expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ allowance: 300 });
+    });
+
+    it('refuses all three without --confirm, and reaches Discord for none of them', async () => {
+      startDaemon();
+      seed();
+      seedPanel();
+      const batchId = seedAppliedGrant();
+      discord.resetCalls();
+
+      for (const line of ['panel sync roles', `undo ${batchId}`, 'adoption allow 10']) {
+        const result = await cli(line);
+        expect(result.code, line).toBe(3);
+        expect(result.err, line).toMatch(/--confirm/);
+      }
+      expect(discord.restCalls()).toEqual([]);
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
     });
   });
 });

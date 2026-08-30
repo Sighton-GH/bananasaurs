@@ -42,6 +42,13 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   excludeChannel: unstubbed('excludeChannel'),
   unexcludeChannel: unstubbed('unexcludeChannel'),
   retryJob: unstubbed('retryJob'),
+  publishPanel: unstubbed('publishPanel'),
+  enqueueReconcile: unstubbed('enqueueReconcile'),
+  findBatch: unstubbed('findBatch'),
+  countUndoable: unstubbed('countUndoable'),
+  enqueueUndo: unstubbed('enqueueUndo'),
+  grantAdoptionAllowance: unstubbed('grantAdoptionAllowance'),
+  adoptionAllowance: unstubbed('adoptionAllowance'),
   ...over,
 });
 
