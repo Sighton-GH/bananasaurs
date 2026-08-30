@@ -2359,3 +2359,42 @@ a verified baseline.
 
 1638 tests green (from 1630 — 8 new in `doctor.test.ts`); typecheck and lint
 exit 0.
+
+---
+
+## WP6 / slice 16f — docs, and Release 1's feature work is done — 2026-08-30
+
+The last slice of the last work package. No code; every doc that named
+backup/restore as unbuilt, or `/privacy` as still in scope, is corrected to
+match what slices 16a–16e and WP5 slice 15 actually built.
+
+**`docs/SMOKE_TESTS.md` is new**, and it is the actual Release 1 gate rather
+than a formality: section A (`docs/21`'s exercises) is already checked off
+from the 2026-08-29 live test; section B (operator CLI, dashboard, `/status`)
+and section C (backup/restore against real data) are not, and are named as
+exactly what has to happen before Release 1 is called done — not rebuilt as
+new work, since both are already fully built and merged.
+
+**Corrected in place**, each because it would otherwise mislead the next
+reader: `docs/08_ROADMAP.md`'s Release 1 list still named `/privacy` as
+in-scope after WP5 slice 15 dropped it; `docs/12_OPEN_QUESTIONS.md`'s backup
+destination question was still open after ADR 0034 answered it; `docs/09`'s
+"test backup and restore" bullet had nothing to point at. `docs/17`'s CLI
+reference gained `backup now`/`backup list` and a note on why restore is
+deliberately absent from it. `.env.example` and `CLAUDE.md`'s command list
+gained the new config keys and `npm run restore`.
+
+**`docs/STATE.md` rewritten rather than appended to**, per its own stated
+purpose — it had not been updated since the WP4 boundary and was silent on
+five slices' worth of WP5 and all of WP6. The old narrative detail (WP3's two
+defects, WP4's cursor mutation, the three live-test fixes) already lives in
+this file and in `docs/reports/`; `STATE.md` now says where the build actually
+is and what the one remaining next action is, not a compressed retelling of
+history it duplicates elsewhere.
+
+**Release 1's feature work is done.** Every slice in `docs/20`'s six work
+packages is built, merged, and green — 1,638 tests, `typecheck` and `lint`
+clean. What remains is `docs/SMOKE_TESTS.md`, which by design cannot be
+finished inside this sandbox: sections B and C both require either a live
+Discord connection or read access to `./data`/`./backups`, and this
+environment has neither, deliberately.

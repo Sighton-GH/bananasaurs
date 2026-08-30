@@ -26,7 +26,7 @@ Updated 2026-08-22 after the plan review. Recommended defaults are included so p
 ## Still needed
 
 1. ~~**Host profile**~~ — answered. i7-6700, 8 threads, 19 GiB RAM, 45 GB free, Mint 22.3, dedicated to server work. Recorded in `docs/15`, which relaxed the memory budget to ~1 GB and reopened local embeddings and a small local generation model as real options.
-2. **Backup destination:** local second disk, NAS, or encrypted remote. Interim recommendation: local path first with `restic` or `borg`, plus a documented encrypted off-host target. The restore drill happens in Release 1, not at the end.
+2. ~~**Backup destination**~~ — answered 2026-08-23, implemented 2026-08-30 (ADR 0034). Local path only in Release 1 (`BANANASAURS_BACKUP_DIR`, default `./backups`); an encrypted off-host target remains documented, not implemented. The restore drill is `docs/SMOKE_TESTS.md` §C, rehearsed against a synthetic database in WP6 slice 16d and still owed one run against real data before Release 1 sign-off.
 3. **Monthly AI spend ceiling:** a number, which becomes a config value that fails closed.
 4. **Release 1 configuration:** which panels, which roles, which log events, which destinations. Blank slate — nothing is imported from Carl-bot. Sheet at `docs/RELEASE1_CONFIG.md`. Does not block the first coding session, but must exist before cutover.
 5. **Anti-nuke posture:** other members hold Discord Administrator. Decide whether Bananasaurs should detect and alert on privileged-account abuse (mass bans, mass role deletion, mass channel deletion) or stay out of it. Detection and alerting is tractable; prevention is not, and should not be promised.

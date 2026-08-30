@@ -23,6 +23,7 @@ npm run lint         # eslint + prettier check
 npm run typecheck    # tsc --noEmit, must be clean
 npm run db:generate  # drizzle-kit generate after a schema change
 npm run db:migrate
+npm run restore      # scripts/restore.mjs — daemon must be stopped first; see docs/SMOKE_TESTS.md
 npm run smoke        # optional, requires TEST_GUILD_ID and a real token
 ```
 

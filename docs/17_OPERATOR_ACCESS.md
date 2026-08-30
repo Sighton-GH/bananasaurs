@@ -37,9 +37,16 @@ bananasaurs jobs list [--failed]
 bananasaurs jobs retry <id> --confirm
 bananasaurs killswitch on|off --confirm
 bananasaurs bootstrap reissue --confirm     # re-arm the dashboard's first-run setup page
+bananasaurs backup now --confirm            # take a backup immediately, apply retention
+bananasaurs backup list                     # every backup on disk, oldest first
 ```
 
 Later releases add `case`, `automod`, `archive search`, `channels enable|disable`.
+
+**Restore is deliberately not on this list.** ADR 0034: it needs the daemon
+stopped, which a socket command can never guarantee about itself. It is
+`npm run restore -- <backup-file> --confirm`, run on the host with the daemon
+stopped — see `docs/SMOKE_TESTS.md` for the drill.
 
 ### Reaching the dashboard
 
