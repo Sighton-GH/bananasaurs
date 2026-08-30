@@ -28,6 +28,13 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   oldestDueJobAtMs: unstubbed('oldestDueJobAtMs'),
   recordAudit: unstubbed('recordAudit'),
   setKillswitch: unstubbed('setKillswitch'),
+  tailAudit: unstubbed('tailAudit'),
+  listJobs: unstubbed('listJobs'),
+  listPanels: unstubbed('listPanels'),
+  findPanel: unstubbed('findPanel'),
+  listUnassignableRoles: unstubbed('listUnassignableRoles'),
+  listRoutes: unstubbed('listRoutes'),
+  listExcludedChannels: unstubbed('listExcludedChannels'),
   ...over,
 });
 
@@ -36,6 +43,8 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   readonly: false,
   env: 'development',
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
+  doctor: () => ({ ok: true, text: 'doctor: ok', data: null }),
+  redactedConfig: () => ({ BANANASAURS_DRY_RUN: false, DISCORD_BOT_TOKEN: '<redacted>' }),
   ...over,
 });
 

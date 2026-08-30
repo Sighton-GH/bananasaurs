@@ -12,8 +12,10 @@ import {
   listAssignedUsers,
   openBatch,
   recordAssignment,
+  recordAudit,
   recordOutcome,
   removeAssignment,
+  tailAudit,
   wasRecentlyApplied,
 } from './effects.js';
 
@@ -220,5 +222,60 @@ describe('listAssignedUsers', () => {
     record(a, ALICE, ROLE_A, 'roles');
 
     expect(listAssignedUsers(b, 'roles')).toEqual([]);
+  });
+});
+
+describe('tailAudit', () => {
+  const put = (scope: GuildScope, at: number, action: string) =>
+    recordAudit(scope, {
+      at,
+      actorType: 'operator_cli',
+      actorId: undefined,
+      actorUnixUserClaimed: 'bryan',
+      via: 'ssh',
+      action,
+      subjectType: 'guild',
+      subjectId: undefined,
+      dryRun: false,
+    });
+
+  it('returns the newest first', () => {
+    put(a, 100, 'first');
+    put(a, 300, 'third');
+    put(a, 200, 'second');
+    expect(tailAudit(a).map((r) => r.action)).toEqual(['third', 'second', 'first']);
+  });
+
+  it('carries `via`, so the trail says which channel an action came in on', () => {
+    put(a, 100, 'x');
+    expect(tailAudit(a)[0]?.via).toBe('ssh');
+  });
+
+  it('carries the claimed unix user, and leaves actor_id null', () => {
+    put(a, 100, 'x');
+    expect(tailAudit(a)[0]).toMatchObject({ actorUnixUserClaimed: 'bryan', actorId: null });
+  });
+
+  it('honours a limit', () => {
+    put(a, 100, 'a');
+    put(a, 200, 'b');
+    expect(tailAudit(a, { limit: 1 }).map((r) => r.action)).toEqual(['b']);
+  });
+
+  it('honours a since bound, which is what --since 2h becomes', () => {
+    put(a, 100, 'old');
+    put(a, 500, 'recent');
+    expect(tailAudit(a, { sinceMs: 400 }).map((r) => r.action)).toEqual(['recent']);
+  });
+
+  it('includes a row exactly on the since boundary', () => {
+    put(a, 400, 'boundary');
+    expect(tailAudit(a, { sinceMs: 400 })).toHaveLength(1);
+  });
+
+  it("does not see another guild's audit trail", () => {
+    put(b, 100, 'theirs');
+    expect(tailAudit(a)).toEqual([]);
+    expect(tailAudit(b)).toHaveLength(1);
   });
 });

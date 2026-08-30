@@ -371,6 +371,8 @@ export interface AuditRow {
   actorType: string;
   actorId: string | null;
   actorUnixUserClaimed: string | null;
+  /** `ssh` (operator socket) | `http` (dashboard) | `gateway` (Discord). */
+  via: string | null;
   action: string;
   subjectType: string;
   subjectId: string | null;
@@ -381,8 +383,20 @@ export interface AuditRow {
   inferred: number;
 }
 
-/** Newest first, on the `audit_tail` index. */
-export const tailAudit = (scope: GuildScope, limit = 50): AuditRow[] =>
+export interface TailAuditInput {
+  limit?: number | undefined;
+  /** `--since 2h`, as an absolute millisecond timestamp the caller computed. */
+  sinceMs?: number | undefined;
+}
+
+/**
+ * Newest first, on the `audit_tail` index.
+ *
+ * The `since` bound is an absolute timestamp rather than a duration: parsing
+ * "2h" is presentation, and a repository that took a duration would need a
+ * clock, which is the one thing a query has no business owning.
+ */
+export const tailAudit = (scope: GuildScope, input: TailAuditInput = {}): AuditRow[] =>
   read(scope, (db) =>
     db
       .select({
@@ -391,6 +405,7 @@ export const tailAudit = (scope: GuildScope, limit = 50): AuditRow[] =>
         actorType: auditEvents.actorType,
         actorId: auditEvents.actorId,
         actorUnixUserClaimed: auditEvents.actorUnixUserClaimed,
+        via: auditEvents.via,
         action: auditEvents.action,
         subjectType: auditEvents.subjectType,
         subjectId: auditEvents.subjectId,
@@ -401,8 +416,13 @@ export const tailAudit = (scope: GuildScope, limit = 50): AuditRow[] =>
         inferred: auditEvents.inferred,
       })
       .from(auditEvents)
-      .where(scope.only(auditEvents))
+      .where(
+        scope.only(
+          auditEvents,
+          input.sinceMs === undefined ? undefined : gte(auditEvents.at, input.sinceMs),
+        ),
+      )
       .orderBy(desc(auditEvents.at), desc(auditEvents.auditId))
-      .limit(limit)
+      .limit(input.limit ?? 50)
       .all(),
   );

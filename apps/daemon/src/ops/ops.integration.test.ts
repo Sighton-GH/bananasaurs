@@ -288,4 +288,148 @@ describe('the operator CLI, end to end', () => {
       expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
     });
   });
+
+  describe('the read commands, against the real database', () => {
+    const seed = (): void => {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+    };
+
+    it('`config get` returns a real configuration value', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('config get BANANASAURS_DRY_RUN');
+      expect(result.code).toBe(0);
+      expect(result.out.trim()).toBe('BANANASAURS_DRY_RUN=false');
+    });
+
+    it('`config get` redacts the bot token, which the config really does hold', async () => {
+      // The end of the chain that matters: the daemon has a real token in
+      // `config`, and the redaction happens in `redactedConfig()` before the
+      // command sees anything (ADR 0013 §4).
+      startDaemon();
+      seed();
+      const result = await cli('config get DISCORD_BOT_TOKEN');
+      expect(result.code).toBe(0);
+      expect(result.out.trim()).toBe('DISCORD_BOT_TOKEN=<redacted>');
+      expect(result.out).not.toContain('not.a.real.token');
+    });
+
+    it('no read command leaks the token, whatever it prints', async () => {
+      startDaemon();
+      seed();
+      for (const line of ['status', 'status --json', 'doctor', 'audit tail', 'jobs list']) {
+        const result = await cli(line);
+        expect(result.out + result.err, line).not.toContain('not.a.real.token');
+      }
+    });
+
+    it('`audit tail` reads back a row the CLI itself wrote', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      const result = await cli('audit tail');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('killswitch.enabled');
+      expect(result.out).toContain('claimed unix user bryan');
+      // **Not** labelled dry-run or inferred. Both columns are SQLite integers
+      // and the daemon converts them to booleans; a conversion that returned a
+      // constant would label every real row a guess, which is the opposite of
+      // the honesty convention WP4 established (mutation 152).
+      expect(result.out).not.toContain('dry-run');
+      expect(result.out).not.toContain('inferred');
+      const asJson = await cli('audit tail --json');
+      expect(JSON.parse(asJson.out)).toMatchObject([{ dryRun: false, inferred: false }]);
+    });
+
+    it('`audit tail --since` excludes anything older than the window', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      // The fake clock is what `now` reads, so moving it forward moves the
+      // window past the row the previous command wrote.
+      discord.advance(3 * 60 * 60 * 1000);
+      const result = await cli('audit tail --since 1h');
+      expect(result.code).toBe(0);
+      expect(result.out).toMatch(/no audit events/);
+    });
+
+    it('`jobs list` shows a real queued job and how overdue it is', async () => {
+      startDaemon();
+      seed();
+      jobRepo.enqueue(t.scopes.forGuild(GUILD), {
+        kind: 'reconcile_guild',
+        payload: '{}',
+        dedupeKey: 'reconcile:x',
+        now: discord.now(),
+        runAfter: discord.now() - 5_000,
+      });
+      const result = await cli('jobs list');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('reconcile_guild');
+      expect(result.out).toContain('due 5s ago');
+    });
+
+    it('`log routing list` says outright that WP4 is inert with no routes', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('log routing list');
+      expect(result.code).toBe(0);
+      expect(result.out).toMatch(/nothing is being logged/i);
+    });
+
+    it('`panel list` reports an empty configuration rather than an empty table', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('panel list');
+      expect(result.code).toBe(0);
+      expect(result.out).toMatch(/no panels/);
+    });
+
+    it('`doctor` runs against the real client and reports the disconnected session', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('doctor');
+      // Exit 0: `doctor` answering "there are problems" is a successful command.
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('PROBLEMS FOUND');
+    });
+
+    it('every read command answers over the socket, none of them 500s', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'status',
+        'doctor',
+        'audit tail',
+        'jobs list',
+        'panel list',
+        'log routing list',
+        'config get BANANASAURS_ENV',
+      ]) {
+        const result = await cli(line);
+        expect(result.code, `${line} exited ${String(result.code)}: ${result.err}`).toBe(0);
+      }
+    });
+
+    it('answers every read command as JSON too, for an agent', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'status --json',
+        'doctor --json',
+        'audit tail --json',
+        'jobs list --json',
+        'panel list --json',
+        'log routing list --json',
+      ]) {
+        const result = await cli(line);
+        expect(result.code, line).toBe(0);
+        expect(() => JSON.parse(result.out) as unknown, line).not.toThrow();
+      }
+    });
+  });
 });

@@ -1,4 +1,4 @@
-import { and, asc, eq, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, lte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { jobs } from '../schema.js';
@@ -246,6 +246,39 @@ export const oldestDueAt = (scope: GuildScope, now: number): number | undefined 
       .limit(1)
       .get(),
   )?.runAfter;
+
+export interface ListJobsInput {
+  /** `bananasaurs jobs list --failed`: the reason an operator asks. */
+  failedOnly?: boolean | undefined;
+  limit?: number | undefined;
+}
+
+export interface JobListRow extends JobRow {
+  createdAt: number;
+  updatedAt: number;
+}
+
+/**
+ * The job table, newest first, for `bananasaurs jobs list`.
+ *
+ * Ordered by `job_id` rather than by a timestamp: the id is monotonic and
+ * unique, so two jobs enqueued in the same millisecond still have a defined
+ * order, which a tail needs and `created_at` cannot give.
+ */
+export const listJobs = (scope: GuildScope, input: ListJobsInput): JobListRow[] =>
+  read(scope, (db) =>
+    db
+      .select({
+        ...columns,
+        createdAt: jobs.createdAt,
+        updatedAt: jobs.updatedAt,
+      })
+      .from(jobs)
+      .where(scope.only(jobs, input.failedOnly === true ? eq(jobs.state, 'failed') : undefined))
+      .orderBy(desc(jobs.jobId))
+      .limit(input.limit ?? 50)
+      .all(),
+  );
 
 /** For `doctor` and for the worker's own logging. */
 export const countByState = (scope: GuildScope): Record<string, number> =>

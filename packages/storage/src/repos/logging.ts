@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { auditEvents, logExcludedChannels, logRoutes, messageDeleteRuns } from '../schema.js';
@@ -6,10 +6,11 @@ import { auditEvents, logExcludedChannels, logRoutes, messageDeleteRuns } from '
 /**
  * Where a logged event kind goes, and which source channels never log.
  *
- * Read-only: nothing in Release 1 configures either table except the
- * operator CLI (`docs/19` slice 13, WP5), which does not exist yet. Tests
- * seed rows by inserting into the schema tables directly, the way
- * `write.test.ts` and `columns.test.ts` already do for tables with no writer.
+ * WP4 shipped this read-only, with the note that nothing in Release 1
+ * configured either table except a future operator CLI. That CLI is WP5
+ * slice 13, and `log routing list` (13c) and `log routing set` (13d) are its
+ * commands — so the listing reads below join the lookup reads above, and the
+ * writers arrive with them.
  */
 
 export interface LogRoute {
@@ -53,6 +54,41 @@ export const listEnabledLogChannels = (scope: GuildScope): string[] =>
       .all();
     return rows.map((r) => r.channelId);
   });
+
+/**
+ * Every configured route, for `bananasaurs log routing list`.
+ *
+ * Ordered by event kind so two runs of the command are comparable — a listing
+ * whose order depends on insertion is one an operator cannot diff.
+ */
+export const listRoutes = (scope: GuildScope): LogRoute[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(logRoutes)
+      .where(scope.only(logRoutes))
+      .orderBy(asc(logRoutes.eventKind))
+      .all()
+      .map((row) => ({
+        guildId: row.guildId,
+        eventKind: row.eventKind,
+        channelId: row.channelId,
+        includeContent: row.includeContent === 1,
+        enabled: row.enabled === 1,
+      })),
+  );
+
+/** Every excluded source channel, for `bananasaurs log routing list`. */
+export const listExcludedChannels = (scope: GuildScope): string[] =>
+  read(scope, (db) =>
+    db
+      .select({ channelId: logExcludedChannels.channelId })
+      .from(logExcludedChannels)
+      .where(scope.only(logExcludedChannels))
+      .orderBy(asc(logExcludedChannels.channelId))
+      .all()
+      .map((r) => r.channelId),
+  );
 
 /** True when this source channel must never be logged from, whatever the routes say. */
 export const isChannelExcluded = (scope: GuildScope, channelId: string): boolean =>

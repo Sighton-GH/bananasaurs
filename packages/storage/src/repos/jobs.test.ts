@@ -12,6 +12,7 @@ import {
   enqueue,
   failJob,
   findJob,
+  listJobs,
   oldestDueAt,
   requeueStranded,
   saveCursor,
@@ -329,5 +330,38 @@ describe('oldestDueAt', () => {
     put(b, { runAfter: 1 });
     expect(oldestDueAt(a, 1_000)).toBeUndefined();
     expect(oldestDueAt(b, 1_000)).toBe(1);
+  });
+});
+
+describe('listJobs', () => {
+  it('returns the newest jobs first, so a tail is the default view', () => {
+    put(a, { dedupeKey: 'k1', now: 100 });
+    put(a, { dedupeKey: 'k2', now: 200 });
+    const rows = listJobs(a, {});
+    expect(rows.map((r) => r.dedupeKey)).toEqual(['k2', 'k1']);
+  });
+
+  it('honours the limit', () => {
+    put(a, { dedupeKey: 'k1' });
+    put(a, { dedupeKey: 'k2' });
+    put(a, { dedupeKey: 'k3' });
+    expect(listJobs(a, { limit: 2 })).toHaveLength(2);
+  });
+
+  it('can be narrowed to failures, which is the reason an operator asks', () => {
+    const stuck = put(a, { dedupeKey: 'k1', maxAttempts: 1 });
+    put(a, { dedupeKey: 'k2' });
+    claimNext(a, 1_000);
+    failJob(a, stuck.jobId ?? 0, 'it exploded', 1_000);
+    const rows = listJobs(a, { failedOnly: true });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.state).toBe('failed');
+    expect(rows[0]?.lastError).toBe('it exploded');
+  });
+
+  it("does not see another guild's jobs", () => {
+    put(b, { dedupeKey: 'k1' });
+    expect(listJobs(a, {})).toEqual([]);
+    expect(listJobs(b, {})).toHaveLength(1);
   });
 });

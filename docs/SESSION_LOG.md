@@ -1372,3 +1372,80 @@ asserts the absence of the word `undefined`; 132 then failed. Third package
 running where the survivor was the useful result.
 
 1081 tests green (from 1052); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13c — the read commands — 2026-08-29
+
+**Changed.** Seven read commands, completing the read half of `docs/17` §1:
+`doctor`, `audit tail`, `jobs list`, `config get`, `panel list`, `panel show`,
+`log routing list`. All in one file (`ops/commands/reads.ts`): after `status`
+and `killswitch` established the shape, these are a port call, a projection and
+a rendering, six more times, and splitting them across six files would put more
+effort into the directory than into the commands. None is a write, so none takes
+`--confirm` and none records an audit row — reading the trail is not an
+auditable event, and recording it would make the trail mostly a record of itself
+being read.
+
+Five new guild-scoped storage reads to serve them: `jobRepo.listJobs`,
+`roleRepo.listUnassignableRoles`, `loggingRepo.listRoutes`,
+`loggingRepo.listExcludedChannels`, and a `since` bound plus the `via` column on
+`effectRepo.tailAudit`.
+
+**`config get` cannot leak a secret, structurally.** The port is
+`instance.redactedConfig()` — `redactConfig(config)`, computed in the
+composition root — so the command never holds a real secret value. ADR 0013 §4
+says "there is no override flag"; here there is no *branch*, either. A test
+tries three plausible reveal arguments and gets `<redacted>` from all of them,
+and an end-to-end test proves it against a daemon whose config really does carry
+a token.
+
+**`audit tail` renders the Unix user as a claim.** `operator_cli (claimed unix
+user bryan)`, never "by bryan" — amendment 2, and the same discipline WP4
+applied to inferred deletion attribution. The `--json` field keeps the caveated
+name `actorUnixUserClaimed` so an agent reading the output cannot mistake it for
+a verified identity either. `dry-run` and `inferred` are labelled for the same
+reason.
+
+**`--since` is parsed in the command, not the repository.** `2h` becomes an
+absolute timestamp against the context clock before it reaches storage: a
+repository that took a duration would need a clock, which is the one thing a
+query has no business owning.
+
+**Two decisions worth naming.** `doctor` counts a disabled panel and an
+unassignable role as *problems*, not as footnotes under a green header — both
+make a panel silently do nothing, which is the confusion `doctor` exists to
+prevent. And `log routing list` says outright "No log routes are configured, so
+nothing is being logged to Discord", because WP4's module is complete and inert
+without one, and an empty table looks identical to "working but quiet". That is
+the WP4 report's §5 flag answered in the CLI's own output as well as in 13d's
+`log routing set`.
+
+**Broke, to check the tests, continuing from 137.** 138. Rendered the claimed
+user as `by bryan` → 2 failed. 139/140. Dropped the `inferred` and `dry-run`
+labels → 1 each. 141. Silently ignored an unparseable `--since` → failed. 142.
+Computed the `--since` window forwards → failed. 143. Demoted a stale panel from
+a `doctor` finding to a footnote → 2 failed. 144. Replaced the "nothing is being
+logged" line with a blank → 2 failed. 145. Rendered a disabled route as working
+→ failed. 146. Wired `redactedConfig` to the raw config → the end-to-end
+token-redaction test failed. 147. Dropped the `since` bound in storage → 2
+failed. 148. Lost `audit tail`'s newest-first order → 2 failed. 149. Made
+`--failed` return everything → failed. 150. Hid disabled routes from
+`listRoutes` → 2 failed. 151. Made `listUnassignableRoles` return every managed
+role → **survived**. 152. Made the daemon's audit projection report every row as
+dry-run and inferred → **survived**. 153. Hid `panel show`'s blocked adoption
+backlog (ADR 0021) → failed. All restored by file copy.
+
+**Both survivors were missing tests, not weak ones.** 151 survived because
+`packages/storage/src/repos/` had no `roles.test.ts` at all — the repository
+that decides what `doctor` reports about role assignability was the one with no
+tests, and the end-to-end `doctor` test seeds no managed roles, so both versions
+returned an empty list. Written now, including the case that actually
+distinguishes them: two managed roles, one marked unassignable, expect one row.
+152 survived because no test asserted a *false* `dryRun`/`inferred` on a real
+row — every assertion was about rows that were meant to be flagged. The
+end-to-end `audit tail` test now asserts a real `killswitch` row is labelled
+neither, which is the honesty convention read from the other direction. Both
+mutations then failed.
+
+1161 tests green (from 1081); typecheck and lint exit 0.

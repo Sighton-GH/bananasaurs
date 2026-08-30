@@ -13,6 +13,8 @@ import {
   incrementClaimedCount,
   isChannelExcluded,
   listEnabledLogChannels,
+  listExcludedChannels,
+  listRoutes,
 } from './logging.js';
 
 /**
@@ -240,5 +242,40 @@ describe('listEnabledLogChannels', () => {
   it('is scoped: a route in one guild is invisible from another', () => {
     seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
     expect(listEnabledLogChannels(b)).toEqual([]);
+  });
+});
+
+describe('listRoutes and listExcludedChannels', () => {
+  it('lists every configured route, ordered by event kind', () => {
+    seedRoute(a, 'member_join', { channelId: CHANNEL_B });
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
+    expect(listRoutes(a).map((r) => r.eventKind)).toEqual(['member_join', 'message_delete']);
+  });
+
+  it('reports enabled and include_content as booleans, not as ones and zeros', () => {
+    seedRoute(a, 'message_edit', { channelId: CHANNEL_A, enabled: false, includeContent: false });
+    expect(listRoutes(a)[0]).toMatchObject({ enabled: false, includeContent: false });
+  });
+
+  it('lists a disabled route too, because an operator needs to see it to re-enable it', () => {
+    seedRoute(a, 'message_edit', { channelId: CHANNEL_A, enabled: false });
+    expect(listRoutes(a)).toHaveLength(1);
+  });
+
+  it("does not see another guild's routes", () => {
+    seedRoute(b, 'member_join', { channelId: CHANNEL_A });
+    expect(listRoutes(a)).toEqual([]);
+    expect(listRoutes(b)).toHaveLength(1);
+  });
+
+  it('lists excluded channels', () => {
+    excludeChannel(a, CHANNEL_B);
+    excludeChannel(a, CHANNEL_A);
+    expect(listExcludedChannels(a)).toEqual([CHANNEL_A, CHANNEL_B].sort());
+  });
+
+  it("does not see another guild's exclusions", () => {
+    excludeChannel(b, CHANNEL_A);
+    expect(listExcludedChannels(a)).toEqual([]);
   });
 });

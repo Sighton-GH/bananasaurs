@@ -287,3 +287,13 @@ export { OPERATOR_COMMANDS } from './ops/registry.js';
 export type { OpsGatewayState, OpsInstance, OpsPorts, OpsSafetyState } from './ops/ports.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
 export { killswitchCommand } from './ops/commands/killswitch.js';
+export {
+  auditTailCommand,
+  configGetCommand,
+  doctorCommand,
+  jobsListCommand,
+  logRoutingListCommand,
+  panelListCommand,
+  panelShowCommand,
+  parseDuration,
+} from './ops/commands/reads.js';

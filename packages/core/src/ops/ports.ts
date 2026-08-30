@@ -45,6 +45,89 @@ export interface OpsAuditWrite {
   readonly dryRun: boolean;
 }
 
+/** One row of the audit trail, as `audit tail` renders it. */
+export interface OpsAuditRow {
+  readonly auditId: number;
+  readonly at: number;
+  readonly actorType: string;
+  readonly actorId: string | null;
+  /** A claim, never a verified identity (amendment 2). Rendered as claimed. */
+  readonly actorUnixUserClaimed: string | null;
+  readonly via: string | null;
+  readonly action: string;
+  readonly subjectType: string;
+  readonly subjectId: string | null;
+  readonly batchId: string | null;
+  readonly dryRun: boolean;
+  /** Attribution that came from the Discord audit log rather than the event. */
+  readonly inferred: boolean;
+}
+
+export interface OpsAuditQuery {
+  readonly limit: number;
+  /** An absolute timestamp; `--since 2h` is turned into one by the command. */
+  readonly sinceMs: number | undefined;
+}
+
+/** One job, as `jobs list` renders it. */
+export interface OpsJobRow {
+  readonly jobId: number;
+  readonly kind: string;
+  readonly state: string;
+  readonly attempts: number;
+  readonly maxAttempts: number;
+  readonly runAfter: number;
+  readonly lastError: string | null;
+  readonly dedupeKey: string;
+}
+
+export interface OpsJobQuery {
+  readonly failedOnly: boolean;
+  readonly limit: number;
+}
+
+/** A panel, flattened for listing. `panel show` returns the full config. */
+export interface OpsPanelSummary {
+  readonly panelId: string;
+  readonly kind: string;
+  readonly component: string;
+  readonly behaviour: string;
+  readonly status: string;
+  readonly messageId: string | undefined;
+  readonly optionCount: number;
+}
+
+export interface OpsPanelDetail extends OpsPanelSummary {
+  readonly channelId: string;
+  readonly maxRoles: number | undefined;
+  readonly requiredRoleId: string | undefined;
+  readonly blockedRoleIds: readonly string[];
+  readonly adoptionPassState: string;
+  readonly adoptionBlockedCount: number;
+  readonly options: readonly {
+    readonly optionId: string;
+    readonly roleId: string;
+    /** Set on a reaction panel; absent on buttons and select menus. */
+    readonly emojiKey: string | undefined;
+    /** Set on buttons and select menus; Discord will not render without it. */
+    readonly label: string | undefined;
+  }[];
+}
+
+/** A managed role a live check found unassignable, and why. */
+export interface OpsUnassignableRole {
+  readonly roleId: string;
+  /** `above_bot` | `managed` | `deleted`, or null if none was recorded. */
+  readonly reason: string | null;
+}
+
+export interface OpsLogRoute {
+  readonly eventKind: string;
+  readonly channelId: string;
+  readonly enabled: boolean;
+  readonly includeContent: boolean;
+}
+
 /** The guild's row in `guilds`, as the effect gateway reads it. */
 export interface OpsSafetyState {
   readonly killswitch: boolean;
@@ -82,6 +165,15 @@ export interface OpsPorts {
   recordAudit(input: OpsAuditWrite): void;
   /** `guilds.killswitch`, layer 2 of the effect gateway's twelve. */
   setKillswitch(on: boolean): void;
+
+  // --- read commands (13c) ---------------------------------------------------
+  tailAudit(query: OpsAuditQuery): readonly OpsAuditRow[];
+  listJobs(query: OpsJobQuery): readonly OpsJobRow[];
+  listPanels(): readonly OpsPanelSummary[];
+  findPanel(panelId: string): OpsPanelDetail | undefined;
+  listUnassignableRoles(): readonly OpsUnassignableRole[];
+  listRoutes(): readonly OpsLogRoute[];
+  listExcludedChannels(): readonly string[];
 }
 
 /** Whether the gateway is connected, as the daemon's client reports it. */
@@ -93,6 +185,13 @@ export interface OpsGatewayState {
   readonly guildCount: number;
 }
 
+/** `doctor`'s gateway half, already rendered by the daemon that owns the client. */
+export interface OpsDoctorReport {
+  readonly ok: boolean;
+  readonly text: string;
+  readonly data: JsonValue;
+}
+
 export interface OpsInstance {
   /** `Date.now()` at process start, for uptime. */
   readonly startedAtMs: number;
@@ -100,4 +199,18 @@ export interface OpsInstance {
   readonly readonly: boolean;
   readonly env: string;
   gateway(): OpsGatewayState;
+  /**
+   * Intents, partials, permissions and hierarchy — the half of `doctor` that
+   * needs the discord.js client, which lives in `apps/daemon` and cannot be
+   * reached from here (ADR 0014). The guild-scoped half is on `OpsPorts`.
+   */
+  doctor(): OpsDoctorReport;
+  /**
+   * The configuration with every secret already replaced by `<redacted>`.
+   *
+   * **Redacted before the command sees it**, not by the command. `config get`
+   * therefore has no branch that could forget and no flag that could override
+   * (ADR 0013 §4). The real value is not reachable from `core` at all.
+   */
+  redactedConfig(): Readonly<Record<string, JsonValue>>;
 }

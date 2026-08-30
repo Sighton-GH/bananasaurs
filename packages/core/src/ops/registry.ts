@@ -1,5 +1,14 @@
 import type { RegisteredCommand } from './dispatch.js';
 import { killswitchCommand } from './commands/killswitch.js';
+import {
+  auditTailCommand,
+  configGetCommand,
+  doctorCommand,
+  jobsListCommand,
+  logRoutingListCommand,
+  panelListCommand,
+  panelShowCommand,
+} from './commands/reads.js';
 import { statusCommand } from './commands/status.js';
 
 /**
@@ -11,4 +20,14 @@ import { statusCommand } from './commands/status.js';
  * `--help`, and refuse an unknown command without a round trip, and it cannot
  * drift from what the daemon will actually accept.
  */
-export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [statusCommand, killswitchCommand];
+export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
+  statusCommand,
+  doctorCommand,
+  configGetCommand,
+  panelListCommand,
+  panelShowCommand,
+  logRoutingListCommand,
+  auditTailCommand,
+  jobsListCommand,
+  killswitchCommand,
+];

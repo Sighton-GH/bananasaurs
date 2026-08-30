@@ -41,6 +41,27 @@ export interface ManagedRoleRow {
   lastCheckedAt: number | null;
 }
 
+/**
+ * Every managed role a live check has found unassignable, for `doctor`.
+ *
+ * The diagnosis, not the symptom: `above_bot`, `managed` and `deleted` each
+ * mean a different fix, and a panel that silently does nothing for one member
+ * looks identical from Discord whichever it is (`docs/19` §9 finding 6).
+ */
+export const listUnassignableRoles = (scope: GuildScope): ManagedRoleRow[] =>
+  read(scope, (db) =>
+    db
+      .select({
+        roleId: managedRoles.roleId,
+        assignable: managedRoles.assignable,
+        unassignableReason: managedRoles.unassignableReason,
+        lastCheckedAt: managedRoles.lastCheckedAt,
+      })
+      .from(managedRoles)
+      .where(scope.only(managedRoles, eq(managedRoles.assignable, 0)))
+      .all(),
+  );
+
 export const findManagedRole = (scope: GuildScope, roleId: string): ManagedRoleRow | undefined =>
   read(scope, (db) =>
     db
