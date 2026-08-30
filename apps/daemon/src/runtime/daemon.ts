@@ -1,6 +1,7 @@
 import { Events, type Client } from 'discord.js';
 import {
   createDispatcher,
+  createStatusCommandSubscriber,
   OPERATOR_COMMANDS,
   parseGuildId,
   Pipeline,
@@ -105,14 +106,85 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     });
   }
 
+  // Shared by the operator dispatcher, the dashboard API and the `/status`
+  // slash command: all three need "the process-level facts" and none should
+  // build its own second copy of them.
+  const instance = opsInstanceFor({
+    config,
+    client,
+    startedAtMs: now(),
+    instanceScope: scopes.instance(),
+    now,
+  });
+
+  /**
+   * The dashboard's seam into per-guild ports (slice 14, `packages/http`
+   * `HttpDeps.portsFor`), and from slice 15 the `/status` command's too.
+   *
+   * The same expression `contextFor` below uses to build the operator
+   * dispatcher's `OpsPorts`, keyed by `scope.guildId` instead of a bare guild
+   * id string because a dashboard route has a `GuildScope` from
+   * `session.scope` and nothing else — `packages/http` cannot import
+   * `apps/daemon` (ADR 0014) to build one itself. Throws rather than returning
+   * `undefined` on a miss: a session's scope can only ever name a guild this
+   * daemon was constructed with, because `login` only accepts guild ids from
+   * the same `BANANASAURS_GUILD_ALLOWLIST` this map was built from, so a miss
+   * here is a bug in that invariant, not a normal-traffic case a route should
+   * have to handle.
+   */
+  const portsFor = (scope: GuildScope): OpsPorts => {
+    const entry = byGuild.get(scope.guildId);
+    if (entry === undefined) {
+      throw new Error(`portsFor: no guild runtime for ${scope.guildId} — outside the allowlist`);
+    }
+    return opsPortsFor(entry.scope, entry.runtime.ops, now);
+  };
+
+  /**
+   * `/status`, one subscriber per allowlisted guild (ADR 0033).
+   *
+   * Built here rather than in `buildGuildRuntime` because it needs `OpsPorts`
+   * and `OpsInstance`, and `opsPortsFor` takes the runtime that `buildGuildRuntime`
+   * is in the middle of producing — this is the first point at which both exist.
+   *
+   * **The allowlist check is structural, not a line of code inside the handler.**
+   * `byGuild` is built from `BANANASAURS_GUILD_ALLOWLIST` and nothing else, so a
+   * guild id arriving from Discord cannot produce a scope by being looked up
+   * here — it either matches an entry that was already allowlisted or it reaches
+   * no subscriber at all, having been refused twice already (the translation
+   * layer's `isGuildAllowed`, then the pipeline's gate 1). `scopedTo` then pins
+   * each subscriber to the guild it was built for, exactly as it does for every
+   * other subscriber, which is what stops one guild's command being answered
+   * with another guild's numbers.
+   */
+  const statusSubscribers = [...byGuild.entries()].map(([guildId, { scope }]) =>
+    scopedTo(
+      guildId,
+      createStatusCommandSubscriber({
+        guildId: parseGuildId(guildId),
+        ports: () => portsFor(scope),
+        instance,
+        responder: {
+          defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+          respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+        },
+        now,
+        logger,
+      }),
+    ),
+  );
+
   const pipeline = new Pipeline({
     allowlist,
     dedupe: {
       firstSight: (input) => pipelineRepo.recordFirstSight(scopeOf(byGuild, input.guildId), input),
     },
-    subscribers: [...byGuild.values()].flatMap(({ runtime }) =>
-      runtime.subscribers.map((s) => scopedTo(runtime.guildId, s)),
-    ),
+    subscribers: [
+      ...[...byGuild.values()].flatMap(({ runtime }) =>
+        runtime.subscribers.map((s) => scopedTo(runtime.guildId, s)),
+      ),
+      ...statusSubscribers,
+    ],
     leaveGuild: (guildId) => discord.leaveGuild(guildId),
     logger,
   });
@@ -268,39 +340,6 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // A handled event can dispatch another, so drain rather than snapshot.
   const settle = async (): Promise<void> => {
     while (inFlight.size > 0) await Promise.all([...inFlight]);
-  };
-
-  // Shared by the operator dispatcher and the dashboard API: both need "the
-  // process-level facts" and neither should build its own second copy of them.
-  const instance = opsInstanceFor({
-    config,
-    client,
-    startedAtMs: now(),
-    instanceScope: scopes.instance(),
-    now,
-  });
-
-  /**
-   * The dashboard's seam into per-guild ports (slice 14, `packages/http`
-   * `HttpDeps.portsFor`).
-   *
-   * The same expression `contextFor` below uses to build the operator
-   * dispatcher's `OpsPorts`, keyed by `scope.guildId` instead of a bare guild
-   * id string because a dashboard route has a `GuildScope` from
-   * `session.scope` and nothing else — `packages/http` cannot import
-   * `apps/daemon` (ADR 0014) to build one itself. Throws rather than returning
-   * `undefined` on a miss: a session's scope can only ever name a guild this
-   * daemon was constructed with, because `login` only accepts guild ids from
-   * the same `BANANASAURS_GUILD_ALLOWLIST` this map was built from, so a miss
-   * here is a bug in that invariant, not a normal-traffic case a route should
-   * have to handle.
-   */
-  const portsFor = (scope: GuildScope): OpsPorts => {
-    const entry = byGuild.get(scope.guildId);
-    if (entry === undefined) {
-      throw new Error(`portsFor: no guild runtime for ${scope.guildId} — outside the allowlist`);
-    }
-    return opsPortsFor(entry.scope, entry.runtime.ops, now);
   };
 
   const ops = createDispatcher({

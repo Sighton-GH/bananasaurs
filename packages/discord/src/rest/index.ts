@@ -14,3 +14,18 @@
 
 export { createDiscordRestPort, type RestPortDeps } from './port.js';
 export { toDiscordApiError } from './errors.js';
+
+/**
+ * Slash-command registration (ADR 0032). Behind this subpath rather than the
+ * package's main entry because it is an authenticated Discord REST call, and
+ * `docs/19` §5 layer 5 says only the effect gateway and the composition root may
+ * make one.
+ */
+export {
+  RELEASE_1_COMMANDS,
+  STATUS_COMMAND,
+  registerGuildCommands,
+  type GuildCommandDefinition,
+  type GuildRegistration,
+  type RegisterCommandsDeps,
+} from './commands.js';

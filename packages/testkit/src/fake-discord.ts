@@ -343,6 +343,35 @@ export class FakeDiscord implements DiscordPort {
     this.applyReaction(p, 'remove');
   }
 
+  /**
+   * Records an interaction Discord has minted, without emitting anything.
+   *
+   * `emitInteraction` does this for itself, and for a component interaction
+   * that is all anyone needs. A test that drives the **real gateway translation
+   * layer** — pushing a raw `INTERACTION_CREATE` packet through
+   * `client.actions` rather than calling `emit` — produces the domain event by
+   * a path this fake never sees, so the interaction would be unknown to it and
+   * the first `deferInteraction` would throw `UnknownInteraction`.
+   *
+   * That is a gap in the fake, not a fact about Discord: Discord knows an
+   * interaction exists because it minted the id and the token, whatever route
+   * the dispatch took to reach the bot. Added for `/status` (WP5 slice 15),
+   * whose whole point is being reached through translation.
+   *
+   * Idempotent, so re-registering a replayed interaction does not reset its
+   * clock or discard the replies already recorded against it.
+   */
+  registerInteraction(p: { interactionId: Snowflake; token: string }): void {
+    if (this.interactions.has(p.interactionId)) return;
+    this.interactions.set(p.interactionId, {
+      token: p.token,
+      createdAtMs: this.clock,
+      deferred: false,
+      ephemeral: false,
+      replies: [],
+    });
+  }
+
   async emitInteraction(p: {
     channelId: Snowflake;
     messageId: Snowflake;
@@ -354,15 +383,7 @@ export class FakeDiscord implements DiscordPort {
     const interactionId = p.interactionId ?? this.nextId();
     const token = `tok-${interactionId}`;
     // Recorded before the emit, because the handler responds during it.
-    if (!this.interactions.has(interactionId)) {
-      this.interactions.set(interactionId, {
-        token,
-        createdAtMs: this.clock,
-        deferred: false,
-        ephemeral: false,
-        replies: [],
-      });
-    }
+    this.registerInteraction({ interactionId, token });
     await this.emit({
       kind: 'interaction',
       guildId: this.guildId,

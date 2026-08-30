@@ -13,6 +13,7 @@ import { createDiscordClient } from '@bananasaurs/discord';
 import { createDiscordRestPort } from '@bananasaurs/discord/rest';
 import { DatabaseLockedError, openDatabase, type OpenedDatabase } from '@bananasaurs/storage';
 import { bindOpsSocket, SocketInUseError, type OpsSocketServer } from './ops/socket.js';
+import { announceCommands } from './runtime/commands.js';
 import { startDashboardApi, type DashboardApi } from './http/wiring.js';
 import { createDaemon } from './runtime/daemon.js';
 import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
@@ -260,7 +261,12 @@ async function main(): Promise<void> {
     // login failed does not need it, and pino redacts `token` besides.
     log.error(safeLogFields({ component: 'startup', err }), 'could not connect to Discord');
     await shutdown('login-failed', EXIT_UNAVAILABLE);
+    return;
   }
+
+  // Registration is a REST call and needs no gateway, so it runs as soon as
+  // login has resolved rather than waiting on READY (ADR 0032).
+  await announceCommands(config, client.rest, log);
 }
 
 void main();

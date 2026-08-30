@@ -46,6 +46,73 @@ export interface InteractionEvent extends Base {
   values?: readonly string[] | undefined;
 }
 
+/**
+ * One option Discord sent with a slash command.
+ *
+ * `value` is the primitive the interaction payload carries and nothing more: a
+ * user, channel, role or mentionable option arrives as its **snowflake string**,
+ * and resolving that into a member or a channel is a REST call the handler makes
+ * deliberately if it needs one. Modelling the resolved object here would put a
+ * fetch behind a field access, which is the mistake `rest/port.ts` avoids by
+ * using raw routes rather than discord.js structures.
+ */
+export interface SlashCommandOption {
+  name: string;
+  value: string | number | boolean;
+}
+
+/**
+ * A slash command invocation, normalised.
+ *
+ * A sibling of `InteractionEvent` rather than a widening of it, because the two
+ * are addressed differently in every way that matters downstream. A component
+ * interaction is anchored to a *message* — `customId` and `messageId` are how a
+ * panel is resolved and how a crafted custom id is caught. A slash command has
+ * no message at all; it is addressed by name, and its arguments are named
+ * options rather than a packed string. One interface carrying both would have
+ * `messageId` and `customId` optional on the very fields that resolve a panel,
+ * and `packages/core/src/panels/interactions.ts` guards those today by narrowing
+ * on `event.kind`.
+ *
+ * Shares `InteractionEvent`'s two credentials-and-ids properties: `interactionId`
+ * is a real snowflake unique per invocation (so `fingerprintOf` can dedupe a
+ * replayed dispatch on it), and `token` is a **short-lived credential** kept out
+ * of `LOGGABLE_FIELDS` so `safeLogFields` drops it.
+ */
+export interface SlashCommandEvent extends Base {
+  kind: 'slashCommand';
+  /** A real snowflake, unique per invocation. The dedupe fingerprint. */
+  interactionId: Snowflake;
+  /** The interaction token — a short-lived credential. Never logged. */
+  token: string;
+  /** The top-level command name, without the leading slash: `status`. */
+  commandName: string;
+  /**
+   * The subcommand group and subcommand beneath `commandName`, outermost first.
+   *
+   * `[]` for `/status`, `['tail']` for a hypothetical `/audit tail`, and
+   * `['route', 'set']` for a group plus a subcommand. One field rather than two
+   * nullable ones, so that a command growing a group later is a new array entry
+   * rather than a change to this interface.
+   */
+  subcommandPath: readonly string[];
+  /**
+   * The options actually supplied, flattened out of any subcommand nesting.
+   *
+   * Discord nests a subcommand's options inside the subcommand option, so the
+   * adapter unwraps them; a handler reads the options it was given without
+   * caring how deep in the payload they arrived.
+   */
+  options: readonly SlashCommandOption[];
+  /**
+   * Where it was invoked. `undefined` is possible — `BaseInteraction.channelId`
+   * is nullable — and is not a reason to drop the event: the reply is addressed
+   * by the interaction token, not by the channel.
+   */
+  channelId: Snowflake | undefined;
+  userId: Snowflake;
+}
+
 export interface MessageEvent extends Base {
   kind: 'messageUpdate' | 'messageDelete';
   channelId: Snowflake;
@@ -103,6 +170,7 @@ export interface ConnectionEvent extends Base {
 export type DomainEvent =
   | ReactionEvent
   | InteractionEvent
+  | SlashCommandEvent
   | MessageEvent
   | MemberEvent
   | RoleEvent

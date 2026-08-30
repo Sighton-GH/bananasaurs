@@ -1923,3 +1923,151 @@ guilds, two distinct names, `daemon.portsFor` asked for each scope in turn.
 Confirmed to fail against the mutation and pass against the real code.
 
 1547 tests green (from 1502); typecheck and lint exit 0.
+
+## WP5 / slice 15 — slash-command support, validated by `/status` — 2026-08-30
+
+**`/privacy` was not built.** The original draft of this slice built a
+feature-state-aware renderer of `PRIVACY.md` because `docs/19` §6.11 named it
+next. Discord requires a privacy policy only above 100 servers and Bananasaurs
+serves one, so that work is for a threshold nowhere in sight. The
+slash-command plumbing underneath it is worth having regardless, and it now has
+a real command to be validated against instead of being wired to nothing.
+
+**A `slashCommand` event is a sibling of `InteractionEvent`, not a widening of
+it.** The two are addressed differently in every way that matters downstream: a
+component interaction is anchored to a *message*, and `customId` plus
+`messageId` are how a panel is resolved and how a crafted custom id is caught.
+A slash command has no message at all. One interface carrying both would make
+`messageId` and `customId` optional on the exact fields
+`packages/core/src/panels/interactions.ts` uses to resolve a panel. It carries
+`subcommandPath` and a flattened `options` list so a second command does not
+need a rework — a subcommand is an *option* whose own options are the real
+arguments, and a group nests one level deeper again, so reading
+`data.options[0].value` without unwrapping reports the subcommand as an
+argument with no value.
+
+**The translation branch replaced a silent drop.** `InteractionCreate`'s
+handler was `if (!interaction.isButton() && !interaction.isStringSelectMenu())
+return undefined;` — a slash command fell through it with no log, no error and
+no event, which is a registered command that answers nothing. The new branch is
+first, and an autocomplete or a modal submit still drops, deliberately.
+`fingerprintOf` deduplicates on the interaction id like a component
+interaction: a replayed `INTERACTION_CREATE` must not answer the member twice,
+and unlike a reaction there is no state to reconverge toward.
+
+**Registration is a composition-root REST call, not an effect (ADR 0032).**
+None of the effect gateway's seven layers describe registering a command list —
+there is no member to protect with a kill switch, no side effect to withhold
+under dry run, no role budget, no target role for a hierarchy check, and
+`role_effects` describes changes to a member's roles rather than a declaration.
+`CLAUDE.md` rule 6's idempotency requirement is satisfied without machinery
+rather than waived: Discord's endpoint is a `PUT` that **replaces** the whole
+set, so a `trigger_ref` and a unique constraint would be manufacturing a
+property that already holds. It lives behind `@bananasaurs/discord/rest`
+because it is an authenticated Discord REST call, and `docs/19` §5 layer 5's
+claim is that only the effect gateway and the composition root can make one —
+the handoff said "alongside `createDiscordClient` and `createDiscordRestPort`",
+which are in two different entry points, and this is the reading that keeps
+that sentence literally true.
+
+**The call site was checked against discord.js, not guessed.**
+`Client.login()` (`src/client/Client.js:216-219`) calls `rest.setToken`
+**synchronously, before** `await this.ws.connect()`, so REST is authenticated
+well before the gateway is ready and registration needs no `ClientReady`.
+`ClientReady` was rejected as the call site for a second reason: it fires again
+on every reconnect, so a flapping connection would re-`PUT` an unchanged set
+against the global rate cap each time. `announceCommands` moved out of
+`index.ts` into `runtime/commands.ts` for one practical reason — `index.ts`
+calls `main()` at import time, so nothing can import it to test it, and the
+mapping from configuration to registration arguments (which application id,
+which guilds) is exactly the wiring that fails silently when it is wrong.
+
+**`/status` is open to every guild member (ADR 0033).** Bryan's call, recorded
+because it is an authorization decision rather than a default. The dashboard's
+`GET /api/health` keeps `config.read`: a session is a bearer credential over a
+network port, and every route there is gated with no exceptions because
+uniformity *is* the property. A slash command arrives with the caller's real
+Discord identity from inside an allowlisted guild, and the data — is the bot
+up, is a safety control silently refusing everything, is the queue moving — is
+what a member watching a panel do nothing is owed. The reply is ephemeral, and
+the renderer is deliberately shorter than the operator `status` command's: rate
+caps, reconcile budgets, breaker thresholds, uptime and the environment name
+are absent, not because they are secret but because they do not answer the
+question being asked.
+
+**Cross-guild isolation is structural rather than a check inside the handler.**
+The handoff suggested an `allowlist.has(guildId)` call in the `/status` path.
+What was built instead is one subscriber per guild, created from the `byGuild`
+map — which is constructed from `BANANASAURS_GUILD_ALLOWLIST` and nothing else
+— wrapped in `scopedTo`, reaching ports through slice 14's `portsFor` seam. A
+guild id from Discord cannot produce a scope by being looked up; it either
+matches an entry that was already allowlisted or it reaches no subscriber at
+all, having been refused by the translation layer's `isGuildAllowed` and again
+by the pipeline's gate 1. That is the same requirement with the caller
+discipline removed.
+
+**One harness addition.** `FakeDiscord.registerInteraction`, extracted from
+`emitInteraction`'s existing bookkeeping. A test that drives the *real*
+translation layer — a raw `INTERACTION_CREATE` packet through
+`client.actions` — produces the domain event by a path the fake never sees, so
+the interaction was unknown to it and the first `deferInteraction` threw
+`UnknownInteraction`. That was a gap in the fake, not a fact about Discord,
+which knows an interaction exists because it minted the id and the token
+whatever route the dispatch took. The registration call itself needed nothing
+from the fake: it is not a `DiscordPort` method, and it is tested the way
+`rest/port.test.ts` tests the port — a real `REST` with `makeRequest` replaced.
+
+**Broke, to check the tests, continuing from 232.** 232. Removed the
+`isChatInputCommand()` branch, restoring the silent drop → 9 tests failed.
+233. See below. 234. Made `flattenOptions` stop before unwrapping a subcommand
+→ failed. 235. Reported `channelId` as always `undefined` → failed. 236. Used
+the *global* command route instead of the guild-scoped one → 4 failed.
+237. Stopped registering at the first guild that refuses → failed.
+238. Registered only the first allowlisted guild → 3 failed. 239. Registered
+under `BANANASAURS_OWNER_USER_ID` instead of `DISCORD_APPLICATION_ID` → 2
+failed. 240. Made a slash command level-triggered, so a replay is answered
+twice → 2 failed. 241. Dropped `/status`'s command-name guard, so any command
+is acknowledged → 2 failed. 242. Replied publicly instead of ephemerally → 2
+failed. 243. Reported a missing `guilds` row as healthy → failed. 244. Never
+reported an engaged kill switch as a pause → 2 failed. 245. See below.
+246. Left the member with a spinner when a read throws → failed.
+247. See below. 248. Built every `/status` subscriber against the first guild's
+scope → 2 failed. All restored by file copy.
+
+**Two survivors, both real, both fixed.**
+
+233 — attributing a DM invocation to a fallback guild id instead of dropping
+it. The test asserted no event was emitted, and no event *was*, because the
+fallback id was not in the allowlist. It passed for the wrong reason and would
+have kept passing with the guild-attribution rule gone. `harness` gained an
+`allowAny` option; with every guild allowed, the only thing that can drop such
+an event is the rule under test. Confirmed to fail against the mutation.
+
+247 — removing `scopedTo` from the `/status` subscribers, so every guild's
+subscriber answers every guild's command. All 24 `daemon.integration.test.ts`
+tests stayed green. The cross-guild test asserted "exactly one reply", and
+there *was* one: `FakeDiscord` is scoped to one guild and throws on a call
+naming another, so the second subscriber's `deferInteraction` failed and the
+pipeline swallowed it. On a real `DiscordPort` both would have succeeded and the
+member would have got two replies carrying two guilds' data. The fake records a
+call *before* it refuses, so the assertion moved to the **defer count**.
+Confirmed to fail against the mutation.
+
+**One equivalent mutant, kept as such.** 245 — removing `Math.max(0, …)` from
+the subscriber's scheduler-lag calculation. It changes nothing observable,
+because `renderMemberStatus` already guards `if (input.schedulerLagMs > 0)`.
+Two guards for one property, and the mutation cannot tell them apart. The clamp
+stays — it makes the value handed to the renderer meet the contract its own
+documentation implies, and mirrors the operator `status` command — and a new
+renderer test pins the behaviour against a negative input directly. Mutation
+245.1 (weakening the renderer's guard to `!== 0`, so a negative lag renders)
+was run to prove that test bites: it failed, as it should.
+
+**Not covered.** The registration call has never reached Discord — this sandbox
+cannot connect, so "the `PUT` is accepted and `/status` appears in the client"
+stays a live check. `doctor` was left alone: the `UseApplicationCommands` bit is
+already in `docs/18`'s verified `2416004288` total, and adding a
+"was registration accepted" probe would need the connection this environment
+does not have.
+
+1589 tests green across 71 files (from 1547 across 68); typecheck and lint exit 0.

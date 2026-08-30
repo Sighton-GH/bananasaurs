@@ -9,6 +9,7 @@ import type {
   MessageEvent,
   ReactionEvent,
   RoleEvent,
+  SlashCommandEvent,
 } from '../discord/events.js';
 
 /**
@@ -97,6 +98,35 @@ describe('interactions carry a real id', () => {
     expect(fingerprintOf(interaction({ interactionId: '900000000000000002' }))).not.toBe(
       fingerprintOf(interaction()),
     );
+  });
+
+  /**
+   * A slash command is an interaction too, and gets the same treatment: a
+   * replayed `INTERACTION_CREATE` after a reconnect must not answer the member
+   * twice. It is deliberately **not** level-triggered — unlike a reaction, there
+   * is no state to reconverge toward, so a second dispatch is a duplicate rather
+   * than a fresh hint.
+   */
+  it('deduplicates a slash command on its interaction id', () => {
+    const slash = (over: Partial<SlashCommandEvent> = {}): DomainEvent => ({
+      ...base,
+      kind: 'slashCommand',
+      interactionId: '900000000000000003',
+      token: 'tok-900000000000000003',
+      commandName: 'status',
+      subcommandPath: [],
+      options: [],
+      channelId: '222222222222222222',
+      userId: '444444444444444444',
+      ...over,
+    });
+
+    expect(fingerprintOf(slash())).toBe('900000000000000003');
+    expect(fingerprintOf(slash())).toBe(fingerprintOf(slash()));
+    expect(fingerprintOf(slash({ interactionId: '900000000000000004' }))).not.toBe(
+      fingerprintOf(slash()),
+    );
+    expect(isLevelTriggered(slash())).toBe(false);
   });
 });
 

@@ -1,6 +1,9 @@
 import {
+  ApplicationCommandOptionType,
   Events,
+  type ChatInputCommandInteraction,
   type Client,
+  type CommandInteractionOption,
   type GuildMember,
   type Interaction,
   type Message,
@@ -12,7 +15,7 @@ import {
   type Role,
   type User,
 } from 'discord.js';
-import { emojiKeyFromGateway, type DomainEvent } from '@bananasaurs/core';
+import { emojiKeyFromGateway, type DomainEvent, type SlashCommandOption } from '@bananasaurs/core';
 
 /**
  * Gateway dispatches, normalised into `packages/core/src/discord/events.ts`.
@@ -100,9 +103,13 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
   // --- interactions -------------------------------------------------------
   client.on(Events.InteractionCreate, (interaction: Interaction) => {
     translate('interaction', () => {
-      // Only message components drive panels. Anything else — a slash command, an
-      // autocomplete — is not this adapter's business and is dropped rather than
-      // translated into a shape that cannot describe it.
+      if (interaction.isChatInputCommand()) return toSlashCommandEvent(interaction, now());
+
+      // Only message components drive panels. Anything else — an autocomplete, a
+      // modal submit, a context-menu command — is not this adapter's business
+      // and is dropped rather than translated into a shape that cannot describe
+      // it. Note this is a *silent* drop by design: the dispatch is real and
+      // well-formed, it simply belongs to a surface Release 1 does not have.
       if (!interaction.isButton() && !interaction.isStringSelectMenu()) return undefined;
       const guildId = interaction.guildId;
       if (!guildId) return undefined;
@@ -235,6 +242,87 @@ export function emitConnectionEvents(
       disconnectedAtMs: input.disconnectedAtMs,
     });
   }
+}
+
+/**
+ * A chat-input command interaction, normalised.
+ *
+ * Separated from the listener because flattening the option tree is the only
+ * part of translation with a shape worth reading on its own.
+ *
+ * Guild attribution is the same rule as everywhere else in this file: an
+ * invocation Discord could not attribute to a guild is dropped here rather than
+ * travelling upward with an optional scope. A user-installed app can be invoked
+ * in a DM, so this is a real case rather than a hypothetical — and every handler
+ * downstream reaches storage through a `GuildScope`, which a DM cannot produce.
+ */
+function toSlashCommandEvent(
+  interaction: ChatInputCommandInteraction,
+  receivedAtMs: number,
+): DomainEvent | undefined {
+  const guildId = interaction.guildId;
+  if (!guildId) return undefined;
+
+  const { subcommandPath, options } = flattenOptions(interaction.options.data);
+  return {
+    kind: 'slashCommand',
+    guildId,
+    receivedAtMs,
+    interactionId: interaction.id,
+    // A short-lived credential, exactly as on `InteractionEvent`. It travels to
+    // the port and nowhere else: absent from LOGGABLE_FIELDS, and pino redacts
+    // `token` besides.
+    token: interaction.token,
+    commandName: interaction.commandName,
+    subcommandPath,
+    options,
+    // Nullable on `BaseInteraction`, and not a reason to drop the invocation:
+    // the reply is addressed by the token, not by the channel.
+    channelId: interaction.channelId ?? undefined,
+    userId: interaction.user.id,
+  };
+}
+
+/**
+ * Discord's nested option tree, flattened into a path plus a flat option list.
+ *
+ * A subcommand is not a separate field in the payload — it is an *option* whose
+ * own `options` are the command's real arguments, and a group nests one level
+ * deeper again. Reading `data[0].value` without unwrapping that would report a
+ * subcommand as an argument named after itself with no value, so the shape has
+ * to be understood rather than copied across.
+ *
+ * Iterative rather than recursive, and deliberately: Discord permits exactly two
+ * levels of nesting (group → subcommand → options), so a loop that walks down
+ * while it sees a subcommand terminates by the payload's own grammar.
+ */
+function flattenOptions(data: readonly CommandInteractionOption[]): {
+  subcommandPath: string[];
+  options: SlashCommandOption[];
+} {
+  const subcommandPath: string[] = [];
+  let level: readonly CommandInteractionOption[] = data;
+
+  for (;;) {
+    const nested = level.find(
+      (option) =>
+        option.type === ApplicationCommandOptionType.Subcommand ||
+        option.type === ApplicationCommandOptionType.SubcommandGroup,
+    );
+    if (nested === undefined) break;
+    subcommandPath.push(nested.name);
+    level = nested.options ?? [];
+  }
+
+  const options: SlashCommandOption[] = [];
+  for (const option of level) {
+    // An option Discord sent with no value is one the member did not supply.
+    // Reporting it as present-but-undefined would make "absent" and "empty"
+    // indistinguishable to a handler that only checks for the name.
+    if (option.value === undefined) continue;
+    options.push({ name: option.name, value: option.value });
+  }
+  return { subcommandPath, options };
 }
 
 /**
