@@ -1639,3 +1639,182 @@ already-posted managed panel, so the edit path had no test at all. Four tests
 written; all four mutations then failed.
 
 1278 tests green (from 1236); typecheck and lint exit 0.
+
+## WP5 / slice 14a–14b — the storage and authorization foundations of the dashboard — 2026-08-30
+
+Four ADRs before any code, because all four are decisions the rest of slice 14
+is built on top of and none of them is reversible cheaply once routes exist.
+
+**ADR 0027 — instance-level tables get their own scope.** `dashboard_accounts`
+and `bootstrap_tokens` have no `guild_id` to be reached through, and the
+shortcut — pass a `GuildScope` and simply not call `.only()` — is wrong in the
+exact way `CLAUDE.md` rule 2 names: it makes "did this query lose its guild
+predicate?" a question you answer by reading the body. So `ScopeFactory` gained
+`instance()`, `write.ts` gained `readInstance`/`writeInstance`, and a
+repository's **first parameter** now answers the question. `InstanceScope`
+carries no `only()`, so there is nothing to forget.
+
+One guild-partitioned table needs it too, and that was not obvious until the
+session lookup was written: **`findSessionByHash` takes an `InstanceScope`**,
+because a session is looked up by its token before the guild is known.
+Guild-scoping that lookup would mean trusting a client-supplied guild in order
+to authenticate the session — which is the same reasoning already recorded in
+`UNIQUE_BY_DESIGN` for this table's primary key. Exactly one session function is
+instance-scoped and it is the one that authenticates; `createSession`,
+`revokeSession` and `touchReauth` are all `GuildScope`.
+
+**ADR 0028 — a dashboard session had no way to be authorized at all.** This was
+the finding of the slice. `principalsOf` maps `actor.id` to a principal only
+when `isSnowflakeId` holds, and an account id is not a snowflake — so every
+`dashboard` actor fell to `actor-has-no-identity` and a logged-in owner could
+not have toggled the kill switch on the page whose whole job is the kill switch.
+`authz.ts` forecloses the easy repair in a comment: `dashboard` is not in
+`CHANNEL_AUTHORIZED_ACTORS` and must not be added.
+
+The obvious fix — make `account` a third `principal_type` so account grants live
+in `capability_grants` — was tried and rejected on the key type.
+`principals.principal_id` is the `snowflake()` custom column, whose `toDriver`
+throws on anything that is not 17–20 digits, and it carries a `NOT GLOB` CHECK
+saying the same to SQLite. Storing `acct_…` there means relaxing both: dropping
+a runtime guard and weakening a CHECK on the most security-critical table in the
+schema so two rows can share a column. That is the shape of change slice 13e
+already refused once.
+
+So: a new **`account_capabilities`** table, guild-partitioned, keyed
+`(guild_id, account_id, capability)`, with a **composite foreign key to
+`account_guild_access`** — which is the load-bearing part. Capability in a guild
+the account cannot reach is not representable, and revoking access cascades the
+capabilities away rather than leaving them dormant for the next time access is
+granted. `PrincipalRef` became a discriminated union, `AccountId` joined
+`SnowflakeId` in `ids.ts` (shaped `acct_` + 32 hex, so the two id spaces cannot
+be confused by a format check in either direction), and `authorize()` and
+`AuthzStore.hasGrant` are otherwise unchanged — still one function anything
+calls to ask the question.
+
+**`principalsOf` ignores a dashboard actor's Discord roles entirely.** A
+control, not tidiness. If `roleIds` reached `hasGrant` for a dashboard actor,
+then ADR 0012's "optional, later" account-linking feature — which would populate
+exactly that field from Discord — would silently turn every Discord role grant
+into a dashboard capability, with nobody editing `principalsOf` to make it
+happen. Two tests name this.
+
+**ADR 0029 — session policy.** Absolute twelve-hour lifetime, no sliding
+renewal: the schema has no `last_seen_at`, so an idle timeout is not
+expressible, and a tab left open on the kill-switch console must not stay
+authenticated forever. Five-minute re-auth window, required for **disabling**
+the kill switch but deliberately not for enabling it — the control that stops
+the bot must never be harder to reach than the one that starts it. CSRF token
+derived as `sha256("bananasaurs.csrf:" + rawToken)`, which needs no column and
+no server secret and therefore cannot drift from its session or die on restart.
+Five failed attempts, fifteen-minute lockout, uniform failure responses.
+
+**Read-only mode refuses login, and says so with 503.** Creating a session is a
+write and so is counting a failed attempt, so `writeInstance` throws. Keeping
+sessions in memory instead was rejected: it would mean a second session store
+with different revocation and, worse, lockout with nowhere to count — the one
+control between a password form and unlimited guesses, silently absent in
+exactly the mode nobody tests. `503` rather than `403` because the caller was
+not denied permission; the server is in a mode where it cannot.
+
+**ADR 0030 — TOTP deferred, re-armed by a test.** ADR 0012 requires it for
+provider-credential or purge capability. Neither capability exists, so the
+requirement is currently vacuous. `authz.test.ts` now asserts `CAPABILITIES`
+contains none of `providers.manage`, `secrets.manage`, `data.purge`,
+`archive.export`, with a failure message naming both ADRs. Adding any of them
+fails the build. That is the difference between a deferral and an omission.
+
+**Broke, to check the tests, continuing from 196.** 196. A dashboard actor
+presents its Discord roles as well as its account → 2 failed. 197. Dropped the
+guild predicate from the account-capability query → failed. 198. Lockout at
+`> maxAttempts` instead of `>=` → 2 failed. 199. Bootstrap token consumable
+twice → failed. 200. `writeInstance` ignores `BANANASAURS_READONLY` → 6 failed.
+201. Re-authentication also extends `expires_at` → failed. 202. `revokeSession`
+loses its guild predicate → failed. 203. Expired bootstrap token still
+consumable → failed. **No survivors.** All restored by file copy.
+
+1359 tests green (from 1278); typecheck and lint exit 0.
+
+## WP5 / slice 14c–14d — `packages/http`, and the dashboard's recovery path — 2026-08-30
+
+The security-critical half of slice 14. `packages/http` is a Fastify API in the
+daemon's process (ADR 0006), bound to loopback, sharing the handle the daemon
+already holds — two processes would be two writers.
+
+**`auth.ts` has no Fastify in it, and `server.ts` makes no decisions.** The same
+split `ops/dispatch.ts` uses for the operator socket: "does lockout actually
+lock" and "does an expired session authenticate" are unit tests against a
+database with no server listening. 54 of the slice's tests are on that side.
+
+**Argon2id for passwords, SHA-256 for tokens, and the reasoning is in one file.**
+`secrets.ts` holds both, together, because the interesting part is which value
+gets which. A session token is 256 bits of uniform randomness — there is no
+dictionary to slow down, and a work factor on every authenticated request is a
+denial-of-service knob pointed at ourselves. The reason to hash it at all is
+that a backup or a diagnostics bundle must not yield a usable credential.
+
+**The CSRF token is `sha256("bananasaurs.csrf:" + rawSessionToken)`.** No column,
+so it cannot drift from its session. No server secret, so it survives a restart
+exactly as long as the DB-backed session does — a key in memory would invalidate
+every live session's CSRF token on every restart, which is the opposite of the
+property sessions are DB-backed for. The domain separator is what stops it being
+the session id hash; mutation 215 removed it and two tests caught that.
+
+**`principalsOf` and `actorFor` are two halves of one control.** `actorFor` gives
+a dashboard actor `roleIds: []` with no parameter to make it otherwise, and
+`principalsOf` ignores a dashboard actor's roles regardless. Either alone would
+be a control; both means the ADR 0012 rule would have to be defeated twice.
+
+**`bananasaurs bootstrap reissue --confirm`,** ADR 0012's documented recovery
+path, tested once end to end as the ADR asks: real CLI, real socket, real
+dispatcher, real migrated database. Three things about it are deliberate and all
+three are tested — the token is printed once and stored only as a hash, the
+daemon must be restarted because `/bootstrap` is a registration-time decision,
+and it refuses while any account exists so nobody with shell access can mint a
+second owner.
+
+**Two config findings, both fixed.** `DASHBOARD_SESSION_SECRET` was **required**
+and read by nothing: it was specified when sessions were going to be signed
+cookies, and ADR 0012 made them DB-backed. A mandatory secret nothing reads is
+worse than none — it implies a control that does not exist and invites someone
+to believe rotating it logs people out. Now optional, still redacted, documented
+as unused. `DASHBOARD_BIND` was `z.string().min(1)`, so `docs/19`'s "bind
+127.0.0.1" was prose the daemon did not enforce; it is now an enum of the three
+loopback spellings, because the value someone reaches for at 2am when the page
+will not load from their laptop is `0.0.0.0`.
+
+**Broke, to check the tests, continuing from 204.** 204. Removed CSRF
+enforcement → 6 failed. 205. See below. 206. Sessions never expire → 2 failed.
+207. Looked sessions up by the raw token instead of its hash → 6 failed. 208.
+Revoked guild access still authenticates → failed. 209. Lockout does not block
+login → 3 failed. 210. Login guesses the first reachable guild → failed. 211.
+Bootstrap consumes the token *after* creating the account → the concurrency test
+failed. 212. `requireFresh` does not check freshness → failed. 213. `Origin`
+check always passes → 6 failed. 214. Bootstrap token issued at startup under
+readonly → failed. 215. CSRF token loses its domain separator → 2 failed. 216.
+See below. 217. `bootstrap reissue` works with accounts present → failed. 218.
+`bootstrap reissue` stores the plaintext token → 3 failed. All restored by file
+copy.
+
+**Two survivors, both real gaps, both now failing.**
+
+**205 — `bootstrapIsArmed` dropped its zero-accounts check and nothing noticed.**
+The test that should have caught it was one test asserting all three
+conditions, and it ended with "provision an account, expect not armed" — but it
+had already advanced the clock past the token's expiry, and `at(clock)` after
+`at(clock + ttl + 1)` reads the *advanced* value, so the clock never went back.
+The final assertion passed because the token had expired and said nothing about
+the account count. The server-side 404 test had the same hole from the other
+direction: its fixture had never issued a token, so the 404 was for the token's
+absence. Split into four tests, plus a server test with an account **and** a live
+token — the exact state a provisioned instance is in when someone finds an old
+token lying around.
+
+**216 — the explicit `readonly` guard on `/api/login` looked redundant.**
+Deleting it left everything green, because the error handler turns the
+`ReadonlyError` thrown by `recordFailedAttempt` into the same 503. But only for
+an account that exists: an unknown username never reaches a write, so it would
+have answered 401 while every real username answered 503 — turning read-only
+mode into a username oracle, in the one mode where the answer can never be a
+login. Now tested by asserting the two responses are byte-identical.
+
+1502 tests green (from 1359); typecheck and lint exit 0.

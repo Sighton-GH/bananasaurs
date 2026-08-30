@@ -59,6 +59,10 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
   doctor: () => ({ ok: true, text: 'doctor: ok', data: null }),
   redactedConfig: () => ({ BANANASAURS_DRY_RUN: false, DISCORD_BOT_TOKEN: '<redacted>' }),
+  // Refuses by default, which is the state a provisioned instance is in. A
+  // test that wants the token has to say so, so `bootstrap reissue` succeeding
+  // is never something a fixture arranged by accident.
+  reissueBootstrapToken: () => ({ ok: false, reason: 'accounts-exist', accountCount: 1 }),
   ...over,
 });
 

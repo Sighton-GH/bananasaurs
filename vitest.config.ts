@@ -21,6 +21,7 @@ export default defineConfig({
       '@bananasaurs/discord': src('./packages/discord/src/index.ts'),
       '@bananasaurs/storage/test-support': src('./packages/storage/src/test-support.ts'),
       '@bananasaurs/storage': src('./packages/storage/src/index.ts'),
+      '@bananasaurs/http': src('./packages/http/src/index.ts'),
       '@bananasaurs/testkit': src('./packages/testkit/src/index.ts'),
     },
   },

@@ -1,5 +1,5 @@
-import { isSnowflakeId } from './ids.js';
-import type { GuildId, SnowflakeId } from './ids.js';
+import { isAccountId, isSnowflakeId } from './ids.js';
+import type { AccountId, GuildId, SnowflakeId } from './ids.js';
 
 /**
  * Capability checking.
@@ -96,10 +96,19 @@ export interface Denied {
 export type Result<T, E> =
   { readonly ok: true; readonly value: T } | { readonly ok: false; readonly error: E };
 
-export interface PrincipalRef {
-  readonly principalType: 'user' | 'role';
-  readonly principalId: SnowflakeId;
-}
+/**
+ * Something a grant can be made to (ADR 0028).
+ *
+ * A union rather than `{ type: string; id: string }`, because the two arms have
+ * genuinely different key spaces and are stored in different tables: a Discord
+ * principal is a snowflake in `capability_grants`, a dashboard account is an
+ * `acct_…` id in `account_capabilities`. Flattening them to a common `string`
+ * would have meant relaxing the snowflake guard on `principals.principal_id`,
+ * which is the one thing ADR 0028 refused to do.
+ */
+export type PrincipalRef =
+  | { readonly principalType: 'user' | 'role'; readonly principalId: SnowflakeId }
+  | { readonly principalType: 'account'; readonly principalId: AccountId };
 
 export interface AuthzStore {
   /**
@@ -151,16 +160,30 @@ const SYSTEM_ACTORS: ReadonlySet<ActorType> = new Set<ActorType>(['system', 'doc
 const CHANNEL_AUTHORIZED_ACTORS: ReadonlySet<ActorType> = new Set<ActorType>(['operator_cli']);
 
 /**
- * The principals an actor presents: itself, plus every role it holds.
+ * The principals an actor presents.
  *
- * `isSnowflakeId` is a type predicate rather than a shape check followed by a
- * cast — a cast onto `SnowflakeId` is banned by the lint tripwire, and rightly:
- * this is exactly the spot where one would have been written for convenience.
- * A dashboard account id is not a snowflake, so it simply never becomes a
- * Discord principal, rather than relying on account ids never colliding with
- * user ids.
+ * `isSnowflakeId` and `isAccountId` are type predicates rather than shape
+ * checks followed by casts — a cast onto `SnowflakeId` is banned by the lint
+ * tripwire, and rightly: this is exactly the spot where one would have been
+ * written for convenience. The two id shapes are disjoint by construction
+ * (`ids.ts`), so neither predicate can accept the other's values and a
+ * dashboard account can never match a `principals` row by coincidence.
+ *
+ * **A dashboard actor presents only its account, never its Discord roles**
+ * (ADR 0028). That is a control, not tidiness. ADR 0012's decision is that
+ * Discord role membership grants nothing in Bananasaurs, because other members
+ * of the club server hold Administrator. If `roleIds` reached `hasGrant` for a
+ * dashboard actor, then the account-linking feature ADR 0012 leaves for later —
+ * which would populate exactly this field from Discord — would silently turn
+ * every role grant into a dashboard capability, without anyone editing this
+ * function. Dropping them here means that cannot happen by omission.
  */
 export const principalsOf = (actor: Actor): PrincipalRef[] => {
+  if (actor.type === 'dashboard') {
+    if (actor.id === undefined || !isAccountId(actor.id)) return [];
+    return [{ principalType: 'account', principalId: actor.id }];
+  }
+
   const principals: PrincipalRef[] = actor.roleIds.map((roleId) => ({
     principalType: 'role',
     principalId: roleId,

@@ -1,10 +1,10 @@
-import { and, eq, or, type SQL } from 'drizzle-orm';
+import { and, eq, inArray, or, type SQL } from 'drizzle-orm';
 import type { SQLiteColumn } from 'drizzle-orm/sqlite-core';
 import { isSnowflakeId } from '@bananasaurs/core';
 import type { AuthzStore, Capability, PrincipalRef } from '@bananasaurs/core';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import { capabilityGrants, principals } from '../schema.js';
+import { accountCapabilities, capabilityGrants, principals } from '../schema.js';
 
 /**
  * Principals and capability grants.
@@ -95,22 +95,116 @@ const matchesAny = (
   return clauses.length === 0 ? undefined : or(...clauses);
 };
 
-/** The `AuthzStore` port, bound to one guild. */
+/**
+ * The `AuthzStore` port, bound to one guild.
+ *
+ * Two tables, one question (ADR 0028). Discord principals live in
+ * `capability_grants`, keyed by snowflake; dashboard accounts live in
+ * `account_capabilities`, keyed by `acct_…`. `PrincipalRef` is a discriminated
+ * union, so which table a ref belongs to is decided by the type system rather
+ * than by a string comparison that could fall through — a ref whose
+ * `principalType` this function did not handle would not compile.
+ *
+ * The account query is second and short-circuits: the common caller is a
+ * Discord member with no account refs at all, and a dashboard session presents
+ * exactly one ref and no Discord ones.
+ */
 export const authzStoreFor = (scope: GuildScope): AuthzStore => ({
   hasGrant(capability, refs) {
     if (refs.length === 0) return false;
+
+    const discordRefs = refs.filter(
+      (ref) => ref.principalType === 'user' || ref.principalType === 'role',
+    );
+    const accountIds = refs.flatMap<string>((ref) =>
+      ref.principalType === 'account' ? [ref.principalId] : [],
+    );
+
     return read(scope, (db) => {
-      const match = matchesAny(refs, capabilityGrants.principalType, capabilityGrants.principalId);
-      if (!match) return false;
+      const match = matchesAny(
+        discordRefs,
+        capabilityGrants.principalType,
+        capabilityGrants.principalId,
+      );
+      if (match !== undefined) {
+        const row = db
+          .select({ capability: capabilityGrants.capability })
+          .from(capabilityGrants)
+          .where(scope.only(capabilityGrants, eq(capabilityGrants.capability, capability), match))
+          .get();
+        if (row !== undefined) return true;
+      }
+
+      if (accountIds.length === 0) return false;
       const row = db
-        .select({ capability: capabilityGrants.capability })
-        .from(capabilityGrants)
-        .where(scope.only(capabilityGrants, eq(capabilityGrants.capability, capability), match))
+        .select({ capability: accountCapabilities.capability })
+        .from(accountCapabilities)
+        .where(
+          scope.only(
+            accountCapabilities,
+            eq(accountCapabilities.capability, capability),
+            inArray(accountCapabilities.accountId, accountIds),
+          ),
+        )
         .get();
       return row !== undefined;
     });
   },
 });
+
+/**
+ * Grants a capability to a dashboard account in one guild (ADR 0028).
+ *
+ * The composite foreign key means this fails outright unless the account
+ * already has access to the guild, so "capability without reachability" is
+ * refused by the database rather than by a check here that could be reordered
+ * away.
+ */
+export const grantAccountCapability = (
+  scope: GuildScope,
+  input: { accountId: string; capability: Capability; grantedBy: string; now: number },
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(accountCapabilities)
+      .values({
+        guildId: scope.guildId,
+        accountId: input.accountId,
+        capability: input.capability,
+        grantedAt: input.now,
+        grantedBy: input.grantedBy,
+      })
+      .onConflictDoNothing()
+      .run();
+  });
+
+export const revokeAccountCapability = (
+  scope: GuildScope,
+  input: { accountId: string; capability: Capability },
+): void =>
+  write(scope, ({ db }) => {
+    db.delete(accountCapabilities)
+      .where(
+        scope.only(
+          accountCapabilities,
+          and(
+            eq(accountCapabilities.accountId, input.accountId),
+            eq(accountCapabilities.capability, input.capability),
+          ),
+        ),
+      )
+      .run();
+  });
+
+/** Every capability an account holds in this guild, for the dashboard's own UI. */
+export const listAccountCapabilities = (scope: GuildScope, accountId: string): string[] =>
+  read(scope, (db) =>
+    db
+      .select({ capability: accountCapabilities.capability })
+      .from(accountCapabilities)
+      .where(scope.only(accountCapabilities, eq(accountCapabilities.accountId, accountId)))
+      .all()
+      .map((row) => row.capability),
+  );
 
 /**
  * Is this target protected? (docs/18 Layer 2.)

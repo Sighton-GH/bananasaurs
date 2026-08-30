@@ -652,6 +652,45 @@ export const accountGuildAccess = sqliteTable(
 );
 
 /**
+ * What a dashboard account may do in a guild it can reach (ADR 0028).
+ *
+ * A second capability table beside `capability_grants`, deliberately. The two
+ * hold grants for two disjoint key spaces: a Discord principal is a snowflake,
+ * a dashboard account is an `acct_…` id. Putting accounts in
+ * `capability_grants` would have meant relaxing both the `snowflake()` column
+ * guard and the `NOT GLOB` CHECK on `principals.principal_id` — dropping a
+ * protection on the most security-critical table in the schema so that two rows
+ * could share a column. `AuthzStore.hasGrant` remains the single function
+ * anything calls to ask "does this principal hold this capability", so there is
+ * still exactly one place the two could diverge.
+ *
+ * The foreign key is composite and points at `account_guild_access`, not at
+ * `dashboard_accounts`. That is the load-bearing part: **capability in a guild
+ * the account cannot reach is not representable**, and revoking access cascades
+ * the capabilities away rather than leaving them dormant for the next time
+ * access is granted.
+ */
+export const accountCapabilities = sqliteTable(
+  'account_capabilities',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    accountId: text('account_id').notNull(),
+    capability: text('capability').notNull(),
+    grantedAt: integer('granted_at').notNull(),
+    /** A dashboard account id or a Discord user id — no snowflake CHECK. */
+    grantedBy: text('granted_by').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.accountId, t.capability] }),
+    foreignKey({
+      columns: [t.guildId, t.accountId],
+      foreignColumns: [accountGuildAccess.guildId, accountGuildAccess.accountId],
+    }).onDelete('cascade'),
+    check('account_capabilities_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/**
  * A dashboard session. Guild-scoped per ADR 0012: a session is for one guild,
  * so a stolen cookie cannot be pointed at another.
  *

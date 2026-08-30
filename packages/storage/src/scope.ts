@@ -49,11 +49,43 @@ interface ScopeInternals {
  * scope would be reachable by anything holding a scope — including `core` —
  * which is exactly the thing the boundary exists to prevent.
  */
-const internals = new WeakMap<GuildScope, ScopeInternals>();
+const internals = new WeakMap<AnyScope, ScopeInternals>();
+
+/**
+ * A scope for the tables that are deliberately not guild-partitioned:
+ * `dashboard_accounts` and `bootstrap_tokens` (ADR 0027).
+ *
+ * It carries **no `only()`**, and that absence is the design. A repository
+ * function's first parameter answers "is this query partitioned?" — a
+ * `GuildScope` means yes, an `InstanceScope` means deliberately no. Passing a
+ * `GuildScope` to an instance-level repository and simply not calling `only()`
+ * would make that a question you answer by reading the body, which is exactly
+ * the failure `CLAUDE.md` rule 2 names.
+ */
+export interface InstanceScope {
+  /**
+   * A real property, so `{}` is not structurally an `InstanceScope`. That keeps
+   * the fabricated-scope refusal reachable in a test rather than only in
+   * theory.
+   */
+  readonly kind: 'instance';
+}
+
+/** Either scope. The database handle is reached the same way through both. */
+export type AnyScope = GuildScope | InstanceScope;
 
 export interface ScopeFactory {
   /** The only way to obtain a scope, and therefore to reach guild data. */
   forGuild(guildId: GuildId): GuildScope;
+  /**
+   * The only way to reach an instance-level table (ADR 0027).
+   *
+   * Returns a fresh object per call rather than a cached singleton, for the
+   * same reason `forGuild` does: the handle lives in a `WeakMap` keyed by the
+   * scope, so a scope is a capability that gets passed, not a global that gets
+   * reached.
+   */
+  instance(): InstanceScope;
 }
 
 export const createScopeFactory = (db: Db, options: { readonly: boolean }): ScopeFactory => ({
@@ -71,23 +103,35 @@ export const createScopeFactory = (db: Db, options: { readonly: boolean }): Scop
     internals.set(scope, { db, readonly: options.readonly });
     return scope;
   },
+
+  instance(): InstanceScope {
+    const scope: InstanceScope = { kind: 'instance' };
+    internals.set(scope, { db, readonly: options.readonly });
+    return scope;
+  },
 });
 
 /**
  * The database behind a scope. Internal to this package — not exported from
  * `index.ts`, which is what keeps the handle out of `core`.
  */
-export const dbOf = (scope: GuildScope): Db => {
+export const dbOf = (scope: AnyScope): Db => {
   const found = internals.get(scope);
   if (!found) {
     throw new Error(
-      'this GuildScope was not produced by createScopeFactory. Scopes carry the ' +
+      'this scope was not produced by createScopeFactory. Scopes carry the ' +
         'database handle out of band precisely so one cannot be fabricated; obtain ' +
-        'it from forGuild().',
+        'it from forGuild() or instance().',
     );
   }
   return found.db;
 };
 
-/** Whether the process was started with BANANASAURS_READONLY. */
-export const isReadonly = (scope: GuildScope): boolean => internals.get(scope)?.readonly ?? true;
+/**
+ * Whether the process was started with BANANASAURS_READONLY.
+ *
+ * Defaults to `true` for a scope this module did not produce, so a fabricated
+ * scope refuses a write rather than being handed an unguarded handle. `dbOf`
+ * throws on the same input a line later; this is the safer of the two orders.
+ */
+export const isReadonly = (scope: AnyScope): boolean => internals.get(scope)?.readonly ?? true;

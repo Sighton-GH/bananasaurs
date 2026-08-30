@@ -11,6 +11,9 @@
       "path": "packages/storage"
     },
     {
+      "path": "packages/http"
+    },
+    {
       "path": "packages/discord"
     },
     {

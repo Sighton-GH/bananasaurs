@@ -151,4 +151,45 @@ describe('the rules actually fire, not merely resolve', () => {
     const messages = results[0]?.messages ?? [];
     expect(messages.map((m) => m.ruleId)).not.toContain(BOUNDARY_RULE);
   });
+
+  /**
+   * `packages/http` and `packages/dashboard` are no longer hypothetical.
+   *
+   * Their rules were written in slice 13a's ADR 0014 pass, before the
+   * directories existed, and were inert until slice 14 created them — exactly
+   * as `packages/cli`'s were. These cases lint a real path inside each, so the
+   * rules are now shown to fire against files that exist rather than only to
+   * resolve for paths that might.
+   */
+  it('reports discord.js in packages/http', async () => {
+    const results = await eslint.lintText(
+      "import { Client } from 'discord.js';\nexport const x = Client;\n",
+      { filePath: path.join(REPO_ROOT, 'packages/http/src/server.ts') },
+    );
+    const messages = results[0]?.messages ?? [];
+    expect(messages.map((m) => m.ruleId)).toContain(BOUNDARY_RULE);
+    expect(messages[0]?.message).toMatch(/effect gateway/);
+  });
+
+  it('allows @bananasaurs/storage in packages/http, which is how it reads a session', async () => {
+    // The API is the one package outside the daemon that legitimately holds a
+    // scope: ADR 0014 keeps the handle out of `core`, not out of `http`.
+    const results = await eslint.lintText(
+      "import { accountRepo } from '@bananasaurs/storage';\nexport const x = accountRepo;\n",
+      { filePath: path.join(REPO_ROOT, 'packages/http/src/auth.ts') },
+    );
+    const messages = results[0]?.messages ?? [];
+    expect(messages.map((m) => m.ruleId)).not.toContain(BOUNDARY_RULE);
+  });
+
+  /**
+   * There is deliberately no `lintText` case for `packages/dashboard` yet.
+   *
+   * `lintText` runs the typed parser, which needs the file to belong to a
+   * tsconfig — so a path inside a directory that does not exist reports a
+   * parse error whose `ruleId` is `null`, and an assertion against it passes or
+   * fails for reasons that have nothing to do with the boundary. The
+   * `calculateConfigForFile` cases above already prove the dashboard's rules
+   * resolve; the firing case belongs with the slice that creates the package.
+   */
 });

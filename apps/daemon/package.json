@@ -10,6 +10,7 @@
   "dependencies": {
     "@bananasaurs/core": "*",
     "@bananasaurs/discord": "*",
+    "@bananasaurs/http": "*",
     "@bananasaurs/storage": "*",
     "discord.js": "^14.27.0"
   },

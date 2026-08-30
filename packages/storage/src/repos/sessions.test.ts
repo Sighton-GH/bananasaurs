@@ -1,0 +1,193 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { parseGuildId } from '@bananasaurs/core';
+import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
+import type { GuildScope, InstanceScope } from '../scope.js';
+import { ReadonlyError } from '../write.js';
+import { upsertGuild } from './guilds.js';
+import { createAccount } from './accounts.js';
+import {
+  createSession,
+  findSessionByHash,
+  listSessionsForAccount,
+  revokeAllForAccount,
+  revokeSession,
+  touchReauth,
+} from './sessions.js';
+
+const GUILD_A = parseGuildId('111111111111111111');
+const GUILD_B = parseGuildId('222222222222222222');
+const ACCOUNT = 'acct_0123456789abcdef0123456789abcdef';
+const OTHER = 'acct_fedcba9876543210fedcba9876543210';
+const HASH = 'a'.repeat(64);
+const HASH_B = 'b'.repeat(64);
+
+const HOUR = 3_600_000;
+
+let t: MigratedTestDatabase;
+let a: GuildScope;
+let b: GuildScope;
+let instance: InstanceScope;
+
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+  a = t.scopes.forGuild(GUILD_A);
+  b = t.scopes.forGuild(GUILD_B);
+  instance = t.scopes.instance();
+  upsertGuild(a, { name: 'guild a', now: 1000 });
+  upsertGuild(b, { name: 'guild b', now: 1000 });
+  for (const accountId of [ACCOUNT, OTHER]) {
+    createAccount(instance, {
+      accountId,
+      username: accountId,
+      passwordHash: 'x',
+      isOwner: false,
+      now: 1000,
+    });
+  }
+});
+afterEach(() => {
+  t.close();
+});
+
+const open = (scope: GuildScope, hash = HASH, accountId = ACCOUNT, now = 1000): void =>
+  createSession(scope, {
+    sessionIdHash: hash,
+    accountId,
+    createdAt: now,
+    expiresAt: now + 12 * HOUR,
+    reauthAt: now,
+    ip: '127.0.0.1',
+  });
+
+describe('a session is looked up by its token before the guild is known', () => {
+  it('finds the row from an instance scope, and it carries the guild', () => {
+    // ADR 0027 and the UNIQUE_BY_DESIGN entry: guild-scoping this lookup would
+    // mean trusting a client-supplied guild in order to authenticate.
+    open(a);
+    expect(findSessionByHash(instance, HASH)?.guildId).toBe(GUILD_A);
+  });
+
+  it('returns undefined for a hash that was never issued', () => {
+    expect(findSessionByHash(instance, HASH)).toBeUndefined();
+  });
+
+  it('stores only the hash — the token never reaches the row', () => {
+    open(a);
+    const row = findSessionByHash(instance, HASH);
+    expect(row?.sessionId).toBe(HASH);
+    expect(JSON.stringify(row)).not.toContain('token');
+  });
+
+  it('records the absolute expiry the caller computed', () => {
+    open(a, HASH, ACCOUNT, 5000);
+    const row = findSessionByHash(instance, HASH);
+    expect(row?.createdAt).toBe(5000);
+    expect(row?.expiresAt).toBe(5000 + 12 * HOUR);
+  });
+
+  it('refuses two sessions with the same token hash', () => {
+    open(a);
+    expect(() => open(a)).toThrow();
+  });
+
+  it('refuses a session for an account that does not exist', () => {
+    expect(() => open(a, HASH, 'acct_00000000000000000000000000000000')).toThrow();
+  });
+});
+
+describe('revocation is immediate, which is why sessions are DB-backed', () => {
+  it('marks the row revoked and says it did', () => {
+    open(a);
+    expect(revokeSession(a, { sessionIdHash: HASH, now: 2000 })).toBe(true);
+    expect(findSessionByHash(instance, HASH)?.revokedAt).toBe(2000);
+  });
+
+  it('reports false for a hash it did not revoke', () => {
+    expect(revokeSession(a, { sessionIdHash: HASH, now: 2000 })).toBe(false);
+  });
+
+  it('leaves the row readable, so the trail of when someone was logged in survives', () => {
+    open(a);
+    revokeSession(a, { sessionIdHash: HASH, now: 2000 });
+    expect(findSessionByHash(instance, HASH)?.createdAt).toBe(1000);
+  });
+
+  it('cannot revoke a session belonging to another guild', () => {
+    // The guild predicate, not a check in the handler. A session issued for
+    // guild A must not be reachable through a scope for guild B.
+    open(a);
+    expect(revokeSession(b, { sessionIdHash: HASH, now: 2000 })).toBe(false);
+    expect(findSessionByHash(instance, HASH)?.revokedAt).toBeNull();
+  });
+
+  it('revokes every session for one account in one call', () => {
+    open(a, HASH);
+    open(a, HASH_B);
+    expect(revokeAllForAccount(a, { accountId: ACCOUNT, now: 2000 })).toBe(2);
+    expect(findSessionByHash(instance, HASH)?.revokedAt).toBe(2000);
+    expect(findSessionByHash(instance, HASH_B)?.revokedAt).toBe(2000);
+  });
+
+  it('does not revoke another account’s sessions', () => {
+    open(a, HASH, ACCOUNT);
+    open(a, HASH_B, OTHER);
+    revokeAllForAccount(a, { accountId: ACCOUNT, now: 2000 });
+    expect(findSessionByHash(instance, HASH_B)?.revokedAt).toBeNull();
+  });
+
+  it('does not revoke sessions in another guild', () => {
+    open(a, HASH, ACCOUNT);
+    open(b, HASH_B, ACCOUNT);
+    expect(revokeAllForAccount(a, { accountId: ACCOUNT, now: 2000 })).toBe(1);
+    expect(findSessionByHash(instance, HASH_B)?.revokedAt).toBeNull();
+  });
+});
+
+describe('re-authentication refreshes reauth_at and nothing else (ADR 0029)', () => {
+  it('moves reauth_at forward', () => {
+    open(a);
+    touchReauth(a, { sessionIdHash: HASH, now: 9000 });
+    expect(findSessionByHash(instance, HASH)?.reauthAt).toBe(9000);
+  });
+
+  it('does not extend the absolute lifetime', () => {
+    // The failure this guards: re-authenticating to disable the kill switch
+    // silently renewing a session that was about to end. Absolute means
+    // absolute (ADR 0029).
+    open(a, HASH, ACCOUNT, 1000);
+    touchReauth(a, { sessionIdHash: HASH, now: 9000 });
+    expect(findSessionByHash(instance, HASH)?.expiresAt).toBe(1000 + 12 * HOUR);
+  });
+
+  it('cannot touch a session in another guild', () => {
+    open(a);
+    touchReauth(b, { sessionIdHash: HASH, now: 9000 });
+    expect(findSessionByHash(instance, HASH)?.reauthAt).toBe(1000);
+  });
+});
+
+describe('listing is guild-scoped', () => {
+  it('returns this guild’s sessions only', () => {
+    open(a, HASH, ACCOUNT);
+    open(b, HASH_B, ACCOUNT);
+    expect(listSessionsForAccount(a, ACCOUNT).map((s) => s.sessionId)).toEqual([HASH]);
+  });
+});
+
+describe('readonly mode refuses every session write (ADR 0029)', () => {
+  it('refuses createSession, which is why login is unavailable read-only', () => {
+    const ro = t.readonlyScopes.forGuild(GUILD_A);
+    expect(() => open(ro)).toThrow(ReadonlyError);
+  });
+
+  it('refuses revokeSession', () => {
+    open(a);
+    const ro = t.readonlyScopes.forGuild(GUILD_A);
+    expect(() => revokeSession(ro, { sessionIdHash: HASH, now: 2000 })).toThrow(ReadonlyError);
+  });
+
+  it('still allows the lookup, so an existing session can still read', () => {
+    open(a);
+    expect(findSessionByHash(t.readonlyScopes.instance(), HASH)?.guildId).toBe(GUILD_A);
+  });
+});

@@ -1,4 +1,5 @@
 import type { RegisteredCommand } from './dispatch.js';
+import { bootstrapReissueCommand } from './commands/bootstrap.js';
 import { killswitchCommand } from './commands/killswitch.js';
 import {
   auditTailCommand,
@@ -54,4 +55,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   adoptionAllowCommand,
   undoCommand,
   killswitchCommand,
+
+  // The dashboard's recovery path (ADR 0012). Authorized by the socket like
+  // every other command here, which is the point: it exists for the case where
+  // nobody can log in, so gating it on a dashboard credential would make it
+  // useless in the only situation it is for.
+  bootstrapReissueCommand,
 ];

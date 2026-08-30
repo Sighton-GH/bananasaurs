@@ -8,12 +8,24 @@ export {
 export { claimDatabaseLock, DatabaseLockedError, type DbLock, type LockInfo } from './lock.js';
 export {
   createScopeFactory,
+  type AnyScope,
   type GuildPartitionedTable,
   type GuildScope,
+  type InstanceScope,
   type ScopeFactory,
 } from './scope.js';
-export { read, write, ReadonlyError, type WriteTx } from './write.js';
+export {
+  read,
+  write,
+  readInstance,
+  writeInstance,
+  ReadonlyError,
+  type InstanceTx,
+  type WriteTx,
+} from './write.js';
 export { SnowflakeTypeError } from './columns.js';
+export * as accountRepo from './repos/accounts.js';
+export * as sessionRepo from './repos/sessions.js';
 export * as guildRepo from './repos/guilds.js';
 export * as authzRepo from './repos/authz.js';
 export { authzStoreFor, isTargetProtected } from './repos/authz.js';

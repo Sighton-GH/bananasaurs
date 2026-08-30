@@ -81,3 +81,34 @@ export const parseGuildId = (value: unknown): GuildId => guildIdSchema.parse(val
 /** Non-throwing form, for code that already has a failure path. */
 export const isSnowflakeId = (value: unknown): value is SnowflakeId =>
   typeof value === 'string' && SNOWFLAKE_RE.test(value);
+
+/**
+ * A dashboard account id: `acct_` followed by 32 lowercase hex digits.
+ *
+ * **The prefix is the point** (ADR 0028). A dashboard account is a principal
+ * alongside Discord users and roles, so the two id spaces meet — in
+ * `principalsOf`, in `capability_grants.granted_by`, and in `audit_events.
+ * actor_id`. A shape that a snowflake check can never accept, and that can
+ * never accept a snowflake, means the two cannot be confused by a format test
+ * in either direction, and `principalsOf` can narrow with a type predicate
+ * rather than a cast the lint tripwire would rightly refuse.
+ *
+ * Sixteen random bytes, rendered hex. Not a ULID or a UUID: an account id is
+ * shown to an operator granting a capability, and sortability buys nothing
+ * against a table that holds a handful of rows.
+ */
+const ACCOUNT_ID_RE = /^acct_[0-9a-f]{32}$/;
+
+export const accountIdSchema = z
+  .string()
+  .regex(ACCOUNT_ID_RE, 'an account id is "acct_" followed by 32 lowercase hex digits')
+  .brand<'AccountId'>();
+
+export type AccountId = z.infer<typeof accountIdSchema>;
+
+/** Throws a ZodError naming the reason. Use at any boundary. */
+export const parseAccountId = (value: unknown): AccountId => accountIdSchema.parse(value);
+
+/** Non-throwing form, for code that already has a failure path. */
+export const isAccountId = (value: unknown): value is AccountId =>
+  typeof value === 'string' && ACCOUNT_ID_RE.test(value);
