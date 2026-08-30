@@ -1,4 +1,5 @@
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import {
   safeLogFields,
@@ -15,6 +16,19 @@ import {
   registerWriteRoutes,
   type HttpDeps,
 } from '@bananasaurs/http';
+import { registerStaticAssets } from './static.js';
+
+/**
+ * `packages/dashboard/dist`, resolved relative to this module's own URL
+ * rather than `process.cwd()` — the same convention `packages/storage/src/
+ * test-support.ts` uses for the migrations folder — so it resolves correctly
+ * whether this file is running from `src/` (`npm run dev`) or from
+ * `dist/` after `tsc --build` (`npm start`); both sit at the same depth
+ * under the repo root.
+ */
+const DASHBOARD_DIST = fileURLToPath(
+  new URL('../../../../packages/dashboard/dist', import.meta.url),
+);
 
 /**
  * The dashboard API, in the daemon's process (ADR 0006 — one process).
@@ -113,6 +127,8 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
       registerWriteRoutes(instance, guard, routeDeps);
     },
   });
+  registerStaticAssets(app, DASHBOARD_DIST);
+
   const host = deps.config.DASHBOARD_BIND;
   await app.listen({ host, port: deps.config.DASHBOARD_PORT });
 
