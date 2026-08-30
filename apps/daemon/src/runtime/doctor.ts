@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   GatewayIntentBits,
   PermissionsBitField,
@@ -6,7 +8,8 @@ import {
   type Guild,
 } from 'discord.js';
 import { REQUIRED_PARTIALS } from '@bananasaurs/discord';
-import type { Config } from '@bananasaurs/core';
+import { humaniseDuration, type Config } from '@bananasaurs/core';
+import { listBackups } from '@bananasaurs/storage';
 
 /**
  * `doctor` v1 — `docs/21` exercise 1 step 3.
@@ -77,6 +80,56 @@ export interface DoctorGuild {
   readonly forbiddenPermissions: readonly string[];
 }
 
+/**
+ * The backup timer's health (ADR 0034, WP6 slice 16e), read from the
+ * filesystem alone — no database handle, so this does not disturb `doctor`'s
+ * existing "does not open the database" property, which is what lets it run
+ * safely against a live daemon's files.
+ */
+export interface DoctorBackupHealth {
+  /** False only if the directory could not even be checked (e.g. ENOTDIR on a parent). */
+  readonly dirExists: boolean;
+  /** False if the directory exists but this process cannot write to it. */
+  readonly dirWritable: boolean;
+  readonly backupCount: number;
+  /** `undefined` when there are no backups yet. */
+  readonly newestAgeMs: number | undefined;
+  /**
+   * The newest backup is older than twice the configured interval — the timer
+   * that should be producing one has gone silent. A fresh install with zero
+   * backups is not this; a directory that used to fill and stopped is.
+   */
+  readonly stale: boolean;
+}
+
+const checkBackupHealth = (config: Config, nowMs: number): DoctorBackupHealth => {
+  const dir = path.resolve(config.BANANASAURS_BACKUP_DIR);
+
+  let dirExists = false;
+  let dirWritable = false;
+  try {
+    fs.accessSync(dir, fs.constants.F_OK);
+    dirExists = true;
+    fs.accessSync(dir, fs.constants.W_OK);
+    dirWritable = true;
+  } catch {
+    // Left at whichever of the two checks above actually succeeded.
+  }
+
+  const backups = dirExists ? listBackups(dir) : [];
+  const newest = backups.at(-1);
+  const newestAgeMs = newest === undefined ? undefined : nowMs - newest.createdAt.getTime();
+  const staleThresholdMs = config.BANANASAURS_BACKUP_INTERVAL_MIN * 60_000 * 2;
+
+  return {
+    dirExists,
+    dirWritable,
+    backupCount: backups.length,
+    newestAgeMs,
+    stale: newestAgeMs !== undefined && newestAgeMs > staleThresholdMs,
+  };
+};
+
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
   readonly ok: boolean;
@@ -90,9 +143,14 @@ export interface DoctorReport {
     readonly sessionEstablished: boolean;
   };
   readonly guilds: readonly DoctorGuild[];
+  readonly backup: DoctorBackupHealth;
 }
 
-export function buildDoctorReport(client: Client, config: Config): DoctorReport {
+export function buildDoctorReport(
+  client: Client,
+  config: Config,
+  nowMs: number = Date.now(),
+): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
 
@@ -107,19 +165,28 @@ export function buildDoctorReport(client: Client, config: Config): DoctorReport 
     inspectGuild(client.guilds.cache.get(guildId), guildId),
   );
 
+  const backup = checkBackupHealth(config, nowMs);
+  // A missing directory is not yet a finding — the timer creates it on the
+  // daemon's first backup, so a never-started instance legitimately has none.
+  // Existing-but-unwritable and stale are both signs something that used to
+  // work has stopped.
+  const backupOk = !(backup.dirExists && !backup.dirWritable) && !backup.stale;
+
   const ok =
     missing.length === 0 &&
     privileged.every((p) => p.requested) &&
     sessionEstablished &&
     guilds.every(
       (g) => g.present && g.missingPermissions.length === 0 && g.forbiddenPermissions.length === 0,
-    );
+    ) &&
+    backupOk;
 
   return {
     ok,
     partials: { configured, missing },
     intents: { privileged, sessionEstablished },
     guilds,
+    backup,
   };
 }
 
@@ -217,6 +284,22 @@ export function formatDoctorReport(report: DoctorReport): string {
         `    extra permissions beyond the Release 1 set: ${guild.extraPermissions.join(', ')}`,
       );
     }
+  }
+
+  lines.push('');
+  const b = report.backup;
+  if (!b.dirExists) {
+    lines.push('  backups: none yet (the timer creates the directory on the first run)');
+  } else if (!b.dirWritable) {
+    lines.push('  BACKUP DIRECTORY NOT WRITABLE — the backup timer cannot write there');
+  } else if (b.backupCount === 0) {
+    lines.push('  backups: directory exists but is empty — none taken yet');
+  } else {
+    const age = b.newestAgeMs === undefined ? '?' : humaniseDuration(b.newestAgeMs);
+    lines.push(
+      `  backups: ${String(b.backupCount)}, newest ${age} old` +
+        (b.stale ? '  STALE — the backup timer appears to have stopped' : ''),
+    );
   }
 
   return lines.join('\n');

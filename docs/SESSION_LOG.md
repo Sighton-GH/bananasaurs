@@ -2309,3 +2309,53 @@ mutation and not a flaw in the test harness.
 
 1630 tests green (from 1621 — 9 new in `scripts/restore.test.mjs`); typecheck
 and lint exit 0.
+
+---
+
+## WP6 / slice 16e — doctor's backup-health section — 2026-08-30
+
+WP6's stated gate in `docs/20` is "`doctor` covering every startup
+precondition," and the one precondition genuinely missing was "is the backup
+timer actually still running" — everything else `doctor` already asserts
+(intents, partials, permissions, guild presence).
+
+**Filesystem-only, deliberately, matching `doctor`'s existing "does not open
+the database" property.** `checkBackupHealth` reads `BANANASAURS_BACKUP_DIR`
+with `fs.accessSync` and `listBackups` — no SQLite handle — so this does not
+reintroduce the thing slice 6d's `doctor` comment already explains is
+load-bearing: it can run safely against a live daemon's files, the same
+reason the Discord-side half never opens the database either.
+
+**A missing directory is not a finding; an unwritable one is.** The timer
+creates the directory on the daemon's own first backup (slice 16a), so a
+never-started instance legitimately has none — reporting that as a failure
+would make `doctor` cry wolf on every fresh install before first boot.
+Existing-but-unwritable is different: something is actively stopping every
+future backup from landing, which is exactly the kind of silent failure
+`doctor` exists to surface.
+
+**Staleness is the other half of "silent."** The newest backup older than
+twice the configured interval means the timer that should be producing one has
+gone quiet — a backup directory that used to fill and stopped, as opposed to
+one that never started. Both `ok:false` conditions plug into the existing
+conjunction rather than a parallel check nobody reads.
+
+**One gap the mutation check found that the hand-written tests had not.**
+Reading `backups.at(0)` (oldest) instead of `backups.at(-1)` (newest) survived
+every test unchanged, because every existing fixture seeded exactly one
+backup — oldest and newest were the same file. A new test seeding two backups
+an hour apart and asserting the reported age matches the *recent* one closed
+it; confirmed to fail against the mutation before being trusted.
+
+**Broke, to check the tests, continuing from 266.** 266. Dropped the
+`!backup.stale` term from `ok` → 2 failed, including the printed-report test
+expecting `PROBLEMS FOUND`. 267. Dropped the writable term from `ok` → the
+unwritable-directory test failed. 268. Widened the staleness multiplier from
+`2` to `3` → 2 failed, the exactly-at-threshold test now passing for the wrong
+reason revealed by the *other* failing test. 269. Swapped `.at(-1)` for
+`.at(0)` → survived until the new two-backup test was added, then failed
+cleanly (`expected 3900000 to be 300000`). All four restored by file copy from
+a verified baseline.
+
+1638 tests green (from 1630 — 8 new in `doctor.test.ts`); typecheck and lint
+exit 0.

@@ -300,7 +300,7 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // throws on a role delivered without a `permissions` field. A diagnostic
     // that can take down the socket handler is worse than no diagnostic.
     try {
-      const report = buildDoctorReport(deps.client, deps.config);
+      const report = buildDoctorReport(deps.client, deps.config, deps.now());
       return {
         ok: report.ok,
         text: formatDoctorReport(report),
