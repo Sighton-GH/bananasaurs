@@ -12,6 +12,7 @@ import {
 import { createDiscordClient } from '@bananasaurs/discord';
 import { createDiscordRestPort } from '@bananasaurs/discord/rest';
 import { DatabaseLockedError, openDatabase, type OpenedDatabase } from '@bananasaurs/storage';
+import { bindOpsSocket, SocketInUseError, type OpsSocketServer } from './ops/socket.js';
 import { createDaemon } from './runtime/daemon.js';
 import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
 
@@ -86,6 +87,22 @@ function openOrFail(config: Config, log: Logger): OpenedDatabase {
 }
 
 /**
+ * Binds the admin socket, or refuses to start.
+ *
+ * `SocketInUseError` is `EXIT_UNAVAILABLE` rather than `EXIT_CONFIG`, matching
+ * `DatabaseLockedError`: another instance holding the resource is something an
+ * operator has to look at, not a typo systemd should stop restarting into.
+ */
+async function bindSocketOrFail(config: Config, log: Logger): Promise<OpsSocketServer> {
+  try {
+    return await bindOpsSocket({ socketPath: config.BANANASAURS_SOCKET_PATH, logger: log });
+  } catch (err) {
+    if (err instanceof SocketInUseError) fail(err.message, EXIT_UNAVAILABLE);
+    throw err;
+  }
+}
+
+/**
  * `doctor` as a mode: connect, report, exit.
  *
  * `docs/21` exercise 1 step 3 says "Run `doctor`", and the operator CLI that
@@ -142,6 +159,14 @@ async function main(): Promise<void> {
 
   if (process.argv.includes('--doctor')) await runDoctor(config, log);
 
+  // **Before the database, deliberately.** `docs/19` amendment 1 specifies the
+  // single-writer guard as "socket bind plus an O_EXCL PID lockfile", in that
+  // order: the bind is what refuses a second daemon on this socket path, and it
+  // has to happen before this process opens the database it would be a second
+  // writer to. The handler is attached further down, once there is a daemon to
+  // handle anything — a request arriving in that window is refused, not queued.
+  const opsSocket = await bindSocketOrFail(config, log);
+
   const opened = openOrFail(config, log);
 
   // A thunk because `client.user` does not exist until READY, and the port is
@@ -179,6 +204,9 @@ async function main(): Promise<void> {
     try {
       // Order matters: stop taking new events, let the ones in flight finish,
       // then close the database. Closing first would fail them mid-write.
+      // The operator socket goes first of all, so a `bananasaurs` invocation
+      // during shutdown is refused at connect rather than half-served.
+      await opsSocket.close();
       await client.destroy();
       await daemon.stop();
     } finally {
@@ -190,6 +218,8 @@ async function main(): Promise<void> {
   for (const signal of ['SIGINT', 'SIGTERM'] as const) {
     process.on(signal, () => void shutdown(signal));
   }
+
+  opsSocket.serve((raw) => daemon.ops.dispatch(raw));
 
   daemon.start();
 

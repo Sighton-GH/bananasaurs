@@ -138,3 +138,41 @@ export const resetBreaker = (scope: GuildScope, now: number): void =>
       .where(scope.only(guilds))
       .run();
   });
+
+/**
+ * The three tunable per-guild limits (`docs/18` layers 3 and 5).
+ *
+ * A patch rather than three setters: `bananasaurs config set` writes one key at
+ * a time, but the caller that widens a rate cap and a reconcile budget together
+ * during an incident should do it in one transaction, not two.
+ *
+ * An empty patch writes nothing — **including `updated_at`**. That is the whole
+ * of the guard's job, and worth stating because the obvious reason is wrong: it
+ * is not that drizzle raises on an update with no columns, since `updatedAt` is
+ * always in the `set` and the statement is never empty. It is that
+ * `guilds.updated_at` is evidence about when the guild's configuration last
+ * changed, and a call that changed nothing must not claim it did.
+ *
+ * The `guilds_positive_limits` CHECK is left to reject a zero, so a caller that
+ * skipped validation still cannot install a rate cap that silently stops every
+ * role change.
+ */
+export interface LimitsPatch {
+  roleRatePerMin?: number | undefined;
+  reconcileBudget?: number | undefined;
+  breakerThreshold?: number | undefined;
+}
+
+export const setLimits = (scope: GuildScope, patch: LimitsPatch, now: number): void =>
+  write(scope, ({ db }) => {
+    const set: Record<string, number> = {};
+    if (patch.roleRatePerMin !== undefined) set['roleRatePerMin'] = patch.roleRatePerMin;
+    if (patch.reconcileBudget !== undefined) set['reconcileBudget'] = patch.reconcileBudget;
+    if (patch.breakerThreshold !== undefined) set['breakerThreshold'] = patch.breakerThreshold;
+    if (Object.keys(set).length === 0) return;
+
+    db.update(guilds)
+      .set({ ...set, updatedAt: now })
+      .where(scope.only(guilds))
+      .run();
+  });

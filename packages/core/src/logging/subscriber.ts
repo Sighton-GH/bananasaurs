@@ -63,6 +63,23 @@ const ROUTE_KIND = {
 } as const;
 
 /**
+ * Every value `log_routes.event_kind` may usefully hold.
+ *
+ * Derived from `ROUTE_KIND` rather than written out a second time, plus
+ * `message_delete`, which is routed here but handled by a delayed job rather
+ * than by the switch below (ADR 0019 fact 3).
+ *
+ * Exported for `bananasaurs log routing set`, which validates against it. A
+ * route on an event kind nothing emits is the exact failure WP4's report §5
+ * named: the command succeeds, the listing looks configured, and nothing is
+ * ever logged — an inert module and a working one look identical.
+ */
+export const LOG_EVENT_KINDS: readonly string[] = [
+  ...Object.values(ROUTE_KIND),
+  'message_delete',
+].sort();
+
+/**
  * `roleUpdate` carries no pipeline-level fingerprint (`fingerprint.ts` leaves
  * it undeduplicated on purpose — it is "level-triggered" for any future
  * consumer that wants recomputation semantics). This module is not that

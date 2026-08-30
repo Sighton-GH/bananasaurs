@@ -1,4 +1,4 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { auditEvents, logExcludedChannels, logRoutes, messageDeleteRuns } from '../schema.js';
@@ -6,10 +6,11 @@ import { auditEvents, logExcludedChannels, logRoutes, messageDeleteRuns } from '
 /**
  * Where a logged event kind goes, and which source channels never log.
  *
- * Read-only: nothing in Release 1 configures either table except the
- * operator CLI (`docs/19` slice 13, WP5), which does not exist yet. Tests
- * seed rows by inserting into the schema tables directly, the way
- * `write.test.ts` and `columns.test.ts` already do for tables with no writer.
+ * WP4 shipped this read-only, with the note that nothing in Release 1
+ * configured either table except a future operator CLI. That CLI is WP5
+ * slice 13, and `log routing list` (13c) and `log routing set` (13d) are its
+ * commands — so the listing reads below join the lookup reads above, and the
+ * writers arrive with them.
  */
 
 export interface LogRoute {
@@ -53,6 +54,41 @@ export const listEnabledLogChannels = (scope: GuildScope): string[] =>
       .all();
     return rows.map((r) => r.channelId);
   });
+
+/**
+ * Every configured route, for `bananasaurs log routing list`.
+ *
+ * Ordered by event kind so two runs of the command are comparable — a listing
+ * whose order depends on insertion is one an operator cannot diff.
+ */
+export const listRoutes = (scope: GuildScope): LogRoute[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(logRoutes)
+      .where(scope.only(logRoutes))
+      .orderBy(asc(logRoutes.eventKind))
+      .all()
+      .map((row) => ({
+        guildId: row.guildId,
+        eventKind: row.eventKind,
+        channelId: row.channelId,
+        includeContent: row.includeContent === 1,
+        enabled: row.enabled === 1,
+      })),
+  );
+
+/** Every excluded source channel, for `bananasaurs log routing list`. */
+export const listExcludedChannels = (scope: GuildScope): string[] =>
+  read(scope, (db) =>
+    db
+      .select({ channelId: logExcludedChannels.channelId })
+      .from(logExcludedChannels)
+      .where(scope.only(logExcludedChannels))
+      .orderBy(asc(logExcludedChannels.channelId))
+      .all()
+      .map((r) => r.channelId),
+  );
 
 /** True when this source channel must never be logged from, whatever the routes say. */
 export const isChannelExcluded = (scope: GuildScope, channelId: string): boolean =>
@@ -151,4 +187,98 @@ export const findMessageDeleteAttribution = (
       .get();
     if (!row) return undefined;
     return { actorId: row.actorId ?? undefined, inferred: row.inferred === 1 };
+  });
+
+// --- writers (WP5 slice 13d) -------------------------------------------------
+
+export interface SetRouteInput {
+  eventKind: string;
+  channelId: string;
+  /**
+   * Whether the rendered log line may quote the message.
+   *
+   * A per-route decision rather than a global one: an operator can log that a
+   * message was deleted in #general without reproducing its text, which is the
+   * distinction ADR 0023 draws between recording an event and republishing
+   * content.
+   */
+  includeContent: boolean;
+}
+
+/**
+ * Points an event kind at a channel, creating the route or re-pointing it.
+ *
+ * Upsert rather than insert-or-fail. The primary key is `(guild_id,
+ * event_kind)`, so "route member joins to #logs" is a statement about one row
+ * whatever its history — and an operator re-running the command after a dropped
+ * SSH connection must not get a constraint error for saying the same thing
+ * twice (`CLAUDE.md` rule 6, applied to configuration rather than to effects).
+ *
+ * It also re-enables: `log routing off` disables rather than deletes, so that
+ * turning logging back on does not require remembering the channel id, and
+ * `set` is what turns it back on.
+ */
+export const setRoute = (scope: GuildScope, input: SetRouteInput): void =>
+  write(scope, ({ db }) => {
+    db.insert(logRoutes)
+      .values({
+        guildId: scope.guildId,
+        eventKind: input.eventKind,
+        channelId: input.channelId,
+        includeContent: input.includeContent ? 1 : 0,
+        enabled: 1,
+      })
+      .onConflictDoUpdate({
+        target: [logRoutes.guildId, logRoutes.eventKind],
+        set: {
+          channelId: input.channelId,
+          includeContent: input.includeContent ? 1 : 0,
+          enabled: 1,
+        },
+      })
+      .run();
+  });
+
+/**
+ * Turns a route on or off, keeping the channel.
+ *
+ * Returns whether a route existed to change. False is not a failure — it is the
+ * difference between "logging stopped" and "you named an event kind that was
+ * never routed", and an operator told the first when the second is true will
+ * believe they have stopped logging something that is still being logged.
+ */
+export const setRouteEnabled = (scope: GuildScope, eventKind: string, enabled: boolean): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(logRoutes)
+      .set({ enabled: enabled ? 1 : 0 })
+      .where(scope.only(logRoutes, eq(logRoutes.eventKind, eventKind)))
+      .run();
+    return result.changes > 0;
+  });
+
+/**
+ * Marks a source channel as never logged from. Returns whether it was new.
+ *
+ * `onConflictDoNothing` rather than a pre-read: the unique constraint is the
+ * check, and a read-then-insert would be two statements where one will do.
+ */
+export const excludeChannel = (scope: GuildScope, channelId: string): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .insert(logExcludedChannels)
+      .values({ guildId: scope.guildId, channelId })
+      .onConflictDoNothing()
+      .run();
+    return result.changes > 0;
+  });
+
+/** Removes an exclusion. Returns whether there was one. */
+export const unexcludeChannel = (scope: GuildScope, channelId: string): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .delete(logExcludedChannels)
+      .where(scope.only(logExcludedChannels, eq(logExcludedChannels.channelId, channelId)))
+      .run();
+    return result.changes > 0;
   });

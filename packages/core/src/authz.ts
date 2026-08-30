@@ -124,6 +124,33 @@ export interface AuthzStore {
 const SYSTEM_ACTORS: ReadonlySet<ActorType> = new Set<ActorType>(['system', 'doctor']);
 
 /**
+ * Actor types whose **channel** is the authorization (ADR 0024).
+ *
+ * `operator_cli` reaches this process over `/run/bananasaurs/admin.sock`, owned
+ * `bananasaurs:bananasaurs-ops`, mode 0660. Group membership is a filesystem
+ * permission the kernel enforces, and it is the whole access control; the
+ * `unixUserClaimed` the request carries is an assertion (amendment 2), recorded
+ * in the audit trail and consulted for nothing here.
+ *
+ * **Deliberately its own set rather than an entry in `SYSTEM_ACTORS`.** That set
+ * means "authorized by being wired into the daemon, not by a grant someone
+ * could revoke by accident" — a different justification, which happens to reach
+ * the same outcome. Folding the two together would mean the next person to
+ * change either rule silently changes the other.
+ *
+ * Three reasons the alternative — check `capability_grants` like everyone else —
+ * is not available, all recorded in ADR 0024: the table is keyed by a Discord
+ * snowflake and a Unix username is not one; the identity is not verifiable, so
+ * the check would be a control built on an assertion; and a fresh install has
+ * zero grant rows, so a CLI gated on a grant could never issue the first grant.
+ *
+ * `dashboard` is **not** here and must not be added. ADR 0012 makes a dashboard
+ * account's capability an explicit owner-issued grant, and that is the decision
+ * keeping the club's other Discord administrators out of the control plane.
+ */
+const CHANNEL_AUTHORIZED_ACTORS: ReadonlySet<ActorType> = new Set<ActorType>(['operator_cli']);
+
+/**
  * The principals an actor presents: itself, plus every role it holds.
  *
  * `isSnowflakeId` is a type predicate rather than a shape check followed by a
@@ -167,6 +194,14 @@ export function authorize<C extends Capability>(
   if (SYSTEM_ACTORS.has(actor.type)) {
     // Authorized by being wired in, not by a grant. Still gets a witness so the
     // executor's signature is uniform and the audit row records who acted.
+    return { ok: true, value: { [witness]: capability, guildId, actor } };
+  }
+
+  if (CHANNEL_AUTHORIZED_ACTORS.has(actor.type)) {
+    // Authorized by the socket's group permissions (ADR 0024). The witness
+    // carries the actor unchanged, so the claimed Unix user reaches the audit
+    // row — and `applyRoleEffect`'s runtime re-verification lands back here and
+    // reaches the same conclusion, rather than being a special case it skips.
     return { ok: true, value: { [witness]: capability, guildId, actor } };
   }
 

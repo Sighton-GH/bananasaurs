@@ -14,15 +14,24 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=bananasaurs
-Group=bananasaurs
+# The *ops* group, not the service group. RuntimeDirectory and every file the
+# process creates take the primary group, so this is what makes the admin
+# socket `bananasaurs:bananasaurs-ops` as docs/17 §2.1 specifies. With
+# `Group=bananasaurs` the socket is 0660 root-of-the-wrong-group and nobody in
+# bananasaurs-ops can reach the CLI — the failure docs/19 §10 warns is easy to
+# get wrong and hard to diagnose. The daemon chmods the socket to 0660 itself
+# and logs its actual uid/gid/mode at startup, so a mismatch is visible in the
+# journal rather than silent.
+Group=bananasaurs-ops
 WorkingDirectory=/opt/bananasaurs
 
 # Root-owned, 0640, group bananasaurs. Never in the repository (ADR 0008).
 EnvironmentFile=/etc/bananasaurs/env
 
-# Creates /run/bananasaurs owned by the service user. UMask 0007 gives the
-# admin socket group read/write, which is what puts bananasaurs-ops members
-# in reach of the operator CLI without sudo (ADR 0013).
+# Creates /run/bananasaurs owned by bananasaurs:bananasaurs-ops. UMask 0007
+# gives the admin socket group read/write, which is what puts bananasaurs-ops
+# members in reach of the operator CLI without sudo (ADR 0013). Group
+# membership is the only access control on that socket (ADR 0024).
 RuntimeDirectory=bananasaurs
 RuntimeDirectoryMode=0750
 UMask=0007

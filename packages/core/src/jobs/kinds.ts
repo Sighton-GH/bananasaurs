@@ -19,6 +19,8 @@ export const JOB_KINDS = {
   adoptPanel: 'adopt_panel',
   /** Consults the audit log for who deleted a message (ADR 0019, ADR 0023). */
   logMessageDelete: 'log_message_delete',
+  /** Reverses one effect batch, for `bananasaurs undo` (ADR 0026). */
+  undoBatch: 'undo_batch',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -33,6 +35,14 @@ export const reconcileGuildPayload = z.object({
   /** The gap that caused this, when there was one. Absent for the timer pass. */
   gapId: z.number().int().positive().optional(),
   reason: z.enum(['gateway-gap', 'timer', 'operator']),
+  /**
+   * One panel, for `bananasaurs panel sync <id>`. Absent means every panel.
+   *
+   * Without it the command would name one panel and reconcile the whole guild,
+   * which is the kind of quiet over-reach an operator discovers only from the
+   * audit trail afterwards (ADR 0026).
+   */
+  panelId: z.string().min(1).max(64).optional(),
 });
 export type ReconcileGuildPayload = z.infer<typeof reconcileGuildPayload>;
 
@@ -43,8 +53,16 @@ export type ReconcileGuildPayload = z.infer<typeof reconcileGuildPayload>;
  * collapsing, each one queues its own reconciliation and the worker spends the
  * whole outage repeating a pass whose inputs have not changed.
  */
-export const reconcileDedupeKey = (reason: ReconcileGuildPayload['reason']): string =>
-  `${JOB_KINDS.reconcileGuild}:${reason}`;
+export const reconcileDedupeKey = (
+  reason: ReconcileGuildPayload['reason'],
+  panelId?: string,
+): string =>
+  panelId === undefined
+    ? `${JOB_KINDS.reconcileGuild}:${reason}`
+    : // Per panel, so syncing panel A does not collapse into a pending sync of
+      // panel B. A guild-wide pass and a panel pass are different work and must
+      // not share a key.
+      `${JOB_KINDS.reconcileGuild}:${reason}:${panelId}`;
 
 /** One sweep pending at a time is enough; the next run picks up what it missed. */
 export const sweepDedupeKey = (): string => JOB_KINDS.sweepEventDedupe;
@@ -84,3 +102,21 @@ export type LogMessageDeletePayload = z.infer<typeof logMessageDeletePayload>;
 /** One job per deletion — a message is deleted at most once. */
 export const logMessageDeleteDedupeKey = (channelId: string, messageId: string): string =>
   `${JOB_KINDS.logMessageDelete}:${channelId}:${messageId}`;
+
+export const undoBatchPayload = z.object({
+  batchId: z.string().min(1).max(64),
+  /** Recorded on every reversing effect, so the trail says why it happened. */
+  reason: z.string().min(1).max(200),
+});
+export type UndoBatchPayload = z.infer<typeof undoBatchPayload>;
+
+/**
+ * One pending undo per batch.
+ *
+ * Per batch rather than global: undoing two batches are independent pieces of
+ * work and neither should wait for the other. Collapsing a repeat is the
+ * point — an operator who runs `undo` twice on a batch still in the queue must
+ * not queue the reversal twice, and the partial unique index over `queued` and
+ * `running` (ADR 0016) is what enforces it.
+ */
+export const undoDedupeKey = (batchId: string): string => `${JOB_KINDS.undoBatch}:${batchId}`;

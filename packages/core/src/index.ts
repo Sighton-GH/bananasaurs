@@ -82,11 +82,14 @@ export {
   reconcileGuildPayload,
   sweepDedupeKey,
   sweepEventDedupePayload,
+  undoBatchPayload,
+  undoDedupeKey,
   type AdoptPanelPayload,
   type JobKind,
   type LogMessageDeletePayload,
   type ReconcileGuildPayload,
   type SweepEventDedupePayload,
+  type UndoBatchPayload,
 } from './jobs/kinds.js';
 export {
   createConnectionSubscriber,
@@ -101,7 +104,12 @@ export {
   formatRoleDelete,
   formatRoleUpdate,
 } from './logging/format.js';
-export { createLoggingSubscriber, type LoggingPorts, type LogRoute } from './logging/subscriber.js';
+export {
+  createLoggingSubscriber,
+  LOG_EVENT_KINDS,
+  type LoggingPorts,
+  type LogRoute,
+} from './logging/subscriber.js';
 export {
   correlateDeletion,
   MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
@@ -243,3 +251,83 @@ export {
   type ReconcilePorts,
   type ReconcileStatus,
 } from './panels/reconcile.js';
+
+// --- the operator surface (ADR 0013, ADR 0024) -------------------------------
+export {
+  exitCodeFor,
+  jsonValueSchema,
+  opsRequestSchema,
+  opsResponseSchema,
+  OPS_ERROR_CODES,
+  OPS_MAX_LINE_BYTES,
+  OPS_PROTOCOL_VERSION,
+  EXIT_FAILED,
+  EXIT_OK,
+  EXIT_REFUSED,
+  EXIT_UNAVAILABLE,
+  EXIT_USAGE,
+  type JsonValue,
+  type OpsError,
+  type OpsErrorCode,
+  type OpsOk,
+  type OpsRequest,
+  type OpsResponse,
+} from './ops/protocol.js';
+export {
+  createDispatcher,
+  defineCommand,
+  type Dispatcher,
+  type DispatcherDeps,
+  type OpsAnyResult,
+  type OpsAuditRecord,
+  type OpsCommand,
+  type OpsCommandResult,
+  type OpsContext,
+  type OpsFlag,
+  type OpsGuildContext,
+  type OpsParam,
+  type OpsReadCommand,
+  type OpsWriteCommand,
+  type OpsWriteResult,
+  type RegisteredCommand,
+} from './ops/dispatch.js';
+export { OPERATOR_COMMANDS } from './ops/registry.js';
+export type {
+  OpsBatchRow,
+  OpsEnqueued,
+  OpsGatewayState,
+  OpsInstance,
+  OpsPorts,
+  OpsPublishResult,
+  OpsRetryOutcome,
+  OpsSafetyState,
+  OpsUndoableCount,
+} from './ops/ports.js';
+export {
+  findSetting,
+  OPS_SETTINGS,
+  parseSettingValue,
+  type OpsSettingChange,
+  type OpsSettingSpec,
+} from './ops/settings.js';
+export { statusCommand, humaniseDuration } from './ops/commands/status.js';
+export { killswitchCommand } from './ops/commands/killswitch.js';
+export { adoptionAllowCommand, panelSyncCommand, undoCommand } from './ops/commands/effects.js';
+export {
+  configSetCommand,
+  jobsRetryCommand,
+  logRoutingExcludeCommand,
+  logRoutingOffCommand,
+  logRoutingSetCommand,
+  logRoutingUnexcludeCommand,
+} from './ops/commands/writes.js';
+export {
+  auditTailCommand,
+  configGetCommand,
+  doctorCommand,
+  jobsListCommand,
+  logRoutingListCommand,
+  panelListCommand,
+  panelShowCommand,
+  parseDuration,
+} from './ops/commands/reads.js';

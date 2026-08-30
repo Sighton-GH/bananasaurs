@@ -14,6 +14,7 @@
     "discord.js": "^14.27.0"
   },
   "devDependencies": {
+    "@bananasaurs/cli": "*",
     "@bananasaurs/testkit": "*"
   }
 }

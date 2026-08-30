@@ -1,0 +1,21 @@
+{
+  "name": "@bananasaurs/cli",
+  "version": "0.0.0",
+  "private": true,
+  "license": "Apache-2.0",
+  "type": "module",
+  "bin": {
+    "bananasaurs": "./dist/bin.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "build": "tsc --build"
+  },
+  "dependencies": {
+    "@bananasaurs/core": "*",
+    "zod": "^3.24.1"
+  }
+}

@@ -1181,3 +1181,461 @@ file copy.
 
 954 tests green; typecheck and lint exit 0. WP4's feature work is complete;
 `docs/20`'s seven-part report is next, then the package boundary.
+
+---
+
+## WP5 / slice 13a — the operator socket, the protocol, and `status` — 2026-08-29
+
+**Changed.** The transport and command machinery for the operator CLI, plus one
+command to prove the chain end to end.
+
+`packages/core/src/ops/` — `protocol.ts` (newline-delimited JSON envelope, Zod
+on both directions, the error-code → exit-code table), `dispatch.ts` (a **pure**
+dispatcher: parsed request + registry → response, no `net` and no database),
+`ports.ts` (`OpsPorts` guild-scoped, `OpsInstance` process-level — split so
+"does every query take a guild id" is answered by *which interface it is on*),
+`registry.ts`, `commands/status.ts`.
+
+`apps/daemon/src/ops/socket.ts` — the `net.Server`. `apps/daemon/src/ops/
+wiring.ts` — the ports, as closures over one `GuildScope`, matching WP4's
+`LoggingPorts` shape exactly. `packages/cli/` — the `bananasaurs` binary:
+`args.ts` (pure), `client.ts`, `run.ts` (pure given its deps), `bin.ts` (four
+lines of substance).
+
+**ADR 0024, written before any of it.** Where does the CLI's capability come
+from? Not from `capability_grants`: that table is keyed by a Discord snowflake
+and a Unix username is not one, the claimed username is not kernel-verified
+(amendment 2), and a fresh install has zero grant rows — so a CLI gated on
+holding a grant could never issue the first one. Reaching the socket *is* the
+authorization; the claimed identity is audit metadata and is consulted for
+nothing. Stated plainly in the ADR: the CLI is a root-equivalent surface behind
+a `0660 bananasaurs:bananasaurs-ops` socket, and what remains is friction and
+forensics (`--confirm`, readonly, redaction, an audit row), not authorization.
+
+**The scope question WP4's report asked me to answer first.** `docs/reports/
+WP4.md` §5 says slice 13 has no command for `log_routes`/`log_excluded_channels`
+and that WP4 is inert without one. It is already in scope and the report looked
+at the wrong list: `docs/19` §6.9 ends "Release 1 surface is exactly the list in
+`docs/17`", and `docs/17_OPERATOR_ACCESS.md:33-34` contains `log routing list`
+and `log routing set`. `docs/19` §7's four-command demonstrable is a sample, not
+the surface. Sized into 13d; no scope change needed.
+
+**`docs/19` amendment 1's single-writer guard is now actually two guards.** The
+amendment specifies "socket bind **plus** an `O_EXCL` PID lockfile", and
+`packages/storage/src/lock.ts:10` has documented the bind since slice 2a as if
+it existed — nothing in the tree called `net.createServer` until this slice.
+`index.ts` now binds **before** `openOrFail`, so the comment is true. Two
+details that only appear once you write it: a Unix `listen()` fails
+`EADDRINUSE` on a *stale file* as well as a live listener, so the bind probes
+with a connect first (`ECONNREFUSED` → stale, unlink and retry; anything else,
+including a permission error, fails safe as live); and `serve()` is separate
+from binding because the handler needs a dispatcher which needs the database
+which is the thing the bind is guarding — a request landing in that window is
+refused, not queued.
+
+**Two design choices worth naming.** The command registry holds
+`RegisteredCommand`, produced by `defineCommand<A>` — which erases the argument
+type at the point `safeParse` produces it, so there is **no cast anywhere**; an
+array of `OpsCommand<never>` or `OpsCommand<any>` would have needed one, in the
+function whose whole job is validating untrusted input. And the CLI reads its
+command catalogue, positional parameters and flags from `OPERATOR_COMMANDS` in
+`core` rather than a table of its own, so it cannot drift into parsing a
+command the daemon does not have.
+
+**Broke, to check the tests, continuing from 107.** 108. Removed the allowlist
+check in `resolveGuild` → the cross-guild refusal failed. 109. Defaulted to the
+first guild instead of refusing when several are allowlisted → failed. 110.
+Disabled the `--confirm` gate → two failed. 111. Read `actorType` from the
+request instead of fixing it to `operator_cli` → failed. 112. Let a throwing
+command escape instead of becoming a `failed` response → two failed. 113.
+Removed the live-socket refusal → the single-writer test failed. 114. Removed
+the request size cap → failed. 115. Dropped the socket's `chmod 0660` → failed.
+116. Removed the serialisation chain → 13 failed. 117. Dropped `run_after <=
+now` from `oldestDueAt`, making a future-scheduled job read as lag → failed.
+118. Dropped the `state = 'queued'` filter → failed. 119. Registered no
+commands in the composition root → 5 integration tests failed. 120. Made the
+CLI prefer the **shortest** matching command name → **survived**, see below.
+121. Collapsed every daemon refusal to exit 0 → 4 failed. 122. Reported the
+gateway as always connected → 2 failed. 123. Defaulted a missing `guilds` row
+to a healthy safety state → failed. Every one restored by file copy.
+
+**Mutation 120 surviving is the useful row, for the third package running.**
+"Longest command name wins" was untestable against the fixture catalogue,
+because `log routing set` was the only command matching that prefix — shortest
+and longest were the same match, so the rule could not be distinguished from
+"any match wins". The catalogue now contains `log` *and* `log routing set`, with
+a test for each direction; 120 then failed three tests. This is the same shape
+as WP4's mutation 98 and WP5-slice-6's mutation 50: the fixture was too simple
+to exercise the rule, not the rule too simple to matter.
+
+**Also fixed:** `deploy/bananasaurs.service` said `Group=bananasaurs`, which
+would have created the admin socket in the wrong group and left `bananasaurs-ops`
+members unable to reach the CLI at all — `docs/17` §2.1 specifies
+`bananasaurs:bananasaurs-ops`. Now `Group=bananasaurs-ops`, and the daemon
+chmods the socket itself and logs its actual uid/gid/mode at startup so a
+mismatch is visible in the journal rather than silent.
+
+**Deferred.** 13b (the audit spine and `killswitch`), 13c (read commands), 13d
+(write commands, including the `log routing` pair). `index.ts`'s bind-before-open
+*ordering* is not covered by a test — every piece either side of it is, but
+`index.ts` has no harness and a source-order assertion would be decoration.
+
+1052 tests green (from 954); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13b — the authorization surface, the audit spine, and `killswitch` — 2026-08-29
+
+**Changed.** The two things that make a write command a write command, and the
+first one to use them.
+
+*Authorization.* `packages/core/src/authz.ts` gains
+`CHANNEL_AUTHORIZED_ACTORS`, holding `operator_cli` alone. An actor arriving
+over the admin socket receives a witness without `capability_grants` being
+consulted — ADR 0024, written in 13a. Deliberately its own set rather than an
+entry in `SYSTEM_ACTORS`: that set means "authorized by being wired into the
+daemon", a different justification that happens to reach the same outcome, and
+folding them together would mean the next person to change either rule silently
+changes the other. This is what lets `undo` and `panel sync` (13d) produce the
+`Authorized<'roles.mutate'>` witness `applyRoleEffect` re-verifies at runtime —
+the re-verification lands back in `authorize()` and reaches the same conclusion,
+rather than being a special case it skips.
+
+`dashboard` is **not** in that set, and a test says so in as many words. ADR
+0012 — a dashboard account's capability is an explicit owner-issued grant — is
+the decision keeping the club's other Discord administrators out of the control
+plane, and widening the socket's exemption by one entry would quietly undo it.
+
+*The audit spine.* `OpsCommand<A>` is now a union: `OpsReadCommand` returns
+`OpsCommandResult`, `OpsWriteCommand` returns `OpsWriteResult`, which has a
+required `audit` field. **A write command that reports no audit record does not
+compile** — the same shape as the `Authorized` witness, where the check produces
+a value the machinery requires, so forgetting is not something you can do by
+omission. Adding the type immediately broke four existing test fixtures, which
+is the enforcement demonstrating itself. The dispatcher fills in the actor,
+channel and timestamp; the command does not get to choose how it is attributed.
+
+Two details worth naming. `actorId` is fixed `undefined` rather than filled from
+the claimed Unix name: every other actor type puts a *verified* identity in that
+column, and laundering an assertion into it would make the trail read as
+stronger evidence than it is (amendment 2). And a failed audit write **fails the
+command** rather than being logged and swallowed — a write that happened and was
+not recorded must not report success, because the operator can always check the
+state but cannot recover a row that was never written.
+
+*`killswitch on|off --confirm`.* ADR 0013 §4: "Being able to stop the bot from a
+phone over SSH is a feature." Until now `docs/21` told the operator that Ctrl-C
+on the process was the emergency brake, because `guilds.killswitch` was checked
+as layer 2 of the effect gateway and nothing exposed it. The command flips one
+column; everything that makes it a *control* already existed.
+
+**Decisions inside the slice.** The kill switch records an audit row even when
+the switch was already in the requested state — an operator reaching for it at
+03:00 is worth recording whether or not it moved, and `before` equalling `after`
+says so plainly. It refuses when the guild has no row in `guilds` rather than
+creating one, because that row also holds dry-run, the breaker and the rate
+limits, and conjuring it would be choosing a guild's safety defaults as a side
+effect of an unrelated action.
+
+**Known, and recorded rather than hidden:** the audit row is written in a second
+transaction, immediately after the command's own. A crash in that window leaves
+a state change with no trail. The alternative — each command writing its own row
+inside its own `write()` — is atomic but makes "did you remember to audit" a
+per-command discipline. Structural completeness won: a missing row for an action
+that did happen is discoverable by comparing state against the trail, whereas a
+write command nobody remembered to audit is invisible forever. There is no
+`await` between the two, so the window is one synchronous statement wide.
+
+**Broke, to check the tests, continuing from 123.** 124. Added `dashboard` to
+`CHANNEL_AUTHORIZED_ACTORS` → the ADR 0012 test failed. 125. Removed the socket
+exemption → 3 failed. 126. Extended it to every actor type → 7 failed. 127.
+Stopped auditing writes entirely → 8 failed across unit and end-to-end. 128.
+Laundered the claimed Unix name into `actor_id` → 2 failed, including the real
+database one. 129. Removed the tripwire behind the write/audit type → failed.
+130. Swallowed a failed audit write instead of failing the command → failed.
+131. Recorded `via: 'http'` (the dashboard's channel) → 2 failed. 132. Removed
+`killswitch`'s no-guild-row refusal → **survived**, see below. 133. Inverted the
+state `killswitch` sets → 9 failed. 134. Recorded one action name for both
+directions → 2 failed. 135. Replaced the `on|off` enum with a bare string →
+failed. 136. Wired the composition root's audit port to a no-op → the
+end-to-end audit test failed. 137. Wired `setKillswitch` to nothing → failed.
+All restored by file copy.
+
+**Mutation 132 surviving is the informative one this slice.** Deleting the
+explicit `before === undefined` refusal still *fails* — the next line
+dereferences `before` and throws, the dispatcher catches it, and the response
+code is `failed` either way. So a test asserting only the code passed against
+the broken version. What actually differs is what the operator reads: "guild X
+has no row in `guilds` … the daemon has never started for this guild" versus
+"Cannot read properties of undefined". The test now asserts the message and
+asserts the absence of the word `undefined`; 132 then failed. Third package
+running where the survivor was the useful result.
+
+1081 tests green (from 1052); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13c — the read commands — 2026-08-29
+
+**Changed.** Seven read commands, completing the read half of `docs/17` §1:
+`doctor`, `audit tail`, `jobs list`, `config get`, `panel list`, `panel show`,
+`log routing list`. All in one file (`ops/commands/reads.ts`): after `status`
+and `killswitch` established the shape, these are a port call, a projection and
+a rendering, six more times, and splitting them across six files would put more
+effort into the directory than into the commands. None is a write, so none takes
+`--confirm` and none records an audit row — reading the trail is not an
+auditable event, and recording it would make the trail mostly a record of itself
+being read.
+
+Five new guild-scoped storage reads to serve them: `jobRepo.listJobs`,
+`roleRepo.listUnassignableRoles`, `loggingRepo.listRoutes`,
+`loggingRepo.listExcludedChannels`, and a `since` bound plus the `via` column on
+`effectRepo.tailAudit`.
+
+**`config get` cannot leak a secret, structurally.** The port is
+`instance.redactedConfig()` — `redactConfig(config)`, computed in the
+composition root — so the command never holds a real secret value. ADR 0013 §4
+says "there is no override flag"; here there is no *branch*, either. A test
+tries three plausible reveal arguments and gets `<redacted>` from all of them,
+and an end-to-end test proves it against a daemon whose config really does carry
+a token.
+
+**`audit tail` renders the Unix user as a claim.** `operator_cli (claimed unix
+user bryan)`, never "by bryan" — amendment 2, and the same discipline WP4
+applied to inferred deletion attribution. The `--json` field keeps the caveated
+name `actorUnixUserClaimed` so an agent reading the output cannot mistake it for
+a verified identity either. `dry-run` and `inferred` are labelled for the same
+reason.
+
+**`--since` is parsed in the command, not the repository.** `2h` becomes an
+absolute timestamp against the context clock before it reaches storage: a
+repository that took a duration would need a clock, which is the one thing a
+query has no business owning.
+
+**Two decisions worth naming.** `doctor` counts a disabled panel and an
+unassignable role as *problems*, not as footnotes under a green header — both
+make a panel silently do nothing, which is the confusion `doctor` exists to
+prevent. And `log routing list` says outright "No log routes are configured, so
+nothing is being logged to Discord", because WP4's module is complete and inert
+without one, and an empty table looks identical to "working but quiet". That is
+the WP4 report's §5 flag answered in the CLI's own output as well as in 13d's
+`log routing set`.
+
+**Broke, to check the tests, continuing from 137.** 138. Rendered the claimed
+user as `by bryan` → 2 failed. 139/140. Dropped the `inferred` and `dry-run`
+labels → 1 each. 141. Silently ignored an unparseable `--since` → failed. 142.
+Computed the `--since` window forwards → failed. 143. Demoted a stale panel from
+a `doctor` finding to a footnote → 2 failed. 144. Replaced the "nothing is being
+logged" line with a blank → 2 failed. 145. Rendered a disabled route as working
+→ failed. 146. Wired `redactedConfig` to the raw config → the end-to-end
+token-redaction test failed. 147. Dropped the `since` bound in storage → 2
+failed. 148. Lost `audit tail`'s newest-first order → 2 failed. 149. Made
+`--failed` return everything → failed. 150. Hid disabled routes from
+`listRoutes` → 2 failed. 151. Made `listUnassignableRoles` return every managed
+role → **survived**. 152. Made the daemon's audit projection report every row as
+dry-run and inferred → **survived**. 153. Hid `panel show`'s blocked adoption
+backlog (ADR 0021) → failed. All restored by file copy.
+
+**Both survivors were missing tests, not weak ones.** 151 survived because
+`packages/storage/src/repos/` had no `roles.test.ts` at all — the repository
+that decides what `doctor` reports about role assignability was the one with no
+tests, and the end-to-end `doctor` test seeds no managed roles, so both versions
+returned an empty list. Written now, including the case that actually
+distinguishes them: two managed roles, one marked unassignable, expect one row.
+152 survived because no test asserted a *false* `dryRun`/`inferred` on a real
+row — every assertion was about rows that were meant to be flagged. The
+end-to-end `audit tail` test now asserts a real `killswitch` row is labelled
+neither, which is the honesty convention read from the other direction. Both
+mutations then failed.
+
+1161 tests green (from 1081); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13d — the database write commands — 2026-08-29
+
+**Split from the plan's 13d.** The plan sized one slice covering seven write
+commands. Two of them (`panel sync`, `undo`) go through the effect gateway and
+its twelve layers and one (`adoption allow`) reaches the live process's
+in-memory rate limiter; that is a different kind of work from writing a column,
+and together they put the slice well past the ~400 lines `docs/20` calls
+mis-sized. So 13d is the six commands that stay inside the database —
+`config set`, `log routing set|off|exclude|unexclude`, `jobs retry` — and the
+three that reach Discord are 13e.
+
+**ADR 0025, written first.** `docs/17` §1 lists `config get` and `config set`
+as a matched pair. They cannot be one: `config get` reads the environment,
+which nothing running can write and which a daemon that *could* write would be
+escalating from the ops group to root's file. What an operator actually needs
+to change lives on the guild's row. So: one key space to the operator, two
+sources underneath, spelled apart (`BANANASAURS_DRY_RUN` versus `dry_run`),
+every answer labelled with its source, and an environment key refused **by
+name** rather than reported as unknown — "no such key" would be false, and an
+operator told that goes looking for a typo that is not there.
+
+**The interaction the ADR exists to surface.** `applyConfiguredDryRun` writes
+`guilds.dry_run` from the environment at every start, so `config set dry_run
+off` is durable only until the next restart unless the environment agrees. The
+command does not resolve that — the environment is the more explicit statement
+of intent and it is a safety control — it prints the conflict and says which
+one wins.
+
+**`config set breaker closed` gives `resetBreaker` its first caller.** It has
+been in the tree since WP2 with no caller outside `write.test.ts`: layer 5
+could trip and nothing the product shipped could clear it, short of editing the
+database by hand — which is the thing `docs/17` §1 exists to prevent. `open` is
+not an accepted value; two commands that halt effects would mean two states to
+check when it will not act.
+
+**`log routing set` closes the WP4 report's §5 gap.** `log_routes` and
+`log_excluded_channels` have had no writer since WP4 shipped. They have four
+now. The event kind is validated against `LOG_EVENT_KINDS`, exported from the
+subscriber that dispatches on it rather than written out a second time: a route
+on `membre_join` would otherwise succeed, list as configured, and log nothing
+forever, which is the §5 failure reproduced one level up. `off` disables rather
+than deletes, so turning logging back on does not require remembering the
+channel id — and it refuses when there is no route, because an operator who
+mistyped must not be told the logging they asked to stop has stopped.
+
+**`jobs retry` refuses more often than it acts.** Three refusals, each asking
+the operator for something different: a different id, patience, or nothing at
+all. The one worth the code is the dedupe collision — `jobs_dedupe` is unique
+over `queued` and `running` (ADR 0016), so a failed row and a freshly enqueued
+replacement coexist until a retry makes the failed one queued too, at which
+point SQLite raises a constraint error naming an index. True, and useless to
+the person holding the terminal. Detected and reported as what it means: the
+work is already going to run, as job N. `attempts` resets to zero, or the
+retry would spend one claim arriving back at exactly the state it left.
+
+**A read-only daemon could not start.** `docs/17` §1 offers
+`BANANASAURS_READONLY=1` "for ordinary inspection". Before this slice it could
+not be used for that at all: `applyConfiguredDryRun` writes at startup, so an
+observe-only process threw `ReadonlyError` out of `createDaemon` on any
+database whose guild row was missing or whose `dry_run` disagreed with the
+environment — every fresh install. Skipped with a warning now, rather than
+caught: "the process cannot write" is a fact known at that line, and finding it
+out by catching an exception would be finding it out by accident.
+
+**One type widened, for a real reason.** `defineCommand` declared its validator
+as `z.ZodType<A>` — input and output the same type — which quietly banned every
+schema that transforms. A branded snowflake and a coerced job id are both
+transforms, and the input is untrusted JSON off a socket, not `A`. Now
+`z.ZodType<A, z.ZodTypeDef, unknown>`, which is what was always true.
+
+**Broke, to check the tests, continuing from 154.** 154. Reported an
+environment key as unknown → failed. 155. Dropped the environment-overwrite
+warning → failed. 156. Let the breaker be opened by hand → failed. 157.
+Accepted a rate cap of zero → failed. 158/159. Dropped `config get`'s source
+label, then its guild lookup entirely → 1 each. 160. Accepted any event kind →
+failed. 161/162. Dropped the content note, then ignored `--no-content` → 2
+each. 163. Reported `log routing off` as successful with no route → failed.
+164. `setRouteEnabled` ignored its argument → 2 failed. 165. `excludeChannel`
+always claimed the exclusion was new → failed. 166. `unexcludeChannel` lost its
+guild scope → failed. 167. `setRoute` inserted but never re-pointed → 2 failed
+(the first attempt at this one added a no-op key and proved nothing; redone).
+168. `setRoute` stopped re-enabling a disabled route → failed. 169. `retryJob`
+skipped the pending-dedupe check → failed. 170. Preserved the attempt count →
+2 failed. 171. Requeued a job in any state → 2 failed. 172. Lost guild scope on
+the lookup → failed. 173. Surfaced the raw constraint error → failed. 174. See
+below. 175. `setLimits` lost its guild scope → failed. 176. The composition
+root mapped `reconcile_budget` onto the rate cap → failed. 177. Removed the
+read-only start guard → 2 failed. All restored by file copy.
+
+**174 falsified a comment, not just a test.** Removing `setLimits`'s
+empty-patch guard survived, and the reason is that the justification written
+beside it was wrong: drizzle never sees an empty `set`, because `updatedAt` is
+always in it. The guard does do something — it keeps a call that changed
+nothing from claiming `guilds.updated_at` changed — and the test asserted
+`not.toThrow()`, which passes either way. Comment corrected to the true reason,
+test now asserts the timestamp. Mutation then failed.
+
+1236 tests green (from 1161); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13e — the write commands that reach Discord — 2026-08-30
+
+**Closes slice 13.** `panel sync`, `undo`, `adoption allow` — the whole
+Release 1 operator surface in `docs/17` §1 now exists.
+
+**ADR 0026, written first, and the arithmetic that forced it.** The CLI gives
+up after thirty seconds (`client.ts:58`). Role effects go through the per-source
+rate cap sequentially and on purpose. At the default twenty a minute, a
+thirty-effect batch takes ninety seconds and a 250-reactor panel takes twelve
+minutes. And a timed-out request does not stop the daemon — the socket handler
+keeps running after the client hangs up. So a synchronous `undo` would print a
+timeout while continuing to reverse role grants in the background, leaving the
+operator unable to say whether it ran, on the command whose whole purpose is to
+repair state during an incident.
+
+So the unbounded half is a job. Each command does the bounded work
+synchronously — validate, refuse, report the size, post the message — and
+returns a job id with the two commands that show what happened to it.
+
+**What each refusal is protecting.** `undo` refuses a batch already undone,
+because the inverse of the inverse is the original change and a careless repeat
+would silently re-apply what was reversed. It refuses a batch with nothing
+reversible, and says why: we granted a role the member already held, so we
+changed nothing and reversing would strip a role that was never ours.
+`panel sync` refuses a panel `doctor` took out of service rather than putting a
+control back in front of members that something decided should not be there.
+
+**`panel sync` gives `postManagedPanel` its first caller.** Like `resetBreaker`
+in 13d, it has been in the tree since WP3 with no caller outside a unit test: a
+managed panel configured in the database could not reach Discord by any shipped
+path. Sync now posts it if unposted, rewrites it if posted — the drift a
+managed panel actually suffers is an option added in configuration while the
+message members can see still shows the old buttons — re-seeds its reactions,
+and queues a reconciliation for the adopted kind only. A button panel carries
+no reaction state to drift.
+
+**`adoption allow` is deliberately not a job.** It grants against `RateLimiter`,
+which is in-memory and per-process, and only the live daemon can reach it. That
+is the concrete reason ADR 0013 puts the CLI on a socket rather than letting it
+open SQLite — a database-writing CLI could not do this at all. It is also lost
+on restart, and the command says so rather than leaving it to be found.
+
+**Undo runs under `operator_cli`, not `system`.** `panels/wiring.ts` runs panel
+effects as `system` because the authorization for a panel-driven change is the
+panel. Undo is the opposite: a human asked for it by name and the batch must say
+so. Both witnesses are obtained honestly — `undoBatch` demands `undo.execute`
+*and* `roles.mutate`, and modelling it with one and casting to the other is the
+shortcut amendment 3 warns about.
+
+**A real bug, found by a test that could not have passed otherwise.**
+`ops/wiring.ts` used `Date.now()` while the daemon runs on an injected clock.
+For 13d's ports that only affected a timestamp. For an enqueue it does not:
+`run_after` is *compared* against the worker's clock by `claimNext`, so the
+undo job was written dated in the future and never claimed. It presents as a
+row sitting in `jobs list` forever with nothing anywhere saying why. `opsPortsFor`
+now takes `now`, like every other wiring function in the tree.
+
+**The ADR 0014 tripwire fired, and it was right.** The new command file was
+called `commands/discord.ts`, and the per-directory `no-restricted-imports` rule
+banning `*discord*` from `packages/core` refused it. Renamed to
+`commands/effects.ts` rather than excepted — a rule weakened for a filename is a
+rule that will not catch the import it exists for.
+
+**Broke, to check the tests, continuing from 178.** 178. Undid a batch already
+undone → 2 failed. 179. Queued a batch with nothing reversible → 2. 180.
+Reported the total as if all of it were reversible → failed. 181. Ran undo with
+no reason → failed. 182. Published a disabled panel → 2 failed. 183. Queued a
+reconciliation for a managed panel → 2 failed. 184–186. See below. 187. Counted
+every effect as reversible → failed. 188. Read `hadRoleBefore` as always false →
+failed. 189. Never marked the batch undone → 2 failed. 190. Granted zero while
+reporting a grant → failed. 191. Read the allowance from nowhere → failed. 192.
+Stopped recording the posted message id → failed. 193. Never seeded reactions →
+failed. 194. Put the ops ports back on the wall clock → 2 failed. 195. See
+below. All restored by file copy.
+
+**Four survivors, all missing tests.** 184: nothing asserted that a
+panel-scoped pass *visits only that panel* — the end-to-end test checked the
+payload carried the id and never that the pass honoured it. 185 and 186: the
+dedupe keys were tested for collapsing a repeat of the same panel or batch, and
+never for *distinguishing* two — a shared key would mean the second sync or the
+second undo silently never happened, which from the terminal is
+indistinguishable from having worked. 195: nothing re-synced an
+already-posted managed panel, so the edit path had no test at all. Four tests
+written; all four mutations then failed.
+
+1278 tests green (from 1236); typecheck and lint exit 0.

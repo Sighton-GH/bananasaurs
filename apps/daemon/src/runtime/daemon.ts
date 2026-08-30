@@ -1,16 +1,20 @@
 import { Events, type Client } from 'discord.js';
 import {
+  createDispatcher,
+  OPERATOR_COMMANDS,
   parseGuildId,
   Pipeline,
   safeLogFields,
   type Config,
   type DiscordPort,
+  type Dispatcher,
   type DomainEvent,
   type Logger,
   type Subscriber,
 } from '@bananasaurs/core';
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
 import { guildRepo, pipelineRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
+import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 
@@ -42,6 +46,12 @@ export interface DaemonDeps {
 
 export interface Daemon {
   readonly guildIds: readonly string[];
+  /**
+   * The operator command surface (ADR 0013). `index.ts` hands this to the
+   * socket once the daemon is assembled; the socket itself was bound earlier,
+   * before the database, because it is half of the single-writer guard.
+   */
+  readonly ops: Dispatcher;
   /** Begins draining the job queues. Does not connect. */
   start(): void;
   stop(): Promise<void>;
@@ -254,8 +264,27 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     while (inFlight.size > 0) await Promise.all([...inFlight]);
   };
 
+  const ops = createDispatcher({
+    commands: OPERATOR_COMMANDS,
+    guildIds,
+    // The context is a closure over one guild's scope, obtained from the same
+    // map every subscriber and job handler is built from. There is no path by
+    // which a command reaches a guild that is not in the allowlist.
+    contextFor: (guildId) => {
+      const entry = byGuild.get(guildId);
+      if (entry === undefined) return undefined;
+      return {
+        guildId: parseGuildId(guildId),
+        now,
+        ports: opsPortsFor(entry.scope, entry.runtime.ops, now),
+      };
+    },
+    instance: opsInstanceFor({ config, client, startedAtMs: now() }),
+  });
+
   return {
     guildIds,
+    ops,
 
     start() {
       for (const { runtime } of byGuild.values()) runtime.worker.recoverStranded();
@@ -309,6 +338,31 @@ function applyConfiguredDryRun(
   nowMs: number,
 ): void {
   const wanted = config.BANANASAURS_DRY_RUN;
+
+  // An observe-only process cannot apply it, and must not die trying.
+  //
+  // `docs/17` §1 offers `BANANASAURS_READONLY=1` for ordinary inspection, and
+  // every write below would throw `ReadonlyError` out of `createDaemon` on any
+  // database whose guild row is missing or whose `dry_run` disagrees with the
+  // environment — which is every fresh install. Skipped with a warning rather
+  // than caught, because "the process cannot write" is a fact known here, and
+  // catching an exception to discover it would be finding out by accident.
+  //
+  // Safe to skip: a read-only process performs no Discord side effect anyway,
+  // so the layer-4 flag it would have written governs nothing it can do.
+  if (config.BANANASAURS_READONLY) {
+    logger.warn(
+      safeLogFields({
+        component: 'startup',
+        guildId: scope.guildId,
+        dryRun: wanted,
+        outcome: 'dry-run-not-applied',
+      }),
+      'read-only: BANANASAURS_DRY_RUN was not applied and guilds.dry_run stands as it is',
+    );
+    return;
+  }
+
   // The row has to exist before the effect gateway can read a safety state from
   // it. The id stands in for the name until GUILD_CREATE supplies the real one;
   // `upsertGuild` would overwrite a good name with the id on every restart.

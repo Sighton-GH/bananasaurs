@@ -13,13 +13,21 @@ import {
   incrementClaimedCount,
   isChannelExcluded,
   listEnabledLogChannels,
+  listExcludedChannels,
+  listRoutes,
+  excludeChannel,
+  setRoute,
+  setRouteEnabled,
+  unexcludeChannel,
 } from './logging.js';
 
 /**
- * `log_routes` and `log_excluded_channels` have no writer yet — nothing in
- * Release 1 configures them except a future operator CLI (WP5 slice 13) — so
- * tests seed rows directly, the same way `write.test.ts` and `columns.test.ts`
- * do for tables with no repo setter.
+ * `log_routes` and `log_excluded_channels`, read and written.
+ *
+ * WP4 shipped the reads with the note that nothing configured either table
+ * except a future operator CLI. That CLI is WP5 slice 13, so the writers are
+ * here now — and the read tests still seed rows directly rather than through
+ * them, so a writer bug cannot hide behind a reader that shares it.
  */
 
 const GUILD_A = parseGuildId('111111111111111111');
@@ -48,7 +56,7 @@ const seedRoute = (
       .run();
   });
 
-const excludeChannel = (scope: GuildScope, channelId: string) =>
+const seedExclusion = (scope: GuildScope, channelId: string) =>
   write(scope, ({ db }) => {
     db.insert(logExcludedChannels).values({ guildId: scope.guildId, channelId }).run();
   });
@@ -109,17 +117,17 @@ describe('isChannelExcluded', () => {
   });
 
   it('is true for an excluded channel', () => {
-    excludeChannel(a, CHANNEL_A);
+    seedExclusion(a, CHANNEL_A);
     expect(isChannelExcluded(a, CHANNEL_A)).toBe(true);
   });
 
   it('does not exclude a different channel', () => {
-    excludeChannel(a, CHANNEL_A);
+    seedExclusion(a, CHANNEL_A);
     expect(isChannelExcluded(a, CHANNEL_B)).toBe(false);
   });
 
   it('is scoped: an exclusion in one guild does not apply to another', () => {
-    excludeChannel(a, CHANNEL_A);
+    seedExclusion(a, CHANNEL_A);
     expect(isChannelExcluded(b, CHANNEL_A)).toBe(false);
   });
 });
@@ -240,5 +248,127 @@ describe('listEnabledLogChannels', () => {
   it('is scoped: a route in one guild is invisible from another', () => {
     seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
     expect(listEnabledLogChannels(b)).toEqual([]);
+  });
+});
+
+describe('listRoutes and listExcludedChannels', () => {
+  it('lists every configured route, ordered by event kind', () => {
+    seedRoute(a, 'member_join', { channelId: CHANNEL_B });
+    seedRoute(a, 'message_delete', { channelId: CHANNEL_A });
+    expect(listRoutes(a).map((r) => r.eventKind)).toEqual(['member_join', 'message_delete']);
+  });
+
+  it('reports enabled and include_content as booleans, not as ones and zeros', () => {
+    seedRoute(a, 'message_edit', { channelId: CHANNEL_A, enabled: false, includeContent: false });
+    expect(listRoutes(a)[0]).toMatchObject({ enabled: false, includeContent: false });
+  });
+
+  it('lists a disabled route too, because an operator needs to see it to re-enable it', () => {
+    seedRoute(a, 'message_edit', { channelId: CHANNEL_A, enabled: false });
+    expect(listRoutes(a)).toHaveLength(1);
+  });
+
+  it("does not see another guild's routes", () => {
+    seedRoute(b, 'member_join', { channelId: CHANNEL_A });
+    expect(listRoutes(a)).toEqual([]);
+    expect(listRoutes(b)).toHaveLength(1);
+  });
+
+  it('lists excluded channels', () => {
+    seedExclusion(a, CHANNEL_B);
+    seedExclusion(a, CHANNEL_A);
+    expect(listExcludedChannels(a)).toEqual([CHANNEL_A, CHANNEL_B].sort());
+  });
+
+  it("does not see another guild's exclusions", () => {
+    seedExclusion(b, CHANNEL_A);
+    expect(listExcludedChannels(a)).toEqual([]);
+  });
+});
+
+/**
+ * The writers `bananasaurs log routing set|off|exclude|unexclude` calls.
+ *
+ * Every one is idempotent and every one is guild-scoped, and both properties
+ * are asserted rather than assumed: an operator re-running a command after a
+ * dropped SSH connection is the ordinary case, not the edge one.
+ */
+describe('log routing writers', () => {
+  it('creates a route', () => {
+    setRoute(a, { eventKind: 'member_join', channelId: CHANNEL_A, includeContent: true });
+    expect(findRoute(a, 'member_join')).toMatchObject({
+      channelId: CHANNEL_A,
+      includeContent: true,
+      enabled: true,
+    });
+  });
+
+  it('re-points an existing route rather than adding a second', () => {
+    setRoute(a, { eventKind: 'member_join', channelId: CHANNEL_A, includeContent: true });
+    setRoute(a, { eventKind: 'member_join', channelId: CHANNEL_B, includeContent: false });
+    expect(listRoutes(a)).toHaveLength(1);
+    expect(findRoute(a, 'member_join')).toMatchObject({
+      channelId: CHANNEL_B,
+      includeContent: false,
+    });
+  });
+
+  it('re-enables a route that was turned off', () => {
+    // The reason `off` disables rather than deletes: turning it back on must
+    // not require the operator to remember the channel id.
+    setRoute(a, { eventKind: 'member_join', channelId: CHANNEL_A, includeContent: true });
+    expect(setRouteEnabled(a, 'member_join', false)).toBe(true);
+    // The row survives with its channel; `enabled` is what the logging
+    // subscriber checks, so the logging really has stopped.
+    expect(findRoute(a, 'member_join')).toMatchObject({ enabled: false, channelId: CHANNEL_A });
+    expect(listEnabledLogChannels(a)).toEqual([]);
+
+    setRoute(a, { eventKind: 'member_join', channelId: CHANNEL_A, includeContent: true });
+    expect(findRoute(a, 'member_join')).toMatchObject({ enabled: true });
+    expect(listEnabledLogChannels(a)).toEqual([CHANNEL_A]);
+  });
+
+  it('reports that there was no route to turn off', () => {
+    // Not silence. An operator who mistypes an event kind must not be told the
+    // logging they asked to stop has stopped.
+    expect(setRouteEnabled(a, 'member_join', false)).toBe(false);
+  });
+
+  it("setRoute does not touch another guild's route", () => {
+    setRoute(a, { eventKind: 'member_join', channelId: CHANNEL_A, includeContent: true });
+    setRoute(b, { eventKind: 'member_join', channelId: CHANNEL_B, includeContent: true });
+    expect(findRoute(a, 'member_join')?.channelId).toBe(CHANNEL_A);
+    expect(findRoute(b, 'member_join')?.channelId).toBe(CHANNEL_B);
+  });
+
+  it("setRouteEnabled does not disable another guild's route", () => {
+    setRoute(b, { eventKind: 'member_join', channelId: CHANNEL_A, includeContent: true });
+    expect(setRouteEnabled(a, 'member_join', false)).toBe(false);
+    expect(findRoute(b, 'member_join')?.enabled).toBe(true);
+  });
+
+  it('excludes a channel, and says so only the first time', () => {
+    expect(excludeChannel(a, CHANNEL_A)).toBe(true);
+    expect(excludeChannel(a, CHANNEL_A)).toBe(false);
+    expect(listExcludedChannels(a)).toEqual([CHANNEL_A]);
+    expect(isChannelExcluded(a, CHANNEL_A)).toBe(true);
+  });
+
+  it('un-excludes a channel, and says so only when there was one', () => {
+    excludeChannel(a, CHANNEL_A);
+    expect(unexcludeChannel(a, CHANNEL_A)).toBe(true);
+    expect(unexcludeChannel(a, CHANNEL_A)).toBe(false);
+    expect(isChannelExcluded(a, CHANNEL_A)).toBe(false);
+  });
+
+  it("does not exclude a channel in another guild's name", () => {
+    excludeChannel(a, CHANNEL_A);
+    expect(isChannelExcluded(b, CHANNEL_A)).toBe(false);
+  });
+
+  it("does not un-exclude another guild's channel", () => {
+    excludeChannel(b, CHANNEL_A);
+    expect(unexcludeChannel(a, CHANNEL_A)).toBe(false);
+    expect(isChannelExcluded(b, CHANNEL_A)).toBe(true);
   });
 });

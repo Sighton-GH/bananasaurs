@@ -4,6 +4,7 @@
   "include": ["src/**/*.ts"],
   "exclude": ["src/**/*.test.ts"],
   "references": [
+    { "path": "../../packages/cli" },
     { "path": "../../packages/core" },
     { "path": "../../packages/discord" },
     { "path": "../../packages/storage" },

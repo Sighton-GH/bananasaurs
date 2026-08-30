@@ -12,7 +12,10 @@ import {
   enqueue,
   failJob,
   findJob,
+  listJobs,
+  oldestDueAt,
   requeueStranded,
+  retryJob,
   saveCursor,
 } from './jobs.js';
 
@@ -296,5 +299,152 @@ describe('requeueStranded', () => {
     claimNext(b, 1000);
     expect(requeueStranded(a, 5000)).toBe(0);
     expect(countByState(b)).toEqual({ running: 1 });
+  });
+});
+
+describe('oldestDueAt', () => {
+  it('returns the run_after of the oldest queued job that is already due', () => {
+    put(a, { runAfter: 500 });
+    put(a, { runAfter: 200, dedupeKey: 'k2' });
+    put(a, { runAfter: 900, dedupeKey: 'k3' });
+    expect(oldestDueAt(a, 1_000)).toBe(200);
+  });
+
+  it('ignores a job scheduled for the future, which is not lag', () => {
+    put(a, { runAfter: 5_000 });
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+  });
+
+  it('ignores jobs that are not queued', () => {
+    const job = put(a, { runAfter: 100 });
+    claimNext(a, 1_000);
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+    completeJob(a, job.jobId ?? 0, 1_000);
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+  });
+
+  it('returns undefined when there is nothing queued at all', () => {
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+  });
+
+  it("does not see another guild's overdue job", () => {
+    put(b, { runAfter: 1 });
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+    expect(oldestDueAt(b, 1_000)).toBe(1);
+  });
+});
+
+describe('listJobs', () => {
+  it('returns the newest jobs first, so a tail is the default view', () => {
+    put(a, { dedupeKey: 'k1', now: 100 });
+    put(a, { dedupeKey: 'k2', now: 200 });
+    const rows = listJobs(a, {});
+    expect(rows.map((r) => r.dedupeKey)).toEqual(['k2', 'k1']);
+  });
+
+  it('honours the limit', () => {
+    put(a, { dedupeKey: 'k1' });
+    put(a, { dedupeKey: 'k2' });
+    put(a, { dedupeKey: 'k3' });
+    expect(listJobs(a, { limit: 2 })).toHaveLength(2);
+  });
+
+  it('can be narrowed to failures, which is the reason an operator asks', () => {
+    const stuck = put(a, { dedupeKey: 'k1', maxAttempts: 1 });
+    put(a, { dedupeKey: 'k2' });
+    claimNext(a, 1_000);
+    failJob(a, stuck.jobId ?? 0, 'it exploded', 1_000);
+    const rows = listJobs(a, { failedOnly: true });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.state).toBe('failed');
+    expect(rows[0]?.lastError).toBe('it exploded');
+  });
+
+  it("does not see another guild's jobs", () => {
+    put(b, { dedupeKey: 'k1' });
+    expect(listJobs(a, {})).toEqual([]);
+    expect(listJobs(b, {})).toHaveLength(1);
+  });
+});
+
+/**
+ * `bananasaurs jobs retry <id> --confirm`.
+ *
+ * The interesting cases are all refusals. Requeueing a failed job is three
+ * column writes; knowing when not to is the substance, and the one that would
+ * otherwise surface as a raw SQLite constraint error is a job whose dedupe key
+ * is already held by pending work (ADR 0016's partial unique index).
+ */
+describe('retryJob', () => {
+  /** Fails loudly rather than defaulting: a fixture that enqueued nothing
+   * would otherwise make every assertion below test the empty case. */
+  const idOf = (result: ReturnType<typeof put>): number => {
+    if (result.jobId === undefined) throw new Error('the fixture enqueued no job');
+    return result.jobId;
+  };
+
+  const failToDeath = (scope: GuildScope): number => {
+    const jobId = idOf(put(scope));
+    for (let i = 0; i < 5; i += 1) {
+      claimNext(scope, 10_000 + i * 600_000);
+      failJob(scope, jobId, 'it exploded', 10_000 + i * 600_000);
+    }
+    expect(findJob(scope, jobId)?.state).toBe('failed');
+    return jobId;
+  };
+
+  it('returns a failed job to the queue, due now', () => {
+    const jobId = failToDeath(a);
+    const outcome = retryJob(a, jobId, 99_000);
+    expect(outcome).toMatchObject({ ok: true });
+    const row = findJob(a, jobId);
+    expect(row).toMatchObject({ state: 'queued', runAfter: 99_000, lastError: null });
+  });
+
+  it('resets the attempt count, or the retry would fail again immediately', () => {
+    // `claimNext` increments `attempts` and `failJob` gives up once it reaches
+    // `max_attempts`. Leaving the count at five would spend one claim to reach
+    // exactly the state the operator asked to leave.
+    const jobId = failToDeath(a);
+    retryJob(a, jobId, 99_000);
+    expect(findJob(a, jobId)?.attempts).toBe(0);
+
+    const claimed = claimNext(a, 99_001);
+    expect(claimed?.jobId).toBe(jobId);
+    const result = failJob(a, jobId, 'again', 99_002);
+    expect(result.willRetry).toBe(true);
+  });
+
+  it('refuses a job that is not failed, naming the state it is in', () => {
+    const jobId = idOf(put(a));
+    const outcome = retryJob(a, jobId, 99_000);
+    expect(outcome).toEqual({ ok: false, reason: 'not-failed', state: 'queued' });
+    expect(findJob(a, jobId)?.runAfter).toBe(1000);
+  });
+
+  it('refuses a job id that does not exist', () => {
+    expect(retryJob(a, 4242, 99_000)).toEqual({ ok: false, reason: 'not-found' });
+  });
+
+  it('refuses when pending work already holds the same dedupe key', () => {
+    // The partial unique index covers `queued` and `running` only, so the
+    // failed row and a fresh enqueue coexist happily — until the retry tries to
+    // make the failed one queued as well. Refused with the blocking id rather
+    // than raised as a UNIQUE constraint error the operator cannot act on.
+    const jobId = failToDeath(a);
+    const replacement = idOf(put(a, { now: 50_000 }));
+
+    expect(retryJob(a, jobId, 99_000)).toEqual({
+      ok: false,
+      reason: 'dedupe-blocked',
+      blockingJobId: replacement,
+    });
+    expect(findJob(a, jobId)?.state).toBe('failed');
+  });
+
+  it("cannot retry another guild's job", () => {
+    const jobId = failToDeath(b);
+    expect(retryJob(a, jobId, 99_000)).toEqual({ ok: false, reason: 'not-found' });
+    expect(findJob(b, jobId)?.state).toBe('failed');
   });
 });

@@ -1,0 +1,1064 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { pino } from 'pino';
+import { Client } from 'discord.js';
+import {
+  panelDefinitionSchema,
+  parseConfig,
+  parseGuildId,
+  parseSnowflakeId,
+  unicodeEmojiKey,
+  type Config,
+} from '@bananasaurs/core';
+import { buildClientOptions } from '@bananasaurs/discord';
+import {
+  effectRepo,
+  guildRepo,
+  jobRepo,
+  loggingRepo,
+  panelRepo,
+  roleRepo,
+} from '@bananasaurs/storage';
+import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
+import { run } from '@bananasaurs/cli';
+import { createDaemon, type Daemon } from '../runtime/daemon.js';
+import { bindOpsSocket, type OpsSocketServer } from './socket.js';
+
+/**
+ * The operator CLI, end to end: a real command line, a real Unix socket, the
+ * real dispatcher, and a real migrated database.
+ *
+ * The reason this exists rather than only the unit tests either side of it is
+ * the class of bug WP4's report named — "no daemon trigger for X". Every piece
+ * of slice 13 can be individually correct and the CLI still answer nothing,
+ * because `createDaemon` never built a dispatcher or `index.ts` never called
+ * `serve`. Nothing but assembling the whole chain catches that.
+ *
+ * Only `index.ts`'s own three lines are missing, and they are exercised by the
+ * ordering test at the bottom.
+ */
+
+const GUILD = parseGuildId('234567890123456789');
+const OWNER = '345678901234567890';
+const logger = pino({ level: process.env['DAEMON_TEST_LOG'] ?? 'silent' });
+
+const config = (over: Record<string, string> = {}): Config =>
+  parseConfig({
+    DISCORD_BOT_TOKEN: 'not.a.real.token',
+    DISCORD_APPLICATION_ID: BOT_USER_ID,
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    DASHBOARD_SESSION_SECRET: 'a'.repeat(32),
+    BANANASAURS_DRY_RUN: '0',
+    ...over,
+  });
+
+let t: ReturnType<typeof openMigratedTestDatabase>;
+let discord: FakeDiscord;
+let client: Client;
+let daemon: Daemon;
+let socket: OpsSocketServer;
+let dir: string;
+let socketPath: string;
+
+beforeEach(async () => {
+  t = openMigratedTestDatabase();
+  discord = new FakeDiscord({ guildId: GUILD });
+  client = new Client(buildClientOptions(() => BOT_USER_ID));
+  dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bananasaurs-cli-'));
+  socketPath = path.join(dir, 'admin.sock');
+  socket = await bindOpsSocket({ socketPath, logger });
+});
+
+afterEach(async () => {
+  await socket.close();
+  await daemon.stop();
+  await client.destroy();
+  t.close();
+  fs.rmSync(dir, { recursive: true, force: true });
+});
+
+const startDaemon = (over: Record<string, string> = {}): void => {
+  daemon = createDaemon({
+    config: config(over),
+    scopes: t.scopes,
+    discord,
+    client,
+    logger,
+    now: () => discord.now(),
+  });
+  socket.serve((raw) => daemon.ops.dispatch(raw));
+};
+
+interface Invocation {
+  code: number;
+  out: string;
+  err: string;
+}
+
+/** Drives the real CLI over the real socket, as a shell would. */
+const cli = async (line: string): Promise<Invocation> => {
+  const out: string[] = [];
+  const err: string[] = [];
+  const code = await run({
+    argv: line.split(' ').filter(Boolean),
+    env: { BANANASAURS_SOCKET_PATH: socketPath },
+    unixUser: 'bryan',
+    writeOut: (text) => out.push(text),
+    writeErr: (text) => err.push(text),
+  });
+  return { code, out: out.join(''), err: err.join('') };
+};
+
+describe('the operator CLI, end to end', () => {
+  it('answers `bananasaurs status` from the real database', async () => {
+    startDaemon();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), {
+      name: 'Engineering Club',
+      enabled: true,
+      now: discord.now(),
+    });
+
+    const result = await cli('status');
+    expect(result.code).toBe(0);
+    expect(result.out).toContain('Engineering Club');
+    expect(result.out).toContain(GUILD);
+    // Not connected: this client has never logged in, and status must say so
+    // rather than reporting a cheerful default.
+    expect(result.out).toMatch(/DISCONNECTED/);
+  });
+
+  it('reports real job counts and real scheduler lag', async () => {
+    startDaemon();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'g', enabled: true, now: discord.now() });
+    jobRepo.enqueue(scope, {
+      kind: 'reconcile',
+      payload: '{}',
+      dedupeKey: 'reconcile:x',
+      now: discord.now(),
+      runAfter: discord.now() - 5_000,
+    });
+
+    const result = await cli('status --json');
+    expect(result.code).toBe(0);
+    const data = JSON.parse(result.out) as { jobs: Record<string, number>; schedulerLagMs: number };
+    expect(data.jobs).toEqual({ queued: 1 });
+    expect(data.schedulerLagMs).toBe(5_000);
+  });
+
+  it('refuses a guild that is not in the allowlist, over the socket', async () => {
+    startDaemon();
+    const result = await cli('status --guild 111111111111111111');
+    expect(result.code).toBe(2);
+    expect(result.err).toContain('BANANASAURS_GUILD_ALLOWLIST');
+  });
+
+  it('refuses an unknown command before it reaches the socket', async () => {
+    startDaemon();
+    const result = await cli('destroy everything --confirm');
+    expect(result.code).toBe(2);
+    expect(result.err).toMatch(/no such command/);
+  });
+
+  it('answers --json with parseable output and nothing else on stdout', async () => {
+    startDaemon();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), {
+      name: 'g',
+      enabled: true,
+      now: discord.now(),
+    });
+    const result = await cli('status --json');
+    expect(() => JSON.parse(result.out) as unknown).not.toThrow();
+  });
+
+  it('reports the daemon as read-only when it was started that way', async () => {
+    // A separate database, because readonly is a property of the opened handle.
+    const readonly = openMigratedTestDatabase();
+    guildRepo.upsertGuild(readonly.scopes.forGuild(GUILD), {
+      name: 'g',
+      enabled: true,
+      now: 0,
+    });
+    daemon = createDaemon({
+      config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '1' }),
+      scopes: readonly.readonlyScopes,
+      discord,
+      client,
+      logger,
+      now: () => discord.now(),
+    });
+    socket.serve((raw) => daemon.ops.dispatch(raw));
+
+    const result = await cli('status');
+    expect(result.code).toBe(0);
+    expect(result.out).toMatch(/read-only/i);
+    readonly.close();
+  });
+
+  it('refuses a request that arrives before serve(), which is the startup window', async () => {
+    // No `startDaemon()`: the socket is bound but no dispatcher is attached,
+    // exactly as it is between `bindSocketOrFail` and the database opening.
+    daemon = createDaemon({
+      config: config(),
+      scopes: t.scopes,
+      discord,
+      client,
+      logger,
+      now: () => discord.now(),
+    });
+    const result = await cli('status');
+    expect(result.code).toBe(1);
+    expect(result.err).toMatch(/still starting/);
+  });
+
+  describe('`bananasaurs killswitch`, against the real database', () => {
+    const seed = (): void => {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+    };
+
+    it('refuses without --confirm, and changes nothing', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('killswitch on');
+      expect(result.code).toBe(3);
+      expect(result.err).toMatch(/--confirm/);
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+      expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD))).toEqual([]);
+    });
+
+    it('flips the column the effect gateway actually reads', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('killswitch on --confirm');
+      expect(result.code).toBe(0);
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(true);
+    });
+
+    it('turns it off again', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      await cli('killswitch off --confirm');
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+    });
+
+    it('writes a real audit row, claimed identity and all', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        actorType: 'operator_cli',
+        actorUnixUserClaimed: 'bryan',
+        action: 'killswitch.enabled',
+        subjectType: 'guild',
+        subjectId: GUILD,
+      });
+      // The claim must not have been laundered into the verified-identity column.
+      expect(rows[0]?.actorId).toBeNull();
+      expect(JSON.parse(rows[0]?.before ?? 'null')).toEqual({ killswitch: false });
+      expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ killswitch: true });
+    });
+
+    it('refuses every write when the daemon is read-only, and records nothing', async () => {
+      const readonly = openMigratedTestDatabase();
+      guildRepo.upsertGuild(readonly.scopes.forGuild(GUILD), { name: 'g', enabled: true, now: 0 });
+      daemon = createDaemon({
+        config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '1' }),
+        scopes: readonly.readonlyScopes,
+        discord,
+        client,
+        logger,
+        now: () => discord.now(),
+      });
+      socket.serve((raw) => daemon.ops.dispatch(raw));
+
+      const result = await cli('killswitch on --confirm');
+      // Exit 3: refused by a control, not a command that ran and failed.
+      expect(result.code).toBe(3);
+      expect(guildRepo.readSafetyState(readonly.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+      expect(effectRepo.tailAudit(readonly.scopes.forGuild(GUILD))).toEqual([]);
+      readonly.close();
+    });
+
+    it('does not touch another guild, even when one is named explicitly', async () => {
+      startDaemon();
+      seed();
+      const other = t.scopes.forGuild(parseGuildId('245678901234567890'));
+      guildRepo.upsertGuild(other, { name: 'other', enabled: true, now: discord.now() });
+
+      const result = await cli('killswitch on --guild 245678901234567890 --confirm');
+      expect(result.code).toBe(2);
+      expect(guildRepo.readSafetyState(other)?.killswitch).toBe(false);
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+    });
+  });
+
+  describe('the read commands, against the real database', () => {
+    const seed = (): void => {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+    };
+
+    it('`config get` returns a real configuration value', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('config get BANANASAURS_DRY_RUN');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('BANANASAURS_DRY_RUN=false');
+      // Labelled with its namespace (ADR 0025), so an operator cannot read a
+      // process value as the guild's own setting.
+      expect(result.out).toContain('environment');
+    });
+
+    it('`config get` redacts the bot token, which the config really does hold', async () => {
+      // The end of the chain that matters: the daemon has a real token in
+      // `config`, and the redaction happens in `redactedConfig()` before the
+      // command sees anything (ADR 0013 §4).
+      startDaemon();
+      seed();
+      const result = await cli('config get DISCORD_BOT_TOKEN');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('DISCORD_BOT_TOKEN=<redacted>');
+      expect(result.out).not.toContain('not.a.real.token');
+    });
+
+    it('no read command leaks the token, whatever it prints', async () => {
+      startDaemon();
+      seed();
+      for (const line of ['status', 'status --json', 'doctor', 'audit tail', 'jobs list']) {
+        const result = await cli(line);
+        expect(result.out + result.err, line).not.toContain('not.a.real.token');
+      }
+    });
+
+    it('`audit tail` reads back a row the CLI itself wrote', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      const result = await cli('audit tail');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('killswitch.enabled');
+      expect(result.out).toContain('claimed unix user bryan');
+      // **Not** labelled dry-run or inferred. Both columns are SQLite integers
+      // and the daemon converts them to booleans; a conversion that returned a
+      // constant would label every real row a guess, which is the opposite of
+      // the honesty convention WP4 established (mutation 152).
+      expect(result.out).not.toContain('dry-run');
+      expect(result.out).not.toContain('inferred');
+      const asJson = await cli('audit tail --json');
+      expect(JSON.parse(asJson.out)).toMatchObject([{ dryRun: false, inferred: false }]);
+    });
+
+    it('`audit tail --since` excludes anything older than the window', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      // The fake clock is what `now` reads, so moving it forward moves the
+      // window past the row the previous command wrote.
+      discord.advance(3 * 60 * 60 * 1000);
+      const result = await cli('audit tail --since 1h');
+      expect(result.code).toBe(0);
+      expect(result.out).toMatch(/no audit events/);
+    });
+
+    it('`jobs list` shows a real queued job and how overdue it is', async () => {
+      startDaemon();
+      seed();
+      jobRepo.enqueue(t.scopes.forGuild(GUILD), {
+        kind: 'reconcile_guild',
+        payload: '{}',
+        dedupeKey: 'reconcile:x',
+        now: discord.now(),
+        runAfter: discord.now() - 5_000,
+      });
+      const result = await cli('jobs list');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('reconcile_guild');
+      expect(result.out).toContain('due 5s ago');
+    });
+
+    it('`log routing list` says outright that WP4 is inert with no routes', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('log routing list');
+      expect(result.code).toBe(0);
+      expect(result.out).toMatch(/nothing is being logged/i);
+    });
+
+    it('`panel list` reports an empty configuration rather than an empty table', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('panel list');
+      expect(result.code).toBe(0);
+      expect(result.out).toMatch(/no panels/);
+    });
+
+    it('`doctor` runs against the real client and reports the disconnected session', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('doctor');
+      // Exit 0: `doctor` answering "there are problems" is a successful command.
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('PROBLEMS FOUND');
+    });
+
+    it('every read command answers over the socket, none of them 500s', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'status',
+        'doctor',
+        'audit tail',
+        'jobs list',
+        'panel list',
+        'log routing list',
+        'config get BANANASAURS_ENV',
+      ]) {
+        const result = await cli(line);
+        expect(result.code, `${line} exited ${String(result.code)}: ${result.err}`).toBe(0);
+      }
+    });
+
+    it('answers every read command as JSON too, for an agent', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'status --json',
+        'doctor --json',
+        'audit tail --json',
+        'jobs list --json',
+        'panel list --json',
+        'log routing list --json',
+      ]) {
+        const result = await cli(line);
+        expect(result.code, line).toBe(0);
+        expect(() => JSON.parse(result.out) as unknown, line).not.toThrow();
+      }
+    });
+  });
+  /**
+   * The write commands that stay inside the database (slice 13d).
+   *
+   * Asserted against the columns the *rest of the product* reads, never against
+   * the command's own output: `loggingRepo.findRoute` is what the logging
+   * subscriber calls, and `guildRepo.readSafetyState` is what the effect
+   * gateway calls. A command that printed a convincing sentence and wrote the
+   * wrong column would pass a test of its text and fail these.
+   */
+  describe('the database write commands', () => {
+    const scope = () => t.scopes.forGuild(GUILD);
+    const seed = (): void => {
+      guildRepo.upsertGuild(scope(), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+    };
+    const CHANNEL = '456789012345678901';
+
+    it('`config set` changes the column the effect gateway reads', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('config set role_rate_per_min 60 --confirm');
+      expect(result.code).toBe(0);
+      expect(guildRepo.readSafetyState(scope())?.roleRatePerMin).toBe(60);
+
+      const rows = effectRepo.tailAudit(scope());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        action: 'config.set',
+        actorType: 'operator_cli',
+        actorId: null,
+        actorUnixUserClaimed: 'bryan',
+        via: 'ssh',
+      });
+      expect(JSON.parse(rows[0]?.before ?? 'null')).toEqual({ role_rate_per_min: 20 });
+      expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ role_rate_per_min: 60 });
+    });
+
+    it('`config set` clears a breaker that nothing else in the product could', async () => {
+      startDaemon();
+      seed();
+      guildRepo.tripBreaker(scope(), 'five failures in a row', discord.now());
+      expect(guildRepo.readSafetyState(scope())?.breakerOpen).toBe(true);
+
+      const result = await cli('config set breaker closed --confirm');
+      expect(result.code).toBe(0);
+      expect(guildRepo.readSafetyState(scope())?.breakerOpen).toBe(false);
+    });
+
+    it('`config set` refuses a process configuration key, and changes nothing', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('config set BANANASAURS_DRY_RUN off --confirm');
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/process configuration/);
+      expect(guildRepo.readSafetyState(scope())?.dryRun).toBe(false);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+
+    it('`config get` reads a guild setting the same command just wrote', async () => {
+      // The pair `docs/17` documents, working as a pair (ADR 0025).
+      startDaemon();
+      seed();
+      await cli('config set reconcile_budget 99 --confirm');
+      const result = await cli('config get reconcile_budget');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('reconcile_budget=99');
+      expect(result.out).toContain(GUILD);
+    });
+
+    it('`log routing set` makes WP4 not inert, which is what it was for', async () => {
+      startDaemon();
+      seed();
+      const result = await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      expect(result.code).toBe(0);
+
+      // The exact call the logging subscriber makes on a member join.
+      expect(loggingRepo.findRoute(scope(), 'member_join')).toMatchObject({
+        channelId: CHANNEL,
+        enabled: true,
+        includeContent: true,
+      });
+      // And the gap-marker query, which is the other reader of the table.
+      expect(loggingRepo.listEnabledLogChannels(scope())).toEqual([CHANNEL]);
+
+      const listed = await cli('log routing list');
+      expect(listed.out).toContain(CHANNEL);
+      expect(listed.out).not.toMatch(/nothing is being logged/i);
+    });
+
+    it('`log routing set --no-content` keeps the message text out of the log', async () => {
+      startDaemon();
+      seed();
+      const result = await cli(`log routing set message_edit ${CHANNEL} --no-content --confirm`);
+      expect(result.code).toBe(0);
+      expect(loggingRepo.findRoute(scope(), 'message_edit')?.includeContent).toBe(false);
+    });
+
+    it('`log routing off` stops the logging and keeps the channel', async () => {
+      startDaemon();
+      seed();
+      await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      const result = await cli('log routing off member_join --confirm');
+      expect(result.code).toBe(0);
+
+      expect(loggingRepo.findRoute(scope(), 'member_join')?.enabled).toBe(false);
+      expect(loggingRepo.listEnabledLogChannels(scope())).toEqual([]);
+      // Turning it back on needs no channel id, which is why `off` disables
+      // rather than deletes.
+      expect(loggingRepo.listRoutes(scope())[0]?.channelId).toBe(CHANNEL);
+    });
+
+    it('`log routing exclude` beats a route that is otherwise configured', async () => {
+      startDaemon();
+      seed();
+      await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      const result = await cli(`log routing exclude ${CHANNEL} --confirm`);
+      expect(result.code).toBe(0);
+      // The subscriber checks the exclusion before the route.
+      expect(loggingRepo.isChannelExcluded(scope(), CHANNEL)).toBe(true);
+
+      await cli(`log routing unexclude ${CHANNEL} --confirm`);
+      expect(loggingRepo.isChannelExcluded(scope(), CHANNEL)).toBe(false);
+    });
+
+    it('`jobs retry` returns a real failed job to the real queue', async () => {
+      startDaemon();
+      seed();
+      const enqueued = jobRepo.enqueue(scope(), {
+        kind: 'reconcile_guild',
+        payload: '{}',
+        dedupeKey: 'reconcile:all',
+        now: discord.now(),
+      });
+      const jobId = enqueued.jobId ?? -1;
+      jobRepo.claimNext(scope(), discord.now());
+      jobRepo.failJob(scope(), jobId, 'Discord said 503', discord.now(), { permanent: true });
+      expect(jobRepo.findJob(scope(), jobId)?.state).toBe('failed');
+
+      const result = await cli(`jobs retry ${String(jobId)} --confirm`);
+      expect(result.code).toBe(0);
+      expect(jobRepo.findJob(scope(), jobId)).toMatchObject({ state: 'queued', attempts: 0 });
+      expect(effectRepo.tailAudit(scope())[0]).toMatchObject({ action: 'job.retried' });
+    });
+
+    it('`jobs retry` refuses a job that is already queued, and audits nothing', async () => {
+      startDaemon();
+      seed();
+      const enqueued = jobRepo.enqueue(scope(), {
+        kind: 'reconcile_guild',
+        payload: '{}',
+        dedupeKey: 'reconcile:all',
+        now: discord.now(),
+      });
+      const result = await cli(`jobs retry ${String(enqueued.jobId ?? -1)} --confirm`);
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/already going to run/);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+
+    it('refuses every write command without --confirm, and writes nothing', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'config set role_rate_per_min 60',
+        `log routing set member_join ${CHANNEL}`,
+        'log routing off member_join',
+        `log routing exclude ${CHANNEL}`,
+        `log routing unexclude ${CHANNEL}`,
+        'jobs retry 1',
+      ]) {
+        const result = await cli(line);
+        // Exit 3: refused by a control, not a command that ran and failed.
+        expect(result.code, line).toBe(3);
+        expect(result.err, line).toMatch(/--confirm/);
+      }
+      expect(guildRepo.readSafetyState(scope())?.roleRatePerMin).toBe(20);
+      expect(loggingRepo.listRoutes(scope())).toEqual([]);
+      expect(loggingRepo.listExcludedChannels(scope())).toEqual([]);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+
+    it('starts read-only against a database it has never written', async () => {
+      // `docs/17` §1: "BANANASAURS_READONLY=1 makes every write command refuse.
+      // Use this for ordinary inspection." Before this slice it could not be
+      // used for that at all: `applyConfiguredDryRun` writes `guilds.dry_run`
+      // from the environment at every start, so an observe-only process threw
+      // `ReadonlyError` out of `createDaemon` on any database whose row was
+      // missing or whose column disagreed — which is every fresh install.
+      const readonly = openMigratedTestDatabase();
+      expect(() => {
+        daemon = createDaemon({
+          config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '0' }),
+          scopes: readonly.readonlyScopes,
+          discord,
+          client,
+          logger,
+          now: () => discord.now(),
+        });
+      }).not.toThrow();
+      socket.serve((raw) => daemon.ops.dispatch(raw));
+
+      // And it answers, which is the point of starting it.
+      const result = await cli('status');
+      expect(result.code).toBe(0);
+      readonly.close();
+    });
+
+    it('refuses every write command when the daemon is read-only', async () => {
+      const readonly = openMigratedTestDatabase();
+      guildRepo.upsertGuild(readonly.scopes.forGuild(GUILD), { name: 'g', enabled: true, now: 0 });
+      daemon = createDaemon({
+        config: config({ BANANASAURS_READONLY: '1' }),
+        scopes: readonly.readonlyScopes,
+        discord,
+        client,
+        logger,
+        now: () => discord.now(),
+      });
+      socket.serve((raw) => daemon.ops.dispatch(raw));
+
+      for (const line of [
+        'config set role_rate_per_min 60 --confirm',
+        `log routing set member_join ${CHANNEL} --confirm`,
+        `log routing exclude ${CHANNEL} --confirm`,
+      ]) {
+        const result = await cli(line);
+        expect(result.code, line).toBe(3);
+      }
+      expect(guildRepo.readSafetyState(readonly.scopes.forGuild(GUILD))?.roleRatePerMin).toBe(20);
+      expect(loggingRepo.listRoutes(readonly.scopes.forGuild(GUILD))).toEqual([]);
+      expect(effectRepo.tailAudit(readonly.scopes.forGuild(GUILD))).toEqual([]);
+      readonly.close();
+    });
+
+    it('answers every write command as JSON too, for an agent', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'config set role_rate_per_min 60 --confirm --json',
+        `log routing set member_join ${CHANNEL} --confirm --json`,
+        `log routing exclude ${CHANNEL} --confirm --json`,
+        `log routing unexclude ${CHANNEL} --confirm --json`,
+        'log routing off member_join --confirm --json',
+      ]) {
+        const result = await cli(line);
+        expect(result.code, `${line}: ${result.err}`).toBe(0);
+        expect(() => JSON.parse(result.out) as unknown, line).not.toThrow();
+      }
+    });
+  });
+  /**
+   * The write commands that reach Discord (slice 13e).
+   *
+   * Every one of them queues the unbounded half rather than awaiting it
+   * (ADR 0026), so these tests run the job too — `daemon.drainJobs()` — and
+   * then assert against `FakeDiscord`, which is the only place a role actually
+   * changing is observable. Asserting on the command's own output would prove
+   * that it printed a sentence.
+   */
+  describe('the write commands that reach Discord', () => {
+    const scope = () => t.scopes.forGuild(GUILD);
+    const CHANNEL = parseSnowflakeId('456789012345678901');
+    const MESSAGE = parseSnowflakeId('567890123456789012');
+    const ROLE = parseSnowflakeId('678901234567890123');
+    const MEMBER = parseSnowflakeId('789012345678901234');
+
+    const seed = (): void => {
+      guildRepo.upsertGuild(scope(), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+      roleRepo.allowlistRole(scope(), ROLE);
+      discord.defineRole({ id: ROLE, position: 1 });
+      discord.setBotHighestRolePosition(10);
+      discord.defineMember(MEMBER, [ROLE]);
+    };
+
+    const seedPanel = (over: Record<string, unknown> = {}): void => {
+      discord.defineMessage({ channelId: CHANNEL, messageId: MESSAGE, authorId: MEMBER });
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'roles',
+          kind: 'adopted',
+          channelId: CHANNEL,
+          messageId: MESSAGE,
+          behaviour: 'toggle',
+          component: 'reaction',
+          options: [
+            { optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 },
+          ],
+          ...over,
+        }),
+        discord.now(),
+      );
+    };
+
+    /** One string field out of a job payload, without an `any` in the assertion. */
+    const payloadField = (payload: string, key: string): string => {
+      const parsed = JSON.parse(payload) as Record<string, unknown>;
+      const value = parsed[key];
+      return typeof value === 'string' ? value : `<${key} missing>`;
+    };
+
+    /** A batch holding one applied grant, as a member's click would leave it. */
+    const seedAppliedGrant = (dedupeKey = 'reaction:brain:once'): string => {
+      const batchId = effectRepo.openBatch(scope(), {
+        source: 'reaction',
+        actorType: 'system',
+        actorId: undefined,
+        now: discord.now(),
+      });
+      const claim = effectRepo.claimEffect(scope(), {
+        dedupeKey,
+        batchId,
+        userId: MEMBER,
+        roleId: ROLE,
+        action: 'grant',
+        // The whole basis of the inverse: we added it, they did not have it.
+        hadRoleBefore: false,
+        panelId: undefined,
+        now: discord.now(),
+      });
+      effectRepo.recordOutcome(scope(), {
+        effectId: claim.effectId,
+        state: 'applied',
+        completedAt: discord.now(),
+        errorCode: undefined,
+      });
+      effectRepo.closeBatch(scope(), batchId, discord.now());
+      return batchId;
+    };
+
+    it('`undo` queues the reversal and the job actually removes the role', async () => {
+      startDaemon();
+      seed();
+      const batchId = seedAppliedGrant();
+      expect(discord.memberRoles(MEMBER)).toContain(ROLE);
+
+      const result = await cli(`undo ${batchId} --confirm`);
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatch(/1 of 1/);
+
+      // Queued, not done — the command returned before anything reached Discord.
+      expect(discord.memberRoles(MEMBER)).toContain(ROLE);
+
+      await daemon.drainJobs();
+      expect(discord.memberRoles(MEMBER)).not.toContain(ROLE);
+      expect(effectRepo.findBatch(scope(), batchId)?.undoneAt).not.toBeNull();
+    });
+
+    it('`undo` refuses the same batch a second time, once the job has run', async () => {
+      startDaemon();
+      seed();
+      const batchId = seedAppliedGrant();
+      await cli(`undo ${batchId} --confirm`);
+      await daemon.drainJobs();
+
+      const again = await cli(`undo ${batchId} --confirm`);
+      expect(again.code).toBe(1);
+      expect(again.err).toMatch(/already undone/);
+    });
+
+    it('a queued undo still obeys the kill switch, like every other role change', async () => {
+      // Undo is a replay of the inverse through `applyRoleEffect`, not a second
+      // path with its own permissions. An undo that could bypass the kill switch
+      // would be an unaudited way to change roles.
+      startDaemon();
+      seed();
+      const batchId = seedAppliedGrant();
+      await cli(`undo ${batchId} --confirm`);
+      await cli('killswitch on --confirm');
+
+      await daemon.drainJobs();
+      expect(discord.memberRoles(MEMBER)).toContain(ROLE);
+    });
+
+    it('`undo` refuses a batch whose effects changed nothing', async () => {
+      startDaemon();
+      seed();
+      const batchId = effectRepo.openBatch(scope(), {
+        source: 'reaction',
+        actorType: 'system',
+        actorId: undefined,
+        now: discord.now(),
+      });
+      const claim = effectRepo.claimEffect(scope(), {
+        dedupeKey: 'reaction:brain:noop',
+        batchId,
+        userId: MEMBER,
+        roleId: ROLE,
+        action: 'grant',
+        // They already had it, so we changed nothing and there is no inverse.
+        hadRoleBefore: true,
+        panelId: undefined,
+        now: discord.now(),
+      });
+      effectRepo.recordOutcome(scope(), {
+        effectId: claim.effectId,
+        state: 'applied',
+        completedAt: discord.now(),
+        errorCode: undefined,
+      });
+
+      const result = await cli(`undo ${batchId} --confirm`);
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/nothing to undo/);
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    it('`panel sync` seeds the reactions and queues a pass for that panel only', async () => {
+      startDaemon();
+      seed();
+      seedPanel();
+
+      const result = await cli('panel sync roles --confirm');
+      expect(result.code, result.err).toBe(0);
+      // The bounded half happened synchronously, at Discord.
+      expect(discord.restCalls('createReaction')).toHaveLength(1);
+
+      const queued = jobRepo.listJobs(scope(), {});
+      expect(queued).toHaveLength(1);
+      expect(queued[0]?.kind).toBe('reconcile_guild');
+      expect(JSON.parse(queued[0]?.payload ?? '{}')).toMatchObject({
+        reason: 'operator',
+        panelId: 'roles',
+      });
+    });
+
+    it('`panel sync` twice queues one pass, not two', async () => {
+      // The dedupe key is per panel and partial over queued/running (ADR 0016),
+      // so a repeat collapses rather than doubling the work.
+      startDaemon();
+      seed();
+      seedPanel();
+      await cli('panel sync roles --confirm');
+      await cli('panel sync roles --confirm');
+      expect(jobRepo.listJobs(scope(), {})).toHaveLength(1);
+    });
+
+    it('`panel sync` on two panels queues two passes, not one', async () => {
+      // The dedupe key is per panel. Without that, syncing panel B would be
+      // absorbed by panel A's pending pass and silently never happen —
+      // indistinguishable, from the terminal, from having worked.
+      startDaemon();
+      seed();
+      seedPanel();
+      const SECOND_MESSAGE = parseSnowflakeId('890123456789012345');
+      discord.defineMessage({ channelId: CHANNEL, messageId: SECOND_MESSAGE, authorId: MEMBER });
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'other',
+          kind: 'adopted',
+          channelId: CHANNEL,
+          messageId: SECOND_MESSAGE,
+          behaviour: 'toggle',
+          component: 'reaction',
+          options: [
+            { optionId: 'brain', roleId: ROLE, emojiKey: unicodeEmojiKey('🧠'), position: 0 },
+          ],
+        }),
+        discord.now(),
+      );
+
+      await cli('panel sync roles --confirm');
+      await cli('panel sync other --confirm');
+
+      const queued = jobRepo.listJobs(scope(), {});
+      expect(queued).toHaveLength(2);
+      expect(queued.map((j) => payloadField(j.payload, 'panelId')).sort()).toEqual([
+        'other',
+        'roles',
+      ]);
+    });
+
+    it('`undo` on two batches queues two reversals, not one', async () => {
+      // Per batch, for the same reason. A shared key would mean the second
+      // batch was never reversed and the command said it would be.
+      startDaemon();
+      seed();
+      const first = seedAppliedGrant();
+      const second = seedAppliedGrant('reaction:brain:twice');
+
+      await cli(`undo ${first} --confirm`);
+      await cli(`undo ${second} --confirm`);
+
+      const queued = jobRepo.listJobs(scope(), {});
+      expect(queued).toHaveLength(2);
+      expect(queued.map((j) => payloadField(j.payload, 'batchId')).sort()).toEqual(
+        [first, second].sort(),
+      );
+    });
+
+    it('`panel sync` rewrites an already-posted managed panel to match its options', async () => {
+      // The drift a managed panel actually suffers: an option was added in the
+      // configuration and the message members can see still shows the old
+      // buttons. A sync that only posted would repair the never-posted case and
+      // leave this one broken forever.
+      startDaemon();
+      seed();
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'buttons',
+          kind: 'managed',
+          channelId: CHANNEL,
+          behaviour: 'toggle',
+          component: 'button',
+          options: [{ optionId: 'brain', roleId: ROLE, label: 'Brain', position: 0 }],
+        }),
+        discord.now(),
+      );
+      await cli('panel sync buttons --confirm');
+      expect(discord.restCalls('editMessage')).toEqual([]);
+
+      discord.resetCalls();
+      const again = await cli('panel sync buttons --confirm');
+      expect(again.code, again.err).toBe(0);
+      expect(again.out).toMatch(/Rewrote panel/);
+      expect(discord.restCalls('editMessage')).toHaveLength(1);
+      // Posted once, not twice: the second sync edits the message it already has.
+      expect(discord.restCalls('sendMessage')).toEqual([]);
+    });
+
+    it('`panel sync` posts a managed panel that has never been posted', async () => {
+      // Nothing else in the shipped product ever calls `postManagedPanel`, so
+      // before this command a configured managed panel could not reach Discord.
+      startDaemon();
+      seed();
+      panelRepo.createPanel(
+        scope(),
+        panelDefinitionSchema.parse({
+          panelId: 'buttons',
+          kind: 'managed',
+          channelId: CHANNEL,
+          behaviour: 'toggle',
+          component: 'button',
+          options: [{ optionId: 'brain', roleId: ROLE, label: 'Brain', position: 0 }],
+        }),
+        discord.now(),
+      );
+
+      const result = await cli('panel sync buttons --confirm');
+      expect(result.code, result.err).toBe(0);
+      expect(result.out).toMatch(/Posted panel/);
+      expect(discord.restCalls('sendMessage')).toHaveLength(1);
+      // Recorded, or an interaction on the message could not find the panel.
+      expect(panelRepo.findPanel(scope(), 'buttons')?.messageId).toBeDefined();
+      // A button panel has no reactions to drift, so no pass is queued.
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    it('`panel sync` refuses a panel `doctor` took out of service', async () => {
+      startDaemon();
+      seed();
+      seedPanel();
+      panelRepo.setPanelStatus(
+        scope(),
+        'roles',
+        'disabled_by_doctor',
+        'role above bot',
+        discord.now(),
+      );
+
+      const result = await cli('panel sync roles --confirm');
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/Re-enable it first/);
+      expect(discord.restCalls('createReaction')).toEqual([]);
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+    });
+
+    it('`adoption allow` reaches the live process, which a database CLI could not', async () => {
+      // The concrete reason ADR 0013 puts the CLI on a socket: the allowance
+      // lives in `RateLimiter`, in this process's memory, and nothing that
+      // wrote SQLite could touch it.
+      startDaemon();
+      seed();
+      const first = await cli('adoption allow 250 --confirm');
+      expect(first.code, first.err).toBe(0);
+      expect(first.out).toMatch(/now 250/);
+
+      // Cumulative against the same live bucket, not a fresh one per request.
+      const second = await cli('adoption allow 50 --confirm');
+      expect(second.out).toMatch(/now 300/);
+
+      const rows = effectRepo.tailAudit(scope());
+      expect(rows[0]).toMatchObject({ action: 'adoption.allowance_granted' });
+      expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ allowance: 300 });
+    });
+
+    it('refuses all three without --confirm, and reaches Discord for none of them', async () => {
+      startDaemon();
+      seed();
+      seedPanel();
+      const batchId = seedAppliedGrant();
+      discord.resetCalls();
+
+      for (const line of ['panel sync roles', `undo ${batchId}`, 'adoption allow 10']) {
+        const result = await cli(line);
+        expect(result.code, line).toBe(3);
+        expect(result.err, line).toMatch(/--confirm/);
+      }
+      expect(discord.restCalls()).toEqual([]);
+      expect(jobRepo.listJobs(scope(), {})).toEqual([]);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+  });
+});

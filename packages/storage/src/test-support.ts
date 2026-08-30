@@ -13,6 +13,15 @@ export interface MigratedTestDatabase {
   db: Db;
   raw: Database.Database;
   scopes: ScopeFactory;
+  /**
+   * The same database seen through `BANANASAURS_READONLY`.
+   *
+   * A second factory over one handle rather than a second database, because
+   * readonly is a property of the *scope*, not of the file — which is what lets
+   * a test seed rows through `scopes` and then prove a command refuses to write
+   * through `readonlyScopes`.
+   */
+  readonlyScopes: ScopeFactory;
   close(): void;
 }
 
@@ -29,5 +38,11 @@ export function openMigratedTestDatabase(): MigratedTestDatabase {
   raw.pragma('foreign_keys = ON');
   const db = drizzle(raw, { schema });
   migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
-  return { db, raw, scopes: createScopeFactory(db, { readonly: false }), close: () => raw.close() };
+  return {
+    db,
+    raw,
+    scopes: createScopeFactory(db, { readonly: false }),
+    readonlyScopes: createScopeFactory(db, { readonly: true }),
+    close: () => raw.close(),
+  };
 }

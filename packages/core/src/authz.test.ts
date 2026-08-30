@@ -142,3 +142,77 @@ describe('the witness cannot be produced by an object literal', () => {
     expect(result.ok && Object.getOwnPropertySymbols(result.value)).toHaveLength(1);
   });
 });
+
+describe('the operator CLI (ADR 0024)', () => {
+  const cli = (over: Partial<Actor> = {}): Actor => ({
+    type: 'operator_cli',
+    id: undefined,
+    roleIds: [],
+    unixUserClaimed: 'bryan',
+    ...over,
+  });
+
+  it('is authorized by reaching the socket, with no grant row anywhere', () => {
+    // ADR 0024. `capability_grants` cannot hold a Unix username, the claimed
+    // name is not kernel-verified, and a fresh install has zero grant rows —
+    // so a CLI gated on a grant could never issue the first grant.
+    const result = authorize({ store: store(), guildId: GUILD, actor: cli() }, 'roles.mutate');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(capabilityOf(result.value)).toBe('roles.mutate');
+  });
+
+  it('does not consult the grant store at all', () => {
+    let asked = false;
+    const result = authorize(
+      {
+        store: store({
+          hasGrant: () => {
+            asked = true;
+            return false;
+          },
+        }),
+        guildId: GUILD,
+        actor: cli(),
+      },
+      'killswitch.toggle',
+    );
+    expect(result.ok).toBe(true);
+    expect(asked).toBe(false);
+  });
+
+  it('carries the claimed unix user on the witness, for the audit row', () => {
+    const result = authorize({ store: store(), guildId: GUILD, actor: cli() }, 'undo.execute');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.value.actor.unixUserClaimed).toBe('bryan');
+    expect(result.value.actor.type).toBe('operator_cli');
+  });
+
+  it('does not extend to the dashboard, which still needs an owner-issued grant', () => {
+    // ADR 0012 is untouched by ADR 0024: a dashboard account holds an explicit
+    // capability set, and a Discord permission bit grants nothing. Widening the
+    // socket's exemption to cover `dashboard` would quietly undo that.
+    const dashboard = cli({ type: 'dashboard', id: 'acct_01HXYZ' });
+    const result = authorize({ store: store(), guildId: GUILD, actor: dashboard }, 'roles.mutate');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe('actor-has-no-identity');
+  });
+
+  it('does not extend to a member, however they present themselves', () => {
+    const spoofing = member({ unixUserClaimed: 'root' });
+    const result = authorize({ store: store(), guildId: GUILD, actor: spoofing }, 'roles.mutate');
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.error.reason).toBe('no-grant');
+  });
+
+  it('does not extend to the owner actor type either', () => {
+    // `owner` is a Discord identity like any other. The socket is the boundary,
+    // not a claim about who someone is.
+    const owner = member({ type: 'owner' });
+    const result = authorize({ store: store(), guildId: GUILD, actor: owner }, 'roles.mutate');
+    expect(result.ok).toBe(false);
+  });
+});
