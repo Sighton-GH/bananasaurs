@@ -12,6 +12,7 @@ import {
   enqueue,
   failJob,
   findJob,
+  oldestDueAt,
   requeueStranded,
   saveCursor,
 } from './jobs.js';
@@ -296,5 +297,37 @@ describe('requeueStranded', () => {
     claimNext(b, 1000);
     expect(requeueStranded(a, 5000)).toBe(0);
     expect(countByState(b)).toEqual({ running: 1 });
+  });
+});
+
+describe('oldestDueAt', () => {
+  it('returns the run_after of the oldest queued job that is already due', () => {
+    put(a, { runAfter: 500 });
+    put(a, { runAfter: 200, dedupeKey: 'k2' });
+    put(a, { runAfter: 900, dedupeKey: 'k3' });
+    expect(oldestDueAt(a, 1_000)).toBe(200);
+  });
+
+  it('ignores a job scheduled for the future, which is not lag', () => {
+    put(a, { runAfter: 5_000 });
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+  });
+
+  it('ignores jobs that are not queued', () => {
+    const job = put(a, { runAfter: 100 });
+    claimNext(a, 1_000);
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+    completeJob(a, job.jobId ?? 0, 1_000);
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+  });
+
+  it('returns undefined when there is nothing queued at all', () => {
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+  });
+
+  it("does not see another guild's overdue job", () => {
+    put(b, { runAfter: 1 });
+    expect(oldestDueAt(a, 1_000)).toBeUndefined();
+    expect(oldestDueAt(b, 1_000)).toBe(1);
   });
 });

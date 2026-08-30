@@ -223,6 +223,30 @@ export const findJob = (scope: GuildScope, jobId: number): JobRow | undefined =>
       .get(),
   );
 
+/**
+ * The `run_after` of the oldest queued job that is already due.
+ *
+ * The number behind `bananasaurs status`'s scheduler lag: `now` minus this is
+ * how far behind the worker actually is. Filtered on *due-ness* rather than on
+ * queued-ness, because a job deliberately scheduled for the future is not lag —
+ * reporting it as lag would make an idle instance with one delayed
+ * `log_message_delete` job look permanently behind.
+ *
+ * Guild-scoped like every other query here, and served by the existing partial
+ * `jobs_claim` index on `(guild_id, state, run_after)` — the same index
+ * `claimNext` uses, in the same order, so this costs no new index.
+ */
+export const oldestDueAt = (scope: GuildScope, now: number): number | undefined =>
+  read(scope, (db) =>
+    db
+      .select({ runAfter: jobs.runAfter })
+      .from(jobs)
+      .where(scope.only(jobs, eq(jobs.state, 'queued'), lte(jobs.runAfter, now)))
+      .orderBy(asc(jobs.runAfter))
+      .limit(1)
+      .get(),
+  )?.runAfter;
+
 /** For `doctor` and for the worker's own logging. */
 export const countByState = (scope: GuildScope): Record<string, number> =>
   read(scope, (db) => {

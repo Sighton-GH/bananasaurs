@@ -1181,3 +1181,103 @@ file copy.
 
 954 tests green; typecheck and lint exit 0. WP4's feature work is complete;
 `docs/20`'s seven-part report is next, then the package boundary.
+
+---
+
+## WP5 / slice 13a — the operator socket, the protocol, and `status` — 2026-08-29
+
+**Changed.** The transport and command machinery for the operator CLI, plus one
+command to prove the chain end to end.
+
+`packages/core/src/ops/` — `protocol.ts` (newline-delimited JSON envelope, Zod
+on both directions, the error-code → exit-code table), `dispatch.ts` (a **pure**
+dispatcher: parsed request + registry → response, no `net` and no database),
+`ports.ts` (`OpsPorts` guild-scoped, `OpsInstance` process-level — split so
+"does every query take a guild id" is answered by *which interface it is on*),
+`registry.ts`, `commands/status.ts`.
+
+`apps/daemon/src/ops/socket.ts` — the `net.Server`. `apps/daemon/src/ops/
+wiring.ts` — the ports, as closures over one `GuildScope`, matching WP4's
+`LoggingPorts` shape exactly. `packages/cli/` — the `bananasaurs` binary:
+`args.ts` (pure), `client.ts`, `run.ts` (pure given its deps), `bin.ts` (four
+lines of substance).
+
+**ADR 0024, written before any of it.** Where does the CLI's capability come
+from? Not from `capability_grants`: that table is keyed by a Discord snowflake
+and a Unix username is not one, the claimed username is not kernel-verified
+(amendment 2), and a fresh install has zero grant rows — so a CLI gated on
+holding a grant could never issue the first one. Reaching the socket *is* the
+authorization; the claimed identity is audit metadata and is consulted for
+nothing. Stated plainly in the ADR: the CLI is a root-equivalent surface behind
+a `0660 bananasaurs:bananasaurs-ops` socket, and what remains is friction and
+forensics (`--confirm`, readonly, redaction, an audit row), not authorization.
+
+**The scope question WP4's report asked me to answer first.** `docs/reports/
+WP4.md` §5 says slice 13 has no command for `log_routes`/`log_excluded_channels`
+and that WP4 is inert without one. It is already in scope and the report looked
+at the wrong list: `docs/19` §6.9 ends "Release 1 surface is exactly the list in
+`docs/17`", and `docs/17_OPERATOR_ACCESS.md:33-34` contains `log routing list`
+and `log routing set`. `docs/19` §7's four-command demonstrable is a sample, not
+the surface. Sized into 13d; no scope change needed.
+
+**`docs/19` amendment 1's single-writer guard is now actually two guards.** The
+amendment specifies "socket bind **plus** an `O_EXCL` PID lockfile", and
+`packages/storage/src/lock.ts:10` has documented the bind since slice 2a as if
+it existed — nothing in the tree called `net.createServer` until this slice.
+`index.ts` now binds **before** `openOrFail`, so the comment is true. Two
+details that only appear once you write it: a Unix `listen()` fails
+`EADDRINUSE` on a *stale file* as well as a live listener, so the bind probes
+with a connect first (`ECONNREFUSED` → stale, unlink and retry; anything else,
+including a permission error, fails safe as live); and `serve()` is separate
+from binding because the handler needs a dispatcher which needs the database
+which is the thing the bind is guarding — a request landing in that window is
+refused, not queued.
+
+**Two design choices worth naming.** The command registry holds
+`RegisteredCommand`, produced by `defineCommand<A>` — which erases the argument
+type at the point `safeParse` produces it, so there is **no cast anywhere**; an
+array of `OpsCommand<never>` or `OpsCommand<any>` would have needed one, in the
+function whose whole job is validating untrusted input. And the CLI reads its
+command catalogue, positional parameters and flags from `OPERATOR_COMMANDS` in
+`core` rather than a table of its own, so it cannot drift into parsing a
+command the daemon does not have.
+
+**Broke, to check the tests, continuing from 107.** 108. Removed the allowlist
+check in `resolveGuild` → the cross-guild refusal failed. 109. Defaulted to the
+first guild instead of refusing when several are allowlisted → failed. 110.
+Disabled the `--confirm` gate → two failed. 111. Read `actorType` from the
+request instead of fixing it to `operator_cli` → failed. 112. Let a throwing
+command escape instead of becoming a `failed` response → two failed. 113.
+Removed the live-socket refusal → the single-writer test failed. 114. Removed
+the request size cap → failed. 115. Dropped the socket's `chmod 0660` → failed.
+116. Removed the serialisation chain → 13 failed. 117. Dropped `run_after <=
+now` from `oldestDueAt`, making a future-scheduled job read as lag → failed.
+118. Dropped the `state = 'queued'` filter → failed. 119. Registered no
+commands in the composition root → 5 integration tests failed. 120. Made the
+CLI prefer the **shortest** matching command name → **survived**, see below.
+121. Collapsed every daemon refusal to exit 0 → 4 failed. 122. Reported the
+gateway as always connected → 2 failed. 123. Defaulted a missing `guilds` row
+to a healthy safety state → failed. Every one restored by file copy.
+
+**Mutation 120 surviving is the useful row, for the third package running.**
+"Longest command name wins" was untestable against the fixture catalogue,
+because `log routing set` was the only command matching that prefix — shortest
+and longest were the same match, so the rule could not be distinguished from
+"any match wins". The catalogue now contains `log` *and* `log routing set`, with
+a test for each direction; 120 then failed three tests. This is the same shape
+as WP4's mutation 98 and WP5-slice-6's mutation 50: the fixture was too simple
+to exercise the rule, not the rule too simple to matter.
+
+**Also fixed:** `deploy/bananasaurs.service` said `Group=bananasaurs`, which
+would have created the admin socket in the wrong group and left `bananasaurs-ops`
+members unable to reach the CLI at all — `docs/17` §2.1 specifies
+`bananasaurs:bananasaurs-ops`. Now `Group=bananasaurs-ops`, and the daemon
+chmods the socket itself and logs its actual uid/gid/mode at startup so a
+mismatch is visible in the journal rather than silent.
+
+**Deferred.** 13b (the audit spine and `killswitch`), 13c (read commands), 13d
+(write commands, including the `log routing` pair). `index.ts`'s bind-before-open
+*ordering* is not covered by a test — every piece either side of it is, but
+`index.ts` has no harness and a source-order assertion would be decoration.
+
+1052 tests green (from 954); typecheck and lint exit 0.

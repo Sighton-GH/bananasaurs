@@ -243,3 +243,41 @@ export {
   type ReconcilePorts,
   type ReconcileStatus,
 } from './panels/reconcile.js';
+
+// --- the operator surface (ADR 0013, ADR 0024) -------------------------------
+export {
+  exitCodeFor,
+  jsonValueSchema,
+  opsRequestSchema,
+  opsResponseSchema,
+  OPS_ERROR_CODES,
+  OPS_MAX_LINE_BYTES,
+  OPS_PROTOCOL_VERSION,
+  EXIT_FAILED,
+  EXIT_OK,
+  EXIT_REFUSED,
+  EXIT_UNAVAILABLE,
+  EXIT_USAGE,
+  type JsonValue,
+  type OpsError,
+  type OpsErrorCode,
+  type OpsOk,
+  type OpsRequest,
+  type OpsResponse,
+} from './ops/protocol.js';
+export {
+  createDispatcher,
+  defineCommand,
+  type Dispatcher,
+  type DispatcherDeps,
+  type OpsCommand,
+  type OpsCommandResult,
+  type OpsContext,
+  type OpsFlag,
+  type OpsGuildContext,
+  type OpsParam,
+  type RegisteredCommand,
+} from './ops/dispatch.js';
+export { OPERATOR_COMMANDS } from './ops/registry.js';
+export type { OpsGatewayState, OpsInstance, OpsPorts, OpsSafetyState } from './ops/ports.js';
+export { statusCommand, humaniseDuration } from './ops/commands/status.js';
