@@ -10,6 +10,8 @@ import {
   type Dispatcher,
   type DomainEvent,
   type Logger,
+  type OpsInstance,
+  type OpsPorts,
   type Subscriber,
 } from '@bananasaurs/core';
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
@@ -52,6 +54,10 @@ export interface Daemon {
    * before the database, because it is half of the single-writer guard.
    */
   readonly ops: Dispatcher;
+  /** The dashboard API's seam into per-guild ports (`packages/http`'s `HttpDeps.portsFor`). */
+  readonly portsFor: (scope: GuildScope) => OpsPorts;
+  /** The dashboard API's seam into process-level facts (`HttpDeps.instance`). */
+  readonly instance: OpsInstance;
   /** Begins draining the job queues. Does not connect. */
   start(): void;
   stop(): Promise<void>;
@@ -264,6 +270,39 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     while (inFlight.size > 0) await Promise.all([...inFlight]);
   };
 
+  // Shared by the operator dispatcher and the dashboard API: both need "the
+  // process-level facts" and neither should build its own second copy of them.
+  const instance = opsInstanceFor({
+    config,
+    client,
+    startedAtMs: now(),
+    instanceScope: scopes.instance(),
+    now,
+  });
+
+  /**
+   * The dashboard's seam into per-guild ports (slice 14, `packages/http`
+   * `HttpDeps.portsFor`).
+   *
+   * The same expression `contextFor` below uses to build the operator
+   * dispatcher's `OpsPorts`, keyed by `scope.guildId` instead of a bare guild
+   * id string because a dashboard route has a `GuildScope` from
+   * `session.scope` and nothing else — `packages/http` cannot import
+   * `apps/daemon` (ADR 0014) to build one itself. Throws rather than returning
+   * `undefined` on a miss: a session's scope can only ever name a guild this
+   * daemon was constructed with, because `login` only accepts guild ids from
+   * the same `BANANASAURS_GUILD_ALLOWLIST` this map was built from, so a miss
+   * here is a bug in that invariant, not a normal-traffic case a route should
+   * have to handle.
+   */
+  const portsFor = (scope: GuildScope): OpsPorts => {
+    const entry = byGuild.get(scope.guildId);
+    if (entry === undefined) {
+      throw new Error(`portsFor: no guild runtime for ${scope.guildId} — outside the allowlist`);
+    }
+    return opsPortsFor(entry.scope, entry.runtime.ops, now);
+  };
+
   const ops = createDispatcher({
     commands: OPERATOR_COMMANDS,
     guildIds,
@@ -279,18 +318,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         ports: opsPortsFor(entry.scope, entry.runtime.ops, now),
       };
     },
-    instance: opsInstanceFor({
-      config,
-      client,
-      startedAtMs: now(),
-      instanceScope: scopes.instance(),
-      now,
-    }),
+    instance,
   });
 
   return {
     guildIds,
     ops,
+    portsFor,
+    instance,
 
     start() {
       for (const { runtime } of byGuild.values()) runtime.worker.recoverStranded();

@@ -1,5 +1,6 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import type { Logger } from '@bananasaurs/core';
+import type { Logger, OpsInstance, OpsPorts } from '@bananasaurs/core';
+import type { GuildScope } from '@bananasaurs/storage';
 import {
   authenticate,
   bootstrap,
@@ -38,6 +39,18 @@ export interface HttpDeps extends AuthDeps {
   readonly logger: Logger;
   /** `BANANASAURS_READONLY`. Decides whether `/bootstrap` is even armed. */
   readonly readonly: boolean;
+  /**
+   * One `OpsPorts` per guild, supplied by the composition root.
+   *
+   * `packages/http` cannot import `apps/daemon` (ADR 0014), and building an
+   * `OpsPorts` needs the daemon's per-guild `GuildOperations` — so the daemon
+   * builds the closure and hands over only the function, keyed by the scope a
+   * route already has from `session.scope`. A route that reached for a guild id
+   * of its own to look one up would have a second, uncontrolled way to select a
+   * scope; taking the whole `GuildScope` keeps there being exactly one.
+   */
+  readonly portsFor: (scope: GuildScope) => OpsPorts;
+  readonly instance: OpsInstance;
 }
 
 /**
@@ -143,7 +156,7 @@ export interface CreateServerOptions {
    * `request` directly instead has no session and no CSRF check, which is
    * visible in its signature.
    */
-  readonly registerRoutes?: (app: FastifyInstance, guard: RouteGuard) => void;
+  readonly registerRoutes?: (app: FastifyInstance, guard: RouteGuard, deps: HttpDeps) => void;
 }
 
 /**
@@ -349,7 +362,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     });
   }
 
-  options.registerRoutes?.(app, guard);
+  options.registerRoutes?.(app, guard, deps);
 
   return app;
 }

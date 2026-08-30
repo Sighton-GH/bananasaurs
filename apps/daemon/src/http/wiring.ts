@@ -1,8 +1,20 @@
 import process from 'node:process';
 import type { FastifyInstance } from 'fastify';
-import { safeLogFields, type Config, type Logger } from '@bananasaurs/core';
-import type { ScopeFactory } from '@bananasaurs/storage';
-import { createServer, issueBootstrapTokenIfNeeded, type HttpDeps } from '@bananasaurs/http';
+import {
+  safeLogFields,
+  type Config,
+  type Logger,
+  type OpsInstance,
+  type OpsPorts,
+} from '@bananasaurs/core';
+import type { GuildScope, ScopeFactory } from '@bananasaurs/storage';
+import {
+  createServer,
+  issueBootstrapTokenIfNeeded,
+  registerReadRoutes,
+  registerWriteRoutes,
+  type HttpDeps,
+} from '@bananasaurs/http';
 
 /**
  * The dashboard API, in the daemon's process (ADR 0006 — one process).
@@ -18,6 +30,9 @@ export interface DashboardApiDeps {
   readonly scopes: ScopeFactory;
   readonly logger: Logger;
   readonly now: () => number;
+  /** The daemon's seam into per-guild ports (`apps/daemon/src/runtime/daemon.ts`). */
+  readonly portsFor: (scope: GuildScope) => OpsPorts;
+  readonly instance: OpsInstance;
 }
 
 export interface DashboardApi {
@@ -63,6 +78,8 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     guildIds: deps.config.BANANASAURS_GUILD_ALLOWLIST,
     logger: deps.logger,
     readonly: deps.config.BANANASAURS_READONLY,
+    portsFor: deps.portsFor,
+    instance: deps.instance,
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.
@@ -85,7 +102,17 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     );
   }
 
-  const app = createServer({ deps: httpDeps });
+  const app = createServer({
+    deps: httpDeps,
+    // One hook, two registrations — `createServer`'s own doc comment on
+    // `registerRoutes` says a route module cannot be written without the
+    // guard it is handed, so both calls go through the same parameter rather
+    // than either becoming a second hook.
+    registerRoutes: (instance, guard, routeDeps) => {
+      registerReadRoutes(instance, guard, routeDeps);
+      registerWriteRoutes(instance, guard, routeDeps);
+    },
+  });
   const host = deps.config.DASHBOARD_BIND;
   await app.listen({ host, port: deps.config.DASHBOARD_PORT });
 

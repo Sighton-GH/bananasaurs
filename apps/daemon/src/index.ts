@@ -208,6 +208,8 @@ async function main(): Promise<void> {
       scopes: opened.scopes,
       logger: log,
       now: () => Date.now(),
+      portsFor: daemon.portsFor,
+      instance: daemon.instance,
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and
