@@ -183,4 +183,8 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
     if (accountCount > 0) return { ok: false, reason: 'accounts-exist', accountCount };
     return { ok: false, reason: 'readonly' };
   },
+  backupNow: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  backupList: () => [],
 });

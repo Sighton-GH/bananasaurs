@@ -1,4 +1,7 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { pino } from 'pino';
 import { ChannelType, Client, Events, type Guild } from 'discord.js';
 import {
@@ -12,6 +15,7 @@ import { buildClientOptions } from '@bananasaurs/discord';
 import {
   guildRepo,
   jobRepo,
+  listBackups,
   panelRepo,
   pipelineRepo,
   roleRepo,
@@ -121,6 +125,7 @@ const start = (over: Record<string, string> = {}): Daemon => {
   const built = createDaemon({
     config: config(over),
     scopes: t.scopes,
+    raw: t.raw,
     discord,
     client,
     logger,
@@ -458,6 +463,7 @@ describe('the bot user id', () => {
     const built = createDaemon({
       config: config(),
       scopes: t.scopes,
+      raw: t.raw,
       discord,
       client,
       logger,
@@ -686,5 +692,38 @@ describe('/status, end to end', () => {
 
     expect(discord.restCalls('deferInteraction')).toEqual([]);
     expect(discord.interactionReplies(INTERACTION)).toEqual([]);
+  });
+});
+
+describe('the backup timer (ADR 0034)', () => {
+  let backupDir: string;
+
+  beforeEach(() => {
+    backupDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bnn-daemon-backup-'));
+  });
+
+  afterEach(() => {
+    fs.rmSync(backupDir, { recursive: true, force: true });
+  });
+
+  it('takes a backup as soon as the daemon starts, not on the first interval', () => {
+    daemon = start({ BANANASAURS_BACKUP_DIR: backupDir, BANANASAURS_BACKUP_INTERVAL_MIN: '1440' });
+    expect(listBackups(backupDir)).toHaveLength(1);
+  });
+
+  it('stops taking backups once the daemon is stopped', async () => {
+    vi.useFakeTimers();
+    try {
+      daemon = start({ BANANASAURS_BACKUP_DIR: backupDir, BANANASAURS_BACKUP_INTERVAL_MIN: '60' });
+      expect(listBackups(backupDir)).toHaveLength(1);
+
+      await daemon.stop();
+      daemon = undefined as unknown as Daemon; // afterEach's daemon?.stop() must not double-stop
+
+      vi.advanceTimersByTime(24 * 60 * 60_000);
+      expect(listBackups(backupDir)).toHaveLength(1); // still just the one from start()
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

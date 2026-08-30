@@ -2139,3 +2139,56 @@ further — within a test of agreement and not this slice's concern).
 1600 tests green across 72 files (the module's own 10; `config/load.test.ts`'s
 three new default assertions land inside an existing test, not a new one);
 typecheck and lint exit 0.
+
+---
+
+## WP6 / slice 16b — the backup timer, wired into the daemon and the operator surface — 2026-08-30
+
+`createBackupTimer` (`apps/daemon/src/runtime/backup-timer.ts`) wraps 16a's
+`performBackup`/`pruneBackups` with the lifecycle ADR 0034 calls for: a
+`setInterval` sibling to the job-poll timer, started and stopped by
+`daemon.start()`/`stop()`, taking the raw `better-sqlite3` handle rather than
+any `GuildScope`.
+
+**Runs once immediately on `start()`, not only on the interval.** At the daily
+default, waiting for the first interval would leave a fresh install with no
+backup at all for up to twenty-four hours — exactly the gap a restore drill
+would find at the worst possible time. Both the synchronous unit tests and a
+new daemon-integration test assert a backup exists the instant `start()`
+returns, before any fake timer is ever advanced.
+
+**Threading `raw` through `DaemonDeps` touched more call sites than the change
+itself.** `index.ts` now passes `opened.raw`; nine `createDaemon(...)` call
+sites across `daemon.integration.test.ts` and `ops.integration.test.ts` needed
+`raw: t.raw` (or `readonly.raw`, the same underlying handle under the
+read-only-scope fixture) added by hand after a blanket search-and-replace
+mistakenly also touched two `createServer(...)` calls for `HttpDeps` — a
+different interface that happens to share the `scopes: t.scopes,` line shape.
+Caught immediately by `tsc` ("'raw' does not exist in type 'HttpDeps'"),
+recorded here because it is the kind of collateral damage a mechanical edit
+produces and a diff review must catch before commit, not the kind a test does.
+
+**`OpsInstance` grows `backupNow()` and `backupList()` (ADR 0034), not a
+restore method — that omission is deliberate and the interface itself is the
+check.** Two existing hand-written fakes implementing `OpsInstance`
+(`packages/core/src/ops/test-fixtures.ts`, `packages/http/src/test-support.ts`)
+had to grow the same two methods or fail to compile — which is `docs/20`'s
+"a green test suite is not evidence" working in the opposite direction: a
+*type* error here is a compile-time proof that every fake actually satisfies
+the real contract, not merely coincides with it.
+
+**Broke, to check the tests, continuing from 254.** 254. Removed the immediate
+`runOnce()` call from `start()`, leaving only the interval → 3 of 5 unit tests
+failed, including "start() backs up immediately." 255. Dropped `clearInterval`
+from `stop()` → the cancellation test failed, showing eleven backups where one
+was expected. 256. Made `runOnce` rethrow instead of returning a failure result
+→ the "reports failure rather than throwing" test failed with the raw
+`EEXIST`-style error escaping uncaught. 257. Removed `backupTimer.start()` from
+`daemon.start()` (leaving `backupTimer.stop()` in `daemon.stop()` untouched, so
+only the start-side wiring was under test) → both new
+`daemon.integration.test.ts` assertions failed, proving those tests exercise
+the real composition root and not just the standalone timer unit. All four
+restored by file copy from a verified baseline.
+
+1607 tests green (from 1600 — 5 in `backup-timer.test.ts`, 2 in
+`daemon.integration.test.ts`); typecheck and lint exit 0.

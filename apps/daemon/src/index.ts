@@ -192,6 +192,7 @@ async function main(): Promise<void> {
     discord,
     client,
     logger: log,
+    raw: opened.raw,
     now: () => Date.now(),
     onFatal: (reason) => {
       log.fatal(safeLogFields({ component: 'startup', reason }), 'stopping');
