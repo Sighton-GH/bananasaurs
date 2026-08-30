@@ -75,7 +75,7 @@ Say what you hit, what the options are, and what you'd choose. Then wait.
 - **Never `git push`.** Commit freely; pushing is Bryan's.
 - **Never read, print, or copy `.env`.**
 - **Never spawn the `claude` binary from application code**, or read Claude subscription credentials — not from a handler, a job, or a queue (ADR 0013).
-- **Never work ahead of the current release.** No provider router, no module runtime, no second dashboard page.
+- **Never work ahead of the current release.** No provider router, no module runtime, no second dashboard page. Planning is not "ahead": ADRs, design docs, and research spikes for a later release are fine at any time. The limit is on implementation and wiring into the running daemon, not on thinking about it on paper. *(Clarified 2026-08-29, for the Release 2 observe-only window — see `docs/08_ROADMAP.md` Release 2's gate.)*
 - **Never grant the bot Discord permissions beyond the Release 1 set** in `docs/18`.
 - **Never disable, weaken, or route around a safety control** to make a test pass. If a control blocks something legitimate, that is a design problem to raise, not an obstacle to remove.
 
@@ -105,6 +105,16 @@ Then stop. Do not begin the next package.
 
 ## Bryan's side of the loop
 
-At each boundary: read the report, spot-check the diff for the package (not every line — the schema, the safety-control wiring, and two or three tests chosen at random), then `git push` and start a fresh session with the handoff prompt.
+**Revised 2026-08-29, after WP4: manual diff review is no longer the checkpoint, because it was never the thing catching bugs.** WP3's job-dedupe and reaction-provenance bugs (ADR 0016, ADR 0017) were found by mutation testing. WP5 slice 6's four real findings were found by running the real adapter against the real test guild. Neither was found by reading a diff, so reading the diff is no longer what happens at the boundary.
+
+At each boundary:
+
+1. **Read the seven-part report.** Cheap, and it is where "decisions you made that I did not specify" and "what you are least confident about" surface — a code-review agent reviews the code, not whether the right thing was built.
+2. **Run an agent review in place of a manual diff read** — `/code-review`, `ultra` for anything safety-critical (authorization, idempotency, moderation actions, anything touching the effect gateway).
+3. **Live-test against the real test guild periodically, not only once per adapter slice.** This is the one thing nothing else in this loop substitutes for — it is what actually found bugs 834 tests and 78 mutations could not.
+
+Then `git push` and start a fresh session with the handoff prompt.
+
+This does not relax the package-boundary stops themselves — six stop points, one package at a time, per "Why not full autonomy to the end" above, is still the pacing. What changed is what happens at the stop, not whether it happens. Applies from this point forward, across every remaining release, not only for the rest of Release 1.
 
 `/clear` between packages is not optional. A session carrying six packages of context contradicts its own earlier decisions and burns tokens re-reading files it already read.
