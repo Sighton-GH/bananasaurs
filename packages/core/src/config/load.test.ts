@@ -81,8 +81,28 @@ describe('parseConfig', () => {
       expect(problems.length).toBeGreaterThanOrEqual(4);
       expect(problems.join('\n')).toContain('DISCORD_APPLICATION_ID');
       expect(problems.join('\n')).toContain('BANANASAURS_OWNER_USER_ID');
-      expect(problems.join('\n')).toContain('DASHBOARD_SESSION_SECRET');
+      expect(problems.join('\n')).toContain('BANANASAURS_GUILD_ALLOWLIST');
+      // DASHBOARD_SESSION_SECRET is deliberately not here any more. ADR 0029
+      // made sessions DB-backed, so there is nothing to sign; a mandatory
+      // secret nothing reads implies a control that does not exist.
+      expect(problems.join('\n')).not.toContain('DASHBOARD_SESSION_SECRET');
     }
+  });
+
+  it('accepts a config with no DASHBOARD_SESSION_SECRET at all (ADR 0029)', () => {
+    const withoutSecret: Record<string, string> = { ...VALID };
+    delete withoutSecret['DASHBOARD_SESSION_SECRET'];
+    expect(parseConfig(withoutSecret)).toBeTruthy();
+  });
+
+  it('refuses a dashboard bind that is not loopback', () => {
+    // The value someone reaches for when the page will not load from their
+    // laptop. `docs/19` §6.10: the fix is `ssh -L`, not a wider bind.
+    expect(() => parseConfig({ ...VALID, DASHBOARD_BIND: '0.0.0.0' })).toThrow(ConfigError);
+  });
+
+  it('accepts ::1, for an IPv6-only host', () => {
+    expect(parseConfig({ ...VALID, DASHBOARD_BIND: '::1' }).DASHBOARD_BIND).toBe('::1');
   });
 
   it('never puts a rejected value into the error message', () => {

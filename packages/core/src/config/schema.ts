@@ -60,8 +60,42 @@ export const configSchema = z.object({
   BANANASAURS_SOCKET_PATH: z.string().min(1).default('./run/admin.sock'),
 
   DASHBOARD_PORT: port.default(8787),
-  DASHBOARD_BIND: z.string().min(1).default('127.0.0.1'),
-  DASHBOARD_SESSION_SECRET: z.string().min(32, 'must be at least 32 characters'),
+
+  /**
+   * Loopback only, and enforced rather than documented.
+   *
+   * `docs/19` §6.10 and §118 both say `127.0.0.1`, and that reaching the
+   * dashboard from anywhere else is `ssh -L 8787:127.0.0.1:8787` or Tailscale.
+   * The variable stays configurable because IPv6-only hosts need `::1`, but the
+   * value it exists to prevent is the one someone reaches for at 2am when the
+   * page will not load from their laptop: `0.0.0.0` puts a password form
+   * holding the kill switch on the LAN.
+   *
+   * An enum rather than a comment, because "the fix is not to change the bind"
+   * is a rule, and a rule that only appears in prose is one the daemon does not
+   * enforce.
+   */
+  DASHBOARD_BIND: z.enum(['127.0.0.1', 'localhost', '::1']).default('127.0.0.1'),
+
+  /**
+   * Unused, and optional since ADR 0029.
+   *
+   * It was specified when dashboard sessions were going to be signed cookies.
+   * ADR 0012 and `docs/19` §6.10 made them DB-backed instead — specifically so
+   * revocation is immediate — and a DB-backed session has nothing to sign. The
+   * CSRF token is derived from the session token itself, deliberately so that
+   * it needs no secret to manage and survives a restart exactly as long as the
+   * session does.
+   *
+   * Kept in `SECRET_CONFIG_KEYS` even though nothing reads it: an operator who
+   * already put a value here must not have it appear in a log line or a
+   * diagnostics bundle merely because the code stopped using it.
+   *
+   * **Not required.** A mandatory secret that nothing reads is worse than no
+   * secret at all: it implies a control that does not exist, and invites
+   * someone to believe that rotating it invalidates sessions. It does not.
+   */
+  DASHBOARD_SESSION_SECRET: z.string().min(32, 'must be at least 32 characters').optional(),
 
   BANANASAURS_ROLE_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(20),
   BANANASAURS_ERROR_BREAKER_THRESHOLD: z.coerce.number().int().positive().default(5),

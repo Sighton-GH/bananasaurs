@@ -10,6 +10,7 @@ import {
   type OpsSettingChange,
 } from '@bananasaurs/core';
 import {
+  accountRepo,
   effectRepo,
   guildRepo,
   jobRepo,
@@ -17,7 +18,9 @@ import {
   panelRepo,
   roleRepo,
   type GuildScope,
+  type InstanceScope,
 } from '@bananasaurs/storage';
+import { generateToken, hashToken, POLICY } from '@bananasaurs/http';
 import { countUndoable } from '../jobs/undo.js';
 import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
 import type { GuildOperations } from '../runtime/guild.js';
@@ -263,6 +266,16 @@ export interface OpsInstanceDeps {
   readonly config: Config;
   readonly client: Client;
   readonly startedAtMs: number;
+  /**
+   * Instance-level storage, for `bootstrap reissue` (ADR 0027).
+   *
+   * Separate from the guild scopes every other port closes over, because
+   * `dashboard_accounts` and `bootstrap_tokens` carry no guild id — and the
+   * type says so, so this cannot be quietly used for a guild-scoped query.
+   */
+  readonly instanceScope: InstanceScope;
+  /** Injected, like every clock in this tree. Slice 13e found the bug. */
+  readonly now: () => number;
 }
 
 /**
@@ -309,5 +322,38 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       pingMs: ping >= 0 ? Math.round(ping) : undefined,
       guildCount: deps.client.guilds.cache.size,
     };
+  },
+
+  /**
+   * ADR 0012's recovery path, wired (slice 14).
+   *
+   * The refusals are decided here rather than in the command because both are
+   * facts about *this process and this database* — how many accounts exist, and
+   * whether the process can write at all. The command turns them into an
+   * operator-readable message; it does not get to decide them.
+   *
+   * The readonly check is explicit rather than left to `writeInstance` throwing.
+   * A caught `ReadonlyError` would work, but "the recovery command refuses in
+   * read-only mode" is a rule worth stating where someone reading this can see
+   * it, rather than an exception path they have to infer.
+   */
+  reissueBootstrapToken: () => {
+    const accountCount = accountRepo.countAccounts(deps.instanceScope);
+    if (accountCount > 0) return { ok: false, reason: 'accounts-exist', accountCount };
+    if (deps.config.BANANASAURS_READONLY) return { ok: false, reason: 'readonly' };
+
+    const token = generateToken();
+    const row = accountRepo.issueBootstrapToken(deps.instanceScope, {
+      // sha256, not Argon2id: the input is 256 bits of uniform randomness, so a
+      // work factor would slow down nobody but us. `hashToken` is the same
+      // function the API verifies with — imported rather than reimplemented,
+      // because a token issued here and checked there must agree, and two
+      // one-line hashes that drift produce a setup link that is simply
+      // rejected with nothing saying why.
+      tokenHash: hashToken(token),
+      now: deps.now(),
+      ttlMs: POLICY.bootstrapTtlMs,
+    });
+    return { ok: true, token, expiresAt: row.expiresAt, port: deps.config.DASHBOARD_PORT };
   },
 });

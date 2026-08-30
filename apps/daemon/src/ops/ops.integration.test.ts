@@ -24,6 +24,7 @@ import {
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { run } from '@bananasaurs/cli';
+import { createServer, hashToken } from '@bananasaurs/http';
 import { createDaemon, type Daemon } from '../runtime/daemon.js';
 import { bindOpsSocket, type OpsSocketServer } from './socket.js';
 
@@ -1060,5 +1061,133 @@ describe('the operator CLI, end to end', () => {
       expect(jobRepo.listJobs(scope(), {})).toEqual([]);
       expect(effectRepo.tailAudit(scope())).toEqual([]);
     });
+  });
+});
+
+describe('the dashboard recovery path, end to end (ADR 0012)', () => {
+  /**
+   * ADR 0012: *"the bootstrap path can be re-armed from the host by someone
+   * with shell access… Document the recovery procedure and test it once."*
+   * This is that test — the real CLI, the real socket, the real dispatcher and
+   * a real migrated database, with nothing faked between the command line and
+   * `bootstrap_tokens`.
+   */
+
+  const bootstrapTokenRows = (): { token_hash: string; consumed_at: number | null }[] =>
+    t.raw.prepare(`SELECT token_hash, consumed_at FROM bootstrap_tokens`).all() as {
+      token_hash: string;
+      consumed_at: number | null;
+    }[];
+
+  it('issues a token and prints it once, storing only its hash', async () => {
+    startDaemon();
+    const result = await cli('bootstrap reissue --confirm');
+    expect(result.code).toBe(0);
+
+    const printed = /token=([A-Za-z0-9_-]+)/.exec(result.out)?.[1];
+    expect(printed).toBeDefined();
+
+    const rows = bootstrapTokenRows();
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.token_hash).not.toBe(printed);
+    expect(rows[0]?.token_hash).toBe(hashToken(printed ?? ''));
+    expect(rows[0]?.consumed_at).toBeNull();
+  });
+
+  it('arms a server built afterwards, and that server accepts the printed token', async () => {
+    // The end of the recovery procedure: reissue, restart, open the link. The
+    // restart is what this second `createServer` stands in for — `/bootstrap`
+    // is a registration-time decision, which is why the command says to
+    // restart.
+    startDaemon();
+    const result = await cli('bootstrap reissue --confirm');
+    const printed = /token=([A-Za-z0-9_-]+)/.exec(result.out)?.[1] ?? '';
+
+    const api = createServer({
+      deps: {
+        scopes: t.scopes,
+        now: () => discord.now(),
+        guildIds: [GUILD],
+        logger,
+        readonly: false,
+      },
+    });
+    const response = await api.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { token: printed, username: 'owner', password: 'correct horse battery staple' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(bootstrapTokenRows()[0]?.consumed_at).not.toBeNull();
+    await api.close();
+  });
+
+  it('refuses once that account exists, which is what stops a second owner', async () => {
+    startDaemon();
+    const first = await cli('bootstrap reissue --confirm');
+    const printed = /token=([A-Za-z0-9_-]+)/.exec(first.out)?.[1] ?? '';
+
+    const api = createServer({
+      deps: {
+        scopes: t.scopes,
+        now: () => discord.now(),
+        guildIds: [GUILD],
+        logger,
+        readonly: false,
+      },
+    });
+    await api.inject({
+      method: 'POST',
+      url: '/api/bootstrap',
+      payload: { token: printed, username: 'owner', password: 'correct horse battery staple' },
+    });
+    await api.close();
+
+    const second = await cli('bootstrap reissue --confirm');
+    expect(second.code).not.toBe(0);
+    expect(second.err).toContain('1 dashboard account(s)');
+  });
+
+  it('needs --confirm, like every other write', async () => {
+    startDaemon();
+    const result = await cli('bootstrap reissue');
+    expect(result.code).not.toBe(0);
+    expect(bootstrapTokenRows()).toHaveLength(0);
+  });
+
+  it('writes an audit row that does not contain the token', async () => {
+    startDaemon();
+    const result = await cli('bootstrap reissue --confirm');
+    const printed = /token=([A-Za-z0-9_-]+)/.exec(result.out)?.[1] ?? '';
+
+    const rows = t.raw
+      .prepare(`SELECT action, subject_type, after FROM audit_events WHERE action = ?`)
+      .all('dashboard.bootstrap_reissued') as {
+      action: string;
+      subject_type: string;
+      after: string | null;
+    }[];
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.subject_type).toBe('instance');
+    expect(JSON.stringify(rows)).not.toContain(printed);
+  });
+
+  it('refuses under BANANASAURS_READONLY without taking the daemon down', async () => {
+    // Slice 13d's finding: something that writes at startup must refuse rather
+    // than throw. The command is the same shape.
+    daemon = createDaemon({
+      config: config({ BANANASAURS_READONLY: '1' }),
+      scopes: t.readonlyScopes,
+      discord,
+      client,
+      logger,
+      now: () => discord.now(),
+    });
+    socket.serve((raw) => daemon.ops.dispatch(raw));
+
+    const result = await cli('bootstrap reissue --confirm');
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('BANANASAURS_READONLY');
+    expect(bootstrapTokenRows()).toHaveLength(0);
   });
 });

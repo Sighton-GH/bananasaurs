@@ -13,6 +13,7 @@ import { createDiscordClient } from '@bananasaurs/discord';
 import { createDiscordRestPort } from '@bananasaurs/discord/rest';
 import { DatabaseLockedError, openDatabase, type OpenedDatabase } from '@bananasaurs/storage';
 import { bindOpsSocket, SocketInUseError, type OpsSocketServer } from './ops/socket.js';
+import { startDashboardApi, type DashboardApi } from './http/wiring.js';
 import { createDaemon } from './runtime/daemon.js';
 import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
 
@@ -197,6 +198,30 @@ async function main(): Promise<void> {
     },
   });
 
+  // Started after `createDaemon` and before the gateway login, so the dashboard
+  // is answering by the time anything can happen in Discord. It shares the
+  // handle the daemon already holds; a second process would be a second writer.
+  let dashboard: DashboardApi | undefined;
+  try {
+    dashboard = await startDashboardApi({
+      config,
+      scopes: opened.scopes,
+      logger: log,
+      now: () => Date.now(),
+    });
+  } catch (err) {
+    // A port already in use is the operator's to look at, like the socket and
+    // the database lock, and it must not leave a half-started daemon running
+    // without its control plane.
+    opened.close();
+    fail(
+      `The dashboard API could not listen on ${config.DASHBOARD_BIND}:${String(config.DASHBOARD_PORT)}.\n\n` +
+        `  ${err instanceof Error ? err.message : String(err)}\n\n` +
+        `  Another instance may already be running, or DASHBOARD_PORT may be taken.`,
+      EXIT_UNAVAILABLE,
+    );
+  }
+
   async function shutdown(reason: string, code = 0): Promise<void> {
     if (shuttingDown) return;
     shuttingDown = true;
@@ -205,8 +230,11 @@ async function main(): Promise<void> {
       // Order matters: stop taking new events, let the ones in flight finish,
       // then close the database. Closing first would fail them mid-write.
       // The operator socket goes first of all, so a `bananasaurs` invocation
-      // during shutdown is refused at connect rather than half-served.
+      // during shutdown is refused at connect rather than half-served. The
+      // dashboard goes with it, and for the same reason: an HTTP request
+      // arriving mid-shutdown is refused at connect rather than half-served.
       await opsSocket.close();
+      await dashboard?.close();
       await client.destroy();
       await daemon.stop();
     } finally {

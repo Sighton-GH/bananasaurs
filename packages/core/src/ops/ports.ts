@@ -315,4 +315,40 @@ export interface OpsInstance {
    * (ADR 0013 §4). The real value is not reachable from `core` at all.
    */
   redactedConfig(): Readonly<Record<string, JsonValue>>;
+
+  /**
+   * Re-arms the dashboard's first-account setup page (ADR 0012, slice 14).
+   *
+   * On `OpsInstance` rather than `OpsPorts` because `dashboard_accounts` and
+   * `bootstrap_tokens` are instance-level (ADR 0027) — there is no guild in the
+   * question and none in the answer. The audit row it produces is still written
+   * against the resolved guild, because `audit_events` is guild-partitioned and
+   * this instance serves one guild; that is a known seam, and the row's
+   * `subject_type` is `instance` so the trail says which kind of thing changed.
+   *
+   * Synchronous: it writes a hash of a value `randomBytes` produced. Nothing
+   * here is Argon2id, so nothing here needs to be async (see `http/secrets.ts`
+   * for why a token gets SHA-256 and a password does not).
+   */
+  reissueBootstrapToken(): OpsBootstrapReissue;
 }
+
+/**
+ * The outcome of `bootstrap reissue`.
+ *
+ * A union rather than a nullable token, because the two refusals ask the
+ * operator for two different things — delete the accounts you meant to delete,
+ * or restart without `BANANASAURS_READONLY` — and a `undefined` return would
+ * have made the command guess which.
+ */
+export type OpsBootstrapReissue =
+  | {
+      readonly ok: true;
+      /** Plaintext, printed once to this operator's terminal. Never stored. */
+      readonly token: string;
+      readonly expiresAt: number;
+      /** `DASHBOARD_PORT`, so the printed URL is the one that actually works. */
+      readonly port: number;
+    }
+  | { readonly ok: false; readonly reason: 'accounts-exist'; readonly accountCount: number }
+  | { readonly ok: false; readonly reason: 'readonly' };

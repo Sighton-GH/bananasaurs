@@ -36,9 +36,53 @@ bananasaurs audit tail -n 50 [--since 2h]
 bananasaurs jobs list [--failed]
 bananasaurs jobs retry <id> --confirm
 bananasaurs killswitch on|off --confirm
+bananasaurs bootstrap reissue --confirm     # re-arm the dashboard's first-run setup page
 ```
 
 Later releases add `case`, `automod`, `archive search`, `channels enable|disable`.
+
+### Reaching the dashboard
+
+The dashboard binds `127.0.0.1` and the daemon **refuses any other bind** —
+`DASHBOARD_BIND` accepts `127.0.0.1`, `localhost` or `::1` and nothing else.
+
+So from anywhere but the box itself, you need a tunnel:
+
+```bash
+ssh -L 8787:127.0.0.1:8787 <host>
+# then open http://127.0.0.1:8787 in your own browser
+```
+
+Tailscale works as well. If the page "doesn't load", this is why, and the fix is
+the tunnel rather than a wider bind: `0.0.0.0` would put a password form holding
+the kill switch on the LAN.
+
+### If nobody can log in
+
+`bootstrap reissue` is the recovery path (ADR 0012), and it is why the owner is
+not a single point of failure for dashboard access — anyone with shell access
+and membership of the ops group can re-arm the setup page.
+
+```bash
+bananasaurs bootstrap reissue --confirm     # prints a URL with a 15-minute token
+sudo systemctl restart bananasaurs          # required: /bootstrap is registered at startup
+ssh -L 8787:127.0.0.1:8787 <host>           # then open the printed URL
+```
+
+Three things about it are deliberate:
+
+- **The token is printed once and never stored.** The database holds only its
+  SHA-256, so the printed line is the only copy. Run the command again to get a
+  new one; the previous one stops working.
+- **The restart is not optional.** `/bootstrap` is registered when the server is
+  constructed, and only when the account table is empty *and* a live token
+  exists. A running daemon has already decided the route does not exist and will
+  keep answering 404 — which looks exactly like the command not having worked.
+- **It refuses while any dashboard account exists.** Otherwise anyone with shell
+  access could mint a second owner account, with the audit trail showing only a
+  token issuance. To reset a forgotten password, have an owner change it from
+  the dashboard. If there is no owner left at all, delete the account rows
+  deliberately and then run this.
 
 ### Rules every command follows
 

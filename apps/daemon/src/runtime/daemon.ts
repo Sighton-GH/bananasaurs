@@ -279,7 +279,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         ports: opsPortsFor(entry.scope, entry.runtime.ops, now),
       };
     },
-    instance: opsInstanceFor({ config, client, startedAtMs: now() }),
+    instance: opsInstanceFor({
+      config,
+      client,
+      startedAtMs: now(),
+      instanceScope: scopes.instance(),
+      now,
+    }),
   });
 
   return {
