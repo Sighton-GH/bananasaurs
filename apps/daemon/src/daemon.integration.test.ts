@@ -9,7 +9,15 @@ import {
   type Config,
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { guildRepo, jobRepo, panelRepo, pipelineRepo, roleRepo } from '@bananasaurs/storage';
+import {
+  guildRepo,
+  jobRepo,
+  panelRepo,
+  pipelineRepo,
+  roleRepo,
+  schema,
+  write,
+} from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { createDaemon, type Daemon } from './runtime/daemon.js';
@@ -145,6 +153,23 @@ const seedPanel = (guildId: ReturnType<typeof parseGuildId>): void => {
   );
 };
 
+/** A `message_delete`/`message_edit`/`role_create`/... route to `CHANNEL`. WP4. */
+const seedLogRoute = (guildId: ReturnType<typeof parseGuildId>, eventKind: string): void => {
+  const scope = t.scopes.forGuild(guildId);
+  guildRepo.upsertGuild(scope, { name: 'test guild', now: 0 });
+  write(scope, ({ db }) => {
+    db.insert(schema.logRoutes)
+      .values({
+        guildId: scope.guildId,
+        eventKind,
+        channelId: CHANNEL,
+        includeContent: 1,
+        enabled: 1,
+      })
+      .run();
+  });
+};
+
 beforeEach(() => {
   t = openMigratedTestDatabase();
 
@@ -273,6 +298,50 @@ describe('a reaction, end to end', () => {
 
     expect(discord.restCalls('addRole')).toEqual([]);
     expect(discord.memberRoles(ALICE)).toEqual([]);
+  });
+});
+
+/**
+ * WP4: proves `createLoggingSubscriber` and `logMessageDeleteHandler` are
+ * actually wired into `buildGuildRuntime`, not merely built and left unused.
+ * The logic itself is `logging.integration.test.ts` and
+ * `logging-deletion.integration.test.ts`'s job; this is the composition
+ * root's.
+ */
+describe('the logging module, end to end', () => {
+  it('posts a role-create log line through the real gateway path', async () => {
+    seedLogRoute(GUILD, 'role_create');
+    daemon = start();
+
+    const freshRole = '666666666666666666';
+    internals(client).actions['GuildRoleCreate']?.handle({
+      guild_id: GUILD,
+      role: { id: freshRole, name: 'beta', position: 2, permissions: '0', managed: false },
+    });
+    await daemon.settle();
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[1]).toBe(CHANNEL);
+    expect((calls[0]?.args[2] as { content: string }).content).toContain('beta');
+  });
+
+  it('enqueues and runs the deletion-attribution job through the real job worker', async () => {
+    seedLogRoute(GUILD, 'message_delete');
+    daemon = start();
+
+    internals(client).actions['MessageDelete']?.handle({
+      id: MESSAGE,
+      channel_id: CHANNEL,
+      guild_id: GUILD,
+    });
+    await daemon.settle();
+    discord.advance(5_000);
+    await daemon.drainJobs();
+
+    const calls = discord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[1]).toBe(CHANNEL);
   });
 });
 

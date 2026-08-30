@@ -1147,3 +1147,37 @@ got its marker, caught by the "posts to every distinct channel configured"
 test. All four restored by file copy.
 
 952 tests green; typecheck and lint exit 0.
+
+---
+
+## WP4 / slice 12e — wiring into the composition root — 2026-08-29
+
+The last WP4 slice. `apps/daemon/src/runtime/guild.ts`: `createLoggingSubscriber`
+added to `subscribers`, `logMessageDeleteHandler` added to the job worker's
+handlers, both wired to the real repositories exactly as every other
+subscriber and handler in this function already is. Nothing new decided
+here — every port closure mirrors a pattern `reconcilePorts` or
+`adoptionPorts` already established two slices ago.
+
+**Proved with the same instrument WP5-slice-6's own handoff named as a
+finding: "No daemon trigger for X" (`docs/reports/WP5-slice-6.md` deferred
+items).** Two tests added to `daemon.integration.test.ts` — the file that
+pushes raw gateway packets through a real discord.js client and a real
+`createDaemon`, the only place composition-root wiring is verified end to
+end rather than by construction — assert that a `GUILD_ROLE_CREATE` packet
+produces a posted log line, and that a `MESSAGE_DELETE` packet produces a
+job that the real worker drains into one. Both were written before the
+wiring existed and failed for exactly the missing-registration reason
+(`expected [] to have a length of 1 but got +0`) before the two lines were
+added.
+
+**Broke, to check the tests, continuing from 105.** 106. Removed
+`createLoggingSubscriber(loggingPorts)` from `subscribers` → both new
+end-to-end tests failed (the deletion test too, since nothing was left to
+enqueue its job). 107. Removed `logMessageDeleteHandler(...)` from the job
+worker's handlers → the deletion test failed; the role-create test, which
+does not touch the job system, correctly kept passing. Both restored by
+file copy.
+
+954 tests green; typecheck and lint exit 0. WP4's feature work is complete;
+`docs/20`'s seven-part report is next, then the package boundary.
