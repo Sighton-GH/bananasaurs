@@ -385,3 +385,170 @@ describe('translation never takes the process down', () => {
     expect(h.events).toEqual([]);
   });
 });
+
+/**
+ * Slash commands (WP5 slice 15, ADR 0032/0033).
+ *
+ * `INTERACTION_CREATE` reaches `client.actions.InteractionCreate.handle`, which
+ * picks a structure class from `data.type` and `data.data.type` and constructs a
+ * real `ChatInputCommandInteraction`. Driving it through that path rather than
+ * through a hand-made interaction is what makes the option-flattening assertions
+ * mean anything: the nesting under test is Discord's payload grammar, and a
+ * fake would only encode what we already believe about it.
+ */
+const APPLICATION = '555555555555555555';
+const COMMAND_ID = '777777777777777777';
+const INTERACTION = '888888888888888888';
+
+const commandPacket = (over: Record<string, unknown> = {}): object => ({
+  id: INTERACTION,
+  application_id: APPLICATION,
+  // InteractionType.ApplicationCommand
+  type: 2,
+  token: 'interaction-token',
+  version: 1,
+  guild_id: GUILD,
+  channel: { id: CHANNEL, type: ChannelType.GuildText, guild_id: GUILD },
+  member: {
+    user: { id: USER, username: 'member', discriminator: '0' },
+    roles: [],
+    joined_at: '2026-01-01T00:00:00.000Z',
+    permissions: '0',
+    deaf: false,
+    mute: false,
+  },
+  app_permissions: '0',
+  locale: 'en-GB',
+  entitlements: [],
+  authorizing_integration_owners: {},
+  // ApplicationCommandType.ChatInput
+  data: { id: COMMAND_ID, name: 'status', type: 1 },
+  ...over,
+});
+
+describe('slash commands', () => {
+  it('translates a chat-input command into the domain shape, guild id included', () => {
+    const h = harness();
+    h.packet('InteractionCreate', commandPacket());
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({
+      kind: 'slashCommand',
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: USER,
+      interactionId: INTERACTION,
+      token: 'interaction-token',
+      commandName: 'status',
+      subcommandPath: [],
+      options: [],
+      receivedAtMs: 1_700_000_000_000,
+    });
+  });
+
+  /**
+   * The branch this slice replaced. Before it, `isChatInputCommand()` fell
+   * through `if (!interaction.isButton() && !interaction.isStringSelectMenu())`
+   * and the invocation was dropped with no log, no error and no event — a
+   * registered command that answered nothing.
+   */
+  it('no longer falls into the component branch and vanishes', () => {
+    const h = harness();
+    h.packet('InteractionCreate', commandPacket());
+    expect(h.events.map((e) => e.kind)).toEqual(['slashCommand']);
+    expect(h.errors).toEqual([]);
+  });
+
+  /**
+   * A subcommand is an *option* whose own options are the real arguments, and a
+   * group nests one level deeper again. Reading `data.options[0].value` without
+   * unwrapping reports the subcommand as an argument with no value.
+   */
+  it('flattens a subcommand group, a subcommand and their options', () => {
+    const h = harness();
+    h.packet(
+      'InteractionCreate',
+      commandPacket({
+        data: {
+          id: COMMAND_ID,
+          name: 'logging',
+          type: 1,
+          options: [
+            {
+              name: 'route',
+              // ApplicationCommandOptionType.SubcommandGroup
+              type: 2,
+              options: [
+                {
+                  name: 'set',
+                  // ApplicationCommandOptionType.Subcommand
+                  type: 1,
+                  options: [
+                    // String, Channel, Boolean
+                    { name: 'kind', type: 3, value: 'messageDelete' },
+                    { name: 'channel', type: 7, value: CHANNEL },
+                    { name: 'content', type: 5, value: true },
+                  ],
+                },
+              ],
+            },
+          ],
+          resolved: {},
+        },
+      }),
+    );
+
+    expect(h.events[0]).toMatchObject({
+      kind: 'slashCommand',
+      commandName: 'logging',
+      subcommandPath: ['route', 'set'],
+      options: [
+        { name: 'kind', value: 'messageDelete' },
+        // A channel option arrives as its snowflake. The event carries the id
+        // rather than a resolved structure, so nothing fetches behind a field.
+        { name: 'channel', value: CHANNEL },
+        { name: 'content', value: true },
+      ],
+    });
+  });
+
+  /**
+   * Guild attribution happens here or not at all. A user-installed application
+   * can be invoked in a DM, and every handler downstream reaches storage through
+   * a `GuildScope`, which a DM cannot produce.
+   */
+  it('drops an invocation that carries no guild', () => {
+    const h = harness();
+    h.packet(
+      'InteractionCreate',
+      commandPacket({
+        guild_id: undefined,
+        channel: { id: '555000555000555000', type: ChannelType.DM, recipients: [{ id: USER }] },
+        member: undefined,
+        user: { id: USER, username: 'member', discriminator: '0' },
+      }),
+    );
+
+    expect(h.events).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  /** The allowlist gate applies to a slash command exactly as to a reaction. */
+  it('drops an invocation from a guild outside the allowlist', () => {
+    const h = harness({ allow: [OTHER_GUILD] });
+    h.packet('InteractionCreate', commandPacket());
+    expect(h.events).toEqual([]);
+  });
+
+  /**
+   * Adding the command branch must not widen the drop. An autocomplete request
+   * is a real, well-formed dispatch for a surface Release 1 does not have.
+   */
+  it('still drops an interaction type this adapter does not handle', () => {
+    const h = harness();
+    // InteractionType.ApplicationCommandAutocomplete
+    h.packet('InteractionCreate', commandPacket({ type: 4 }));
+    expect(h.events).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+});

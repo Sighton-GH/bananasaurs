@@ -43,6 +43,8 @@ export type {
   MessageEvent,
   ReactionEvent,
   RoleEvent,
+  SlashCommandEvent,
+  SlashCommandOption,
 } from './discord/events.js';
 export {
   customEmojiKey,
@@ -322,6 +324,13 @@ export {
   type OpsSettingSpec,
 } from './ops/settings.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
+export {
+  STATUS_COMMAND_NAME,
+  createStatusCommandSubscriber,
+  renderMemberStatus,
+  type SlashResponder,
+  type StatusCommandDeps,
+} from './ops/commands/status-slash.js';
 export { killswitchCommand } from './ops/commands/killswitch.js';
 export { adoptionAllowCommand, panelSyncCommand, undoCommand } from './ops/commands/effects.js';
 export {
