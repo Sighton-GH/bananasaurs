@@ -76,12 +76,15 @@ export {
   adoptDedupeKey,
   adoptPanelPayload,
   JOB_KINDS,
+  logMessageDeleteDedupeKey,
+  logMessageDeletePayload,
   reconcileDedupeKey,
   reconcileGuildPayload,
   sweepDedupeKey,
   sweepEventDedupePayload,
   type AdoptPanelPayload,
   type JobKind,
+  type LogMessageDeletePayload,
   type ReconcileGuildPayload,
   type SweepEventDedupePayload,
 } from './jobs/kinds.js';
@@ -89,6 +92,26 @@ export {
   createConnectionSubscriber,
   type ConnectionPorts,
 } from './pipeline/connection-subscriber.js';
+export {
+  formatMemberJoin,
+  formatMemberLeave,
+  formatMessageDelete,
+  formatMessageEdit,
+  formatRoleCreate,
+  formatRoleDelete,
+  formatRoleUpdate,
+} from './logging/format.js';
+export { createLoggingSubscriber, type LoggingPorts, type LogRoute } from './logging/subscriber.js';
+export {
+  correlateDeletion,
+  MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
+  type CorrelationCandidate,
+} from './logging/attribution.js';
+export {
+  attributeAndLogDeletion,
+  type MessageDeleteAttribution,
+  type MessageDeleteAttributionPorts,
+} from './logging/attribute-deletion.js';
 export {
   authorize,
   capabilityOf,

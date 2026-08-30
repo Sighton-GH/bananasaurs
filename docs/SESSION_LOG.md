@@ -926,3 +926,258 @@ fix (`adoptionPassState !== 'pending'`) → **24 of 37** failed in
 
 834 → 845 (defect 1) → 848 (defect 2) → 853 (defect 3) tests green;
 typecheck and lint exit 0. `npm run db:migrate` applies cleanly.
+
+---
+
+## WP4 / slice 12a — read-side plumbing, before the hard part — 2026-08-29
+
+ADR 0023 first (`docs/decisions/0023-logging-module-scope-and-deletion-attribution.md`):
+scope is message/member/role logging only — `REVIEW.md`'s Release 1 list
+wins over `docs/20`'s broader "role and channel changes" summary, and the
+codebase agrees (`DomainEvent` has no channel-change variant, `FakeDiscord`
+has no channel verb). No kick/ban attribution either: that is `REVIEW.md`
+Release 2's "mod log," and `FakeDiscord` was extended for `deleteMessageAs`
+specifically and nothing analogous for kicks or bans — evidence the scope
+was meant to stop at message deletion. The ADR also records the message-delete
+correlation algorithm and the log-post idempotency design ahead of slices
+12b–12d, so those slices implement a decision already written down rather
+than inventing one mid-slice.
+
+**`packages/storage/src/repos/logging.ts`** — `findRoute` and
+`isChannelExcluded`, read-only. Neither table has a writer yet; nothing in
+Release 1 configures `log_routes` or `log_excluded_channels` except a future
+operator CLI (WP5 slice 13), so tests seed rows with a direct `db.insert`,
+the same way `write.test.ts` and `columns.test.ts` already do for tables
+with no repo setter.
+
+**`pipelineRepo.forgetFirstSight`** — the release half of the existing
+`recordFirstSight` claim, added because ADR 0023 decision 4 needs it: the
+logging module claims before a Discord send and releases the claim if the
+send throws, deliberately inverting the role-effects "claim before REST,
+never release" pattern, because logging has no reconciliation to fall back
+on and a permanent silent claim would mean a transient failure loses a log
+line forever.
+
+**`RoleEvent` gains `name`** (`packages/core/src/discord/events.ts`,
+`packages/discord/src/events.ts`). Free: discord.js already hands the
+`GuildRoleCreate`/`Update`/`Delete` listener the full `Role` object,
+including on delete, where it is the role's last-known state an instant
+before removal from `guild.roles.cache` — not a second Discord call, just
+translation that was previously discarding it. Proved against the real
+gateway-packet harness (`packages/discord/src/events.test.ts`), including
+that a delete after a rename reports the *renamed* name, since the object
+handed to the delete listener already reflects it.
+
+**Broke, to check the tests, continuing from 84.** 85. `forgetFirstSight`
+filtered only on `eventKind`, dropping the `fingerprint` condition → the new
+"releases only the named fingerprint" test failed (added specifically
+because the original three tests could not have caught this — none of them
+recorded two different fingerprints under one guild and checked that
+forgetting one left the other claimed). 86. `findRoute` hard-coded
+`enabled: true` → "reports enabled: false" failed. 87. `findRoute` dropped
+its `eventKind` filter → "does not confuse two event kinds" failed. 88.
+`isChannelExcluded` always returned `true` → three tests failed, including
+the cross-guild one. 89. The adapter's role-event translation stopped
+reading `role.name`, sending `''` → the new role-name test failed. All five
+restored by file copy.
+
+853 → 870 tests green; typecheck and lint exit 0.
+
+---
+
+## WP4 / slice 12b — the plain log subscriber — 2026-08-29
+
+`packages/core/src/logging/{format.ts,subscriber.ts}`: `createLoggingSubscriber`
+handles `messageUpdate`, `memberAdd`, `memberRemove`, `roleCreate`,
+`roleUpdate`, `roleDelete`. `messageDelete` falls through untouched — slice
+12c's job, once the audit-log correlation exists.
+
+Per event: look up `log_routes` for the mapped snake_case kind
+(`message_edit`, `member_join`, ...); for a message event, refuse a source
+channel on `log_excluded_channels`; claim a namespaced fingerprint
+(`log:<kind>`, never the bare gateway kind — that PK is already taken by the
+pipeline's own gate 2, and claiming it again would just observe "already
+seen" and never fire); format; send; **release the claim if the send
+throws**, per ADR 0023 decision 4's deliberate inversion of the role-effects
+"claim, never release" pattern. `roleUpdate` gets its own content-based
+fingerprint (`roleId:name`) computed locally, rather than teaching the
+shared `fingerprint.ts` a new case — that module is shared by every future
+consumer of `roleUpdate`, and this one only needs edge-triggered semantics
+for itself.
+
+Tested in `apps/daemon/src/logging.integration.test.ts`, wired against the
+real repositories and `FakeDiscord`, matching how every other subscriber in
+this codebase is tested (none of them have an isolated unit test with
+hand-rolled ports — a fake agreeing with itself proves nothing about the
+`event_dedupe` unique constraint the claim/release pair actually leans on).
+Direct `subscriber.handle()` calls throughout, not `Pipeline.dispatch()` —
+routing through the pipeline would let gate 2's own dedupe silently absorb a
+replay before it ever reached this module, which is exactly the case these
+tests exist to isolate.
+
+**Broke, to check the tests, continuing from 89.** 90. Removed the excluded-
+channel check → failed. 91. Removed the `route.enabled` check → failed. 92.
+Removed the claim gate (posted unconditionally) → 2 failed, including the
+role-update-specific one. 93. Removed the release-on-failure call → the
+retry-after-failure test failed. 94. Dropped `name` from the `roleUpdate`
+fingerprint, leaving only `roleId` → failed the "second, real update with a
+different name" test — without this the module would silently swallow every
+rename after the first. All five restored by file copy.
+
+870 → 895 tests green; typecheck and lint exit 0.
+
+---
+
+## WP4 / slice 12c — inferred message-delete attribution — 2026-08-29
+
+The hard part ADR 0023 exists for. `messageDelete` now enqueues a job
+(`log_message_delete`, `run_after = now + 3s`) instead of formatting and
+sending inline — ADR 0019 fact 3 says a synchronous fetch finds nothing.
+Content is decided once, at enqueue time, from the route's live
+`include_content`, so content the owner has off is never persisted into the
+job table even for the delay's duration.
+
+**The correlation algorithm** (`packages/core/src/logging/attribution.ts`,
+`correlateDeletion`) is pure and unit-tested directly: given candidates with
+a live count and how much of it this module has already claimed, exactly one
+candidate with an unclaimed increment wins; zero or two-or-more both mean
+`unknown`. `message_delete_runs` (new table, migration `0003_pink_pride`) is
+the durable "already claimed" cursor ADR 0019 says the port cannot provide —
+`AuditLogEntry.count` is a live total, never a delta, so nothing else can
+answer "did a new deletion join this run since I last looked". Claiming
+exactly one unit per successful attribution, not the whole visible delta, is
+what lets a burst of N deletions by the same moderator — N independent jobs
+— each see their own unclaimed unit regardless of execution order.
+
+**The residual ambiguity ADR 0023 named up front actually reproduces.** A
+live test would have been dishonest here since it cannot force the timing;
+`the self-deletion after a fully-claimed run` integration test constructs it
+directly: two real moderator deletions correctly attributed and claimed,
+then a same-author same-channel self-deletion — with the cursor working
+correctly it is `unknown`, exactly as it should be. Mutation 98 below is what
+exposed that my first pass at this test suite did **not** actually exercise
+the cursor's role at all (two messages by one actor pass with or without the
+cursor working, because there is only ever one candidate) — the new test
+closes that gap.
+
+**Idempotency, done as ADR 0023 decision 4 describes for this specific case.**
+A single claim guards resolution *and* the send; `findExistingAttribution`
+reads the already-recorded audit row before resolving anything, so a retry
+after a failed send reuses what was already decided instead of re-consulting
+the audit log — which would see its own prior increment already claimed and
+wrongly downgrade a correct attribution to "unknown" on the second attempt
+(proven by mutation 96). The failed attempt is recorded in `restCalls`
+before the fake's own failure check runs — a fact about the fixture worth
+knowing, not a bug: `record()` happens unconditionally, `check()` is what
+throws.
+
+Wired end-to-end against `FakeDiscord`'s own clock
+(`apps/daemon/src/logging-deletion.integration.test.ts`), not a synchronous
+call — the whole point of the job is the delay, and only a real (fake) clock
+proves the timing rather than assuming it.
+
+**Broke, to check the tests, continuing from 94.** 95. `correlateDeletion`
+picked the first active candidate instead of refusing when more than one was
+active → failed both the unit test and the integration test asserting
+neither moderator is named. 96. Removed the `findExistingAttribution` guard,
+forcing re-resolution on every call → the retry-after-failure integration
+test failed exactly as decision 3's own reasoning predicts: a correct first
+attribution downgraded to "unknown" on retry. 97. Removed the release-on-
+failure call → the same test failed differently, this time because the
+retry never got a chance to send at all. 98. Made `incrementClaimedCount` a
+no-op → survived against the *original* test suite, which is the finding
+worth recording: neither existing test actually depended on the cursor,
+because both only ever involve one actor. Added the self-deletion-after-a-
+claimed-run test specifically to close that gap, confirmed it passes against
+correct code, then confirmed mutation 98 now fails it (and the direct repo
+test) before moving on. 99. Removed the excluded-channel check from the
+`messageDelete` branch → failed. 100. Removed the `route.enabled` check from
+the same branch → failed. 101. Dropped `(inferred)` from the formatted
+message → failed the label test. All seven restored by file copy.
+
+895 → 935 tests green; typecheck and lint exit 0. `npm run db:migrate`
+applies the new `message_delete_runs` table cleanly (a plain `CREATE TABLE`,
+not the `ALTER TABLE` rebuild ADR 0021's migration hit).
+
+---
+
+## WP4 / slice 12d — gap markers — 2026-08-29
+
+ADR 0023 decision 5, and the last WP4 slice before wiring. On a non-resumed
+`connection` event the logging subscriber now posts one marker
+("⚠️ Bananasaurs was disconnected from `<t:from:t>` to `<t:to:t>`. Message,
+member, and role events in that window were not captured.") to every
+*distinct* channel `listEnabledLogChannels` (new repo function) returns —
+one marker per channel even when two event kinds route to the same one.
+Discord's own `<t:unix:t>` markup renders in each reader's local time, so
+nobody has to guess a server timezone.
+
+**Corrected one detail from the ADR during implementation, in place, since
+nothing had shipped from it yet:** decision 5 originally said to key the
+per-channel idempotency claim on `(gapId, channelId)`. `gapId` is minted by
+`recordGap`, inside `connection-subscriber.ts` — a *different* subscriber.
+Subscribers share no state and `Pipeline.dispatch` discards each one's
+return value, so there is no way for the logging module to learn the id
+connection-subscriber just assigned. `disconnectedAtMs`, already on the
+event, identifies the same gap exactly as well — a guild cannot have two
+simultaneous disconnections — so the claim key is `(disconnectedAtMs,
+channelId)` instead. Recorded in the ADR text itself rather than as a
+separate entry, since the decision did not change, only which field
+implements it.
+
+Each channel is independent: one channel's send failing must not stop
+another's, so the loop tries every enabled channel and catches per-channel,
+logging and moving on rather than propagating the first failure — the
+opposite of every other path in this module, where a caught failure is
+rethrown so the job/pipeline sees it. That is deliberate: there is nothing
+above this to retry a gap marker (no job, immediate delivery on the
+connection event), so swallowing per-channel and logging is the only way
+one bad channel does not silently cost every other configured channel its
+marker too.
+
+**Broke, to check the tests, continuing from 101.** 102. Removed the
+`event.resumed` early return → posted a marker for a resumed session that
+lost nothing → failed. 103. Removed the per-channel claim check → the no-
+double-post-on-redelivery test failed. 104. Removed the per-channel
+try/catch, letting a send failure propagate → the "still posts to the other
+channel" test failed by throwing instead of completing with both channels
+attempted. 105. Dropped `channelId` from the claim fingerprint, leaving only
+`disconnectedAtMs` → the second of two configured channels silently never
+got its marker, caught by the "posts to every distinct channel configured"
+test. All four restored by file copy.
+
+952 tests green; typecheck and lint exit 0.
+
+---
+
+## WP4 / slice 12e — wiring into the composition root — 2026-08-29
+
+The last WP4 slice. `apps/daemon/src/runtime/guild.ts`: `createLoggingSubscriber`
+added to `subscribers`, `logMessageDeleteHandler` added to the job worker's
+handlers, both wired to the real repositories exactly as every other
+subscriber and handler in this function already is. Nothing new decided
+here — every port closure mirrors a pattern `reconcilePorts` or
+`adoptionPorts` already established two slices ago.
+
+**Proved with the same instrument WP5-slice-6's own handoff named as a
+finding: "No daemon trigger for X" (`docs/reports/WP5-slice-6.md` deferred
+items).** Two tests added to `daemon.integration.test.ts` — the file that
+pushes raw gateway packets through a real discord.js client and a real
+`createDaemon`, the only place composition-root wiring is verified end to
+end rather than by construction — assert that a `GUILD_ROLE_CREATE` packet
+produces a posted log line, and that a `MESSAGE_DELETE` packet produces a
+job that the real worker drains into one. Both were written before the
+wiring existed and failed for exactly the missing-registration reason
+(`expected [] to have a length of 1 but got +0`) before the two lines were
+added.
+
+**Broke, to check the tests, continuing from 105.** 106. Removed
+`createLoggingSubscriber(loggingPorts)` from `subscribers` → both new
+end-to-end tests failed (the deletion test too, since nothing was left to
+enqueue its job). 107. Removed `logMessageDeleteHandler(...)` from the job
+worker's handlers → the deletion test failed; the role-create test, which
+does not touch the job system, correctly kept passing. Both restored by
+file copy.
+
+954 tests green; typecheck and lint exit 0. WP4's feature work is complete;
+`docs/20`'s seven-part report is next, then the package boundary.

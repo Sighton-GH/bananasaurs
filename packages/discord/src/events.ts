@@ -187,6 +187,7 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
       guildId: role.guild.id,
       receivedAtMs: now(),
       roleId: role.id,
+      name: role.name,
     }));
   };
   client.on(Events.GuildRoleCreate, roleEvent('roleCreate'));

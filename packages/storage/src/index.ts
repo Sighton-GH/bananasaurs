@@ -20,6 +20,7 @@ export { authzStoreFor, isTargetProtected } from './repos/authz.js';
 export * as effectRepo from './repos/effects.js';
 export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
+export * as loggingRepo from './repos/logging.js';
 export * as panelRepo from './repos/panels.js';
 export * as pipelineRepo from './repos/pipeline.js';
 export * as roleRepo from './repos/roles.js';

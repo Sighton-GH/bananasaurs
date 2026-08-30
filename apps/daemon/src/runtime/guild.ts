@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import {
   createConnectionSubscriber,
   createInteractionSubscriber,
+  createLoggingSubscriber,
   createMemberUpdateSubscriber,
   createReactionSubscriber,
   EffectGateway,
@@ -16,7 +17,9 @@ import {
   type EffectGatewayDeps,
   type InteractionSubscriberDeps,
   type Logger,
+  type LoggingPorts,
   type MemberUpdatePorts,
+  type MessageDeleteAttributionPorts,
   type ReconcilePorts,
   type Subscriber,
 } from '@bananasaurs/core';
@@ -27,6 +30,7 @@ import {
   isTargetProtected,
   jobRepo,
   jobStoreFor,
+  loggingRepo,
   panelRepo,
   pipelineRepo,
   roleRepo,
@@ -34,6 +38,7 @@ import {
 } from '@bananasaurs/storage';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
+import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -207,6 +212,58 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     setAdoptionPassState: adoptionStateWriter(scope, now),
   };
 
+  const loggingPorts: LoggingPorts = {
+    guildId,
+    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+    listEnabledLogChannels: () => loggingRepo.listEnabledLogChannels(scope),
+    claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: now() }),
+    release: (input) => pipelineRepo.forgetFirstSight(scope, input),
+    sendMessage: (channelId, message) => discord.sendMessage(guildId, channelId, message),
+    enqueueDeletionAttribution: ({ dedupeKey, payload, runAfter }) =>
+      jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.logMessageDelete,
+        payload,
+        dedupeKey,
+        runAfter,
+        now: now(),
+      }),
+    now,
+    logger,
+  };
+
+  const deletionAttributionPorts: MessageDeleteAttributionPorts = {
+    guildId,
+    findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
+    fetchAuditLog: () =>
+      discord.fetchAuditLog(guildId, { actionType: 'message_delete', limit: 25 }),
+    claimedCountFor: (input) => loggingRepo.claimedCountFor(scope, input),
+    incrementClaimedCount: (input) => loggingRepo.incrementClaimedCount(scope, input),
+    findExistingAttribution: (messageId) =>
+      loggingRepo.findMessageDeleteAttribution(scope, messageId),
+    recordAudit: ({ actorId, inferred, at, payload }) =>
+      effectRepo.recordAudit(scope, {
+        at,
+        actorType: actorId === undefined ? 'system' : 'member',
+        actorId,
+        action: 'message_delete',
+        subjectType: 'message',
+        subjectId: payload.messageId,
+        before: {
+          channelId: payload.channelId,
+          authorId: payload.authorId,
+          content: payload.content,
+        },
+        dryRun: false,
+        inferred,
+      }),
+    claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: now() }),
+    release: (input) => pipelineRepo.forgetFirstSight(scope, input),
+    sendMessage: (channelId, message) => discord.sendMessage(guildId, channelId, message),
+    logger,
+    now,
+  };
+
   const subscribers: Subscriber[] = [
     createConnectionSubscriber(
       {
@@ -224,6 +281,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createReactionSubscriber(reconcilePorts),
     createInteractionSubscriber(interactionPorts),
     createMemberUpdateSubscriber(memberUpdatePorts),
+    createLoggingSubscriber(loggingPorts),
   ];
 
   const worker = new JobWorker({
@@ -231,6 +289,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     handlers: [
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
+      logMessageDeleteHandler(deletionAttributionPorts),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this
       // slice does not build (ADR 0020).

@@ -566,6 +566,36 @@ export const logExcludedChannels = sqliteTable(
   ],
 );
 
+/**
+ * How much of a coalesced `MESSAGE_DELETE` audit run this module has already
+ * attributed to a message (ADR 0023 decision 3).
+ *
+ * A `MESSAGE_DELETE` audit entry describes a *run* of deletions by one actor
+ * against one author in one channel, and its `count` is a running total, not
+ * a per-deletion signal (ADR 0019). `claimed_count` is what makes "a new
+ * deletion joined this run" answerable at all: compare the entry's live
+ * count against how much of it this module has already claimed.
+ */
+export const messageDeleteRuns = sqliteTable(
+  'message_delete_runs',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    actorUserId: snowflake('actor_user_id').notNull(),
+    authorId: snowflake('author_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    claimedCount: integer('claimed_count').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.actorUserId, t.authorId, t.channelId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('message_delete_runs_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('message_delete_runs_actor_user_id_snowflake', snowflakeCheck(t.actorUserId)),
+    check('message_delete_runs_author_id_snowflake', snowflakeCheck(t.authorId)),
+    check('message_delete_runs_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('message_delete_runs_claimed_count_nonnegative', sql`${t.claimedCount} >= 0`),
+  ],
+);
+
 // --- dashboard accounts and capability --------------------------------------
 
 /**

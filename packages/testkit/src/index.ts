@@ -1,5 +1,6 @@
 export {
   ACK_DEADLINE_MS,
+  AUDIT_LOG_LAG_MS,
   BOT_USER_ID,
   FakeDiscord,
   FOLLOWUP_DEADLINE_MS,

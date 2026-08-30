@@ -43,6 +43,36 @@ export const recordFirstSight = (scope: GuildScope, input: FirstSightInput): boo
   });
 
 /**
+ * Releases a claim made by `recordFirstSight`, so the same fingerprint can be
+ * seen as "first" again.
+ *
+ * For ADR 0023: the logging module claims before attempting a Discord send
+ * and releases the claim if the send throws, so a transient failure does not
+ * blackhole a log line forever the way it safely can for a role effect (which
+ * has reconciliation to fall back on; logging does not). A harmless no-op
+ * when nothing was claimed, matching `recordFirstSight`'s own tolerance for
+ * being called from a guarded, non-concurrent path (ADR 0020: one promise
+ * chain per guild, so there is no race between a claim and its release).
+ */
+export const forgetFirstSight = (
+  scope: GuildScope,
+  input: Pick<FirstSightInput, 'eventKind' | 'fingerprint'>,
+): void =>
+  write(scope, ({ db }) => {
+    db.delete(eventDedupe)
+      .where(
+        scope.only(
+          eventDedupe,
+          and(
+            eq(eventDedupe.eventKind, input.eventKind),
+            eq(eventDedupe.fingerprint, input.fingerprint),
+          ),
+        ),
+      )
+      .run();
+  });
+
+/**
  * Drops dedupe rows older than the retention window.
  *
  * The table grows without bound otherwise — one row per non-reaction event,
