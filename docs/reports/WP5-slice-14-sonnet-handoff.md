@@ -21,15 +21,19 @@ can be attributed. Read that section before you touch `ports.ts`.
 
 ```bash
 git fetch origin
-git checkout worktree-wp5-dashboard
+git checkout main
 ```
 
-Slices 14a–14d are two commits on that branch, not yet merged to main. Work on
-the same branch and commit on top. Never `git push`, never merge, never force.
+Slices 14a–14d are **merged to main** as "Merge WP5 slice 14 first half".
+Start from main and call `EnterWorktree` with name `wp5-dashboard-page`.
 
-Do not work on `wp4-logging`, `worktree-wp3-role-panels`,
-`worktree-wp5-live-test-fixes`, `worktree-wp5-live-test-report`,
-`worktree-clarify-doc21`, or `worktree-wp5-operator-cli`. All stale or merged.
+Commit on your new branch only. Never `git push`, never merge, never force.
+
+Do not work on `worktree-wp5-dashboard` — that is the merged branch carrying the
+first half, and its name is one character away from yours. Also stale or merged:
+`wp4-logging`, `worktree-wp3-role-panels`, `worktree-wp5-live-test-fixes`,
+`worktree-wp5-live-test-report`, `worktree-clarify-doc21`,
+`worktree-wp5-operator-cli`.
 
 ## SETUP
 
