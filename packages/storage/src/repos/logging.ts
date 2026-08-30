@@ -188,3 +188,97 @@ export const findMessageDeleteAttribution = (
     if (!row) return undefined;
     return { actorId: row.actorId ?? undefined, inferred: row.inferred === 1 };
   });
+
+// --- writers (WP5 slice 13d) -------------------------------------------------
+
+export interface SetRouteInput {
+  eventKind: string;
+  channelId: string;
+  /**
+   * Whether the rendered log line may quote the message.
+   *
+   * A per-route decision rather than a global one: an operator can log that a
+   * message was deleted in #general without reproducing its text, which is the
+   * distinction ADR 0023 draws between recording an event and republishing
+   * content.
+   */
+  includeContent: boolean;
+}
+
+/**
+ * Points an event kind at a channel, creating the route or re-pointing it.
+ *
+ * Upsert rather than insert-or-fail. The primary key is `(guild_id,
+ * event_kind)`, so "route member joins to #logs" is a statement about one row
+ * whatever its history — and an operator re-running the command after a dropped
+ * SSH connection must not get a constraint error for saying the same thing
+ * twice (`CLAUDE.md` rule 6, applied to configuration rather than to effects).
+ *
+ * It also re-enables: `log routing off` disables rather than deletes, so that
+ * turning logging back on does not require remembering the channel id, and
+ * `set` is what turns it back on.
+ */
+export const setRoute = (scope: GuildScope, input: SetRouteInput): void =>
+  write(scope, ({ db }) => {
+    db.insert(logRoutes)
+      .values({
+        guildId: scope.guildId,
+        eventKind: input.eventKind,
+        channelId: input.channelId,
+        includeContent: input.includeContent ? 1 : 0,
+        enabled: 1,
+      })
+      .onConflictDoUpdate({
+        target: [logRoutes.guildId, logRoutes.eventKind],
+        set: {
+          channelId: input.channelId,
+          includeContent: input.includeContent ? 1 : 0,
+          enabled: 1,
+        },
+      })
+      .run();
+  });
+
+/**
+ * Turns a route on or off, keeping the channel.
+ *
+ * Returns whether a route existed to change. False is not a failure — it is the
+ * difference between "logging stopped" and "you named an event kind that was
+ * never routed", and an operator told the first when the second is true will
+ * believe they have stopped logging something that is still being logged.
+ */
+export const setRouteEnabled = (scope: GuildScope, eventKind: string, enabled: boolean): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(logRoutes)
+      .set({ enabled: enabled ? 1 : 0 })
+      .where(scope.only(logRoutes, eq(logRoutes.eventKind, eventKind)))
+      .run();
+    return result.changes > 0;
+  });
+
+/**
+ * Marks a source channel as never logged from. Returns whether it was new.
+ *
+ * `onConflictDoNothing` rather than a pre-read: the unique constraint is the
+ * check, and a read-then-insert would be two statements where one will do.
+ */
+export const excludeChannel = (scope: GuildScope, channelId: string): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .insert(logExcludedChannels)
+      .values({ guildId: scope.guildId, channelId })
+      .onConflictDoNothing()
+      .run();
+    return result.changes > 0;
+  });
+
+/** Removes an exclusion. Returns whether there was one. */
+export const unexcludeChannel = (scope: GuildScope, channelId: string): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .delete(logExcludedChannels)
+      .where(scope.only(logExcludedChannels, eq(logExcludedChannels.channelId, channelId)))
+      .run();
+    return result.changes > 0;
+  });

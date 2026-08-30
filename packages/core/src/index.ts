@@ -101,7 +101,12 @@ export {
   formatRoleDelete,
   formatRoleUpdate,
 } from './logging/format.js';
-export { createLoggingSubscriber, type LoggingPorts, type LogRoute } from './logging/subscriber.js';
+export {
+  createLoggingSubscriber,
+  LOG_EVENT_KINDS,
+  type LoggingPorts,
+  type LogRoute,
+} from './logging/subscriber.js';
 export {
   correlateDeletion,
   MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
@@ -284,9 +289,30 @@ export {
   type RegisteredCommand,
 } from './ops/dispatch.js';
 export { OPERATOR_COMMANDS } from './ops/registry.js';
-export type { OpsGatewayState, OpsInstance, OpsPorts, OpsSafetyState } from './ops/ports.js';
+export type {
+  OpsGatewayState,
+  OpsInstance,
+  OpsPorts,
+  OpsRetryOutcome,
+  OpsSafetyState,
+} from './ops/ports.js';
+export {
+  findSetting,
+  OPS_SETTINGS,
+  parseSettingValue,
+  type OpsSettingChange,
+  type OpsSettingSpec,
+} from './ops/settings.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
 export { killswitchCommand } from './ops/commands/killswitch.js';
+export {
+  configSetCommand,
+  jobsRetryCommand,
+  logRoutingExcludeCommand,
+  logRoutingOffCommand,
+  logRoutingSetCommand,
+  logRoutingUnexcludeCommand,
+} from './ops/commands/writes.js';
 export {
   auditTailCommand,
   configGetCommand,

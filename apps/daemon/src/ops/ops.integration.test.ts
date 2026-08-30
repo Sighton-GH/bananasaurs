@@ -6,7 +6,7 @@ import { pino } from 'pino';
 import { Client } from 'discord.js';
 import { parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { effectRepo, guildRepo, jobRepo } from '@bananasaurs/storage';
+import { effectRepo, guildRepo, jobRepo, loggingRepo } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { run } from '@bananasaurs/cli';
@@ -303,7 +303,10 @@ describe('the operator CLI, end to end', () => {
       seed();
       const result = await cli('config get BANANASAURS_DRY_RUN');
       expect(result.code).toBe(0);
-      expect(result.out.trim()).toBe('BANANASAURS_DRY_RUN=false');
+      expect(result.out).toContain('BANANASAURS_DRY_RUN=false');
+      // Labelled with its namespace (ADR 0025), so an operator cannot read a
+      // process value as the guild's own setting.
+      expect(result.out).toContain('environment');
     });
 
     it('`config get` redacts the bot token, which the config really does hold', async () => {
@@ -314,7 +317,7 @@ describe('the operator CLI, end to end', () => {
       seed();
       const result = await cli('config get DISCORD_BOT_TOKEN');
       expect(result.code).toBe(0);
-      expect(result.out.trim()).toBe('DISCORD_BOT_TOKEN=<redacted>');
+      expect(result.out).toContain('DISCORD_BOT_TOKEN=<redacted>');
       expect(result.out).not.toContain('not.a.real.token');
     });
 
@@ -428,6 +431,259 @@ describe('the operator CLI, end to end', () => {
       ]) {
         const result = await cli(line);
         expect(result.code, line).toBe(0);
+        expect(() => JSON.parse(result.out) as unknown, line).not.toThrow();
+      }
+    });
+  });
+  /**
+   * The write commands that stay inside the database (slice 13d).
+   *
+   * Asserted against the columns the *rest of the product* reads, never against
+   * the command's own output: `loggingRepo.findRoute` is what the logging
+   * subscriber calls, and `guildRepo.readSafetyState` is what the effect
+   * gateway calls. A command that printed a convincing sentence and wrote the
+   * wrong column would pass a test of its text and fail these.
+   */
+  describe('the database write commands', () => {
+    const scope = () => t.scopes.forGuild(GUILD);
+    const seed = (): void => {
+      guildRepo.upsertGuild(scope(), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+    };
+    const CHANNEL = '456789012345678901';
+
+    it('`config set` changes the column the effect gateway reads', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('config set role_rate_per_min 60 --confirm');
+      expect(result.code).toBe(0);
+      expect(guildRepo.readSafetyState(scope())?.roleRatePerMin).toBe(60);
+
+      const rows = effectRepo.tailAudit(scope());
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        action: 'config.set',
+        actorType: 'operator_cli',
+        actorId: null,
+        actorUnixUserClaimed: 'bryan',
+        via: 'ssh',
+      });
+      expect(JSON.parse(rows[0]?.before ?? 'null')).toEqual({ role_rate_per_min: 20 });
+      expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ role_rate_per_min: 60 });
+    });
+
+    it('`config set` clears a breaker that nothing else in the product could', async () => {
+      startDaemon();
+      seed();
+      guildRepo.tripBreaker(scope(), 'five failures in a row', discord.now());
+      expect(guildRepo.readSafetyState(scope())?.breakerOpen).toBe(true);
+
+      const result = await cli('config set breaker closed --confirm');
+      expect(result.code).toBe(0);
+      expect(guildRepo.readSafetyState(scope())?.breakerOpen).toBe(false);
+    });
+
+    it('`config set` refuses a process configuration key, and changes nothing', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('config set BANANASAURS_DRY_RUN off --confirm');
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/process configuration/);
+      expect(guildRepo.readSafetyState(scope())?.dryRun).toBe(false);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+
+    it('`config get` reads a guild setting the same command just wrote', async () => {
+      // The pair `docs/17` documents, working as a pair (ADR 0025).
+      startDaemon();
+      seed();
+      await cli('config set reconcile_budget 99 --confirm');
+      const result = await cli('config get reconcile_budget');
+      expect(result.code).toBe(0);
+      expect(result.out).toContain('reconcile_budget=99');
+      expect(result.out).toContain(GUILD);
+    });
+
+    it('`log routing set` makes WP4 not inert, which is what it was for', async () => {
+      startDaemon();
+      seed();
+      const result = await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      expect(result.code).toBe(0);
+
+      // The exact call the logging subscriber makes on a member join.
+      expect(loggingRepo.findRoute(scope(), 'member_join')).toMatchObject({
+        channelId: CHANNEL,
+        enabled: true,
+        includeContent: true,
+      });
+      // And the gap-marker query, which is the other reader of the table.
+      expect(loggingRepo.listEnabledLogChannels(scope())).toEqual([CHANNEL]);
+
+      const listed = await cli('log routing list');
+      expect(listed.out).toContain(CHANNEL);
+      expect(listed.out).not.toMatch(/nothing is being logged/i);
+    });
+
+    it('`log routing set --no-content` keeps the message text out of the log', async () => {
+      startDaemon();
+      seed();
+      const result = await cli(`log routing set message_edit ${CHANNEL} --no-content --confirm`);
+      expect(result.code).toBe(0);
+      expect(loggingRepo.findRoute(scope(), 'message_edit')?.includeContent).toBe(false);
+    });
+
+    it('`log routing off` stops the logging and keeps the channel', async () => {
+      startDaemon();
+      seed();
+      await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      const result = await cli('log routing off member_join --confirm');
+      expect(result.code).toBe(0);
+
+      expect(loggingRepo.findRoute(scope(), 'member_join')?.enabled).toBe(false);
+      expect(loggingRepo.listEnabledLogChannels(scope())).toEqual([]);
+      // Turning it back on needs no channel id, which is why `off` disables
+      // rather than deletes.
+      expect(loggingRepo.listRoutes(scope())[0]?.channelId).toBe(CHANNEL);
+    });
+
+    it('`log routing exclude` beats a route that is otherwise configured', async () => {
+      startDaemon();
+      seed();
+      await cli(`log routing set member_join ${CHANNEL} --confirm`);
+      const result = await cli(`log routing exclude ${CHANNEL} --confirm`);
+      expect(result.code).toBe(0);
+      // The subscriber checks the exclusion before the route.
+      expect(loggingRepo.isChannelExcluded(scope(), CHANNEL)).toBe(true);
+
+      await cli(`log routing unexclude ${CHANNEL} --confirm`);
+      expect(loggingRepo.isChannelExcluded(scope(), CHANNEL)).toBe(false);
+    });
+
+    it('`jobs retry` returns a real failed job to the real queue', async () => {
+      startDaemon();
+      seed();
+      const enqueued = jobRepo.enqueue(scope(), {
+        kind: 'reconcile_guild',
+        payload: '{}',
+        dedupeKey: 'reconcile:all',
+        now: discord.now(),
+      });
+      const jobId = enqueued.jobId ?? -1;
+      jobRepo.claimNext(scope(), discord.now());
+      jobRepo.failJob(scope(), jobId, 'Discord said 503', discord.now(), { permanent: true });
+      expect(jobRepo.findJob(scope(), jobId)?.state).toBe('failed');
+
+      const result = await cli(`jobs retry ${String(jobId)} --confirm`);
+      expect(result.code).toBe(0);
+      expect(jobRepo.findJob(scope(), jobId)).toMatchObject({ state: 'queued', attempts: 0 });
+      expect(effectRepo.tailAudit(scope())[0]).toMatchObject({ action: 'job.retried' });
+    });
+
+    it('`jobs retry` refuses a job that is already queued, and audits nothing', async () => {
+      startDaemon();
+      seed();
+      const enqueued = jobRepo.enqueue(scope(), {
+        kind: 'reconcile_guild',
+        payload: '{}',
+        dedupeKey: 'reconcile:all',
+        now: discord.now(),
+      });
+      const result = await cli(`jobs retry ${String(enqueued.jobId ?? -1)} --confirm`);
+      expect(result.code).toBe(1);
+      expect(result.err).toMatch(/already going to run/);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+
+    it('refuses every write command without --confirm, and writes nothing', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'config set role_rate_per_min 60',
+        `log routing set member_join ${CHANNEL}`,
+        'log routing off member_join',
+        `log routing exclude ${CHANNEL}`,
+        `log routing unexclude ${CHANNEL}`,
+        'jobs retry 1',
+      ]) {
+        const result = await cli(line);
+        // Exit 3: refused by a control, not a command that ran and failed.
+        expect(result.code, line).toBe(3);
+        expect(result.err, line).toMatch(/--confirm/);
+      }
+      expect(guildRepo.readSafetyState(scope())?.roleRatePerMin).toBe(20);
+      expect(loggingRepo.listRoutes(scope())).toEqual([]);
+      expect(loggingRepo.listExcludedChannels(scope())).toEqual([]);
+      expect(effectRepo.tailAudit(scope())).toEqual([]);
+    });
+
+    it('starts read-only against a database it has never written', async () => {
+      // `docs/17` §1: "BANANASAURS_READONLY=1 makes every write command refuse.
+      // Use this for ordinary inspection." Before this slice it could not be
+      // used for that at all: `applyConfiguredDryRun` writes `guilds.dry_run`
+      // from the environment at every start, so an observe-only process threw
+      // `ReadonlyError` out of `createDaemon` on any database whose row was
+      // missing or whose column disagreed — which is every fresh install.
+      const readonly = openMigratedTestDatabase();
+      expect(() => {
+        daemon = createDaemon({
+          config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '0' }),
+          scopes: readonly.readonlyScopes,
+          discord,
+          client,
+          logger,
+          now: () => discord.now(),
+        });
+      }).not.toThrow();
+      socket.serve((raw) => daemon.ops.dispatch(raw));
+
+      // And it answers, which is the point of starting it.
+      const result = await cli('status');
+      expect(result.code).toBe(0);
+      readonly.close();
+    });
+
+    it('refuses every write command when the daemon is read-only', async () => {
+      const readonly = openMigratedTestDatabase();
+      guildRepo.upsertGuild(readonly.scopes.forGuild(GUILD), { name: 'g', enabled: true, now: 0 });
+      daemon = createDaemon({
+        config: config({ BANANASAURS_READONLY: '1' }),
+        scopes: readonly.readonlyScopes,
+        discord,
+        client,
+        logger,
+        now: () => discord.now(),
+      });
+      socket.serve((raw) => daemon.ops.dispatch(raw));
+
+      for (const line of [
+        'config set role_rate_per_min 60 --confirm',
+        `log routing set member_join ${CHANNEL} --confirm`,
+        `log routing exclude ${CHANNEL} --confirm`,
+      ]) {
+        const result = await cli(line);
+        expect(result.code, line).toBe(3);
+      }
+      expect(guildRepo.readSafetyState(readonly.scopes.forGuild(GUILD))?.roleRatePerMin).toBe(20);
+      expect(loggingRepo.listRoutes(readonly.scopes.forGuild(GUILD))).toEqual([]);
+      expect(effectRepo.tailAudit(readonly.scopes.forGuild(GUILD))).toEqual([]);
+      readonly.close();
+    });
+
+    it('answers every write command as JSON too, for an agent', async () => {
+      startDaemon();
+      seed();
+      for (const line of [
+        'config set role_rate_per_min 60 --confirm --json',
+        `log routing set member_join ${CHANNEL} --confirm --json`,
+        `log routing exclude ${CHANNEL} --confirm --json`,
+        `log routing unexclude ${CHANNEL} --confirm --json`,
+        'log routing off member_join --confirm --json',
+      ]) {
+        const result = await cli(line);
+        expect(result.code, `${line}: ${result.err}`).toBe(0);
         expect(() => JSON.parse(result.out) as unknown, line).not.toThrow();
       }
     });

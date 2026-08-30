@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, lte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { jobs } from '../schema.js';
@@ -305,4 +305,76 @@ export const requeueStranded = (scope: GuildScope, now: number): number =>
       .where(scope.only(jobs, eq(jobs.state, 'running')))
       .run();
     return result.changes;
+  });
+
+/**
+ * The outcome of `bananasaurs jobs retry <id> --confirm`.
+ *
+ * A union rather than a boolean, because the three refusals need three
+ * different actions from the operator: find the right id, wait for the job that
+ * is already running, or do nothing because the work is already queued.
+ */
+export type RetryOutcome =
+  | { ok: true; job: JobRow }
+  | { ok: false; reason: 'not-found' }
+  | { ok: false; reason: 'not-failed'; state: string }
+  | { ok: false; reason: 'dedupe-blocked'; blockingJobId: number };
+
+/**
+ * Returns a failed job to the queue.
+ *
+ * Only a `failed` job. A `queued` one is already going to run, a `running` one
+ * is running, and a `done` one succeeded — requeueing any of those would mean
+ * the operator's mental model is wrong, and the refusal says which state it is
+ * actually in rather than doing something plausible.
+ *
+ * **`attempts` resets to zero.** `claimNext` increments it and `failJob` gives
+ * up once it reaches `max_attempts`, so a retry that preserved the count would
+ * spend one claim arriving back at exactly the state the operator asked to
+ * leave.
+ *
+ * **The dedupe key is checked first.** `jobs_dedupe` is unique over
+ * `queued` and `running` rows (ADR 0016), so a failed row and a freshly
+ * enqueued replacement coexist — until this makes the failed one queued too, at
+ * which point SQLite raises a constraint error naming an index. That is a true
+ * statement an operator cannot act on, so the condition is detected and
+ * reported as what it means: the work is already going to run, as job N.
+ *
+ * Select-then-update inside one `write()`; better-sqlite3 is synchronous and
+ * `write()` forbids an await, so nothing interleaves between the two.
+ */
+export const retryJob = (scope: GuildScope, jobId: number, now: number): RetryOutcome =>
+  write(scope, ({ db }) => {
+    const row = db
+      .select(columns)
+      .from(jobs)
+      .where(scope.only(jobs, eq(jobs.jobId, jobId)))
+      .get();
+
+    // Guild-scoped, so another guild's job is not "forbidden", it is not there.
+    // Distinguishing the two would confirm the id exists somewhere, which is a
+    // partition leak however small.
+    if (!row) return { ok: false, reason: 'not-found' };
+    if (row.state !== 'failed') return { ok: false, reason: 'not-failed', state: row.state };
+
+    const blocking = db
+      .select({ jobId: jobs.jobId })
+      .from(jobs)
+      .where(
+        scope.only(
+          jobs,
+          eq(jobs.dedupeKey, row.dedupeKey),
+          inArray(jobs.state, ['queued', 'running']),
+        ),
+      )
+      .limit(1)
+      .get();
+    if (blocking) return { ok: false, reason: 'dedupe-blocked', blockingJobId: blocking.jobId };
+
+    db.update(jobs)
+      .set({ state: 'queued', attempts: 0, runAfter: now, lastError: null, updatedAt: now })
+      .where(scope.only(jobs, eq(jobs.jobId, jobId)))
+      .run();
+
+    return { ok: true, job: { ...row, state: 'queued', attempts: 0, runAfter: now } };
   });

@@ -1,5 +1,11 @@
 import type { Client } from 'discord.js';
-import { redactConfig, type Config, type OpsInstance, type OpsPorts } from '@bananasaurs/core';
+import {
+  redactConfig,
+  type Config,
+  type OpsInstance,
+  type OpsPorts,
+  type OpsSettingChange,
+} from '@bananasaurs/core';
 import {
   effectRepo,
   guildRepo,
@@ -59,16 +65,7 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
     })),
 
   listJobs: (query) =>
-    jobRepo.listJobs(scope, { failedOnly: query.failedOnly, limit: query.limit }).map((job) => ({
-      jobId: job.jobId,
-      kind: job.kind,
-      state: job.state,
-      attempts: job.attempts,
-      maxAttempts: job.maxAttempts,
-      runAfter: job.runAfter,
-      lastError: job.lastError,
-      dedupeKey: job.dedupeKey,
-    })),
+    jobRepo.listJobs(scope, { failedOnly: query.failedOnly, limit: query.limit }).map(jobRow),
 
   listPanels: () => panelRepo.listPanels(scope).map(panelSummary),
 
@@ -107,6 +104,81 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
     })),
 
   listExcludedChannels: () => loggingRepo.listExcludedChannels(scope),
+
+  findJob: (jobId) => {
+    const job = jobRepo.findJob(scope, jobId);
+    return job === undefined ? undefined : jobRow(job);
+  },
+
+  // --- write commands (13d) --------------------------------------------------
+  applySetting: (change) => applySetting(scope, change),
+
+  setRoute: (input) =>
+    loggingRepo.setRoute(scope, {
+      eventKind: input.eventKind,
+      channelId: input.channelId,
+      includeContent: input.includeContent,
+    }),
+  setRouteEnabled: (eventKind, enabled) => loggingRepo.setRouteEnabled(scope, eventKind, enabled),
+  excludeChannel: (channelId) => loggingRepo.excludeChannel(scope, channelId),
+  unexcludeChannel: (channelId) => loggingRepo.unexcludeChannel(scope, channelId),
+
+  retryJob: (jobId) => {
+    const outcome = jobRepo.retryJob(scope, jobId, Date.now());
+    // Projected field by field rather than passed through: the repository's
+    // success case carries the whole job row, and the port's does not need it.
+    return outcome.ok ? { ok: true } : outcome;
+  },
+});
+
+/**
+ * One validated setting change, applied to the column that holds it.
+ *
+ * The `switch` is exhaustive by construction: `OpsSettingChange` is a
+ * discriminated union, so `value` narrows without a cast, and a key added to
+ * `OPS_SETTINGS` with no branch here fails `tsc` rather than falling through to
+ * a silent no-op (ADR 0025).
+ */
+const applySetting = (scope: GuildScope, change: OpsSettingChange): void => {
+  const now = Date.now();
+  switch (change.key) {
+    case 'dry_run':
+      guildRepo.setDryRun(scope, change.value, now);
+      return;
+    case 'role_rate_per_min':
+      guildRepo.setLimits(scope, { roleRatePerMin: change.value }, now);
+      return;
+    case 'reconcile_budget':
+      guildRepo.setLimits(scope, { reconcileBudget: change.value }, now);
+      return;
+    case 'breaker_threshold':
+      guildRepo.setLimits(scope, { breakerThreshold: change.value }, now);
+      return;
+    case 'breaker':
+      guildRepo.resetBreaker(scope, now);
+      return;
+  }
+};
+
+/** The job projection, shared by `jobs list` and `jobs retry`. */
+const jobRow = (job: {
+  jobId: number;
+  kind: string;
+  state: string;
+  attempts: number;
+  maxAttempts: number;
+  runAfter: number;
+  lastError: string | null;
+  dedupeKey: string;
+}) => ({
+  jobId: job.jobId,
+  kind: job.kind,
+  state: job.state,
+  attempts: job.attempts,
+  maxAttempts: job.maxAttempts,
+  runAfter: job.runAfter,
+  lastError: job.lastError,
+  dedupeKey: job.dedupeKey,
 });
 
 /** The listing projection, shared by `panel list` and `panel show`. */

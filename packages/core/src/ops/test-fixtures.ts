@@ -35,6 +35,13 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   listUnassignableRoles: unstubbed('listUnassignableRoles'),
   listRoutes: unstubbed('listRoutes'),
   listExcludedChannels: unstubbed('listExcludedChannels'),
+  findJob: unstubbed('findJob'),
+  applySetting: unstubbed('applySetting'),
+  setRoute: unstubbed('setRoute'),
+  setRouteEnabled: unstubbed('setRouteEnabled'),
+  excludeChannel: unstubbed('excludeChannel'),
+  unexcludeChannel: unstubbed('unexcludeChannel'),
+  retryJob: unstubbed('retryJob'),
   ...over,
 });
 

@@ -1449,3 +1449,104 @@ neither, which is the honesty convention read from the other direction. Both
 mutations then failed.
 
 1161 tests green (from 1081); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13d — the database write commands — 2026-08-29
+
+**Split from the plan's 13d.** The plan sized one slice covering seven write
+commands. Two of them (`panel sync`, `undo`) go through the effect gateway and
+its twelve layers and one (`adoption allow`) reaches the live process's
+in-memory rate limiter; that is a different kind of work from writing a column,
+and together they put the slice well past the ~400 lines `docs/20` calls
+mis-sized. So 13d is the six commands that stay inside the database —
+`config set`, `log routing set|off|exclude|unexclude`, `jobs retry` — and the
+three that reach Discord are 13e.
+
+**ADR 0025, written first.** `docs/17` §1 lists `config get` and `config set`
+as a matched pair. They cannot be one: `config get` reads the environment,
+which nothing running can write and which a daemon that *could* write would be
+escalating from the ops group to root's file. What an operator actually needs
+to change lives on the guild's row. So: one key space to the operator, two
+sources underneath, spelled apart (`BANANASAURS_DRY_RUN` versus `dry_run`),
+every answer labelled with its source, and an environment key refused **by
+name** rather than reported as unknown — "no such key" would be false, and an
+operator told that goes looking for a typo that is not there.
+
+**The interaction the ADR exists to surface.** `applyConfiguredDryRun` writes
+`guilds.dry_run` from the environment at every start, so `config set dry_run
+off` is durable only until the next restart unless the environment agrees. The
+command does not resolve that — the environment is the more explicit statement
+of intent and it is a safety control — it prints the conflict and says which
+one wins.
+
+**`config set breaker closed` gives `resetBreaker` its first caller.** It has
+been in the tree since WP2 with no caller outside `write.test.ts`: layer 5
+could trip and nothing the product shipped could clear it, short of editing the
+database by hand — which is the thing `docs/17` §1 exists to prevent. `open` is
+not an accepted value; two commands that halt effects would mean two states to
+check when it will not act.
+
+**`log routing set` closes the WP4 report's §5 gap.** `log_routes` and
+`log_excluded_channels` have had no writer since WP4 shipped. They have four
+now. The event kind is validated against `LOG_EVENT_KINDS`, exported from the
+subscriber that dispatches on it rather than written out a second time: a route
+on `membre_join` would otherwise succeed, list as configured, and log nothing
+forever, which is the §5 failure reproduced one level up. `off` disables rather
+than deletes, so turning logging back on does not require remembering the
+channel id — and it refuses when there is no route, because an operator who
+mistyped must not be told the logging they asked to stop has stopped.
+
+**`jobs retry` refuses more often than it acts.** Three refusals, each asking
+the operator for something different: a different id, patience, or nothing at
+all. The one worth the code is the dedupe collision — `jobs_dedupe` is unique
+over `queued` and `running` (ADR 0016), so a failed row and a freshly enqueued
+replacement coexist until a retry makes the failed one queued too, at which
+point SQLite raises a constraint error naming an index. True, and useless to
+the person holding the terminal. Detected and reported as what it means: the
+work is already going to run, as job N. `attempts` resets to zero, or the
+retry would spend one claim arriving back at exactly the state it left.
+
+**A read-only daemon could not start.** `docs/17` §1 offers
+`BANANASAURS_READONLY=1` "for ordinary inspection". Before this slice it could
+not be used for that at all: `applyConfiguredDryRun` writes at startup, so an
+observe-only process threw `ReadonlyError` out of `createDaemon` on any
+database whose guild row was missing or whose `dry_run` disagreed with the
+environment — every fresh install. Skipped with a warning now, rather than
+caught: "the process cannot write" is a fact known at that line, and finding it
+out by catching an exception would be finding it out by accident.
+
+**One type widened, for a real reason.** `defineCommand` declared its validator
+as `z.ZodType<A>` — input and output the same type — which quietly banned every
+schema that transforms. A branded snowflake and a coerced job id are both
+transforms, and the input is untrusted JSON off a socket, not `A`. Now
+`z.ZodType<A, z.ZodTypeDef, unknown>`, which is what was always true.
+
+**Broke, to check the tests, continuing from 154.** 154. Reported an
+environment key as unknown → failed. 155. Dropped the environment-overwrite
+warning → failed. 156. Let the breaker be opened by hand → failed. 157.
+Accepted a rate cap of zero → failed. 158/159. Dropped `config get`'s source
+label, then its guild lookup entirely → 1 each. 160. Accepted any event kind →
+failed. 161/162. Dropped the content note, then ignored `--no-content` → 2
+each. 163. Reported `log routing off` as successful with no route → failed.
+164. `setRouteEnabled` ignored its argument → 2 failed. 165. `excludeChannel`
+always claimed the exclusion was new → failed. 166. `unexcludeChannel` lost its
+guild scope → failed. 167. `setRoute` inserted but never re-pointed → 2 failed
+(the first attempt at this one added a no-op key and proved nothing; redone).
+168. `setRoute` stopped re-enabling a disabled route → failed. 169. `retryJob`
+skipped the pending-dedupe check → failed. 170. Preserved the attempt count →
+2 failed. 171. Requeued a job in any state → 2 failed. 172. Lost guild scope on
+the lookup → failed. 173. Surfaced the raw constraint error → failed. 174. See
+below. 175. `setLimits` lost its guild scope → failed. 176. The composition
+root mapped `reconcile_budget` onto the rate cap → failed. 177. Removed the
+read-only start guard → 2 failed. All restored by file copy.
+
+**174 falsified a comment, not just a test.** Removing `setLimits`'s
+empty-patch guard survived, and the reason is that the justification written
+beside it was wrong: drizzle never sees an empty `set`, because `updatedAt` is
+always in it. The guard does do something — it keeps a call that changed
+nothing from claiming `guilds.updated_at` changed — and the test asserted
+`not.toThrow()`, which passes either way. Comment corrected to the true reason,
+test now asserts the timestamp. Mutation then failed.
+
+1236 tests green (from 1161); typecheck and lint exit 0.

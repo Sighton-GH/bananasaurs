@@ -45,10 +45,12 @@ half of the same table pair and is worthless to defer.
 | `log routing list` | 17 | 13c |
 | `config set <key> <value> --confirm` | 17 | 13d |
 | `log routing set <event> <channel> --confirm` | 17 | 13d |
+| `log routing off <event> --confirm` | — | 13d |
+| `log routing exclude\|unexclude <channel> --confirm` | — | 13d |
 | `jobs retry <id> --confirm` | 17 | 13d |
-| `panel sync <id> --confirm` | 17, 19 §7 | 13d |
-| `undo <batch-id> --confirm` | 20 | 13d |
-| `adoption allow <n> --confirm` | 21 ex. 5 | 13d |
+| `panel sync <id> --confirm` | 17, 19 §7 | 13e |
+| `undo <batch-id> --confirm` | 20 | 13e |
+| `adoption allow <n> --confirm` | 21 ex. 5 | 13e |
 
 `bootstrap reissue --confirm` (docs/19 §6.10 step 4) lands in **14a**, with the
 account table it re-arms.
@@ -98,16 +100,31 @@ write with `actor_type='operator_cli'`, `via='ssh'`,
 `panel show`, `log routing list`. This is where the model/effort note in the
 handoff says to drop to Sonnet: it is the same shape four more times.
 
-### 13d — write commands
+### 13d — write commands that stay inside the database
 
-`config set`, `log routing set`, `log routing exclude|unexclude`,
-`jobs retry`, `panel sync`, `undo`, `adoption allow`. `panel sync` and `undo`
-reach Discord and therefore go through the existing effect gateway unchanged —
-kill switch, breaker, hierarchy, rate cap and dry-run all still apply.
-`adoption allow` calls `RateLimiter.grantAllowance`, which is **in-memory,
-per-process** (`packages/core/src/effects/rate-limit.ts:43`) — reaching the
-live daemon's own limiter is precisely what the socket makes possible and a
-database-writing CLI could not do.
+**Split from the original 13d during implementation.** One slice covering all
+seven writes ran well past the ~400 lines `docs/20` calls mis-sized, and the
+three Discord-reaching commands are a different kind of work from writing a
+column. 13d is therefore: `config set`, `log routing set`,
+`log routing off`, `log routing exclude|unexclude`, `jobs retry`.
+
+Needs **ADR 0025** first: `docs/17` lists `config get` and `config set` as a
+matched pair over one key space, and they cannot be — the getter reads the
+environment, which nothing running can write, and the setter can only reach
+per-guild columns. One key space to the operator, two sources underneath.
+
+`log routing set|off|exclude|unexclude` is the WP4 §5 gap closed: those two
+tables have had no writer since WP4 shipped.
+
+### 13e — write commands that reach Discord
+
+`panel sync`, `undo`, `adoption allow`. `panel sync` and `undo` go through the
+existing effect gateway unchanged — kill switch, breaker, hierarchy, rate cap
+and dry-run all still apply. `adoption allow` calls
+`RateLimiter.grantAllowance`, which is **in-memory, per-process**
+(`packages/core/src/effects/rate-limit.ts:43`) — reaching the live daemon's own
+limiter is precisely what the socket makes possible and a database-writing CLI
+could not do.
 
 ### 14a — dashboard API, accounts, sessions, bootstrap
 

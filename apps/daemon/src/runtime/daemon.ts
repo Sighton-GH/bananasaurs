@@ -334,6 +334,31 @@ function applyConfiguredDryRun(
   nowMs: number,
 ): void {
   const wanted = config.BANANASAURS_DRY_RUN;
+
+  // An observe-only process cannot apply it, and must not die trying.
+  //
+  // `docs/17` §1 offers `BANANASAURS_READONLY=1` for ordinary inspection, and
+  // every write below would throw `ReadonlyError` out of `createDaemon` on any
+  // database whose guild row is missing or whose `dry_run` disagrees with the
+  // environment — which is every fresh install. Skipped with a warning rather
+  // than caught, because "the process cannot write" is a fact known here, and
+  // catching an exception to discover it would be finding out by accident.
+  //
+  // Safe to skip: a read-only process performs no Discord side effect anyway,
+  // so the layer-4 flag it would have written governs nothing it can do.
+  if (config.BANANASAURS_READONLY) {
+    logger.warn(
+      safeLogFields({
+        component: 'startup',
+        guildId: scope.guildId,
+        dryRun: wanted,
+        outcome: 'dry-run-not-applied',
+      }),
+      'read-only: BANANASAURS_DRY_RUN was not applied and guilds.dry_run stands as it is',
+    );
+    return;
+  }
+
   // The row has to exist before the effect gateway can read a safety state from
   // it. The id stands in for the name until GUILD_CREATE supplies the real one;
   // `upsertGuild` would overwrite a good name with the id on every restart.

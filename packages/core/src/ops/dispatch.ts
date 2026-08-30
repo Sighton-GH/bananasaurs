@@ -118,8 +118,16 @@ interface OpsCommandBase<A> {
    */
   readonly positional?: readonly OpsParam[];
   readonly flags?: readonly OpsFlag[];
-  /** Untrusted input meets a Zod validator here, same as a form submission. */
-  readonly args: z.ZodType<A>;
+  /**
+   * Untrusted input meets a Zod validator here, same as a form submission.
+   *
+   * The input type is `unknown`, not `A`. `runParsed` hands this whatever
+   * arrived on the socket, so a schema that *transforms* — a coerced number, a
+   * branded snowflake — is exactly as valid as one that only checks. Declaring
+   * `ZodType<A>` would have required input and output to be the same type,
+   * which quietly bans the validators that do the most work.
+   */
+  readonly args: z.ZodType<A, z.ZodTypeDef, unknown>;
 }
 
 /** A command that changes nothing: no `--confirm`, no audit row. */

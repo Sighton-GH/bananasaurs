@@ -1,4 +1,5 @@
 import type { JsonValue } from './protocol.js';
+import type { OpsSettingChange } from './settings.js';
 /**
  * Everything the operator commands can reach.
  *
@@ -174,7 +175,42 @@ export interface OpsPorts {
   listUnassignableRoles(): readonly OpsUnassignableRole[];
   listRoutes(): readonly OpsLogRoute[];
   listExcludedChannels(): readonly string[];
+  /** One job by id, for the `before` half of `jobs retry`'s audit row. */
+  findJob(jobId: number): OpsJobRow | undefined;
+
+  // --- write commands (13d) --------------------------------------------------
+  /**
+   * Applies one validated setting change (ADR 0025).
+   *
+   * One port rather than five, and a discriminated union rather than a
+   * `(key, value)` pair: the composition root switches on `key`, the value
+   * narrows without a cast, and a setting added to `OPS_SETTINGS` with no
+   * branch here fails to compile rather than failing at runtime.
+   */
+  applySetting(change: OpsSettingChange): void;
+  /** Points an event kind at a channel, creating or re-pointing the route. */
+  setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
+  /** Returns whether there was a route to change. False is a real answer. */
+  setRouteEnabled(eventKind: string, enabled: boolean): boolean;
+  /** Returns whether the exclusion is new. */
+  excludeChannel(channelId: string): boolean;
+  /** Returns whether there was an exclusion to remove. */
+  unexcludeChannel(channelId: string): boolean;
+  retryJob(jobId: number): OpsRetryOutcome;
 }
+
+/**
+ * What `jobs retry` did, or why it did not.
+ *
+ * Mirrors `jobRepo.retryJob`'s union across the port boundary rather than
+ * flattening it to a boolean, because the three refusals ask the operator for
+ * three different things: a different id, patience, or nothing at all.
+ */
+export type OpsRetryOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'not-found' }
+  | { readonly ok: false; readonly reason: 'not-failed'; readonly state: string }
+  | { readonly ok: false; readonly reason: 'dedupe-blocked'; readonly blockingJobId: number };
 
 /** Whether the gateway is connected, as the daemon's client reports it. */
 export interface OpsGatewayState {

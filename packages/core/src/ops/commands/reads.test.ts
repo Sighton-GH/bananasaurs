@@ -195,7 +195,8 @@ describe('bananasaurs config get', () => {
     const res = await drive(configGetCommand, {}, { key: 'BANANASAURS_DRY_RUN' });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toBe('BANANASAURS_DRY_RUN=false');
+    expect(res.text).toContain('BANANASAURS_DRY_RUN=false');
+    expect(res.text).toContain('environment');
   });
 
   it('returns <redacted> for a secret, because it never had the value', async () => {
@@ -205,7 +206,10 @@ describe('bananasaurs config get', () => {
     const res = await drive(configGetCommand, {}, { key: 'DISCORD_BOT_TOKEN' });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toBe('DISCORD_BOT_TOKEN=<redacted>');
+    expect(res.text).toContain('DISCORD_BOT_TOKEN=<redacted>');
+    // Labelled with its namespace, so an operator cannot mistake a process
+    // value for the guild's own setting (ADR 0025).
+    expect(res.text).toContain('environment');
   });
 
   it('cannot be made to print a secret by any argument', async () => {

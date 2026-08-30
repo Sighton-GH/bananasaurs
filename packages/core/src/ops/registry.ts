@@ -10,6 +10,14 @@ import {
   panelShowCommand,
 } from './commands/reads.js';
 import { statusCommand } from './commands/status.js';
+import {
+  configSetCommand,
+  jobsRetryCommand,
+  logRoutingExcludeCommand,
+  logRoutingOffCommand,
+  logRoutingSetCommand,
+  logRoutingUnexcludeCommand,
+} from './commands/writes.js';
 
 /**
  * The operator command surface, in one list.
@@ -29,5 +37,14 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   logRoutingListCommand,
   auditTailCommand,
   jobsListCommand,
+
+  // Writes. Each needs `--confirm` and each records an audit row; the
+  // dispatcher enforces both, so the ordering here is for `--help` only.
+  configSetCommand,
+  logRoutingSetCommand,
+  logRoutingOffCommand,
+  logRoutingExcludeCommand,
+  logRoutingUnexcludeCommand,
+  jobsRetryCommand,
   killswitchCommand,
 ];

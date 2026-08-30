@@ -1,6 +1,8 @@
 import { z } from 'zod';
 import { defineCommand, type OpsCommandResult, type OpsContext } from '../dispatch.js';
+import { findSetting, OPS_SETTINGS } from '../settings.js';
 import { humaniseDuration } from './status.js';
+import { currentValue } from './writes.js';
 
 /**
  * The read half of the Release 1 surface (`docs/17` §1): `doctor`,
@@ -218,6 +220,25 @@ export const configGetCommand = defineCommand<z.infer<typeof configArgs>>({
   positional: [{ name: 'key', required: true, describe: 'e.g. BANANASAURS_DRY_RUN' }],
   args: configArgs,
   run(ctx: OpsContext, args): OpsCommandResult {
+    // Two namespaces, one key space (ADR 0025). The guild settings are tried
+    // first because they are the mutable ones, and an operator asking about a
+    // value they can change is the common case.
+    const spec = findSetting(args.key);
+    if (spec !== undefined) {
+      const state = ctx.ports.safetyState();
+      if (state === undefined) {
+        throw new Error(`guild ${ctx.guildId} has no row in \`guilds\`, so it has no settings`);
+      }
+      const value = currentValue(spec.key, state);
+      return {
+        // Labelled with its source, always. An unlabelled value would let an
+        // operator read `BANANASAURS_DRY_RUN=false` and conclude the guild is
+        // live while the guild's own row says otherwise.
+        text: `${spec.key}=${String(value)}   (guild ${ctx.guildId})`,
+        data: { key: spec.key, value, source: 'guild' },
+      };
+    }
+
     // **The redaction happens before this command sees anything.**
     // `ctx.instance.redactedConfig()` is `redactConfig(config)`, so a secret's
     // real value is not reachable from here at all — there is no flag to add
@@ -226,13 +247,16 @@ export const configGetCommand = defineCommand<z.infer<typeof configArgs>>({
     if (!Object.prototype.hasOwnProperty.call(config, args.key)) {
       throw new Error(
         `no such configuration key: ${args.key}\n\n` +
-          `  Known keys: ${Object.keys(config).sort().join(', ')}`,
+          `  Guild settings: ${OPS_SETTINGS.map((s) => s.key).join(', ')}\n` +
+          `  Process configuration: ${Object.keys(config).sort().join(', ')}`,
       );
     }
     const value = config[args.key] ?? null;
     return {
-      text: `${args.key}=${typeof value === 'string' ? value : JSON.stringify(value)}`,
-      data: { key: args.key, value },
+      text:
+        `${args.key}=${typeof value === 'string' ? value : JSON.stringify(value)}` +
+        `   (environment; changing it needs an edit to the env file and a restart)`,
+      data: { key: args.key, value, source: 'environment' },
     };
   },
 });
