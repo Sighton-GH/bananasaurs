@@ -1025,3 +1025,76 @@ different name" test — without this the module would silently swallow every
 rename after the first. All five restored by file copy.
 
 870 → 895 tests green; typecheck and lint exit 0.
+
+---
+
+## WP4 / slice 12c — inferred message-delete attribution — 2026-08-29
+
+The hard part ADR 0022 exists for. `messageDelete` now enqueues a job
+(`log_message_delete`, `run_after = now + 3s`) instead of formatting and
+sending inline — ADR 0019 fact 3 says a synchronous fetch finds nothing.
+Content is decided once, at enqueue time, from the route's live
+`include_content`, so content the owner has off is never persisted into the
+job table even for the delay's duration.
+
+**The correlation algorithm** (`packages/core/src/logging/attribution.ts`,
+`correlateDeletion`) is pure and unit-tested directly: given candidates with
+a live count and how much of it this module has already claimed, exactly one
+candidate with an unclaimed increment wins; zero or two-or-more both mean
+`unknown`. `message_delete_runs` (new table, migration `0003_pink_pride`) is
+the durable "already claimed" cursor ADR 0019 says the port cannot provide —
+`AuditLogEntry.count` is a live total, never a delta, so nothing else can
+answer "did a new deletion join this run since I last looked". Claiming
+exactly one unit per successful attribution, not the whole visible delta, is
+what lets a burst of N deletions by the same moderator — N independent jobs
+— each see their own unclaimed unit regardless of execution order.
+
+**The residual ambiguity ADR 0022 named up front actually reproduces.** A
+live test would have been dishonest here since it cannot force the timing;
+`the self-deletion after a fully-claimed run` integration test constructs it
+directly: two real moderator deletions correctly attributed and claimed,
+then a same-author same-channel self-deletion — with the cursor working
+correctly it is `unknown`, exactly as it should be. Mutation 98 below is what
+exposed that my first pass at this test suite did **not** actually exercise
+the cursor's role at all (two messages by one actor pass with or without the
+cursor working, because there is only ever one candidate) — the new test
+closes that gap.
+
+**Idempotency, done as ADR 0022 decision 4 describes for this specific case.**
+A single claim guards resolution *and* the send; `findExistingAttribution`
+reads the already-recorded audit row before resolving anything, so a retry
+after a failed send reuses what was already decided instead of re-consulting
+the audit log — which would see its own prior increment already claimed and
+wrongly downgrade a correct attribution to "unknown" on the second attempt
+(proven by mutation 96). The failed attempt is recorded in `restCalls`
+before the fake's own failure check runs — a fact about the fixture worth
+knowing, not a bug: `record()` happens unconditionally, `check()` is what
+throws.
+
+Wired end-to-end against `FakeDiscord`'s own clock
+(`apps/daemon/src/logging-deletion.integration.test.ts`), not a synchronous
+call — the whole point of the job is the delay, and only a real (fake) clock
+proves the timing rather than assuming it.
+
+**Broke, to check the tests, continuing from 94.** 95. `correlateDeletion`
+picked the first active candidate instead of refusing when more than one was
+active → failed both the unit test and the integration test asserting
+neither moderator is named. 96. Removed the `findExistingAttribution` guard,
+forcing re-resolution on every call → the retry-after-failure integration
+test failed exactly as decision 3's own reasoning predicts: a correct first
+attribution downgraded to "unknown" on retry. 97. Removed the release-on-
+failure call → the same test failed differently, this time because the
+retry never got a chance to send at all. 98. Made `incrementClaimedCount` a
+no-op → survived against the *original* test suite, which is the finding
+worth recording: neither existing test actually depended on the cursor,
+because both only ever involve one actor. Added the self-deletion-after-a-
+claimed-run test specifically to close that gap, confirmed it passes against
+correct code, then confirmed mutation 98 now fails it (and the direct repo
+test) before moving on. 99. Removed the excluded-channel check from the
+`messageDelete` branch → failed. 100. Removed the `route.enabled` check from
+the same branch → failed. 101. Dropped `(inferred)` from the formatted
+message → failed the label test. All seven restored by file copy.
+
+895 → 935 tests green; typecheck and lint exit 0. `npm run db:migrate`
+applies the new `message_delete_runs` table cleanly (a plain `CREATE TABLE`,
+not the `ALTER TABLE` rebuild ADR 0021's migration hit).

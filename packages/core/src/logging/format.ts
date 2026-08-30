@@ -7,9 +7,6 @@ import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js'
  * (`unknown[]`) and nothing else in Release 1 constructs one, so a plain
  * string is the boring choice and the one this module's own tests can assert
  * on directly.
- *
- * Message-delete formatting is not here — it needs the inferred actor, which
- * only exists after the audit-log correlation job runs (slice 12c).
  */
 
 const authorMention = (authorId: string | undefined): string =>
@@ -21,6 +18,34 @@ export function formatMessageEdit(event: MessageEvent, includeContent: boolean):
     lines.push(
       event.content === undefined ? 'Content: not available' : `Content: ${event.content}`,
     );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The one line that has to render "(inferred)" and never plain attribution
+ * (`docs/20`'s gate). `actorUserId` is `undefined` when correlation found no
+ * safe answer — a self-deletion, the audit log not caught up yet, or an
+ * ambiguity between two candidates (ADR 0022 decision 3) — and renders as
+ * "unknown", never a guess.
+ *
+ * `content` is whatever the enqueueing subscriber decided to carry — already
+ * `undefined` both when the message was uncached and when the route's
+ * `include_content` was off, which is why there is no "not available" line
+ * here the way `formatMessageEdit` has one: this function cannot tell those
+ * two cases apart, and guessing which one it is would be its own small
+ * dishonesty.
+ */
+export function formatMessageDelete(
+  payload: { channelId: string; authorId?: string | undefined; content?: string | undefined },
+  actorUserId: string | undefined,
+): string {
+  const actorPart = actorUserId === undefined ? 'unknown' : `<@${actorUserId}> (inferred)`;
+  const lines = [
+    `Message deleted in <#${payload.channelId}>, author ${authorMention(payload.authorId)}, deleted by ${actorPart}`,
+  ];
+  if (payload.content !== undefined) {
+    lines.push(`Content: ${payload.content}`);
   }
   return lines.join('\n');
 }

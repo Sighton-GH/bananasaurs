@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { snowflakeIdSchema } from '../ids.js';
 
 /**
  * Job kinds and their payload schemas.
@@ -16,6 +17,8 @@ export const JOB_KINDS = {
   reconcileGuild: 'reconcile_guild',
   /** Turns a panel's existing reactions into roles, once an owner sized it. */
   adoptPanel: 'adopt_panel',
+  /** Consults the audit log for who deleted a message (ADR 0019, ADR 0022). */
+  logMessageDelete: 'log_message_delete',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -60,3 +63,24 @@ export type AdoptPanelPayload = z.infer<typeof adoptPanelPayload>;
  * then run the pass again" possible at all.
  */
 export const adoptDedupeKey = (panelId: string): string => `${JOB_KINDS.adoptPanel}:${panelId}`;
+
+/**
+ * `undefined` on `authorId` and `content` are decisions, not omissions:
+ * `authorId` is genuinely absent when the message was uncached (ADR 0019
+ * fact 4), and `content` is `undefined` both when uncached and when the
+ * route's `include_content` was off at enqueue time — decided once, there,
+ * rather than persisting content the owner turned off into the job table
+ * for the run_after delay's duration.
+ */
+export const logMessageDeletePayload = z.object({
+  channelId: snowflakeIdSchema,
+  messageId: snowflakeIdSchema,
+  authorId: snowflakeIdSchema.optional(),
+  content: z.string().optional(),
+  deletedAtMs: z.number().int().nonnegative(),
+});
+export type LogMessageDeletePayload = z.infer<typeof logMessageDeletePayload>;
+
+/** One job per deletion — a message is deleted at most once. */
+export const logMessageDeleteDedupeKey = (channelId: string, messageId: string): string =>
+  `${JOB_KINDS.logMessageDelete}:${channelId}:${messageId}`;

@@ -3,6 +3,8 @@ import type { Logger } from '../obs/logger.js';
 import { safeLogFields } from '../obs/logger.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { fingerprintOf } from '../pipeline/fingerprint.js';
+import { MESSAGE_DELETE_ATTRIBUTION_DELAY_MS } from './attribution.js';
+import { logMessageDeleteDedupeKey } from '../jobs/kinds.js';
 import {
   formatMemberJoin,
   formatMemberLeave,
@@ -13,9 +15,11 @@ import {
 } from './format.js';
 
 /**
- * The logging module (ADR 0022): message edits, member joins/leaves, and
- * role create/update/delete. Message deletion is not here — it needs the
- * audit-log correlation job (slice 12c) and is handled separately.
+ * The logging module (ADR 0022): message edits and deletes, member
+ * joins/leaves, and role create/update/delete. A deletion is not formatted
+ * or sent here — it is enqueued as a delayed job, because ADR 0019 fact 3
+ * says the audit log has not caught up yet at the moment the dispatch
+ * arrives. `attribute-deletion.ts` is the job's body.
  */
 
 export interface LogRoute {
@@ -37,7 +41,12 @@ export interface LoggingPorts {
   /** Released when a send throws, so a later delivery of the same event can retry. */
   release(input: { eventKind: string; fingerprint: string }): void;
   sendMessage(channelId: Snowflake, message: { content: string }): Promise<unknown>;
+  /** One job per deletion; a no-op if the same messageId is already queued. */
+  enqueueDeletionAttribution(input: { dedupeKey: string; payload: string; runAfter: number }): {
+    enqueued: boolean;
+  };
   readonly logger: Logger;
+  now(): number;
 }
 
 /** The `log_routes.event_kind` string for each gateway kind this module handles. */
@@ -69,8 +78,31 @@ function fingerprintFor(event: Parameters<Subscriber['handle']>[0]): string | un
 export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
   name: 'logging',
   async handle(event) {
+    if (event.kind === 'messageDelete') {
+      if (ports.isChannelExcluded(event.channelId)) return;
+      const route = ports.findRoute('message_delete');
+      if (route === undefined || !route.enabled) return;
+
+      const now = ports.now();
+      ports.enqueueDeletionAttribution({
+        dedupeKey: logMessageDeleteDedupeKey(event.channelId, event.messageId),
+        payload: JSON.stringify({
+          channelId: event.channelId,
+          messageId: event.messageId,
+          authorId: event.authorId,
+          // Decided once, here — not re-checked at job time — so content the
+          // owner has off is never persisted into the job table even for the
+          // delay's duration.
+          content: route.includeContent ? event.content : undefined,
+          deletedAtMs: event.receivedAtMs,
+        }),
+        runAfter: now + MESSAGE_DELETE_ATTRIBUTION_DELAY_MS,
+      });
+      return;
+    }
+
     const routeKind = ROUTE_KIND[event.kind as keyof typeof ROUTE_KIND] as string | undefined;
-    if (routeKind === undefined) return; // messageDelete and everything else: not this module's job
+    if (routeKind === undefined) return; // everything else: not this module's job
 
     if (event.kind === 'messageUpdate' && ports.isChannelExcluded(event.channelId)) return;
 

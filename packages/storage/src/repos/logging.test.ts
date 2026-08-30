@@ -5,7 +5,14 @@ import type { GuildScope } from '../scope.js';
 import { logExcludedChannels, logRoutes } from '../schema.js';
 import { write } from '../write.js';
 import { upsertGuild } from './guilds.js';
-import { findRoute, isChannelExcluded } from './logging.js';
+import { recordAudit } from './effects.js';
+import {
+  claimedCountFor,
+  findMessageDeleteAttribution,
+  findRoute,
+  incrementClaimedCount,
+  isChannelExcluded,
+} from './logging.js';
 
 /**
  * `log_routes` and `log_excluded_channels` have no writer yet — nothing in
@@ -113,5 +120,91 @@ describe('isChannelExcluded', () => {
   it('is scoped: an exclusion in one guild does not apply to another', () => {
     excludeChannel(a, CHANNEL_A);
     expect(isChannelExcluded(b, CHANNEL_A)).toBe(false);
+  });
+});
+
+const ACTOR = '555555555555555555';
+const OTHER_ACTOR = '666666666666666666';
+const AUTHOR = '777777777777777777';
+const RUN = { actorUserId: ACTOR, authorId: AUTHOR, channelId: CHANNEL_A };
+
+describe('claimedCountFor / incrementClaimedCount', () => {
+  it('is 0 for a run that has never been claimed against', () => {
+    expect(claimedCountFor(a, RUN)).toBe(0);
+  });
+
+  it('increments by exactly one per call', () => {
+    incrementClaimedCount(a, RUN);
+    expect(claimedCountFor(a, RUN)).toBe(1);
+    incrementClaimedCount(a, RUN);
+    expect(claimedCountFor(a, RUN)).toBe(2);
+  });
+
+  it('does not confuse two different actors deleting the same author in the same channel', () => {
+    incrementClaimedCount(a, RUN);
+    expect(claimedCountFor(a, { ...RUN, actorUserId: OTHER_ACTOR })).toBe(0);
+  });
+
+  it('does not confuse two different channels', () => {
+    incrementClaimedCount(a, RUN);
+    expect(claimedCountFor(a, { ...RUN, channelId: CHANNEL_B })).toBe(0);
+  });
+
+  it('is scoped: a claim in one guild is invisible from another', () => {
+    incrementClaimedCount(a, RUN);
+    expect(claimedCountFor(b, RUN)).toBe(0);
+  });
+});
+
+describe('findMessageDeleteAttribution', () => {
+  const MESSAGE = '888888888888888888';
+
+  it('is undefined when no attribution has been recorded for this message', () => {
+    expect(findMessageDeleteAttribution(a, MESSAGE)).toBeUndefined();
+  });
+
+  it('returns the recorded actor and the inferred flag', () => {
+    recordAudit(a, {
+      at: 1000,
+      actorType: 'member',
+      actorId: ACTOR,
+      action: 'message_delete',
+      subjectType: 'message',
+      subjectId: MESSAGE,
+      dryRun: false,
+      inferred: true,
+    });
+    expect(findMessageDeleteAttribution(a, MESSAGE)).toEqual({ actorId: ACTOR, inferred: true });
+  });
+
+  it('returns an undefined actor when the recorded outcome was unknown', () => {
+    recordAudit(a, {
+      at: 1000,
+      actorType: 'system',
+      actorId: undefined,
+      action: 'message_delete',
+      subjectType: 'message',
+      subjectId: MESSAGE,
+      dryRun: false,
+      inferred: false,
+    });
+    expect(findMessageDeleteAttribution(a, MESSAGE)).toEqual({
+      actorId: undefined,
+      inferred: false,
+    });
+  });
+
+  it('is scoped: an attribution in one guild is invisible from another', () => {
+    recordAudit(a, {
+      at: 1000,
+      actorType: 'member',
+      actorId: ACTOR,
+      action: 'message_delete',
+      subjectType: 'message',
+      subjectId: MESSAGE,
+      dryRun: false,
+      inferred: true,
+    });
+    expect(findMessageDeleteAttribution(b, MESSAGE)).toBeUndefined();
   });
 });

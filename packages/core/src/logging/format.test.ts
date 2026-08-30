@@ -3,6 +3,7 @@ import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js'
 import {
   formatMemberJoin,
   formatMemberLeave,
+  formatMessageDelete,
   formatMessageEdit,
   formatRoleCreate,
   formatRoleDelete,
@@ -48,6 +49,43 @@ describe('formatMessageEdit', () => {
     const text = formatMessageEdit(messageEditEvent({ authorId: undefined }), true);
     expect(text.toLowerCase()).toContain('unknown');
     expect(text).not.toContain('<@undefined>');
+  });
+});
+
+const ACTOR = '999999999999999999';
+
+describe('formatMessageDelete', () => {
+  it('names the channel, the author, and the inferred actor', () => {
+    const text = formatMessageDelete(
+      { channelId: CHANNEL, authorId: AUTHOR, content: 'deleted text' },
+      ACTOR,
+    );
+    expect(text).toContain(`<#${CHANNEL}>`);
+    expect(text).toContain(`<@${AUTHOR}>`);
+    expect(text).toContain(`<@${ACTOR}>`);
+    expect(text).toContain('deleted text');
+  });
+
+  it('labels the actor as inferred — never plain attribution (docs/20 gate)', () => {
+    const text = formatMessageDelete({ channelId: CHANNEL, authorId: AUTHOR }, ACTOR);
+    expect(text.toLowerCase()).toContain('inferred');
+  });
+
+  it('says the actor is unknown rather than guessing when none was found', () => {
+    const text = formatMessageDelete({ channelId: CHANNEL, authorId: AUTHOR }, undefined);
+    expect(text.toLowerCase()).toContain('unknown');
+    expect(text).not.toContain(`<@${ACTOR}>`);
+  });
+
+  it('reports the author as unknown when the message was uncached', () => {
+    const text = formatMessageDelete({ channelId: CHANNEL, authorId: undefined }, undefined);
+    expect(text.toLowerCase()).toContain('unknown');
+    expect(text).not.toContain('<@undefined>');
+  });
+
+  it('omits the content line entirely when there is none to show', () => {
+    const text = formatMessageDelete({ channelId: CHANNEL, authorId: AUTHOR }, ACTOR);
+    expect(text.toLowerCase()).not.toContain('content');
   });
 });
 

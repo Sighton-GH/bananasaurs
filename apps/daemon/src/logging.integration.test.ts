@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
   createLoggingSubscriber,
+  JOB_KINDS,
   parseGuildId,
   type LoggingPorts,
   type MemberEvent,
@@ -10,6 +11,7 @@ import {
 } from '@bananasaurs/core';
 import {
   guildRepo,
+  jobRepo,
   loggingRepo,
   pipelineRepo,
   write,
@@ -21,8 +23,9 @@ import { FakeDiscord } from '@bananasaurs/testkit';
 
 /**
  * The logging module's plain event kinds (ADR 0022): message edits, member
- * joins/leaves, and role create/update/delete. Message deletion is slice 12c
- * — it needs the audit-log correlation job and is not handled here.
+ * joins/leaves, and role create/update/delete, plus enqueueing the deletion-
+ * attribution job for `messageDelete` (the job's own body — the audit-log
+ * correlation — is `logging-deletion.integration.test.ts`).
  *
  * Wired against the real repositories, like `pipeline.integration.test.ts`:
  * a fake agreeing with itself proves nothing about the SQL a claim/release
@@ -77,6 +80,15 @@ beforeEach(() => {
     claim: (input) => pipelineRepo.recordFirstSight(scope, { ...input, atMs: 0 }),
     release: (input) => pipelineRepo.forgetFirstSight(scope, input),
     sendMessage: (channelId, message) => discord.sendMessage(GUILD, channelId, message),
+    enqueueDeletionAttribution: ({ dedupeKey, payload, runAfter }) =>
+      jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.logMessageDelete,
+        payload,
+        dedupeKey,
+        runAfter,
+        now: 0,
+      }),
+    now: () => 0,
     logger,
   };
 });
@@ -199,6 +211,81 @@ describe('message edits', () => {
     // No further failure queued: a retry should succeed and actually post.
     await subscriber.handle(event);
     expect(discord.restCalls('sendMessage')).toHaveLength(2);
+  });
+});
+
+const messageDelete = (over: Partial<MessageEvent> = {}): MessageEvent => ({
+  kind: 'messageDelete',
+  guildId: GUILD,
+  receivedAtMs: 1_000,
+  channelId: CHANNEL,
+  messageId: MESSAGE,
+  authorId: USER,
+  content: undefined,
+  editedTimestampMs: undefined,
+  ...over,
+});
+
+describe('message deletes — enqueueing the attribution job', () => {
+  it('enqueues nothing when no route is configured', async () => {
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageDelete());
+    expect(jobRepo.countByState(scope)).toEqual({});
+  });
+
+  it('enqueues nothing when the route is disabled', async () => {
+    seedRoute('message_delete', { enabled: false });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageDelete());
+    expect(jobRepo.countByState(scope)).toEqual({});
+  });
+
+  it('enqueues a job scheduled for after the attribution delay', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageDelete({ receivedAtMs: 1_000 }));
+
+    expect(jobRepo.countByState(scope)).toEqual({ queued: 1 });
+    // Not yet due: the audit log has not had time to catch up (ADR 0019).
+    expect(jobRepo.claimNext(scope, 1_000)).toBeUndefined();
+    expect(jobRepo.claimNext(scope, 4_001)?.kind).toBe(JOB_KINDS.logMessageDelete);
+  });
+
+  it('does not log a delete from an excluded source channel', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    excludeChannel(EXCLUDED_CHANNEL);
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageDelete({ channelId: EXCLUDED_CHANNEL }));
+
+    expect(jobRepo.countByState(scope)).toEqual({});
+  });
+
+  it('does not persist content in the job payload when the route has content off', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL, includeContent: false });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageDelete({ content: 'secret' }));
+
+    const job = jobRepo.claimNext(scope, 10_000);
+    expect(job?.payload).not.toContain('secret');
+  });
+
+  it('does persist content in the job payload when the route has content on', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL, includeContent: true });
+    const subscriber = createLoggingSubscriber(ports);
+    await subscriber.handle(messageDelete({ content: 'visible' }));
+
+    const job = jobRepo.claimNext(scope, 10_000);
+    expect(job?.payload).toContain('visible');
+  });
+
+  it('enqueues one job per deletion, not one per redelivery of the same event', async () => {
+    seedRoute('message_delete', { channelId: CHANNEL });
+    const subscriber = createLoggingSubscriber(ports);
+    const event = messageDelete();
+    await subscriber.handle(event);
+    await subscriber.handle(event);
+
+    expect(jobRepo.countByState(scope)).toEqual({ queued: 1 });
   });
 });
 
