@@ -1281,3 +1281,94 @@ mismatch is visible in the journal rather than silent.
 `index.ts` has no harness and a source-order assertion would be decoration.
 
 1052 tests green (from 954); typecheck and lint exit 0.
+
+---
+
+## WP5 / slice 13b — the authorization surface, the audit spine, and `killswitch` — 2026-08-29
+
+**Changed.** The two things that make a write command a write command, and the
+first one to use them.
+
+*Authorization.* `packages/core/src/authz.ts` gains
+`CHANNEL_AUTHORIZED_ACTORS`, holding `operator_cli` alone. An actor arriving
+over the admin socket receives a witness without `capability_grants` being
+consulted — ADR 0024, written in 13a. Deliberately its own set rather than an
+entry in `SYSTEM_ACTORS`: that set means "authorized by being wired into the
+daemon", a different justification that happens to reach the same outcome, and
+folding them together would mean the next person to change either rule silently
+changes the other. This is what lets `undo` and `panel sync` (13d) produce the
+`Authorized<'roles.mutate'>` witness `applyRoleEffect` re-verifies at runtime —
+the re-verification lands back in `authorize()` and reaches the same conclusion,
+rather than being a special case it skips.
+
+`dashboard` is **not** in that set, and a test says so in as many words. ADR
+0012 — a dashboard account's capability is an explicit owner-issued grant — is
+the decision keeping the club's other Discord administrators out of the control
+plane, and widening the socket's exemption by one entry would quietly undo it.
+
+*The audit spine.* `OpsCommand<A>` is now a union: `OpsReadCommand` returns
+`OpsCommandResult`, `OpsWriteCommand` returns `OpsWriteResult`, which has a
+required `audit` field. **A write command that reports no audit record does not
+compile** — the same shape as the `Authorized` witness, where the check produces
+a value the machinery requires, so forgetting is not something you can do by
+omission. Adding the type immediately broke four existing test fixtures, which
+is the enforcement demonstrating itself. The dispatcher fills in the actor,
+channel and timestamp; the command does not get to choose how it is attributed.
+
+Two details worth naming. `actorId` is fixed `undefined` rather than filled from
+the claimed Unix name: every other actor type puts a *verified* identity in that
+column, and laundering an assertion into it would make the trail read as
+stronger evidence than it is (amendment 2). And a failed audit write **fails the
+command** rather than being logged and swallowed — a write that happened and was
+not recorded must not report success, because the operator can always check the
+state but cannot recover a row that was never written.
+
+*`killswitch on|off --confirm`.* ADR 0013 §4: "Being able to stop the bot from a
+phone over SSH is a feature." Until now `docs/21` told the operator that Ctrl-C
+on the process was the emergency brake, because `guilds.killswitch` was checked
+as layer 2 of the effect gateway and nothing exposed it. The command flips one
+column; everything that makes it a *control* already existed.
+
+**Decisions inside the slice.** The kill switch records an audit row even when
+the switch was already in the requested state — an operator reaching for it at
+03:00 is worth recording whether or not it moved, and `before` equalling `after`
+says so plainly. It refuses when the guild has no row in `guilds` rather than
+creating one, because that row also holds dry-run, the breaker and the rate
+limits, and conjuring it would be choosing a guild's safety defaults as a side
+effect of an unrelated action.
+
+**Known, and recorded rather than hidden:** the audit row is written in a second
+transaction, immediately after the command's own. A crash in that window leaves
+a state change with no trail. The alternative — each command writing its own row
+inside its own `write()` — is atomic but makes "did you remember to audit" a
+per-command discipline. Structural completeness won: a missing row for an action
+that did happen is discoverable by comparing state against the trail, whereas a
+write command nobody remembered to audit is invisible forever. There is no
+`await` between the two, so the window is one synchronous statement wide.
+
+**Broke, to check the tests, continuing from 123.** 124. Added `dashboard` to
+`CHANNEL_AUTHORIZED_ACTORS` → the ADR 0012 test failed. 125. Removed the socket
+exemption → 3 failed. 126. Extended it to every actor type → 7 failed. 127.
+Stopped auditing writes entirely → 8 failed across unit and end-to-end. 128.
+Laundered the claimed Unix name into `actor_id` → 2 failed, including the real
+database one. 129. Removed the tripwire behind the write/audit type → failed.
+130. Swallowed a failed audit write instead of failing the command → failed.
+131. Recorded `via: 'http'` (the dashboard's channel) → 2 failed. 132. Removed
+`killswitch`'s no-guild-row refusal → **survived**, see below. 133. Inverted the
+state `killswitch` sets → 9 failed. 134. Recorded one action name for both
+directions → 2 failed. 135. Replaced the `on|off` enum with a bare string →
+failed. 136. Wired the composition root's audit port to a no-op → the
+end-to-end audit test failed. 137. Wired `setKillswitch` to nothing → failed.
+All restored by file copy.
+
+**Mutation 132 surviving is the informative one this slice.** Deleting the
+explicit `before === undefined` refusal still *fails* — the next line
+dereferences `before` and throws, the dispatcher catches it, and the response
+code is `failed` either way. So a test asserting only the code passed against
+the broken version. What actually differs is what the operator reads: "guild X
+has no row in `guilds` … the daemon has never started for this guild" versus
+"Cannot read properties of undefined". The test now asserts the message and
+asserts the absence of the word `undefined`; 132 then failed. Third package
+running where the survivor was the useful result.
+
+1081 tests green (from 1052); typecheck and lint exit 0.

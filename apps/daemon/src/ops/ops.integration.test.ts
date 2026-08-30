@@ -6,7 +6,7 @@ import { pino } from 'pino';
 import { Client } from 'discord.js';
 import { parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { guildRepo, jobRepo } from '@bananasaurs/storage';
+import { effectRepo, guildRepo, jobRepo } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { run } from '@bananasaurs/cli';
@@ -199,5 +199,93 @@ describe('the operator CLI, end to end', () => {
     const result = await cli('status');
     expect(result.code).toBe(1);
     expect(result.err).toMatch(/still starting/);
+  });
+
+  describe('`bananasaurs killswitch`, against the real database', () => {
+    const seed = (): void => {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD), {
+        name: 'Engineering Club',
+        enabled: true,
+        now: discord.now(),
+      });
+    };
+
+    it('refuses without --confirm, and changes nothing', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('killswitch on');
+      expect(result.code).toBe(3);
+      expect(result.err).toMatch(/--confirm/);
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+      expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD))).toEqual([]);
+    });
+
+    it('flips the column the effect gateway actually reads', async () => {
+      startDaemon();
+      seed();
+      const result = await cli('killswitch on --confirm');
+      expect(result.code).toBe(0);
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(true);
+    });
+
+    it('turns it off again', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      await cli('killswitch off --confirm');
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+    });
+
+    it('writes a real audit row, claimed identity and all', async () => {
+      startDaemon();
+      seed();
+      await cli('killswitch on --confirm');
+      const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD));
+      expect(rows).toHaveLength(1);
+      expect(rows[0]).toMatchObject({
+        actorType: 'operator_cli',
+        actorUnixUserClaimed: 'bryan',
+        action: 'killswitch.enabled',
+        subjectType: 'guild',
+        subjectId: GUILD,
+      });
+      // The claim must not have been laundered into the verified-identity column.
+      expect(rows[0]?.actorId).toBeNull();
+      expect(JSON.parse(rows[0]?.before ?? 'null')).toEqual({ killswitch: false });
+      expect(JSON.parse(rows[0]?.after ?? 'null')).toEqual({ killswitch: true });
+    });
+
+    it('refuses every write when the daemon is read-only, and records nothing', async () => {
+      const readonly = openMigratedTestDatabase();
+      guildRepo.upsertGuild(readonly.scopes.forGuild(GUILD), { name: 'g', enabled: true, now: 0 });
+      daemon = createDaemon({
+        config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '1' }),
+        scopes: readonly.readonlyScopes,
+        discord,
+        client,
+        logger,
+        now: () => discord.now(),
+      });
+      socket.serve((raw) => daemon.ops.dispatch(raw));
+
+      const result = await cli('killswitch on --confirm');
+      // Exit 3: refused by a control, not a command that ran and failed.
+      expect(result.code).toBe(3);
+      expect(guildRepo.readSafetyState(readonly.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+      expect(effectRepo.tailAudit(readonly.scopes.forGuild(GUILD))).toEqual([]);
+      readonly.close();
+    });
+
+    it('does not touch another guild, even when one is named explicitly', async () => {
+      startDaemon();
+      seed();
+      const other = t.scopes.forGuild(parseGuildId('245678901234567890'));
+      guildRepo.upsertGuild(other, { name: 'other', enabled: true, now: discord.now() });
+
+      const result = await cli('killswitch on --guild 245678901234567890 --confirm');
+      expect(result.code).toBe(2);
+      expect(guildRepo.readSafetyState(other)?.killswitch).toBe(false);
+      expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.killswitch).toBe(false);
+    });
   });
 });

@@ -1,7 +1,13 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { parseGuildId } from '../ids.js';
-import { createDispatcher, defineCommand, type OpsGuildContext } from './dispatch.js';
+import {
+  createDispatcher,
+  defineCommand,
+  type OpsGuildContext,
+  type RegisteredCommand,
+} from './dispatch.js';
+import type { OpsAuditWrite } from './ports.js';
 import { fakeOpsInstance, fakeOpsPorts } from './test-fixtures.js';
 
 const GUILD_A = parseGuildId('1000000000000000001');
@@ -9,7 +15,14 @@ const GUILD_B = parseGuildId('1000000000000000002');
 
 const contextFor = (guildId: string): OpsGuildContext | undefined => {
   if (guildId !== GUILD_A && guildId !== GUILD_B) return undefined;
-  return { guildId: parseGuildId(guildId), now: () => 1_700_000_000_000, ports: fakeOpsPorts() };
+  return {
+    guildId: parseGuildId(guildId),
+    now: () => 1_700_000_000_000,
+    // Stubbed here rather than left to throw: from slice 13b the dispatcher
+    // records an audit row after every successful write, so a fake that
+    // refuses would make every write test fail for the wrong reason.
+    ports: fakeOpsPorts({ recordAudit: () => undefined }),
+  };
 };
 
 /** A read command that reports the guild it ran under, so scope is observable. */
@@ -32,7 +45,11 @@ const touch = defineCommand<{ note: string }>({
   args: z.object({ note: z.string().min(1) }),
   run: (ctx, args) => {
     touched.push(`${ctx.guildId}:${args.note}`);
-    return { text: 'touched', data: { note: args.note } };
+    return {
+      text: 'touched',
+      data: { note: args.note },
+      audit: { action: 'touch.done', subjectType: 'guild' },
+    };
   },
 });
 
@@ -209,7 +226,7 @@ describe('the ops dispatcher', () => {
         write: true,
         summary: 'refuses',
         args: z.object({}),
-        run: () => {
+        run: (): never => {
           throw new FakeReadonlyError('refusing a write: BANANASAURS_READONLY is set');
         },
       });
@@ -276,5 +293,150 @@ describe('the ops dispatcher', () => {
     process.off('unhandledRejection', onUnhandled);
     expect(res.ok).toBe(false);
     expect(onUnhandled).not.toHaveBeenCalled();
+  });
+});
+
+describe('the audit trail (ADR 0013 §4, docs/19 §6.9)', () => {
+  const recorded: OpsAuditWrite[] = [];
+
+  const ports = () =>
+    fakeOpsPorts({
+      recordAudit: (input) => {
+        recorded.push(input);
+      },
+    });
+
+  const audited = defineCommand<{ note: string }>({
+    name: 'audited',
+    write: true,
+    summary: 'a write that reports what it did',
+    args: z.object({ note: z.string() }),
+    run: (_ctx, args) => ({
+      text: 'done',
+      data: null,
+      audit: {
+        action: 'thing.changed',
+        subjectType: 'guild',
+        subjectId: 'subject-1',
+        before: { note: 'old' },
+        after: { note: args.note },
+      },
+    }),
+  });
+
+  const build = (commands = [audited, whoami]) =>
+    createDispatcher({
+      commands,
+      guildIds: [GUILD_A],
+      contextFor: (guildId) => ({
+        guildId: parseGuildId(guildId),
+        now: () => 1_700_000_000_000,
+        ports: ports(),
+      }),
+      instance,
+    });
+
+  beforeEach(() => {
+    recorded.length = 0;
+  });
+
+  it('records one row for a write command that succeeded', async () => {
+    const res = await build().dispatch(
+      request({ command: 'audited', args: { note: 'new' }, confirm: true, unixUserClaimed: 'bry' }),
+    );
+    expect(res.ok).toBe(true);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      actorType: 'operator_cli',
+      via: 'ssh',
+      actorUnixUserClaimed: 'bry',
+      action: 'thing.changed',
+      subjectType: 'guild',
+      subjectId: 'subject-1',
+      before: { note: 'old' },
+      after: { note: 'new' },
+      at: 1_700_000_000_000,
+    });
+  });
+
+  it('records the claimed user as a claim, and never an actor id', async () => {
+    // ADR 0024: the name is an assertion. It must not be laundered into
+    // `actor_id`, which every other actor type fills with a verified identity.
+    await build().dispatch(
+      request({ command: 'audited', args: { note: 'n' }, confirm: true, unixUserClaimed: 'root' }),
+    );
+    expect(recorded[0]?.actorId).toBeUndefined();
+    expect(recorded[0]?.actorUnixUserClaimed).toBe('root');
+  });
+
+  it('records nothing at all for a read command', async () => {
+    await build().dispatch(request({ command: 'whoami' }));
+    expect(recorded).toEqual([]);
+  });
+
+  it('records nothing when a write was refused for want of --confirm', async () => {
+    const res = await build().dispatch(request({ command: 'audited', args: { note: 'n' } }));
+    expect(res.ok).toBe(false);
+    expect(recorded).toEqual([]);
+  });
+
+  it('records nothing when the write itself failed', async () => {
+    const failing = defineCommand<Record<string, never>>({
+      name: 'failing',
+      write: true,
+      summary: 'fails',
+      args: z.object({}),
+      run: (): never => {
+        throw new Error('nope');
+      },
+    });
+    const res = await build([failing]).dispatch(request({ command: 'failing', confirm: true }));
+    expect(res.ok).toBe(false);
+    expect(recorded).toEqual([]);
+  });
+
+  it('refuses a write command that reported no audit record', async () => {
+    // Unreachable through `defineCommand`, whose write branch demands one at
+    // compile time. This is the tripwire behind that type, for a
+    // `RegisteredCommand` assembled by hand.
+    const unaudited: RegisteredCommand = {
+      name: 'unaudited',
+      write: true,
+      summary: 'forgot',
+      positional: [],
+      flags: [],
+      runParsed: () => ({ ok: true, result: { text: 'done', data: null } }),
+    };
+    const res = await build([unaudited]).dispatch(request({ command: 'unaudited', confirm: true }));
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('failed');
+    expect(res.message).toMatch(/audit/i);
+    expect(recorded).toEqual([]);
+  });
+
+  it('fails the command when the audit row could not be written', async () => {
+    // A write that happened but was not recorded must not report success:
+    // the audit trail is the only durable evidence an operator acted.
+    const dispatcher = createDispatcher({
+      commands: [audited],
+      guildIds: [GUILD_A],
+      contextFor: (guildId) => ({
+        guildId: parseGuildId(guildId),
+        now: () => 1,
+        ports: fakeOpsPorts({
+          recordAudit: () => {
+            throw new Error('disk full');
+          },
+        }),
+      }),
+      instance,
+    });
+    const res = await dispatcher.dispatch(
+      request({ command: 'audited', args: { note: 'n' }, confirm: true }),
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.message).toContain('disk full');
   });
 });

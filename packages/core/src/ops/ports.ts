@@ -1,3 +1,4 @@
+import type { JsonValue } from './protocol.js';
 /**
  * Everything the operator commands can reach.
  *
@@ -14,6 +15,35 @@
  * Both grow one slice at a time, like `PanelStore` and `LoggingPorts` before
  * them.
  */
+
+/**
+ * One row for `audit_events`, as the operator surface writes it.
+ *
+ * `actorId` is absent by construction rather than optional-in-practice: the CLI
+ * has no verified identity to put there (ADR 0024), and laundering the claimed
+ * Unix name into the column every other actor type fills with a *verified*
+ * identity is exactly the mistake amendment 2 exists to prevent. The claim goes
+ * in `actorUnixUserClaimed`, whose name carries the caveat.
+ */
+export interface OpsAuditWrite {
+  readonly at: number;
+  readonly actorType: 'operator_cli';
+  readonly actorId: undefined;
+  readonly actorUnixUserClaimed: string | undefined;
+  /**
+   * `ssh`, per `docs/19` §6.9 — the column's vocabulary is
+   * `'ssh' | 'http' | 'gateway'` and predates the distinction between an
+   * operator on the box and one over SSH. It means "came in on the operator
+   * socket"; `http` is the dashboard and `gateway` is Discord.
+   */
+  readonly via: 'ssh';
+  readonly action: string;
+  readonly subjectType: string;
+  readonly subjectId: string | undefined;
+  readonly before: JsonValue | undefined;
+  readonly after: JsonValue | undefined;
+  readonly dryRun: boolean;
+}
 
 /** The guild's row in `guilds`, as the effect gateway reads it. */
 export interface OpsSafetyState {
@@ -43,6 +73,15 @@ export interface OpsPorts {
    * reporting the oldest queued row.
    */
   oldestDueJobAtMs(nowMs: number): number | undefined;
+  /**
+   * Writes one `audit_events` row.
+   *
+   * Called by the dispatcher, not by the command, so "every write is audited"
+   * is a property of the machinery rather than of each handler remembering.
+   */
+  recordAudit(input: OpsAuditWrite): void;
+  /** `guilds.killswitch`, layer 2 of the effect gateway's twelve. */
+  setKillswitch(on: boolean): void;
 }
 
 /** Whether the gateway is connected, as the daemon's client reports it. */

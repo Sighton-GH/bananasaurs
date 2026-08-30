@@ -270,14 +270,20 @@ export {
   defineCommand,
   type Dispatcher,
   type DispatcherDeps,
+  type OpsAnyResult,
+  type OpsAuditRecord,
   type OpsCommand,
   type OpsCommandResult,
   type OpsContext,
   type OpsFlag,
   type OpsGuildContext,
   type OpsParam,
+  type OpsReadCommand,
+  type OpsWriteCommand,
+  type OpsWriteResult,
   type RegisteredCommand,
 } from './ops/dispatch.js';
 export { OPERATOR_COMMANDS } from './ops/registry.js';
 export type { OpsGatewayState, OpsInstance, OpsPorts, OpsSafetyState } from './ops/ports.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
+export { killswitchCommand } from './ops/commands/killswitch.js';

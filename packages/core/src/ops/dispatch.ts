@@ -1,7 +1,7 @@
 import type { z } from 'zod';
 import type { Actor } from '../authz.js';
 import type { GuildId } from '../ids.js';
-import type { OpsInstance, OpsPorts } from './ports.js';
+import type { OpsAuditWrite, OpsInstance, OpsPorts } from './ports.js';
 import {
   OPS_PROTOCOL_VERSION,
   opsRequestSchema,
@@ -64,6 +64,31 @@ export interface OpsCommandResult {
   readonly data: JsonValue;
 }
 
+/**
+ * What a write command says it did, for the audit trail.
+ *
+ * The actor, the channel and the timestamp are not here: the command does not
+ * get to choose how it is attributed. The dispatcher fills those from the
+ * request it validated (ADR 0024).
+ */
+export interface OpsAuditRecord {
+  /** Dotted, past tense: `killswitch.enabled`, `log_route.set`. */
+  readonly action: string;
+  readonly subjectType: string;
+  readonly subjectId?: string | undefined;
+  readonly before?: JsonValue | undefined;
+  readonly after?: JsonValue | undefined;
+  /** Only meaningful for a command that would have reached Discord. */
+  readonly dryRun?: boolean | undefined;
+}
+
+/** A write command's result. The audit record is not optional. */
+export interface OpsWriteResult extends OpsCommandResult {
+  readonly audit: OpsAuditRecord;
+}
+
+export type OpsAnyResult = OpsCommandResult | OpsWriteResult;
+
 /** One positional argument, in the order the command takes them. */
 export interface OpsParam {
   readonly name: string;
@@ -79,15 +104,9 @@ export interface OpsFlag {
   readonly describe: string;
 }
 
-export interface OpsCommand<A> {
+interface OpsCommandBase<A> {
   /** The full path, spelled as `docs/17` spells it: `log routing set`. */
   readonly name: string;
-  /**
-   * Whether this command changes anything. Drives the `--confirm` gate and,
-   * from slice 13b, the audit row — so it is a property of the command rather
-   * than a flag each handler remembers to check.
-   */
-  readonly write: boolean;
   readonly summary: string;
   /**
    * How the CLI turns a command line into `args`.
@@ -101,13 +120,34 @@ export interface OpsCommand<A> {
   readonly flags?: readonly OpsFlag[];
   /** Untrusted input meets a Zod validator here, same as a form submission. */
   readonly args: z.ZodType<A>;
+}
+
+/** A command that changes nothing: no `--confirm`, no audit row. */
+export interface OpsReadCommand<A> extends OpsCommandBase<A> {
+  readonly write: false;
   run(ctx: OpsContext, args: A): OpsCommandResult | Promise<OpsCommandResult>;
 }
+
+/**
+ * A command that changes something.
+ *
+ * `write: true` and `OpsWriteResult` travel together, which is the point: a
+ * write command that returns no audit record **does not compile**. "Every write
+ * is audited" is enforced the same way "every role mutation is authorized" is —
+ * the check produces a value the machinery requires, so forgetting it is not
+ * something you can do by omission.
+ */
+export interface OpsWriteCommand<A> extends OpsCommandBase<A> {
+  readonly write: true;
+  run(ctx: OpsContext, args: A): OpsWriteResult | Promise<OpsWriteResult>;
+}
+
+export type OpsCommand<A> = OpsReadCommand<A> | OpsWriteCommand<A>;
 
 /** The outcome of validating a command's arguments and, if they held, running it. */
 export type ParsedRun =
   | { readonly ok: false; readonly issues: readonly z.ZodIssue[] }
-  | { readonly ok: true; readonly result: OpsCommandResult | Promise<OpsCommandResult> };
+  | { readonly ok: true; readonly result: OpsAnyResult | Promise<OpsAnyResult> };
 
 /**
  * A command with its argument type erased, so a registry can hold commands
@@ -264,6 +304,29 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
           return fail(request.command, 'bad-request', run.issues.map(describeIssue).join('; '));
         }
         const result = await run.result;
+
+        if (command.write) {
+          const record = 'audit' in result ? result.audit : undefined;
+          if (record === undefined) {
+            // Unreachable through `defineCommand`, whose write branch demands an
+            // audit record at compile time. This is the tripwire behind that
+            // type, for a `RegisteredCommand` assembled by hand — and it fails
+            // the command rather than logging a warning, because a write with no
+            // trail is the thing ADR 0013 §4 is trying to make impossible.
+            throw new Error(
+              `${command.name} changed state but reported no audit record; ` +
+                `every write command must return one`,
+            );
+          }
+          // Thrown, not swallowed: a write that happened and was not recorded
+          // must not report success. The audit trail is the only durable
+          // evidence an operator acted, and a silent gap in it is worse than a
+          // command that says it failed when it half-succeeded — the operator
+          // can check the state; they cannot recover a row that was never
+          // written.
+          guild.context.ports.recordAudit(auditWriteFor(record, actor, guild.context.now()));
+        }
+
         return {
           v: OPS_PROTOCOL_VERSION,
           ok: true,
@@ -284,6 +347,28 @@ export function createDispatcher(deps: DispatcherDeps): Dispatcher {
     },
   };
 }
+
+/**
+ * The command's account of what it did, plus the attribution it does not choose.
+ *
+ * `actorId` is fixed `undefined` rather than filled from the claim: the CLI has
+ * no verified identity, and putting the claimed Unix name in the column every
+ * other actor type fills with a verified one would make the trail read as
+ * stronger evidence than it is (amendment 2).
+ */
+const auditWriteFor = (record: OpsAuditRecord, actor: Actor, at: number): OpsAuditWrite => ({
+  at,
+  actorType: 'operator_cli',
+  actorId: undefined,
+  actorUnixUserClaimed: actor.unixUserClaimed,
+  via: 'ssh',
+  action: record.action,
+  subjectType: record.subjectType,
+  subjectId: record.subjectId,
+  before: record.before,
+  after: record.after,
+  dryRun: record.dryRun ?? false,
+});
 
 /** `path: message`, so a rejected field names itself. */
 const describeIssue = (issue: z.ZodIssue): string =>

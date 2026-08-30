@@ -3,6 +3,9 @@ import { z } from 'zod';
 import { defineCommand, OPERATOR_COMMANDS, type RegisteredCommand } from '@bananasaurs/core';
 import { parseArgv } from './args.js';
 
+/** Every write command must report one; `OpsWriteResult` demands it. */
+const AUDIT = { action: 'test.done', subjectType: 'guild' } as const;
+
 const catalogue: readonly RegisteredCommand[] = [
   defineCommand<Record<string, never>>({
     name: 'status',
@@ -17,7 +20,7 @@ const catalogue: readonly RegisteredCommand[] = [
     summary: 'stop or start acting',
     positional: [{ name: 'state', required: true, describe: 'on or off' }],
     args: z.object({ on: z.boolean() }),
-    run: () => ({ text: '', data: null }),
+    run: () => ({ text: '', data: null, audit: AUDIT }),
   }),
   // Deliberately nested: `log` is a command in its own right *and* a prefix of
   // `log routing set`. Without a pair like this, "longest match wins" is a rule
@@ -39,7 +42,7 @@ const catalogue: readonly RegisteredCommand[] = [
       { name: 'channelId', required: true, describe: 'the channel' },
     ],
     args: z.object({ eventKind: z.string(), channelId: z.string() }),
-    run: () => ({ text: '', data: null }),
+    run: () => ({ text: '', data: null, audit: AUDIT }),
   }),
   defineCommand<{ limit: number; failed: boolean }>({
     name: 'audit tail',

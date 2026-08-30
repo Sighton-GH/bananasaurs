@@ -15,6 +15,9 @@ import {
 import { run } from './run.js';
 import type { sendRequest } from './client.js';
 
+/** Every write command must report one; `OpsWriteResult` demands it. */
+const AUDIT = { action: 'test.done', subjectType: 'guild' } as const;
+
 const catalogue: readonly RegisteredCommand[] = [
   defineCommand<Record<string, never>>({
     name: 'status',
@@ -29,7 +32,7 @@ const catalogue: readonly RegisteredCommand[] = [
     summary: 'stop or start acting',
     positional: [{ name: 'state', required: true, describe: 'on or off' }],
     args: z.object({ state: z.string() }),
-    run: () => ({ text: '', data: null }),
+    run: () => ({ text: '', data: null, audit: AUDIT }),
   }),
 ];
 

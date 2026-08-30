@@ -26,6 +26,8 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   safetyState: unstubbed('safetyState'),
   jobCounts: unstubbed('jobCounts'),
   oldestDueJobAtMs: unstubbed('oldestDueJobAtMs'),
+  recordAudit: unstubbed('recordAudit'),
+  setKillswitch: unstubbed('setKillswitch'),
   ...over,
 });
 

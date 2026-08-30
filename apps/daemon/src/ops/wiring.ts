@@ -1,6 +1,6 @@
 import type { Client } from 'discord.js';
 import type { Config, OpsInstance, OpsPorts } from '@bananasaurs/core';
-import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
+import { effectRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 
 /**
  * The operator surface's ports, bound to one guild.
@@ -15,6 +15,21 @@ export const opsPortsFor = (scope: GuildScope): OpsPorts => ({
   safetyState: () => guildRepo.readSafetyState(scope),
   jobCounts: () => jobRepo.countByState(scope),
   oldestDueJobAtMs: (nowMs) => jobRepo.oldestDueAt(scope, nowMs),
+  recordAudit: (input) =>
+    effectRepo.recordAudit(scope, {
+      at: input.at,
+      actorType: input.actorType,
+      actorId: input.actorId,
+      actorUnixUserClaimed: input.actorUnixUserClaimed,
+      via: input.via,
+      action: input.action,
+      subjectType: input.subjectType,
+      subjectId: input.subjectId,
+      before: input.before,
+      after: input.after,
+      dryRun: input.dryRun,
+    }),
+  setKillswitch: (on) => guildRepo.setKillswitch(scope, on, Date.now()),
 });
 
 export interface OpsInstanceDeps {
