@@ -2192,3 +2192,46 @@ restored by file copy from a verified baseline.
 
 1607 tests green (from 1600 — 5 in `backup-timer.test.ts`, 2 in
 `daemon.integration.test.ts`); typecheck and lint exit 0.
+
+---
+
+## WP6 / slice 16c — `backup now` and `backup list` on the operator surface — 2026-08-30
+
+The last plumbing gap from 16b: `OpsInstance.backupNow()`/`backupList()` existed
+but nothing on the command surface called them. `packages/core/src/ops/commands/backup.ts`
+adds both, following `bootstrap reissue`'s shape exactly — `ctx.instance`, not
+`ctx.ports`, because a backup has no guild in the question.
+
+**`backup now` throws on failure rather than returning a written-but-failed
+result, matching every other write command in this tree.** A thrown error
+means no audit row, which is correct: nothing happened, so there is nothing to
+record having happened. The audit row on success names the file, before/after
+backup counts, and stays clear of touching `docs/17`'s "every write is
+audited" contract — `defineCommand`'s `OpsWriteResult` still demands the field
+at the type level, so there was no way to skip it even by accident.
+
+**There is deliberately no `backup restore` command, and a test says so
+directly** rather than only by omission: `OPERATOR_COMMANDS.map(...).some((n)
+=> n.includes('restore'))` is asserted `false`. ADR 0034 already argues why —
+restore needs the daemon stopped, which is the one precondition a live socket
+command can never satisfy — and a test that only checked "the command I wrote
+works" would have said nothing about whether a *different* command was ever
+added by someone reasoning locally about symmetry with `backup now`.
+
+**`backup list` flags a missing checksum sidecar rather than hiding it.** A
+backup whose `.sha256` file didn't get written (disk full mid-cycle, an
+operator's own `rm`) is exactly the kind of finding `docs/19`'s "an untested
+restore is not a restore" exists to surface before the day someone needs it.
+
+**Broke, to check the tests, continuing from 258.** 258. Dropped `fileName`
+from the audit row's `after` → "records an audit row naming the file" failed.
+259. Weakened the retention-message condition from `> 0` to `>= 0`, so "removed
+nothing" never renders → the zero-pruned test failed, printing "removed 0
+older backup(s)" where the operator-facing wording should say nothing was
+removed. 260. Made the checksum warning unconditional → "does not flag a
+backup that has its checksum" failed. 261. Made the empty-list branch
+unreachable (`=== -1`) → the empty-list test failed, receiving `''` instead of
+the explanatory line. All four restored by file copy from a verified baseline.
+
+1621 tests green (from 1607 — 14 new in `commands/backup.test.ts`); typecheck
+and lint exit 0.
