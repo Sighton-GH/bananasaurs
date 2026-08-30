@@ -1,10 +1,20 @@
 import { describe, expect, it } from 'vitest';
-import { authorize, capabilityOf, principalsOf, type Actor, type AuthzStore } from './authz.js';
-import { parseGuildId, parseSnowflakeId } from './ids.js';
+import {
+  authorize,
+  capabilityOf,
+  principalsOf,
+  CAPABILITIES,
+  type Actor,
+  type AuthzStore,
+  type Capability,
+  type PrincipalRef,
+} from './authz.js';
+import { parseAccountId, parseGuildId, parseSnowflakeId } from './ids.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const USER = parseSnowflakeId('222222222222222222');
 const ROLE = parseSnowflakeId('333333333333333333');
+const ACCOUNT = parseAccountId('acct_0123456789abcdef0123456789abcdef');
 
 const member = (over: Partial<Actor> = {}): Actor => ({
   type: 'member',
@@ -26,11 +36,80 @@ describe('principalsOf', () => {
     ]);
   });
 
-  it('does not present a dashboard account id as a Discord principal', () => {
-    // Account ids are not snowflakes. Without the shape check, a dashboard
-    // actor could match a `principals` row by coincidence.
-    const dashboard = member({ type: 'dashboard', id: 'acct_01HXYZ', roleIds: [] });
+  it('presents a dashboard account as an account principal (ADR 0028)', () => {
+    const dashboard = member({ type: 'dashboard', id: ACCOUNT, roleIds: [] });
+    expect(principalsOf(dashboard)).toEqual([{ principalType: 'account', principalId: ACCOUNT }]);
+  });
+
+  it('never presents a dashboard account id as a Discord principal', () => {
+    const dashboard = member({ type: 'dashboard', id: ACCOUNT, roleIds: [] });
+    expect(principalsOf(dashboard).map((p) => p.principalType)).not.toContain('user');
+  });
+
+  it('presents nothing for a dashboard actor whose id is not an account id', () => {
+    // The shape check is what stops a caller putting a snowflake in a dashboard
+    // actor's `id` and picking up that Discord user's grants.
+    const dashboard = member({ type: 'dashboard', id: USER, roleIds: [] });
     expect(principalsOf(dashboard)).toEqual([]);
+  });
+
+  it('ignores a dashboard actor’s Discord roles entirely (ADR 0012, ADR 0028)', () => {
+    /**
+     * The control this test exists for. ADR 0012: Discord role membership
+     * grants nothing here, because other club members hold Administrator. If
+     * `roleIds` reached `hasGrant` for a dashboard actor, the account-linking
+     * feature ADR 0012 leaves for later — which would populate this very field
+     * from Discord — would silently turn every role grant into a dashboard
+     * capability, with nobody editing `principalsOf` to make it happen.
+     *
+     * Read this before "simplifying" the dashboard branch back into the common
+     * path.
+     */
+    const linked = member({ type: 'dashboard', id: ACCOUNT, roleIds: [ROLE] });
+    expect(principalsOf(linked)).toEqual([{ principalType: 'account', principalId: ACCOUNT }]);
+  });
+
+  it('does not let a dashboard actor reach a grant made to a role it claims', () => {
+    const store = {
+      hasGrant: (_c: Capability, refs: readonly PrincipalRef[]) =>
+        refs.some((r) => r.principalType === 'role' && r.principalId === ROLE),
+    };
+    const linked = member({ type: 'dashboard', id: ACCOUNT, roleIds: [ROLE] });
+    expect(authorize({ store, guildId: GUILD, actor: linked }, 'killswitch.toggle').ok).toBe(false);
+  });
+});
+
+describe('TOTP is deferred, and this test is what re-arms it (ADR 0030)', () => {
+  /**
+   * ADR 0012 requires TOTP for any account holding provider-credential or purge
+   * capability. Neither exists in Release 1, so the requirement is currently
+   * vacuous — there is no capability to hold that would trigger it.
+   *
+   * ADR 0030 records the deferral. This is the condition that ends it: adding
+   * any of these to `CAPABILITIES` fails the build, so whoever builds the
+   * provider layer or a purge must either build TOTP or make an explicit,
+   * visible decision not to. That is the difference between a deferral and an
+   * omission.
+   *
+   * The list is a heuristic — it is the names those capabilities would
+   * plausibly take. A capability that grants provider credentials or purge
+   * under some other name is still covered by ADR 0012; add it here rather than
+   * routing around this test.
+   */
+  const REQUIRES_TOTP = ['providers.manage', 'secrets.manage', 'data.purge', 'archive.export'];
+
+  it.each(REQUIRES_TOTP)('%s is not a capability yet', (capability) => {
+    expect(
+      CAPABILITIES as readonly string[],
+      `${capability} was added to CAPABILITIES, and ADR 0012 requires TOTP for any account ` +
+        `holding it. ADR 0030 deferred TOTP only because no such capability existed. Either ` +
+        `build TOTP enrolment and verification, or amend ADR 0030 with a new reason and remove ` +
+        `this name from the list — but do not delete this test.`,
+    ).not.toContain(capability);
+  });
+
+  it('still has the eight Release 1 capabilities, so the guard is not vacuous', () => {
+    expect(CAPABILITIES).toHaveLength(8);
   });
 });
 

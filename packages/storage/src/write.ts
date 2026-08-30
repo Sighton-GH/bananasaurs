@@ -1,5 +1,5 @@
 import type { Db } from './db.js';
-import { dbOf, isReadonly, type GuildScope } from './scope.js';
+import { dbOf, isReadonly, type GuildScope, type InstanceScope } from './scope.js';
 
 /**
  * Refused because the process was started with BANANASAURS_READONLY.
@@ -9,9 +9,19 @@ import { dbOf, isReadonly, type GuildScope } from './scope.js';
  */
 export class ReadonlyError extends Error {
   override readonly name = 'ReadonlyError';
-  constructor(guildId: string) {
+  /**
+   * `subject` is a guild id, or the literal `instance` for an instance-level
+   * write (ADR 0027).
+   *
+   * One class rather than two, deliberately: `dispatch.ts` and the HTTP error
+   * mapper both recognise a readonly refusal by `err.name` across the ADR 0014
+   * boundary, where `instanceof` is not available. A second class would be a
+   * second thing each of those has to learn about, and the one that forgot
+   * would report a write refusal as an internal error.
+   */
+  constructor(subject: string) {
     super(
-      `refusing a write for guild ${guildId}: BANANASAURS_READONLY is set. ` +
+      `refusing a write for guild ${subject}: BANANASAURS_READONLY is set. ` +
         `The process is running in observe-only mode.`,
     );
   }
@@ -34,6 +44,12 @@ type NotPromise<T> = T extends Promise<unknown> ? never : T;
 export interface WriteTx {
   readonly db: Db;
   readonly scope: GuildScope;
+}
+
+/** The same, for an instance-level transaction (ADR 0027). */
+export interface InstanceTx {
+  readonly db: Db;
+  readonly scope: InstanceScope;
 }
 
 /**
@@ -73,5 +89,23 @@ export function write<T>(scope: GuildScope, fn: (tx: WriteTx) => NotPromise<T>):
  * without exporting `dbOf` from the package.
  */
 export function read<T>(scope: GuildScope, fn: (db: Db) => NotPromise<T>): T {
+  return fn(dbOf(scope));
+}
+
+/**
+ * `write()` for the tables that carry no guild id (ADR 0027).
+ *
+ * Same transaction rule, the same `NotPromise<T>` refusal of an async callback,
+ * and the same single interception point for `BANANASAURS_READONLY` — readonly
+ * is a property of the process, not of a guild, so it applies identically.
+ */
+export function writeInstance<T>(scope: InstanceScope, fn: (tx: InstanceTx) => NotPromise<T>): T {
+  if (isReadonly(scope)) throw new ReadonlyError('instance');
+  const db = dbOf(scope);
+  return db.transaction((tx) => fn({ db: tx, scope }) as T);
+}
+
+/** `read()` for instance-level tables. Allowed in readonly mode, as reads are. */
+export function readInstance<T>(scope: InstanceScope, fn: (db: Db) => NotPromise<T>): T {
   return fn(dbOf(scope));
 }

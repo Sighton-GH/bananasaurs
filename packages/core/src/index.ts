@@ -7,11 +7,15 @@ export {
 } from './config/schema.js';
 export { parseConfig, redactConfig, ConfigError } from './config/load.js';
 export {
+  accountIdSchema,
   guildIdSchema,
+  isAccountId,
   isSnowflakeId,
+  parseAccountId,
   parseGuildId,
   parseSnowflakeId,
   snowflakeIdSchema,
+  type AccountId,
   type GuildId,
   type SnowflakeId,
 } from './ids.js';
