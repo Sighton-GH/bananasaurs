@@ -145,6 +145,17 @@ Twenty-three mutations across the package, twenty-two killed on first attempt, o
 ## 7. Handoff prompt for a fresh session
 
 ```
+Model: Opus, high effort — for the socket/auth/idempotency core (undo,
+killswitch, the capability check over the new socket channel). Per
+docs/decisions/0022-claude-model-strategy.md, this is Tier A: a new
+authorization surface plus idempotent state-mutating commands, not
+"follow an established pattern" work. Switch to Sonnet/medium effort once
+that plumbing is built and reviewed — e.g. for the third or fourth
+similar read-only command (status/doctor output formatting, --json
+plumbing). If you'd rather not juggle models mid-session, stay on Opus for
+the whole slice; it is a small package and the safety-critical parts
+dominate it.
+
 Begin WP5 of the Bananasaurs project — the operator CLI, dashboard, and
 /privacy. Slice 6 (the real Discord adapter) already shipped out of order;
 this session starts at slice 13, the operator CLI.
