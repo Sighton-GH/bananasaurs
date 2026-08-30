@@ -55,7 +55,7 @@ What follows is the full engine, for the rules that survive that filter.
 - Rule model and predicates: keyword, wildcard, regex, invite, link/domain, mention spam, duplicate message, rapid spam, caps, emoji, attachment type, account age, join age.
 - Role, channel, and user exemptions. Sliding-window counters, violation expiry, progressive escalation, per-rule rate limits.
 - Saved-message fixtures, dry-run evaluation, human-readable match traces, false-positive review, rule versioning and rollback.
-- Per-rule `test` / `observe` / `enforce`, a global testing-mode toggle, and an emergency disable that is separate from testing mode.
+- Per-rule `test` / `observe` / `enforce`, a global testing-mode toggle, and an emergency disable that is separate from testing mode. **Observe-only windows are per rule and run concurrently, not sequentially** — build the rule set up front and flip every rule into `observe` the same day so their clocks overlap; that is the lever for wall-clock speed, not a shorter window per rule. *(Recorded 2026-08-29.)*
 - **No overlapping enforcement.** While Carl-bot enforces a rule, the Bananasaurs equivalent is observe-only. Cutover is per rule and atomic: disable there, then enable here. Each rule records which legacy rule it replaces and its cutover state.
 - Native Discord AutoMod integration where it blocks content earlier; supplement rather than duplicate.
 - Moderation cases, notes, warnings, evidence links, permission-scoped history search.
@@ -63,7 +63,7 @@ What follows is the full engine, for the rules that survive that filter.
 - Protected users and roles, hierarchy checks, per-action capability grants, confirmation policy for high-impact actions.
 - Reconciliation of actions taken directly in Discord, flagged `source: discord_audit_log (inferred)`, never authoritative.
 
-**Gate:** every legacy automod rule has an equivalent that ran observe-only against real traffic for at least two weeks with an acceptable false-positive rate. Cutover happened one rule at a time. Hierarchy and permission tests pass, duplicate execution is impossible, and every action records actor, target, reason, evidence, timestamps, and outcome. All of it works with no AI configured at all — because at this point there is none.
+**Gate:** every legacy automod rule has an equivalent that ran observe-only against real traffic with an acceptable false-positive rate before cutover. **Two weeks is the floor for a fuzzy, heuristic rule** (spam-rate, duplicate-message, mention-spam, caps) — exactly the kind where real conversation produces the surprises this gate exists to catch. **A narrow, precise rule** (invite-link blocklist, domain blocklist) has little for real traffic to teach it and may graduate sooner if its false-positive review is clean early; the owner decides per rule, not by one uniform timer. *(Recorded 2026-08-29 — no auto-testing volume substitutes for real-traffic exposure; see the reasoning in the WP4 boundary conversation.)* Cutover happened one rule at a time. Hierarchy and permission tests pass, duplicate execution is impossible, and every action records actor, target, reason, evidence, timestamps, and outcome. All of it works with no AI configured at all — because at this point there is none.
 
 ---
 
