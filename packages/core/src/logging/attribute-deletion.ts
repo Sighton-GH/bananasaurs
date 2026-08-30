@@ -7,7 +7,7 @@ import { formatMessageDelete } from './format.js';
 import type { LogRoute } from './subscriber.js';
 
 /**
- * The delayed job's body (ADR 0022 decision 3): consult the audit log,
+ * The delayed job's body (ADR 0023 decision 3): consult the audit log,
  * decide an actor or refuse to guess, record the audit trail, and post the
  * log line. Runs `MESSAGE_DELETE_ATTRIBUTION_DELAY_MS` after the dispatch.
  */
@@ -73,7 +73,7 @@ export async function attributeAndLogDeletion(
       content: formatMessageDelete(payload, actorId),
     });
   } catch (err) {
-    // The send failing must not blackhole this line forever (ADR 0022 decision
+    // The send failing must not blackhole this line forever (ADR 0023 decision
     // 4) — but the resolution above is durable and idempotent via
     // `findExistingAttribution`, so releasing here only ever retries the part
     // that still needs it.

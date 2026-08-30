@@ -17,7 +17,7 @@ export const JOB_KINDS = {
   reconcileGuild: 'reconcile_guild',
   /** Turns a panel's existing reactions into roles, once an owner sized it. */
   adoptPanel: 'adopt_panel',
-  /** Consults the audit log for who deleted a message (ADR 0019, ADR 0022). */
+  /** Consults the audit log for who deleted a message (ADR 0019, ADR 0023). */
   logMessageDelete: 'log_message_delete',
 } as const;
 

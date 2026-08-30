@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { correlateDeletion, type CorrelationCandidate } from './attribution.js';
 
 /**
- * ADR 0022 decision 3: the available key is (actor, author, channel,
+ * ADR 0023 decision 3: the available key is (actor, author, channel,
  * count-delta), and it is approximate in every component. These tests are
  * the judgement call written down as behaviour.
  */

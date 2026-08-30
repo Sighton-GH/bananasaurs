@@ -1,7 +1,7 @@
 import type { MemberEvent, MessageEvent, RoleEvent } from '../discord/events.js';
 
 /**
- * Pure text formatting for the logging module (ADR 0022).
+ * Pure text formatting for the logging module (ADR 0023).
  *
  * Plain content strings, not embeds: `OutgoingMessage.embeds` is opaque
  * (`unknown[]`) and nothing else in Release 1 constructs one, so a plain
@@ -26,7 +26,7 @@ export function formatMessageEdit(event: MessageEvent, includeContent: boolean):
  * The one line that has to render "(inferred)" and never plain attribution
  * (`docs/20`'s gate). `actorUserId` is `undefined` when correlation found no
  * safe answer — a self-deletion, the audit log not caught up yet, or an
- * ambiguity between two candidates (ADR 0022 decision 3) — and renders as
+ * ambiguity between two candidates (ADR 0023 decision 3) — and renders as
  * "unknown", never a guess.
  *
  * `content` is whatever the enqueueing subscriber decided to carry — already
@@ -57,7 +57,7 @@ export function formatMemberJoin(event: MemberEvent): string {
 /**
  * Never says why. Distinguishing a voluntary leave from a kick or a ban
  * needs the same audit-log correlation ADR 0019 built for message deletion,
- * and ADR 0022 puts that out of scope: `REVIEW.md` Release 2 owns "kick,
+ * and ADR 0023 puts that out of scope: `REVIEW.md` Release 2 owns "kick,
  * ban/unban... mod log".
  */
 export function formatMemberLeave(event: MemberEvent): string {
@@ -81,7 +81,7 @@ export function formatRoleDelete(event: RoleEvent): string {
  * silent hole. `<t:unix:t>` is Discord's own timestamp markup — it renders in
  * each reader's local time, so the channel never has to guess whose
  * timezone to print in. Every WP4 event kind is a gateway dispatch with no
- * "what happened while I was away" API (ADR 0022 decision 5), so the marker
+ * "what happened while I was away" API (ADR 0023 decision 5), so the marker
  * names all three, not only messages.
  */
 export function formatGapMarker(disconnectedAtMs: number, reconnectedAtMs: number): string {

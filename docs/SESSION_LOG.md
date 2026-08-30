@@ -931,7 +931,7 @@ typecheck and lint exit 0. `npm run db:migrate` applies cleanly.
 
 ## WP4 / slice 12a — read-side plumbing, before the hard part — 2026-08-29
 
-ADR 0022 first (`docs/decisions/0022-logging-module-scope-and-deletion-attribution.md`):
+ADR 0023 first (`docs/decisions/0023-logging-module-scope-and-deletion-attribution.md`):
 scope is message/member/role logging only — `REVIEW.md`'s Release 1 list
 wins over `docs/20`'s broader "role and channel changes" summary, and the
 codebase agrees (`DomainEvent` has no channel-change variant, `FakeDiscord`
@@ -951,7 +951,7 @@ the same way `write.test.ts` and `columns.test.ts` already do for tables
 with no repo setter.
 
 **`pipelineRepo.forgetFirstSight`** — the release half of the existing
-`recordFirstSight` claim, added because ADR 0022 decision 4 needs it: the
+`recordFirstSight` claim, added because ADR 0023 decision 4 needs it: the
 logging module claims before a Discord send and releases the claim if the
 send throws, deliberately inverting the role-effects "claim before REST,
 never release" pattern, because logging has no reconciliation to fall back
@@ -998,7 +998,7 @@ channel on `log_excluded_channels`; claim a namespaced fingerprint
 (`log:<kind>`, never the bare gateway kind — that PK is already taken by the
 pipeline's own gate 2, and claiming it again would just observe "already
 seen" and never fire); format; send; **release the claim if the send
-throws**, per ADR 0022 decision 4's deliberate inversion of the role-effects
+throws**, per ADR 0023 decision 4's deliberate inversion of the role-effects
 "claim, never release" pattern. `roleUpdate` gets its own content-based
 fingerprint (`roleId:name`) computed locally, rather than teaching the
 shared `fingerprint.ts` a new case — that module is shared by every future
@@ -1030,7 +1030,7 @@ rename after the first. All five restored by file copy.
 
 ## WP4 / slice 12c — inferred message-delete attribution — 2026-08-29
 
-The hard part ADR 0022 exists for. `messageDelete` now enqueues a job
+The hard part ADR 0023 exists for. `messageDelete` now enqueues a job
 (`log_message_delete`, `run_after = now + 3s`) instead of formatting and
 sending inline — ADR 0019 fact 3 says a synchronous fetch finds nothing.
 Content is decided once, at enqueue time, from the route's live
@@ -1049,7 +1049,7 @@ exactly one unit per successful attribution, not the whole visible delta, is
 what lets a burst of N deletions by the same moderator — N independent jobs
 — each see their own unclaimed unit regardless of execution order.
 
-**The residual ambiguity ADR 0022 named up front actually reproduces.** A
+**The residual ambiguity ADR 0023 named up front actually reproduces.** A
 live test would have been dishonest here since it cannot force the timing;
 `the self-deletion after a fully-claimed run` integration test constructs it
 directly: two real moderator deletions correctly attributed and claimed,
@@ -1060,7 +1060,7 @@ the cursor's role at all (two messages by one actor pass with or without the
 cursor working, because there is only ever one candidate) — the new test
 closes that gap.
 
-**Idempotency, done as ADR 0022 decision 4 describes for this specific case.**
+**Idempotency, done as ADR 0023 decision 4 describes for this specific case.**
 A single claim guards resolution *and* the send; `findExistingAttribution`
 reads the already-recorded audit row before resolving anything, so a retry
 after a failed send reuses what was already decided instead of re-consulting
@@ -1103,7 +1103,7 @@ not the `ALTER TABLE` rebuild ADR 0021's migration hit).
 
 ## WP4 / slice 12d — gap markers — 2026-08-29
 
-ADR 0022 decision 5, and the last WP4 slice before wiring. On a non-resumed
+ADR 0023 decision 5, and the last WP4 slice before wiring. On a non-resumed
 `connection` event the logging subscriber now posts one marker
 ("⚠️ Bananasaurs was disconnected from `<t:from:t>` to `<t:to:t>`. Message,
 member, and role events in that window were not captured.") to every

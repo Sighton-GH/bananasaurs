@@ -112,7 +112,7 @@ describe('formatMemberLeave', () => {
     expect(formatMemberLeave(memberEvent('memberRemove'))).toContain(`<@${AUTHOR}>`);
   });
 
-  it('says nothing about why — kick/ban attribution is not this release (ADR 0022)', () => {
+  it('says nothing about why — kick/ban attribution is not this release (ADR 0023)', () => {
     const text = formatMemberLeave(memberEvent('memberRemove')).toLowerCase();
     expect(text).not.toContain('kick');
     expect(text).not.toContain('ban');

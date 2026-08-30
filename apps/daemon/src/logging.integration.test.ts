@@ -23,7 +23,7 @@ import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
 
 /**
- * The logging module's plain event kinds (ADR 0022): message edits, member
+ * The logging module's plain event kinds (ADR 0023): message edits, member
  * joins/leaves, and role create/update/delete, plus enqueueing the deletion-
  * attribution job for `messageDelete` (the job's own body — the audit-log
  * correlation — is `logging-deletion.integration.test.ts`).
@@ -353,7 +353,7 @@ describe('roles', () => {
   });
 
   it('logs a second, real role update with a different resulting name', async () => {
-    // roleUpdate has no pipeline-level fingerprint (ADR 0022 decision 4), so
+    // roleUpdate has no pipeline-level fingerprint (ADR 0023 decision 4), so
     // this module computes its own from the resulting name.
     seedRoute('role_update', { channelId: CHANNEL });
     const subscriber = createLoggingSubscriber(ports);
@@ -373,7 +373,7 @@ const connectionEvent = (over: Partial<ConnectionEvent> = {}): ConnectionEvent =
   ...over,
 });
 
-describe('gap markers (ADR 0022 decision 5)', () => {
+describe('gap markers (ADR 0023 decision 5)', () => {
   it('posts nothing when no routes are configured', async () => {
     const subscriber = createLoggingSubscriber(ports);
     await subscriber.handle(connectionEvent());

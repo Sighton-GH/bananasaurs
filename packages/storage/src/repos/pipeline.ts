@@ -46,7 +46,7 @@ export const recordFirstSight = (scope: GuildScope, input: FirstSightInput): boo
  * Releases a claim made by `recordFirstSight`, so the same fingerprint can be
  * seen as "first" again.
  *
- * For ADR 0022: the logging module claims before attempting a Discord send
+ * For ADR 0023: the logging module claims before attempting a Discord send
  * and releases the claim if the send throws, so a transient failure does not
  * blackhole a log line forever the way it safely can for a role effect (which
  * has reconciliation to fall back on; logging does not). A harmless no-op

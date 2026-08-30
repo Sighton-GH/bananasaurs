@@ -315,7 +315,7 @@ describe('roles and guild lifecycle', () => {
   });
 
   /**
-   * The logging module (WP4, ADR 0022) needs a name to render "Role deleted:
+   * The logging module (WP4, ADR 0023) needs a name to render "Role deleted:
    * @old-name" rather than a bare id nobody recognises — and discord.js hands
    * the listener the role's last-known state for free on every one of these
    * three dispatches, including delete, where it is already gone from

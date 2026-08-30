@@ -41,7 +41,7 @@ export const findRoute = (scope: GuildScope, eventKind: string): LogRoute | unde
 /**
  * Every distinct channel currently enabled for at least one event kind.
  *
- * For the gap marker (ADR 0022 decision 5): a channel routed under two event
+ * For the gap marker (ADR 0023 decision 5): a channel routed under two event
  * kinds gets one marker, not two.
  */
 export const listEnabledLogChannels = (scope: GuildScope): string[] =>
@@ -90,7 +90,7 @@ export const claimedCountFor = (scope: GuildScope, key: DeletionRunKey): number 
   });
 
 /**
- * Claims exactly one more unit of this run's count (ADR 0022 decision 3): not
+ * Claims exactly one more unit of this run's count (ADR 0023 decision 3): not
  * the whole visible delta, so a burst of N deletions by the same actor — each
  * its own job — each independently sees an unclaimed increment regardless of
  * execution order.
@@ -128,7 +128,7 @@ export interface MessageDeleteAttribution {
  * Read before resolving a fresh attribution (the job handler's own
  * idempotency): a retry after a failed Discord send must reuse what was
  * already decided rather than re-consulting the audit log, which could see a
- * different, contradictory answer the second time (ADR 0022 decision 3's
+ * different, contradictory answer the second time (ADR 0023 decision 3's
  * cursor advances on a successful resolution, so a naive re-resolve after
  * one already succeeded would find its own increment already claimed and
  * wrongly downgrade to "unknown").

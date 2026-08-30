@@ -16,7 +16,7 @@ import {
 } from './format.js';
 
 /**
- * The logging module (ADR 0022): message edits and deletes, member
+ * The logging module (ADR 0023): message edits and deletes, member
  * joins/leaves, and role create/update/delete. A deletion is not formatted
  * or sent here — it is enqueued as a delayed job, because ADR 0019 fact 3
  * says the audit log has not caught up yet at the moment the dispatch
@@ -38,7 +38,7 @@ export interface LoggingPorts {
   /**
    * The claim, namespaced under this module's own `eventKind` so it cannot
    * collide with the pipeline's own gate-2 dedupe row for the bare gateway
-   * kind (ADR 0022 decision 4).
+   * kind (ADR 0023 decision 4).
    */
   claim(input: { eventKind: string; fingerprint: string }): boolean;
   /** Released when a send throws, so a later delivery of the same event can retry. */
@@ -79,7 +79,7 @@ function fingerprintFor(event: Parameters<Subscriber['handle']>[0]): string | un
 }
 
 /**
- * `docs/19` §6.7's restated gate, generalised (ADR 0022 decision 5): a gap
+ * `docs/19` §6.7's restated gate, generalised (ADR 0023 decision 5): a gap
  * during which nothing was captured must be a visible marker, never a
  * silent hole. Every distinct enabled channel gets one, independently of the
  * others — one channel's send failing must not stop another's.
@@ -181,7 +181,7 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
       await ports.sendMessage(route.channelId, { content });
     } catch (err) {
       // A transient send failure must not blackhole this line forever — this
-      // module has no reconciliation to fall back on (ADR 0022 decision 4).
+      // module has no reconciliation to fall back on (ADR 0023 decision 4).
       ports.release({ eventKind: dedupeKind, fingerprint });
       ports.logger.error(
         safeLogFields({

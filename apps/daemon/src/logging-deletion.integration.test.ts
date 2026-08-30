@@ -27,7 +27,7 @@ import { AUDIT_LOG_LAG_MS, FakeDiscord } from '@bananasaurs/testkit';
 import { logMessageDeleteHandler } from './jobs/logging.js';
 
 /**
- * The hard part of WP4 (ADR 0022 decision 3): who deleted a message, decided
+ * The hard part of WP4 (ADR 0023 decision 3): who deleted a message, decided
  * from a coalesced, late-arriving, message-id-free audit log. Wired against
  * the real repositories and `FakeDiscord`'s own clock, because the timing —
  * the whole reason the job is delayed at all — cannot be proven by a fake

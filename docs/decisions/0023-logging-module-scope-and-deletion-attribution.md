@@ -1,4 +1,4 @@
-# ADR 0022: Logging module scope, deletion attribution, and log-post idempotency
+# ADR 0023: Logging module scope, deletion attribution, and log-post idempotency
 
 Status: accepted (2026-08-29)
 

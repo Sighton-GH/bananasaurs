@@ -1,7 +1,7 @@
 import type { Snowflake } from '../discord/port.js';
 
 /**
- * Message-delete attribution (ADR 0022 decision 3).
+ * Message-delete attribution (ADR 0023 decision 3).
  *
  * The audit log's `MESSAGE_DELETE` entries coalesce (ADR 0019): an entry
  * describes a *run* of deletions by one actor against one author in one

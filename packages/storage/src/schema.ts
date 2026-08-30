@@ -568,7 +568,7 @@ export const logExcludedChannels = sqliteTable(
 
 /**
  * How much of a coalesced `MESSAGE_DELETE` audit run this module has already
- * attributed to a message (ADR 0022 decision 3).
+ * attributed to a message (ADR 0023 decision 3).
  *
  * A `MESSAGE_DELETE` audit entry describes a *run* of deletions by one actor
  * against one author in one channel, and its `count` is a running total, not
