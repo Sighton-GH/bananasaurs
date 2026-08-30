@@ -173,6 +173,26 @@ describe('what a member is told', () => {
     expect(text).toContain('2m 5s behind');
   });
 
+  /**
+   * The subscriber clamps lag at zero, and this is the renderer's own half of
+   * that: a clock that moved backwards must never produce "-1m behind".
+   *
+   * Two guards for one property is deliberate, and it is why mutation 245
+   * (removing the clamp) is an **equivalent mutant** rather than a survivor —
+   * the renderer's `> 0` already suppresses the line. Pinned here so the
+   * behaviour survives whichever guard is later refactored away.
+   */
+  it('says nothing about lag when the lag is negative', () => {
+    const text = renderMemberStatus({
+      gateway: { connected: true, pingMs: 5, guildCount: 1 },
+      safety: { killswitch: false, dryRun: false, breakerOpen: false, breakerReason: null },
+      jobCounts: {},
+      schedulerLagMs: -60_000,
+    });
+    expect(text).not.toContain('behind');
+    expect(text).not.toContain('-');
+  });
+
   /** A job state the ports do not report is zero, not absent from the line. */
   it('reports zero for a job state with no rows', () => {
     const text = renderMemberStatus({

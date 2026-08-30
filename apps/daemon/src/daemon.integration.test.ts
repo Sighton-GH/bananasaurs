@@ -617,8 +617,17 @@ describe('/status, end to end', () => {
 
     expect(statusReply()).toContain('Role changes are **enabled**');
     expect(statusReply()).not.toContain('kill switch');
-    // Exactly one subscriber answered. Two would mean `scopedTo` let the other
-    // guild's subscriber handle this guild's command as well.
+    /**
+     * Exactly one subscriber acknowledged. Two would mean `scopedTo` let the
+     * other guild's subscriber handle this guild's command as well — which on a
+     * real `DiscordPort` is two replies carrying two guilds' data.
+     *
+     * Asserted on the **defer count**, not on the reply count. `FakeDiscord` is
+     * scoped to one guild and throws on a call naming another, but it *records*
+     * the call before it refuses — so the reply count alone stays at one either
+     * way, and mutation 247 (dropping `scopedTo`) survived against it.
+     */
+    expect(discord.restCalls('deferInteraction')).toHaveLength(1);
     expect(discord.interactionReplies(INTERACTION)).toHaveLength(1);
   });
 

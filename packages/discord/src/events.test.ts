@@ -52,8 +52,16 @@ interface Harness {
   packet: (action: string, data: object) => void;
 }
 
-function harness(options: { allow?: readonly string[] } = {}): Harness {
+/**
+ * `allowAny` exists so a "this event has no guild" test cannot pass because the
+ * allowlist happened to reject whatever the adapter attributed it to. With every
+ * guild allowed, the *only* thing that can drop such an event is the guild
+ * attribution rule under test.
+ */
+function harness(options: { allow?: readonly string[]; allowAny?: boolean } = {}): Harness {
   const allow = options.allow ?? [GUILD];
+  const isGuildAllowed = (guildId: string): boolean =>
+    options.allowAny === true || allow.includes(guildId);
   const client = new Client(buildClientOptions(() => BOT));
 
   // What READY would have established. Without it the client has no identity,
@@ -86,7 +94,7 @@ function harness(options: { allow?: readonly string[] } = {}): Harness {
   const errors: unknown[] = [];
   attachGatewayTranslation(client, {
     now: () => 1_700_000_000_000,
-    isGuildAllowed: (guildId) => allow.includes(guildId),
+    isGuildAllowed,
     emit: (event) => void events.push(event),
     onError: (err) => void errors.push(err),
   });
@@ -516,9 +524,14 @@ describe('slash commands', () => {
    * Guild attribution happens here or not at all. A user-installed application
    * can be invoked in a DM, and every handler downstream reaches storage through
    * a `GuildScope`, which a DM cannot produce.
+   *
+   * **Every guild is allowed here on purpose.** With the ordinary allowlist, an
+   * adapter that invented a fallback guild id would still be dropped — by the
+   * allowlist, not by the rule under test — and this test would pass while the
+   * attribution rule was gone. Mutation 233 survived exactly that way.
    */
   it('drops an invocation that carries no guild', () => {
-    const h = harness();
+    const h = harness({ allowAny: true });
     h.packet(
       'InteractionCreate',
       commandPacket({
