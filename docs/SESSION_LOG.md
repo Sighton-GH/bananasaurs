@@ -2235,3 +2235,77 @@ the explanatory line. All four restored by file copy from a verified baseline.
 
 1621 tests green (from 1607 — 14 new in `commands/backup.test.ts`); typecheck
 and lint exit 0.
+
+---
+
+## WP6 / slice 16d — the restore drill, rehearsed for real — 2026-08-30
+
+`scripts/restore.mjs`, alongside `scripts/migrate.mjs` for the same reason
+that one is plain JS outside the TypeScript project. Not an operator command —
+ADR 0034 already argues why, and this slice is where that argument had to
+actually hold up: restore needs the daemon *not* running, which a socket
+command can never guarantee about itself.
+
+**The refusal reuses the daemon's own single-writer lock rather than
+reinventing a weaker check.** `claimDatabaseLock` from
+`packages/storage/dist/lock.js` — the exact function `openDatabase` calls at
+startup — is called directly against `<db-path>.lock`. A live daemon holds
+that file; a `DatabaseLockedError` is exactly the refusal this script needs,
+for free, with the daemon's own pid in the message.
+
+**Never delete, always move.** The current database (and its `-wal`/`-shm`
+companions, if present) are renamed to a timestamped `.pre-restore-<ts>`
+sibling before the backup is copied in — recoverable if the restore itself was
+the mistake.
+
+**Checksum verified when present, warned about and not refused when absent.**
+An operator restoring from a hand-copied file has already made the decision
+this check exists to inform; refusing outright would make the emergency path
+less usable in exactly the situation it exists for.
+
+**Rehearsed against a real, file-backed, fully migrated SQLite database, not
+just asserted in a test.** Before writing the automated suite, a throwaway
+driver script (`scratchpad/restore-drill.mjs`, deleted after) ran the whole
+sequence by hand against a synthetic database in this environment's scratch
+directory — never `./data` or `./backups`, which this repository's own
+`.claude/settings.json` denies reading, deliberately, because they can hold
+real Discord content: seed content A, back it up, mutate the live database to
+content A-plus, dry-run (no change), refuse under a held lock (no change),
+refuse on a tampered checksum (no change), the real restore (content reverts
+to A), confirm the pre-restore file survives holding content A-plus, and warn
+without refusing when the checksum sidecar is missing. Every step produced the
+expected output before any of it became a committed test — `docs/19`'s "an
+untested restore is not a restore" is the literal gate this slice closes.
+
+**`scripts/restore.test.mjs` turns that rehearsal into a repeatable regression
+suite**, added to `vitest.config.ts`'s `include` alongside the existing
+`packages/**` and `apps/**` globs. It depends on `packages/storage/dist/`
+existing, exactly as `migrate.mjs` already does silently — confirmed safe
+because `npm run typecheck`'s `tsc --build` emits `dist/` as a side effect of
+the composite project build, and CI runs typecheck before test.
+
+**One thing found by running it, not by reading it.** `VACUUM INTO` does not
+create its destination directory (recorded already in slice 16a) — nothing
+new here, but the rehearsal is what confirmed the *restore* side has no
+equivalent gap: `fs.renameSync`/`fs.copyFileSync` need the destination's
+parent to exist, and it always does, because it is the daemon's own configured
+data directory.
+
+**Broke, to check the tests, continuing from 262.** 262. Disabled the checksum
+mismatch check → the mismatch test failed (`expected +0 to be 1`). 263. Made
+the script proceed past a `DatabaseLockedError` instead of refusing → far
+worse than one failed assertion: 7 of 9 tests failed, because the mutated
+script went on to rename and replace the database file out from under the
+*other* process's still-open connection in the "held lock" test, corrupting
+enough shared file state to cascade into unrelated tests — itself a strong
+argument for why the check exists, not just a test artifact to shrug off.
+264. Changed the "move aside" to `fs.rmSync` (a delete) → the
+never-delete test failed cleanly, finding zero preserved files. 265. Made the
+dry-run branch unreachable, so `--confirm` is effectively assumed → the
+dry-run test failed, showing a real restore happened with no flag requesting
+one. All four restored by file copy from a verified baseline; the third
+mutation's cascade cleared completely on restore, confirming it was the
+mutation and not a flaw in the test harness.
+
+1630 tests green (from 1621 — 9 new in `scripts/restore.test.mjs`); typecheck
+and lint exit 0.
