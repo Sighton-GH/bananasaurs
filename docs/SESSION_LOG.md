@@ -2071,3 +2071,71 @@ already in `docs/18`'s verified `2416004288` total, and adding a
 does not have.
 
 1589 tests green across 71 files (from 1547 across 68); typecheck and lint exit 0.
+
+---
+
+## WP6 / slice 16a — the backup module, and two things measured before writing it — 2026-08-30
+
+Release 1's last unbuilt line item (`REVIEW.md` §E: "Backup, and a restore the
+owner has actually performed"). `docs/19` §6.12 had already settled the
+mechanism and destination; this slice is ADR 0034 plus `performBackup` and
+`pruneBackups` in `@bananasaurs/storage`.
+
+**Two facts measured against better-sqlite3 13 before writing any backup code,
+following this project's own habit of not trusting a plan's assumptions.**
+`VACUUM INTO` does not create its destination directory — pointed at a missing
+parent it fails with the same "unable to open database" error SQLite gives for
+a permissions problem, so `performBackup` calls `mkdirSync(destDir, {
+recursive: true })` itself rather than assuming the statement handles it the
+way `openDatabase` does for the main database path. And it refuses to
+overwrite an existing destination file rather than replacing it — a real gift:
+it means a millisecond-precision filename is enough to make a same-tick
+collision unreachable rather than merely unlikely, and a naming bug fails loud
+instead of silently clobbering a prior backup.
+
+**Instance-level, not a `jobs` row (ADR 0034).** `jobs` is guild-scoped by
+construction; a backup is a copy of the one database file the whole process
+shares, not a fact about any guild. `performBackup` and `pruneBackups` take the
+raw `better-sqlite3` handle directly, no `GuildScope`, and will be driven by a
+second `setInterval` in `apps/daemon` — sibling to the job-poll timer, not
+nested inside the per-guild map — in the next slice.
+
+**The checksum is a sidecar file, not a database row**, in the exact format
+`sha256sum` itself emits (`<hex>  <filename>\n`). A backup has to be verifiable
+by a human with coreutils alone, on a box where the daemon is not running and
+nothing in this repository is importable — that is the whole scenario restore
+exists for, so trusting the checksum's own file to also hold the checksum
+would be circular in the one situation that matters.
+
+**Retention only ever touches files this scheme produced.** `pruneBackups`
+filters on the `bananasaurs-<timestamp>.db` pattern before sorting and
+deleting, so an operator's own copy sitting in the same directory is never at
+risk — proven by a test that plants a stray file, prunes with `retain: 0`, and
+asserts the stray survives while every managed backup is gone.
+
+**Defaults: daily, keep fourteen** (`BANANASAURS_BACKUP_INTERVAL_MIN=1440`,
+`BANANASAURS_BACKUP_RETAIN=14`), `BANANASAURS_BACKUP_DIR=./backups` — a sibling
+of `./data`, matching `deploy/bananasaurs.service`'s `ReadWritePaths`, which
+already anticipated this layout back in WP1.
+
+**Broke, to check the tests, continuing from 249.** 249. Dropped the
+`mkdirSync` call → the nested-directory test failed with the exact "unable to
+open database" error the measurement above predicted. 250. Dropped the
+checksum sidecar write → 2 failed. 251. Made `pruneBackups` keep the oldest
+files instead of the newest → the retention test failed, naming the wrong
+three files kept. 252. Removed the filename-pattern filter from the listing
+helper, so pruning would consider every file in the directory → 4 failed,
+including the stray-file test and a `parseBackupTimestamp` throw on the stray
+file's own name. 253. Introduced an off-by-one in the timestamp slice (treating
+the literal `T` separator as a digit) → the round-trip test failed with
+`RangeError: Invalid time value`, immediately rather than producing a wrong
+but plausible date. All five restored by file copy from a verified baseline,
+each confirmed against the pre-mutation md5 before continuing.
+
+**Baseline note.** This session measured 1590 tests across 71 files at the
+worktree's starting commit (slice 15's own entry says 1589/71; not chased
+further — within a test of agreement and not this slice's concern).
+
+1600 tests green across 72 files (the module's own 10; `config/load.test.ts`'s
+three new default assertions land inside an existing test, not a new one);
+typecheck and lint exit 0.

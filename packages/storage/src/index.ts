@@ -24,6 +24,17 @@ export {
   type WriteTx,
 } from './write.js';
 export { SnowflakeTypeError } from './columns.js';
+export {
+  BACKUP_FILENAME_PATTERN,
+  listBackups,
+  performBackup,
+  pruneBackups,
+  type BackupListing,
+  type BackupOptions,
+  type BackupResult,
+  type PruneOptions,
+  type PrunedBackup,
+} from './backup.js';
 export * as accountRepo from './repos/accounts.js';
 export * as sessionRepo from './repos/sessions.js';
 export * as guildRepo from './repos/guilds.js';
