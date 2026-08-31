@@ -494,10 +494,19 @@ const DEFAULT_AUTOMOD_RULE_ID = 'default-word-filter';
  * Seeds the guild's first automod rule, once, from `obscenity`'s bundled word
  * list (ADR 0035, Task 6).
  *
- * Guarded on "no *enabled* `keyword_filter` rule exists yet" rather than "no
- * rule row exists yet": an owner who has already configured automod manually
- * (or who disabled the seeded default) must not have a second rule pushed in
- * alongside theirs on the next restart. `createRule` (Task 5) always inserts
+ * Guarded on `ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)` — **not** on "no
+ * *enabled* `keyword_filter` rule exists yet", which this used to check.
+ * That first version crashed the whole daemon on a second startup: an owner
+ * disabling the seeded rule via `setRuleMode({ enabled: false })` (a real,
+ * already-shipped capability, and one spec §8 explicitly expects — "review
+ * and tune categories" before anything enforces for real) makes
+ * `listEnabledKeywordFilterRules` empty again, so the old guard re-entered
+ * this whole function on the next restart and `createRule` threw on the
+ * `mod_rules` `(guild_id, rule_id)` primary key it collided with. Checking
+ * for the specific id, independent of its enabled state, makes seeding
+ * idempotent per rule rather than per "is anything currently enabled" —
+ * exactly once, ever, and never touching a row that already exists, so a
+ * disabled rule stays disabled. `createRule` (Task 5) always inserts
  * `mode: 'test'` regardless of what is asked — spec §8's rollout rule that
  * automod ships observing, not enforcing, until an owner opts a rule into
  * `enforce` — so there is nothing else to pass here to get that; it is the
@@ -525,7 +534,7 @@ function seedAutomodDefaults(
     return;
   }
 
-  if (automodRuleRepo.listEnabledKeywordFilterRules(scope).length > 0) return;
+  if (automodRuleRepo.ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)) return;
 
   automodRuleRepo.createRule(scope, {
     ruleId: DEFAULT_AUTOMOD_RULE_ID,

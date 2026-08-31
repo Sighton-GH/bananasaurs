@@ -9,6 +9,7 @@ import {
   createRule,
   isExempt,
   listEnabledKeywordFilterRules,
+  ruleExists,
   setRuleMode,
 } from './automod-rules.js';
 
@@ -62,5 +63,21 @@ describe('automod rules repo', () => {
     // exemption insert goes through the repo once its write function exists —
     // implement addRoleExemption alongside the others, same table shape.
     expect(isExempt(scope, 'r1', { authorRoleIds: [ROLE], channelId: CHANNEL })).toBe(false);
+  });
+
+  describe('ruleExists', () => {
+    it('is false before a rule is created and true after, whether enabled or not', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      expect(ruleExists(scope, 'r1')).toBe(false);
+
+      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+      expect(ruleExists(scope, 'r1')).toBe(true);
+
+      // The daemon's first-run seeding guard relies on exactly this: a
+      // disabled rule still "exists", so it must not be created a second
+      // time (`mod_rules`' primary key is `(guild_id, rule_id)`).
+      setRuleMode(scope, { ruleId: 'r1', enabled: false, now: 1000 });
+      expect(ruleExists(scope, 'r1')).toBe(true);
+    });
   });
 });

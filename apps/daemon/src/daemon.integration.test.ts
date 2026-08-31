@@ -13,6 +13,7 @@ import {
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  automodRuleRepo,
   guildRepo,
   jobRepo,
   listBackups,
@@ -390,6 +391,52 @@ describe('dry run comes from the environment', () => {
     daemon = start({ BANANASAURS_DRY_RUN: '1' });
 
     expect(guildRepo.readSafetyState(t.scopes.forGuild(GUILD))?.dryRun).toBe(true);
+  });
+});
+
+describe('automod default word list seeding', () => {
+  const DEFAULT_AUTOMOD_RULE_ID = 'default-word-filter';
+
+  it('seeds exactly one rule, in test mode, on first start', () => {
+    daemon = start();
+
+    const scope = t.scopes.forGuild(GUILD);
+    expect(automodRuleRepo.ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)).toBe(true);
+    expect(automodRuleRepo.listEnabledKeywordFilterRules(scope)).toEqual([
+      expect.objectContaining({ ruleId: DEFAULT_AUTOMOD_RULE_ID, mode: 'test' }),
+    ]);
+  });
+
+  /**
+   * The crash this reproduces: `setRuleMode({ enabled: false })` is a real,
+   * already-shipped capability, and spec §8 explicitly expects an operator to
+   * "review and tune categories" — which includes disabling the seeded
+   * default — before anything enforces for real. The old guard
+   * (`listEnabledKeywordFilterRules(scope).length > 0`) went back to seeing
+   * zero enabled rules once the seeded one was disabled, so a restart
+   * attempted the same `INSERT` a second time and `createRule` threw on
+   * `mod_rules`' `(guild_id, rule_id)` primary key — taking the whole daemon
+   * process down at startup, not just this one guild.
+   */
+  it('does not crash on a second start and leaves a disabled rule disabled', async () => {
+    daemon = start();
+    const scope = t.scopes.forGuild(GUILD);
+    automodRuleRepo.setRuleMode(scope, {
+      ruleId: DEFAULT_AUTOMOD_RULE_ID,
+      enabled: false,
+      now: discord.now(),
+    });
+    await daemon.stop();
+
+    expect(() => {
+      daemon = start();
+    }).not.toThrow();
+
+    expect(automodRuleRepo.listEnabledKeywordFilterRules(scope)).toEqual([]);
+    // Re-seeding must not have run at all, not merely "ran harmlessly" — a
+    // second seeding pass would also re-attempt `addCategory`/`addTerm`,
+    // which have the same duplicate-key exposure `createRule` did.
+    expect(automodRuleRepo.ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)).toBe(true);
   });
 });
 

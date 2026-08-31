@@ -143,6 +143,29 @@ export const isExempt = (scope: GuildScope, ruleId: string, input: IsExemptInput
     );
   });
 
+/**
+ * Whether a rule with this id exists at all — enabled or disabled.
+ *
+ * Deliberately broader than `listEnabledKeywordFilterRules`: that function
+ * answers "what should the subscriber match against right now", which is
+ * correctly silent about a disabled rule. This answers a different question —
+ * "has this specific id already been created" — which the daemon's first-run
+ * seeding (`apps/daemon/src/runtime/daemon.ts`) needs so that a rule an owner
+ * has deliberately disabled does not get a second, conflicting `INSERT`
+ * attempted against it on every restart (`mod_rules`' primary key is
+ * `(guild_id, rule_id)`).
+ */
+export const ruleExists = (scope: GuildScope, ruleId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ ruleId: modRules.ruleId })
+        .from(modRules)
+        .where(scope.only(modRules, eq(modRules.ruleId, ruleId)))
+        .get() !== undefined,
+  );
+
 export interface CreateRuleInput {
   readonly ruleId: string;
   readonly name: string;
@@ -154,6 +177,15 @@ export interface CreateRuleInput {
  * this slice implements (ADR 0035) — and always starts in `mode: 'test'`
  * (spec §8: automod ships observing, not enforcing, until an owner opts in),
  * whatever mode a later `setRuleMode` call moves it to.
+ *
+ * Callers that might run more than once against the same `ruleId` (the
+ * daemon's first-run seeding) must check `ruleExists` first — this function
+ * itself is a plain `INSERT` and throws on a duplicate `(guild_id, rule_id)`,
+ * matching every other `create*`-named write in this file. Making the insert
+ * itself conflict-safe would not have been enough on its own: `addCategory`/
+ * `addTerm` right below have the same duplicate-key exposure for a re-run
+ * seeding attempt, so the fix belongs at the call site's guard, once, rather
+ * than repeated ad hoc across every insert a re-run could repeat.
  */
 export const createRule = (scope: GuildScope, input: CreateRuleInput): void =>
   write(scope, ({ db }) => {
