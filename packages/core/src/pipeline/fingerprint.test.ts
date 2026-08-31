@@ -158,6 +158,27 @@ describe('message deletions', () => {
   });
 });
 
+describe('message creations', () => {
+  it('are terminal, so the message id alone identifies them', () => {
+    expect(fingerprintOf(messageEvent('messageCreate'))).toBe(
+      fingerprintOf(messageEvent('messageCreate')),
+    );
+  });
+
+  it('distinguishes two different messages', () => {
+    const a = messageEvent('messageCreate', { messageId: '333333333333333333' });
+    const b = messageEvent('messageCreate', { messageId: '333333333333333334' });
+    expect(fingerprintOf(a)).not.toBe(fingerprintOf(b));
+  });
+
+  it('is not level-triggered — a replayed MESSAGE_CREATE must not double-count', () => {
+    // The automod subscriber increments a per-member violation counter with no
+    // idempotency guard of its own, relying on the pipeline to drop a
+    // gateway-reconnect replay before it gets there.
+    expect(isLevelTriggered(messageEvent('messageCreate'))).toBe(false);
+  });
+});
+
 describe('member joins and leaves', () => {
   it('are identified by the join timestamp when Discord provides it', () => {
     const a = member('memberAdd', { joinedAtMs: 1_699_000_000_000 });
