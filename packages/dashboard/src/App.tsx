@@ -141,6 +141,8 @@ function ReauthModal({ onSubmit }: { onSubmit: (password: string) => void }) {
 // --- the dashboard itself ----------------------------------------------------
 
 interface HealthInfo {
+  guildId: string;
+  guildName: string | null;
   gateway: { connected: boolean; pingMs: number | undefined; guildCount: number };
   safety: { killswitch: boolean; dryRun: boolean; breakerOpen: boolean } | undefined;
   jobCounts: Record<string, number>;
@@ -263,6 +265,9 @@ function Dashboard({ session, onLoggedOut }: { session: SessionInfo; onLoggedOut
           <p>Loading…</p>
         ) : (
           <ul>
+            <li>
+              Guild: {health.guildName ?? '(name not yet known)'} ({health.guildId})
+            </li>
             <li>Gateway: {health.gateway.connected ? 'connected' : 'disconnected'}</li>
             <li>Dry run: {health.safety?.dryRun ? 'ON' : 'off'}</li>
             <li>Kill switch: {health.safety?.killswitch ? 'ON' : 'off'}</li>

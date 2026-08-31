@@ -2398,3 +2398,40 @@ clean. What remains is `docs/SMOKE_TESTS.md`, which by design cannot be
 finished inside this sandbox: sections B and C both require either a live
 Discord connection or read access to `./data`/`./backups`, and this
 environment has neither, deliberately.
+
+---
+
+## Release 1 smoke tests, sections B and C — live run — 2026-08-30
+
+Guided live session against the real test guild and a newly systemd-managed
+real daemon (`deploy/bananasaurs-test.service` — a test-only unit pointed at
+this checkout, added because the host had never gone through `docs/17`'s
+deployment steps). Full account: `docs/reports/
+release1-smoke-tests-live-run.md`.
+
+**Every box in `docs/SMOKE_TESTS.md` sections B and C is now checked.
+Release 1 is done.**
+
+Two real bugs, both in the dashboard health page, found and fixed live:
+`dryRun`/`breakerOpen` were fetched from `/api/health` but never rendered
+(`packages/dashboard/src/App.tsx`), and the endpoint never returned guild
+identity at all (`packages/http/src/routes/read.ts`). Both fixed, tested
+(1,638 green), and re-verified live after a daemon restart.
+
+**One real safety property confirmed working that no test exercises
+end to end:** the live Discord guild owner cannot have roles mutated by the
+bot (`packages/core/src/effects/gateway.ts:266`, `member.isGuildOwner`,
+fed by a live Discord API check independent of the `principals` table,
+which was completely empty throughout this session). Found while chasing
+why a role grant worked on alt accounts but not the owner's account during
+the kill-switch test — initially looked like a bug, traced to a deliberate,
+correctly-functioning anti-nuke control.
+
+The restore drill (section C) passed clean against the real database:
+on-demand backup, hand-verified checksum, full stop/restore/start/doctor
+cycle with panel and audit state intact across it, pre-restore file
+confirmed and removed, and the refusal path confirmed against a running
+daemon with zero file operations performed (traced through
+`scripts/restore.mjs` to confirm the refusal happens strictly before any
+rename/copy, since the script's own console output prints the plan before
+the safety check and reads misleadingly on a refusal).

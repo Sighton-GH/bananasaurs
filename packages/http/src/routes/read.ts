@@ -41,6 +41,8 @@ export const registerReadRoutes = (
     const ports = deps.portsFor(session.scope);
     const now = deps.now();
     return reply.status(200).send({
+      guildId: session.scope.guildId,
+      guildName: ports.guildName() ?? null,
       gateway: deps.instance.gateway(),
       safety: ports.safetyState(),
       jobCounts: ports.jobCounts(),

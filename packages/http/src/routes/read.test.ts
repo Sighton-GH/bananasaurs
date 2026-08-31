@@ -132,11 +132,18 @@ describe('GET /api/health', () => {
     const { cookie } = await signIn();
     const response = await app.inject({ method: 'GET', url: '/api/health', headers: { cookie } });
     const body = response.json<{
+      guildId: string;
+      guildName: string | null;
       gateway: unknown;
       safety: { killswitch: boolean };
       jobCounts: unknown;
       oldestDueJobAtMs: number | undefined;
     }>();
+    // A health page that cannot say which guild it is looking at cannot be
+    // told apart from any other instance's — found live in the Release 1
+    // smoke test, where the dashboard rendered no guild identity at all.
+    expect(body.guildId).toBe(GUILD);
+    expect(body.guildName).toBe('guild');
     expect(body.gateway).toBeDefined();
     expect(body.safety.killswitch).toBe(false);
     expect(body.jobCounts).toBeDefined();

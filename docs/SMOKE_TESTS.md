@@ -32,36 +32,39 @@ later change touches the event pipeline, panels, or reconciliation.
 - [x] Exercise 5 — the adoption allowance actually gates a mass grant
 - [x] Exercise 6 — the memory footprint is sane (`docs/15`)
 
-## Section B — operator CLI, dashboard, `/status` (not yet run live)
+## Section B — operator CLI, dashboard, `/status` (run 2026-08-30)
 
 Built (WP5 slices 13–15) and covered by 1,638+ unit and integration tests
 against the fake harness, but never exercised against the real test guild —
-`docs/STATE.md`'s own next-action note flags this as the highest-value
+`docs/STATE.md`'s own next-action note flagged this as the highest-value
 untested surface, precisely because slice 6 already found two things the fake
-harness got wrong about Discord that only a live run caught.
+harness got wrong about Discord that only a live run caught. It found two
+more: see `docs/reports/release1-smoke-tests-live-run.md`.
 
-- [ ] `bananasaurs status` over SSH reports the real gateway connection, job
+- [x] `bananasaurs status` over SSH reports the real gateway connection, job
       counts and scheduler lag
-- [ ] `bananasaurs doctor` over SSH matches what `--doctor` reported at
-      startup
-- [ ] `bananasaurs panel sync <id> --confirm` against a real panel; confirm
+- [x] `bananasaurs doctor` over SSH matches what `--doctor` reported at
+      startup (with a documented scope difference — the live command also
+      checks panels/role hierarchy, which the startup check does not)
+- [x] `bananasaurs panel sync <id> --confirm` against a real panel; confirm
       the message/reactions actually change on Discord
-- [ ] `bananasaurs log routing set <event> <channel> --confirm`, then trigger
+- [x] `bananasaurs log routing set <event> <channel> --confirm`, then trigger
       that event in the test guild and confirm it logs
-- [ ] `bananasaurs audit tail` shows the actions just taken, correctly
+- [x] `bananasaurs audit tail` shows the actions just taken, correctly
       attributed
-- [ ] `bananasaurs killswitch on --confirm` — perform an action in Discord
+- [x] `bananasaurs killswitch on --confirm` — perform an action in Discord
       that should now produce zero side effects; `killswitch off --confirm`
       restores normal operation
-- [ ] Dashboard: bootstrap from a printed token, log in, confirm the health
+- [x] Dashboard: bootstrap from a printed token, log in, confirm the health
       page, panel config, audit table and kill switch all reflect the real
-      instance
-- [ ] Dashboard: a second account cannot reach it (`docs/08`'s Release 1 gate,
+      instance (health page was missing dry run/breaker/guild identity —
+      found live and fixed; see the report)
+- [x] Dashboard: a second account cannot reach it (`docs/08`'s Release 1 gate,
       "verified by trying it from another club administrator's account")
-- [ ] `/status` in the test guild, from a non-owner member, returns an
+- [x] `/status` in the test guild, from a non-owner member, returns an
       ephemeral reply with the real gateway/job state
 
-## Section C — backup and restore (WP6, not yet run against real data)
+## Section C — backup and restore (WP6, run 2026-08-30)
 
 **This is the gate `docs/20`'s WP6 line names explicitly.** Everything below
 was rehearsed against a synthetic database in WP6 slice 16d
@@ -104,20 +107,20 @@ the actual running daemon and its actual `./data/bananasaurs.db`.
    `npm run restore -- <any-backup> --confirm` and confirm it refuses,
    naming the daemon's pid, rather than doing anything.
 
-- [ ] Step 1 — timer confirmed running
-- [ ] Step 2 — `backup now` taken and listed
-- [ ] Step 3 — checksum verified with `sha256sum -c`
-- [ ] Step 4 — full restore drill performed; `doctor` reports `ok` afterward
-- [ ] Step 5 — pre-restore file confirmed present, then removed
-- [ ] Step 6 — restore refuses against a running daemon
+- [x] Step 1 — timer confirmed running
+- [x] Step 2 — `backup now` taken and listed
+- [x] Step 3 — checksum verified with `sha256sum -c`
+- [x] Step 4 — full restore drill performed; `doctor` reports `ok` afterward
+- [x] Step 5 — pre-restore file confirmed present, then removed
+- [x] Step 6 — restore refuses against a running daemon
 
 ---
 
 ## Sign-off
 
-Release 1 is done when every box above is checked and `docs/08_ROADMAP.md`'s
-Release 1 gate paragraph is true without qualification. Record the date and
-any findings in `docs/SESSION_LOG.md`, the same way slice 6's live test did —
-a finding here is exactly as valuable as one caught by mutation testing, and
-for the same reason: the fake harness, and the reasoning in this document,
-are both conditional on being right.
+**Release 1 is done — 2026-08-30.** Every box above is checked, run against
+the real test guild and the real daemon (`docs/reports/
+release1-smoke-tests-live-run.md` has the full account, including two real
+dashboard bugs found and fixed live and a confirmed anti-nuke safety
+property). `docs/08_ROADMAP.md`'s Release 1 gate paragraph is true without
+qualification.
