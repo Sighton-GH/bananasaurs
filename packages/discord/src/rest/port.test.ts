@@ -378,6 +378,46 @@ describe('messages and reactions', () => {
     expect(last(requests).method).toBe('PATCH');
     expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
   });
+
+  /**
+   * ADR 0035: deletion is deliberately NOT hierarchy-gated. A bot with Manage
+   * Messages can delete any member's message, owner included, so this route
+   * carries only the audit reason, the same shape as `addRole`/`removeRole`.
+   */
+  it('deletes a message with the reason in the audit header', async () => {
+    const { port, requests } = harness();
+    await port.deleteMessage(
+      GUILD,
+      { channelId: CHANNEL, messageId: MESSAGE },
+      'automod: blocked keyword',
+    );
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
+    expect(last(requests).reason).toBe('automod: blocked keyword');
+  });
+});
+
+describe('moderation', () => {
+  it('times out a member with an ISO timestamp and the reason in the audit header', async () => {
+    const { port, requests } = harness();
+    await port.timeoutMember(GUILD, USER, 60_000, 'automod: rate limit');
+
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/members/${USER}`);
+    expect(last(requests).body).toMatchObject({
+      communication_disabled_until: expect.any(String),
+    });
+    expect(last(requests).reason).toBe('automod: rate limit');
+  });
+
+  it('kicks a member on the guild member route, with the reason in the audit header', async () => {
+    const { port, requests } = harness();
+    await port.kickMember(GUILD, USER, 'automod: repeated violations');
+
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/members/${USER}`);
+    expect(last(requests).reason).toBe('automod: repeated violations');
+  });
 });
 
 describe('interactions', () => {

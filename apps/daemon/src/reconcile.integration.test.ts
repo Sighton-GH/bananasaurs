@@ -724,7 +724,7 @@ describe('a broken panel option — findings 1 and 2b', () => {
 describe('a panel that can no longer work', () => {
   it('is disabled when its message has been deleted, and its configuration kept', async () => {
     preReact(E_A, ALICE);
-    discord.deleteMessage({ channelId: CHANNEL, messageId: MESSAGE });
+    discord.simulateDeletedMessage({ channelId: CHANNEL, messageId: MESSAGE });
 
     const outcome = await reconcileGuild(reconcilePorts(), { reason: 'timer' });
 
@@ -738,7 +738,7 @@ describe('a panel that can no longer work', () => {
 
   it('changes no roles when its message is gone', async () => {
     preReact(E_A, ALICE);
-    discord.deleteMessage({ channelId: CHANNEL, messageId: MESSAGE });
+    discord.simulateDeletedMessage({ channelId: CHANNEL, messageId: MESSAGE });
 
     await reconcileGuild(reconcilePorts(), { reason: 'timer' });
 

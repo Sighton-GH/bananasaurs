@@ -131,6 +131,19 @@ export interface DiscordPort {
   ): Promise<DiscordMessageRef>;
   editMessage(guildId: Snowflake, ref: DiscordMessageRef, message: OutgoingMessage): Promise<void>;
 
+  /** Not hierarchy-gated — works against any member's message, any role. */
+  deleteMessage(guildId: Snowflake, ref: DiscordMessageRef, reason: string): Promise<void>;
+
+  // --- moderation ----------------------------------------------------------
+  /** `durationMs` is clamped to Discord's 28-day maximum by the caller. */
+  timeoutMember(
+    guildId: Snowflake,
+    userId: Snowflake,
+    durationMs: number,
+    reason: string,
+  ): Promise<void>;
+  kickMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void>;
+
   // --- interactions ------------------------------------------------------
   /**
    * Acknowledges an interaction. **Three seconds, and Discord is strict.**

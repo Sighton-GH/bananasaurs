@@ -127,6 +127,13 @@ export class FakeDiscord implements DiscordPort {
 
   private roles = new Map<Snowflake, DiscordRole>();
   private members = new Map<Snowflake, FakeMember>();
+  /**
+   * What `timeoutMember`/`kickMember` most recently did to a member.
+   *
+   * Mirrors the `members` map's role: state the port methods mutate and tests
+   * read back through an inspector, the same shape as `memberRoles`.
+   */
+  private moderationState = new Map<Snowflake, { until: number } | 'kicked'>();
   private messages = new Map<string, FakeMessage>();
   private auditLog: FakeAuditEntry[] = [];
   private botPosition: number;
@@ -190,6 +197,10 @@ export class FakeDiscord implements DiscordPort {
   memberRoles(userId: Snowflake): Snowflake[] {
     return [...(this.members.get(userId)?.roleIds ?? [])].sort();
   }
+  /** What `timeoutMember`/`kickMember` most recently did to this member, if anything. */
+  memberModerationState(userId: Snowflake): { until: number } | 'kicked' | undefined {
+    return this.moderationState.get(userId);
+  }
 
   defineMessage(msg: {
     channelId: Snowflake;
@@ -210,7 +221,14 @@ export class FakeDiscord implements DiscordPort {
   setMessageCached(ref: DiscordMessageRef, cached: boolean): void {
     this.mustMessage(ref).cached = cached;
   }
-  deleteMessage(ref: DiscordMessageRef): void {
+  /**
+   * Marks a message gone without going through the `DiscordPort` method or
+   * emitting anything — for tests setting up "this message is already
+   * deleted" world state (e.g. an out-of-band deletion discovered on
+   * reconciliation), as distinct from `deleteMessage`, the port method a
+   * caller under test invokes to delete one.
+   */
+  simulateDeletedMessage(ref: DiscordMessageRef): void {
     this.mustMessage(ref).deleted = true;
   }
   /**
@@ -773,6 +791,56 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
+   * Not hierarchy-gated (ADR 0035): a bot with Manage Messages can delete any
+   * member's message, owner included, so unlike `timeoutMember`/`kickMember`
+   * this never consults `this.check`'s hierarchy machinery — it does the same
+   * existence/already-deleted check `editMessage` does, then reuses the same
+   * assignment `simulateDeletedMessage` uses to mark a message gone.
+   */
+  async deleteMessage(guildId: Snowflake, ref: DiscordMessageRef, reason: string): Promise<void> {
+    this.record('deleteMessage', [guildId, ref, reason]);
+    this.check('deleteMessage', guildId);
+    const m = this.mustMessage(ref);
+    if (m.deleted) throw FakeDiscord.unknownMessage();
+    m.deleted = true;
+  }
+
+  /**
+   * Hierarchy-gated the same way `addRole`/`removeRole` are: the guild owner
+   * can never be timed out by any bot, and nobody can act on a member whose
+   * highest role sits at or above the bot's own role position (ADR 0035).
+   */
+  async timeoutMember(
+    guildId: Snowflake,
+    userId: Snowflake,
+    durationMs: number,
+    reason: string,
+  ): Promise<void> {
+    this.record('timeoutMember', [guildId, userId, durationMs, reason]);
+    this.check('timeoutMember', guildId);
+    const member = this.members.get(userId);
+    if (!member) throw FakeDiscord.unknownMember();
+    if (member.isGuildOwner || this.highestRolePosition(member) >= this.botPosition) {
+      throw FakeDiscord.missingPermissions();
+    }
+    this.moderationState.set(userId, { until: this.clock + durationMs });
+  }
+
+  /** Hierarchy-gated the same way `timeoutMember` is; see there. */
+  async kickMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('kickMember', [guildId, userId, reason]);
+    this.check('kickMember', guildId);
+    const member = this.members.get(userId);
+    if (!member) throw FakeDiscord.unknownMember();
+    if (member.isGuildOwner || this.highestRolePosition(member) >= this.botPosition) {
+      throw FakeDiscord.missingPermissions();
+    }
+    this.moderationState.set(userId, 'kicked');
+    // A kick removes the member from the guild, same as Discord.
+    this.members.delete(userId);
+  }
+
+  /**
    * Three seconds. Discord discards the token rather than queueing, so being
    * late is unrecoverable and the member sees "This interaction failed".
    */
@@ -865,6 +933,16 @@ export class FakeDiscord implements DiscordPort {
     const m = this.messages.get(key(ref.channelId, ref.messageId));
     if (!m) throw FakeDiscord.unknownMessage();
     return m;
+  }
+
+  /** The position of the member's highest role, or 0 (`@everyone`) if none. */
+  private highestRolePosition(member: FakeMember): number {
+    let highest = 0;
+    for (const roleId of member.roleIds) {
+      const role = this.roles.get(roleId);
+      if (role && role.position > highest) highest = role.position;
+    }
+    return highest;
   }
 
   private applyReaction(

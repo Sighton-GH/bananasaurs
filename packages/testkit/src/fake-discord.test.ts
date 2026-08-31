@@ -131,8 +131,70 @@ describe('the six required conditions', () => {
   });
 
   it('6b. fetching a deleted panel message fails with Unknown Message', async () => {
-    d.deleteMessage(ref);
+    d.simulateDeletedMessage(ref);
     await expect(d.fetchMessage(GUILD, ref)).rejects.toMatchObject({ code: 10008 });
+  });
+});
+
+describe('moderation (ADR 0035)', () => {
+  it('deletes a message and records the call', async () => {
+    await d.deleteMessage(GUILD, ref, 'automod: blocked keyword');
+    await expect(d.fetchMessage(GUILD, ref)).rejects.toMatchObject({ code: 10008 });
+    expect(d.restCalls('deleteMessage')).toHaveLength(1);
+  });
+
+  it('deleteMessage is NOT hierarchy-gated — it deletes even the owner’s message', async () => {
+    d.defineMember('777777777777777777', [], true); // guild owner
+    d.defineMessage({
+      channelId: CHANNEL,
+      messageId: '888888888888888888',
+      authorId: '777777777777777777',
+    });
+    await expect(
+      d.deleteMessage(GUILD, { channelId: CHANNEL, messageId: '888888888888888888' }, 'x'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('deleteMessage is NOT hierarchy-gated — it deletes a message from a member above the bot', async () => {
+    d.defineRole({ id: '999999999999999998', position: 200 }); // above the bot's 100
+    d.defineMember('777777777777777777', ['999999999999999998']);
+    d.defineMessage({
+      channelId: CHANNEL,
+      messageId: '888888888888888888',
+      authorId: '777777777777777777',
+    });
+    await expect(
+      d.deleteMessage(GUILD, { channelId: CHANNEL, messageId: '888888888888888888' }, 'x'),
+    ).resolves.toBeUndefined();
+  });
+
+  it('times out a member and records the state', async () => {
+    d.advance(0);
+    await d.timeoutMember(GUILD, USER, 60_000, 'automod: rate limit');
+    expect(d.memberModerationState(USER)).toEqual({ until: d.now() + 60_000 });
+  });
+
+  it('kicks a member, records the state, and removes them from the guild', async () => {
+    await d.kickMember(GUILD, USER, 'automod: repeated violations');
+    expect(d.memberModerationState(USER)).toBe('kicked');
+    await expect(d.fetchMember(GUILD, USER)).rejects.toMatchObject({ code: 10007 });
+  });
+
+  it('timeoutMember refuses the guild owner, mirroring Discord itself', async () => {
+    d.defineMember('777777777777777777', [], true);
+    await expect(d.timeoutMember(GUILD, '777777777777777777', 60_000, 'x')).rejects.toMatchObject({
+      code: 50013,
+    });
+    expect(d.memberModerationState('777777777777777777')).toBeUndefined();
+  });
+
+  it('kickMember refuses a member whose role sits at or above the bot', async () => {
+    d.defineRole({ id: '999999999999999998', position: 100 }); // at the bot's own position
+    d.defineMember('777777777777777777', ['999999999999999998']);
+    await expect(d.kickMember(GUILD, '777777777777777777', 'x')).rejects.toMatchObject({
+      code: 50013,
+    });
+    expect(d.memberModerationState('777777777777777777')).toBeUndefined();
   });
 });
 

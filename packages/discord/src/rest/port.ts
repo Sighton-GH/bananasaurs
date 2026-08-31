@@ -234,6 +234,26 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       );
     },
 
+    async deleteMessage(_guildId, ref, reason) {
+      await mapErrors(() =>
+        rest.delete(Routes.channelMessage(ref.channelId, ref.messageId), { reason }),
+      );
+    },
+
+    // --- moderation --------------------------------------------------------
+    async timeoutMember(guildId, userId, durationMs, reason) {
+      await mapErrors(() =>
+        rest.patch(Routes.guildMember(guildId, userId), {
+          body: { communication_disabled_until: new Date(Date.now() + durationMs).toISOString() },
+          reason,
+        }),
+      );
+    },
+
+    async kickMember(guildId, userId, reason) {
+      await mapErrors(() => rest.delete(Routes.guildMember(guildId, userId), { reason }));
+    },
+
     // --- interactions ----------------------------------------------------
     async deferInteraction(_guildId, ref, options) {
       await mapErrors(() =>
