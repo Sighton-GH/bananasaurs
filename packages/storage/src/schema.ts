@@ -768,6 +768,13 @@ export const modCaseEvents = sqliteTable(
     actionTaken: text('action_taken').notNull(),
     escalationAction: text('escalation_action'),
     refusalReason: text('refusal_reason'),
+    /**
+     * Who acted, for manual events (ADR 0037). Null for automod/system
+     * events, whose actor is implicitly the bot; a moderator command's
+     * actor is a member who must be visible in case history — "every
+     * action records actor" is a Release 2 gate, not a convention.
+     */
+    actorId: snowflake('actor_id'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.eventId] }),
@@ -802,17 +809,57 @@ export const modCaseEvents = sqliteTable(
         'deleted','deleted_and_escalated','escalation_refused','escalation_failed',
         'escalation_dry_run','escalation_skipped','would_delete','delete_failed',
         'delete_blocked_killswitch','delete_blocked_breaker','delete_blocked_dry_run',
-        'delete_blocked_guild_unknown')`,
+        'delete_blocked_guild_unknown',
+        'warned','note','evidence_added','purged','purge_refused','purge_failed')`,
     ),
     check(
       'mod_case_events_escalation_action',
-      sql`${t.escalationAction} IS NULL OR ${t.escalationAction} IN ('timeout','kick')`,
+      sql`${t.escalationAction} IS NULL OR ${t.escalationAction} IN ('timeout','kick','ban','unban')`,
     ),
     check(
       'mod_case_events_refusal_reason',
       sql`${t.refusalReason} IS NULL OR ${t.refusalReason} IN
         ('unauthorized','guild-unknown','killswitch','breaker-open','rate-cap','discord-owner','role-above-bot')`,
     ),
+    check('mod_case_events_actor_id_snowflake', nullableSnowflakeCheck(t.actorId)),
+  ],
+);
+
+/**
+ * A moderation action awaiting its second confirmation (ADR 0037).
+ *
+ * `/mod ban` and `/mod purge` do not execute on invocation: the command
+ * writes the intent here, renders an ephemeral preview with Confirm/Cancel
+ * buttons, and only the confirming tap — by the same moderator, before
+ * `expires_at` — executes it. The row is the durable half of that handshake;
+ * the interaction token is Discord's half and dies with the process, so an
+ * intent that outlives its token simply expires (recorded as accepted in
+ * the ADR, not fixed).
+ *
+ * `payload` is JSON and Zod-validated on read, like every payload we wrote
+ * ourselves. `takePendingAction` reads and deletes in one write, so a
+ * confirm is one-shot at the storage layer — a double-tap on Confirm, or a
+ * replayed component dispatch, finds the row already gone.
+ */
+export const modPendingActions = sqliteTable(
+  'mod_pending_actions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    intentId: text('intent_id').notNull(),
+    payload: text('payload').notNull(),
+    /** Only this principal may confirm — a button left on screen is not an authorization transfer. */
+    createdBy: snowflake('created_by').notNull(),
+    createdAt: integer('created_at').notNull(),
+    /** The interaction-token window: created_at + 15 minutes (ADR 0018). */
+    expiresAt: integer('expires_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.intentId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    index('mod_pending_actions_expiry').on(t.expiresAt),
+    check('mod_pending_actions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mod_pending_actions_created_by_snowflake', snowflakeCheck(t.createdBy)),
+    check('mod_pending_actions_expiry_sane', sql`${t.expiresAt} > ${t.createdAt}`),
   ],
 );
 

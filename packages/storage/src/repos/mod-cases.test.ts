@@ -158,3 +158,91 @@ describe('nextEscalationTier', () => {
     expect(nextEscalationTier(6)).toEqual({ tier: 2, action: 'kick', timeoutMs: undefined });
   });
 });
+
+/**
+ * ADR 0037's six additive values. The CHECK constraint is the real
+ * enforcement point (the test above established the idiom), so each new
+ * value must be accepted by the migrated schema, not merely by the
+ * TypeScript union — and `escalation_action` must widen to `ban`/`unban`
+ * for the `/mod` commands that reuse the escalation-outcome mapping.
+ */
+describe('mod case events — the manual-action vocabulary (ADR 0037)', () => {
+  it('accepts every manual-action value the widened union names', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+
+    const manual: ModCaseActionTaken[] = [
+      'warned',
+      'note',
+      'evidence_added',
+      'purged',
+      'purge_refused',
+      'purge_failed',
+    ];
+    manual.forEach((actionTaken, index) => {
+      recordCaseEvent(scope, {
+        eventId: `m-${index}`,
+        caseId,
+        ruleId: 'manual',
+        memberId: MEMBER,
+        at: 1000,
+        matchedCategory: 'manual',
+        matchedSnippet: 'reason text',
+        actionTaken,
+      });
+    });
+    expect(listCaseEvents(scope, caseId).map((e) => e.actionTaken)).toEqual(manual);
+  });
+
+  it('accepts escalation_action ban and unban', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    recordCaseEvent(scope, {
+      eventId: 'b-1',
+      caseId,
+      ruleId: 'manual',
+      memberId: MEMBER,
+      at: 1000,
+      matchedCategory: 'manual',
+      matchedSnippet: 'reason',
+      actionTaken: 'escalation_refused',
+      escalationAction: 'ban',
+      refusalReason: 'discord-owner',
+    });
+    const events = listCaseEvents(scope, caseId);
+    expect(events[0]?.escalationAction).toBe('ban');
+  });
+
+  /**
+   * "Every action records actor" (Release 2 gate): a manual event carries
+   * the moderator's id; an automod event leaves it null and keeps meaning.
+   */
+  it('round-trips actor_id, null when absent', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    recordCaseEvent(scope, {
+      eventId: 'a-1',
+      caseId,
+      ruleId: 'manual',
+      memberId: MEMBER,
+      at: 1000,
+      matchedCategory: 'manual',
+      matchedSnippet: 'strike one',
+      actionTaken: 'warned',
+      actorId: MEMBER,
+    });
+    recordCaseEvent(scope, {
+      eventId: 'a-2',
+      caseId,
+      ruleId: 'r1',
+      memberId: MEMBER,
+      at: 2000,
+      matchedCategory: 'c1',
+      matchedSnippet: 'badword',
+      actionTaken: 'deleted',
+    });
+    const events = listCaseEvents(scope, caseId);
+    expect(events[0]?.actorId).toBe(MEMBER);
+    expect(events[1]?.actorId).toBeUndefined();
+  });
+});

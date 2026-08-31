@@ -54,8 +54,21 @@ export type ModCaseActionTaken =
   | 'delete_blocked_killswitch'
   | 'delete_blocked_breaker'
   | 'delete_blocked_dry_run'
-  | 'delete_blocked_guild_unknown';
-export type ModCaseEscalationAction = 'timeout' | 'kick';
+  | 'delete_blocked_guild_unknown'
+  /**
+   * Manual events (ADR 0037): moderator commands share this append-only
+   * stream. The five `escalation_*` values are reused for manual member
+   * actions — the mapping from `ModerationOutcome` is one-to-one and
+   * already written — with `escalation_action` naming which action and the
+   * new `actorId` field recording who ordered it.
+   */
+  | 'warned'
+  | 'note'
+  | 'evidence_added'
+  | 'purged'
+  | 'purge_refused'
+  | 'purge_failed';
+export type ModCaseEscalationAction = 'timeout' | 'kick' | 'ban' | 'unban';
 export type ModCaseRefusalReason =
   | 'unauthorized'
   | 'guild-unknown'
@@ -159,6 +172,12 @@ export interface RecordCaseEventInput {
    * case event a moderator can see against the member's history.
    */
   readonly refusalReason?: ModCaseRefusalReason;
+  /**
+   * Who acted, for manual events (ADR 0037). Absent for automod/system
+   * events — their actor is implicitly the bot — and required for the
+   * manual vocabulary, where "every action records actor" is the gate.
+   */
+  readonly actorId?: string;
 }
 
 /** Appends one event to a case's history. Plain guild-scoped insert. */
@@ -177,6 +196,7 @@ export const recordCaseEvent = (scope: GuildScope, input: RecordCaseEventInput):
         actionTaken: input.actionTaken,
         escalationAction: input.escalationAction ?? null,
         refusalReason: input.refusalReason ?? null,
+        actorId: input.actorId ?? null,
       })
       .run();
   });
@@ -192,6 +212,8 @@ export interface ModCaseEvent {
   readonly actionTaken: ModCaseActionTaken;
   readonly escalationAction: ModCaseEscalationAction | undefined;
   readonly refusalReason: ModCaseRefusalReason | undefined;
+  /** The moderator who acted, for manual events (ADR 0037). */
+  readonly actorId: string | undefined;
 }
 
 /**
@@ -233,12 +255,18 @@ export const listCaseEvents = (scope: GuildScope, caseId: string): ModCaseEvent[
         escalationAction: (row.escalationAction ?? undefined) as
           ModCaseEscalationAction | undefined,
         refusalReason: (row.refusalReason ?? undefined) as ModCaseRefusalReason | undefined,
+        actorId: row.actorId ?? undefined,
       })),
   );
 
 export interface EscalationTier {
   readonly tier: number;
-  readonly action: ModCaseEscalationAction | undefined;
+  /**
+   * The automod ladder only ever times out or kicks (ADR 0035); the manual
+   * actions `ban`/`unban` exist in `ModCaseEscalationAction` for `/mod`
+   * commands, never for an automatic consequence.
+   */
+  readonly action: 'timeout' | 'kick' | undefined;
   readonly timeoutMs: number | undefined;
 }
 

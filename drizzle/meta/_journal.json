@@ -50,6 +50,13 @@
       "when": 1788181071828,
       "tag": "0006_same_ikaris",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "6",
+      "when": 1788193282092,
+      "tag": "0007_mushy_dark_beast",
+      "breakpoints": true
     }
   ]
 }
