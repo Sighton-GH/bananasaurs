@@ -173,7 +173,41 @@ describe('automod, end to end on the fake gateway', () => {
     expect(modCase?.violationCount).toBe(1);
     const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
     expect(events).toHaveLength(1);
-    expect(events[0]?.actionTaken).toBe('deleted');
+    expect(events[0]?.actionTaken).toBe('would_delete');
+  });
+
+  /**
+   * docs/18 Layer 4/6, end to end: dry run is the DEFAULT for an unconfigured
+   * guild, so an enforce-mode rule in a guild whose owner has not turned dry
+   * run off must delete nothing. `beforeEach` clears the flag for every other
+   * test here; this one puts it back deliberately.
+   */
+  it('deletes nothing in an enforce-mode rule while the guild is in dry run', async () => {
+    write(scope, ({ db }) => {
+      db.update(schema.guilds).set({ dryRun: 1 }).where(scope.only(schema.guilds)).run();
+    });
+    seedRule('enforce');
+
+    await sendMessage(MEMBER, 'badword here');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    const modCase = findCase(MEMBER);
+    const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
+    expect(events.map((e) => e.actionTaken)).toEqual(['delete_blocked_dry_run']);
+  });
+
+  it('deletes nothing while the kill switch is on', async () => {
+    write(scope, ({ db }) => {
+      db.update(schema.guilds).set({ killswitch: 1 }).where(scope.only(schema.guilds)).run();
+    });
+    seedRule('enforce');
+
+    await sendMessage(MEMBER, 'badword here');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    const modCase = findCase(MEMBER);
+    const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
+    expect(events.map((e) => e.actionTaken)).toEqual(['delete_blocked_killswitch']);
   });
 
   it('an escalation against a fake owner member is refused and durably recorded', async () => {

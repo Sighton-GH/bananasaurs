@@ -777,9 +777,32 @@ export const modCaseEvents = sqliteTable(
     }).onDelete('cascade'),
     check('mod_case_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('mod_case_events_member_id_snowflake', snowflakeCheck(t.memberId)),
+    /**
+     * One value per *real* outcome, so case history cannot claim a punishment
+     * that never happened.
+     *
+     * The first vocabulary had three values and the subscriber mapped every
+     * non-refused escalation onto `deleted_and_escalated` — which recorded a
+     * timeout or a kick for a `dry-run`, `skipped` or `failed`
+     * `ModerationOutcome` too — and reused `deleted` for a `test`/`observe`
+     * mode match where nothing was deleted at all. Both are lies in a table
+     * whose entire purpose (ADR 0035) is a durable, truthful record a
+     * moderator reads back later.
+     *
+     * The five `escalation_*`/`deleted*` values below map one-to-one onto
+     * `ModerationOutcome`'s five variants, after a real deletion. The
+     * `delete_blocked_*` values are the case where enforcement never reached
+     * Discord because a safety layer (docs/18) said no; `would_delete` is the
+     * `test`/`observe` case, which is not a deletion and no longer pretends
+     * to be one; `delete_failed` is a deletion Discord actually refused.
+     */
     check(
       'mod_case_events_action_taken',
-      sql`${t.actionTaken} IN ('deleted','deleted_and_escalated','escalation_refused')`,
+      sql`${t.actionTaken} IN (
+        'deleted','deleted_and_escalated','escalation_refused','escalation_failed',
+        'escalation_dry_run','escalation_skipped','would_delete','delete_failed',
+        'delete_blocked_killswitch','delete_blocked_breaker','delete_blocked_dry_run',
+        'delete_blocked_guild_unknown')`,
     ),
     check(
       'mod_case_events_escalation_action',

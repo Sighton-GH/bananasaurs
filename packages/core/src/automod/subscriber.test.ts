@@ -4,7 +4,11 @@ import { pino } from 'pino';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import type { DomainEvent, MessageEvent, ReactionEvent } from '../discord/events.js';
-import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
+import type {
+  ModerationIntent,
+  ModerationOutcome,
+  ModerationSafetyState,
+} from '../effects/moderation-gateway.js';
 import {
   createAutomodSubscriber,
   type AutomodSubscriberDeps,
@@ -82,8 +86,12 @@ interface Harness {
     openOrResolveCase: string[];
     recordCaseEvent: Parameters<AutomodSubscriberDeps['recordCaseEvent']>[0][];
     applyAction: { auth: unknown; intent: ModerationIntent }[];
+    readSafetyState: number;
   };
 }
+
+/** Everything live: not read-only, not stopped, not dry-run. */
+const LIVE: ModerationSafetyState = { killswitch: false, breakerOpen: false, dryRun: false };
 
 function buildHarness(
   opts: {
@@ -93,6 +101,8 @@ function buildHarness(
     tier?: { action: 'timeout' | 'kick' | undefined; timeoutMs: number | undefined };
     applyActionResult?: ModerationOutcome;
     logger?: typeof silentLogger;
+    /** `null` stands for "this guild is not in the database at all". */
+    safetyState?: ModerationSafetyState | null;
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -102,6 +112,7 @@ function buildHarness(
     openOrResolveCase: [],
     recordCaseEvent: [],
     applyAction: [],
+    readSafetyState: 0,
   };
 
   const exempt = opts.exemptRuleIds ?? new Set<string>();
@@ -138,6 +149,11 @@ function buildHarness(
     nextEscalationTier: () => tier,
     moderationGateway,
     authorRoleIds: async () => [],
+    readSafetyState: () => {
+      calls.readSafetyState += 1;
+      const state = opts.safetyState === undefined ? LIVE : opts.safetyState;
+      return state ?? undefined;
+    },
   };
 
   return { deps, calls };
@@ -198,8 +214,9 @@ describe('automod subscriber', () => {
 
     expect(calls.deleteMessage).toHaveLength(0);
     expect(calls.applyAction).toHaveLength(0);
+    // Not `'deleted'`: nothing was deleted, and the record must say so.
     expect(calls.recordCaseEvent).toEqual([
-      expect.objectContaining({ ruleId: 'rule-3', actionTaken: 'deleted' }),
+      expect.objectContaining({ ruleId: 'rule-3', actionTaken: 'would_delete' }),
     ]);
   });
 
@@ -213,7 +230,7 @@ describe('automod subscriber', () => {
     expect(calls.applyAction).toHaveLength(0);
     // Distinguishable from the test-mode case by which rule triggered it.
     expect(calls.recordCaseEvent).toEqual([
-      expect.objectContaining({ ruleId: 'rule-4', actionTaken: 'deleted' }),
+      expect.objectContaining({ ruleId: 'rule-4', actionTaken: 'would_delete' }),
     ]);
   });
 
@@ -327,5 +344,105 @@ describe('automod subscriber', () => {
     expect(calls.recordCaseEvent).toEqual([
       expect.objectContaining({ ruleId: 'rule-8-ok', actionTaken: 'deleted' }),
     ]);
+  });
+
+  /**
+   * docs/18 Layer 6: the kill switch "stops all Discord side effects
+   * immediately", and a dry-run guild performs "no writes at all". The
+   * deletion is a Discord side effect like any other, and dry run is the
+   * DEFAULT state of an unconfigured guild — so an automod rule flipped to
+   * enforce before the owner turns dry run off must not delete a real
+   * member's message.
+   */
+  describe('safety gates on the deletion path', () => {
+    const blocked: [string, ModerationSafetyState | null, string][] = [
+      ['the kill switch is on', { ...LIVE, killswitch: true }, 'delete_blocked_killswitch'],
+      ['the circuit breaker is open', { ...LIVE, breakerOpen: true }, 'delete_blocked_breaker'],
+      ['the guild is in dry run', { ...LIVE, dryRun: true }, 'delete_blocked_dry_run'],
+      ['the guild is not in the database', null, 'delete_blocked_guild_unknown'],
+    ];
+
+    for (const [name, safetyState, actionTaken] of blocked) {
+      it(`does not delete when ${name}, and records why`, async () => {
+        const { deps, calls } = buildHarness({
+          rules: [rule({ ruleId: 'rule-safety', mode: 'enforce' })],
+          safetyState,
+          violationCount: 6,
+          tier: { action: 'kick', timeoutMs: undefined },
+        });
+        const subscriber = createAutomodSubscriber(deps);
+
+        await subscriber.handle(messageCreate());
+
+        expect(calls.deleteMessage).toHaveLength(0);
+        // Nor may a blocked deletion fall through into an escalation — the
+        // kill switch stops *every* side effect, not only the delete.
+        expect(calls.applyAction).toHaveLength(0);
+        expect(calls.recordCaseEvent).toEqual([
+          expect.objectContaining({ ruleId: 'rule-safety', actionTaken }),
+        ]);
+      });
+    }
+
+    it('reads the safety state before every enforce-mode deletion', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-live', mode: 'enforce' })],
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.readSafetyState).toBeGreaterThan(0);
+      expect(calls.deleteMessage).toHaveLength(1);
+    });
+
+    it('does not read the safety state for a non-enforce rule', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-observe', mode: 'observe' })],
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.readSafetyState).toBe(0);
+    });
+  });
+
+  /**
+   * I1: `ModerationOutcome` has five variants and `action_taken` used to
+   * collapse four of them onto `'deleted_and_escalated'` — recording a
+   * timeout or a kick that never happened.
+   */
+  describe('every moderation outcome is recorded honestly', () => {
+    const outcomes: [ModerationOutcome, string][] = [
+      [{ status: 'applied' }, 'deleted_and_escalated'],
+      [{ status: 'refused', reason: 'role-above-bot' }, 'escalation_refused'],
+      [{ status: 'failed', code: 'DiscordApiError' }, 'escalation_failed'],
+      [{ status: 'dry-run' }, 'escalation_dry_run'],
+      [{ status: 'skipped', reason: 'already-applied' }, 'escalation_skipped'],
+    ];
+
+    for (const [outcome, actionTaken] of outcomes) {
+      it(`records a ${outcome.status} escalation as ${actionTaken}`, async () => {
+        const { deps, calls } = buildHarness({
+          rules: [rule({ ruleId: 'rule-outcome', mode: 'enforce' })],
+          violationCount: 3,
+          tier: { action: 'timeout', timeoutMs: 600_000 },
+          applyActionResult: outcome,
+        });
+        const subscriber = createAutomodSubscriber(deps);
+
+        await subscriber.handle(messageCreate());
+
+        expect(calls.deleteMessage).toHaveLength(1);
+        expect(calls.recordCaseEvent).toEqual([
+          expect.objectContaining({
+            actionTaken,
+            escalationAction: 'timeout',
+            refusalReason: outcome.status === 'refused' ? outcome.reason : undefined,
+          }),
+        ]);
+      });
+    }
   });
 });

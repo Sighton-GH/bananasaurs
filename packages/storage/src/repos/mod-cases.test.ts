@@ -7,6 +7,7 @@ import {
   nextEscalationTier,
   openOrResolveCase,
   recordCaseEvent,
+  type ModCaseActionTaken,
 } from './mod-cases.js';
 
 const GUILD = parseGuildId('111111111111111111');
@@ -54,6 +55,57 @@ describe('mod cases repo', () => {
     });
     // asserted via a read helper this task also adds, listCaseEvents(scope, caseId)
     expect(listCaseEvents(scope, caseId)).toHaveLength(1);
+  });
+
+  /**
+   * The CHECK constraint is the real enforcement point for this vocabulary,
+   * and a value the TypeScript union allows but the constraint rejects fails
+   * only at runtime, in production, on the row that most needed writing.
+   */
+  it('accepts every action_taken value the union names, and rejects one it does not', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+
+    const all: ModCaseActionTaken[] = [
+      'deleted',
+      'deleted_and_escalated',
+      'escalation_refused',
+      'escalation_failed',
+      'escalation_dry_run',
+      'escalation_skipped',
+      'would_delete',
+      'delete_failed',
+      'delete_blocked_killswitch',
+      'delete_blocked_breaker',
+      'delete_blocked_dry_run',
+      'delete_blocked_guild_unknown',
+    ];
+    all.forEach((actionTaken, index) => {
+      recordCaseEvent(scope, {
+        eventId: `e-${index}`,
+        caseId,
+        ruleId: 'r1',
+        memberId: MEMBER,
+        at: 1000,
+        matchedCategory: 'c1',
+        matchedSnippet: 'badword',
+        actionTaken,
+      });
+    });
+    expect(listCaseEvents(scope, caseId).map((e) => e.actionTaken)).toEqual(all);
+
+    expect(() =>
+      recordCaseEvent(scope, {
+        eventId: 'e-bogus',
+        caseId,
+        ruleId: 'r1',
+        memberId: MEMBER,
+        at: 1000,
+        matchedCategory: 'c1',
+        matchedSnippet: 'badword',
+        actionTaken: 'invented' as ModCaseActionTaken,
+      }),
+    ).toThrow();
   });
 });
 

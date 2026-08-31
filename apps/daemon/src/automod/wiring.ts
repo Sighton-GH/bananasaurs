@@ -160,6 +160,13 @@ export const automodPortsFor = (
         }),
       }),
     nextEscalationTier: (violationCount) => modCaseRepo.nextEscalationTier(violationCount),
+    // Literally the same call `automodGatewayFor` above passes as the
+    // gateway's `state.read()`. Deliberately one function referenced twice
+    // rather than two reads of two different things: dry run, the kill switch
+    // and the breaker are guild-level settings, so the deletion and the
+    // escalation must agree about them, and the only way to guarantee that is
+    // for both to read the same row through the same function.
+    readSafetyState: () => guildRepo.readSafetyState(scope),
     moderationGateway: gateway,
     authorRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
   };

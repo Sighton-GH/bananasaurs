@@ -22,7 +22,39 @@ import { modCaseEvents, modCases } from '../schema.js';
  */
 
 export type ModCaseStatus = 'open' | 'closed';
-export type ModCaseActionTaken = 'deleted' | 'deleted_and_escalated' | 'escalation_refused';
+
+/**
+ * What actually happened on one match. Mirrors `mod_case_events`' CHECK
+ * constraint exactly (`schema.ts`), which is the real enforcement point.
+ *
+ * Grouped by whether the offending message was really deleted:
+ *
+ * - **Really deleted, then**: `deleted` (no escalation tier crossed),
+ *   `deleted_and_escalated` (`applied`), `escalation_refused` (`refused`, a
+ *   safety layer said no), `escalation_failed` (`failed`, Discord errored),
+ *   `escalation_dry_run` (`dry-run`), `escalation_skipped` (`skipped`, the
+ *   identical action had already been applied). The last five map one-to-one
+ *   onto `ModerationOutcome`'s five variants.
+ * - **Not deleted**: `would_delete` (the rule is in `test`/`observe` mode, so
+ *   nothing was ever going to be deleted), `delete_blocked_*` (the rule is in
+ *   `enforce` mode but a docs/18 safety layer stopped every Discord side
+ *   effect first), `delete_failed` (the delete was attempted and Discord
+ *   refused it for a reason other than "the message is already gone", which
+ *   the subscriber treats as success).
+ */
+export type ModCaseActionTaken =
+  | 'deleted'
+  | 'deleted_and_escalated'
+  | 'escalation_refused'
+  | 'escalation_failed'
+  | 'escalation_dry_run'
+  | 'escalation_skipped'
+  | 'would_delete'
+  | 'delete_failed'
+  | 'delete_blocked_killswitch'
+  | 'delete_blocked_breaker'
+  | 'delete_blocked_dry_run'
+  | 'delete_blocked_guild_unknown';
 export type ModCaseEscalationAction = 'timeout' | 'kick';
 export type ModCaseRefusalReason =
   | 'unauthorized'
