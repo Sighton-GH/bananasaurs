@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { modCaseEvents, modCases } from '../schema.js';
@@ -145,13 +145,32 @@ export interface ModCaseEvent {
   readonly refusalReason: ModCaseRefusalReason | undefined;
 }
 
-/** Every event recorded against `caseId`, guild-scoped. */
+/**
+ * Every event recorded against `caseId`, guild-scoped, oldest first.
+ *
+ * Ordered by the table's own implicit SQLite `rowid` rather than `at`:
+ * `mod_case_events` carries no autoincrement column of its own (unlike
+ * `audit_events.audit_id`, which exists exactly to break ties the same way),
+ * and `at` can legitimately tie — several violations processed against the
+ * same message-handling tick share a clock reading in production and always
+ * do in a test using a fake clock that does not auto-advance. Without an
+ * `ORDER BY` at all, this query has no defined order — the planner is free to
+ * satisfy `WHERE guild_id = ?` via the `(guild_id, event_id)` primary key
+ * index, which sorts by `event_id` (a random UUID), so two events from the
+ * very same case could come back in either order depending on which UUIDs
+ * happened to sort where. `recordCaseEvent` only ever inserts, never updates,
+ * so `rowid` — assigned once, in insertion order, and never reused for a
+ * still-live row — is a correct, always-available substitute for a real
+ * sequence column here. Found by Task 12's end-to-end escalation test, which
+ * drives several events into one case and asserts a specific one is last.
+ */
 export const listCaseEvents = (scope: GuildScope, caseId: string): ModCaseEvent[] =>
   read(scope, (db) =>
     db
       .select()
       .from(modCaseEvents)
       .where(scope.only(modCaseEvents, eq(modCaseEvents.caseId, caseId)))
+      .orderBy(sql`rowid`)
       .all()
       .map((row) => ({
         eventId: row.eventId,

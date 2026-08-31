@@ -1,0 +1,208 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { pino } from 'pino';
+import {
+  createAutomodSubscriber,
+  parseGuildId,
+  parseSnowflakeId,
+  Pipeline,
+} from '@bananasaurs/core';
+import {
+  automodRuleRepo,
+  guildRepo,
+  modCaseRepo,
+  pipelineRepo,
+  read,
+  schema,
+  write,
+  type GuildScope,
+} from '@bananasaurs/storage';
+import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import { FakeDiscord } from '@bananasaurs/testkit';
+import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
+
+/**
+ * Automod, end to end on the fake gateway (Task 12, ADR 0035).
+ *
+ * The pipeline dispatches a real `messageCreate`, the automod subscriber
+ * converges through the matcher, the mod-case repo, and (on escalation) the
+ * moderation gateway — every layer that will run in production except the
+ * discord.js adapter itself. Mirrors `panels.integration.test.ts`'s exact
+ * setup style: fixed snowflakes, `openMigratedTestDatabase`, a real
+ * `Pipeline`, and Task 10's exported composition helpers rather than
+ * re-derived wiring.
+ *
+ * What this proves that the unit tests (`packages/core/src/automod/
+ * subscriber.test.ts`) cannot: that a real message actually reaches a
+ * deletion and a case row through the pipeline's gates, and — the scenario
+ * ADR 0035 was written to catch — that an escalation refused by real
+ * hierarchy logic (the fake guild owner) is durably recorded rather than
+ * merely logged, the exact gap Release 1's role-effect refusals had.
+ */
+
+const GUILD = parseGuildId('111111111111111111');
+const CHANNEL = parseSnowflakeId('222222222222222222');
+const MEMBER = parseSnowflakeId('444444444444444444');
+const EXEMPT_MEMBER = parseSnowflakeId('555555555555555555');
+const OWNER = parseSnowflakeId('666666666666666666');
+const EXEMPT_ROLE = parseSnowflakeId('777777777777777777');
+
+const RULE_ID = 'rule-1';
+const CATEGORY_ID = 'cat-1';
+const TERM_ID = 'term-1';
+
+const logger = pino({ level: 'silent' });
+
+let t: ReturnType<typeof openMigratedTestDatabase>;
+let scope: GuildScope;
+let discord: FakeDiscord;
+let pipeline: Pipeline;
+let nextMessageId: bigint;
+
+/** Wires the automod subscriber onto the pipeline, exactly as `guild.ts` will. */
+const buildPipeline = (): Pipeline => {
+  const automodGateway = automodGatewayFor(scope, discord, logger, () => discord.now());
+  const automodAuth = automodAuthorization(scope);
+  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, () =>
+    discord.now(),
+  );
+
+  return new Pipeline({
+    allowlist: new Set([GUILD]),
+    dedupe: {
+      firstSight: (input) => pipelineRepo.recordFirstSight(scope, input),
+    },
+    subscribers: [createAutomodSubscriber(automodPorts)],
+    leaveGuild: async () => undefined,
+    logger,
+  });
+};
+
+/** Creates one enabled `keyword_filter` rule with a single term, 'badword'. */
+const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
+  automodRuleRepo.createRule(scope, { ruleId: RULE_ID, name: 'test rule', now: discord.now() });
+  automodRuleRepo.addCategory(scope, {
+    categoryId: CATEGORY_ID,
+    ruleId: RULE_ID,
+    name: 'test category',
+    defaultAction: 'delete_and_case',
+  });
+  automodRuleRepo.addTerm(scope, { termId: TERM_ID, categoryId: CATEGORY_ID, text: 'badword' });
+  if (mode !== 'test') {
+    automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode, now: discord.now() });
+  }
+};
+
+/** Registers a fake message and dispatches it as a real `messageCreate`. */
+const sendMessage = async (authorId: string, content: string): Promise<void> => {
+  nextMessageId += 1n;
+  const messageId = nextMessageId.toString();
+  discord.defineMessage({ channelId: CHANNEL, messageId, authorId });
+  await discord.emitMessageCreate({ channelId: CHANNEL, messageId, authorId, content });
+};
+
+function findCase(memberId: string) {
+  return read(scope, (db) =>
+    db
+      .select()
+      .from(schema.modCases)
+      .where(scope.only(schema.modCases))
+      .all()
+      .find((row) => row.memberId === memberId),
+  );
+}
+
+beforeEach(() => {
+  nextMessageId = 100_000_000_000_000_000n;
+  t = openMigratedTestDatabase();
+  scope = t.scopes.forGuild(GUILD);
+
+  guildRepo.upsertGuild(scope, { name: 'test guild', now: 0 });
+  // docs/18 Layer 4: an unconfigured guild is dry-run. A test that exercises
+  // real calls turns it off deliberately.
+  write(scope, ({ db }) => {
+    db.update(schema.guilds).set({ dryRun: 0 }).where(scope.only(schema.guilds)).run();
+  });
+
+  discord = new FakeDiscord({ guildId: GUILD, botHighestRolePosition: 100 });
+  discord.defineRole({ id: EXEMPT_ROLE, name: 'exempt', position: 5 });
+  discord.defineMember(MEMBER, []);
+  discord.defineMember(EXEMPT_MEMBER, [EXEMPT_ROLE]);
+  discord.defineMember(OWNER, [], true);
+
+  pipeline = buildPipeline();
+  // Exactly what the discord.js adapter will do in production: every gateway
+  // event goes through the pipeline, allowlist gate and dedupe gate included.
+  discord.onEvent(async (event) => {
+    await pipeline.dispatch(event);
+  });
+});
+
+afterEach(() => {
+  t.close();
+});
+
+describe('automod, end to end on the fake gateway', () => {
+  it('deletes a matching message and opens a case, in enforce mode', async () => {
+    seedRule('enforce');
+
+    await sendMessage(MEMBER, 'badword here');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(1);
+    const modCase = findCase(MEMBER);
+    expect(modCase?.violationCount).toBe(1);
+    expect(modCase?.status).toBe('open');
+  });
+
+  it('does not delete from an exempt role', async () => {
+    seedRule('enforce');
+    automodRuleRepo.addRoleExemption(scope, { ruleId: RULE_ID, roleId: EXEMPT_ROLE });
+
+    await sendMessage(EXEMPT_MEMBER, 'badword here');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    expect(findCase(EXEMPT_MEMBER)).toBeUndefined();
+  });
+
+  it('makes no Discord call in test mode', async () => {
+    seedRule('test');
+
+    await sendMessage(MEMBER, 'badword here');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    const modCase = findCase(MEMBER);
+    expect(modCase?.violationCount).toBe(1);
+    const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.actionTaken).toBe('deleted');
+  });
+
+  it('an escalation against a fake owner member is refused and durably recorded', async () => {
+    seedRule('enforce');
+
+    // Drive violationCount to 6 (the kick tier, mod-cases.ts's
+    // `nextEscalationTier`) via repeated matching messages from the owner.
+    for (let i = 0; i < 6; i += 1) {
+      await sendMessage(OWNER, 'badword here');
+    }
+
+    // The message deletion happens unconditionally in enforce mode, before
+    // escalation is even attempted, and a refusal does not undo it.
+    expect(discord.restCalls('deleteMessage')).toHaveLength(6);
+
+    const modCase = findCase(OWNER);
+    expect(modCase?.violationCount).toBe(6);
+    const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
+    const lastEvent = events[events.length - 1];
+    expect(lastEvent?.actionTaken).toBe('escalation_refused');
+    expect(lastEvent?.refusalReason).toBe('discord-owner');
+    expect(lastEvent?.escalationAction).toBe('kick');
+
+    // The gateway refuses on the live hierarchy check (member.isGuildOwner)
+    // before it ever reaches the Discord call for either escalation action —
+    // this is the exact assertion "would have caught tonight's finding about
+    // refusals being log-only, had it existed for role effects."
+    expect(discord.restCalls('timeoutMember')).toHaveLength(0);
+    expect(discord.restCalls('kickMember')).toHaveLength(0);
+    expect(discord.memberModerationState(OWNER)).toBeUndefined();
+  });
+});
