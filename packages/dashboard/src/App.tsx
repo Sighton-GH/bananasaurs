@@ -264,7 +264,9 @@ function Dashboard({ session, onLoggedOut }: { session: SessionInfo; onLoggedOut
         ) : (
           <ul>
             <li>Gateway: {health.gateway.connected ? 'connected' : 'disconnected'}</li>
+            <li>Dry run: {health.safety?.dryRun ? 'ON' : 'off'}</li>
             <li>Kill switch: {health.safety?.killswitch ? 'ON' : 'off'}</li>
+            <li>Circuit breaker: {health.safety?.breakerOpen ? 'OPEN' : 'closed'}</li>
             <li>
               Jobs:{' '}
               {Object.entries(health.jobCounts)
