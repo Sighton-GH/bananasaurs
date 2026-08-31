@@ -61,7 +61,10 @@ mod_cases
 mod_case_events
   guild_id, event_id (pk), case_id (fk), rule_id (fk), member_id,
   at, matched_category, matched_snippet (full content, see §5),
-  action_taken ('deleted' | 'deleted_and_escalated' | 'escalation_refused'),
+  action_taken (one value per real outcome — widened by ADR 0036 from the
+  three values planned here to twelve, because three could not tell a
+  dry-run, skipped or failed escalation apart from an applied one, nor a
+  test-mode observation apart from a real deletion),
   escalation_action (nullable: 'timeout' | 'kick'),
   refusal_reason (nullable, same `RefusalReason` shape the effect gateway
   already uses where applicable, plus a moderation-specific reason for
@@ -107,11 +110,19 @@ MESSAGE_CREATE / MESSAGE_UPDATE
        - no match -> done
        - match -> resolve action (category default, term override)
   -> rule mode is 'test': record what would have happened, no Discord call
-  -> rule mode is 'observe': record + log, no Discord call
+  -> rule mode is 'observe': record 'would_delete' + log, no Discord call,
+     and no increment of violation_count (ADR 0036)
   -> rule mode is 'enforce':
+       - check the guild's safety state FIRST (kill switch, breaker, dry
+         run) — the deletion is a Discord side effect like any other, and
+         an unconfigured guild is in dry run. Blocked -> record
+         'delete_blocked_*' and stop; no delete, no escalation. (ADR 0036)
        - delete the message (Manage Messages, not hierarchy-gated —
-         succeeds regardless of the author's role)
-       - open/resolve mod_cases row, increment violation_count
+         succeeds regardless of the author's role). Already gone (10008)
+         counts as success, per §6; any other failure records
+         'delete_failed' and does not escalate.
+       - open/resolve mod_cases row, increment violation_count — only in
+         enforce mode, and only when the deletion was not blocked (ADR 0036)
        - resolve escalation tier from violation_count
        - if tier has a member action: attempt it through the existing
          effect-gateway-style pipeline (authorization, live hierarchy
@@ -120,7 +131,9 @@ MESSAGE_CREATE / MESSAGE_UPDATE
          'escalation_refused' with reason, NOT log-only (this is the
          change from Release 1's role-effect refusal behavior — ADR 0035
          §"A moderation-action refusal is durably recorded")
-       - applied -> mod_case_events records 'deleted_and_escalated'
+       - applied -> mod_case_events records 'deleted_and_escalated'; a
+         dry-run, skipped or failed outcome gets its own value rather than
+         being recorded as an applied punishment (ADR 0036)
 ```
 
 ## 5. Message content in case events
