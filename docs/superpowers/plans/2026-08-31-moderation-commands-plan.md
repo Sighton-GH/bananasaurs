@@ -107,11 +107,11 @@ gains `'warned' | 'note' | 'evidence_added' | 'purged' | 'purge_refused' |
 test (test-first).
 
 - [ ] Step 1: Failing tests: `ban` refuses `discord-owner` and
-      `role-above-bot` (same hierarchy path as kick); `unban` and
-      `untimeout` skip the member fetch entirely (assert
-      `fetchMember` was *not* called) but still refuse on killswitch /
-      breaker / guild-unknown; dry run records without the REST call for
-      every new action; a replayed dedupe key returns
+      `role-above-bot` (same hierarchy path as kick); `unban` skips the
+      member fetch entirely (assert `fetchMember` was *not* called) while
+      `untimeout` keeps the hierarchy path (its target is a member Discord
+      still gates by role position); dry run records without the REST call
+      for every new action; a replayed dedupe key returns
       `{ status: 'skipped', reason: 'already-applied' }` — the claim is
       claimed before the REST call, exactly as today.
 - [ ] Step 2: Widen `ModerationIntent.action`; branch the execution block;

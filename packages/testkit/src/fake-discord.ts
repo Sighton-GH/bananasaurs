@@ -859,6 +859,22 @@ export class FakeDiscord implements DiscordPort {
   }
 
   /**
+   * Removes a member's timeout by clearing the state, hierarchy-gated exactly
+   * like `timeoutMember` — Discord gates the PATCH by role position the same
+   * way, whatever the gateway decided, so the fake refuses what Discord would.
+   */
+  async untimeoutMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('untimeoutMember', [guildId, userId, reason]);
+    this.check('untimeoutMember', guildId);
+    const member = this.members.get(userId);
+    if (!member) throw FakeDiscord.unknownMember();
+    if (member.isGuildOwner || this.highestRolePosition(member) >= this.botPosition) {
+      throw FakeDiscord.missingPermissions();
+    }
+    this.moderationState.delete(userId);
+  }
+
+  /**
    * Hierarchy-gated exactly like `kickMember` for a member still in the
    * guild: the owner can never be banned and a member at or above the bot
    * cannot be. A user who has already left CAN be banned by id — Discord

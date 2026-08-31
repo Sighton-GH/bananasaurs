@@ -158,6 +158,12 @@ export interface DiscordPort {
     durationMs: number,
     reason: string,
   ): Promise<void>;
+  /**
+   * Removes a member's timeout by setting `communication_disabled_until` to
+   * null. Hierarchy-gated by Discord exactly like `timeoutMember`, so the
+   * gateway keeps the full member path for it (ADR 0037).
+   */
+  untimeoutMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void>;
   kickMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void>;
   /**
    * Bans a member. No message-deletion parameter (ADR 0037): Discord's

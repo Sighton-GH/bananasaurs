@@ -250,6 +250,17 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       );
     },
 
+    async untimeoutMember(guildId, userId, reason) {
+      // Discord removes a timeout by setting the field to null; there is no
+      // dedicated "remove timeout" route or verb.
+      await mapErrors(() =>
+        rest.patch(Routes.guildMember(guildId, userId), {
+          body: { communication_disabled_until: null },
+          reason,
+        }),
+      );
+    },
+
     async kickMember(guildId, userId, reason) {
       await mapErrors(() => rest.delete(Routes.guildMember(guildId, userId), { reason }));
     },

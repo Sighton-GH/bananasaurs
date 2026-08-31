@@ -94,6 +94,9 @@ class MinimalModerationDiscord implements DiscordPort {
   async unbanMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
     this.record('unbanMember', [guildId, userId, reason]);
   }
+  async untimeoutMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('untimeoutMember', [guildId, userId, reason]);
+  }
 
   // --- unused by this gateway: any call here is a gateway that reached
   // outside its documented surface. -------------------------------------
@@ -280,5 +283,115 @@ describe('ModerationActionGateway', () => {
     expect(first).toEqual({ status: 'applied' });
     expect(second).toEqual({ status: 'skipped', reason: 'already-applied' });
     expect(h.discord.callsFor('timeoutMember')).toHaveLength(1);
+  });
+
+  describe('the ADR 0037 actions', () => {
+    it('bans a member through the same hierarchy path as kick', async () => {
+      const h = build();
+      const outcome = await h.gateway.applyAction(
+        witnessFor(),
+        intent({ action: 'ban', dedupeKey: 'd-ban', reason: 'mod: confirmed ban' }),
+      );
+
+      expect(outcome).toEqual({ status: 'applied' });
+      expect(h.discord.callsFor('banMember')).toHaveLength(1);
+      expect(h.discord.callsFor('banMember')[0]?.args).toEqual([GUILD, USER, 'mod: confirmed ban']);
+    });
+
+    it('refuses to ban the owner: discord-owner, no call', async () => {
+      const h = build({ member: { isGuildOwner: true } });
+      const outcome = await h.gateway.applyAction(
+        witnessFor(),
+        intent({ action: 'ban', dedupeKey: 'd-ban-owner' }),
+      );
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'discord-owner' });
+      expect(h.discord.callsFor('banMember')).toHaveLength(0);
+    });
+
+    it('refuses to ban a member above the bot: role-above-bot, no call', async () => {
+      const h = build({ botPosition: 5, member: { roleIds: [MEMBER_ROLE] } });
+      const outcome = await h.gateway.applyAction(
+        witnessFor(),
+        intent({ action: 'ban', dedupeKey: 'd-ban-hierarchy' }),
+      );
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'role-above-bot' });
+      expect(h.discord.callsFor('banMember')).toHaveLength(0);
+    });
+
+    /**
+     * The one action with no hierarchy block (ADR 0037): the target is not
+     * a member — there is no member record to compare roles against — so
+     * the gateway must not even ask.
+     */
+    it('unbans without fetching the member or the roles', async () => {
+      const h = build();
+      const outcome = await h.gateway.applyAction(
+        witnessFor(),
+        intent({ action: 'unban', dedupeKey: 'd-unban' }),
+      );
+
+      expect(outcome).toEqual({ status: 'applied' });
+      expect(h.discord.callsFor('unbanMember')).toHaveLength(1);
+      expect(h.discord.callsFor('fetchMember')).toHaveLength(0);
+      expect(h.discord.callsFor('fetchRoles')).toHaveLength(0);
+      expect(h.discord.callsFor('fetchBotHighestRolePosition')).toHaveLength(0);
+    });
+
+    it('untimeouts through the hierarchy path: the target is a member', async () => {
+      const h = build();
+      const outcome = await h.gateway.applyAction(
+        witnessFor(),
+        intent({ action: 'untimeout', dedupeKey: 'd-untimeout' }),
+      );
+
+      expect(outcome).toEqual({ status: 'applied' });
+      expect(h.discord.callsFor('fetchMember')).toHaveLength(1);
+      expect(h.discord.callsFor('untimeoutMember')).toHaveLength(1);
+    });
+
+    it('refuses to untimeout the owner, like any other member action', async () => {
+      const h = build({ member: { isGuildOwner: true } });
+      const outcome = await h.gateway.applyAction(
+        witnessFor(),
+        intent({ action: 'untimeout', dedupeKey: 'd-untimeout-owner' }),
+      );
+
+      expect(outcome).toEqual({ status: 'refused', reason: 'discord-owner' });
+      expect(h.discord.callsFor('untimeoutMember')).toHaveLength(0);
+    });
+
+    it('records a dry-run without calling Discord for every new action', async () => {
+      const h = build();
+      h.setState({ dryRun: true });
+      for (const [action, dedupeKey] of [
+        ['ban', 'd-dry-ban'],
+        ['unban', 'd-dry-unban'],
+        ['untimeout', 'd-dry-untimeout'],
+      ] as const) {
+        const outcome = await h.gateway.applyAction(witnessFor(), intent({ action, dedupeKey }));
+        expect(outcome).toEqual({ status: 'dry-run' });
+      }
+      expect(h.discord.callsFor('banMember')).toHaveLength(0);
+      expect(h.discord.callsFor('unbanMember')).toHaveLength(0);
+      expect(h.discord.callsFor('untimeoutMember')).toHaveLength(0);
+    });
+
+    it('is idempotent for every new action: the second claim skips', async () => {
+      for (const [action, dedupeKey, method] of [
+        ['ban', 'd-idem-ban', 'banMember'],
+        ['unban', 'd-idem-unban', 'unbanMember'],
+        ['untimeout', 'd-idem-untimeout', 'untimeoutMember'],
+      ] as const) {
+        const h = build();
+        const first = await h.gateway.applyAction(witnessFor(), intent({ action, dedupeKey }));
+        const second = await h.gateway.applyAction(witnessFor(), intent({ action, dedupeKey }));
+
+        expect(first).toEqual({ status: 'applied' });
+        expect(second).toEqual({ status: 'skipped', reason: 'already-applied' });
+        expect(h.discord.callsFor(method)).toHaveLength(1);
+      }
+    });
   });
 });

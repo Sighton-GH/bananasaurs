@@ -410,6 +410,18 @@ describe('moderation', () => {
     expect(last(requests).reason).toBe('automod: rate limit');
   });
 
+  it('untimeouts by setting communication_disabled_until to null', async () => {
+    const { port, requests } = harness();
+    await port.untimeoutMember(GUILD, USER, 'mod: appeal accepted');
+
+    expect(last(requests).method).toBe('PATCH');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/members/${USER}`);
+    expect(last(requests).body).toMatchObject({
+      communication_disabled_until: null,
+    });
+    expect(last(requests).reason).toBe('mod: appeal accepted');
+  });
+
   it('kicks a member on the guild member route, with the reason in the audit header', async () => {
     const { port, requests } = harness();
     await port.kickMember(GUILD, USER, 'automod: repeated violations');

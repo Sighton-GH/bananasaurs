@@ -60,11 +60,12 @@ text, or URL (full text, matching the existing column contract).
 
 ## 3. DiscordPort surface
 
-Four new methods on the one existing port (ADR 0037):
+Five new methods on the one existing port (ADR 0037):
 
 ```typescript
 banMember(guildId, userId, reason): Promise<void>
 unbanMember(guildId, userId, reason): Promise<void>
+untimeoutMember(guildId, userId, reason): Promise<void>   // PATCH member, communication_disabled_until: null
 bulkDeleteMessages(guildId, channelId, messageIds, reason): Promise<void>
 fetchRecentMessages(guildId, channelId, { before?, limit }):
   Promise<{ messages: {messageId, authorId, createdAtMs, content?}[], nextBefore?: Snowflake }>
@@ -74,10 +75,11 @@ REST routes: `PUT /guilds/{g}/bans/{u}` (no `delete_message_*` parameter —
 message removal is purge's explicit job), `DELETE /guilds/{g}/bans/{u}`,
 `POST /channels/{c}/messages/bulk-delete` (2..100 ids, all < 14 days, else
 Discord rejects the whole call), `GET /channels/{c}/messages?before=&limit=`.
-FakeDiscord gains the four verbs: ban/unban toggle a `bans` set (with
+FakeDiscord gains the five verbs: ban/unban toggle a `bans` set (with
 `memberBanAdd`/`memberBanRemove` audit entries after `AUDIT_LOG_LAG_MS`),
 bulk-delete validates the 14-day ceiling and 100-id cap and marks messages
-deleted, fetch-recent walks stored messages newest-first.
+deleted, fetch-recent walks stored messages newest-first, and untimeout
+clears the timeout state with the same hierarchy gate `timeoutMember` has.
 
 ## 4. ModerationActionGateway: the new actions
 
@@ -89,11 +91,14 @@ idempotency claim → dry run → execute). Differences per action:
 - `ban`: the full hierarchy path applies — owner refused
   (`discord-owner`), member at/above the bot refused (`role-above-bot`),
   exactly like kick.
-- `unban`, `untimeout`: no member fetch, no hierarchy — the target is not
-  an ordinary member (banned, or Discord refuses the member fetch); the
-  layers that survive are auth, kill switch, breaker, idempotency, dry run.
-  A ban that does not exist still executes — Discord treats deleting a
+- `unban`: no member fetch, no hierarchy — the target is not a member
+  (banned, so there is no member record to compare roles against); a ban
+  that does not exist still executes — Discord treats deleting a
   non-existent ban as success, and the outcome is honest either way.
+- `untimeout`: hierarchy applies, like `timeout` — the target is a member
+  in the guild, and Discord gates the PATCH by role position exactly as it
+  gates a timeout (amended while implementing: the draft had untimeout skip
+  hierarchy, which would have recorded an `applied` the API then refused).
 - `timeout`: unchanged, clamped by the boundary validator to 28 days
   (`MAX_TIMEOUT_MS = 28 * 24 * 60 * 60 * 1000`, clamped in the boundary
   validator, never silently rounded mid-gateway).
@@ -206,7 +211,7 @@ else happens).
 | subcommand | arguments | behaviour |
 | --- | --- | --- |
 | `timeout` | user, duration, reason | clamp to 28 days; gateway; case event |
-| `untimeout` | user, reason | gateway, no hierarchy |
+| `untimeout` | user, reason | gateway, hierarchy applies |
 | `kick` | user, reason | gateway; hierarchy applies |
 | `ban` | user, reason | preview + confirm (§7); gateway |
 | `unban` | user, reason | gateway, no hierarchy |

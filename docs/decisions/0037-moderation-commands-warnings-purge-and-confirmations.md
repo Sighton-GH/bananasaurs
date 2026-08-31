@@ -46,21 +46,29 @@ follow-up is addressable through that token for exactly that long
 
 ## Decision
 
-### The DiscordPort surface grows by four methods, not by a moderation sub-port
+### The DiscordPort surface grows by five methods, not by a moderation sub-port
 
 `banMember(guildId, userId, reason)`, `unbanMember(guildId, userId, reason)`,
+`untimeoutMember(guildId, userId, reason)`,
 `bulkDeleteMessages(guildId, channelId, messageIds, reason)`, and
 `fetchRecentMessages(guildId, channelId, { before?, limit })` (a page of
 `{ messageId, authorId, createdAtMs, content }` plus a continuation cursor).
 The port stays one interface the FakeDiscord implements whole; a separate
 "moderation port" would split the seam every test harness and the safety
-layers already share.
+layers already share. (`untimeoutMember` exists because Discord removes a
+timeout by PATCHing `communication_disabled_until` to null — a dedicated
+verb keeps that honest instead of overloading `timeoutMember` with a magic
+duration.)
 
 Ban does **not** delete messages: Discord's `delete_message_days` /
 `delete_message_seconds` parameters are deprecated, and message removal is
 purge's job, explicitly and separately. Unban performs no hierarchy check —
 the target is not a member, so `fetchMember` has nothing to compare — and the
 gateway's refusal vocabulary therefore needs no new members for it.
+**Untimeout does keep the hierarchy check** (amended while implementing, and
+different from unban): its target *is* a member in the guild, and Discord
+gates the PATCH by role position exactly as it gates a timeout, so skipping
+the check would record an `applied` the API then refuses.
 
 ### The purge job: payload, resume, budget
 

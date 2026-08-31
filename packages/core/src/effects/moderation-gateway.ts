@@ -4,7 +4,7 @@ import type { GuildId, SnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 
 /**
- * The one function that can time out or kick a member.
+ * The one function that can time out, untimeout, kick, ban, or unban a member.
  *
  * `EffectGateway` (`gateway.ts`) is the model this mirrors, layer for layer:
  * one chokepoint rather than guard clauses scattered across call sites, so
@@ -17,6 +17,8 @@ import { safeLogFields, type Logger } from '../obs/logger.js';
  *   2. kill switch         guilds.killswitch                    -> refuse
  *   3. circuit breaker     guilds.breaker_state = 'open'        -> refuse
  *   7. hierarchy           live, immediately before acting      -> refuse
+ *                          (skipped only for `unban`: the target is not
+ *                          a member — ADR 0037)
  *   9. idempotency         claim before the call                -> skip
  *  10. dry run             record, no REST call
  *  11. execute             the single REST call
@@ -33,8 +35,13 @@ import { safeLogFields, type Logger } from '../obs/logger.js';
 
 export interface ModerationIntent {
   readonly userId: SnowflakeId;
-  readonly action: 'timeout' | 'kick';
-  /** Ignored for `kick`. Clamped to Discord's 28-day maximum by the caller. */
+  /**
+   * ADR 0037: `ban` rides the full hierarchy path like kick; `unban` skips
+   * it entirely (the target is not a member); `untimeout` targets a member
+   * in the guild, so it keeps the hierarchy path like `timeout`.
+   */
+  readonly action: 'timeout' | 'untimeout' | 'kick' | 'ban' | 'unban';
+  /** Ignored except for `timeout`. Clamped to Discord's 28-day maximum by the caller. */
   readonly timeoutMs: number | undefined;
   readonly dedupeKey: string;
   /** Shown in Discord's own audit log. */
@@ -97,7 +104,8 @@ export class ModerationActionGateway {
   constructor(private readonly deps: ModerationGatewayDeps) {}
 
   /**
-   * Times out or kicks one member, or explains why it did not.
+   * Times out, untimeouts, kicks, bans, or unbans one member — or explains
+   * why it did not.
    *
    * `auth` cannot be forged by omission and cannot be omitted at all — there
    * is no overload without it. It is nonetheless re-verified below, because
@@ -140,25 +148,33 @@ export class ModerationActionGateway {
     // Never cached: the failure mode is somebody reordering roles, or Discord
     // itself transferring ownership, after startup (REVIEW C9, mirrored from
     // gateway.ts's own layer 7).
-    const [roles, botPosition, member] = await Promise.all([
-      deps.discord.fetchRoles(deps.guildId),
-      deps.discord.fetchBotHighestRolePosition(deps.guildId),
-      deps.discord.fetchMember(deps.guildId, intent.userId),
-    ]);
+    //
+    // `unban` has no hierarchy block (ADR 0037): the target is not a member,
+    // so there is no member record to compare roles against, and Discord
+    // never refuses a ban removal for hierarchy reasons. Every other action
+    // targets a member and gets the full check — `untimeout` included, since
+    // the target is a member Discord itself still gates by role position.
+    if (intent.action !== 'unban') {
+      const [roles, botPosition, member] = await Promise.all([
+        deps.discord.fetchRoles(deps.guildId),
+        deps.discord.fetchBotHighestRolePosition(deps.guildId),
+        deps.discord.fetchMember(deps.guildId, intent.userId),
+      ]);
 
-    // Discord never lets a bot act on the guild owner, whatever the hierarchy
-    // says. Refusing here turns a confusing 403 into a stated reason
-    // (gateway.ts:266's `member.isGuildOwner` check, same idea).
-    if (member.isGuildOwner) return refuse('discord-owner');
+      // Discord never lets a bot act on the guild owner, whatever the
+      // hierarchy says. Refusing here turns a confusing 403 into a stated
+      // reason (gateway.ts:266's `member.isGuildOwner` check, same idea).
+      if (member.isGuildOwner) return refuse('discord-owner');
 
-    const highestMemberRolePosition = member.roleIds.reduce((max, roleId) => {
-      const position = roles.find((r) => r.id === roleId)?.position ?? 0;
-      return position > max ? position : max;
-    }, 0);
-    // Strictly below, matching resolveAssignability's own off-by-one guard: a
-    // member whose highest role sits at exactly the bot's position is not
-    // reachable either.
-    if (highestMemberRolePosition >= botPosition) return refuse('role-above-bot');
+      const highestMemberRolePosition = member.roleIds.reduce((max, roleId) => {
+        const position = roles.find((r) => r.id === roleId)?.position ?? 0;
+        return position > max ? position : max;
+      }, 0);
+      // Strictly below, matching resolveAssignability's own off-by-one guard:
+      // a member whose highest role sits at exactly the bot's position is not
+      // reachable either.
+      if (highestMemberRolePosition >= botPosition) return refuse('role-above-bot');
+    }
 
     // --- 9. idempotency ------------------------------------------------------
     // Before the REST call, deliberately. If the process dies between the
@@ -185,15 +201,27 @@ export class ModerationActionGateway {
 
     // --- 11. execute -------------------------------------------------------
     try {
-      if (intent.action === 'timeout') {
-        await deps.discord.timeoutMember(
-          deps.guildId,
-          intent.userId,
-          intent.timeoutMs ?? 0,
-          intent.reason,
-        );
-      } else {
-        await deps.discord.kickMember(deps.guildId, intent.userId, intent.reason);
+      switch (intent.action) {
+        case 'timeout':
+          await deps.discord.timeoutMember(
+            deps.guildId,
+            intent.userId,
+            intent.timeoutMs ?? 0,
+            intent.reason,
+          );
+          break;
+        case 'untimeout':
+          await deps.discord.untimeoutMember(deps.guildId, intent.userId, intent.reason);
+          break;
+        case 'kick':
+          await deps.discord.kickMember(deps.guildId, intent.userId, intent.reason);
+          break;
+        case 'ban':
+          await deps.discord.banMember(deps.guildId, intent.userId, intent.reason);
+          break;
+        case 'unban':
+          await deps.discord.unbanMember(deps.guildId, intent.userId, intent.reason);
+          break;
       }
     } catch (err) {
       const code = err instanceof Error ? err.name : 'UnknownError';
