@@ -12,6 +12,7 @@
     "build": "tsc --build"
   },
   "dependencies": {
+    "obscenity": "^0.4.6",
     "pino": "^9.5.0",
     "zod": "^3.24.1"
   }
