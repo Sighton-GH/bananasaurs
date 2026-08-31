@@ -408,6 +408,25 @@ describe('automod default word list seeding', () => {
   });
 
   /**
+   * The seeded rule really carries obscenity's anchors and exceptions all the
+   * way into `word_terms`/`word_allowlist`, not just into the seeding
+   * function's own unit test. Without both, the shipped default rule matched
+   * `class`, `assignment` and `Massachusetts` as profanity on first start.
+   */
+  it('seeds anchored terms and obscenity’s own allowlist exceptions', () => {
+    daemon = start();
+
+    const scope = t.scopes.forGuild(GUILD);
+    const rule = automodRuleRepo.listEnabledKeywordFilterRules(scope)[0];
+    // `|` is obscenity's word-boundary assertion (its `Pattern` grammar), and
+    // `parseRawPattern` — what the live matcher runs on `word_terms.text` —
+    // is the parser that reads it.
+    expect(rule?.terms.map((term) => term.text)).toContain('|ass');
+    expect(rule?.allowlist).toContain('assi');
+    expect(rule?.allowlist).toContain('analy');
+  });
+
+  /**
    * The crash this reproduces: `setRuleMode({ enabled: false })` is a real,
    * already-shipped capability, and spec §8 explicitly expects an operator to
    * "review and tune categories" — which includes disabling the seeded

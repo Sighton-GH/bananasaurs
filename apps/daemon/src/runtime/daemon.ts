@@ -545,6 +545,10 @@ function seedAutomodDefaults(
     {
       addCategory: (input) => automodRuleRepo.addCategory(scope, input),
       addTerm: (input) => automodRuleRepo.addTerm(scope, input),
+      // obscenity's own per-phrase exceptions (`assess`, `asset`, `analy`,
+      // `cockney`, …). Without them the seeded default rule matched ordinary
+      // English — `class`, `assignment`, `Massachusetts` — on day one.
+      addAllowlistPhrase: (input) => automodRuleRepo.addAllowlistPhrase(scope, input),
     },
     DEFAULT_AUTOMOD_RULE_ID,
   );
