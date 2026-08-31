@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
+import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
 import type { DomainEvent, MessageEvent, ReactionEvent } from '../discord/events.js';
 import type {
   ModerationIntent,
@@ -87,6 +88,7 @@ interface Harness {
     recordCaseEvent: Parameters<AutomodSubscriberDeps['recordCaseEvent']>[0][];
     applyAction: { auth: unknown; intent: ModerationIntent }[];
     readSafetyState: number;
+    authorRoleIds: string[];
   };
 }
 
@@ -103,6 +105,13 @@ function buildHarness(
     logger?: typeof silentLogger;
     /** `null` stands for "this guild is not in the database at all". */
     safetyState?: ModerationSafetyState | null;
+    /** Which rules have a role-type exemption configured (a cheap local read). */
+    roleExemptRuleIds?: ReadonlySet<string>;
+    /** Thrown by `deleteMessage`, mimicking `DiscordPort`'s real failures. */
+    deleteMessageError?: Error;
+    /** Thrown by `authorRoleIds`, i.e. `fetchMember` rejecting. */
+    authorRoleIdsError?: Error;
+    authorRoleIds?: readonly string[];
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -113,6 +122,7 @@ function buildHarness(
     recordCaseEvent: [],
     applyAction: [],
     readSafetyState: 0,
+    authorRoleIds: [],
   };
 
   const exempt = opts.exemptRuleIds ?? new Set<string>();
@@ -136,8 +146,10 @@ function buildHarness(
       calls.isExempt.push({ ruleId, input });
       return exempt.has(ruleId);
     },
+    hasRoleExemption: (ruleId) => (opts.roleExemptRuleIds ?? new Set<string>()).has(ruleId),
     deleteMessage: async (channelId, messageId, reason) => {
       calls.deleteMessage.push({ channelId, messageId, reason });
+      if (opts.deleteMessageError !== undefined) throw opts.deleteMessageError;
     },
     openOrResolveCase: (memberId) => {
       calls.openOrResolveCase.push(memberId);
@@ -148,7 +160,11 @@ function buildHarness(
     },
     nextEscalationTier: () => tier,
     moderationGateway,
-    authorRoleIds: async () => [],
+    authorRoleIds: async (userId) => {
+      calls.authorRoleIds.push(userId);
+      if (opts.authorRoleIdsError !== undefined) throw opts.authorRoleIdsError;
+      return opts.authorRoleIds ?? [];
+    },
     readSafetyState: () => {
       calls.readSafetyState += 1;
       const state = opts.safetyState === undefined ? LIVE : opts.safetyState;
@@ -449,6 +465,140 @@ describe('automod subscriber', () => {
       await subscriber.handle(messageCreate());
 
       expect(calls.readSafetyState).toBe(0);
+    });
+  });
+
+  /**
+   * I3: `authorRoleIds` is a real, uncached `GET /guilds/{g}/members/{u}`
+   * (`automod/wiring.ts` binds it to `DiscordPort.fetchMember`). It used to
+   * run for *every* message in the guild, before anything had established
+   * that there was a rule to check or a role exemption to check it against —
+   * REST latency and 429 exposure on every message, ahead of the deletion.
+   */
+  describe('the author role fetch', () => {
+    it('does not happen at all when there are no rules', async () => {
+      const { deps, calls } = buildHarness({ rules: [] });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.authorRoleIds).toEqual([]);
+      expect(calls.isExempt).toHaveLength(0);
+    });
+
+    it('does not happen when no rule has a role exemption configured', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-no-role-exempt', mode: 'enforce' })],
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      // Channel exemptions still get their chance — that check is a local
+      // read, not a REST call.
+      expect(calls.authorRoleIds).toEqual([]);
+      expect(calls.isExempt).toEqual([
+        { ruleId: 'rule-no-role-exempt', input: { authorRoleIds: [], channelId: CHANNEL } },
+      ]);
+      expect(calls.deleteMessage).toHaveLength(1);
+    });
+
+    it('happens once, at most, however many rules need it', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-a' }), rule({ ruleId: 'rule-b' })],
+        roleExemptRuleIds: new Set(['rule-a', 'rule-b']),
+        authorRoleIds: ['555555555555555555'],
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.authorRoleIds).toEqual([AUTHOR]);
+      expect(calls.isExempt.map((c) => c.input.authorRoleIds)).toEqual([
+        ['555555555555555555'],
+        ['555555555555555555'],
+      ]);
+    });
+
+    /**
+     * `fetchMember` throws for an author who is not a guild member — a
+     * webhook, an application-owned message, or somebody who left between
+     * posting and processing. That used to escape `handle` uncaught.
+     */
+    it('failing leaves the author with no roles rather than crashing the handler', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-fetch-fails', mode: 'enforce' })],
+        roleExemptRuleIds: new Set(['rule-fetch-fails']),
+        authorRoleIdsError: new Error('unknown member'),
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await expect(subscriber.handle(messageCreate())).resolves.toBeUndefined();
+
+      expect(calls.isExempt).toEqual([
+        { ruleId: 'rule-fetch-fails', input: { authorRoleIds: [], channelId: CHANNEL } },
+      ]);
+      // The message is still evaluated; no role-based exemption applies.
+      expect(calls.deleteMessage).toHaveLength(1);
+    });
+  });
+
+  /**
+   * I2: the delete had no try/catch, so a rejection escaped `handle` — after
+   * `openOrResolveCase` had already incremented the violation counter, with
+   * no `mod_case_events` row to show for it, and with every later rule for
+   * that message skipped.
+   */
+  describe('when the deletion fails', () => {
+    it('treats an already-deleted message as success (design spec §6)', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-gone', mode: 'enforce' })],
+        deleteMessageError: new DiscordApiError(
+          404,
+          DiscordErrorCode.UnknownMessage,
+          'Unknown Message',
+        ),
+        violationCount: 3,
+        tier: { action: 'timeout', timeoutMs: 600_000 },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await expect(subscriber.handle(messageCreate())).resolves.toBeUndefined();
+
+      // "The outcome (message gone) is what the rule wanted" — so processing
+      // continues into escalation exactly as if we had deleted it ourselves.
+      expect(calls.applyAction).toHaveLength(1);
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ actionTaken: 'deleted_and_escalated' }),
+      ]);
+    });
+
+    it('records the failure and keeps going on any other error', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-403', mode: 'enforce' }), rule({ ruleId: 'rule-after' })],
+        deleteMessageError: new DiscordApiError(
+          403,
+          DiscordErrorCode.MissingPermissions,
+          'Missing Permissions',
+        ),
+        violationCount: 3,
+        tier: { action: 'timeout', timeoutMs: 600_000 },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await expect(subscriber.handle(messageCreate())).resolves.toBeUndefined();
+
+      // The violation is not silently lost from case history...
+      expect(calls.recordCaseEvent[0]).toEqual(
+        expect.objectContaining({ ruleId: 'rule-403', actionTaken: 'delete_failed' }),
+      );
+      // ...nothing is escalated off a deletion that did not happen...
+      expect(calls.applyAction).toHaveLength(0);
+      // ...and the next rule for this message still runs.
+      expect(calls.recordCaseEvent).toHaveLength(2);
+      expect(calls.recordCaseEvent[1]).toEqual(
+        expect.objectContaining({ ruleId: 'rule-after', actionTaken: 'delete_failed' }),
+      );
     });
   });
 

@@ -196,6 +196,33 @@ describe('automod, end to end on the fake gateway', () => {
     expect(events.map((e) => e.actionTaken)).toEqual(['delete_blocked_dry_run']);
   });
 
+  /**
+   * Design spec §6: a message already deleted by a human moderator by the
+   * time Bananasaurs gets to it "is treated as success, not a failure — the
+   * outcome (message gone) is what the rule wanted". `FakeDiscord` raises the
+   * real `DiscordApiError`/10008 for this, so the branch is exercised against
+   * the same error shape production sees.
+   */
+  it('treats a message that is already gone as a successful deletion', async () => {
+    seedRule('enforce');
+    nextMessageId += 1n;
+    const messageId = nextMessageId.toString();
+    discord.defineMessage({ channelId: CHANNEL, messageId, authorId: MEMBER });
+    // A human moderator got there first.
+    await discord.deleteMessage(GUILD, { channelId: CHANNEL, messageId }, 'by hand');
+
+    await discord.emitMessageCreate({
+      channelId: CHANNEL,
+      messageId,
+      authorId: MEMBER,
+      content: 'badword here',
+    });
+
+    const modCase = findCase(MEMBER);
+    const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
+    expect(events.map((e) => e.actionTaken)).toEqual(['deleted']);
+  });
+
   it('deletes nothing while the kill switch is on', async () => {
     write(scope, ({ db }) => {
       db.update(schema.guilds).set({ killswitch: 1 }).where(scope.only(schema.guilds)).run();

@@ -143,6 +143,31 @@ export const isExempt = (scope: GuildScope, ruleId: string, input: IsExemptInput
     );
   });
 
+/**
+ * Whether `ruleId` has any **role**-type exemption configured.
+ *
+ * Exists so the subscriber (Task 9) can decide whether it needs the author's
+ * role ids *before* paying for them: `isExempt` above takes them as input,
+ * and the only source of a member's live roles is `DiscordPort.fetchMember`,
+ * an uncached REST call. A guild whose rules exempt only channels — or
+ * nothing at all, which is the seeded default — never makes that call.
+ */
+export const hasRoleExemption = (scope: GuildScope, ruleId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ exemptId: modRuleExemptions.exemptId })
+        .from(modRuleExemptions)
+        .where(
+          scope.only(
+            modRuleExemptions,
+            and(eq(modRuleExemptions.ruleId, ruleId), eq(modRuleExemptions.exemptType, 'role')),
+          ),
+        )
+        .get() !== undefined,
+  );
+
 export interface EnforceRuleChannelScope {
   readonly ruleId: string;
   /** Channels this rule is exempted from, so `doctor` skips them. */

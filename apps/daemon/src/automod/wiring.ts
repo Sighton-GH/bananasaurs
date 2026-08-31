@@ -121,6 +121,7 @@ export const automodPortsFor = (
     logger,
     moderationAuth: auth,
     listRules: () => automodRuleRepo.listEnabledKeywordFilterRules(scope),
+    hasRoleExemption: (ruleId) => automodRuleRepo.hasRoleExemption(scope, ruleId),
     isExempt: (ruleId, input) => automodRuleRepo.isExempt(scope, ruleId, input),
     // Narrower than `DiscordPort.deleteMessage(guildId, ref, reason)` — the
     // subscriber only ever names a channel and a message, so the guild id is

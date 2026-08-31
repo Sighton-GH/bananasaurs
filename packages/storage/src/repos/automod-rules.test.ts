@@ -6,8 +6,10 @@ import {
   addAllowlistPhrase,
   addCategory,
   addChannelExemption,
+  addRoleExemption,
   addTerm,
   createRule,
+  hasRoleExemption,
   isExempt,
   listEnabledKeywordFilterRules,
   listEnforceModeKeywordFilterRules,
@@ -65,6 +67,32 @@ describe('automod rules repo', () => {
     // exemption insert goes through the repo once its write function exists —
     // implement addRoleExemption alongside the others, same table shape.
     expect(isExempt(scope, 'r1', { authorRoleIds: [ROLE], channelId: CHANNEL })).toBe(false);
+  });
+
+  /**
+   * The subscriber asks this before deciding whether to spend a REST call on
+   * the author's role ids, so "no role exemptions" must be answerable without
+   * one — and a channel exemption must not be mistaken for a role one.
+   */
+  describe('hasRoleExemption', () => {
+    it('is false for a rule with no exemptions, and for a channel-only exemption', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+      expect(hasRoleExemption(scope, 'r1')).toBe(false);
+
+      addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
+      expect(hasRoleExemption(scope, 'r1')).toBe(false);
+    });
+
+    it('is true once a role exemption exists, and stays scoped to its own rule', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+      createRule(scope, { ruleId: 'r2', name: 'y', now: 1000 });
+      addRoleExemption(scope, { ruleId: 'r1', roleId: ROLE });
+
+      expect(hasRoleExemption(scope, 'r1')).toBe(true);
+      expect(hasRoleExemption(scope, 'r2')).toBe(false);
+    });
   });
 
   describe('listEnforceModeKeywordFilterRules', () => {

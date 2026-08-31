@@ -7,6 +7,7 @@ import type {
   ModerationSafetyState,
 } from '../effects/moderation-gateway.js';
 import type { Authorized } from '../authz.js';
+import { DiscordApiError } from '../discord/errors.js';
 import { parseSnowflakeId } from '../ids.js';
 import { buildMatcher, stripZeroWidth } from './matcher.js';
 
@@ -80,6 +81,17 @@ export interface AutomodSubscriberDeps {
   /** Re-verified inside the gateway on every call; held here only to pass through. */
   readonly moderationAuth: Authorized<'moderation.act'>;
   listRules(): readonly RuleWithWordList[];
+  /**
+   * Whether this rule has a **role**-type exemption at all — a local read,
+   * unlike the role ids it decides whether to fetch.
+   *
+   * `isExempt` needs the author's role ids, and getting those is a REST call
+   * (`authorRoleIds` below). Asking this first means a guild whose rules
+   * exempt only channels — or nothing — never makes that call, which is
+   * otherwise one uncached `GET /guilds/{g}/members/{u}` per message in the
+   * guild, on the latency path in front of a deletion.
+   */
+  hasRoleExemption(ruleId: string): boolean;
   isExempt(ruleId: string, input: { authorRoleIds: readonly string[]; channelId: string }): boolean;
   deleteMessage(channelId: string, messageId: string, reason: string): Promise<void>;
   openOrResolveCase(memberId: string): { caseId: string; violationCount: number };
@@ -171,12 +183,44 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
     if (event.kind !== 'messageCreate' && event.kind !== 'messageUpdate') return;
     if (event.authorId === undefined || event.content === undefined) return;
 
+    // Before anything else that costs something: a guild with no enabled
+    // keyword-filter rule has nothing to check and nothing to fetch.
+    const rules = deps.listRules();
+    if (rules.length === 0) return;
+
     const authorId = event.authorId;
     const normalized = stripZeroWidth(event.content);
-    const roleIds = await deps.authorRoleIds(authorId);
 
-    for (const rule of deps.listRules()) {
-      if (deps.isExempt(rule.ruleId, { authorRoleIds: roleIds, channelId: event.channelId })) {
+    /**
+     * The author's role ids, fetched at most once per message and only if a
+     * rule actually has a role exemption to check them against.
+     *
+     * A failure resolves to "no roles" rather than propagating: `fetchMember`
+     * throws for an author who is not a guild member (a webhook, an
+     * application-owned message, somebody who left between posting and
+     * processing), and such a message must still be evaluated — with no
+     * role-based exemption applying — rather than crashing the handler and
+     * skipping every rule.
+     */
+    let fetchedRoleIds: readonly string[] | undefined;
+    const roleIdsOnce = async (): Promise<readonly string[]> => {
+      if (fetchedRoleIds === undefined) {
+        try {
+          fetchedRoleIds = await deps.authorRoleIds(authorId);
+        } catch (err) {
+          fetchedRoleIds = [];
+          deps.logger.warn(
+            safeLogFields({ component: 'automod', guildId: event.guildId, err }),
+            'could not read the author’s roles; evaluating with no role exemptions',
+          );
+        }
+      }
+      return fetchedRoleIds;
+    };
+
+    for (const rule of rules) {
+      const authorRoleIds = deps.hasRoleExemption(rule.ruleId) ? await roleIdsOnce() : [];
+      if (deps.isExempt(rule.ruleId, { authorRoleIds, channelId: event.channelId })) {
         continue;
       }
 
@@ -275,9 +319,53 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
       // leave the offending message in place — the two are independent
       // outcomes, and deletion has already succeeded by the time escalation
       // is even attempted.
-      await deps.deleteMessage(event.channelId, event.messageId, `automod: ${rule.ruleId}`);
+      let deleted = true;
+      try {
+        await deps.deleteMessage(event.channelId, event.messageId, `automod: ${rule.ruleId}`);
+      } catch (err) {
+        // The design spec (§6): a message already deleted by the time
+        // Bananasaurs tries "is treated as success, not a failure — the
+        // outcome (message gone) is what the rule wanted". `isGone` is the
+        // established idiom for this in `panels/reconcile.ts`; for a message
+        // deletion the only code in that set Discord can return is 10008,
+        // Unknown Message.
+        if (err instanceof DiscordApiError && err.isGone) {
+          deps.logger.info(
+            safeLogFields({
+              component: 'automod',
+              guildId: event.guildId,
+              ruleId: rule.ruleId,
+              outcome: 'already-deleted',
+            }),
+            'the message was already gone; treating the deletion as done',
+          );
+        } else {
+          deleted = false;
+          deps.logger.error(
+            safeLogFields({
+              component: 'automod',
+              guildId: event.guildId,
+              ruleId: rule.ruleId,
+              outcome: 'delete_failed',
+              err,
+            }),
+            'the automod deletion failed',
+          );
+        }
+      }
 
       const { caseId, violationCount } = deps.openOrResolveCase(authorId);
+
+      // A deletion Discord actually refused. Recorded rather than thrown —
+      // an escaping rejection lost the case event entirely and skipped every
+      // remaining rule for this message — and *not* escalated from: a timeout
+      // or a kick on top of a message still sitting in the channel is the
+      // wrong half of the action to have succeeded.
+      if (!deleted) {
+        record(caseId, 'delete_failed');
+        continue;
+      }
+
       const tier = deps.nextEscalationTier(violationCount);
 
       // Enforce mode, but the violation count has not crossed a tier: the
