@@ -418,6 +418,78 @@ describe('moderation', () => {
     expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/members/${USER}`);
     expect(last(requests).reason).toBe('automod: repeated violations');
   });
+
+  /**
+   * ADR 0037: ban carries no message-deletion parameter — message removal is
+   * purge's explicit job, and Discord's `delete_message_days` is deprecated.
+   */
+  it('bans a member on the guild ban route, with no deletion parameter', async () => {
+    const { port, requests } = harness();
+    await port.banMember(GUILD, USER, 'mod: confirmed ban');
+
+    expect(last(requests).method).toBe('PUT');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/bans/${USER}`);
+    expect(last(requests).body).toBeUndefined();
+    expect(last(requests).reason).toBe('mod: confirmed ban');
+  });
+
+  it('lifts a ban with DELETE on the same route', async () => {
+    const { port, requests } = harness();
+    await port.unbanMember(GUILD, USER, 'mod: appeal accepted');
+
+    expect(last(requests).method).toBe('DELETE');
+    expect(last(requests).path).toBe(`/api/v10/guilds/${GUILD}/bans/${USER}`);
+    expect(last(requests).reason).toBe('mod: appeal accepted');
+  });
+
+  it('bulk-deletes on the bulk-delete route, ids in the body', async () => {
+    const { port, requests } = harness();
+    await port.bulkDeleteMessages(GUILD, CHANNEL, [MESSAGE, '444444444444444445'], 'mod: purge');
+
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/bulk-delete`);
+    expect(last(requests).body).toMatchObject({
+      messages: [MESSAGE, '444444444444444445'],
+    });
+    expect(last(requests).reason).toBe('mod: purge');
+  });
+
+  it('fetches recent messages newest-first, honouring before and limit', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: [
+          { id: '444444444444444445', author: { id: USER }, content: 'newer' },
+          { id: MESSAGE, author: { id: USER }, content: 'older' },
+        ],
+      },
+    ]);
+    const page = await port.fetchRecentMessages(GUILD, CHANNEL, {
+      before: '444444444444444446',
+      limit: 2,
+    });
+
+    expect(page.messages).toEqual([
+      {
+        messageId: '444444444444444445',
+        authorId: USER,
+        createdAtMs: expect.any(Number),
+        content: 'newer',
+      },
+      { messageId: MESSAGE, authorId: USER, createdAtMs: expect.any(Number), content: 'older' },
+    ]);
+    // A full page offers a cursor; the caller pages until it is undefined.
+    expect(page.nextBefore).toBe(MESSAGE);
+  });
+
+  it('reports no cursor when the page came back short', async () => {
+    const { port } = harness([
+      { status: 200, body: [{ id: MESSAGE, author: { id: USER }, content: 'only' }] },
+    ]);
+    const page = await port.fetchRecentMessages(GUILD, CHANNEL, { limit: 2 });
+    expect(page.messages).toHaveLength(1);
+    expect(page.nextBefore).toBeUndefined();
+  });
 });
 
 describe('interactions', () => {

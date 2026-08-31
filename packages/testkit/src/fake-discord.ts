@@ -11,8 +11,12 @@ import {
   type EmojiKey,
   type OutgoingMessage,
   type ReactionUserPage,
+  type RecentMessagesPage,
   type Snowflake,
 } from '@bananasaurs/core';
+
+/** Discord's epoch, which every snowflake timestamp is an offset from. */
+const DISCORD_EPOCH_MS = 1_420_070_400_000;
 
 /**
  * In-memory Discord, built before the features that use it.
@@ -38,6 +42,8 @@ interface FakeMessage {
   reactions: Map<EmojiKey, Snowflake[]>;
   cached: boolean;
   deleted: boolean;
+  /** Last-known content, for `fetchRecentMessages` (ADR 0037). */
+  content: string | undefined;
 }
 
 /**
@@ -135,6 +141,8 @@ export class FakeDiscord implements DiscordPort {
    */
   private moderationState = new Map<Snowflake, { until: number } | 'kicked'>();
   private messages = new Map<string, FakeMessage>();
+  /** Guild bans, for `banMember`/`unbanMember` (ADR 0037). */
+  private bans = new Set<Snowflake>();
   private auditLog: FakeAuditEntry[] = [];
   private botPosition: number;
 
@@ -201,12 +209,17 @@ export class FakeDiscord implements DiscordPort {
   memberModerationState(userId: Snowflake): { until: number } | 'kicked' | undefined {
     return this.moderationState.get(userId);
   }
+  /** Whether `banMember` has banned this user and `unbanMember` not lifted it. */
+  isBanned(userId: Snowflake): boolean {
+    return this.bans.has(userId);
+  }
 
   defineMessage(msg: {
     channelId: Snowflake;
     messageId: Snowflake;
     authorId?: Snowflake;
     cached?: boolean;
+    content?: string | undefined;
   }): void {
     this.messages.set(key(msg.channelId, msg.messageId), {
       channelId: msg.channelId,
@@ -215,6 +228,7 @@ export class FakeDiscord implements DiscordPort {
       reactions: new Map(),
       cached: msg.cached ?? true,
       deleted: false,
+      content: msg.content,
     });
   }
   /** A message outside the client cache. Its events arrive partial. */
@@ -842,6 +856,112 @@ export class FakeDiscord implements DiscordPort {
     this.moderationState.set(userId, 'kicked');
     // A kick removes the member from the guild, same as Discord.
     this.members.delete(userId);
+  }
+
+  /**
+   * Hierarchy-gated exactly like `kickMember` for a member still in the
+   * guild: the owner can never be banned and a member at or above the bot
+   * cannot be. A user who has already left CAN be banned by id — Discord
+   * allows it, and there is no member record to compare roles against — so
+   * an absent member is banned without a hierarchy check.
+   */
+  async banMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('banMember', [guildId, userId, reason]);
+    this.check('banMember', guildId);
+    const member = this.members.get(userId);
+    if (member) {
+      if (member.isGuildOwner || this.highestRolePosition(member) >= this.botPosition) {
+        throw FakeDiscord.missingPermissions();
+      }
+      // A ban removes the member from the guild, same as Discord.
+      this.members.delete(userId);
+    }
+    this.bans.add(userId);
+    this.defineAuditLogEntry({
+      actionType: 'member_ban',
+      actorUserId: BOT_USER_ID,
+      targetId: userId,
+      reason,
+    });
+  }
+
+  /**
+   * Not hierarchy-gated (ADR 0037): the target is not a member, so there is
+   * nothing to compare. Lifting a ban that does not exist is a no-op, the
+   * way Discord treats it.
+   */
+  async unbanMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('unbanMember', [guildId, userId, reason]);
+    this.check('unbanMember', guildId);
+    this.bans.delete(userId);
+  }
+
+  /**
+   * Discord rejects the ENTIRE call if any message is 14 days old or older,
+   * and accepts 2..100 ids. Modelled, not approximated: a caller that sends
+   * a mixed batch gets the same 400 real Discord returns, because the whole
+   * point of the fresh/old split in the purge is that this refusal exists.
+   * Age comes from the snowflake — the same derivation the REST port uses
+   * for `fetchRecentMessages` timestamps.
+   */
+  async bulkDeleteMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    messageIds: readonly Snowflake[],
+    reason: string,
+  ): Promise<void> {
+    this.record('bulkDeleteMessages', [guildId, channelId, messageIds, reason]);
+    this.check('bulkDeleteMessages', guildId);
+    if (messageIds.length < 2 || messageIds.length > 100) {
+      throw new DiscordApiError(400, undefined, 'bulk delete accepts 2..100 messages');
+    }
+    const fourteenDaysMs = 14 * 24 * 60 * 60 * 1000;
+    for (const messageId of messageIds) {
+      const createdAtMs = Number((BigInt(messageId) >> 22n) + BigInt(DISCORD_EPOCH_MS));
+      if (this.clock - createdAtMs >= fourteenDaysMs) {
+        throw new DiscordApiError(
+          400,
+          undefined,
+          'You can only bulk delete messages that are under 14 days old',
+        );
+      }
+    }
+    for (const messageId of messageIds) {
+      const m = this.messages.get(key(channelId, messageId));
+      if (m) m.deleted = true;
+    }
+  }
+
+  /**
+   * Recent messages in a channel, newest first by snowflake, excluding
+   * deleted ones — the shape the purge preview and the purge job page over.
+   * A full page yields a cursor for the same reason `fetchReactionUsers`
+   * does: Discord never says "that was the last page".
+   */
+  async fetchRecentMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    options: { before?: Snowflake | undefined; limit?: number | undefined } = {},
+  ): Promise<RecentMessagesPage> {
+    this.record('fetchRecentMessages', [guildId, channelId, options]);
+    this.check('fetchRecentMessages', guildId);
+    const limit = Math.min(options.limit ?? 50, 100);
+    const all = [...this.messages.values()]
+      .filter((m) => m.channelId === channelId && !m.deleted)
+      .filter((m) => options.before === undefined || BigInt(m.messageId) < BigInt(options.before))
+      .sort((a, b) => (BigInt(b.messageId) > BigInt(a.messageId) ? 1 : -1))
+      .slice(0, limit)
+      .map((m) => ({
+        messageId: m.messageId,
+        authorId: m.authorId,
+        createdAtMs: Number((BigInt(m.messageId) >> 22n) + BigInt(DISCORD_EPOCH_MS)),
+        content: m.content,
+      }));
+    const last = all.length > 0 ? all[all.length - 1] : undefined;
+    return {
+      messages: all,
+      nextBefore: all.length === limit && last !== undefined ? last.messageId : undefined,
+    };
   }
 
   /**

@@ -28,9 +28,11 @@ export type {
   DiscordPort,
   DiscordRole,
   EmojiKey,
+  FetchedMessage,
   InteractionRef,
   OutgoingMessage,
   ReactionUserPage,
+  RecentMessagesPage,
   Snowflake,
 } from './discord/port.js';
 export type {

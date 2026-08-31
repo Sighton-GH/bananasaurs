@@ -254,6 +254,50 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       await mapErrors(() => rest.delete(Routes.guildMember(guildId, userId), { reason }));
     },
 
+    async banMember(guildId, userId, reason) {
+      // No body: message deletion is purge's explicit job (ADR 0037), and
+      // `delete_message_days`/`delete_message_seconds` are deprecated.
+      await mapErrors(() => rest.put(Routes.guildBan(guildId, userId), { reason }));
+    },
+
+    async unbanMember(guildId, userId, reason) {
+      await mapErrors(() => rest.delete(Routes.guildBan(guildId, userId), { reason }));
+    },
+
+    async bulkDeleteMessages(_guildId, channelId, messageIds, reason) {
+      await mapErrors(() =>
+        rest.post(Routes.channelBulkDelete(channelId), {
+          body: { messages: messageIds },
+          reason,
+        }),
+      );
+    },
+
+    async fetchRecentMessages(_guildId, channelId, options) {
+      const limit = Math.min(options.limit ?? 50, 100);
+      const messages = (await mapErrors(() =>
+        rest.get(Routes.channelMessages(channelId), {
+          query: makeURLSearchParams({ limit, before: options.before }),
+        }),
+      )) as APIMessage[];
+
+      const page = messages.map((message) => ({
+        messageId: message.id,
+        authorId: message.author?.id ?? undefined,
+        createdAtMs: snowflakeToMs(message.id),
+        content: message.content === '' ? undefined : message.content,
+      }));
+
+      const last = messages.length > 0 ? messages[messages.length - 1] : undefined;
+      return {
+        messages: page,
+        // Same convention as fetchReactionUsers: a full page yields a cursor
+        // even when it happens to have exhausted the channel; the caller
+        // learns the truth by getting a short page next.
+        nextBefore: messages.length === limit && last !== undefined ? last.id : undefined,
+      };
+    },
+
     // --- interactions ----------------------------------------------------
     async deferInteraction(_guildId, ref, options) {
       await mapErrors(() =>

@@ -92,6 +92,22 @@ export interface OutgoingMessage {
   components?: readonly unknown[] | undefined;
 }
 
+/** One message as `fetchRecentMessages` reports it. */
+export interface FetchedMessage {
+  messageId: Snowflake;
+  /** Absent for a webhook or system message — never guessed. */
+  authorId: Snowflake | undefined;
+  /** From the snowflake itself, like every timestamp Discord does not send. */
+  createdAtMs: number;
+  content: string | undefined;
+}
+
+export interface RecentMessagesPage {
+  messages: readonly FetchedMessage[];
+  /** Pass back as `before` to continue. Undefined when the page is the last. */
+  nextBefore: Snowflake | undefined;
+}
+
 export interface DiscordPort {
   // --- roles -------------------------------------------------------------
   addRole(guildId: Snowflake, userId: Snowflake, roleId: Snowflake, reason: string): Promise<void>;
@@ -143,6 +159,35 @@ export interface DiscordPort {
     reason: string,
   ): Promise<void>;
   kickMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void>;
+  /**
+   * Bans a member. No message-deletion parameter (ADR 0037): Discord's
+   * `delete_message_days` is deprecated, and message removal is purge's
+   * explicit, separately-attributed job.
+   */
+  banMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void>;
+  /** Lifts a ban. No member fetch, no hierarchy — the target is not a member. */
+  unbanMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void>;
+  /**
+   * Bulk-deletes 2..100 messages in one call. **Discord rejects the entire
+   * call if any message is 14 days old or older** — the caller buckets by
+   * age, it never sends a mixed batch (ADR 0037).
+   */
+  bulkDeleteMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    messageIds: readonly Snowflake[],
+    reason: string,
+  ): Promise<void>;
+  /**
+   * Recent messages in a channel, newest first, for the purge preview and
+   * the purge job's pagination. A full page carries `nextBefore` (the oldest
+   * id on the page) to continue from; a short page is the end.
+   */
+  fetchRecentMessages(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    options: { before?: Snowflake | undefined; limit?: number | undefined },
+  ): Promise<RecentMessagesPage>;
 
   // --- interactions ------------------------------------------------------
   /**

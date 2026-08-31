@@ -88,6 +88,12 @@ class MinimalModerationDiscord implements DiscordPort {
   async kickMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
     this.record('kickMember', [guildId, userId, reason]);
   }
+  async banMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('banMember', [guildId, userId, reason]);
+  }
+  async unbanMember(guildId: Snowflake, userId: Snowflake, reason: string): Promise<void> {
+    this.record('unbanMember', [guildId, userId, reason]);
+  }
 
   // --- unused by this gateway: any call here is a gateway that reached
   // outside its documented surface. -------------------------------------
@@ -117,6 +123,12 @@ class MinimalModerationDiscord implements DiscordPort {
   }
   async deleteMessage(): Promise<void> {
     this.notUsed('deleteMessage');
+  }
+  async bulkDeleteMessages(): Promise<void> {
+    this.notUsed('bulkDeleteMessages');
+  }
+  async fetchRecentMessages(): Promise<never> {
+    this.notUsed('fetchRecentMessages');
   }
   async deferInteraction(): Promise<void> {
     this.notUsed('deferInteraction');
