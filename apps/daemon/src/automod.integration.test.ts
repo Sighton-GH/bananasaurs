@@ -17,7 +17,7 @@ import {
   type GuildScope,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
-import { FakeDiscord } from '@bananasaurs/testkit';
+import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
 
 /**
@@ -151,6 +151,21 @@ describe('automod, end to end on the fake gateway', () => {
     const modCase = findCase(MEMBER);
     expect(modCase?.violationCount).toBe(1);
     expect(modCase?.status).toBe('open');
+  });
+
+  /**
+   * The feedback loop this closes: the bot deletes a flagged message, the
+   * `message_delete` logging route posts the deleted content, discord.js
+   * emits that post as a `messageCreate`, and an enforce-mode rule matches
+   * the quoted word in the bot's own log entry.
+   */
+  it('never acts on its own messages', async () => {
+    seedRule('enforce');
+
+    await sendMessage(BOT_USER_ID, 'badword here');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    expect(findCase(BOT_USER_ID)).toBeUndefined();
   });
 
   it('does not delete from an exempt role', async () => {

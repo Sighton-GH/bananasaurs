@@ -394,9 +394,30 @@ describe('messages', () => {
         channelId: CHANNEL,
         messageId: MESSAGE,
         authorId: USER,
+        authorIsBot: false,
         content: 'hello',
         editedTimestampMs: undefined,
       },
+    ]);
+  });
+
+  /**
+   * Automod must never process a bot's own output. The bot posts a
+   * message-delete log entry that quotes the deleted content, discord.js
+   * emits that as a `messageCreate`, and an enforce-mode rule would match the
+   * quoted word and delete its own log message — logging it again, forever,
+   * opening a case against the bot's own user id on every lap.
+   */
+  it('marks a bot-authored message as such', () => {
+    const h = harness();
+    h.packet(
+      'MessageCreate',
+      messageCreatePacket({
+        author: { id: USER, username: 'bananasaurs', discriminator: '0', bot: true },
+      }),
+    );
+    expect(h.events).toEqual<DomainEvent[]>([
+      expect.objectContaining({ kind: 'messageCreate', authorIsBot: true }) as DomainEvent,
     ]);
   });
 

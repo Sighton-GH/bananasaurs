@@ -316,6 +316,8 @@ export class FakeDiscord implements DiscordPort {
     messageId: Snowflake;
     authorId: Snowflake;
     content: string;
+    /** Defaults to the bot's own id being the only bot in the fixture. */
+    authorIsBot?: boolean;
   }): Promise<void> {
     await this.emit({
       kind: 'messageCreate',
@@ -324,6 +326,7 @@ export class FakeDiscord implements DiscordPort {
       channelId: p.channelId,
       messageId: p.messageId,
       authorId: p.authorId,
+      authorIsBot: p.authorIsBot ?? p.authorId === BOT_USER_ID,
       content: p.content,
       editedTimestampMs: undefined,
     });
@@ -612,6 +615,7 @@ export class FakeDiscord implements DiscordPort {
       // discord.js fills the author in from its cache when it has one, so an
       // uncached message names nobody.
       authorId: message.cached ? message.authorId : undefined,
+      authorIsBot: message.cached && message.authorId === BOT_USER_ID,
       content: undefined,
       editedTimestampMs: undefined,
     });

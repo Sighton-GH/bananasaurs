@@ -23,6 +23,7 @@ const messageEditEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   channelId: CHANNEL,
   messageId: MESSAGE,
   authorId: AUTHOR,
+  authorIsBot: false,
   content: 'hello world',
   editedTimestampMs: 2,
   ...over,

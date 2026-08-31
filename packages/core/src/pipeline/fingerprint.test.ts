@@ -45,6 +45,7 @@ const messageEvent = (
   channelId: '222222222222222222',
   messageId: '333333333333333333',
   authorId: '444444444444444444',
+  authorIsBot: false,
   content: undefined,
   editedTimestampMs: undefined,
   ...over,

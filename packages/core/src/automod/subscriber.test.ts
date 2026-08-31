@@ -73,6 +73,7 @@ const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
   channelId: CHANNEL,
   messageId: MESSAGE,
   authorId: AUTHOR,
+  authorIsBot: false,
   content: 'this message has badword in it',
   editedTimestampMs: undefined,
   ...over,
@@ -194,6 +195,33 @@ describe('automod subscriber', () => {
 
     expect(calls.listRules).toBe(0);
     expect(calls.deleteMessage).toHaveLength(0);
+    expect(calls.recordCaseEvent).toHaveLength(0);
+  });
+
+  /**
+   * I4: discord.js emits `MessageCreate` for the bot's own messages too, and
+   * the `message_delete` logging route quotes the deleted content by default
+   * (docs/SMOKE_TESTS.md §B). An enforce-mode rule therefore closed a loop:
+   * automod deletes a flagged message -> the deletion is logged, with the
+   * flagged word in it -> that log message is itself a `messageCreate` that
+   * matches -> automod deletes its own log message -> logged again, forever,
+   * incrementing a case against the bot's own user id every lap.
+   *
+   * Every bot and webhook author is skipped, not only this bot's own id:
+   * that is the standard way Discord bots avoid self-triggering, and a
+   * *different* bot's output is not a member's speech to moderate either.
+   */
+  it('never processes a message authored by a bot, however well it matches', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-bot', mode: 'enforce' })],
+    });
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate({ authorIsBot: true }));
+
+    expect(calls.listRules).toBe(0);
+    expect(calls.deleteMessage).toHaveLength(0);
+    expect(calls.openOrResolveCase).toHaveLength(0);
     expect(calls.recordCaseEvent).toHaveLength(0);
   });
 

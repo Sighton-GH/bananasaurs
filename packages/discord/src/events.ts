@@ -363,6 +363,10 @@ function toMessageEvent(
     channelId: message.channelId,
     messageId: message.id,
     authorId: message.author?.id ?? undefined,
+    // `?? false` rather than leaving it optional: an unknown author is not a
+    // known bot, and a message automod cannot attribute is still a message it
+    // should evaluate.
+    authorIsBot: message.author?.bot ?? false,
     /**
      * Absent when the message was never cached — which for a delete is the
      * common case, because the dispatch carries only ids. `undefined` means "we

@@ -118,6 +118,16 @@ export interface MessageEvent extends Base {
   channelId: Snowflake;
   messageId: Snowflake;
   authorId: Snowflake | undefined;
+  /**
+   * `message.author.bot` — true for this bot, any other bot, and a webhook.
+   * `false` when the author is unknown (an uncached delete names nobody).
+   *
+   * Load-bearing for automod: discord.js emits `MessageCreate` for the bot's
+   * own messages, and the `message_delete` logging route quotes the deleted
+   * content, so without this an enforce-mode rule deletes a message, matches
+   * its own log entry about that deletion, deletes that, and loops.
+   */
+  authorIsBot: boolean;
   /** Absent when the message was not cached, or when content logging is off. */
   content: string | undefined;
   editedTimestampMs: number | undefined;

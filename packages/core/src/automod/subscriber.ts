@@ -181,6 +181,14 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
   name: 'automod',
   async handle(event) {
     if (event.kind !== 'messageCreate' && event.kind !== 'messageUpdate') return;
+    // Never moderate a bot — this one included. discord.js emits
+    // `MessageCreate` for our own messages, and the `message_delete` logging
+    // route quotes the deleted content, so an enforce-mode rule that deletes
+    // a message would then match the log entry about that deletion, delete
+    // that, and loop — opening a case against the bot's own user id every
+    // lap. Every bot and webhook is skipped, not only this bot's own id:
+    // another bot's output is not a member's speech to moderate either.
+    if (event.authorIsBot) return;
     if (event.authorId === undefined || event.content === undefined) return;
 
     // Before anything else that costs something: a guild with no enabled
