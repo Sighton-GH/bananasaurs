@@ -2071,3 +2071,330 @@ already in `docs/18`'s verified `2416004288` total, and adding a
 does not have.
 
 1589 tests green across 71 files (from 1547 across 68); typecheck and lint exit 0.
+
+---
+
+## WP6 / slice 16a — the backup module, and two things measured before writing it — 2026-08-30
+
+Release 1's last unbuilt line item (`REVIEW.md` §E: "Backup, and a restore the
+owner has actually performed"). `docs/19` §6.12 had already settled the
+mechanism and destination; this slice is ADR 0034 plus `performBackup` and
+`pruneBackups` in `@bananasaurs/storage`.
+
+**Two facts measured against better-sqlite3 13 before writing any backup code,
+following this project's own habit of not trusting a plan's assumptions.**
+`VACUUM INTO` does not create its destination directory — pointed at a missing
+parent it fails with the same "unable to open database" error SQLite gives for
+a permissions problem, so `performBackup` calls `mkdirSync(destDir, {
+recursive: true })` itself rather than assuming the statement handles it the
+way `openDatabase` does for the main database path. And it refuses to
+overwrite an existing destination file rather than replacing it — a real gift:
+it means a millisecond-precision filename is enough to make a same-tick
+collision unreachable rather than merely unlikely, and a naming bug fails loud
+instead of silently clobbering a prior backup.
+
+**Instance-level, not a `jobs` row (ADR 0034).** `jobs` is guild-scoped by
+construction; a backup is a copy of the one database file the whole process
+shares, not a fact about any guild. `performBackup` and `pruneBackups` take the
+raw `better-sqlite3` handle directly, no `GuildScope`, and will be driven by a
+second `setInterval` in `apps/daemon` — sibling to the job-poll timer, not
+nested inside the per-guild map — in the next slice.
+
+**The checksum is a sidecar file, not a database row**, in the exact format
+`sha256sum` itself emits (`<hex>  <filename>\n`). A backup has to be verifiable
+by a human with coreutils alone, on a box where the daemon is not running and
+nothing in this repository is importable — that is the whole scenario restore
+exists for, so trusting the checksum's own file to also hold the checksum
+would be circular in the one situation that matters.
+
+**Retention only ever touches files this scheme produced.** `pruneBackups`
+filters on the `bananasaurs-<timestamp>.db` pattern before sorting and
+deleting, so an operator's own copy sitting in the same directory is never at
+risk — proven by a test that plants a stray file, prunes with `retain: 0`, and
+asserts the stray survives while every managed backup is gone.
+
+**Defaults: daily, keep fourteen** (`BANANASAURS_BACKUP_INTERVAL_MIN=1440`,
+`BANANASAURS_BACKUP_RETAIN=14`), `BANANASAURS_BACKUP_DIR=./backups` — a sibling
+of `./data`, matching `deploy/bananasaurs.service`'s `ReadWritePaths`, which
+already anticipated this layout back in WP1.
+
+**Broke, to check the tests, continuing from 249.** 249. Dropped the
+`mkdirSync` call → the nested-directory test failed with the exact "unable to
+open database" error the measurement above predicted. 250. Dropped the
+checksum sidecar write → 2 failed. 251. Made `pruneBackups` keep the oldest
+files instead of the newest → the retention test failed, naming the wrong
+three files kept. 252. Removed the filename-pattern filter from the listing
+helper, so pruning would consider every file in the directory → 4 failed,
+including the stray-file test and a `parseBackupTimestamp` throw on the stray
+file's own name. 253. Introduced an off-by-one in the timestamp slice (treating
+the literal `T` separator as a digit) → the round-trip test failed with
+`RangeError: Invalid time value`, immediately rather than producing a wrong
+but plausible date. All five restored by file copy from a verified baseline,
+each confirmed against the pre-mutation md5 before continuing.
+
+**Baseline note.** This session measured 1590 tests across 71 files at the
+worktree's starting commit (slice 15's own entry says 1589/71; not chased
+further — within a test of agreement and not this slice's concern).
+
+1600 tests green across 72 files (the module's own 10; `config/load.test.ts`'s
+three new default assertions land inside an existing test, not a new one);
+typecheck and lint exit 0.
+
+---
+
+## WP6 / slice 16b — the backup timer, wired into the daemon and the operator surface — 2026-08-30
+
+`createBackupTimer` (`apps/daemon/src/runtime/backup-timer.ts`) wraps 16a's
+`performBackup`/`pruneBackups` with the lifecycle ADR 0034 calls for: a
+`setInterval` sibling to the job-poll timer, started and stopped by
+`daemon.start()`/`stop()`, taking the raw `better-sqlite3` handle rather than
+any `GuildScope`.
+
+**Runs once immediately on `start()`, not only on the interval.** At the daily
+default, waiting for the first interval would leave a fresh install with no
+backup at all for up to twenty-four hours — exactly the gap a restore drill
+would find at the worst possible time. Both the synchronous unit tests and a
+new daemon-integration test assert a backup exists the instant `start()`
+returns, before any fake timer is ever advanced.
+
+**Threading `raw` through `DaemonDeps` touched more call sites than the change
+itself.** `index.ts` now passes `opened.raw`; nine `createDaemon(...)` call
+sites across `daemon.integration.test.ts` and `ops.integration.test.ts` needed
+`raw: t.raw` (or `readonly.raw`, the same underlying handle under the
+read-only-scope fixture) added by hand after a blanket search-and-replace
+mistakenly also touched two `createServer(...)` calls for `HttpDeps` — a
+different interface that happens to share the `scopes: t.scopes,` line shape.
+Caught immediately by `tsc` ("'raw' does not exist in type 'HttpDeps'"),
+recorded here because it is the kind of collateral damage a mechanical edit
+produces and a diff review must catch before commit, not the kind a test does.
+
+**`OpsInstance` grows `backupNow()` and `backupList()` (ADR 0034), not a
+restore method — that omission is deliberate and the interface itself is the
+check.** Two existing hand-written fakes implementing `OpsInstance`
+(`packages/core/src/ops/test-fixtures.ts`, `packages/http/src/test-support.ts`)
+had to grow the same two methods or fail to compile — which is `docs/20`'s
+"a green test suite is not evidence" working in the opposite direction: a
+*type* error here is a compile-time proof that every fake actually satisfies
+the real contract, not merely coincides with it.
+
+**Broke, to check the tests, continuing from 254.** 254. Removed the immediate
+`runOnce()` call from `start()`, leaving only the interval → 3 of 5 unit tests
+failed, including "start() backs up immediately." 255. Dropped `clearInterval`
+from `stop()` → the cancellation test failed, showing eleven backups where one
+was expected. 256. Made `runOnce` rethrow instead of returning a failure result
+→ the "reports failure rather than throwing" test failed with the raw
+`EEXIST`-style error escaping uncaught. 257. Removed `backupTimer.start()` from
+`daemon.start()` (leaving `backupTimer.stop()` in `daemon.stop()` untouched, so
+only the start-side wiring was under test) → both new
+`daemon.integration.test.ts` assertions failed, proving those tests exercise
+the real composition root and not just the standalone timer unit. All four
+restored by file copy from a verified baseline.
+
+1607 tests green (from 1600 — 5 in `backup-timer.test.ts`, 2 in
+`daemon.integration.test.ts`); typecheck and lint exit 0.
+
+---
+
+## WP6 / slice 16c — `backup now` and `backup list` on the operator surface — 2026-08-30
+
+The last plumbing gap from 16b: `OpsInstance.backupNow()`/`backupList()` existed
+but nothing on the command surface called them. `packages/core/src/ops/commands/backup.ts`
+adds both, following `bootstrap reissue`'s shape exactly — `ctx.instance`, not
+`ctx.ports`, because a backup has no guild in the question.
+
+**`backup now` throws on failure rather than returning a written-but-failed
+result, matching every other write command in this tree.** A thrown error
+means no audit row, which is correct: nothing happened, so there is nothing to
+record having happened. The audit row on success names the file, before/after
+backup counts, and stays clear of touching `docs/17`'s "every write is
+audited" contract — `defineCommand`'s `OpsWriteResult` still demands the field
+at the type level, so there was no way to skip it even by accident.
+
+**There is deliberately no `backup restore` command, and a test says so
+directly** rather than only by omission: `OPERATOR_COMMANDS.map(...).some((n)
+=> n.includes('restore'))` is asserted `false`. ADR 0034 already argues why —
+restore needs the daemon stopped, which is the one precondition a live socket
+command can never satisfy — and a test that only checked "the command I wrote
+works" would have said nothing about whether a *different* command was ever
+added by someone reasoning locally about symmetry with `backup now`.
+
+**`backup list` flags a missing checksum sidecar rather than hiding it.** A
+backup whose `.sha256` file didn't get written (disk full mid-cycle, an
+operator's own `rm`) is exactly the kind of finding `docs/19`'s "an untested
+restore is not a restore" exists to surface before the day someone needs it.
+
+**Broke, to check the tests, continuing from 258.** 258. Dropped `fileName`
+from the audit row's `after` → "records an audit row naming the file" failed.
+259. Weakened the retention-message condition from `> 0` to `>= 0`, so "removed
+nothing" never renders → the zero-pruned test failed, printing "removed 0
+older backup(s)" where the operator-facing wording should say nothing was
+removed. 260. Made the checksum warning unconditional → "does not flag a
+backup that has its checksum" failed. 261. Made the empty-list branch
+unreachable (`=== -1`) → the empty-list test failed, receiving `''` instead of
+the explanatory line. All four restored by file copy from a verified baseline.
+
+1621 tests green (from 1607 — 14 new in `commands/backup.test.ts`); typecheck
+and lint exit 0.
+
+---
+
+## WP6 / slice 16d — the restore drill, rehearsed for real — 2026-08-30
+
+`scripts/restore.mjs`, alongside `scripts/migrate.mjs` for the same reason
+that one is plain JS outside the TypeScript project. Not an operator command —
+ADR 0034 already argues why, and this slice is where that argument had to
+actually hold up: restore needs the daemon *not* running, which a socket
+command can never guarantee about itself.
+
+**The refusal reuses the daemon's own single-writer lock rather than
+reinventing a weaker check.** `claimDatabaseLock` from
+`packages/storage/dist/lock.js` — the exact function `openDatabase` calls at
+startup — is called directly against `<db-path>.lock`. A live daemon holds
+that file; a `DatabaseLockedError` is exactly the refusal this script needs,
+for free, with the daemon's own pid in the message.
+
+**Never delete, always move.** The current database (and its `-wal`/`-shm`
+companions, if present) are renamed to a timestamped `.pre-restore-<ts>`
+sibling before the backup is copied in — recoverable if the restore itself was
+the mistake.
+
+**Checksum verified when present, warned about and not refused when absent.**
+An operator restoring from a hand-copied file has already made the decision
+this check exists to inform; refusing outright would make the emergency path
+less usable in exactly the situation it exists for.
+
+**Rehearsed against a real, file-backed, fully migrated SQLite database, not
+just asserted in a test.** Before writing the automated suite, a throwaway
+driver script (`scratchpad/restore-drill.mjs`, deleted after) ran the whole
+sequence by hand against a synthetic database in this environment's scratch
+directory — never `./data` or `./backups`, which this repository's own
+`.claude/settings.json` denies reading, deliberately, because they can hold
+real Discord content: seed content A, back it up, mutate the live database to
+content A-plus, dry-run (no change), refuse under a held lock (no change),
+refuse on a tampered checksum (no change), the real restore (content reverts
+to A), confirm the pre-restore file survives holding content A-plus, and warn
+without refusing when the checksum sidecar is missing. Every step produced the
+expected output before any of it became a committed test — `docs/19`'s "an
+untested restore is not a restore" is the literal gate this slice closes.
+
+**`scripts/restore.test.mjs` turns that rehearsal into a repeatable regression
+suite**, added to `vitest.config.ts`'s `include` alongside the existing
+`packages/**` and `apps/**` globs. It depends on `packages/storage/dist/`
+existing, exactly as `migrate.mjs` already does silently — confirmed safe
+because `npm run typecheck`'s `tsc --build` emits `dist/` as a side effect of
+the composite project build, and CI runs typecheck before test.
+
+**One thing found by running it, not by reading it.** `VACUUM INTO` does not
+create its destination directory (recorded already in slice 16a) — nothing
+new here, but the rehearsal is what confirmed the *restore* side has no
+equivalent gap: `fs.renameSync`/`fs.copyFileSync` need the destination's
+parent to exist, and it always does, because it is the daemon's own configured
+data directory.
+
+**Broke, to check the tests, continuing from 262.** 262. Disabled the checksum
+mismatch check → the mismatch test failed (`expected +0 to be 1`). 263. Made
+the script proceed past a `DatabaseLockedError` instead of refusing → far
+worse than one failed assertion: 7 of 9 tests failed, because the mutated
+script went on to rename and replace the database file out from under the
+*other* process's still-open connection in the "held lock" test, corrupting
+enough shared file state to cascade into unrelated tests — itself a strong
+argument for why the check exists, not just a test artifact to shrug off.
+264. Changed the "move aside" to `fs.rmSync` (a delete) → the
+never-delete test failed cleanly, finding zero preserved files. 265. Made the
+dry-run branch unreachable, so `--confirm` is effectively assumed → the
+dry-run test failed, showing a real restore happened with no flag requesting
+one. All four restored by file copy from a verified baseline; the third
+mutation's cascade cleared completely on restore, confirming it was the
+mutation and not a flaw in the test harness.
+
+1630 tests green (from 1621 — 9 new in `scripts/restore.test.mjs`); typecheck
+and lint exit 0.
+
+---
+
+## WP6 / slice 16e — doctor's backup-health section — 2026-08-30
+
+WP6's stated gate in `docs/20` is "`doctor` covering every startup
+precondition," and the one precondition genuinely missing was "is the backup
+timer actually still running" — everything else `doctor` already asserts
+(intents, partials, permissions, guild presence).
+
+**Filesystem-only, deliberately, matching `doctor`'s existing "does not open
+the database" property.** `checkBackupHealth` reads `BANANASAURS_BACKUP_DIR`
+with `fs.accessSync` and `listBackups` — no SQLite handle — so this does not
+reintroduce the thing slice 6d's `doctor` comment already explains is
+load-bearing: it can run safely against a live daemon's files, the same
+reason the Discord-side half never opens the database either.
+
+**A missing directory is not a finding; an unwritable one is.** The timer
+creates the directory on the daemon's own first backup (slice 16a), so a
+never-started instance legitimately has none — reporting that as a failure
+would make `doctor` cry wolf on every fresh install before first boot.
+Existing-but-unwritable is different: something is actively stopping every
+future backup from landing, which is exactly the kind of silent failure
+`doctor` exists to surface.
+
+**Staleness is the other half of "silent."** The newest backup older than
+twice the configured interval means the timer that should be producing one has
+gone quiet — a backup directory that used to fill and stopped, as opposed to
+one that never started. Both `ok:false` conditions plug into the existing
+conjunction rather than a parallel check nobody reads.
+
+**One gap the mutation check found that the hand-written tests had not.**
+Reading `backups.at(0)` (oldest) instead of `backups.at(-1)` (newest) survived
+every test unchanged, because every existing fixture seeded exactly one
+backup — oldest and newest were the same file. A new test seeding two backups
+an hour apart and asserting the reported age matches the *recent* one closed
+it; confirmed to fail against the mutation before being trusted.
+
+**Broke, to check the tests, continuing from 266.** 266. Dropped the
+`!backup.stale` term from `ok` → 2 failed, including the printed-report test
+expecting `PROBLEMS FOUND`. 267. Dropped the writable term from `ok` → the
+unwritable-directory test failed. 268. Widened the staleness multiplier from
+`2` to `3` → 2 failed, the exactly-at-threshold test now passing for the wrong
+reason revealed by the *other* failing test. 269. Swapped `.at(-1)` for
+`.at(0)` → survived until the new two-backup test was added, then failed
+cleanly (`expected 3900000 to be 300000`). All four restored by file copy from
+a verified baseline.
+
+1638 tests green (from 1630 — 8 new in `doctor.test.ts`); typecheck and lint
+exit 0.
+
+---
+
+## WP6 / slice 16f — docs, and Release 1's feature work is done — 2026-08-30
+
+The last slice of the last work package. No code; every doc that named
+backup/restore as unbuilt, or `/privacy` as still in scope, is corrected to
+match what slices 16a–16e and WP5 slice 15 actually built.
+
+**`docs/SMOKE_TESTS.md` is new**, and it is the actual Release 1 gate rather
+than a formality: section A (`docs/21`'s exercises) is already checked off
+from the 2026-08-29 live test; section B (operator CLI, dashboard, `/status`)
+and section C (backup/restore against real data) are not, and are named as
+exactly what has to happen before Release 1 is called done — not rebuilt as
+new work, since both are already fully built and merged.
+
+**Corrected in place**, each because it would otherwise mislead the next
+reader: `docs/08_ROADMAP.md`'s Release 1 list still named `/privacy` as
+in-scope after WP5 slice 15 dropped it; `docs/12_OPEN_QUESTIONS.md`'s backup
+destination question was still open after ADR 0034 answered it; `docs/09`'s
+"test backup and restore" bullet had nothing to point at. `docs/17`'s CLI
+reference gained `backup now`/`backup list` and a note on why restore is
+deliberately absent from it. `.env.example` and `CLAUDE.md`'s command list
+gained the new config keys and `npm run restore`.
+
+**`docs/STATE.md` rewritten rather than appended to**, per its own stated
+purpose — it had not been updated since the WP4 boundary and was silent on
+five slices' worth of WP5 and all of WP6. The old narrative detail (WP3's two
+defects, WP4's cursor mutation, the three live-test fixes) already lives in
+this file and in `docs/reports/`; `STATE.md` now says where the build actually
+is and what the one remaining next action is, not a compressed retelling of
+history it duplicates elsewhere.
+
+**Release 1's feature work is done.** Every slice in `docs/20`'s six work
+packages is built, merged, and green — 1,638 tests, `typecheck` and `lint`
+clean. What remains is `docs/SMOKE_TESTS.md`, which by design cannot be
+finished inside this sandbox: sections B and C both require either a live
+Discord connection or read access to `./data`/`./backups`, and this
+environment has neither, deliberately.

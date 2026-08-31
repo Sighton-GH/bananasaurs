@@ -14,6 +14,7 @@ import {
   effectRepo,
   guildRepo,
   jobRepo,
+  listBackups,
   loggingRepo,
   panelRepo,
   roleRepo,
@@ -22,6 +23,7 @@ import {
 } from '@bananasaurs/storage';
 import { generateToken, hashToken, POLICY } from '@bananasaurs/http';
 import { countUndoable } from '../jobs/undo.js';
+import type { BackupTimer } from '../runtime/backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
 import type { GuildOperations } from '../runtime/guild.js';
 
@@ -276,6 +278,8 @@ export interface OpsInstanceDeps {
   readonly instanceScope: InstanceScope;
   /** Injected, like every clock in this tree. Slice 13e found the bug. */
   readonly now: () => number;
+  /** `backup now` and `backup list` (ADR 0034, slice 16). */
+  readonly backupTimer: BackupTimer;
 }
 
 /**
@@ -296,7 +300,7 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // throws on a role delivered without a `permissions` field. A diagnostic
     // that can take down the socket handler is worse than no diagnostic.
     try {
-      const report = buildDoctorReport(deps.client, deps.config);
+      const report = buildDoctorReport(deps.client, deps.config, deps.now());
       return {
         ok: report.ok,
         text: formatDoctorReport(report),
@@ -356,4 +360,24 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     });
     return { ok: true, token, expiresAt: row.expiresAt, port: deps.config.DASHBOARD_PORT };
   },
+
+  backupNow: () => {
+    const result = deps.backupTimer.runOnce();
+    if (!result.ok) return { ok: false, error: result.error };
+    return {
+      ok: true,
+      fileName: result.backup.fileName,
+      sizeBytes: result.backup.sizeBytes,
+      sha256: result.backup.sha256,
+      prunedCount: result.pruned.length,
+    };
+  },
+
+  backupList: () =>
+    listBackups(deps.config.BANANASAURS_BACKUP_DIR).map((backup) => ({
+      fileName: backup.fileName,
+      sizeBytes: backup.sizeBytes,
+      createdAtMs: backup.createdAt.getTime(),
+      hasChecksum: backup.hasChecksum,
+    })),
 });

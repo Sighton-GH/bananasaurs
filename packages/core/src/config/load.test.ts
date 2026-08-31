@@ -19,6 +19,9 @@ describe('parseConfig', () => {
     expect(c.DASHBOARD_PORT).toBe(8787);
     expect(c.BANANASAURS_ROLE_RATE_LIMIT_PER_MIN).toBe(20);
     expect(c.BANANASAURS_RECONCILE_BUDGET).toBe(25);
+    expect(c.BANANASAURS_BACKUP_DIR).toBe('./backups');
+    expect(c.BANANASAURS_BACKUP_INTERVAL_MIN).toBe(1440);
+    expect(c.BANANASAURS_BACKUP_RETAIN).toBe(14);
   });
 
   it('defaults dry run ON, so an unconfigured instance performs no side effects', () => {

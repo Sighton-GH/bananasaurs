@@ -100,6 +100,16 @@ export const configSchema = z.object({
   BANANASAURS_ROLE_RATE_LIMIT_PER_MIN: z.coerce.number().int().positive().default(20),
   BANANASAURS_ERROR_BREAKER_THRESHOLD: z.coerce.number().int().positive().default(5),
   BANANASAURS_RECONCILE_BUDGET: z.coerce.number().int().positive().default(25),
+
+  /**
+   * Backup (ADR 0034, `docs/19` §6.12). A sibling of `BANANASAURS_DATA_DIR`
+   * rather than nested inside it, matching `deploy/bananasaurs.service`'s
+   * `ReadWritePaths=/opt/bananasaurs/data /opt/bananasaurs/backups`.
+   */
+  BANANASAURS_BACKUP_DIR: z.string().min(1).default('./backups'),
+  /** Daily by default — see ADR 0034 for why this database's size doesn't argue for more often. */
+  BANANASAURS_BACKUP_INTERVAL_MIN: z.coerce.number().int().positive().default(1440),
+  BANANASAURS_BACKUP_RETAIN: z.coerce.number().int().positive().default(14),
 });
 
 export type Config = z.infer<typeof configSchema>;

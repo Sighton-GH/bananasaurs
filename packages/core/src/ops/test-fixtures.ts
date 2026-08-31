@@ -63,6 +63,8 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   // test that wants the token has to say so, so `bootstrap reissue` succeeding
   // is never something a fixture arranged by accident.
   reissueBootstrapToken: () => ({ ok: false, reason: 'accounts-exist', accountCount: 1 }),
+  backupNow: unstubbed('backupNow'),
+  backupList: unstubbed('backupList'),
   ...over,
 });
 

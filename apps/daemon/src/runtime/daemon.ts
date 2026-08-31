@@ -1,3 +1,4 @@
+import type Database from 'better-sqlite3';
 import { Events, type Client } from 'discord.js';
 import {
   createDispatcher,
@@ -18,6 +19,7 @@ import {
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
 import { guildRepo, pipelineRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
+import { createBackupTimer } from './backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 
@@ -38,6 +40,12 @@ export interface DaemonDeps {
   readonly discord: DiscordPort;
   readonly client: Client;
   readonly logger: Logger;
+  /**
+   * The raw handle, for the backup timer only (ADR 0034). Every other port in
+   * this tree reaches storage through a `GuildScope` or `InstanceScope`; a
+   * backup is `VACUUM INTO` against the file itself, which has no scope to be.
+   */
+  readonly raw: Database.Database;
   /** A property, not a method: it is destructured and passed on by value. */
   readonly now: () => number;
   /**
@@ -89,7 +97,9 @@ export const scopedTo = (guildId: string, subscriber: Subscriber): Subscriber =>
 });
 
 export function createDaemon(deps: DaemonDeps): Daemon {
-  const { config, scopes, discord, client, logger, now } = deps;
+  const { config, scopes, discord, client, logger, now, raw } = deps;
+
+  const backupTimer = createBackupTimer({ raw, config, logger });
 
   // Branded here, at the boundary. The config schema has already checked the
   // shape; this is what carries that check into every scope and port below.
@@ -115,6 +125,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     startedAtMs: now(),
     instanceScope: scopes.instance(),
     now,
+    backupTimer,
   });
 
   /**
@@ -376,11 +387,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // Node keeps the process alive for a pending timer, and the socket is
       // what should do that. A daemon whose gateway died must exit, not idle.
       timer.unref();
+      backupTimer.start();
     },
 
     async stop() {
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
+      backupTimer.stop();
       await settle();
     },
 

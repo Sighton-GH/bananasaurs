@@ -1,4 +1,5 @@
 import type { RegisteredCommand } from './dispatch.js';
+import { backupListCommand, backupNowCommand } from './commands/backup.js';
 import { bootstrapReissueCommand } from './commands/bootstrap.js';
 import { killswitchCommand } from './commands/killswitch.js';
 import {
@@ -39,6 +40,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   logRoutingListCommand,
   auditTailCommand,
   jobsListCommand,
+  backupListCommand,
 
   // Writes. Each needs `--confirm` and each records an audit row; the
   // dispatcher enforces both, so the ordering here is for `--help` only.
@@ -48,6 +50,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   logRoutingExcludeCommand,
   logRoutingUnexcludeCommand,
   jobsRetryCommand,
+  backupNowCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).

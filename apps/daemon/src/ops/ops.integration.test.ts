@@ -86,6 +86,7 @@ const startDaemon = (over: Record<string, string> = {}): void => {
   daemon = createDaemon({
     config: config(over),
     scopes: t.scopes,
+    raw: t.raw,
     discord,
     client,
     logger,
@@ -187,6 +188,7 @@ describe('the operator CLI, end to end', () => {
     daemon = createDaemon({
       config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '1' }),
       scopes: readonly.readonlyScopes,
+      raw: readonly.raw,
       discord,
       client,
       logger,
@@ -206,6 +208,7 @@ describe('the operator CLI, end to end', () => {
     daemon = createDaemon({
       config: config(),
       scopes: t.scopes,
+      raw: t.raw,
       discord,
       client,
       logger,
@@ -276,6 +279,7 @@ describe('the operator CLI, end to end', () => {
       daemon = createDaemon({
         config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '1' }),
         scopes: readonly.readonlyScopes,
+        raw: readonly.raw,
         discord,
         client,
         logger,
@@ -646,6 +650,7 @@ describe('the operator CLI, end to end', () => {
         daemon = createDaemon({
           config: config({ BANANASAURS_READONLY: '1', BANANASAURS_DRY_RUN: '0' }),
           scopes: readonly.readonlyScopes,
+          raw: readonly.raw,
           discord,
           client,
           logger,
@@ -666,6 +671,7 @@ describe('the operator CLI, end to end', () => {
       daemon = createDaemon({
         config: config({ BANANASAURS_READONLY: '1' }),
         scopes: readonly.readonlyScopes,
+        raw: readonly.raw,
         discord,
         client,
         logger,
@@ -1182,6 +1188,7 @@ describe('the dashboard recovery path, end to end (ADR 0012)', () => {
     daemon = createDaemon({
       config: config({ BANANASAURS_READONLY: '1' }),
       scopes: t.readonlyScopes,
+      raw: t.raw,
       discord,
       client,
       logger,

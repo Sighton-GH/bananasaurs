@@ -47,7 +47,7 @@ Exact screens and policies change; verify current official documentation while p
 1. Run locally with a test guild/channel and test provider key.
 2. Verify DM silence and unauthorized denial.
 3. Validate archive/retrieval on synthetic non-sensitive content.
-4. Test backup and restore.
+4. Test backup and restore — see `docs/SMOKE_TESTS.md` §C for the drill.
 5. Add the real guild and a minimal channel set.
 6. Review audit events and provider disclosure before expanding scope.
 7. Run the moderation test plan with synthetic accounts/roles before removing existing moderation bots.

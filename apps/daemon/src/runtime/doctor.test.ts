@@ -1,7 +1,11 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { Client, GatewayIntentBits, Partials, Status, type Guild } from 'discord.js';
 import { parseConfig, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
+import { openTestDatabase, performBackup } from '@bananasaurs/storage';
 import { buildDoctorReport, formatDoctorReport, RELEASE_1_PERMISSIONS } from './doctor.js';
 
 /**
@@ -227,6 +231,139 @@ describe('permissions — docs/18 layer 1', () => {
 
     expect(report.guilds[0]?.extraPermissions).toEqual(['ManageMessages']);
     expect(report.ok).toBe(true);
+  });
+});
+
+describe('backup health (ADR 0034)', () => {
+  let dir: string;
+
+  beforeEach(() => {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bnn-doctor-backup-'));
+  });
+
+  afterEach(() => {
+    fs.chmodSync(dir, 0o755); // undo any readonly test's chmod, or rmSync below fails
+    fs.rmSync(dir, { recursive: true, force: true });
+  });
+
+  const takeBackup = (destDir: string, now: () => Date = () => new Date()) => {
+    const db = openTestDatabase();
+    try {
+      return performBackup(db.raw, { destDir, now });
+    } finally {
+      db.close();
+    }
+  };
+
+  it('is not a doctor failure when the directory does not exist yet', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const missing = path.join(dir, 'never-created');
+    const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: missing }));
+
+    expect(report.backup.dirExists).toBe(false);
+    expect(report.backup.backupCount).toBe(0);
+    expect(report.ok).toBe(true);
+  });
+
+  it('is not a doctor failure when the directory exists but holds nothing yet', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: dir }));
+
+    expect(report.backup.dirExists).toBe(true);
+    expect(report.backup.dirWritable).toBe(true);
+    expect(report.backup.backupCount).toBe(0);
+    expect(report.ok).toBe(true);
+  });
+
+  it('reports the count and age of a fresh backup without failing doctor', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const takenAt = new Date('2026-08-30T00:00:00.000Z');
+    takeBackup(dir, () => takenAt);
+    const nowMs = takenAt.getTime() + 5 * 60_000; // 5 minutes later
+
+    const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: dir }), nowMs);
+
+    expect(report.backup.backupCount).toBe(1);
+    expect(report.backup.newestAgeMs).toBe(5 * 60_000);
+    expect(report.backup.stale).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('reports the age of the newest backup, not the oldest, when several exist', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const older = new Date('2026-08-30T00:00:00.000Z');
+    const newer = new Date('2026-08-30T01:00:00.000Z');
+    takeBackup(dir, () => older);
+    takeBackup(dir, () => newer);
+    const nowMs = newer.getTime() + 5 * 60_000;
+
+    const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: dir }), nowMs);
+
+    expect(report.backup.backupCount).toBe(2);
+    // If this read the oldest instead, the age would be 65 minutes, not 5.
+    expect(report.backup.newestAgeMs).toBe(5 * 60_000);
+  });
+
+  it('fails doctor when the newest backup is older than twice the configured interval', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const takenAt = new Date('2026-08-30T00:00:00.000Z');
+    takeBackup(dir, () => takenAt);
+    // Interval 60 min, threshold 120 min; the backup is 121 minutes old.
+    const nowMs = takenAt.getTime() + 121 * 60_000;
+
+    const report = buildDoctorReport(
+      client,
+      config({ BANANASAURS_BACKUP_DIR: dir, BANANASAURS_BACKUP_INTERVAL_MIN: '60' }),
+      nowMs,
+    );
+
+    expect(report.backup.stale).toBe(true);
+    expect(report.ok).toBe(false);
+  });
+
+  it('does not call a backup stale at exactly twice the interval', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const takenAt = new Date('2026-08-30T00:00:00.000Z');
+    takeBackup(dir, () => takenAt);
+    const nowMs = takenAt.getTime() + 120 * 60_000; // exactly the threshold
+
+    const report = buildDoctorReport(
+      client,
+      config({ BANANASAURS_BACKUP_DIR: dir, BANANASAURS_BACKUP_INTERVAL_MIN: '60' }),
+      nowMs,
+    );
+
+    expect(report.backup.stale).toBe(false);
+    expect(report.ok).toBe(true);
+  });
+
+  it('fails doctor when the directory exists but this process cannot write to it', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    fs.chmodSync(dir, 0o555); // read + execute, no write
+
+    const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: dir }));
+
+    expect(report.backup.dirExists).toBe(true);
+    expect(report.backup.dirWritable).toBe(false);
+    expect(report.ok).toBe(false);
+  });
+
+  it('renders a stale backup as a named finding in the printed report', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const takenAt = new Date('2026-08-30T00:00:00.000Z');
+    takeBackup(dir, () => takenAt);
+    const nowMs = takenAt.getTime() + 121 * 60_000;
+
+    const text = formatDoctorReport(
+      buildDoctorReport(
+        client,
+        config({ BANANASAURS_BACKUP_DIR: dir, BANANASAURS_BACKUP_INTERVAL_MIN: '60' }),
+        nowMs,
+      ),
+    );
+
+    expect(text).toMatch(/STALE/);
+    expect(text).toContain('doctor: PROBLEMS FOUND');
   });
 });
 

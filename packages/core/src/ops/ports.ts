@@ -337,6 +337,41 @@ export interface OpsInstance {
    * for why a token gets SHA-256 and a password does not).
    */
   reissueBootstrapToken(): OpsBootstrapReissue;
+
+  /**
+   * Runs a backup immediately (ADR 0034, `backup now`).
+   *
+   * On `OpsInstance` for the same reason `reissueBootstrapToken` is: a backup
+   * is `VACUUM INTO` against the one database file the whole process shares,
+   * not a query scoped to any guild. Safe to run while the daemon is up —
+   * that is the entire argument for choosing `VACUUM INTO` in the first
+   * place — so unlike restore, this is reachable from the operator socket.
+   */
+  backupNow(): OpsBackupRunResult;
+  /** Every backup on disk, oldest first, for `backup list`. */
+  backupList(): readonly OpsBackupListing[];
+}
+
+export interface OpsBackupOutcome {
+  readonly ok: true;
+  readonly fileName: string;
+  readonly sizeBytes: number;
+  readonly sha256: string;
+  readonly prunedCount: number;
+}
+
+export interface OpsBackupFailure {
+  readonly ok: false;
+  readonly error: string;
+}
+
+export type OpsBackupRunResult = OpsBackupOutcome | OpsBackupFailure;
+
+export interface OpsBackupListing {
+  readonly fileName: string;
+  readonly sizeBytes: number;
+  readonly createdAtMs: number;
+  readonly hasChecksum: boolean;
 }
 
 /**
