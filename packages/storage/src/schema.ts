@@ -596,6 +596,203 @@ export const messageDeleteRuns = sqliteTable(
   ],
 );
 
+// --- automod ------------------------------------------------------------
+
+/**
+ * A configured automod rule. `kind` is the extension point for the
+ * predicate types the roadmap names beyond this slice's `keyword_filter`
+ * (ADR 0035) — adding one is a new predicate implementation against this
+ * table, not a schema change.
+ */
+export const modRules = sqliteTable(
+  'mod_rules',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    kind: text('kind').notNull(),
+    name: text('name').notNull(),
+    mode: text('mode').notNull().default('test'),
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mod_rules_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mod_rules_kind', sql`${t.kind} IN ('keyword_filter')`),
+    check('mod_rules_mode', sql`${t.mode} IN ('test','observe','enforce')`),
+    check('mod_rules_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+export const modRuleExemptions = sqliteTable(
+  'mod_rule_exemptions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    exemptType: text('exempt_type').notNull(),
+    exemptId: snowflake('exempt_id').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId, t.exemptType, t.exemptId] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('mod_rule_exemptions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mod_rule_exemptions_exempt_id_snowflake', snowflakeCheck(t.exemptId)),
+    check('mod_rule_exemptions_type', sql`${t.exemptType} IN ('role','channel')`),
+  ],
+);
+
+/** A group of word terms sharing a default action. One rule may have several. */
+export const wordCategories = sqliteTable(
+  'word_categories',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    categoryId: text('category_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    name: text('name').notNull(),
+    defaultAction: text('default_action').notNull(),
+    enabled: integer('enabled').notNull().default(1),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.categoryId] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('word_categories_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check(
+      'word_categories_default_action',
+      sql`${t.defaultAction} IN ('log_only','delete','delete_and_case')`,
+    ),
+    check('word_categories_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+/** One matched word or phrase. `actionOverride` NULL inherits the category default. */
+export const wordTerms = sqliteTable(
+  'word_terms',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    termId: text('term_id').notNull(),
+    categoryId: text('category_id').notNull(),
+    text: text('text').notNull(),
+    actionOverride: text('action_override'),
+    enabled: integer('enabled').notNull().default(1),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.termId] }),
+    foreignKey({
+      columns: [t.guildId, t.categoryId],
+      foreignColumns: [wordCategories.guildId, wordCategories.categoryId],
+    }).onDelete('cascade'),
+    check('word_terms_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check(
+      'word_terms_action_override',
+      sql`${t.actionOverride} IS NULL OR ${t.actionOverride} IN ('log_only','delete','delete_and_case')`,
+    ),
+    check('word_terms_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+/** Explicit exceptions, wired into obscenity's own allowlist mechanism. */
+export const wordAllowlist = sqliteTable(
+  'word_allowlist',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    phrase: text('phrase').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId, t.phrase] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('word_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/** Per-member violation history. What escalation reads to pick the next tier. */
+export const modCases = sqliteTable(
+  'mod_cases',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    caseId: text('case_id').notNull(),
+    memberId: snowflake('member_id').notNull(),
+    openedAt: integer('opened_at').notNull(),
+    violationCount: integer('violation_count').notNull().default(0),
+    escalationTier: integer('escalation_tier').notNull().default(0),
+    status: text('status').notNull().default('open'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.caseId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    // One open case per member — a new violation resolves into the existing
+    // open case rather than forking a second one.
+    uniqueIndex('mod_cases_open_per_member')
+      .on(t.guildId, t.memberId)
+      .where(sql`${t.status} = 'open'`),
+    check('mod_cases_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mod_cases_member_id_snowflake', snowflakeCheck(t.memberId)),
+    check('mod_cases_status', sql`${t.status} IN ('open','closed')`),
+    check('mod_cases_violation_count_nonnegative', sql`${t.violationCount} >= 0`),
+    check('mod_cases_escalation_tier_nonnegative', sql`${t.escalationTier} >= 0`),
+  ],
+);
+
+/**
+ * One matched event and what happened as a result — including a refusal.
+ *
+ * ADR 0035: a moderation-action refusal (owner, hierarchy) is recorded here
+ * as its own event, not left log-only the way a Release 1 role-effect
+ * refusal is. `refusalReason` is deliberately a superset of the effect
+ * gateway's `RefusalReason` plus one moderation-specific value
+ * (`'discord-owner'`) for Discord's own unconditional owner protection,
+ * which has no equivalent in the role-mutation vocabulary.
+ */
+export const modCaseEvents = sqliteTable(
+  'mod_case_events',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    eventId: text('event_id').notNull(),
+    caseId: text('case_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    memberId: snowflake('member_id').notNull(),
+    at: integer('at').notNull(),
+    matchedCategory: text('matched_category').notNull(),
+    matchedSnippet: text('matched_snippet').notNull(),
+    actionTaken: text('action_taken').notNull(),
+    escalationAction: text('escalation_action'),
+    refusalReason: text('refusal_reason'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.eventId] }),
+    foreignKey({
+      columns: [t.guildId, t.caseId],
+      foreignColumns: [modCases.guildId, modCases.caseId],
+    }).onDelete('cascade'),
+    check('mod_case_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mod_case_events_member_id_snowflake', snowflakeCheck(t.memberId)),
+    check(
+      'mod_case_events_action_taken',
+      sql`${t.actionTaken} IN ('deleted','deleted_and_escalated','escalation_refused')`,
+    ),
+    check(
+      'mod_case_events_escalation_action',
+      sql`${t.escalationAction} IS NULL OR ${t.escalationAction} IN ('timeout','kick')`,
+    ),
+    check(
+      'mod_case_events_refusal_reason',
+      sql`${t.refusalReason} IS NULL OR ${t.refusalReason} IN
+        ('unauthorized','guild-unknown','killswitch','breaker-open','rate-cap','discord-owner','role-above-bot')`,
+    ),
+  ],
+);
+
 // --- dashboard accounts and capability --------------------------------------
 
 /**
