@@ -143,6 +143,63 @@ export const isExempt = (scope: GuildScope, ruleId: string, input: IsExemptInput
     );
   });
 
+export interface EnforceRuleChannelScope {
+  readonly ruleId: string;
+  /** Channels this rule is exempted from, so `doctor` skips them. */
+  readonly exemptChannelIds: readonly string[];
+}
+
+/**
+ * Every enabled, `mode: 'enforce'` `keyword_filter` rule, with its channel
+ * exemptions — the input `doctor`'s `listKeywordFilterRulesMissingManageMessages`
+ * (`apps/daemon/src/ops/wiring.ts`) needs to check the bot's live permissions
+ * against the rest of the guild's channels.
+ *
+ * Deliberately narrower than `listEnabledKeywordFilterRules`: a `test` or
+ * `observe` rule never calls `deleteMessage` (Task 9's subscriber), so a
+ * missing `Manage Messages` there is not yet a finding — only `enforce` mode
+ * makes the permission load-bearing.
+ */
+export const listEnforceModeKeywordFilterRules = (
+  scope: GuildScope,
+): readonly EnforceRuleChannelScope[] => {
+  const rules = read(scope, (db) =>
+    db
+      .select({ ruleId: modRules.ruleId })
+      .from(modRules)
+      .where(
+        scope.only(
+          modRules,
+          and(
+            eq(modRules.kind, 'keyword_filter'),
+            eq(modRules.enabled, 1),
+            eq(modRules.mode, 'enforce'),
+          ),
+        ),
+      )
+      .all(),
+  );
+
+  return rules.map((rule) => ({
+    ruleId: rule.ruleId,
+    exemptChannelIds: read(scope, (db) =>
+      db
+        .select({ exemptId: modRuleExemptions.exemptId })
+        .from(modRuleExemptions)
+        .where(
+          scope.only(
+            modRuleExemptions,
+            and(
+              eq(modRuleExemptions.ruleId, rule.ruleId),
+              eq(modRuleExemptions.exemptType, 'channel'),
+            ),
+          ),
+        )
+        .all(),
+    ).map((row) => row.exemptId),
+  }));
+};
+
 /**
  * Whether a rule with this id exists at all — enabled or disabled.
  *

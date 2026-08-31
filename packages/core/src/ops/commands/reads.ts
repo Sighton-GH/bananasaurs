@@ -44,6 +44,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     const panels = ctx.ports.listPanels();
     const stale = panels.filter((p) => p.status !== 'enabled');
     const unassignable = ctx.ports.listUnassignableRoles();
+    const missingManageMessages = ctx.ports.listKeywordFilterRulesMissingManageMessages();
 
     const lines = [report.text, ''];
     lines.push(
@@ -60,11 +61,24 @@ export const doctorCommand = defineCommand<Record<string, never>>({
               .map((r) => `            ${r.roleId}  ${r.reason ?? 'reason not recorded'}`)
               .join('\n'),
     );
+    lines.push(
+      missingManageMessages.length === 0
+        ? 'automod    every enforce-mode keyword filter rule has Manage Messages'
+        : `automod    ${String(missingManageMessages.length)} rule(s) missing Manage Messages:\n` +
+            missingManageMessages
+              .map((r) => `            ${r.ruleId}  channel ${r.channelId}`)
+              .join('\n'),
+    );
 
-    // The gateway half already decides `ok`; the two guild-scoped findings here
-    // are just as capable of making a panel silently do nothing, so they count
-    // the same way rather than being printed as decoration under a green header.
-    const ok = report.ok && stale.length === 0 && unassignable.length === 0;
+    // The gateway half already decides `ok`; the three guild-scoped findings
+    // here are just as capable of making a panel — or an enforce-mode rule —
+    // silently do nothing, so they count the same way rather than being
+    // printed as decoration under a green header.
+    const ok =
+      report.ok &&
+      stale.length === 0 &&
+      unassignable.length === 0 &&
+      missingManageMessages.length === 0;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
     return {
@@ -76,6 +90,10 @@ export const doctorCommand = defineCommand<Record<string, never>>({
         unassignableRoles: unassignable.map((r) => ({
           roleId: r.roleId,
           reason: r.reason ?? null,
+        })),
+        automodMissingManageMessages: missingManageMessages.map((r) => ({
+          ruleId: r.ruleId,
+          channelId: r.channelId,
         })),
       },
     };

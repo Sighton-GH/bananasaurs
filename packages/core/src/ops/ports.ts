@@ -128,6 +128,21 @@ export interface OpsUnassignableRole {
   readonly reason: string | null;
 }
 
+/**
+ * One (rule, channel) pair where an enforce-mode `keyword_filter` rule
+ * applies but a live check found the bot without `Manage Messages` there.
+ *
+ * An enforce-mode rule that cannot delete is not a rule quietly doing less —
+ * it is a rule doing nothing at all while its mode says otherwise, the same
+ * failure `docs/SESSION_LOG.md`'s "a panel with a deleted message says so"
+ * precedent exists for (`docs/superpowers/specs/2026-08-30-automod-rule-
+ * engine-design.md` §6).
+ */
+export interface OpsKeywordFilterChannelMissingManageMessages {
+  readonly ruleId: string;
+  readonly channelId: string;
+}
+
 export interface OpsLogRoute {
   readonly eventKind: string;
   readonly channelId: string;
@@ -179,6 +194,11 @@ export interface OpsPorts {
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;
   listUnassignableRoles(): readonly OpsUnassignableRole[];
+  /**
+   * Every (rule, channel) pair where an enabled, enforce-mode `keyword_filter`
+   * rule applies and a live check found the bot without `Manage Messages`.
+   */
+  listKeywordFilterRulesMissingManageMessages(): readonly OpsKeywordFilterChannelMissingManageMessages[];
   listRoutes(): readonly OpsLogRoute[];
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */

@@ -417,6 +417,7 @@ describe('bananasaurs doctor', () => {
   const healthy = {
     listPanels: () => [],
     listUnassignableRoles: () => [],
+    listKeywordFilterRulesMissingManageMessages: () => [],
   };
 
   it('reports ok when the gateway half is ok and nothing is stale', async () => {
@@ -475,6 +476,31 @@ describe('bananasaurs doctor', () => {
     if (!res.ok) return;
     expect(res.text).toContain('above_bot');
     expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('flags an enforce-mode keyword_filter rule where the bot lacks Manage Messages', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listKeywordFilterRulesMissingManageMessages: () => [
+        { ruleId: 'profanity-filter', channelId: '333' },
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('automod');
+    expect(res.text).toContain('profanity-filter');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('reports clean when every enforce-mode rule has Manage Messages', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listKeywordFilterRulesMissingManageMessages: () => [],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('automod');
+    expect(res.data).toMatchObject({ ok: true });
   });
 
   it('survives a doctor report that could not be built', async () => {

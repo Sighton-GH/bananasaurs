@@ -111,6 +111,10 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
 
   listUnassignableRoles: () => [],
 
+  listKeywordFilterRulesMissingManageMessages: () => {
+    throw new Error('not used by the dashboard routes under test — needs a real Discord client');
+  },
+
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       eventKind: route.eventKind,

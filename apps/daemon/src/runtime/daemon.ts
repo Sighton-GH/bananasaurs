@@ -156,7 +156,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     if (entry === undefined) {
       throw new Error(`portsFor: no guild runtime for ${scope.guildId} — outside the allowlist`);
     }
-    return opsPortsFor(entry.scope, entry.runtime.ops, now);
+    return opsPortsFor(entry.scope, entry.runtime.ops, now, client);
   };
 
   /**
@@ -373,7 +373,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       return {
         guildId: parseGuildId(guildId),
         now,
-        ports: opsPortsFor(entry.scope, entry.runtime.ops, now),
+        ports: opsPortsFor(entry.scope, entry.runtime.ops, now, client),
       };
     },
     instance,

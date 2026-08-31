@@ -1,4 +1,4 @@
-import type { Client } from 'discord.js';
+import { PermissionsBitField, type Client } from 'discord.js';
 import {
   JOB_KINDS,
   reconcileDedupeKey,
@@ -11,6 +11,7 @@ import {
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  automodRuleRepo,
   effectRepo,
   guildRepo,
   jobRepo,
@@ -50,6 +51,7 @@ export const opsPortsFor = (
   scope: GuildScope,
   operations: GuildOperations,
   now: () => number,
+  client: Client,
 ): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
@@ -119,6 +121,9 @@ export const opsPortsFor = (
       roleId: row.roleId,
       reason: row.unassignableReason,
     })),
+
+  listKeywordFilterRulesMissingManageMessages: () =>
+    keywordFilterRulesMissingManageMessages(scope, client),
 
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
@@ -252,6 +257,57 @@ const jobRow = (job: {
   lastError: job.lastError,
   dedupeKey: job.dedupeKey,
 });
+
+/**
+ * `doctor`'s automod half: for every enabled, enforce-mode `keyword_filter`
+ * rule, every channel it is not exempted from where the bot's cached
+ * permissions do not include `Manage Messages`.
+ *
+ * A live check against `client.guilds.cache`, the same "already in memory,
+ * nothing to fetch" style `doctor.ts`'s `inspectGuild` uses for its own
+ * permission bits — deliberately, since this runs on every `doctor` call and
+ * a REST round trip per channel would make the command slow in proportion to
+ * how many channels the guild has, for a fact the gateway cache already
+ * holds. `permissionsIn` folds channel-specific overwrites on top of the
+ * role-derived base, which a guild-level check (`RELEASE_1_PERMISSIONS`)
+ * cannot see — an overwrite is exactly the kind of drift this check exists
+ * to catch (ADR 0035 §6).
+ *
+ * Threads-and-forums aside, `isTextBased` also covers voice and stage
+ * channels' text chat, which `deleteMessage` reaches the same way a normal
+ * text channel does — excluding them would silently under-report.
+ */
+const keywordFilterRulesMissingManageMessages = (
+  scope: GuildScope,
+  client: Client,
+): readonly { ruleId: string; channelId: string }[] => {
+  const rules = automodRuleRepo.listEnforceModeKeywordFilterRules(scope);
+  if (rules.length === 0) return [];
+
+  const guild = client.guilds.cache.get(scope.guildId);
+  // Not present in the cache (not yet READY, or left the guild entirely) is
+  // itself a finding elsewhere in `doctor` (the gateway half's `g.present`) —
+  // this check stays silent rather than reporting a channel list it cannot
+  // actually see.
+  if (guild === undefined) return [];
+  const me = guild.members.me;
+  if (me === null) return [];
+
+  const channels = [...guild.channels.cache.values()].filter(
+    (channel) => channel.isTextBased() && !channel.isThread(),
+  );
+
+  const missing: { ruleId: string; channelId: string }[] = [];
+  for (const rule of rules) {
+    for (const channel of channels) {
+      if (rule.exemptChannelIds.includes(channel.id)) continue;
+      if (!me.permissionsIn(channel).has(PermissionsBitField.Flags.ManageMessages)) {
+        missing.push({ ruleId: rule.ruleId, channelId: channel.id });
+      }
+    }
+  }
+  return missing;
+};
 
 /** The listing projection, shared by `panel list` and `panel show`. */
 const panelSummary = (panel: ReturnType<typeof panelRepo.listPanels>[number]) => ({
