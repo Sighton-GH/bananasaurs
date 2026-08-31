@@ -22,6 +22,7 @@ export const LOGGABLE_FIELDS = new Set([
   'roleId',
   'channelId',
   'messageId',
+  'ruleId',
   'panelId',
   'optionId',
   'accountId',
