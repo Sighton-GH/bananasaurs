@@ -347,6 +347,50 @@ describe('automod subscriber', () => {
   });
 
   /**
+   * CLAUDE.md rule 2: "every query, cache key, job payload, index, export,
+   * log line and provider request carries an explicit guild ID".
+   *
+   * The matcher cache is module-level and was keyed on the bare `ruleId`.
+   * `daemon.ts` seeds every guild's default rule under the *same* id
+   * (`'default-word-filter'`), and the daemon structurally supports N guilds
+   * via its allowlist — so whichever guild's message arrived first built the
+   * matcher for that id and every other guild was then matched against the
+   * first guild's word list.
+   */
+  it('never matches one guild against another guild’s word list', async () => {
+    const SHARED_RULE_ID = 'default-word-filter';
+    const GUILD_2 = parseGuildId('999999999999999999');
+
+    const first = buildHarness({
+      rules: [
+        rule({ ruleId: SHARED_RULE_ID, terms: [{ text: 'alpha', categoryId: 'cat-alpha' }] }),
+      ],
+    });
+    const second = buildHarness({
+      rules: [rule({ ruleId: SHARED_RULE_ID, terms: [{ text: 'beta', categoryId: 'cat-beta' }] })],
+    });
+
+    // Guild 1 goes first, so it is the one that populates the cache.
+    await createAutomodSubscriber(first.deps).handle(
+      messageCreate({ content: 'an alpha message' }),
+    );
+    expect(first.calls.deleteMessage).toHaveLength(1);
+
+    const subscriber2 = createAutomodSubscriber(second.deps);
+    await subscriber2.handle(messageCreate({ guildId: GUILD_2, content: 'a beta message' }));
+    // Guild 2's own word. With the shared key this was matched against guild
+    // 1's list and missed entirely.
+    expect(second.calls.deleteMessage).toHaveLength(1);
+    expect(second.calls.recordCaseEvent).toEqual([
+      expect.objectContaining({ matchedCategory: 'cat-beta', matchedSnippet: 'beta' }),
+    ]);
+
+    // ...and the converse: guild 1's word is not a violation in guild 2.
+    await subscriber2.handle(messageCreate({ guildId: GUILD_2, content: 'an alpha message' }));
+    expect(second.calls.deleteMessage).toHaveLength(1);
+  });
+
+  /**
    * docs/18 Layer 6: the kill switch "stops all Discord side effects
    * immediately", and a dry-run guild performs "no writes at all". The
    * deletion is a Discord side effect like any other, and dry run is the

@@ -126,18 +126,22 @@ export interface AutomodSubscriberDeps {
 }
 
 /**
- * One matcher per rule, cached and rebuilt whenever a new `ruleId` is seen.
+ * One matcher per `(guildId, ruleId)`, cached and rebuilt whenever a new key
+ * is seen.
  *
  * Module-level, per the design spec's instruction to keep this "a plain Map
- * in the subscriber's own module state, not a new abstraction" — appropriate
- * because Bananasaurs runs one process for one guild (ADR 0006, CLAUDE.md).
- * It has no invalidation: a rule whose word list changes after its matcher
- * has been built keeps matching on the stale list until the process
- * restarts. That is out of scope for this task per the implementation plan,
- * but it is a real gap Task 10 (or a later slice) should close — most
- * plausibly by keying the cache on a content hash/version rather than bare
- * `ruleId`, or by having the rule-editing command bump a version the
- * subscriber checks.
+ * in the subscriber's own module state, not a new abstraction". Module-level
+ * state is shared by every guild in the process, though, which is exactly why
+ * the key must carry the guild id (CLAUDE.md rule 2): the daemon supports N
+ * allowlisted guilds, one subscriber instance each, all reading this one Map,
+ * and every seeded guild names its default rule `'default-word-filter'`.
+ *
+ * It still has no invalidation: a rule whose word list changes after its
+ * matcher has been built keeps matching on the stale list until the process
+ * restarts. That is out of scope per the implementation plan, but it is a
+ * real gap a later slice should close — most plausibly by extending the key
+ * with a content hash/version, or by having the rule-editing command bump a
+ * version the subscriber checks.
  */
 const matcherCache = new Map<string, ReturnType<typeof buildMatcher>>();
 
@@ -182,10 +186,15 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
       // logged, and every other rule still runs for this message.
       let hit: { categoryId: string; snippet: string } | undefined;
       try {
-        let matcher = matcherCache.get(rule.ruleId);
+        // Guild-scoped, per CLAUDE.md rule 2 — a bare `ruleId` is not a key.
+        // `daemon.ts` seeds every guild's default rule under the same id
+        // (`'default-word-filter'`), so with a bare key whichever guild spoke
+        // first decided what every other guild was matched against.
+        const cacheKey = `${event.guildId}:${rule.ruleId}`;
+        let matcher = matcherCache.get(cacheKey);
         if (matcher === undefined) {
           matcher = buildMatcher(rule.terms, rule.allowlist);
-          matcherCache.set(rule.ruleId, matcher);
+          matcherCache.set(cacheKey, matcher);
         }
         hit = matcher.match(normalized);
       } catch (err) {
