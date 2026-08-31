@@ -55,6 +55,8 @@ export const CAPABILITIES = [
   'audit.read',
   'killswitch.toggle',
   'undo.execute',
+  /** ADR 0035: timeout/kick actions taken by the automod rule engine. */
+  'moderation.act',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

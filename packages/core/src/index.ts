@@ -171,6 +171,14 @@ export {
 } from './effects/undo.js';
 export { checkReconcileBudget, type BudgetDecision } from './effects/budget.js';
 export {
+  ModerationActionGateway,
+  type ModerationGatewayDeps,
+  type ModerationIntent,
+  type ModerationOutcome,
+  type ModerationRefusalReason,
+  type ModerationSafetyState,
+} from './effects/moderation-gateway.js';
+export {
   emojiKeySchema,
   optionByEmoji,
   optionById,
