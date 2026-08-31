@@ -288,6 +288,29 @@ export class FakeDiscord implements DiscordPort {
     for (const l of this.listeners) await l(event);
   }
 
+  /**
+   * MESSAGE_CREATE. Exists for later tasks' keyword-filter subscriber (the
+   * automod rule engine): it needs new messages arriving through the same
+   * `DomainEvent` stream as everything else, not a bespoke path.
+   */
+  async emitMessageCreate(p: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    authorId: Snowflake;
+    content: string;
+  }): Promise<void> {
+    await this.emit({
+      kind: 'messageCreate',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      channelId: p.channelId,
+      messageId: p.messageId,
+      authorId: p.authorId,
+      content: p.content,
+      editedTimestampMs: undefined,
+    });
+  }
+
   async emitReactionAdd(p: {
     channelId: Snowflake;
     messageId: Snowflake;

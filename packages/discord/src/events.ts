@@ -131,6 +131,9 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
   });
 
   // --- messages -----------------------------------------------------------
+  client.on(Events.MessageCreate, (message: AnyMessage) => {
+    translate('messageCreate', () => toMessageEvent('messageCreate', message, now()));
+  });
   client.on(Events.MessageUpdate, (_old: AnyMessage, message: AnyMessage) => {
     translate('messageUpdate', () => toMessageEvent('messageUpdate', message, now()));
   });
@@ -347,7 +350,7 @@ function roleIdsOf(member: AnyMember): string[] {
 }
 
 function toMessageEvent(
-  kind: 'messageUpdate' | 'messageDelete',
+  kind: 'messageCreate' | 'messageUpdate' | 'messageDelete',
   message: AnyMessage,
   receivedAtMs: number,
 ): DomainEvent | undefined {

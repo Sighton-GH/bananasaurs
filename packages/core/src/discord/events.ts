@@ -114,7 +114,7 @@ export interface SlashCommandEvent extends Base {
 }
 
 export interface MessageEvent extends Base {
-  kind: 'messageUpdate' | 'messageDelete';
+  kind: 'messageCreate' | 'messageUpdate' | 'messageDelete';
   channelId: Snowflake;
   messageId: Snowflake;
   authorId: Snowflake | undefined;

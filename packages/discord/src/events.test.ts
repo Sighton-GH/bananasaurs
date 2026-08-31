@@ -371,6 +371,61 @@ describe('roles and guild lifecycle', () => {
   });
 });
 
+const messageCreatePacket = (over: Record<string, unknown> = {}): object => ({
+  id: MESSAGE,
+  channel_id: CHANNEL,
+  guild_id: GUILD,
+  author: { id: USER, username: 'member', discriminator: '0' },
+  content: 'hello',
+  timestamp: '2026-08-30T00:00:00.000Z',
+  type: 0,
+  ...over,
+});
+
+describe('messages', () => {
+  it('translates a create into the domain shape, guild id included', () => {
+    const h = harness();
+    h.packet('MessageCreate', messageCreatePacket());
+    expect(h.events).toEqual<DomainEvent[]>([
+      {
+        kind: 'messageCreate',
+        guildId: GUILD,
+        receivedAtMs: 1_700_000_000_000,
+        channelId: CHANNEL,
+        messageId: MESSAGE,
+        authorId: USER,
+        content: 'hello',
+        editedTimestampMs: undefined,
+      },
+    ]);
+  });
+
+  /**
+   * As with reactions: omitting `guild_id` alone is not enough. `Message`
+   * falls back to `this.channel?.guild?.id` (`Message.js:51`), so posting to
+   * `CHANNEL` — already cached as a guild channel by the harness — would still
+   * attribute the event. A real DM channel is the only honest way to produce
+   * a message discord.js cannot attach to a guild.
+   */
+  it('drops a message that carries no guild', () => {
+    const h = harness();
+    const dm = '888888888888888888';
+    internals(h.client).channels._add(
+      { id: dm, type: ChannelType.DM, recipients: [{ id: USER }] },
+      null,
+      {},
+    );
+    h.packet('MessageCreate', messageCreatePacket({ guild_id: undefined, channel_id: dm }));
+    expect(h.events).toEqual([]);
+  });
+
+  it('drops a message from a guild that is not allowlisted', () => {
+    const h = harness({ allow: [OTHER_GUILD] });
+    h.packet('MessageCreate', messageCreatePacket());
+    expect(h.events).toEqual([]);
+  });
+});
+
 describe('translation never takes the process down', () => {
   /**
    * `MessageReaction.emoji` dereferences `client.application.emojis` for a custom
