@@ -1,0 +1,52 @@
+# Bananasaurs daemon — TEST unit, runs against the dev checkout in place.
+#
+# Unlike deploy/bananasaurs.service (the hardened /opt production layout from
+# docs/17_OPERATOR_ACCESS.md, run as the dedicated `bananasaurs` service
+# account), this unit runs as the checkout's own owner and points
+# WorkingDirectory/ExecStart/EnvironmentFile at this repo so
+# docs/SMOKE_TESTS.md §C's restore drill (sudo systemctl stop/start
+# bananasaurs, against ./data and ./backups) can be exercised for real
+# without first standing up a service account with traversal rights into
+# /home/bryan — that plumbing belongs to the real /opt cutover, not this
+# drill. Written for the Release 1 smoke-test session, 2026-08-30.
+#
+#   sudo cp deploy/bananasaurs-test.service /etc/systemd/system/bananasaurs.service
+#   sudo systemctl daemon-reload && sudo systemctl enable --now bananasaurs
+#
+# Bryan runs those commands. Nothing in this repository needs root.
+# When the drill is done and this unit is no longer wanted:
+#   sudo systemctl disable --now bananasaurs
+#   sudo rm /etc/systemd/system/bananasaurs.service && sudo systemctl daemon-reload
+
+[Unit]
+Description=Bananasaurs Discord assistant (test unit, dev checkout)
+Documentation=https://github.com/Sighton-GH/bananasaurs
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=bryan
+WorkingDirectory=/home/bryan/projects/bananasaurs
+
+# Reuses this checkout's own .env rather than duplicating secrets at
+# /etc/bananasaurs/env — that duplication only earns its keep once this
+# becomes the real /opt production deployment.
+EnvironmentFile=/home/bryan/projects/bananasaurs/.env
+
+ExecStart=/usr/bin/node /home/bryan/projects/bananasaurs/apps/daemon/dist/index.js
+Restart=on-failure
+RestartSec=5s
+
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ReadWritePaths=/home/bryan/projects/bananasaurs/data /home/bryan/projects/bananasaurs/backups
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bananasaurs
+
+[Install]
+WantedBy=multi-user.target
