@@ -94,7 +94,24 @@ export interface AutomodSubscriberDeps {
   hasRoleExemption(ruleId: string): boolean;
   isExempt(ruleId: string, input: { authorRoleIds: readonly string[]; channelId: string }): boolean;
   deleteMessage(channelId: string, messageId: string, reason: string): Promise<void>;
-  openOrResolveCase(memberId: string): { caseId: string; violationCount: number };
+  /**
+   * Resolves the member's case so an event can be attached to it, and — only
+   * when `countsAsViolation` — moves the per-member violation counter the
+   * escalation ladder reads.
+   *
+   * The counter is what `nextEscalationTier` turns into a timeout or a kick,
+   * so it must only ever count violations that were actually *enforced*.
+   * Counting a `test`/`observe` match defeats the documented rollout (spec
+   * §8: ship in test mode, review and tune, then flip to enforce) — every
+   * match during the observation period would have quietly pushed ordinary
+   * members up the ladder, and the first real match after the flip could go
+   * straight to a kick. Counting a match a safety layer blocked has the same
+   * failure the moment the kill switch or dry run is turned off.
+   */
+  openOrResolveCase(
+    memberId: string,
+    options: { countsAsViolation: boolean },
+  ): { caseId: string; violationCount: number };
   recordCaseEvent(input: {
     caseId: string;
     ruleId: string;
@@ -286,7 +303,10 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
       // old vocabulary reused the deletion value here, so case history could
       // not tell an observation apart from a real removal.
       if (rule.mode !== 'enforce') {
-        record(deps.openOrResolveCase(authorId).caseId, 'would_delete');
+        record(
+          deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
+          'would_delete',
+        );
         continue;
       }
 
@@ -310,7 +330,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // Durably recorded, not merely logged — the same requirement ADR 0035
         // imposes on a refused escalation. A moderator reading the case sees
         // "this would have been deleted but was not, and why".
-        record(deps.openOrResolveCase(authorId).caseId, blocked);
+        record(deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId, blocked);
         deps.logger.warn(
           safeLogFields({
             component: 'automod',
@@ -362,7 +382,9 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         }
       }
 
-      const { caseId, violationCount } = deps.openOrResolveCase(authorId);
+      const { caseId, violationCount } = deps.openOrResolveCase(authorId, {
+        countsAsViolation: true,
+      });
 
       // A deletion Discord actually refused. Recorded rather than thrown —
       // an escaping rejection lost the case event entirely and skipped every

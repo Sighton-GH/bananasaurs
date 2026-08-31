@@ -68,6 +68,19 @@ export type ModCaseRefusalReason =
 export interface OpenOrResolveCaseInput {
   readonly memberId: string;
   readonly now: number;
+  /**
+   * Whether this violation moves the counter the escalation ladder reads.
+   *
+   * `false` still resolves (or opens) the member's case, so a case event has
+   * something to hang off — a `test`/`observe` match and a match a safety
+   * layer blocked are both real observations a moderator should be able to
+   * read back — but leaves `violation_count` exactly where it was. A case
+   * opened by a non-counting match starts at 0, which is what "we have seen
+   * this, and nothing has been enforced" looks like.
+   *
+   * Defaults to `true` so an existing caller cannot silently stop counting.
+   */
+  readonly countsAsViolation?: boolean;
 }
 
 export interface OpenOrResolveCaseResult {
@@ -101,7 +114,10 @@ export const openOrResolveCase = (
       )
       .get();
 
+    const counts = input.countsAsViolation ?? true;
+
     if (existing) {
+      if (!counts) return { caseId: existing.caseId, violationCount: existing.violationCount };
       const violationCount = existing.violationCount + 1;
       db.update(modCases)
         .set({ violationCount })
@@ -111,18 +127,19 @@ export const openOrResolveCase = (
     }
 
     const caseId = randomUUID();
+    const violationCount = counts ? 1 : 0;
     db.insert(modCases)
       .values({
         guildId: scope.guildId,
         caseId,
         memberId: input.memberId,
         openedAt: input.now,
-        violationCount: 1,
+        violationCount,
         escalationTier: 0,
         status: 'open',
       })
       .run();
-    return { caseId, violationCount: 1 };
+    return { caseId, violationCount };
   });
 
 export interface RecordCaseEventInput {

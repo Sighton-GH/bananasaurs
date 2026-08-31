@@ -38,6 +38,42 @@ describe('mod cases repo', () => {
     expect(second.violationCount).toBe(2);
   });
 
+  /**
+   * The staged rollout (spec §8) only works if an observation is recorded
+   * without moving the counter `nextEscalationTier` reads — otherwise the
+   * first real match after an operator flips a rule to enforce inherits every
+   * test-mode match and can go straight to a kick.
+   */
+  describe('countsAsViolation: false', () => {
+    it('opens a case at zero rather than one', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      const result = openOrResolveCase(scope, {
+        memberId: MEMBER,
+        now: 1000,
+        countsAsViolation: false,
+      });
+      expect(result.violationCount).toBe(0);
+    });
+
+    it('leaves an existing case’s count exactly where it was', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      const first = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+      for (let i = 0; i < 5; i += 1) {
+        openOrResolveCase(scope, { memberId: MEMBER, now: 2000, countsAsViolation: false });
+      }
+      const after = openOrResolveCase(scope, {
+        memberId: MEMBER,
+        now: 3000,
+        countsAsViolation: false,
+      });
+
+      expect(after.caseId).toBe(first.caseId);
+      expect(after.violationCount).toBe(1);
+      // ...and a counting call still increments from there, not from six.
+      expect(openOrResolveCase(scope, { memberId: MEMBER, now: 4000 }).violationCount).toBe(2);
+    });
+  });
+
   it('records a case event, including a refusal', () => {
     const scope = t.scopes.forGuild(GUILD);
     const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });

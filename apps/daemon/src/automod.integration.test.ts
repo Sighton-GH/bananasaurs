@@ -185,7 +185,9 @@ describe('automod, end to end on the fake gateway', () => {
 
     expect(discord.restCalls('deleteMessage')).toHaveLength(0);
     const modCase = findCase(MEMBER);
-    expect(modCase?.violationCount).toBe(1);
+    // A case exists so the observation has somewhere to live, but the counter
+    // the escalation ladder reads has not moved — nothing was enforced.
+    expect(modCase?.violationCount).toBe(0);
     const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
     expect(events).toHaveLength(1);
     expect(events[0]?.actionTaken).toBe('would_delete');
@@ -250,6 +252,38 @@ describe('automod, end to end on the fake gateway', () => {
     const modCase = findCase(MEMBER);
     const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
     expect(events.map((e) => e.actionTaken)).toEqual(['delete_blocked_killswitch']);
+  });
+
+  /**
+   * Spec §8's rollout, end to end: a rule ships in test mode, an operator
+   * watches it for a while, then flips it to enforce. The violation counter
+   * must reflect only what was actually enforced — otherwise the first real
+   * match after the flip reads a count of seven and kicks a member for their
+   * first enforced violation.
+   */
+  it('does not carry test-mode matches into the escalation ladder', async () => {
+    seedRule('test');
+
+    for (let i = 0; i < 6; i += 1) {
+      await sendMessage(MEMBER, 'badword here');
+    }
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    expect(findCase(MEMBER)?.violationCount).toBe(0);
+
+    automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
+    await sendMessage(MEMBER, 'badword here');
+
+    // One real violation, not seven — so no kick (the tier at 6).
+    expect(findCase(MEMBER)?.violationCount).toBe(1);
+    expect(discord.restCalls('kickMember')).toHaveLength(0);
+    expect(discord.restCalls('timeoutMember')).toHaveLength(0);
+    expect(discord.restCalls('deleteMessage')).toHaveLength(1);
+
+    const events = modCaseRepo.listCaseEvents(scope, findCase(MEMBER)!.caseId);
+    expect(events.map((e) => e.actionTaken)).toEqual([
+      ...Array<string>(6).fill('would_delete'),
+      'deleted',
+    ]);
   });
 
   it('an escalation against a fake owner member is refused and durably recorded', async () => {

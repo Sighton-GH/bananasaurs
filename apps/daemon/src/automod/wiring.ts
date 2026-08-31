@@ -130,7 +130,12 @@ export const automodPortsFor = (
     // boundary, ADR 0014).
     deleteMessage: (channelId, messageId, reason) =>
       discord.deleteMessage(guildId, { channelId, messageId }, reason),
-    openOrResolveCase: (memberId) => modCaseRepo.openOrResolveCase(scope, { memberId, now: now() }),
+    openOrResolveCase: (memberId, options) =>
+      modCaseRepo.openOrResolveCase(scope, {
+        memberId,
+        now: now(),
+        countsAsViolation: options.countsAsViolation,
+      }),
     recordCaseEvent: (input) =>
       modCaseRepo.recordCaseEvent(scope, {
         eventId: randomUUID(),

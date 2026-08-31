@@ -85,11 +85,12 @@ interface Harness {
     listRules: number;
     isExempt: { ruleId: string; input: { authorRoleIds: readonly string[]; channelId: string } }[];
     deleteMessage: { channelId: string; messageId: string; reason: string }[];
-    openOrResolveCase: string[];
+    openOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
     recordCaseEvent: Parameters<AutomodSubscriberDeps['recordCaseEvent']>[0][];
     applyAction: { auth: unknown; intent: ModerationIntent }[];
     readSafetyState: number;
     authorRoleIds: string[];
+    nextEscalationTier: number[];
   };
 }
 
@@ -124,10 +125,11 @@ function buildHarness(
     applyAction: [],
     readSafetyState: 0,
     authorRoleIds: [],
+    nextEscalationTier: [],
   };
 
   const exempt = opts.exemptRuleIds ?? new Set<string>();
-  const violationCount = opts.violationCount ?? 1;
+  let counted = 0;
   const tier = opts.tier ?? { action: undefined, timeoutMs: undefined };
   const moderationGateway: ModerationGatewayPort = {
     async applyAction(auth, intent) {
@@ -152,14 +154,21 @@ function buildHarness(
       calls.deleteMessage.push({ channelId, messageId, reason });
       if (opts.deleteMessageError !== undefined) throw opts.deleteMessageError;
     },
-    openOrResolveCase: (memberId) => {
-      calls.openOrResolveCase.push(memberId);
-      return { caseId: 'case-1', violationCount };
+    // Stateful, like the real repo: a counting call moves the counter and a
+    // non-counting one does not. `opts.violationCount` overrides it outright
+    // for tests that want to start at a specific tier.
+    openOrResolveCase: (memberId, options) => {
+      calls.openOrResolveCase.push({ memberId, countsAsViolation: options.countsAsViolation });
+      if (options.countsAsViolation) counted += 1;
+      return { caseId: 'case-1', violationCount: opts.violationCount ?? counted };
     },
     recordCaseEvent: (input) => {
       calls.recordCaseEvent.push(input);
     },
-    nextEscalationTier: () => tier,
+    nextEscalationTier: (violationCount) => {
+      calls.nextEscalationTier.push(violationCount);
+      return tier;
+    },
     moderationGateway,
     authorRoleIds: async (userId) => {
       calls.authorRoleIds.push(userId);
@@ -234,7 +243,7 @@ describe('automod subscriber', () => {
     expect(calls.deleteMessage).toEqual([
       { channelId: CHANNEL, messageId: MESSAGE, reason: 'automod: rule-2' },
     ]);
-    expect(calls.openOrResolveCase).toEqual([AUTHOR]);
+    expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: true }]);
     expect(calls.recordCaseEvent).toEqual([
       {
         caseId: 'case-1',
@@ -627,6 +636,49 @@ describe('automod subscriber', () => {
       expect(calls.recordCaseEvent[1]).toEqual(
         expect.objectContaining({ ruleId: 'rule-after', actionTaken: 'delete_failed' }),
       );
+    });
+  });
+
+  /**
+   * I5: the documented rollout (spec §8) is "ship in test mode, the operator
+   * reviews and tunes, then flips to enforce". `openOrResolveCase` used to
+   * increment the per-member violation counter for *every* mode, so ordinary
+   * members' counts climbed silently throughout the observation period — and
+   * the very first real match after the flip could read an already-high count
+   * and go straight to a kick, defeating the entire point of the staged
+   * rollout.
+   */
+  describe('the violation counter', () => {
+    it('does not move for a test-mode match, so flipping to enforce starts at one', async () => {
+      const rules: RuleWithWordList[] = [rule({ ruleId: 'rule-rollout', mode: 'test' })];
+      const { deps, calls } = buildHarness({ rules });
+      const subscriber = createAutomodSubscriber(deps);
+
+      // A long observation period: five matches while the operator tunes.
+      for (let i = 0; i < 5; i += 1) await subscriber.handle(messageCreate());
+      expect(calls.openOrResolveCase.every((c) => !c.countsAsViolation)).toBe(true);
+
+      rules[0] = rule({ ruleId: 'rule-rollout', mode: 'enforce' });
+      await subscriber.handle(messageCreate());
+
+      // The first *real* violation is violation number one — not number six,
+      // which `nextEscalationTier` would have answered with a kick.
+      expect(calls.nextEscalationTier).toEqual([1]);
+      expect(calls.applyAction).toHaveLength(0);
+    });
+
+    it('does not move when a safety layer blocked the deletion', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-blocked', mode: 'enforce' })],
+        safetyState: { ...LIVE, dryRun: true },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      // Same reasoning as test mode: no enforcement happened, so nothing
+      // should accrue towards a kick the moment dry run is turned off.
+      expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
     });
   });
 
