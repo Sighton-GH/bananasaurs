@@ -37,6 +37,7 @@ export {
 } from './backup.js';
 export * as accountRepo from './repos/accounts.js';
 export * as automodRuleRepo from './repos/automod-rules.js';
+export * as modCaseRepo from './repos/mod-cases.js';
 export * as sessionRepo from './repos/sessions.js';
 export * as guildRepo from './repos/guilds.js';
 export * as authzRepo from './repos/authz.js';

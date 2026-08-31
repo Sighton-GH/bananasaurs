@@ -7,6 +7,7 @@ import {
   parseGuildId,
   Pipeline,
   safeLogFields,
+  seedDefaultWordList,
   type Config,
   type DiscordPort,
   type Dispatcher,
@@ -17,7 +18,13 @@ import {
   type Subscriber,
 } from '@bananasaurs/core';
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
-import { guildRepo, pipelineRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
+import {
+  automodRuleRepo,
+  guildRepo,
+  pipelineRepo,
+  type GuildScope,
+  type ScopeFactory,
+} from '@bananasaurs/storage';
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
 import { createBackupTimer } from './backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
@@ -110,6 +117,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   for (const guildId of guildIds) {
     const scope = scopes.forGuild(guildId);
     applyConfiguredDryRun(scope, config, logger, now());
+    seedAutomodDefaults(scope, config, logger, now());
     byGuild.set(guildId, {
       scope,
       runtime: buildGuildRuntime({ scope, config, discord, logger, now }),
@@ -476,6 +484,70 @@ function applyConfiguredDryRun(
     wanted
       ? 'dry run turned ON by configuration; no Discord side effect will be performed'
       : 'dry run turned OFF by configuration; Discord side effects are live',
+  );
+}
+
+/** The seeded rule's stable id: `setRuleMode`/`doctor` name it by this later. */
+const DEFAULT_AUTOMOD_RULE_ID = 'default-word-filter';
+
+/**
+ * Seeds the guild's first automod rule, once, from `obscenity`'s bundled word
+ * list (ADR 0035, Task 6).
+ *
+ * Guarded on "no *enabled* `keyword_filter` rule exists yet" rather than "no
+ * rule row exists yet": an owner who has already configured automod manually
+ * (or who disabled the seeded default) must not have a second rule pushed in
+ * alongside theirs on the next restart. `createRule` (Task 5) always inserts
+ * `mode: 'test'` regardless of what is asked — spec §8's rollout rule that
+ * automod ships observing, not enforcing, until an owner opts a rule into
+ * `enforce` — so there is nothing else to pass here to get that; it is the
+ * repository's own default, not a parameter this call chooses.
+ *
+ * Skipped in read-only mode for the same reason `applyConfiguredDryRun` skips:
+ * `createRule`/`addCategory`/`addTerm` all write, and a read-only process
+ * must not throw `ReadonlyError` from a startup step nothing asked it to run.
+ */
+function seedAutomodDefaults(
+  scope: GuildScope,
+  config: Config,
+  logger: Logger,
+  nowMs: number,
+): void {
+  if (config.BANANASAURS_READONLY) {
+    logger.warn(
+      safeLogFields({
+        component: 'startup',
+        guildId: scope.guildId,
+        outcome: 'automod-seed-not-applied',
+      }),
+      'read-only: automod default word list was not seeded',
+    );
+    return;
+  }
+
+  if (automodRuleRepo.listEnabledKeywordFilterRules(scope).length > 0) return;
+
+  automodRuleRepo.createRule(scope, {
+    ruleId: DEFAULT_AUTOMOD_RULE_ID,
+    name: 'Default word filter (obscenity englishDataset)',
+    now: nowMs,
+  });
+  seedDefaultWordList(
+    {
+      addCategory: (input) => automodRuleRepo.addCategory(scope, input),
+      addTerm: (input) => automodRuleRepo.addTerm(scope, input),
+    },
+    DEFAULT_AUTOMOD_RULE_ID,
+  );
+
+  logger.info(
+    safeLogFields({
+      component: 'startup',
+      guildId: scope.guildId,
+      ruleId: DEFAULT_AUTOMOD_RULE_ID,
+      outcome: 'automod-seeded',
+    }),
+    'seeded the default automod word list in test mode; an owner opts it into enforce',
   );
 }
 

@@ -179,6 +179,13 @@ export {
   type ModerationSafetyState,
 } from './effects/moderation-gateway.js';
 export {
+  createAutomodSubscriber,
+  type AutomodSubscriberDeps,
+  type ModerationGatewayPort,
+  type RuleWithWordList,
+} from './automod/subscriber.js';
+export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
+export {
   emojiKeySchema,
   optionByEmoji,
   optionById,

@@ -4,6 +4,7 @@ import {
   editManagedPanel,
   postManagedPanel,
   seedPanelReactions,
+  createAutomodSubscriber,
   createInteractionSubscriber,
   createLoggingSubscriber,
   createMemberUpdateSubscriber,
@@ -40,6 +41,7 @@ import {
   roleRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
+import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
@@ -256,6 +258,15 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  // ADR 0035, Task 10: the automod rule engine's ports, built the same way
+  // `panels/wiring.ts` builds a panel's — `automodPortsFor` mirrors
+  // `panelEffectsFor` in taking an already-constructed gateway and witness so
+  // Task 12's integration test can build the identical wiring without
+  // re-deriving it (`apps/daemon/src/automod/wiring.ts`).
+  const automodGateway = automodGatewayFor(scope, discord, logger, now);
+  const automodAuth = automodAuthorization(scope);
+  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now);
+
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
     findRoute: (eventKind) => loggingRepo.findRoute(scope, eventKind),
@@ -306,6 +317,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createInteractionSubscriber(interactionPorts),
     createMemberUpdateSubscriber(memberUpdatePorts),
     createLoggingSubscriber(loggingPorts),
+    createAutomodSubscriber(automodPorts),
   ];
 
   const worker = new JobWorker({

@@ -137,7 +137,7 @@ function buildHarness(
     },
     nextEscalationTier: () => tier,
     moderationGateway,
-    authorRoleIds: () => [],
+    authorRoleIds: async () => [],
   };
 
   return { deps, calls };

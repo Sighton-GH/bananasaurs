@@ -72,7 +72,16 @@ export interface AutomodSubscriberDeps {
     timeoutMs: number | undefined;
   };
   readonly moderationGateway: ModerationGatewayPort;
-  authorRoleIds(userId: string): readonly string[];
+  /**
+   * Async, unlike the rest of this interface's synchronous lookups
+   * (`isExempt`, `openOrResolveCase`, `nextEscalationTier`) — corrected during
+   * Task 10's wiring. `DiscordPort.fetchMember` (`discord/port.ts`) is the
+   * only real source of a member's role ids and it is a REST call; there is
+   * no synchronous path to them. `handle` below already awaits everything
+   * else it calls that can fail or take time, so awaiting this too costs
+   * nothing this module wasn't already paying.
+   */
+  authorRoleIds(userId: string): Promise<readonly string[]>;
 }
 
 /**
@@ -99,7 +108,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
 
     const authorId = event.authorId;
     const normalized = stripZeroWidth(event.content);
-    const roleIds = deps.authorRoleIds(authorId);
+    const roleIds = await deps.authorRoleIds(authorId);
 
     for (const rule of deps.listRules()) {
       if (deps.isExempt(rule.ruleId, { authorRoleIds: roleIds, channelId: event.channelId })) {
