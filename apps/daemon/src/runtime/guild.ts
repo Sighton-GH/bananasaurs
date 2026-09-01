@@ -10,6 +10,7 @@ import {
   createMemberUpdateSubscriber,
   createModCommandSubscriber,
   createModConfirmationSubscriber,
+  createNativeAutomodSubscriber,
   createReactionSubscriber,
   EffectGateway,
   JobWorker,
@@ -32,6 +33,7 @@ import {
   type ModConfirmationDeps,
   type ModerationGatewayDeps,
   type ModerationRefusalReason,
+  type NativeAutomodSubscriberDeps,
   type OpsPublishResult,
   type PurgePorts,
   type ReconcilePorts,
@@ -52,6 +54,7 @@ import {
   roleRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
+import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
@@ -278,6 +281,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const automodGateway = automodGatewayFor(scope, discord, logger, now);
   const automodAuth = automodAuthorization(scope);
   const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now);
+
+  // ADR 0038, Task 5: native Discord AutoMod observability. Deliberately
+  // narrower than `automodPorts` above — this subscriber makes no Discord
+  // calls, so it needs no gateway and no witness of its own
+  // (`automod/native-wiring.ts`).
+  const nativeAutomodPorts: NativeAutomodSubscriberDeps = nativeAutomodPortsFor(scope, logger, now);
 
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
@@ -596,6 +605,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createMemberUpdateSubscriber(memberUpdatePorts),
     createLoggingSubscriber(loggingPorts),
     createAutomodSubscriber(automodPorts),
+    createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
   ];

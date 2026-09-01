@@ -9,6 +9,8 @@ import {
   type DomainEvent,
   type InteractionRef,
   type EmojiKey,
+  type NativeAutoModAction,
+  type NativeAutoModTrigger,
   type OutgoingMessage,
   type ReactionUserPage,
   type RecentMessagesPage,
@@ -343,6 +345,41 @@ export class FakeDiscord implements DiscordPort {
       authorIsBot: p.authorIsBot ?? p.authorId === BOT_USER_ID,
       content: p.content,
       editedTimestampMs: undefined,
+    });
+  }
+
+  /**
+   * AUTO_MODERATION_ACTION_EXECUTION (ADR 0038). Defaults describe the common
+   * case: a keyword rule that *blocked* the message, so Discord supplies no
+   * message id — which is exactly the case the fingerprint has to handle
+   * without one.
+   */
+  async emitAutoModerationAction(p: {
+    ruleId: Snowflake;
+    userId: Snowflake;
+    actionType?: NativeAutoModAction;
+    triggerType?: NativeAutoModTrigger;
+    channelId?: Snowflake;
+    messageId?: Snowflake;
+    alertMessageId?: Snowflake;
+    content?: string;
+    matchedKeyword?: string;
+    matchedContent?: string;
+  }): Promise<void> {
+    await this.emit({
+      kind: 'autoModerationAction',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      ruleId: p.ruleId,
+      triggerType: p.triggerType ?? 'keyword',
+      userId: p.userId,
+      actionType: p.actionType ?? 'block',
+      channelId: p.channelId,
+      messageId: p.messageId,
+      alertMessageId: p.alertMessageId,
+      content: p.content ?? '',
+      matchedKeyword: p.matchedKeyword,
+      matchedContent: p.matchedContent,
     });
   }
 
