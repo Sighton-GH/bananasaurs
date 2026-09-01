@@ -213,10 +213,24 @@ rule, because real traffic has little to teach a precise blocklist.
   length cap, and an execution timeout. **ReDoS is the risk** — patterns come
   from the dashboard and later, in Release 3, from a model. A linear-time
   engine or a hard per-evaluation timeout is required, not optional.
-- `invite`: **pattern matching only, no resolution.** Resolving an invite code
-  to a guild is an outbound API call; CLAUDE.md rule 8 forbids new destinations
-  without an explicit instruction, and this is not one. An allowlist of the
-  club's own invite codes handles the legitimate case.
+- `invite`: **pattern matching only, no resolution** (owner decision). The
+  predicate detects anything invite-shaped — `discord.gg/…`,
+  `discord.com/invite/…`, and vanity forms — and checks it against a local
+  allowlist holding the club's own codes **plus partner and sister-club codes**,
+  each with a human label so the list stays readable a year from now. Resolving
+  a code to a guild id is an outbound API call, which CLAUDE.md rule 8 forbids
+  without an explicit instruction; the owner chose not to give one.
+
+  **The known failure mode, and why it is acceptable.** Pattern matching cannot
+  tell which server a code points at, so when a partner rotates their invite or
+  switches to a vanity URL, their new code is not on the list and the rule fires
+  on a legitimate message. This is designed for rather than hoped away: it
+  surfaces as exactly one false positive in the Slice 9 review queue, whose
+  invite-predicate suppression is "add this code to the allowlist," so the loop
+  closes in one click. The cost of a partner rotating an invite is one deleted
+  message and one click — not a silent gap. Allowlist entries carry a
+  last-matched timestamp so a stale partner code is visible rather than
+  accumulating.
 - `link_domain`: URL extraction plus an allow/deny list on the registrable
   domain. No fetching, no resolution, no DNS.
 
@@ -225,11 +239,16 @@ rule, because real traffic has little to teach a precise blocklist.
 These need sliding-window counters, which do not exist. `docs/08` says these
 are exactly the rules that genuinely need the full two-week floor.
 
-- **In-memory counters**, keyed `(guildId, memberId, ruleId)`, as a bounded
-  ring buffer with an eviction sweep. **A restart resets the window, and that
-  is accepted and documented**: a ten-second spam window losing state on a
-  daemon restart is harmless, and a durable table would cost writes on every
-  message for no behavioural gain.
+- **In-memory counters** (owner decision), keyed `(guildId, memberId, ruleId)`,
+  as a bounded ring buffer with an eviction sweep. **A restart resets the
+  window, and that is accepted and documented.** Two reasons it costs less than
+  it sounds: the escalation counter is durable in `mod_cases` either way, so a
+  restart never loses accrued violations — only the sub-minute rate window — and
+  a spammer whose burst is interrupted by a restart trips on their next one.
+  The alternative costs a write per evaluated message per windowed rule, up to
+  three per message, on the hot path of a single-writer SQLite database that
+  gains archive ingestion in Release 3; `REVIEW.md` §C12 warns about exactly
+  that contention.
 - The key is guild-scoped in its own right, per CLAUDE.md rule 2 — cache keys
   are named in that rule explicitly.
 - `duplicate_message` compares normalised content across a window; the
@@ -709,8 +728,8 @@ it — which is the Release 3 gate's own requirement.
 | 4 | `mod_rules.config` JSON carrier for scalar predicate config; list-shaped data stays relational | Claude |
 | 5 | Fixtures and the dry-run evaluator precede all predicates | Claude, in answer to the owner's question |
 | 6 | Nine predicates; `account_age` and `join_age` out of Release 2 | **Owner** |
-| 7 | Invite matching is pattern-only, no resolution (rule 8) | Claude |
-| 8 | Sliding windows are in-memory and reset on restart | Claude |
+| 7 | Invite matching is pattern-only, no resolution; the allowlist holds our own codes plus labelled partner codes, and a rotated partner invite is recovered through the Slice 9 review queue | **Owner** |
+| 8 | Sliding windows are in-memory and reset on restart; the durable escalation counter is unaffected | **Owner** |
 | 9 | `enforce` is refused unless `cutover_state` permits it | Claude |
 | 10 | Dashboard: real shell + Release 2 pages + Release 3 stubs | **Owner** |
 | 11 | Tailwind v4 + hand-written components + selective Radix + `wouter`; no shadcn CLI | Claude, owner asked for a recommendation |
@@ -725,29 +744,27 @@ it — which is the Release 3 gate's own requirement.
 
 ## 8. Assumptions to challenge on review
 
-1. **Invite matching without resolution** is enough for the club's needs. If the
-   real requirement is "block invites to servers that are not ours," an
-   allowlist of our own codes covers it; if it is "block invites to servers
-   matching some property," that needs resolution and therefore a rule 8
-   instruction.
-2. **In-memory sliding windows** are acceptable. A daemon restart during an
-   active spam burst loses that burst's accumulated count.
-3. **Drive Phase A** (link-shared URLs) covers the club's documents. If the
+1. **Drive Phase A** (link-shared URLs) covers the club's documents. If the
    documents are permission-restricted rather than link-shared, Phase A cannot
    read them and Phase B becomes necessary.
-4. **The two-week observe floor** applies to the window tier; the precise tier
+2. **Partner invite codes are few and change rarely.** The allowlist is
+   maintained by hand and recovers from a rotation through one reviewed false
+   positive (Slice 3). If partner servers turn out to be numerous or to rotate
+   invites often, that recovery loop becomes a chore and code resolution — and
+   the rule 8 instruction it needs — is worth revisiting.
+3. **The two-week observe floor** applies to the window tier; the precise tier
    may graduate sooner at owner discretion, per `docs/08`.
-5. **Eight new dashboard dependencies** are within CLAUDE.md's "boring and
+4. **Eight new dashboard dependencies** are within CLAUDE.md's "boring and
    small" bar. If not, the fallback is hand-rolled CSS plus `wouter` alone, at
    the cost of accessibility work and long-term consistency.
-6. **The false-positive thresholds are now set** (decision 16) but the specific
+5. **The false-positive thresholds are now set** (decision 16) but the specific
    numbers are untested against real data. 5% and zero are defensible starting
    points, not measurements. Expect at least one rule — `caps` or
    `duplicate_message` — to fail its bar in the first window; the intended
    response is to narrow the rule or set it delete-only, **not** to move the
    bar. If the bar moves, it should move deliberately and be recorded, because
    a threshold revised in the moment it binds is not a threshold.
-7. **The 20-match minimum sample is a judgement, not a statistic.** It is large
+6. **The 20-match minimum sample is a judgement, not a statistic.** It is large
    enough that one bad match does not sink a rule and small enough to reach in
    two weeks on a 30-person server. It is not a confidence interval and should
    not be described as one.
