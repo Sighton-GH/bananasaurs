@@ -45,3 +45,50 @@ export const checkReconcileBudget = (
   if (count > budget) return { ok: false, count, budget, reason: 'over-budget' };
   return { ok: true, count };
 };
+
+/**
+ * The purge budget (ADR 0037, `docs/superpowers/specs/2026-08-31-moderation-
+ * commands-design.md` §6): a hard ceiling on how many messages one `/mod
+ * purge` job may delete, checked twice — once as a preview refusal before a
+ * moderator confirms (Task 7), and again by the job itself on every tick.
+ *
+ * `PURGE_MAX_MESSAGES` is a literal constant, not guild config (`checkPurge
+ * Budget`'s own docstring below explains why), which is also why this lives
+ * beside `checkReconcileBudget` rather than folding into it: the two guard
+ * different kinds of destructive bulk-action, and only one of them is
+ * operator-configurable.
+ */
+export const PURGE_MAX_MESSAGES = 500;
+
+export type PurgeBudgetDecision =
+  | { readonly ok: true; readonly count: number }
+  | {
+      readonly ok: false;
+      readonly count: number;
+      readonly budget: number;
+      readonly reason: 'over-budget';
+    };
+
+/**
+ * Checks a prospective *cumulative* message count against the purge budget.
+ *
+ * Shaped like `checkReconcileBudget`'s decision (`ok`/`count`/`budget`/
+ * `reason`), but the input is a running total rather than a materialised
+ * list. `checkReconcileBudget` can take the whole list because reconciliation
+ * computes its entire change plan in one pass before touching anything; a
+ * purge cannot — it pages `fetchRecentMessages` a page at a time across many
+ * job ticks (`packages/core/src/mod/purge.ts`), so there is no single list to
+ * hand this function without first deleting nothing across the whole channel
+ * and holding every id in memory, which defeats the point of a bounded,
+ * resumable job. The caller instead passes `deletedSoFar + messages this tick
+ * would add`, so the ceiling is enforced on the true cumulative total every
+ * tick sees, not on any one page in isolation (a channel with five 100-
+ * message pages must still refuse at the fifth if the budget is 450, even
+ * though every individual page is well under it).
+ */
+export const checkPurgeBudget = (prospectiveCount: number, budget: number): PurgeBudgetDecision => {
+  if (prospectiveCount > budget) {
+    return { ok: false, count: prospectiveCount, budget, reason: 'over-budget' };
+  }
+  return { ok: true, count: prospectiveCount };
+};

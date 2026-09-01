@@ -86,6 +86,9 @@ export {
   JOB_KINDS,
   logMessageDeleteDedupeKey,
   logMessageDeletePayload,
+  modPurgeCursorSchema,
+  modPurgePayload,
+  purgeDedupeKey,
   reconcileDedupeKey,
   reconcileGuildPayload,
   sweepDedupeKey,
@@ -95,6 +98,8 @@ export {
   type AdoptPanelPayload,
   type JobKind,
   type LogMessageDeletePayload,
+  type ModPurgeCursor,
+  type ModPurgePayload,
   type ReconcileGuildPayload,
   type SweepEventDedupePayload,
   type UndoBatchPayload,
@@ -171,7 +176,13 @@ export {
   type UndoPorts,
   type UndoResult,
 } from './effects/undo.js';
-export { checkReconcileBudget, type BudgetDecision } from './effects/budget.js';
+export {
+  checkPurgeBudget,
+  checkReconcileBudget,
+  PURGE_MAX_MESSAGES,
+  type BudgetDecision,
+  type PurgeBudgetDecision,
+} from './effects/budget.js';
 export {
   ModerationActionGateway,
   type ModerationGatewayDeps,
@@ -187,6 +198,14 @@ export {
   type RuleWithWordList,
 } from './automod/subscriber.js';
 export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
+export {
+  PURGE_TICK_SPACING_MS,
+  runPurgeTick,
+  type PurgeCasePorts,
+  type PurgePorts,
+  type PurgeRefusalReason,
+  type PurgeTickInput,
+} from './mod/purge.js';
 export {
   emojiKeySchema,
   optionByEmoji,

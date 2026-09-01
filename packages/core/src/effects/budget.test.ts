@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { checkReconcileBudget } from './budget.js';
+import { checkPurgeBudget, checkReconcileBudget, PURGE_MAX_MESSAGES } from './budget.js';
 import { parseSnowflakeId } from '../ids.js';
 import type { RoleIntent } from './gateway.js';
 
@@ -53,5 +53,46 @@ describe('the reconciliation budget refuses before acting, not during', () => {
 
   it('refuses everything when the budget is zero', () => {
     expect(checkReconcileBudget(changes(1), 0)).toMatchObject({ ok: false });
+  });
+});
+
+describe('the purge budget checks a running total, not a materialised list', () => {
+  it('allows a prospective count within budget', () => {
+    expect(checkPurgeBudget(100, PURGE_MAX_MESSAGES)).toEqual({ ok: true, count: 100 });
+  });
+
+  it('allows a prospective count exactly at budget', () => {
+    expect(checkPurgeBudget(PURGE_MAX_MESSAGES, PURGE_MAX_MESSAGES)).toEqual({
+      ok: true,
+      count: PURGE_MAX_MESSAGES,
+    });
+  });
+
+  it('refuses a prospective count over budget', () => {
+    expect(checkPurgeBudget(PURGE_MAX_MESSAGES + 1, PURGE_MAX_MESSAGES)).toEqual({
+      ok: false,
+      count: PURGE_MAX_MESSAGES + 1,
+      budget: PURGE_MAX_MESSAGES,
+      reason: 'over-budget',
+    });
+  });
+
+  it('refuses a fifth 100-message page even though each page alone is under budget', () => {
+    // A tick never sees the whole channel at once — only its own page plus
+    // the running total. Four pages of 100 fit comfortably under 450; the
+    // fifth must still be refused on the cumulative total, not waved through
+    // because the page itself is small.
+    const deletedSoFar = 400;
+    const thisPage = 100;
+    expect(checkPurgeBudget(deletedSoFar + thisPage, 450)).toEqual({
+      ok: false,
+      count: 500,
+      budget: 450,
+      reason: 'over-budget',
+    });
+  });
+
+  it('allows an empty channel', () => {
+    expect(checkPurgeBudget(0, PURGE_MAX_MESSAGES)).toEqual({ ok: true, count: 0 });
   });
 });

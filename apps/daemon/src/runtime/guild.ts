@@ -25,6 +25,7 @@ import {
   type MemberUpdatePorts,
   type MessageDeleteAttributionPorts,
   type OpsPublishResult,
+  type PurgePorts,
   type ReconcilePorts,
   type Subscriber,
 } from '@bananasaurs/core';
@@ -36,6 +37,7 @@ import {
   jobRepo,
   jobStoreFor,
   loggingRepo,
+  modCaseRepo,
   panelRepo,
   pipelineRepo,
   roleRepo,
@@ -45,6 +47,7 @@ import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../aut
 import { adoptionStateWriter, adoptPanelHandler } from '../jobs/adopt.js';
 import { sweepEventDedupeHandler } from '../jobs/handlers.js';
 import { logMessageDeleteHandler } from '../jobs/logging.js';
+import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
@@ -299,6 +302,66 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     now,
   };
 
+  // The bounded purge job (ADR 0037, Task 5): built the same way
+  // `deletionAttributionPorts` above is, and reusing the exact honest-
+  // attribution `recordAudit` shape it uses — a purge's deletions go through
+  // the same ADR 0023 path as any other, with the confirming moderator as
+  // the actor rather than a guess from Discord's audit log.
+  const purgePorts: PurgePorts = {
+    guildId,
+    discord,
+    readSafetyState: () => guildRepo.readSafetyState(scope),
+    openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
+    recordCaseEvent: (input) =>
+      modCaseRepo.recordCaseEvent(scope, {
+        eventId: input.eventId,
+        caseId: input.caseId,
+        ruleId: input.ruleId,
+        memberId: input.memberId,
+        at: input.at,
+        matchedCategory: input.matchedCategory,
+        matchedSnippet: input.matchedSnippet,
+        actionTaken: input.actionTaken,
+        actorId: input.actorId,
+        // `exactOptionalPropertyTypes` (tsconfig) treats an optional property
+        // set to literal `undefined` as distinct from the property being
+        // absent, and `RecordCaseEventInput` wants the latter (same idiom as
+        // `automod/wiring.ts`'s `recordCaseEvent`).
+        ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
+      }),
+    recordDeletionAudit: ({ at, actorId, messageId, channelId, authorId, content }) =>
+      effectRepo.recordAudit(scope, {
+        at,
+        actorType: 'member',
+        actorId,
+        action: 'message_delete',
+        subjectType: 'message',
+        subjectId: messageId,
+        before: { channelId, authorId, content },
+        dryRun: false,
+        inferred: false,
+      }),
+    enqueueDeletionAttribution: ({ dedupeKey, payload, runAfter }) =>
+      jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.logMessageDelete,
+        payload,
+        dedupeKey,
+        runAfter,
+        now: now(),
+      }),
+    enqueuePurgeContinuation: ({ payload, cursor, dedupeKey, runAfter }) =>
+      void jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.modPurge,
+        payload,
+        cursor,
+        dedupeKey,
+        runAfter,
+        now: now(),
+      }),
+    now,
+    logger,
+  };
+
   const subscribers: Subscriber[] = [
     createConnectionSubscriber(
       {
@@ -326,6 +389,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
       logMessageDeleteHandler(deletionAttributionPorts),
+      modPurgeHandler(purgePorts),
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this

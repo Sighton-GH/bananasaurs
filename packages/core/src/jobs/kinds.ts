@@ -21,6 +21,8 @@ export const JOB_KINDS = {
   logMessageDelete: 'log_message_delete',
   /** Reverses one effect batch, for `bananasaurs undo` (ADR 0026). */
   undoBatch: 'undo_batch',
+  /** One tick of a bounded `/mod purge` (ADR 0037). */
+  modPurge: 'mod_purge',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -120,3 +122,82 @@ export type UndoBatchPayload = z.infer<typeof undoBatchPayload>;
  * `running` (ADR 0016) is what enforces it.
  */
 export const undoDedupeKey = (batchId: string): string => `${JOB_KINDS.undoBatch}:${batchId}`;
+
+/**
+ * The bounded purge job (ADR 0037, `packages/core/src/mod/purge.ts`).
+ *
+ * `intentId` ties the job back to the `mod_pending_actions` row the confirm
+ * tap created it from (Task 7) and, transitively, to the moderator who
+ * confirmed. There is no target member: a purge acts on a channel, not a
+ * person, which is also why its case events (`purged`/`purge_refused`/
+ * `purge_failed`) resolve against the *initiator's* own case rather than a
+ * violator's — nobody else's case fits a channel cleanup.
+ */
+export const modPurgePayload = z.object({
+  intentId: z.string().min(1).max(64),
+  channelId: snowflakeIdSchema,
+  initiatorUserId: snowflakeIdSchema,
+  reason: z.string().min(1).max(500),
+});
+export type ModPurgePayload = z.infer<typeof modPurgePayload>;
+
+/**
+ * Where a purge got to, so a restart resumes rather than restarting the
+ * channel from the top (`jobs.cursor`, JSON, Zod-validated on read like every
+ * job payload — CLAUDE.md rule 3 applies to our own prior writes too).
+ *
+ * `phase: 'fresh'` pages `fetchRecentMessages` and bulk-deletes messages
+ * under Discord's 14-day bulk-delete ceiling; `phase: 'old'` deletes the
+ * messages at or past that ceiling one at a time, since Discord refuses a
+ * bulk call carrying even one message that old. `lastMessageId` is
+ * `fetchRecentMessages`'s own `before` cursor — the id of the oldest message
+ * this job has resolved (deleted or confirmed too old to touch yet) —
+ * `undefined` only for a purge that has not resolved anything yet.
+ * `deletedCount` is the running total `checkPurgeBudget` checks every tick;
+ * it is *not* recomputed from Discord, because a deleted message leaves no
+ * trace to recount from.
+ */
+export const modPurgeCursorSchema = z.object({
+  phase: z.enum(['fresh', 'old']),
+  // Plain `Snowflake` (`discord/port.ts`'s unbranded string alias), not the
+  // branded `SnowflakeId`: this id round-trips straight back into
+  // `DiscordPort.fetchRecentMessages`'s `before` option, which takes a bare
+  // `Snowflake`, and the branded schema would force an unnecessary
+  // re-parse at every construction site for a value that already came from
+  // Discord's own response.
+  lastMessageId: z.string().min(1).optional(),
+  deletedCount: z.number().int().nonnegative(),
+});
+export type ModPurgeCursor = z.infer<typeof modPurgeCursorSchema>;
+
+/**
+ * The purge job's dedupe key.
+ *
+ * Two distinct callers, two distinct shapes, by design (see
+ * `packages/core/src/mod/purge.ts`'s module docstring for the full trap this
+ * avoids):
+ *
+ * - The confirm tap (Task 7) mints the *first* job with no `afterJobId`,
+ *   producing the bare `mod:<guildId>:purge:<intentId>` key the spec names —
+ *   one purge, one confirm, one job at that key, ever (the jobs table's
+ *   partial unique index makes a double-tap enqueue nothing).
+ * - Every tick after that mints its *own successor's* key from its **own**
+ *   `jobId` (`context.jobId` — stable across a crash-and-retry of the same
+ *   row, since `requeueStranded` never changes it, and completely
+ *   independent of anything the tick fetched from Discord). Keying off the
+ *   tick's own id rather than off the cursor content it computed means: (a)
+ *   the successor's key can never equal the tick's own key — a tick was
+ *   enqueued under *its progenitor's* id, never its own, so self-collision
+ *   against the still-`running` current row (the trap `jobs_dedupe`'s
+ *   partial uniqueness creates: see `schema.ts`'s `jobs_dedupe` comment) is
+ *   structurally impossible; and (b) a stranded tick that gets reclaimed and
+ *   re-run computes the *identical* successor key both times (same `jobId`
+ *   both times), so a crash between "successor inserted" and "this row
+ *   marked done" cannot leave two live successors — the second `enqueue`
+ *   collides with the first and is silently dropped, exactly like a
+ *   double-tapped confirm collides with itself.
+ */
+export const purgeDedupeKey = (guildId: string, intentId: string, afterJobId?: number): string =>
+  afterJobId === undefined
+    ? `mod:${guildId}:purge:${intentId}`
+    : `mod:${guildId}:purge:${intentId}:after:${afterJobId}`;

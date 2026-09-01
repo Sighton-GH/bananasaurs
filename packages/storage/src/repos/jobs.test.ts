@@ -123,6 +123,33 @@ describe('enqueue', () => {
       expect(put(a, { now: 2000 }).enqueued).toBe(true);
     });
   });
+
+  /**
+   * The purge job (ADR 0037) enqueues its own continuation pre-loaded with
+   * the cursor to resume from, rather than starting the new row at `null`
+   * and losing the progress the tick just computed.
+   */
+  describe('an initial cursor, for a job that enqueues its own continuation', () => {
+    it('is null when omitted, like every other job kind today', () => {
+      const result = put(a);
+      expect(findJob(a, result.jobId ?? -1)?.cursor).toBeNull();
+    });
+
+    it('is set on the row a successful insert creates', () => {
+      const result = put(a, { cursor: '{"phase":"fresh","deletedCount":10}' });
+      expect(findJob(a, result.jobId ?? -1)?.cursor).toBe('{"phase":"fresh","deletedCount":10}');
+    });
+
+    it('is not applied when the insert is skipped by the dedupe key', () => {
+      // A conflicting enqueue must never overwrite a live row's progress —
+      // this is not an update, only ever a starting value for a row this
+      // call actually creates.
+      const first = put(a, { cursor: '{"phase":"fresh","deletedCount":1}' });
+      const second = put(a, { cursor: '{"phase":"old","deletedCount":99}' });
+      expect(second.enqueued).toBe(false);
+      expect(findJob(a, first.jobId ?? -1)?.cursor).toBe('{"phase":"fresh","deletedCount":1}');
+    });
+  });
 });
 
 describe('claimNext', () => {

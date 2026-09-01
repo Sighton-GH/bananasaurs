@@ -47,6 +47,16 @@ export interface EnqueueInput {
   dedupeKey: string;
   runAfter?: number;
   maxAttempts?: number;
+  /**
+   * Progress the new row starts already knowing, for a job that enqueues its
+   * own continuation (the purge job, ADR 0037 — `packages/core/src/mod/
+   * purge.ts`). `undefined`/omitted leaves it `null`, same as every other
+   * caller today. When the insert is skipped by `jobs_dedupe` (a row already
+   * live under this key), the existing row's cursor is left exactly as it
+   * is — this is not an update, only ever a starting value for a row this
+   * call actually creates.
+   */
+  cursor?: string | null;
   now: number;
 }
 
@@ -74,6 +84,7 @@ export const enqueue = (scope: GuildScope, input: EnqueueInput): EnqueueResult =
         dedupeKey: input.dedupeKey,
         runAfter: input.runAfter ?? input.now,
         maxAttempts: input.maxAttempts ?? 5,
+        cursor: input.cursor ?? null,
         createdAt: input.now,
         updatedAt: input.now,
       })
