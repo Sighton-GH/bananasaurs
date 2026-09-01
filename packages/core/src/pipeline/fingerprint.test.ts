@@ -179,6 +179,21 @@ describe('message creations', () => {
     // gateway-reconnect replay before it gets there.
     expect(isLevelTriggered(messageEvent('messageCreate'))).toBe(false);
   });
+
+  it('pins the exact wire-format digest for a known event', () => {
+    // Golden value: rows already written to the `event_dedupe` table store
+    // this exact hex string. `digest()` joins its parts with a literal NUL
+    // character, and that join is part of the fingerprint's encoding — if it
+    // ever changes (including swapping the raw byte for an equivalent-looking
+    // escape sequence that is not actually the same code point), every
+    // previously stored fingerprint stops matching and Discord events already
+    // seen once would silently reprocess. If this test ever needs to change,
+    // stop: that means the encoding changed, which is an idempotency break,
+    // not a test to update.
+    expect(fingerprintOf(messageEvent('messageCreate'))).toBe(
+      'bb07f2abd24d01dd1bdebd9bfe8fed436138f83461a13323b5695f1974560e79',
+    );
+  });
 });
 
 describe('member joins and leaves', () => {
