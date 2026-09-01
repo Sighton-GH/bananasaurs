@@ -180,16 +180,13 @@ describe('message creations', () => {
     expect(isLevelTriggered(messageEvent('messageCreate'))).toBe(false);
   });
 
-  it('pins the exact wire-format digest for a known event', () => {
-    // Golden value: rows already written to the `event_dedupe` table store
-    // this exact hex string. `digest()` joins its parts with a literal NUL
-    // character, and that join is part of the fingerprint's encoding — if it
-    // ever changes (including swapping the raw byte for an equivalent-looking
-    // escape sequence that is not actually the same code point), every
-    // previously stored fingerprint stops matching and Discord events already
-    // seen once would silently reprocess. If this test ever needs to change,
-    // stop: that means the encoding changed, which is an idempotency break,
-    // not a test to update.
+  it('pins the messageCreate digest, as a smoke test only', () => {
+    // `messageCreate` hashes a single part (the message id), so
+    // `Array.prototype.join` never touches its separator here — this pin
+    // cannot detect a change to how `digest()` joins multiple parts. Kept as
+    // a cheap smoke test for the messageCreate case specifically; the
+    // separator itself is guarded by the multi-part pins below
+    // ('roles' and 'autoModerationAction fingerprints'), not by this one.
     expect(fingerprintOf(messageEvent('messageCreate'))).toBe(
       'bb07f2abd24d01dd1bdebd9bfe8fed436138f83461a13323b5695f1974560e79',
     );
@@ -246,6 +243,22 @@ describe('roles', () => {
 
   it('do not fingerprint an update, which can recur legitimately', () => {
     expect(fingerprintOf(role('roleUpdate'))).toBeUndefined();
+  });
+
+  it('pins the exact multi-part digest, guarding the join separator', () => {
+    // Golden value: rows already written to the `event_dedupe` table store
+    // this exact hex string. Unlike a single-part digest, `roleCreate` joins
+    // two parts (`event.kind`, `event.roleId`), so `Array.prototype.join`
+    // genuinely exercises its separator here — a change to how `digest()`
+    // joins its parts (a different character, or dropping the separator
+    // entirely) changes this hash. If this test ever needs to change, stop:
+    // that means the encoding changed, which invalidates every multi-part
+    // fingerprint already stored (`memberAdd`, `memberRemove`, `roleCreate`,
+    // `roleDelete`, `messageUpdate`, `autoModerationAction`'s fallback), not
+    // a test to update.
+    expect(fingerprintOf(role('roleCreate', '555555555555555555'))).toBe(
+      'ac019cc4aa16e4acbcb1739c5712190a519f7dd844adbdad279fb11e46584d7a',
+    );
   });
 });
 
@@ -349,5 +362,20 @@ describe('autoModerationAction fingerprints', () => {
 
   it('is never level-triggered', () => {
     expect(fingerprintOf(nativeEvent())).toBeDefined();
+  });
+
+  it('pins the exact six-part fallback digest, guarding the join separator', () => {
+    // Golden value for this task's own new code: the fallback branch joins
+    // six parts (kind, ruleId, userId, actionType, content, time bucket), so
+    // this pin genuinely exercises `digest()`'s join separator, unlike a
+    // one-part digest such as messageCreate's. Rows already written to the
+    // `event_dedupe` table store this exact hex string for a blocked native
+    // AutoMod action. If this test ever needs to change, stop: that means
+    // the join encoding changed, which would invalidate every multi-part
+    // fingerprint already stored, not just this one — an idempotency break
+    // per CLAUDE.md rule 6.
+    expect(fingerprintOf(nativeEvent())).toBe(
+      '443761f4955d01db78d80350153a63627df479b6c6bfeb8d71154906188c0b1a',
+    );
   });
 });
