@@ -152,10 +152,22 @@ discord_event_id)` `REVIEW.md` §C8 prescribed, because gateway dispatches carry
 no event id — the reasoning is already written down at
 `packages/core/src/pipeline/fingerprint.ts:4-48` and mirrored at
 `packages/storage/src/schema.ts:357-375`. `fingerprintOf` is a `switch` over
-`event.kind` with no `default` and a `string | undefined` return, so adding a
-kind without adding its fingerprint case is a compile error rather than a
-silent gap. Returning `undefined` there is the explicit "not deduplicated"
-choice; this event returns a real fingerprint.
+`event.kind`; returning `undefined` there is the explicit "not deduplicated"
+choice, and this event returns a real fingerprint.
+
+**Corrected while implementing.** An earlier draft of this ADR claimed that
+`fingerprintOf`'s `switch` already made a missing case a compile error. It did
+not. Falling off the end of a function whose return type is `string |
+undefined` is legal TypeScript, and `tsconfig.base.json` sets `strict`,
+`exactOptionalPropertyTypes` and `noFallthroughCasesInSwitch` but **not**
+`noImplicitReturns` — so an unhandled kind silently became level-triggered
+rather than failing loudly, which is an idempotency gap (rule 6) that nothing
+surfaces. Reproduced both ways before acting on it: clean at exit 0 without the
+flag, TS7030 with it. This slice therefore *builds* the gate it assumed,
+via an explicit `default` clause asserting `never` — local to one function,
+rather than a compiler flag whose blast radius is every package. Adopting
+`noImplicitReturns` repo-wide would close the same class of gap everywhere and
+is worth doing; it is deliberately left as its own change.
 
 **The accepted trade-off.** Case 3 collapses two byte-identical blocked
 messages from the same member inside the window into one recorded event, so a

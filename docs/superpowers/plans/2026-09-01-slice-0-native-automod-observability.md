@@ -124,12 +124,23 @@ export interface AutoModerationEvent extends Base {
 
 Then add `| AutoModerationEvent` to the `DomainEvent` union.
 
-- [ ] **Step 2: Run typecheck to see the exhaustiveness gate fire**
+- [ ] **Step 2: Run typecheck — and note that it PASSES, which is the bug**
 
 Run: `npm run typecheck`
-Expected: FAIL in `packages/core/src/pipeline/fingerprint.ts` with `TS2366: Function lacks ending return statement and return type does not include 'undefined'`.
+Expected: **clean.**
 
-This is the codebase's one compiler-enforced gate over `DomainEvent.kind` — `fingerprintOf`'s `switch` has no `default` and returns `string | undefined`. Seeing it fail here is the point of running this step: it proves a future event kind cannot be added without a deliberate dedupe decision.
+> **Corrected during execution.** This step originally predicted a `TS2366`
+> failure, on the claim that `fingerprintOf`'s `switch` was a compile-enforced
+> gate over `DomainEvent.kind`. It is not. Falling off the end of a function
+> returning `string | undefined` is legal, and `tsconfig.base.json` does not set
+> `noImplicitReturns` (it sets `strict`, `exactOptionalPropertyTypes` and
+> `noFallthroughCasesInSwitch`). Verified both ways with an isolated repro:
+> exit 0 without the flag, `TS7030` with it.
+>
+> So a new `DomainEvent` kind silently becomes level-triggered — "not
+> deduplicated" — instead of failing loudly. That is an idempotency gap
+> (CLAUDE.md rule 6) that nothing surfaces. Step 5a below builds the gate this
+> step assumed already existed.
 
 - [ ] **Step 3: Write the failing fingerprint tests**
 
@@ -246,6 +257,37 @@ In `packages/core/src/pipeline/fingerprint.ts`, inside the `switch`, before the 
       );
     }
 ```
+
+- [ ] **Step 5a: Build the exhaustiveness gate Step 2 assumed existed**
+
+Add an explicit `default` clause to `fingerprintOf` asserting `never`, so that
+adding a `DomainEvent` kind without deciding its dedupe behaviour is a compile
+error rather than a silent fallback to "not deduplicated":
+
+```ts
+    default: {
+      // Not reachable: every `DomainEvent` kind above returns. This clause
+      // exists so that *adding* a kind without deciding its dedupe behaviour
+      // is a compile error rather than a silent fallback to "not
+      // deduplicated" — an idempotency gap (CLAUDE.md rule 6) nothing else
+      // surfaces. `strict` alone does not catch it: falling off the end of a
+      // `string | undefined` function is legal, and `noImplicitReturns` is
+      // not set. Do not delete this as dead code; being unreachable is the
+      // point.
+      const unhandled: never = event;
+      void unhandled;
+      return undefined;
+    }
+```
+
+Verify the gate actually holds: temporarily add a throwaway member to the
+`DomainEvent` union, confirm `npm run typecheck` now FAILS at the `never`
+assignment, then remove it and confirm typecheck is clean again. The throwaway
+is a verification step, never a commit.
+
+Do **not** enable `noImplicitReturns` repo-wide here — it would close the same
+class of gap everywhere, and is worth doing, but its blast radius is every
+package and this slice is about native AutoMod observability.
 
 - [ ] **Step 6: Re-export the type**
 
