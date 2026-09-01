@@ -22,6 +22,7 @@ import type { DomainEvent } from '../discord/events.js';
  * | `messageDelete` | sha256(message) — deletion is terminal |
  * | `memberAdd` / `memberRemove` | sha256(user ‖ joinedAt or a time bucket) |
  * | `roleCreate` / `roleDelete` | sha256(role) — a role id is created and deleted once |
+ * | `autoModerationAction` | digest of rule / user / action / matched content, time bucket fallback |
  * | everything else | **not deduplicated** |
  *
  * **Reactions are deliberately absent, and this is the load-bearing decision.**
@@ -54,10 +55,14 @@ const digest = (...parts: (string | number)[]): string =>
 /**
  * How coarse the fallback bucket is when a join timestamp is unavailable.
  *
- * Only reached for `memberRemove`, where Discord does not always give us
- * `joined_at`. A duplicate arriving more than a minute later is treated as a
- * new event — which is the right failure direction: logging a leave twice is
- * noise, missing one is a hole in the record.
+ * Reached for `memberRemove`, where Discord does not always give us
+ * `joined_at`, and for `autoModerationAction`, where Discord never gives us an
+ * event id or timestamp. The trade-off differs by kind: for `memberRemove`, a
+ * duplicate arriving more than a minute later is treated as a new event (right
+ * direction: logging a leave twice is noise, missing one is a hole); for
+ * `autoModerationAction`, a byte-identical match inside the bucket collapses
+ * into one event (under-counts repeats but avoids replay double-recording, and
+ * native events do not count toward escalation anyway — ADR 0038).
  */
 const FALLBACK_BUCKET_MS = 60_000;
 
