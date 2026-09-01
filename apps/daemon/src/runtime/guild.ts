@@ -544,11 +544,14 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
         }),
     },
-    // Task 9: `history` — read-only, so a fourth, narrower sibling port
-    // (`HistoryCasePorts`) rather than a widening of `cases`/`noteEvidenceCases`
-    // above: it names only the two read functions its own call site uses,
-    // the same "each module names only what it calls" convention the other
-    // three ports here already follow.
+    // Task 9: `history` — mostly read-only, so a fourth, narrower sibling
+    // port (`HistoryCasePorts`) rather than a widening of
+    // `cases`/`noteEvidenceCases` above: it names the two reads its own call
+    // site uses, plus (fix round) the same `openOrResolveCase`/
+    // `recordCaseEvent` write pair every other subcommand's refusal path
+    // already calls through `modCaseRepo` — restricted at the type level to
+    // the single `escalation_refused`/`unauthorized` combination `history`
+    // ever writes.
     history: {
       guildId,
       authz: authzStoreFor(scope),
@@ -556,11 +559,14 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       cases: {
         listCasesForMember: (memberId) => modCaseRepo.listCasesForMember(scope, memberId),
         listCaseEvents: (caseId) => modCaseRepo.listCaseEvents(scope, caseId),
+        openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
+        recordCaseEvent: (input) => modCaseRepo.recordCaseEvent(scope, input),
       },
       responder: {
         defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
         respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
       },
+      now,
       logger,
     } satisfies HistoryDeps,
     responder: {

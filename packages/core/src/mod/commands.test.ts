@@ -58,6 +58,8 @@ interface Harness {
     noteEvidenceOpenOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
     historyListCasesForMember: string[];
     historyListCaseEvents: string[];
+    historyOpenOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
+    historyRecordCaseEvent: Parameters<HistoryCasePorts['recordCaseEvent']>[0][];
     defer: { ref: InteractionRef; options: { ephemeral: boolean } }[];
     respond: { ref: InteractionRef; message: OutgoingMessage }[];
     fetchInvokerRoleIds: Snowflake[];
@@ -83,6 +85,8 @@ function buildHarness(
     noteEvidenceOpenOrResolveCase: [],
     historyListCasesForMember: [],
     historyListCaseEvents: [],
+    historyOpenOrResolveCase: [],
+    historyRecordCaseEvent: [],
     defer: [],
     respond: [],
     fetchInvokerRoleIds: [],
@@ -150,6 +154,16 @@ function buildHarness(
       calls.historyListCaseEvents.push(caseId);
       return opts.historyEventsByCase?.[caseId] ?? [];
     },
+    openOrResolveCase: (input) => {
+      calls.historyOpenOrResolveCase.push({
+        memberId: input.memberId,
+        countsAsViolation: input.countsAsViolation,
+      });
+      return { caseId: 'case-1', violationCount: 0 };
+    },
+    recordCaseEvent: (input) => {
+      calls.historyRecordCaseEvent.push(input);
+    },
   };
 
   const responder: SlashResponder = {
@@ -181,6 +195,7 @@ function buildHarness(
       },
       cases: historyCases,
       responder,
+      now: () => NOW_MS,
       logger: silentLogger,
     },
     responder,
@@ -605,15 +620,29 @@ describe('mod command subscriber', () => {
   });
 
   describe('history', () => {
-    it('without moderation.act, refuses — the dispatch-level proof that history is gated like every other subcommand', async () => {
+    it('without moderation.act, refuses and durably records the refusal on the target’s case — the dispatch-level proof that history is gated and audited like every other subcommand', async () => {
       const { deps, calls } = buildHarness({ authorized: false });
       const subscriber = createModCommandSubscriber(deps);
       await subscriber.handle(slashCommandEvent({ subcommandPath: ['history'] }));
 
       expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
       expect(calls.historyListCasesForMember).toHaveLength(0);
-      // Unlike every write subcommand, history records no case event for a
-      // refusal — nothing happened to any case.
+
+      // history's own refusal port records it — an unauthorized probe of a
+      // specific member's disciplinary history is reconnaissance worth a
+      // durable trace, the same as every other subcommand's refusal.
+      expect(calls.historyOpenOrResolveCase).toEqual([
+        { memberId: TARGET, countsAsViolation: false },
+      ]);
+      expect(calls.historyRecordCaseEvent).toHaveLength(1);
+      const refusal = calls.historyRecordCaseEvent[0]!;
+      expect(refusal.memberId).toBe(TARGET);
+      expect(refusal.actorId).toBe(MODERATOR);
+      expect(refusal.actionTaken).toBe('escalation_refused');
+      expect(refusal.refusalReason).toBe('unauthorized');
+
+      // Never routed onto any of the other three ports' write paths — the
+      // refusal lands only through history's own narrow port.
       expect(calls.recordCaseEvent).toHaveLength(0);
       expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(0);
       expect(calls.warnRecordCaseEvent).toHaveLength(0);
@@ -660,6 +689,9 @@ describe('mod command subscriber', () => {
       expect(content).toContain('warned');
       expect(content).toContain(MODERATOR);
       expect(content).toContain('violations: 2');
+      // A successful read writes nothing — reading is not an action.
+      expect(calls.historyOpenOrResolveCase).toHaveLength(0);
+      expect(calls.historyRecordCaseEvent).toHaveLength(0);
     });
   });
 

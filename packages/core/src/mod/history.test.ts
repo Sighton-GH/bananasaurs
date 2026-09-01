@@ -48,6 +48,8 @@ interface Harness {
   calls: {
     listCasesForMember: string[];
     listCaseEvents: string[];
+    openOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
+    recordCaseEvent: Parameters<HistoryCasePorts['recordCaseEvent']>[0][];
     fetchInvokerRoleIds: Snowflake[];
     respond: { ref: InteractionRef; message: OutgoingMessage }[];
   };
@@ -63,6 +65,8 @@ function buildHarness(
   const calls: Harness['calls'] = {
     listCasesForMember: [],
     listCaseEvents: [],
+    openOrResolveCase: [],
+    recordCaseEvent: [],
     fetchInvokerRoleIds: [],
     respond: [],
   };
@@ -77,6 +81,16 @@ function buildHarness(
     listCaseEvents: (caseId) => {
       calls.listCaseEvents.push(caseId);
       return opts.eventsByCase?.[caseId] ?? [];
+    },
+    openOrResolveCase: (input) => {
+      calls.openOrResolveCase.push({
+        memberId: input.memberId,
+        countsAsViolation: input.countsAsViolation,
+      });
+      return { caseId: 'refusal-case-1', violationCount: 0 };
+    },
+    recordCaseEvent: (input) => {
+      calls.recordCaseEvent.push(input);
     },
   };
 
@@ -96,6 +110,7 @@ function buildHarness(
     },
     cases,
     responder,
+    now: () => NOW_MS,
     logger: silentLogger,
   };
 
@@ -139,6 +154,30 @@ describe('handleHistory', () => {
       expect(calls.respond).toHaveLength(1);
       expect(calls.respond[0]?.ref).toEqual(REF);
       expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+    });
+
+    /**
+     * Added in the fix round after this task's first review: an unauthorized
+     * `/mod history <member>` probe is durably recorded on the *target's*
+     * case, the same way `warn`/the direct actions/`ban`/`purge`/`note`/
+     * `evidence` already record their own unauthorized attempts
+     * (`commands.ts`'s `recordDirectRefusal`) — an unauthorized attempt to
+     * read a specific member's disciplinary history is itself reconnaissance
+     * worth a trace, not only a log line.
+     */
+    it('durably records the refusal on the target member’s case: escalation_refused / unauthorized, actor is the real caller', async () => {
+      const { deps, calls } = buildHarness({ authorized: false });
+      await handleHistory(deps, slashCommandEvent(), REF);
+
+      expect(calls.openOrResolveCase).toEqual([{ memberId: TARGET, countsAsViolation: false }]);
+      expect(calls.recordCaseEvent).toHaveLength(1);
+      const refusal = calls.recordCaseEvent[0]!;
+      expect(refusal.caseId).toBe('refusal-case-1');
+      expect(refusal.memberId).toBe(TARGET);
+      expect(refusal.actorId).toBe(MODERATOR);
+      expect(refusal.actionTaken).toBe('escalation_refused');
+      expect(refusal.refusalReason).toBe('unauthorized');
+      expect(refusal.at).toBe(NOW_MS);
     });
   });
 
@@ -251,6 +290,54 @@ describe('handleHistory', () => {
       const content = calls.respond[0]?.message.content ?? '';
       expect(content).toContain('2 case(s)');
       expect(content.indexOf('case-open')).toBeLessThan(content.indexOf('case-closed'));
+    });
+
+    it('writes nothing — a successful read records no case event', async () => {
+      const oneCase = openCase();
+      const { deps, calls } = buildHarness({
+        authorized: true,
+        cases: [oneCase],
+        eventsByCase: { 'case-1': [event()] },
+      });
+      await handleHistory(deps, slashCommandEvent(), REF);
+
+      expect(calls.openOrResolveCase).toHaveLength(0);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+    });
+
+    /**
+     * Added in the fix round: a case's event log has no upper bound — there
+     * is no case-closing feature, so an actively-moderated member's open
+     * case can accumulate events indefinitely, and the fully-rendered
+     * content can legitimately exceed Discord's 2000-character message
+     * ceiling. This drives it well past that with 60 events (each roughly
+     * 100+ characters once rendered) and proves the response still fits,
+     * keeps the most recent events, and says how many it dropped.
+     */
+    it('truncates to stay under Discord’s 2000-character content limit, keeping the most recent events', async () => {
+      const oneCase = openCase({ violationCount: 60 });
+      const manyEvents = Array.from({ length: 60 }, (_, i) =>
+        event({
+          eventId: `evt-${i}`,
+          // Oldest first, per `listCaseEvents`'s own contract — index 0 is
+          // the oldest, index 59 the most recent.
+          at: NOW_MS - (60 - i) * 1000,
+          matchedSnippet: `distinguishable-marker-${String(i).padStart(3, '0')}`,
+        }),
+      );
+      const { deps, calls } = buildHarness({
+        authorized: true,
+        cases: [oneCase],
+        eventsByCase: { 'case-1': manyEvents },
+      });
+      await handleHistory(deps, slashCommandEvent(), REF);
+
+      const content = calls.respond[0]?.message.content ?? '';
+      expect(content.length).toBeLessThanOrEqual(2000);
+      expect(content).toMatch(/omitted/i);
+      // The most recent event survives; the oldest does not.
+      expect(content).toContain('distinguishable-marker-059');
+      expect(content).not.toContain('distinguishable-marker-000');
     });
   });
 });

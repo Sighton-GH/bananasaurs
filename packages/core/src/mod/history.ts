@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto';
 import {
   authorize,
   type Actor,
@@ -8,17 +9,25 @@ import {
 } from '../authz.js';
 import type { SlashCommandEvent, SlashCommandOption } from '../discord/events.js';
 import type { InteractionRef, Snowflake } from '../discord/port.js';
-import type { GuildId } from '../ids.js';
+import type { GuildId, SnowflakeId } from '../ids.js';
 import { parseSnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 import type { SlashResponder } from '../ops/commands/status-slash.js';
+import { MANUAL_RULE_ID } from './warn.js';
 
 /**
  * `/mod history` (Task 9) — the last `/mod` subcommand: a read-only search
  * over one member's case(s), rendered as an ephemeral reply. Unlike every
- * other subcommand in this family it writes nothing — no gateway call, no
- * `mod_case_events` row, not even for a refusal (there is no action to
- * record a refusal *against*; see `handleHistory`'s own comment on that).
+ * write subcommand in this family it never touches the moderation gateway
+ * and its *successful* path writes no `mod_case_events` row — reading is not
+ * an action. An **unauthorized** attempt is different: per the fix round
+ * after this task's first review, it durably records an `escalation_refused`
+ * event on the target's case, the same as `warn`/the direct actions/`ban`/
+ * `purge`/`note`/`evidence` already do for their own unauthorized attempts
+ * (`recordUnauthorizedRefusal` below, mirroring `commands.ts`'s
+ * `recordDirectRefusal`). An unauthorized probe of a *specific* member's
+ * disciplinary history is itself reconnaissance worth a durable trace, not
+ * only a log line.
  *
  * A sibling module to `confirmations.ts`, not a branch inside `commands.ts`:
  * this file defines its own `HistoryDeps` (mirroring `ModConfirmationDeps`)
@@ -28,9 +37,10 @@ import type { SlashResponder } from '../ops/commands/status-slash.js';
  *
  * Never imports `@bananasaurs/storage` (ADR 0014). `HistoryCasePorts` below
  * re-declares the read shapes `mod-cases.ts`'s `listCasesForMember` and
- * `listCaseEvents` return, the same way `NoteEvidenceCasePorts` and
- * `ModCommandCasePorts` (`commands.ts`) re-declare their own write shapes
- * rather than importing the storage package's types directly. The concrete
+ * `listCaseEvents` return, plus the same `openOrResolveCase`/`recordCaseEvent`
+ * write shapes `NoteEvidenceCasePorts` (`commands.ts`) re-declares — needed
+ * here only for the unauthorized-refusal path, and restricted to the single
+ * `actionTaken`/`refusalReason` pair that path ever writes. The concrete
  * repo calls are wired in `apps/daemon/src/runtime/guild.ts`.
  */
 
@@ -59,10 +69,33 @@ export interface HistoryCaseEvent {
   readonly actorId: string | undefined;
 }
 
-/** The narrow, read-only slice of the case repo `history` needs. */
+/**
+ * The slice of the case repo `history` needs: the two reads plus, as of the
+ * fix round, the two writes an unauthorized attempt uses to record its own
+ * refusal. Narrower than `NoteEvidenceCasePorts`'s write pair — `actionTaken`
+ * here is pinned to the single literal this module ever writes, not the
+ * three-value union note/evidence needs.
+ */
 export interface HistoryCasePorts {
   listCasesForMember(memberId: string): readonly HistoryCase[];
   listCaseEvents(caseId: string): readonly HistoryCaseEvent[];
+  openOrResolveCase(input: { memberId: string; now: number; countsAsViolation: boolean }): {
+    caseId: string;
+    violationCount: number;
+  };
+  recordCaseEvent(input: {
+    eventId: string;
+    caseId: string;
+    ruleId: string;
+    memberId: string;
+    at: number;
+    matchedCategory: string;
+    matchedSnippet: string;
+    actionTaken: 'escalation_refused';
+    refusalReason: 'unauthorized';
+    /** The moderator who invoked the command. Every manual event carries one (ADR 0037). */
+    actorId: string;
+  }): void;
 }
 
 export interface HistoryDeps {
@@ -72,6 +105,7 @@ export interface HistoryDeps {
   readonly fetchInvokerRoleIds: (userId: Snowflake) => Promise<readonly Snowflake[]>;
   readonly cases: HistoryCasePorts;
   readonly responder: SlashResponder;
+  readonly now: () => number;
   readonly logger: Logger;
 }
 
@@ -92,6 +126,40 @@ const authorizeInvoker = async (
     roleIds: roleIds.map((id) => parseSnowflakeId(id)),
   };
   return authorize({ store: deps.authz, guildId: deps.guildId, actor }, 'moderation.act');
+};
+
+/**
+ * Records an unauthorized `/mod history` attempt on the target's own case —
+ * mirrors `commands.ts`'s `recordDirectRefusal` exactly (same
+ * `openOrResolveCase(..., countsAsViolation: false)` then
+ * `recordCaseEvent(..., actionTaken: 'escalation_refused', refusalReason:
+ * 'unauthorized')` shape). `matchedSnippet` is `''`: unlike a refused
+ * timeout/kick/warn, `/mod history` carries no `reason` option to put there
+ * — `describeEvent` below already treats an empty snippet as "nothing to
+ * show" for any event, so this renders identically to how a reason-less
+ * refusal would.
+ */
+const recordUnauthorizedRefusal = (
+  deps: HistoryDeps,
+  input: { targetId: SnowflakeId; actorId: Snowflake; now: number },
+): void => {
+  const { caseId } = deps.cases.openOrResolveCase({
+    memberId: input.targetId,
+    now: input.now,
+    countsAsViolation: false,
+  });
+  deps.cases.recordCaseEvent({
+    eventId: randomUUID(),
+    caseId,
+    ruleId: MANUAL_RULE_ID,
+    memberId: input.targetId,
+    at: input.now,
+    matchedCategory: 'history',
+    matchedSnippet: '',
+    actionTaken: 'escalation_refused',
+    refusalReason: 'unauthorized',
+    actorId: input.actorId,
+  });
 };
 
 const formatTimestamp = (atMs: number): string => new Date(atMs).toISOString();
@@ -155,24 +223,107 @@ const describeCase = (caseRow: HistoryCase, events: readonly HistoryCaseEvent[])
   return sections.join('\n');
 };
 
+/** Discord's ceiling on a message's `content` field. */
+const MAX_CONTENT_LENGTH = 2000;
+
+const renderContent = (
+  targetId: SnowflakeId,
+  cases: readonly HistoryCase[],
+  eventsByCase: ReadonlyMap<string, readonly HistoryCaseEvent[]>,
+  omittedCount: number,
+): string => {
+  const blocks = cases.map((caseRow) =>
+    describeCase(caseRow, eventsByCase.get(caseRow.caseId) ?? []),
+  );
+  const lines = [`Case history for <@${targetId}> — ${cases.length} case(s):`, '', ...blocks];
+  if (omittedCount > 0) {
+    lines.push(
+      `_(${omittedCount} older event${omittedCount === 1 ? '' : 's'} omitted to stay under ` +
+        `Discord's ${MAX_CONTENT_LENGTH}-character message limit — showing the most recent.)_`,
+    );
+  }
+  return lines.join('\n\n');
+};
+
+/**
+ * The case (if any) still holding the globally-oldest unrendered event.
+ *
+ * Each case's array is oldest-first (`listCaseEvents`'s own contract), so a
+ * case's current oldest remaining event is always its head (`events[0]`).
+ * Comparing heads across cases and returning the smallest `at` is therefore
+ * enough to find the single oldest event across every case without
+ * re-sorting anything.
+ */
+const caseWithOldestRemainingEvent = (
+  eventsByCase: ReadonlyMap<string, readonly HistoryCaseEvent[]>,
+): string | undefined => {
+  let oldest: { caseId: string; at: number } | undefined;
+  for (const [caseId, events] of eventsByCase) {
+    const head = events[0];
+    if (head === undefined) continue;
+    if (oldest === undefined || head.at < oldest.at) oldest = { caseId, at: head.at };
+  }
+  return oldest?.caseId;
+};
+
+/**
+ * A case's open-ended event log has no upper bound — there is no
+ * case-closing feature, so an actively-moderated member's single open case
+ * can accumulate automod strikes, warns, notes, evidence, and purge events
+ * indefinitely. `renderContent`'s full, untruncated output can therefore
+ * legitimately exceed Discord's 2000-character message-content ceiling, and
+ * an over-length response is not degraded gracefully by Discord — the
+ * interaction fails outright.
+ *
+ * The fix: render fully, and if that overflows, repeatedly drop the single
+ * globally-oldest remaining event (`caseWithOldestRemainingEvent`) and
+ * re-render, until the content fits or there is nothing left to drop. "Drop
+ * the oldest" rather than any other strategy because a moderator running
+ * `/mod history` almost always cares most about a member's *current*
+ * standing — the most recent warning, the most recent purge they ran — not
+ * their oldest recorded event; the omitted-count notice
+ * (`renderContent`'s own `omittedCount` line) makes the truncation visible
+ * rather than silent. Re-rendering per drop (rather than computing a byte
+ * budget up front) is O(n²) in the event count, but `n` here is a single
+ * moderator's `/mod history` query, not a hot path — simplicity over
+ * cleverness.
+ */
+const buildTruncatedContent = (
+  targetId: SnowflakeId,
+  cases: readonly HistoryCase[],
+  eventsByCase: Map<string, HistoryCaseEvent[]>,
+): string => {
+  let omitted = 0;
+  let content = renderContent(targetId, cases, eventsByCase, omitted);
+  while (content.length > MAX_CONTENT_LENGTH) {
+    const caseId = caseWithOldestRemainingEvent(eventsByCase);
+    if (caseId === undefined) break; // Nothing left to drop — render as-is (best effort).
+    eventsByCase.get(caseId)?.shift();
+    omitted += 1;
+    content = renderContent(targetId, cases, eventsByCase, omitted);
+  }
+  return content;
+};
+
 /**
  * `/mod history` — read-only, but still gated on `moderation.act` (the Task
  * 9 brief's explicit instruction: "`history` without `moderation.act`
- * refused"). An unauthorized attempt gets a plain ephemeral refusal with no
- * `recordCaseEvent` call: unlike every write subcommand in this family,
- * nothing happened to any case here — there is no action to durably record a
- * refusal *against*. The brief's own Step 1 asks only for "refused",
- * matching this reading.
+ * refused"). An unauthorized attempt is durably recorded on the target's own
+ * case (`recordUnauthorizedRefusal`, above) — reconnaissance against a
+ * specific member's disciplinary history is worth a case event, even though
+ * `history` itself never writes one on success.
  */
 export const handleHistory = async (
   deps: HistoryDeps,
   event: SlashCommandEvent,
   ref: InteractionRef,
 ): Promise<void> => {
+  const nowMs = deps.now();
   const targetId = parseSnowflakeId(optionValue(event.options, 'target'));
 
   const authResult = await authorizeInvoker(deps, event.userId);
   if (!authResult.ok) {
+    recordUnauthorizedRefusal(deps, { targetId, actorId: event.userId, now: nowMs });
     deps.logger.warn(
       safeLogFields({
         component: 'mod-commands',
@@ -212,14 +363,10 @@ export const handleHistory = async (
     return;
   }
 
-  const blocks = cases.map((caseRow) =>
-    describeCase(caseRow, deps.cases.listCaseEvents(caseRow.caseId)),
+  const eventsByCase = new Map<string, HistoryCaseEvent[]>(
+    cases.map((caseRow) => [caseRow.caseId, [...deps.cases.listCaseEvents(caseRow.caseId)]]),
   );
-  const content = [
-    `Case history for <@${targetId}> — ${cases.length} case(s):`,
-    '',
-    ...blocks,
-  ].join('\n\n');
+  const content = buildTruncatedContent(targetId, cases, eventsByCase);
 
   await deps.responder.respond(ref, { content });
 };
