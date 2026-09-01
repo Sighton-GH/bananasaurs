@@ -263,6 +263,44 @@ procedure and become constraints the code enforces.
   permit it, and for rules in `observe` past their window with an unreviewed
   match backlog.
 
+##### The false-positive gate, tiered by blast radius
+
+Release 2's finish line — "an acceptable false-positive rate" in both
+`REVIEW.md` §E and `docs/08` — had no numerator and no threshold. Slice 9
+supplies the numerator; the owner set the threshold (§7, decision 16), and this
+slice is where it is enforced rather than remembered.
+
+| The rule's maximum blast radius | Threshold |
+| --- | --- |
+| Deletes the message only — does not feed the escalation counter | at most **5%** of reviewed matches are false positives |
+| Feeds the escalation counter, so it can reach a timeout, kick or ban | **zero** false positives among reviewed matches |
+
+- **`unclear` counts as a false positive** for gate purposes. It biases
+  conservative, and it gives the reviewer a reason to resolve verdicts rather
+  than leave them.
+- **Minimum sample: 20 reviewed matches** before a rate is meaningful at all.
+- **The low-volume path.** A precise-tier rule may fire zero times in two weeks,
+  and 0 out of 0 is not a passing score — it is no score. A rule that does not
+  reach 20 reviewed matches is gated instead on a clean pass against the Slice 2
+  fixture corpus plus an explicit owner sign-off recorded on the rule. This is
+  what `docs/08`'s "may graduate sooner if its false-positive review is clean
+  early" means operationally.
+
+**Blast radius has to be a property of the rule, not an inference.** Under
+ADR 0035 every hit deletes the message, and escalation is driven by the
+per-member violation counter, which is shared across rules — so strictly, any
+enforcing rule can contribute to a member action, and the two tiers would
+collapse into one. ADR 0036 already introduced the distinction as a call-site
+parameter: `openOrResolveCase` takes `countsAsViolation`, currently derived from
+mode. This slice lifts it to **`mod_rules.counts_as_violation`** (default true),
+which makes the tiers real and gives a high-false-positive-risk rule an escape
+hatch: `caps` can ship delete-only and clear the 5% bar rather than failing the
+zero bar.
+
+Both thresholds and the sign-off live on the rule alongside `cutover_state`, so
+the enforce refusal can check them. A gate that is not machine-checked is a
+habit, and habits are what this slice exists to replace.
+
 ### → **Flip day.** Every rule to `observe`. The clock starts.
 
 Nothing after this point blocks the window. Everything below runs during it.
@@ -302,10 +340,9 @@ native rule.
 
 **It also has to report the number the gate is written against.** Release 2's
 "done when" clause says "an acceptable false-positive rate" without defining
-either the numerator or the threshold. This screen defines the numerator —
-reviewed matches per rule, split by verdict — and the threshold is an owner
-decision per rule, recorded on the rule alongside `cutover_state` rather than
-left as a judgement made once and forgotten. See §8.6.
+either the numerator or the threshold. This screen supplies the numerator —
+reviewed matches per rule, split into false positive / true positive / unclear.
+The thresholds are set (§7, decision 16) and enforced in Slice 6.
 
 #### Slice 10 — Release 3 route stubs
 
@@ -395,9 +432,13 @@ sufficient, and this checkpoint is priced accordingly.
   measuring a fiction.
 - **Before flip day:** a rehearsal in which every rule's trace is rendered and
   read. A trace nobody can read produces an observe window that yields nothing.
-- **Slice 6:** a test that `mode = 'enforce'` is *refused* for a rule whose
-  `cutover_state` does not permit it — written before the feature, since it is
-  the mechanism the release gate rests on.
+- **Slice 6:** tests, written before the feature, that `mode = 'enforce'` is
+  *refused* for a rule whose `cutover_state` does not permit it; that a
+  counter-feeding rule with one `false_positive` or one `unclear` verdict is
+  refused; that a delete-only rule at 6% is refused and at 4% is allowed; and
+  that a rule with 19 reviewed matches falls to the low-volume path rather than
+  passing on a flattering ratio. These are the mechanism the release gate rests
+  on, so they are written first.
 - **Slice 3:** a ReDoS test with a catastrophic-backtracking pattern, asserting
   the timeout or the linear-time engine holds.
 
@@ -677,6 +718,8 @@ it — which is the Release 3 gate's own requirement.
 | 13 | Resources: allowlisted URLs, dashboard uploads, Discord attachments, and Drive URLs, with a dashboard page to authorise them | **Owner** |
 | 14 | Drive is Phase A (link-shared, public export endpoint, no OAuth); Phase B OAuth deferred | Claude, stated as an assumption |
 | 15 | The tool registry and proposal pipeline are built and tested before the provider layer exists | Claude |
+| 16 | The false-positive gate is tiered by blast radius: 5% for delete-only rules, zero for rules that feed the escalation counter, `unclear` counting against, a 20-match minimum sample, and a fixture-pass-plus-sign-off path for low-volume rules | **Owner** |
+| 17 | `counts_as_violation` becomes a per-rule property, lifted from ADR 0036's call-site parameter, so decision 16's tiers are a real distinction rather than an inference | Claude, following from 16 |
 
 ---
 
@@ -697,15 +740,17 @@ it — which is the Release 3 gate's own requirement.
 5. **Eight new dashboard dependencies** are within CLAUDE.md's "boring and
    small" bar. If not, the fallback is hand-rolled CSS plus `wouter` alone, at
    the cost of accessibility work and long-term consistency.
-6. **"An acceptable false-positive rate" is still undefined**, in `REVIEW.md`
-   §E, in `docs/08`, and here. It is the literal condition Release 2 ends on,
-   and it currently has no numerator and no threshold. This plan proposes that
-   Slice 9 supplies the numerator (reviewed matches per rule, split by verdict)
-   and that the threshold is set per rule by the owner and recorded on the rule.
-   **The owner has not agreed to that yet** — it is the one gap in the release
-   gate this plan does not close on its own authority, because deciding how
-   wrong an enforcement rule may be before it is allowed to punish members is
-   not a call to make by default.
+6. **The false-positive thresholds are now set** (decision 16) but the specific
+   numbers are untested against real data. 5% and zero are defensible starting
+   points, not measurements. Expect at least one rule — `caps` or
+   `duplicate_message` — to fail its bar in the first window; the intended
+   response is to narrow the rule or set it delete-only, **not** to move the
+   bar. If the bar moves, it should move deliberately and be recorded, because
+   a threshold revised in the moment it binds is not a threshold.
+7. **The 20-match minimum sample is a judgement, not a statistic.** It is large
+   enough that one bad match does not sink a rule and small enough to reach in
+   two weeks on a 30-person server. It is not a confidence interval and should
+   not be described as one.
 
 ---
 
@@ -719,7 +764,7 @@ style, numbered sequentially from 0038:
 | 0038 | Native AutoMod is a first-class collaborator, and its decisions are recorded | Slice 0 |
 | 0039 | The predicate interface and the `mod_rules.config` carrier | Slice 1 |
 | 0040 | Fixtures, the dry-run evaluator, and the one-code-path invariant | Slice 2 |
-| 0041 | Cutover state gates enforcement; automod testing mode is a third lever | Slice 6 |
+| 0041 | Cutover state and the tiered false-positive gate together decide when enforcement is offerable; `counts_as_violation` becomes a rule property; automod testing mode is a third lever | Slice 6 |
 | 0042 | The dashboard's stack, design system, and information architecture | Slice 7 |
 | 0043 | AI proposes, deterministic code disposes: the tool registry and the proposed-action pipeline | R3-4 |
 | 0044 | Resource and document ingestion, and the outbound destinations it authorises | R3-3 |
