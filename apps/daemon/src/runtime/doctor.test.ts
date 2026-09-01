@@ -6,7 +6,12 @@ import { Client, GatewayIntentBits, Partials, Status, type Guild } from 'discord
 import { parseConfig, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import { openTestDatabase, performBackup } from '@bananasaurs/storage';
-import { buildDoctorReport, formatDoctorReport, RELEASE_1_PERMISSIONS } from './doctor.js';
+import {
+  buildDoctorReport,
+  formatDoctorReport,
+  RELEASE_1_PERMISSIONS,
+  REQUIRED_PERMISSIONS,
+} from './doctor.js';
 
 /**
  * `doctor` v1, which `docs/21` exercise 1 step 3 specifies exactly: it must
@@ -86,7 +91,7 @@ beforeEach(() => {
 
 describe('partials', () => {
   it('reports the ones the client was built with', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
     expect(report.partials.configured).toContain('Message');
@@ -121,7 +126,7 @@ describe('privileged intents', () => {
    * portal.
    */
   it('reports both as requested and granted once a session exists', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
     expect(report.intents.privileged).toEqual([
@@ -162,7 +167,7 @@ describe('the allowlisted guilds', () => {
    * against a hierarchy refusal has to be reading the same scale.
    */
   it('reports the bot own highest role position on Discord scale', () => {
-    const guild = addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    const guild = addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
     expect(guild.members.me?.roles.highest.position).toBe(1); // the index
@@ -178,7 +183,7 @@ describe('the allowlisted guilds', () => {
    * panel in that guild simply never fires, and nothing says why.
    */
   it('names an allowlisted guild the bot is not in', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config({ BANANASAURS_GUILD_ALLOWLIST: ABSENT_GUILD }));
 
     expect(report.guilds[0]).toMatchObject({ guildId: ABSENT_GUILD, present: false });
@@ -187,9 +192,9 @@ describe('the allowlisted guilds', () => {
   });
 });
 
-describe('permissions — docs/18 layer 1', () => {
-  it('is content with exactly the Release 1 set', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+describe('permissions — docs/18 layer 1 + Release 2 moderation', () => {
+  it('is content with exactly the required set', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
     expect(report.guilds[0]?.missingPermissions).toEqual([]);
@@ -199,7 +204,7 @@ describe('permissions — docs/18 layer 1', () => {
 
   it('names a permission the bot needs and does not have', () => {
     // Everything except Manage Roles, which is the one thing it actually does.
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS & ~268435456n));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS & ~268435456n));
     const report = buildDoctorReport(client, config());
 
     expect(report.guilds[0]?.missingPermissions).toEqual(['ManageRoles']);
@@ -213,7 +218,7 @@ describe('permissions — docs/18 layer 1', () => {
    * deleting a message or banning a member.
    */
   it('refuses to call a bot with Administrator healthy', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS | 8n));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS | 8n));
     const report = buildDoctorReport(client, config());
 
     expect(report.guilds[0]?.extraPermissions).toContain('Administrator');
@@ -221,16 +226,48 @@ describe('permissions — docs/18 layer 1', () => {
   });
 
   /**
-   * Manage Messages is deliberately absent (`docs/18`, amendment 2026-08-22:
-   * `single_choice` was restricted to managed panels rather than granting it).
-   * Holding it is not fatal, but it is a change to the wall and it gets said.
+   * Release 2's moderation surface (ADR 0037 — /mod ban/unban; the keyword-filter
+   * purge path) needs `Ban Members` and `Manage Messages` at the guild level, on
+   * top of everything Release 1 already required.
    */
-  it('reports Manage Messages as extra without failing the check', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS | 8192n));
+  it('flags a missing Ban Members as a required permission', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS & ~4n)); // ~BanMembers
     const report = buildDoctorReport(client, config());
 
-    expect(report.guilds[0]?.extraPermissions).toEqual(['ManageMessages']);
+    expect(report.guilds[0]?.missingPermissions).toEqual(['BanMembers']);
+    expect(report.ok).toBe(false);
+  });
+
+  it('flags a missing Manage Messages as a required permission', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS & ~8192n)); // ~ManageMessages
+    const report = buildDoctorReport(client, config());
+
+    expect(report.guilds[0]?.missingPermissions).toEqual(['ManageMessages']);
+    expect(report.ok).toBe(false);
+  });
+
+  it('passes with Ban Members and Manage Messages held alongside everything Release 1 needs', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config());
+
+    expect(report.guilds[0]?.missingPermissions).toEqual([]);
     expect(report.ok).toBe(true);
+  });
+
+  /**
+   * Before this change, `RELEASE_1_PERMISSIONS` was the whole required set, so a
+   * guild that had reasonably granted Ban Members/Manage Messages up front (a
+   * moderation bot needs them) showed up as over-permissioned. Once they join
+   * the required set, that same guild stops being flagged for holding something
+   * it should have anyway.
+   */
+  it('no longer reports Ban Members or Manage Messages as extra now that they are required', () => {
+    addGuild(GUILD, String(RELEASE_1_PERMISSIONS | 4n | 8192n)); // + BanMembers + ManageMessages
+    const report = buildDoctorReport(client, config());
+
+    expect(report.guilds[0]?.extraPermissions).not.toContain('BanMembers');
+    expect(report.guilds[0]?.extraPermissions).not.toContain('ManageMessages');
+    expect(report.guilds[0]?.extraPermissions).toEqual([]);
   });
 });
 
@@ -256,7 +293,7 @@ describe('backup health (ADR 0034)', () => {
   };
 
   it('is not a doctor failure when the directory does not exist yet', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const missing = path.join(dir, 'never-created');
     const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: missing }));
 
@@ -266,7 +303,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('is not a doctor failure when the directory exists but holds nothing yet', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: dir }));
 
     expect(report.backup.dirExists).toBe(true);
@@ -276,7 +313,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('reports the count and age of a fresh backup without failing doctor', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const takenAt = new Date('2026-08-30T00:00:00.000Z');
     takeBackup(dir, () => takenAt);
     const nowMs = takenAt.getTime() + 5 * 60_000; // 5 minutes later
@@ -290,7 +327,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('reports the age of the newest backup, not the oldest, when several exist', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const older = new Date('2026-08-30T00:00:00.000Z');
     const newer = new Date('2026-08-30T01:00:00.000Z');
     takeBackup(dir, () => older);
@@ -305,7 +342,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('fails doctor when the newest backup is older than twice the configured interval', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const takenAt = new Date('2026-08-30T00:00:00.000Z');
     takeBackup(dir, () => takenAt);
     // Interval 60 min, threshold 120 min; the backup is 121 minutes old.
@@ -322,7 +359,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('does not call a backup stale at exactly twice the interval', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const takenAt = new Date('2026-08-30T00:00:00.000Z');
     takeBackup(dir, () => takenAt);
     const nowMs = takenAt.getTime() + 120 * 60_000; // exactly the threshold
@@ -338,7 +375,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('fails doctor when the directory exists but this process cannot write to it', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     fs.chmodSync(dir, 0o555); // read + execute, no write
 
     const report = buildDoctorReport(client, config({ BANANASAURS_BACKUP_DIR: dir }));
@@ -349,7 +386,7 @@ describe('backup health (ADR 0034)', () => {
   });
 
   it('renders a stale backup as a named finding in the printed report', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const takenAt = new Date('2026-08-30T00:00:00.000Z');
     takeBackup(dir, () => takenAt);
     const nowMs = takenAt.getTime() + 121 * 60_000;
@@ -369,7 +406,7 @@ describe('backup health (ADR 0034)', () => {
 
 describe('the printed report', () => {
   it('is legible and carries no secret', () => {
-    addGuild(GUILD, String(RELEASE_1_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const text = formatDoctorReport(buildDoctorReport(client, config()));
 
     expect(text).toContain('partials');

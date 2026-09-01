@@ -44,6 +44,23 @@ export const RELEASE_1_PERMISSIONS =
   PermissionsBitField.Flags.ViewAuditLog;
 
 /**
+ * Release 2's moderation surface (ADR 0037 — `/mod ban`, `/mod unban`; the
+ * keyword-filter purge path) reaches Discord actions layer 1 never granted:
+ * banning a member and deleting other members' messages. Named separately
+ * from `RELEASE_1_PERMISSIONS` rather than folded into it so the release that
+ * introduced each permission stays visible at the point it is required.
+ */
+export const RELEASE_2_MODERATION_PERMISSIONS =
+  PermissionsBitField.Flags.BanMembers | PermissionsBitField.Flags.ManageMessages;
+
+/**
+ * Everything doctor requires the bot's guild role to hold, across both
+ * releases. `RELEASE_1_PERMISSIONS` stays exported and unchanged — this is
+ * the union `inspectGuild` actually checks against.
+ */
+export const REQUIRED_PERMISSIONS = RELEASE_1_PERMISSIONS | RELEASE_2_MODERATION_PERMISSIONS;
+
+/**
  * Extra permissions that are a finding rather than a note.
  *
  * Administrator implies every permission, which dissolves layer 1 entirely: a
@@ -221,10 +238,10 @@ function inspectGuild(guild: Guild | undefined, guildId: string): DoctorGuild {
     // an operator comparing this number against a hierarchy refusal has to see
     // the same scale.
     botHighestRolePosition: me?.roles.highest.rawPosition,
-    missingPermissions: namesOf(RELEASE_1_PERMISSIONS & ~held),
-    // Everything held that the Release 1 set does not name — the other direction
+    missingPermissions: namesOf(REQUIRED_PERMISSIONS & ~held),
+    // Everything held that the required set does not name — the other direction
     // of the same wall, and the one nobody notices without being told.
-    extraPermissions: namesOf(held & ~RELEASE_1_PERMISSIONS),
+    extraPermissions: namesOf(held & ~REQUIRED_PERMISSIONS),
     forbiddenPermissions: namesOf(held & FORBIDDEN_PERMISSIONS),
   };
 }
@@ -281,7 +298,7 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
     if (guild.extraPermissions.length > 0) {
       lines.push(
-        `    extra permissions beyond the Release 1 set: ${guild.extraPermissions.join(', ')}`,
+        `    extra permissions beyond the required set: ${guild.extraPermissions.join(', ')}`,
       );
     }
   }
