@@ -246,6 +246,10 @@ caveat that qualifies it is the kind of quiet lie the gate exists to catch.
 - `MESSAGE_CONTENT` is already held, so `content` and `matched_content` arrive
   populated. Had it not been, they would be empty strings and the recorded
   event would be far less useful — worth knowing if the intent is ever dropped.
+  Loss of this intent also silently coarsens deduplication: `content` is a
+  component of the fingerprint, so its absence would collapse all of one
+  member's blocks under one rule inside a 60-second window into a single
+  recorded event.
 - No new dependency. No provider call. Nothing in this path degrades if every
   AI provider is unreachable, because none is involved.
 - Not decided here, and deliberately: whether Bananasaurs should ever *manage*

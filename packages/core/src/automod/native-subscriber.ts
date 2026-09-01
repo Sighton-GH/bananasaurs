@@ -88,12 +88,13 @@ export const createNativeAutomodSubscriber = (deps: NativeAutomodSubscriberDeps)
     // `content` and `matchedContent` are member-authored text and never reach
     // a log line (CLAUDE.md rule 4: redaction is an allowlist). Every field
     // logged here — `component`, `guildId`, `ruleId`, `action` — is already on
-    // `LOGGABLE_FIELDS`, so this call needs no allowlist change.
+    // `LOGGABLE_FIELDS`, so this call needs no allowlist change. The ruleId is
+    // logged with the native prefix to match the database record.
     deps.logger.info(
       safeLogFields({
         component: 'native-automod',
         guildId: native.guildId,
-        ruleId: native.ruleId,
+        ruleId: `${NATIVE_RULE_PREFIX}${native.ruleId}`,
         action: native.actionType,
       }),
       'recorded a native AutoMod decision',
