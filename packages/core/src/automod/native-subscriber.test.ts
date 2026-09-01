@@ -119,9 +119,7 @@ describe('native automod subscriber', () => {
     // is consistent with what "snippet" means elsewhere.
     const { subscriber, recorded } = deps();
     const longContent = 'x'.repeat(300);
-    await subscriber.handle(
-      event({ matchedKeyword: undefined, matchedContent: longContent }),
-    );
+    await subscriber.handle(event({ matchedKeyword: undefined, matchedContent: longContent }));
     expect(recorded).toHaveLength(1);
     const snippet = (recorded[0] as { matchedSnippet: string }).matchedSnippet;
     expect(snippet).toBe('x'.repeat(200) + '…');

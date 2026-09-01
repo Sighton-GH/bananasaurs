@@ -258,7 +258,9 @@ function inspectGuild(guild: Guild | undefined, guildId: string): DoctorGuild {
     // of the same wall, and the one nobody notices without being told. Exclude
     // ManageGuild from this report, since it is not required but is tracked
     // separately for native AutoMod observability.
-    extraPermissions: namesOf(held & ~REQUIRED_PERMISSIONS & ~NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS),
+    extraPermissions: namesOf(
+      held & ~REQUIRED_PERMISSIONS & ~NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS,
+    ),
     forbiddenPermissions: namesOf(held & FORBIDDEN_PERMISSIONS),
     nativeAutomodObservabilityActive: (held & NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS) !== 0n,
   };
