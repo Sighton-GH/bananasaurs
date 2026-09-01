@@ -134,16 +134,17 @@ const evidenceUrlOption: GuildCommandOption = {
  * members holding none of them by default, while `authorize()` remains the
  * actual gate.
  *
- * Nine subcommands now: `timeout`, `untimeout`, `kick`, `unban`, `warn`
+ * Ten subcommands now: `timeout`, `untimeout`, `kick`, `unban`, `warn`
  * (Task 6, executing on invocation), `ban` and `purge` (Task 7,
  * confirm-then-execute — `packages/core/src/mod/confirmations.ts` writes a
  * pending intent and renders Confirm/Cancel buttons instead of acting
- * immediately), and `note`/`evidence` (Task 8, executing on invocation like
+ * immediately), `note`/`evidence` (Task 8, executing on invocation like
  * Task 6's five — neither calls the moderation gateway at all, so there is
- * nothing to preview or confirm). `history` is Task 9 and extends this
- * `options` array too — the registration endpoint replaces the whole set on
- * every `PUT` (this file's own docstring, ADR 0032), so growing the array
- * and redeploying is the entire mechanism.
+ * nothing to preview or confirm), and `history` (Task 9, read-only — no
+ * gateway call, no case-event write, just `target`). The registration
+ * endpoint replaces the whole set on every `PUT` (this file's own
+ * docstring, ADR 0032), so growing the array and redeploying is the entire
+ * mechanism.
  */
 export const MOD_COMMAND: GuildCommandDefinition = {
   name: 'mod',
@@ -220,6 +221,12 @@ export const MOD_COMMAND: GuildCommandDefinition = {
       description: 'Attach an evidence link to a member’s case history',
       type: ApplicationCommandOptionType.Subcommand,
       options: [targetOption, evidenceUrlOption],
+    },
+    {
+      name: 'history',
+      description: 'Show a member’s case history — read-only, no side effects',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption],
     },
   ],
 };

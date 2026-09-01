@@ -14,6 +14,7 @@ import {
   type ModCommandDeps,
   type NoteEvidenceCasePorts,
 } from './commands.js';
+import type { HistoryCase, HistoryCaseEvent, HistoryCasePorts } from './history.js';
 import type { WarnCasePorts } from './warn.js';
 
 /**
@@ -55,6 +56,8 @@ interface Harness {
     warnRecordCaseEvent: Parameters<WarnCasePorts['recordCaseEvent']>[0][];
     noteEvidenceRecordCaseEvent: Parameters<NoteEvidenceCasePorts['recordCaseEvent']>[0][];
     noteEvidenceOpenOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
+    historyListCasesForMember: string[];
+    historyListCaseEvents: string[];
     defer: { ref: InteractionRef; options: { ephemeral: boolean } }[];
     respond: { ref: InteractionRef; message: OutgoingMessage }[];
     fetchInvokerRoleIds: Snowflake[];
@@ -67,6 +70,8 @@ function buildHarness(
     applyActionResult?: ModerationOutcome;
     violationCount?: number;
     tier?: { tier: number; action: 'timeout' | 'kick' | undefined; timeoutMs: number | undefined };
+    historyCases?: readonly HistoryCase[];
+    historyEventsByCase?: Record<string, readonly HistoryCaseEvent[]>;
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -76,6 +81,8 @@ function buildHarness(
     warnRecordCaseEvent: [],
     noteEvidenceRecordCaseEvent: [],
     noteEvidenceOpenOrResolveCase: [],
+    historyListCasesForMember: [],
+    historyListCaseEvents: [],
     defer: [],
     respond: [],
     fetchInvokerRoleIds: [],
@@ -134,6 +141,17 @@ function buildHarness(
     },
   };
 
+  const historyCases: HistoryCasePorts = {
+    listCasesForMember: (memberId) => {
+      calls.historyListCasesForMember.push(memberId);
+      return opts.historyCases ?? [];
+    },
+    listCaseEvents: (caseId) => {
+      calls.historyListCaseEvents.push(caseId);
+      return opts.historyEventsByCase?.[caseId] ?? [];
+    },
+  };
+
   const responder: SlashResponder = {
     defer: async (ref, options) => {
       calls.defer.push({ ref, options });
@@ -154,6 +172,17 @@ function buildHarness(
     cases,
     warnRepo,
     noteEvidenceCases,
+    history: {
+      guildId: GUILD,
+      authz,
+      fetchInvokerRoleIds: async (userId) => {
+        calls.fetchInvokerRoleIds.push(userId);
+        return [];
+      },
+      cases: historyCases,
+      responder,
+      logger: silentLogger,
+    },
     responder,
     now: () => NOW_MS,
     logger: silentLogger,
@@ -206,8 +235,8 @@ describe('mod command subscriber', () => {
   it('ignores an unrecognised subcommand rather than guessing', async () => {
     const { deps, calls } = buildHarness();
     const subscriber = createModCommandSubscriber(deps);
-    // 'history' belongs to Task 9, not yet wired into this subscriber.
-    await subscriber.handle(slashCommandEvent({ subcommandPath: ['history'] }));
+    // A stale/future registration this subscriber does not (yet) know.
+    await subscriber.handle(slashCommandEvent({ subcommandPath: ['bogus-subcommand'] }));
     expect(calls.defer).toHaveLength(0);
     expect(calls.applyAction).toHaveLength(0);
   });
@@ -572,6 +601,65 @@ describe('mod command subscriber', () => {
       expect(event.actorId).toBe(MODERATOR);
       expect(event.memberId).toBe(TARGET);
       expect(event.actionTaken).not.toBe('evidence_added');
+    });
+  });
+
+  describe('history', () => {
+    it('without moderation.act, refuses — the dispatch-level proof that history is gated like every other subcommand', async () => {
+      const { deps, calls } = buildHarness({ authorized: false });
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(slashCommandEvent({ subcommandPath: ['history'] }));
+
+      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(calls.historyListCasesForMember).toHaveLength(0);
+      // Unlike every write subcommand, history records no case event for a
+      // refusal — nothing happened to any case.
+      expect(calls.recordCaseEvent).toHaveLength(0);
+      expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(0);
+      expect(calls.warnRecordCaseEvent).toHaveLength(0);
+    });
+
+    it('with moderation.act, routes to the history handler and renders cases and events', async () => {
+      const { deps, calls } = buildHarness({
+        authorized: true,
+        historyCases: [
+          {
+            caseId: 'case-1',
+            memberId: TARGET,
+            openedAt: NOW_MS - 10_000,
+            violationCount: 2,
+            escalationTier: 0,
+            status: 'open',
+          },
+        ],
+        historyEventsByCase: {
+          'case-1': [
+            {
+              eventId: 'evt-1',
+              caseId: 'case-1',
+              ruleId: 'manual',
+              memberId: TARGET,
+              at: NOW_MS,
+              matchedCategory: 'warn',
+              matchedSnippet: 'being disruptive',
+              actionTaken: 'warned',
+              escalationAction: undefined,
+              refusalReason: undefined,
+              actorId: MODERATOR,
+            },
+          ],
+        },
+      });
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(slashCommandEvent({ subcommandPath: ['history'] }));
+
+      expect(calls.historyListCasesForMember).toEqual([TARGET]);
+      expect(calls.historyListCaseEvents).toEqual(['case-1']);
+      const content = calls.respond[0]?.message.content ?? '';
+      expect(content).toContain('case-1');
+      expect(content).toContain('warned');
+      expect(content).toContain(MODERATOR);
+      expect(content).toContain('violations: 2');
     });
   });
 

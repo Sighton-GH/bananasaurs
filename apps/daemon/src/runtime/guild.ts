@@ -22,6 +22,7 @@ import {
   type Config,
   type DiscordPort,
   type EffectGatewayDeps,
+  type HistoryDeps,
   type InteractionSubscriberDeps,
   type Logger,
   type LoggingPorts,
@@ -543,6 +544,25 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
         }),
     },
+    // Task 9: `history` — read-only, so a fourth, narrower sibling port
+    // (`HistoryCasePorts`) rather than a widening of `cases`/`noteEvidenceCases`
+    // above: it names only the two read functions its own call site uses,
+    // the same "each module names only what it calls" convention the other
+    // three ports here already follow.
+    history: {
+      guildId,
+      authz: authzStoreFor(scope),
+      fetchInvokerRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
+      cases: {
+        listCasesForMember: (memberId) => modCaseRepo.listCasesForMember(scope, memberId),
+        listCaseEvents: (caseId) => modCaseRepo.listCaseEvents(scope, caseId),
+      },
+      responder: {
+        defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      },
+      logger,
+    } satisfies HistoryDeps,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
       respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),

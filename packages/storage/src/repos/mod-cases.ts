@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { eq, sql } from 'drizzle-orm';
+import { desc, eq, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { modCaseEvents, modCases } from '../schema.js';
@@ -282,6 +282,63 @@ export const listCaseEvents = (scope: GuildScope, caseId: string): ModCaseEvent[
           ModCaseEscalationAction | undefined,
         refusalReason: (row.refusalReason ?? undefined) as ModCaseRefusalReason | undefined,
         actorId: row.actorId ?? undefined,
+      })),
+  );
+
+export interface ModCase {
+  readonly caseId: string;
+  readonly memberId: string;
+  readonly openedAt: number;
+  readonly violationCount: number;
+  readonly escalationTier: number;
+  readonly status: ModCaseStatus;
+}
+
+/**
+ * Every case ever opened for `memberId`, guild-scoped — `/mod history`
+ * (Task 9), the last `/mod` subcommand.
+ *
+ * Ordered open-first, then newest-opened-first. In production today
+ * `mod_cases_open_per_member`'s partial unique index and the absence of any
+ * code path that ever sets `status = 'closed'` mean a member has at most one
+ * row, so this ordering is untested by production traffic — but the schema
+ * already carries a `status` column and this function is written for the
+ * general case the schema anticipates (multiple historical cases per
+ * member), not for today's single-row reality. "Open first" beats
+ * "newest first" deliberately: an operator running `/mod history` wants the
+ * live case at the top even if, hypothetically, a closed case were reopened
+ * more recently in wall-clock terms than the member's current open case —
+ * there is no such path today, but the ordering still encodes the right
+ * priority rather than a coincidentally-correct one.
+ *
+ * `ORDER BY` needs two tiebreakers beyond `status`/`openedAt`: `openedAt` can
+ * tie the same way `listCaseEvents`' docstring explains `at` can (a fake
+ * clock in a test, or two rows landing in the same production millisecond),
+ * and `case_id` is a random UUID with no useful sort order of its own. Like
+ * `listCaseEvents`, this falls back to the table's own implicit SQLite
+ * `rowid` — insertion order, newest last — so `rowid DESC` is a stable,
+ * always-available "most recently inserted" tiebreaker within a tied
+ * `(status, openedAt)` group.
+ */
+export const listCasesForMember = (scope: GuildScope, memberId: string): ModCase[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(modCases)
+      .where(scope.only(modCases, eq(modCases.memberId, memberId)))
+      .orderBy(
+        sql`CASE WHEN ${modCases.status} = 'open' THEN 0 ELSE 1 END`,
+        desc(modCases.openedAt),
+        sql`rowid DESC`,
+      )
+      .all()
+      .map((row) => ({
+        caseId: row.caseId,
+        memberId: row.memberId,
+        openedAt: row.openedAt,
+        violationCount: row.violationCount,
+        escalationTier: row.escalationTier,
+        status: row.status as ModCaseStatus,
       })),
   );
 

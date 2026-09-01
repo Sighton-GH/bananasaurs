@@ -4,11 +4,13 @@ import { parseGuildId, parseSnowflakeId } from '@bananasaurs/core';
 import { upsertGuild } from './guilds.js';
 import {
   listCaseEvents,
+  listCasesForMember,
   nextEscalationTier,
   openOrResolveCase,
   recordCaseEvent,
   type ModCaseActionTaken,
 } from './mod-cases.js';
+import { modCases } from '../schema.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const MEMBER = parseSnowflakeId('222222222222222222');
@@ -374,5 +376,124 @@ describe('moderator warnings share the escalation counter (ADR 0037)', () => {
     });
     expect(later.caseId).toBe(first.caseId);
     expect(later.violationCount).toBe(2);
+  });
+});
+
+/**
+ * `/mod history` (Task 9) reads through this. There is no code path in the
+ * product today that ever sets `status = 'closed'` — `openOrResolveCase`
+ * only ever opens or resolves into an existing open case — so a closed row
+ * below is seeded directly against `modCases` (bypassing the repo, which
+ * offers no close operation) purely to exercise the ordering the schema's
+ * `status` column anticipates. Building a case-closing feature is out of
+ * scope for this task.
+ */
+describe('listCasesForMember', () => {
+  const seedClosedCase = (
+    scope: ReturnType<MigratedTestDatabase['scopes']['forGuild']>,
+    input: { caseId: string; memberId: string; openedAt: number; violationCount?: number },
+  ): void => {
+    t.db
+      .insert(modCases)
+      .values({
+        guildId: scope.guildId,
+        caseId: input.caseId,
+        memberId: input.memberId,
+        openedAt: input.openedAt,
+        violationCount: input.violationCount ?? 1,
+        escalationTier: 0,
+        status: 'closed',
+      })
+      .run();
+  };
+
+  it('is guild-scoped: another guild’s member with the identical id returns nothing', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+
+    const otherGuild = parseGuildId('999999999999999999');
+    upsertGuild(t.scopes.forGuild(otherGuild), { name: 'other guild', now: 0 });
+    const otherScope = t.scopes.forGuild(otherGuild);
+
+    expect(listCasesForMember(otherScope, MEMBER)).toEqual([]);
+    // Sanity: the case really exists, just not reachable through the wrong scope.
+    expect(listCasesForMember(scope, MEMBER)).toHaveLength(1);
+  });
+
+  it('returns nothing for a member who has never had a case', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    expect(listCasesForMember(scope, MEMBER)).toEqual([]);
+  });
+
+  it('open sorts before closed even when the closed case is more recently opened', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    seedClosedCase(scope, { caseId: 'closed-newer', memberId: MEMBER, openedAt: 5000 });
+    const open = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+
+    const cases = listCasesForMember(scope, MEMBER);
+    expect(cases.map((c) => c.caseId)).toEqual([open.caseId, 'closed-newer']);
+    expect(cases[0]?.status).toBe('open');
+    expect(cases[1]?.status).toBe('closed');
+  });
+
+  it('within the same status, newest opened_at sorts first', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    seedClosedCase(scope, { caseId: 'closed-old', memberId: MEMBER, openedAt: 1000 });
+    seedClosedCase(scope, { caseId: 'closed-new', memberId: MEMBER, openedAt: 2000 });
+
+    const cases = listCasesForMember(scope, MEMBER);
+    expect(cases.map((c) => c.caseId)).toEqual(['closed-new', 'closed-old']);
+  });
+
+  it('returns the full row shape: caseId, memberId, openedAt, violationCount, escalationTier, status', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    openOrResolveCase(scope, { memberId: MEMBER, now: 1234 });
+    openOrResolveCase(scope, { memberId: MEMBER, now: 2345 });
+
+    const cases = listCasesForMember(scope, MEMBER);
+    expect(cases).toEqual([
+      {
+        caseId: cases[0]?.caseId,
+        memberId: MEMBER,
+        openedAt: 1234,
+        violationCount: 2,
+        escalationTier: 0,
+        status: 'open',
+      },
+    ]);
+  });
+
+  it('once a case is found, listCaseEvents(caseId) gives the full per-case picture', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    recordCaseEvent(scope, {
+      eventId: 'evt-1',
+      caseId,
+      ruleId: 'manual',
+      memberId: MEMBER,
+      at: 1000,
+      matchedCategory: 'note',
+      matchedSnippet: 'first contact',
+      actionTaken: 'note',
+      actorId: '777777777777777777',
+    });
+    recordCaseEvent(scope, {
+      eventId: 'evt-2',
+      caseId,
+      ruleId: 'manual',
+      memberId: MEMBER,
+      at: 2000,
+      matchedCategory: 'timeout',
+      matchedSnippet: 'being disruptive',
+      actionTaken: 'manual_applied',
+      escalationAction: 'timeout',
+      actorId: '777777777777777777',
+    });
+
+    const [foundCase] = listCasesForMember(scope, MEMBER);
+    expect(foundCase?.caseId).toBe(caseId);
+    const events = listCaseEvents(scope, foundCase!.caseId);
+    expect(events.map((e) => e.eventId)).toEqual(['evt-1', 'evt-2']);
+    expect(events.map((e) => e.actionTaken)).toEqual(['note', 'manual_applied']);
   });
 });

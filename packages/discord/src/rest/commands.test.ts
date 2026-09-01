@@ -78,7 +78,7 @@ describe('the Release 2 command set', () => {
     expect(RELEASE_2_COMMANDS).toEqual([STATUS_COMMAND, MOD_COMMAND]);
   });
 
-  it('/mod carries the five Task 6 subcommands, ban and purge (Task 7), and note/evidence (Task 8)', () => {
+  it('/mod carries the five Task 6 subcommands, ban and purge (Task 7), note/evidence (Task 8), and history (Task 9)', () => {
     expect(MOD_COMMAND.name).toBe('mod');
     const names = MOD_COMMAND.options?.map((o) => o.name);
     expect(names).toEqual([
@@ -91,6 +91,7 @@ describe('the Release 2 command set', () => {
       'purge',
       'note',
       'evidence',
+      'history',
     ]);
     // Only the six action subcommands take a `reason` — `note`/`evidence`
     // (Task 8) carry their own content option (`text`/`url`) instead; a
@@ -125,6 +126,11 @@ describe('the Release 2 command set', () => {
     expect(evidence?.options?.map((o) => o.name)).toEqual(['target', 'url']);
     const url = evidence?.options?.find((o) => o.name === 'url');
     expect(url).toMatchObject({ type: 3, required: true, max_length: 500 }); // STRING
+  });
+
+  it('history is read-only: target only, no reason and no other content option', () => {
+    const history = MOD_COMMAND.options?.find((o) => o.name === 'history');
+    expect(history?.options?.map((o) => o.name)).toEqual(['target']);
   });
 
   it('ban is a plain target+reason confirm-then-execute subcommand', () => {

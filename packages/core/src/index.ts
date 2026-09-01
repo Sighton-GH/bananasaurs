@@ -224,6 +224,13 @@ export {
   type NoteEvidenceCasePorts,
 } from './mod/commands.js';
 export {
+  handleHistory,
+  type HistoryCase,
+  type HistoryCaseEvent,
+  type HistoryCasePorts,
+  type HistoryDeps,
+} from './mod/history.js';
+export {
   banConfirmDedupeKey,
   buildConfirmCancelComponents,
   buildModCancelCustomId,

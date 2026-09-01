@@ -17,6 +17,7 @@ import { safeLogFields, type Logger } from '../obs/logger.js';
 import type { SlashResponder } from '../ops/commands/status-slash.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import { handleBanPreview, handlePurgePreview, type ModConfirmationDeps } from './confirmations.js';
+import { handleHistory, type HistoryDeps } from './history.js';
 import { issueWarn, MANUAL_RULE_ID, type WarnCasePorts } from './warn.js';
 
 /**
@@ -36,11 +37,13 @@ import { issueWarn, MANUAL_RULE_ID, type WarnCasePorts } from './warn.js';
  * hierarchy, no confirmation to hold open — so each is just an authorized
  * moderator appending one durable `mod_case_events` row, the same shape as
  * `handleDirectAction`'s "defer → authorize → act → respond" but with the
- * "act" step being a repo write instead of a gateway call. `history`
- * belongs to Task 9. `MOD_COMMAND` (`packages/discord/src/rest/commands.ts`)
- * registers nine subcommands today — Task 9 extends both that list and this
- * subscriber's dispatch, the same way `ADR 0037` point 9 describes the
- * registration endpoint being re-PUT with a growing set.
+ * "act" step being a repo write instead of a gateway call. `history` (Task
+ * 9, `handleHistory` in `./history.js`) is the tenth and last subcommand:
+ * read-only, so it writes no `mod_case_events` row at all, not even for a
+ * refusal — see `history.ts`'s own docstring. `MOD_COMMAND`
+ * (`packages/discord/src/rest/commands.ts`) registers all ten subcommands
+ * now, the same way `ADR 0037` point 9 describes the registration endpoint
+ * being re-PUT with a growing set.
  *
  * The pattern mirrors `ops/commands/status-slash.ts`: defer ephemeral,
  * respond ephemeral, an honest fallback if the handler throws after
@@ -163,6 +166,13 @@ export interface ModCommandDeps {
   readonly warnRepo: WarnCasePorts;
   /** Backs `note` and `evidence` (Task 8) — see `NoteEvidenceCasePorts`'s own docstring for why this is a third, separate port rather than a widening of `cases`. */
   readonly noteEvidenceCases: NoteEvidenceCasePorts;
+  /**
+   * Everything `history` needs (Task 9). A separate, self-contained deps
+   * object rather than flattened fields here — mirrors `confirmations`
+   * below: `history.ts` defines `HistoryDeps` and this module imports it,
+   * never the reverse.
+   */
+  readonly history: HistoryDeps;
   readonly responder: SlashResponder;
   readonly now: () => number;
   readonly logger: Logger;
@@ -622,13 +632,14 @@ const handleNoteOrEvidence = async (
 
 const isKnownSubcommand = (
   value: string,
-): value is DirectAction | 'warn' | 'ban' | 'purge' | 'note' | 'evidence' =>
+): value is DirectAction | 'warn' | 'ban' | 'purge' | 'note' | 'evidence' | 'history' =>
   DIRECT_ACTIONS.has(value) ||
   value === 'warn' ||
   value === 'ban' ||
   value === 'purge' ||
   value === 'note' ||
-  value === 'evidence';
+  value === 'evidence' ||
+  value === 'history';
 
 export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => ({
   name: 'mod-commands',
@@ -637,12 +648,11 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
     if (event.commandName !== MOD_COMMAND_NAME) return;
 
     const subcommand = event.subcommandPath[0];
-    // Not one of the nine subcommands this subscriber knows — either a
-    // stale registration or a later task's subcommand (`history`, Task 9)
-    // this instance does not yet handle. Identified before acknowledging,
-    // the same rule `status-slash.ts` follows for a command that is not
-    // `/status`: never swallow an interaction that belongs to code not
-    // wired in yet.
+    // Not one of the ten subcommands this subscriber knows — either a stale
+    // registration or a subcommand a future task adds that this instance
+    // does not yet handle. Identified before acknowledging, the same rule
+    // `status-slash.ts` follows for a command that is not `/status`: never
+    // swallow an interaction that belongs to code not wired in yet.
     if (subcommand === undefined || !isKnownSubcommand(subcommand)) return;
 
     const ref: InteractionRef = { interactionId: event.interactionId, token: event.token };
@@ -657,6 +667,8 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
         await handlePurgePreview(deps.confirmations, event, ref);
       } else if (subcommand === 'note' || subcommand === 'evidence') {
         await handleNoteOrEvidence(deps, event, ref, subcommand);
+      } else if (subcommand === 'history') {
+        await handleHistory(deps.history, event, ref);
       } else {
         await handleDirectAction(deps, event, ref, subcommand);
       }
