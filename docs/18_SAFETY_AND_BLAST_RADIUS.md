@@ -33,7 +33,10 @@ Total: **2416004288**. Invite URL:
 https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot%20applications.commands&permissions=2416004288
 ```
 
-**Deliberately absent:** Manage Messages, Manage Channels, Manage Server, Kick, Ban, Moderate Members, Manage Webhooks, Mention Everyone, Administrator.
+**Deliberately absent:** Manage Messages, Manage Channels, Kick, Ban, Moderate Members, Manage Webhooks, Mention Everyone, Administrator.
+
+**Manage Server — conditionally held for native AutoMod observability:**
+When granting Manage Server, understand the trade-off: it is the only permission that enables Discord to dispatch `AUTO_MODERATION_ACTION_EXECUTION` events, so native AutoMod decisions are recorded in case history (ADR 0038). However, it also unlocks Discord's AutoMod REST endpoints, converting "Bananasaurs structurally cannot manage native rules" (permission wall, layer 1) into "merely does not." This removes a structural limit. The owner decides whether that trade is worth it; it is not currently granted, and `doctor` reports when it is missing but does not fail — native observability is inert without it, yet the bot is meant to run without it today.
 
 > **Amendment, 2026-08-22 — one feature is given up to keep this list short.**
 >

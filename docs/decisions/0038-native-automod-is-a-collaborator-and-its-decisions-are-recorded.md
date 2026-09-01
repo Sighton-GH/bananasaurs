@@ -202,6 +202,19 @@ caveat that qualifies it is the kind of quiet lie the gate exists to catch.
 
 ## Consequences
 
+- **Permission requirement:** `AUTO_MODERATION_ACTION_EXECUTION` dispatch requires
+  the `MANAGE_GUILD` permission (confirmed in `discord.js` source,
+  `AutoModerationActionExecution.js`). This is not currently granted; whether to
+  grant it is the owner's decision and has not been made. Granting it has a real
+  trade-off: `MANAGE_GUILD` also unlocks Discord's AutoMod REST endpoints, converting
+  "Bananasaurs structurally cannot manage native rules via the API" (permission
+  wall, permission architecture layer 1) into "merely does not." Section §A2 of
+  `docs/18_SAFETY_AND_BLAST_RADIUS.md` records this trade and its structural
+  implications. When the permission is not held, the bot runs normally but native
+  AutoMod observability is inert — events are never recorded and the decision is
+  unauditable. Whether this is acceptable is separate from the technical deferral:
+  "should Bananasaurs *manage* native rules?" This ADR reads native's decisions
+  only, never writes them back.
 - `REQUIRED_INTENTS` gains `AutoModerationExecution`. It is not privileged, so
   no portal change is needed, but `doctor` and the intent assertions must be
   updated together or the daemon will assert against a stale set.

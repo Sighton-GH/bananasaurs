@@ -54,6 +54,18 @@ export const RELEASE_2_MODERATION_PERMISSIONS =
   PermissionsBitField.Flags.BanMembers | PermissionsBitField.Flags.ManageMessages;
 
 /**
+ * Native AutoMod observability (ADR 0038) requires `ManageGuild` for Discord
+ * to dispatch `AUTO_MODERATION_ACTION_EXECUTION` events at all. This is not
+ * currently granted — whether to grant it is the owner's decision, because
+ * `ManageGuild` also unlocks Discord's AutoMod REST endpoints and would
+ * convert "Bananasaurs structurally cannot manage native rules" into "merely
+ * does not" — trading away a permission wall. `doctor` reports when it is
+ * missing, but does not fail; the feature is inert without it, yet the bot is
+ * meant to run without it today.
+ */
+export const NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS = PermissionsBitField.Flags.ManageGuild;
+
+/**
  * Everything doctor requires the bot's guild role to hold, across both
  * releases. `RELEASE_1_PERMISSIONS` stays exported and unchanged — this is
  * the union `inspectGuild` actually checks against.
@@ -95,6 +107,8 @@ export interface DoctorGuild {
   readonly extraPermissions: readonly string[];
   /** The subset of `extraPermissions` that dissolves layer 1 rather than widening it. */
   readonly forbiddenPermissions: readonly string[];
+  /** True if native AutoMod observability (`ManageGuild`) is available. */
+  readonly nativeAutomodObservabilityActive: boolean;
 }
 
 /**
@@ -219,6 +233,7 @@ function inspectGuild(guild: Guild | undefined, guildId: string): DoctorGuild {
       missingPermissions: [],
       extraPermissions: [],
       forbiddenPermissions: [],
+      nativeAutomodObservabilityActive: false,
     };
   }
 
@@ -240,9 +255,12 @@ function inspectGuild(guild: Guild | undefined, guildId: string): DoctorGuild {
     botHighestRolePosition: me?.roles.highest.rawPosition,
     missingPermissions: namesOf(REQUIRED_PERMISSIONS & ~held),
     // Everything held that the required set does not name — the other direction
-    // of the same wall, and the one nobody notices without being told.
-    extraPermissions: namesOf(held & ~REQUIRED_PERMISSIONS),
+    // of the same wall, and the one nobody notices without being told. Exclude
+    // ManageGuild from this report, since it is not required but is tracked
+    // separately for native AutoMod observability.
+    extraPermissions: namesOf(held & ~REQUIRED_PERMISSIONS & ~NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS),
     forbiddenPermissions: namesOf(held & FORBIDDEN_PERMISSIONS),
+    nativeAutomodObservabilityActive: (held & NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS) !== 0n,
   };
 }
 
@@ -299,6 +317,11 @@ export function formatDoctorReport(report: DoctorReport): string {
     if (guild.extraPermissions.length > 0) {
       lines.push(
         `    extra permissions beyond the required set: ${guild.extraPermissions.join(', ')}`,
+      );
+    }
+    if (!guild.nativeAutomodObservabilityActive) {
+      lines.push(
+        `    native AutoMod observability inactive: Manage Server not held, so AUTO_MODERATION_ACTION_EXECUTION is never dispatched (ADR 0038)`,
       );
     }
   }
