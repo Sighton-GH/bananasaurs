@@ -27,16 +27,16 @@ This is the only limit that cannot be defeated by a bug in Bananasaurs, because 
 | Use Application Commands | 2147483648 | Slash commands |
 | View Audit Log | 128 | Attribute deletions in the log module |
 
-Total: **2416004288**. Invite URL:
+Total: **2416004320**. Invite URL:
 
 ```
-https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot%20applications.commands&permissions=2416004288
+https://discord.com/oauth2/authorize?client_id=YOUR_APPLICATION_ID&scope=bot%20applications.commands&permissions=2416004320
 ```
 
 **Deliberately absent:** Manage Messages, Manage Channels, Kick, Ban, Moderate Members, Manage Webhooks, Mention Everyone, Administrator.
 
-**Manage Server — conditionally held for native AutoMod observability:**
-When granting Manage Server, understand the trade-off: it is the only permission that enables Discord to dispatch `AUTO_MODERATION_ACTION_EXECUTION` events, so native AutoMod decisions are recorded in case history (ADR 0038). However, it also unlocks Discord's AutoMod REST endpoints, converting "Bananasaurs structurally cannot manage native rules" (permission wall, layer 1) into "merely does not." This removes a structural limit. The owner decides whether that trade is worth it; it is not currently granted, and `doctor` reports when it is missing but does not fail — native observability is inert without it, yet the bot is meant to run without it today.
+**Manage Server — granted 2026-09-01 for native AutoMod observability:**
+This was a real trade, and it was weighed as one before it was made: Manage Server is the only permission that enables Discord to dispatch `AUTO_MODERATION_ACTION_EXECUTION` events, so native AutoMod decisions can be recorded in case history (ADR 0038). It also unlocks Discord's AutoMod REST endpoints, converting "Bananasaurs structurally cannot manage native rules" (permission wall, layer 1) into "merely does not" — a structural limit given up, not merely a permission added. The same grant additionally reaches editing guild settings, managing integrations, and viewing every invite. The owner decided the trade was worth it and granted Manage Server on 2026-09-01. What this actually turns on: reading native AutoMod executions, which is the intended use and is now live. Bananasaurs does not use any of the rest of that surface — the AutoMod REST endpoints, guild settings, integrations, or invites — and ADR 0038 leaves managing native AutoMod rules explicitly out of scope.
 
 > **Amendment, 2026-08-22 — one feature is given up to keep this list short.**
 >
