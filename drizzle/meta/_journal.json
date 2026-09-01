@@ -57,6 +57,13 @@
       "when": 1788193282092,
       "tag": "0007_mushy_dark_beast",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1788194811559,
+      "tag": "0008_mysterious_catseye",
+      "breakpoints": true
     }
   ]
 }

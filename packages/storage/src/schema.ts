@@ -810,7 +810,8 @@ export const modCaseEvents = sqliteTable(
         'escalation_dry_run','escalation_skipped','would_delete','delete_failed',
         'delete_blocked_killswitch','delete_blocked_breaker','delete_blocked_dry_run',
         'delete_blocked_guild_unknown',
-        'warned','note','evidence_added','purged','purge_refused','purge_failed')`,
+        'warned','note','evidence_added','purged','purge_refused','purge_failed',
+        'manual_applied')`,
     ),
     check(
       'mod_case_events_escalation_action',

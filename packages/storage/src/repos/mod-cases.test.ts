@@ -160,7 +160,8 @@ describe('nextEscalationTier', () => {
 });
 
 /**
- * ADR 0037's six additive values. The CHECK constraint is the real
+ * ADR 0037's manual-action vocabulary (seven additive values, plus the
+ * widened escalation_action). The CHECK constraint is the real
  * enforcement point (the test above established the idiom), so each new
  * value must be accepted by the migrated schema, not merely by the
  * TypeScript union — and `escalation_action` must widen to `ban`/`unban`
@@ -178,6 +179,7 @@ describe('mod case events — the manual-action vocabulary (ADR 0037)', () => {
       'purged',
       'purge_refused',
       'purge_failed',
+      'manual_applied',
     ];
     manual.forEach((actionTaken, index) => {
       recordCaseEvent(scope, {
@@ -244,5 +246,63 @@ describe('mod case events — the manual-action vocabulary (ADR 0037)', () => {
     const events = listCaseEvents(scope, caseId);
     expect(events[0]?.actorId).toBe(MEMBER);
     expect(events[1]?.actorId).toBeUndefined();
+  });
+});
+
+/**
+ * The owner's ladder-feeding decision (ADR 0037 §Warnings feed the ladder):
+ * a mod warning increments the SAME per-member counter automod violations
+ * use, with the same semantics. These tests pin the equality at the storage
+ * layer — where the two sources meet — so that an implementation detail
+ * (which call site increments) can never make them diverge.
+ */
+describe('moderator warnings share the escalation counter (ADR 0037)', () => {
+  it('mixed automod strikes and mod warnings are one counter, order-independent', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const OTHER = parseSnowflakeId('666666666666666666');
+
+    // Automod → warn → automod: one member, one counter.
+    const a1 = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    const w1 = openOrResolveCase(scope, { memberId: MEMBER, now: 2000 });
+    const a2 = openOrResolveCase(scope, { memberId: MEMBER, now: 3000 });
+    expect(a1.violationCount).toBe(1);
+    expect(w1.violationCount).toBe(2);
+    expect(a2.violationCount).toBe(3);
+
+    // Three automod strikes alone: the identical sequence.
+    const b1 = openOrResolveCase(scope, { memberId: OTHER, now: 1000 });
+    const b2 = openOrResolveCase(scope, { memberId: OTHER, now: 2000 });
+    const b3 = openOrResolveCase(scope, { memberId: OTHER, now: 3000 });
+    expect([b1.violationCount, b2.violationCount, b3.violationCount]).toEqual([1, 2, 3]);
+
+    // `nextEscalationTier` cannot tell the sources apart — that is the point:
+    // the mixed sequence (automod, warn, automod) and the pure-automod
+    // sequence both reach a count of 3, and the tier decision agrees.
+    expect(nextEscalationTier(a2.violationCount)).toEqual(nextEscalationTier(b3.violationCount));
+    expect(nextEscalationTier(6)).toEqual({ tier: 2, action: 'kick', timeoutMs: undefined });
+  });
+
+  it('a warn resolves into the case an automod strike opened', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const automod = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    const warn = openOrResolveCase(scope, { memberId: MEMBER, now: 2000 });
+    expect(warn.caseId).toBe(automod.caseId);
+    expect(warn.violationCount).toBe(2);
+  });
+
+  it('has no expiry for either source — the counter is monotonic over the open case', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const first = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    // A violation 90 days later still resolves into the same open case and
+    // still increments — nothing here resets or decays the count with the
+    // passage of time. If the counter expired, this would come back at 1
+    // (reset) or some smaller/artificial value; instead it keeps counting
+    // exactly as an immediate second violation would.
+    const later = openOrResolveCase(scope, {
+      memberId: MEMBER,
+      now: 1000 + 90 * 24 * 60 * 60 * 1000,
+    });
+    expect(later.caseId).toBe(first.caseId);
+    expect(later.violationCount).toBe(2);
   });
 });

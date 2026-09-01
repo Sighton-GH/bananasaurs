@@ -57,17 +57,23 @@ export type ModCaseActionTaken =
   | 'delete_blocked_guild_unknown'
   /**
    * Manual events (ADR 0037): moderator commands share this append-only
-   * stream. The five `escalation_*` values are reused for manual member
-   * actions — the mapping from `ModerationOutcome` is one-to-one and
-   * already written — with `escalation_action` naming which action and the
-   * new `actorId` field recording who ordered it.
+   * stream. A manual member action (timeout/untimeout/kick/ban/unban) that
+   * Discord really applied is `'manual_applied'` — NOT
+   * `'deleted_and_escalated'`, whose name would claim the deletion the
+   * automod vocabulary's meaning bundles in. The other four outcome states
+   * reuse the `escalation_*` values (`escalation_refused`/`failed`/`dry_run`/
+   * `skipped`): they describe an outcome uniformly, and `escalation_action`
+   * names which action. `warned` is the event that increments the ladder the
+   * member shares with automod strikes; `note`/`evidence_added` record text
+   * and URLs; `purged`/`purge_refused`/`purge_failed` mark the job's outcome.
    */
   | 'warned'
   | 'note'
   | 'evidence_added'
   | 'purged'
   | 'purge_refused'
-  | 'purge_failed';
+  | 'purge_failed'
+  | 'manual_applied';
 export type ModCaseEscalationAction = 'timeout' | 'kick' | 'ban' | 'unban';
 export type ModCaseRefusalReason =
   | 'unauthorized'
