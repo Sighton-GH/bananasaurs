@@ -143,8 +143,16 @@ The key is therefore derived in priority order:
 
 1. `alert_system_message_id` when present — unique per alert action;
 2. `message_id` when present — the action did not block;
-3. otherwise a fingerprint over `(guildId, ruleId, userId, actionType,
-   hash(content), matchedKeyword)` within a bounded time window.
+3. otherwise a fingerprint over `(kind, ruleId, userId, actionType, content,
+   timeBucket)` within a bounded time window.
+
+   Two things this deliberately does **not** include, both corrected against the
+   implementation during review. `guildId` is absent because `event_dedupe`'s
+   primary key is `(guild_id, event_kind, fingerprint)` — the guild is already a
+   column, and embedding it in the hash as well would be redundant, which is why
+   no other case in `fingerprintOf` does it. `matchedKeyword` is absent because
+   `content` already determines it for a fixed rule, so it would add no
+   discriminating power.
 
 This is not a new invention: it is the house pattern. `event_dedupe` is keyed
 `(guild_id, event_kind, fingerprint)`, **not** the `(guild_id,
