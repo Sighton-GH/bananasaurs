@@ -288,6 +288,54 @@ const authorizeInvoker = async (
   );
 };
 
+/**
+ * Records an unauthorized ban/purge attempt on `mod_case_events`, the same
+ * way `commands.ts`'s `recordDirectRefusal` durably records an unauthorized
+ * `/mod kick` (Task 6) — brought here in the fix round after review found
+ * these paths only logging (finding 4). An unauthorized `/mod ban` attempt
+ * — arguably the more serious probe — must be as visible in case history as
+ * an unauthorized `/mod kick`, not only in the log file.
+ *
+ * `ban` has a target member to hang the case on (`payload.targetId` at
+ * confirm time, the parsed `target` option at preview time). `purge` does
+ * not — a channel cleanup has no member on the other end — so it reuses the
+ * exact resolution `purge.ts`'s own case events already settled on: attach
+ * to the *initiating actor's own*, non-counting case, the same call
+ * `recordPurgeCaseEvent` makes with `memberId: payload.initiatorUserId`.
+ * Reusing that resolution here (rather than inventing a third pattern for
+ * "no target") is deliberate.
+ */
+const recordUnauthorizedRefusal = (
+  deps: ModConfirmationDeps,
+  input: {
+    memberId: SnowflakeId;
+    category: 'ban' | 'purge';
+    reason: string;
+    actorId: Snowflake;
+    now: number;
+    escalationAction?: 'ban';
+  },
+): void => {
+  const { caseId } = deps.cases.openOrResolveCase({
+    memberId: input.memberId,
+    now: input.now,
+    countsAsViolation: false,
+  });
+  deps.cases.recordCaseEvent({
+    eventId: randomUUID(),
+    caseId,
+    ruleId: MANUAL_RULE_ID,
+    memberId: input.memberId,
+    at: input.now,
+    matchedCategory: input.category,
+    matchedSnippet: input.reason,
+    actionTaken: 'escalation_refused',
+    ...(input.escalationAction !== undefined && { escalationAction: input.escalationAction }),
+    refusalReason: 'unauthorized',
+    actorId: input.actorId,
+  });
+};
+
 // --- ban preview ---------------------------------------------------------
 
 export const handleBanPreview = async (
@@ -301,6 +349,14 @@ export const handleBanPreview = async (
 
   const authResult = await authorizeInvoker(deps, event.userId);
   if (!authResult.ok) {
+    recordUnauthorizedRefusal(deps, {
+      memberId: targetId,
+      category: 'ban',
+      reason,
+      actorId: event.userId,
+      now: nowMs,
+      escalationAction: 'ban',
+    });
     deps.logger.warn(
       safeLogFields({
         component: 'mod-confirmations',
@@ -384,6 +440,13 @@ export const handlePurgePreview = async (
 
   const authResult = await authorizeInvoker(deps, event.userId);
   if (!authResult.ok) {
+    recordUnauthorizedRefusal(deps, {
+      memberId: parseSnowflakeId(event.userId),
+      category: 'purge',
+      reason,
+      actorId: event.userId,
+      now: nowMs,
+    });
     deps.logger.warn(
       safeLogFields({
         component: 'mod-confirmations',
@@ -660,36 +723,134 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
     const ref: InteractionRef = { interactionId: event.interactionId, token: event.token };
     await deps.responder.defer(ref, { ephemeral: true });
 
-    const nowMs = deps.now();
-    const resolved = resolveIntentForClick(deps, parsed.intentId, event.userId, nowMs);
-
-    if (resolved.kind !== 'ok') {
-      await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE[resolved.kind] });
-      return;
-    }
-
-    if (parsed.action === 'cancel') {
-      // Already validated present, fresh, and belonging to this clicker —
-      // this take cannot legitimately miss.
-      deps.pendingActions.take(parsed.intentId, nowMs);
-      deps.logger.info(
-        safeLogFields({
-          component: 'mod-confirmations',
-          guildId: deps.guildId,
-          actorId: event.userId,
-          intentId: parsed.intentId,
-          outcome: 'cancelled',
-        }),
-        '/mod confirmation cancelled',
-      );
-      await deps.responder.respond(ref, { content: 'Cancelled. Nothing was done.' });
-      return;
-    }
-
-    // --- confirm -----------------------------------------------------------
+    // Everything below can throw (a peek/take against a real database, a
+    // live `authorize()` call, a gateway or job-queue call) and must still
+    // leave the moderator with an answer rather than a deferred interaction
+    // that never resolves. `commands.ts`'s own docstring names this pattern
+    // — "an honest fallback if the handler throws after deferring" — and
+    // wraps *everything* after its defer in the try; this now does too
+    // (fix round, finding 2: the try previously started partway through,
+    // after the peek and the whole cancel branch).
     try {
+      const nowMs = deps.now();
+      const resolved = resolveIntentForClick(deps, parsed.intentId, event.userId, nowMs);
+
+      if (resolved.kind === 'expired') {
+        // Consumed here, deliberately (fix round, finding 1). Before this,
+        // an expired intent was reported "expired" straight from the peek
+        // and never reached `take` — the only other place that ever
+        // deleted an expired row — so a moderator who previewed and never
+        // clicked anything left a row in `mod_pending_actions` forever
+        // (`sweepExpiredPendingActions`, Task 1, has no scheduler wired to
+        // it; nothing else in this codebase calls it). Still reported as
+        // "expired", not "already executed" — the row genuinely was this
+        // moderator's own intent, it simply outlived its window; the take
+        // is housekeeping, not a change to what the moderator is told.
+        deps.pendingActions.take(parsed.intentId, nowMs);
+        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE.expired });
+        return;
+      }
+      if (resolved.kind === 'not-found') {
+        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE['not-found'] });
+        return;
+      }
+      if (resolved.kind === 'wrong-moderator') {
+        await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE['wrong-moderator'] });
+        return;
+      }
+
+      // resolved.kind === 'ok': present, fresh, belongs to this clicker.
+      if (parsed.action === 'cancel') {
+        deps.pendingActions.take(parsed.intentId, nowMs);
+        deps.logger.info(
+          safeLogFields({
+            component: 'mod-confirmations',
+            guildId: deps.guildId,
+            actorId: event.userId,
+            intentId: parsed.intentId,
+            outcome: 'cancelled',
+          }),
+          '/mod confirmation cancelled',
+        );
+        await deps.responder.respond(ref, { content: 'Cancelled. Nothing was done.' });
+        return;
+      }
+
+      // --- confirm -----------------------------------------------------
+      // Parsed from the peeked row, before taking anything: a refusal
+      // below (an authorization that no longer holds) needs to know which
+      // kind this is — and, for ban, the target — to record an honest
+      // case event, and there is no reason to wait until after `take` to
+      // learn that. Cancel above never needed the payload's content at
+      // all.
+      const payloadResult = modPendingActionPayload.safeParse(
+        JSON.parse(resolved.row.payload) as unknown,
+      );
+      if (!payloadResult.success) {
+        // Consumed rather than left for indefinite retry: a payload this
+        // module wrote itself that fails to parse back is corruption, not
+        // a transient condition a second click would resolve.
+        deps.pendingActions.take(parsed.intentId, nowMs);
+        deps.logger.error(
+          safeLogFields({
+            component: 'mod-confirmations',
+            guildId: deps.guildId,
+            intentId: parsed.intentId,
+            outcome: 'failed',
+            err: payloadResult.error,
+          }),
+          'a pending action payload failed to validate on confirm',
+        );
+        await deps.responder.respond(ref, {
+          content: 'Something went wrong confirming that. An operator has been notified.',
+        });
+        return;
+      }
+      const payload = payloadResult.data;
+
+      // Re-verified here, not merely inherited from the preview (fix
+      // round, finding 3): a moderator's capability can be revoked
+      // between preview and confirm, and `createdBy === userId` — already
+      // checked by `resolveIntentForClick` above — proves identity, not
+      // standing authorization.
       const authResult = await authorizeInvoker(deps, event.userId);
       if (!authResult.ok) {
+        if (payload.kind === 'ban') {
+          recordUnauthorizedRefusal(deps, {
+            memberId: payload.targetId,
+            category: 'ban',
+            reason: payload.reason,
+            actorId: event.userId,
+            now: nowMs,
+            escalationAction: 'ban',
+          });
+        } else {
+          recordUnauthorizedRefusal(deps, {
+            memberId: parseSnowflakeId(event.userId),
+            category: 'purge',
+            reason: payload.reason,
+            actorId: event.userId,
+            now: nowMs,
+          });
+        }
+        deps.logger.warn(
+          safeLogFields({
+            component: 'mod-confirmations',
+            guildId: deps.guildId,
+            actorId: event.userId,
+            intentId: parsed.intentId,
+            action: payload.kind,
+            outcome: 'unauthorized',
+          }),
+          '/mod confirmation refused: caller no longer has moderation.act',
+        );
+        // Deliberately NOT taken (a design decision, not an oversight):
+        // authorization can be a transient state — a role re-sync still
+        // catching up, an admin about to re-grant a stripped role — and
+        // the *same* moderator regaining it within the confirmation
+        // window should still be able to confirm the same intent, the
+        // same way a wrong-moderator click above leaves the row intact
+        // for the right moderator rather than burning it.
         await deps.responder.respond(ref, {
           content: 'You do not have permission to confirm this action.',
         });
@@ -708,25 +869,6 @@ export const createModConfirmationSubscriber = (deps: ModConfirmationDeps): Subs
         await deps.responder.respond(ref, { content: RESOLUTION_MESSAGE['not-found'] });
         return;
       }
-
-      const payloadResult = modPendingActionPayload.safeParse(JSON.parse(taken.payload) as unknown);
-      if (!payloadResult.success) {
-        deps.logger.error(
-          safeLogFields({
-            component: 'mod-confirmations',
-            guildId: deps.guildId,
-            intentId: parsed.intentId,
-            outcome: 'failed',
-            err: payloadResult.error,
-          }),
-          'a pending action payload failed to validate on confirm',
-        );
-        await deps.responder.respond(ref, {
-          content: 'Something went wrong confirming that. An operator has been notified.',
-        });
-        return;
-      }
-      const payload = payloadResult.data;
 
       if (payload.kind === 'ban') {
         await executeConfirmedBan(

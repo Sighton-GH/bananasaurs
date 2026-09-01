@@ -145,6 +145,13 @@ interface Harness {
     fetchInvokerRoleIds: Snowflake[];
   };
   pendingActions: ReturnType<typeof fakePendingActionPorts>;
+  /**
+   * Flips the fake `AuthzStore`'s verdict after the harness was built — the
+   * fix round's finding 3: a capability can be revoked between preview and
+   * confirm, and the confirm path must re-check it rather than inherit the
+   * preview's own verdict.
+   */
+  setAuthorized: (value: boolean) => void;
 }
 
 function buildHarness(
@@ -163,7 +170,8 @@ function buildHarness(
     fetchInvokerRoleIds: [],
   };
 
-  const authz: AuthzStore = { hasGrant: () => opts.authorized ?? true };
+  let authorized = opts.authorized ?? true;
+  const authz: AuthzStore = { hasGrant: () => authorized };
 
   const moderationGateway: ModerationGatewayPort = {
     async applyAction(auth, intent) {
@@ -209,7 +217,7 @@ function buildHarness(
     logger: silentLogger,
   };
 
-  return { deps, calls, pendingActions };
+  return { deps, calls, pendingActions, setAuthorized: (value) => (authorized = value) };
 }
 
 const extractIntentId = (message: OutgoingMessage): string => {
@@ -294,7 +302,7 @@ describe('/mod ban preview', () => {
     expect(payload).toEqual({ kind: 'ban', targetId: TARGET, reason: 'raiding' });
   });
 
-  it('refuses an unauthorized caller, writes no pending intent', async () => {
+  it('refuses an unauthorized caller, writes no pending intent, and records the refusal on the target’s case', async () => {
     const { deps, calls, pendingActions } = buildHarness({ authorized: false });
     await handleBanPreview(deps, slashCommandEvent(), {
       interactionId: 'interaction-1',
@@ -304,6 +312,18 @@ describe('/mod ban preview', () => {
     expect(calls.applyAction).toHaveLength(0);
     expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
     expect(pendingActions.rows.size).toBe(0);
+
+    // Fix round, finding 4: an unauthorized /mod ban attempt must land in
+    // durable case history exactly like an unauthorized /mod kick does
+    // (commands.ts's recordDirectRefusal), not only in the log file.
+    expect(calls.recordCaseEvent).toHaveLength(1);
+    const event = calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(TARGET);
+    expect(event.actorId).toBe(MODERATOR);
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.escalationAction).toBe('ban');
+    expect(event.matchedSnippet).toBe('raiding');
   });
 });
 
@@ -408,7 +428,7 @@ describe('ban confirm/cancel', () => {
     expect(harness.pendingActions.peek(intentId)).toBeUndefined();
   });
 
-  it('an expired intent answers "expired" and calls the gateway zero times', async () => {
+  it('an expired intent answers "expired", calls the gateway zero times, and is consumed rather than left to leak', async () => {
     const harness = buildHarness();
     const intentId = await preview(harness);
     const subscriber = createModConfirmationSubscriber(harness.deps);
@@ -425,6 +445,76 @@ describe('ban confirm/cancel', () => {
     expect(harness.calls.applyAction).toHaveLength(0);
     expect(harness.calls.respond.at(-1)?.message.content).toMatch(/expired/i);
     void subscriber; // the un-advanced subscriber is unused in this test
+
+    // Fix round, finding 1: `sweepExpiredPendingActions` has no scheduler
+    // wired to it anywhere in the repo, so this "expired" branch is the
+    // only code path that ever reaps a row a moderator previewed and never
+    // clicked on again — it must consume the row itself or it leaks
+    // forever (short of the guild being deleted, which cascades it away).
+    expect(harness.pendingActions.peek(intentId)).toBeUndefined();
+  });
+
+  it('a thrown error while resolving the click still answers ephemeral, not a hung interaction', async () => {
+    // Fix round, finding 2: the try/catch previously started partway
+    // through the handler — after the peek and the whole cancel branch —
+    // so an exception there escaped `handle()` entirely, leaving the
+    // moderator's interaction deferred and never resolved. Simulates a
+    // failure in the very first thing the handler does after defer: the
+    // peek itself (a stand-in for, e.g., a transient SQLite error).
+    const harness = buildHarness();
+    const intentId = await preview(harness);
+    const respondsAtPreview = harness.calls.respond.length;
+    harness.pendingActions.peek = () => {
+      throw new Error('simulated storage failure');
+    };
+    const subscriber = createModConfirmationSubscriber(harness.deps);
+
+    await subscriber.handle(
+      interactionEvent({ customId: buildModConfirmCustomId(intentId), userId: MODERATOR }),
+    );
+
+    expect(harness.calls.defer).toHaveLength(1);
+    expect(harness.calls.respond).toHaveLength(respondsAtPreview + 1);
+    expect(harness.calls.respond.at(-1)?.message.content).toMatch(/something went wrong/i);
+    expect(harness.calls.applyAction).toHaveLength(0);
+  });
+
+  it('re-checks authorization at confirm time: a capability revoked after preview refuses the confirm, calls the gateway zero times, records the refusal, and leaves the intent intact', async () => {
+    // Fix round, finding 3.
+    const harness = buildHarness({ authorized: true });
+    const intentId = await preview(harness);
+    const fetchCallsAtPreview = harness.calls.fetchInvokerRoleIds.length;
+
+    harness.setAuthorized(false);
+    const subscriber = createModConfirmationSubscriber(harness.deps);
+    await subscriber.handle(
+      interactionEvent({ customId: buildModConfirmCustomId(intentId), userId: MODERATOR }),
+    );
+
+    expect(harness.calls.applyAction).toHaveLength(0);
+    expect(harness.calls.respond.at(-1)?.message.content).toMatch(
+      /do not have permission to confirm/i,
+    );
+    // Proves re-authorization actually ran at confirm time — deleting the
+    // confirm path's own `authorizeInvoker` call and relying only on the
+    // `createdBy` identity check would leave this assertion failing.
+    expect(harness.calls.fetchInvokerRoleIds.length).toBeGreaterThan(fetchCallsAtPreview);
+
+    // Deliberate design choice, not an oversight: authorization can be a
+    // transient state (a role re-sync still catching up, an admin about to
+    // re-grant a stripped role), so the intent is left intact for the same
+    // moderator to retry within the confirmation window — symmetric with
+    // how a wrong-moderator click leaves the row intact for the right one.
+    expect(harness.pendingActions.peek(intentId)).not.toBeUndefined();
+
+    // And it is durably recorded, the same as an unauthorized preview.
+    expect(harness.calls.recordCaseEvent).toHaveLength(1);
+    const event = harness.calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(TARGET);
+    expect(event.actorId).toBe(MODERATOR);
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.escalationAction).toBe('ban');
   });
 
   it('ignores a custom id that is not one of ours', async () => {
@@ -495,7 +585,7 @@ describe('/mod purge preview', () => {
     expect(harness.pendingActions.rows.size).toBe(1);
   });
 
-  it('refuses an unauthorized caller before ever fetching messages', async () => {
+  it('refuses an unauthorized caller before ever fetching messages, and records the refusal on the initiator’s own case', async () => {
     let fetchCalls = 0;
     const harness = buildHarness({
       authorized: false,
@@ -519,6 +609,18 @@ describe('/mod purge preview', () => {
 
     expect(fetchCalls).toBe(0);
     expect(harness.calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+
+    // Fix round, finding 4. Purge has no single target member — reuses
+    // purge.ts's own resolution: attach to the initiating moderator's own,
+    // non-counting case, the same as a completed purge's own case events.
+    expect(harness.calls.recordCaseEvent).toHaveLength(1);
+    const event = harness.calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(MODERATOR);
+    expect(event.actorId).toBe(MODERATOR);
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.escalationAction).toBeUndefined();
+    expect(event.matchedSnippet).toBe('spam cleanup');
   });
 });
 
@@ -586,5 +688,30 @@ describe('purge confirm', () => {
 
     expect(harness.calls.enqueuePurgeJob).toHaveLength(1);
     expect(harness.calls.respond.at(-1)?.message.content).toMatch(/already executed/i);
+  });
+
+  it('re-checks authorization at confirm time for purge too: a revoked capability refuses the confirm, never enqueues, and records the refusal on the initiator’s own case', async () => {
+    const harness = buildHarness({ authorized: true });
+    const intentId = await previewPurge(harness);
+
+    harness.setAuthorized(false);
+    const subscriber = createModConfirmationSubscriber(harness.deps);
+    await subscriber.handle(
+      interactionEvent({ customId: buildModConfirmCustomId(intentId), userId: MODERATOR }),
+    );
+
+    expect(harness.calls.enqueuePurgeJob).toHaveLength(0);
+    expect(harness.calls.respond.at(-1)?.message.content).toMatch(
+      /do not have permission to confirm/i,
+    );
+    expect(harness.pendingActions.peek(intentId)).not.toBeUndefined();
+
+    expect(harness.calls.recordCaseEvent).toHaveLength(1);
+    const event = harness.calls.recordCaseEvent[0]!;
+    expect(event.memberId).toBe(MODERATOR);
+    expect(event.actorId).toBe(MODERATOR);
+    expect(event.actionTaken).toBe('escalation_refused');
+    expect(event.refusalReason).toBe('unauthorized');
+    expect(event.escalationAction).toBeUndefined();
   });
 });
