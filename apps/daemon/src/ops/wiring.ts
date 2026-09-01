@@ -269,7 +269,7 @@ const jobRow = (job: {
  * a REST round trip per channel would make the command slow in proportion to
  * how many channels the guild has, for a fact the gateway cache already
  * holds. `permissionsIn` folds channel-specific overwrites on top of the
- * role-derived base, which a guild-level check (`RELEASE_1_PERMISSIONS`)
+ * role-derived base, which a guild-level check (`REQUIRED_PERMISSIONS`)
  * cannot see — an overwrite is exactly the kind of drift this check exists
  * to catch (ADR 0035 §6).
  *
