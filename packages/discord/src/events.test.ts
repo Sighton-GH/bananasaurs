@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { ChannelType, Client, Events, type Guild } from 'discord.js';
-import type { DomainEvent, ReactionEvent } from '@bananasaurs/core';
+import type { AutoModerationEvent, DomainEvent, ReactionEvent } from '@bananasaurs/core';
 import { buildClientOptions } from './client.js';
 import { attachGatewayTranslation } from './events.js';
 
@@ -23,6 +23,7 @@ const MESSAGE = '444444444444444444';
 const USER = '111111111111111111';
 const BOT = '999999999999999999';
 const ROLE = '222222222222222222';
+const AUTOMOD_RULE = '666666666666666666';
 
 /**
  * discord.js's own gateway entry points, which are private to the library.
@@ -443,6 +444,83 @@ describe('messages', () => {
   it('drops a message from a guild that is not allowlisted', () => {
     const h = harness({ allow: [OTHER_GUILD] });
     h.packet('MessageCreate', messageCreatePacket());
+    expect(h.events).toEqual([]);
+  });
+});
+
+/**
+ * Native AutoMod observability (ADR 0038, slice 0). `AUTO_MODERATION_ACTION_
+ * EXECUTION` has a real action class (`client.actions.AutoModerationActionExecution`),
+ * so this is driven through `h.packet` exactly like the other gateway dispatches
+ * — a raw packet through discord.js's own handler — rather than a hand-built
+ * `AutoModerationActionExecution` instance.
+ */
+const autoModPacket = (over: Record<string, unknown> = {}): object => ({
+  guild_id: GUILD,
+  action: { type: 1, metadata: {} }, // BlockMessage
+  rule_id: AUTOMOD_RULE,
+  rule_trigger_type: 1, // Keyword
+  user_id: USER,
+  channel_id: CHANNEL,
+  message_id: null, // blocked: Discord omits it
+  alert_system_message_id: null,
+  content: 'a forbidden word',
+  matched_keyword: 'forbidden',
+  matched_content: 'forbidden',
+  ...over,
+});
+
+describe('native auto-moderation (ADR 0038)', () => {
+  it('translates a blocked auto-moderation execution', () => {
+    const h = harness();
+    h.packet('AutoModerationActionExecution', autoModPacket());
+
+    expect(h.events).toEqual<DomainEvent[]>([
+      {
+        kind: 'autoModerationAction',
+        guildId: GUILD,
+        receivedAtMs: 1_700_000_000_000,
+        ruleId: AUTOMOD_RULE,
+        triggerType: 'keyword',
+        userId: USER,
+        actionType: 'block',
+        channelId: CHANNEL,
+        messageId: undefined,
+        alertMessageId: undefined,
+        content: 'a forbidden word',
+        matchedKeyword: 'forbidden',
+        matchedContent: 'forbidden',
+      },
+    ]);
+  });
+
+  it('maps an unrecognised trigger type to unknown rather than dropping the event', () => {
+    const h = harness();
+    h.packet('AutoModerationActionExecution', autoModPacket({ rule_trigger_type: 99 }));
+
+    expect(h.events).toHaveLength(1);
+    expect((h.events[0] as AutoModerationEvent).triggerType).toBe('unknown');
+  });
+
+  /**
+   * The asymmetric half of the mapping: an action type we cannot name is
+   * dropped rather than guessed, unlike a trigger type. Covered separately
+   * because the brief's translator tests only exercise the trigger path.
+   */
+  it('drops the event entirely when the action type is unrecognised', () => {
+    const h = harness();
+    h.packet(
+      'AutoModerationActionExecution',
+      autoModPacket({ action: { type: 99, metadata: {} } }),
+    );
+
+    expect(h.events).toEqual([]);
+    expect(h.errors).toEqual([]);
+  });
+
+  it('drops an execution from a guild that is not allowlisted', () => {
+    const h = harness({ allow: [OTHER_GUILD] });
+    h.packet('AutoModerationActionExecution', autoModPacket());
     expect(h.events).toEqual([]);
   });
 });

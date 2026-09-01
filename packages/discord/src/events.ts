@@ -1,6 +1,7 @@
 import {
   ApplicationCommandOptionType,
   Events,
+  type AutoModerationActionExecution,
   type ChatInputCommandInteraction,
   type Client,
   type CommandInteractionOption,
@@ -15,7 +16,13 @@ import {
   type Role,
   type User,
 } from 'discord.js';
-import { emojiKeyFromGateway, type DomainEvent, type SlashCommandOption } from '@bananasaurs/core';
+import {
+  emojiKeyFromGateway,
+  type DomainEvent,
+  type NativeAutoModAction,
+  type NativeAutoModTrigger,
+  type SlashCommandOption,
+} from '@bananasaurs/core';
 
 /**
  * Gateway dispatches, normalised into `packages/core/src/discord/events.ts`.
@@ -139,6 +146,11 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
   });
   client.on(Events.MessageDelete, (message: AnyMessage) => {
     translate('messageDelete', () => toMessageEvent('messageDelete', message, now()));
+  });
+
+  // --- native auto-moderation (ADR 0038) ----------------------------------
+  client.on(Events.AutoModerationActionExecution, (execution: AutoModerationActionExecution) => {
+    translate('autoModerationAction', () => toAutoModerationEvent(execution, now()));
   });
 
   // --- members ------------------------------------------------------------
@@ -375,5 +387,57 @@ function toMessageEvent(
      */
     content: message.partial ? undefined : (message.content ?? undefined),
     editedTimestampMs: message.editedTimestamp ?? undefined,
+  };
+}
+
+/**
+ * Discord's numeric enums are mapped to string unions here, at the adapter, so
+ * `packages/core` never carries Discord enum values. An unrecognised value maps
+ * to `'unknown'` rather than dropping the event: a decision we cannot name is
+ * still a decision that happened, and ADR 0038 exists to record it.
+ */
+const ACTION_TYPES: Record<number, NativeAutoModAction> = {
+  1: 'block',
+  2: 'alert',
+  3: 'timeout',
+  4: 'block_interaction',
+};
+
+const TRIGGER_TYPES: Record<number, NativeAutoModTrigger> = {
+  1: 'keyword',
+  3: 'spam',
+  4: 'keyword_preset',
+  5: 'mention_spam',
+  6: 'member_profile',
+};
+
+function toAutoModerationEvent(
+  execution: AutoModerationActionExecution,
+  receivedAtMs: number,
+): DomainEvent | undefined {
+  // No `if (!guildId) return undefined` guard here, unlike every other
+  // translator in this file: `AutoModerationActionExecution.guild` is
+  // non-nullable (`discord.js` typings), because Discord only fires this
+  // dispatch for a guild. A guard would be dead code, and eslint's
+  // no-unnecessary-condition would say so.
+  const actionType = ACTION_TYPES[execution.action.type];
+  // An action type we cannot name is dropped rather than guessed: unlike a
+  // trigger type, the action is what the recorded vocabulary asserts happened,
+  // and recording "something" would put a falsehood in the case history.
+  if (actionType === undefined) return undefined;
+  return {
+    kind: 'autoModerationAction',
+    guildId: execution.guild.id,
+    receivedAtMs,
+    ruleId: execution.ruleId,
+    triggerType: TRIGGER_TYPES[execution.ruleTriggerType] ?? 'unknown',
+    userId: execution.userId,
+    actionType,
+    channelId: execution.channelId ?? undefined,
+    messageId: execution.messageId ?? undefined,
+    alertMessageId: execution.alertSystemMessageId ?? undefined,
+    content: execution.content,
+    matchedKeyword: execution.matchedKeyword ?? undefined,
+    matchedContent: execution.matchedContent ?? undefined,
   };
 }

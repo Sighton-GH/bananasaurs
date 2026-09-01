@@ -36,6 +36,7 @@ export const REQUIRED_INTENTS = [
   GatewayIntentBits.MessageContent, // PRIVILEGED — only if content logging is on
   GatewayIntentBits.GuildMessageReactions,
   GatewayIntentBits.GuildModeration, // audit-log-backed delete attribution
+  GatewayIntentBits.AutoModerationExecution, // native AutoMod decisions (ADR 0038) — not privileged
 ] as const;
 
 /**

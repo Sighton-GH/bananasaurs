@@ -44,8 +44,19 @@ describe('intents', () => {
     ['MessageContent', GatewayIntentBits.MessageContent],
     ['GuildMessageReactions', GatewayIntentBits.GuildMessageReactions],
     ['GuildModeration', GatewayIntentBits.GuildModeration],
+    ['AutoModerationExecution', GatewayIntentBits.AutoModerationExecution],
   ])('requests %s', (_name, bit) => {
     expect(buildClientOptions(() => botId).intents).toContain(bit);
+  });
+
+  it('requests the auto-moderation execution intent', () => {
+    expect(REQUIRED_INTENTS).toContain(GatewayIntentBits.AutoModerationExecution);
+  });
+
+  it('does not treat auto-moderation execution as privileged', () => {
+    // It needs no Developer Portal toggle, so `doctor` must not report it as a
+    // grant that could be silently withheld.
+    expect(PRIVILEGED_INTENTS).not.toContain(GatewayIntentBits.AutoModerationExecution);
   });
 
   /**
