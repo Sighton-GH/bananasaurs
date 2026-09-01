@@ -272,34 +272,36 @@ describe('permissions — docs/18 layer 1 + Release 2 moderation', () => {
   });
 
   /**
-   * Native AutoMod observability (ADR 0038) requires `ManageGuild` for Discord
-   * to dispatch events, but it is not currently granted. When held, it should
-   * not be flagged as an extra permission, and the feature should be reported
-   * active. When not held, it is merely an observation, not a failure.
+   * Native AutoMod observability (ADR 0038, Slice 0) requires `ManageGuild`
+   * for Discord to dispatch events. The owner granted it 2026-09-01, and it
+   * is now inside `REQUIRED_PERMISSIONS`: unlike before, a guild missing it
+   * fails `doctor` the same way a guild missing `BanMembers` does, because
+   * Slice 0 depends on it and its disappearance would silently kill the
+   * feature.
    */
-  it('reports native AutoMod observability as inactive when Manage Guild is not held', () => {
-    addGuild(GUILD, String(REQUIRED_PERMISSIONS)); // no ManageGuild
+  it('flags a missing Manage Guild as a required permission and fails doctor', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS & ~NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
+    expect(report.guilds[0]?.missingPermissions).toEqual(['ManageGuild']);
     expect(report.guilds[0]?.nativeAutomodObservabilityActive).toBe(false);
-    expect(report.guilds[0]?.extraPermissions).toEqual([]);
-    expect(report.ok).toBe(true); // inactivity is not a failure
+    expect(report.ok).toBe(false);
   });
 
   it('reports native AutoMod observability as active when Manage Guild is held', () => {
-    addGuild(GUILD, String(REQUIRED_PERMISSIONS | NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
     expect(report.guilds[0]?.nativeAutomodObservabilityActive).toBe(true);
-    expect(report.guilds[0]?.extraPermissions).not.toContain('ManageGuild');
-    expect(report.guilds[0]?.extraPermissions).toEqual([]);
+    expect(report.guilds[0]?.missingPermissions).toEqual([]);
     expect(report.ok).toBe(true);
   });
 
-  it('does not list ManageGuild as an extra permission even when held', () => {
-    addGuild(GUILD, String(REQUIRED_PERMISSIONS | NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS));
+  it('does not list ManageGuild as an extra permission now that it is required', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const report = buildDoctorReport(client, config());
 
+    expect(report.guilds[0]?.extraPermissions).not.toContain('ManageGuild');
     expect(report.guilds[0]?.extraPermissions).toEqual([]);
   });
 });
@@ -450,17 +452,19 @@ describe('the printed report', () => {
     expect(text).not.toContain('REALTOKEN');
   });
 
-  it('reports native AutoMod observability as inactive with a clear message', () => {
-    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+  it('reports native AutoMod observability as inactive with a clear message, and fails doctor', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS & ~NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS));
     const text = formatDoctorReport(buildDoctorReport(client, config()));
 
     expect(text).toContain('native AutoMod observability inactive');
     expect(text).toContain('Manage Server not held');
     expect(text).toContain('ADR 0038');
+    expect(text).toContain('MISSING PERMISSIONS: ManageGuild');
+    expect(text).toContain('doctor: PROBLEMS FOUND');
   });
 
   it('does not mention native AutoMod observability when it is active', () => {
-    addGuild(GUILD, String(REQUIRED_PERMISSIONS | NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS));
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
     const text = formatDoctorReport(buildDoctorReport(client, config()));
 
     expect(text).not.toContain('native AutoMod observability');
