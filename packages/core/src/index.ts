@@ -201,6 +201,8 @@ export {
   type RuleWithWordList,
 } from './automod/subscriber.js';
 export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
+export { createNativeAutomodSubscriber } from './automod/native-subscriber.js';
+export type { NativeAutomodSubscriberDeps } from './automod/native-subscriber.js';
 export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,
