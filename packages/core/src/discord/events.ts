@@ -133,6 +133,45 @@ export interface MessageEvent extends Base {
   editedTimestampMs: number | undefined;
 }
 
+/** Which action Discord's own AutoMod executed. */
+export type NativeAutoModAction = 'block' | 'alert' | 'timeout' | 'block_interaction';
+
+/** Which kind of native rule fired. `unknown` covers enum values Discord adds later. */
+export type NativeAutoModTrigger =
+  'keyword' | 'spam' | 'keyword_preset' | 'mention_spam' | 'member_profile' | 'unknown';
+
+/**
+ * Discord's own AutoMod acted (ADR 0038). Bananasaurs records this; it never
+ * acts on it. Native blocks *before* the message exists, so no `messageCreate`
+ * is dispatched for blocked content and our own subscriber never sees it —
+ * this event is the only way that decision is observable.
+ */
+export interface AutoModerationEvent extends Base {
+  kind: 'autoModerationAction';
+  /** Discord's AutoMod rule id. Never one of our own `mod_rules.rule_id`s. */
+  ruleId: Snowflake;
+  triggerType: NativeAutoModTrigger;
+  /** The member whose content triggered the rule. */
+  userId: Snowflake;
+  actionType: NativeAutoModAction;
+  /** Absent when the content was not part of a channel message. */
+  channelId: Snowflake | undefined;
+  /**
+   * Absent exactly when AutoMod *blocked* the message — the common case here,
+   * since a blocking rule is why we hear about it at all. Never flattened to a
+   * string: `undefined` means "there is no message", not "the id is empty".
+   */
+  messageId: Snowflake | undefined;
+  /** Present only for the `alert` action: the id of the log message it posted. */
+  alertMessageId: Snowflake | undefined;
+  /** Requires `MESSAGE_CONTENT`, which this bot holds. Empty string if not. */
+  content: string;
+  /** The rule's configured word that matched, when Discord names one. */
+  matchedKeyword: string | undefined;
+  /** The substring of `content` that matched. Requires `MESSAGE_CONTENT`. */
+  matchedContent: string | undefined;
+}
+
 export interface MemberEvent extends Base {
   kind: 'memberAdd' | 'memberRemove' | 'memberUpdate';
   userId: Snowflake;
@@ -185,6 +224,7 @@ export type DomainEvent =
   | MemberEvent
   | RoleEvent
   | GuildEvent
-  | ConnectionEvent;
+  | ConnectionEvent
+  | AutoModerationEvent;
 
 export type DomainEventKind = DomainEvent['kind'];

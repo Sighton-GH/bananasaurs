@@ -36,6 +36,7 @@ export type {
   Snowflake,
 } from './discord/port.js';
 export type {
+  AutoModerationEvent,
   ConnectionEvent,
   DomainEvent,
   DomainEventKind,
@@ -43,6 +44,8 @@ export type {
   InteractionEvent,
   MemberEvent,
   MessageEvent,
+  NativeAutoModAction,
+  NativeAutoModTrigger,
   ReactionEvent,
   RoleEvent,
   SlashCommandEvent,

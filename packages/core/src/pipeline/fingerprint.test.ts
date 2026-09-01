@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { fingerprintOf, isLevelTriggered } from './fingerprint.js';
 import type {
+  AutoModerationEvent,
   ConnectionEvent,
   DomainEvent,
   GuildEvent,
@@ -259,5 +260,79 @@ describe('the level-triggered kinds are not deduplicated at all', () => {
 
   it('does not treat an interaction as level-triggered', () => {
     expect(isLevelTriggered(interaction())).toBe(false);
+  });
+});
+
+const nativeEvent = (over: Partial<AutoModerationEvent> = {}): AutoModerationEvent => ({
+  kind: 'autoModerationAction',
+  guildId: '111111111111111111',
+  receivedAtMs: 1_700_000_000_000,
+  ruleId: '222222222222222222',
+  triggerType: 'keyword',
+  userId: '333333333333333333',
+  actionType: 'block',
+  channelId: '444444444444444444',
+  messageId: undefined,
+  alertMessageId: undefined,
+  content: 'a forbidden word',
+  matchedKeyword: 'forbidden',
+  matchedContent: 'forbidden',
+  ...over,
+});
+
+describe('autoModerationAction fingerprints', () => {
+  it('uses the alert message id when Discord supplies one', () => {
+    const a = nativeEvent({ actionType: 'alert', alertMessageId: '555555555555555555' });
+    const b = nativeEvent({
+      actionType: 'alert',
+      alertMessageId: '555555555555555555',
+      // A replay carries the same ids but is observed later; the later
+      // observation must not create a second fingerprint.
+      receivedAtMs: 1_700_000_090_000,
+      content: 'different text entirely',
+    });
+    expect(fingerprintOf(a)).toBe(fingerprintOf(b));
+  });
+
+  it('uses the message id when the action did not block', () => {
+    const a = nativeEvent({ actionType: 'timeout', messageId: '666666666666666666' });
+    const b = nativeEvent({
+      actionType: 'timeout',
+      messageId: '666666666666666666',
+      receivedAtMs: 1_700_000_090_000,
+    });
+    expect(fingerprintOf(a)).toBe(fingerprintOf(b));
+  });
+
+  it('separates two actions on the same message', () => {
+    // One rule with both an alert and a timeout action produces two dispatches
+    // carrying the same message id. They are two real events, not a replay.
+    const alert = nativeEvent({ actionType: 'alert', messageId: '666666666666666666' });
+    const timeout = nativeEvent({ actionType: 'timeout', messageId: '666666666666666666' });
+    expect(fingerprintOf(alert)).not.toBe(fingerprintOf(timeout));
+  });
+
+  it('falls back to a content fingerprint when the message was blocked', () => {
+    // No message id and no alert id: this is the common case, and the only
+    // available identity is what was matched, by whom, under which rule.
+    const a = nativeEvent();
+    const b = nativeEvent({ receivedAtMs: 1_700_000_000_500 });
+    expect(fingerprintOf(a)).toBe(fingerprintOf(b));
+  });
+
+  it('treats a blocked repeat outside the bucket as a new event', () => {
+    const a = nativeEvent();
+    const b = nativeEvent({ receivedAtMs: 1_700_000_000_000 + 60_000 });
+    expect(fingerprintOf(a)).not.toBe(fingerprintOf(b));
+  });
+
+  it('separates different members saying the same thing', () => {
+    const a = nativeEvent();
+    const b = nativeEvent({ userId: '777777777777777777' });
+    expect(fingerprintOf(a)).not.toBe(fingerprintOf(b));
+  });
+
+  it('is never level-triggered', () => {
+    expect(fingerprintOf(nativeEvent())).toBeDefined();
   });
 });
