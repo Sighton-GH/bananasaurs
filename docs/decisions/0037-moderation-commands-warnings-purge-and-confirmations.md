@@ -90,6 +90,35 @@ job requeues itself with a spaced `runAfter` between ticks so the one-at-a-time
 portion for messages older than 14 days walks out under Discord's rate
 limits instead of hammering them.
 
+**Amendment (Task 5 implementation): the successor's dedupe key is not the
+job's own key.** `JobWorker.runOnce` (`packages/core/src/jobs/worker.ts`)
+always marks a claimed row `done` once its handler returns; there is no
+"run me again" signal, so a tick that is not finished must enqueue a *new*
+row for its own continuation. `jobs_dedupe` is unique only over
+`state IN ('queued','running')`, and a tick's own row is still `running`
+while its handler executes — so a successor enqueued under the *same* key
+the current row holds would collide with itself and be silently dropped,
+stopping the purge dead after one tick. `purgeDedupeKey(guildId, intentId,
+afterJobId?)` (`packages/core/src/jobs/kinds.ts`) therefore takes two
+shapes: the confirm tap mints the *first* job with no `afterJobId`,
+producing the bare `mod:<guildId>:purge:<intentId>` key this section names
+above; every tick after that mints its **successor's** key from its own
+`context.jobId` — `mod:<guildId>:purge:<intentId>:after:<jobId>`. Keying off
+the tick's own row id (never the cursor content it computed) makes
+self-collision structurally impossible — a row was enqueued under its
+*progenitor's* id, never its own — and, because `jobId` is stable across a
+crash (`requeueStranded` never changes it), makes a stranded-and-reclaimed
+tick mint the *identical* successor key on retry regardless of what page it
+happens to fetch and delete the second time around, so a crash between
+"successor inserted" and "this row marked done" cannot leave two live
+successors racing each other through the same channel. The job row's
+`enqueue` also grew an optional initial `cursor` (`packages/storage/src/
+repos/jobs.ts`) so the newly-inserted successor starts already knowing where
+to resume, rather than at `null`. Full reasoning and the two known, bounded
+edge cases this still leaves (an undercounted-but-never-double-deleted page,
+and a narrow crash window where a real deletion can end up with no audit
+row) are in `packages/core/src/mod/purge.ts`'s module docstring.
+
 ### Purged messages go through the normal deletion-attribution path
 
 The purge deletes only through `DiscordPort` — `bulkDeleteMessages` for

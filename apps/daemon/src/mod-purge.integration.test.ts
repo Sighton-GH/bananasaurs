@@ -3,8 +3,10 @@ import { pino } from 'pino';
 import {
   JOB_KINDS,
   JobWorker,
+  modPurgePayload,
   parseGuildId,
   purgeDedupeKey,
+  runPurgeTick,
   type MessageDeleteAttributionPorts,
   type PurgePorts,
 } from '@bananasaurs/core';
@@ -288,7 +290,7 @@ describe('the purge job resumes across a restart without double-deleting (Step 3
     expect(attributionJobs).toHaveLength(150);
   });
 
-  it('a stranded (crashed mid-tick) job requeues to exactly one live continuation, not two', async () => {
+  it('a stranded job claimed but never started (crashed before its handler ran) requeues to exactly one live continuation, not two', async () => {
     // 250 messages so a claimed-but-never-completed tick 1 (simulating a
     // real crash, via `requeueStranded` rather than a clean `runOnce`
     // return) still has real work to redo, and the *retried* tick 1 must
@@ -321,5 +323,73 @@ describe('the purge job resumes across a restart without double-deleting (Step 3
 
     expect(discord.restCalls('bulkDeleteMessages')).toHaveLength(1);
     expect(discord.restCalls('bulkDeleteMessages')[0]?.args[2]).toHaveLength(100);
+  });
+
+  it('a stranded job that already did real work before its process died retries to exactly one live continuation, and no message is deleted twice', async () => {
+    // The harder case the module docstring's "one bounded imprecision"
+    // section reasons through: the row's handler actually ran — deleted a
+    // page, enqueued a successor — and *then* the process died before
+    // `store.complete()` persisted. Proven here end to end, not just at the
+    // dedupe-key-string level (`purge.test.ts`'s fake-store tests).
+    seedFreshMessages(250);
+    enqueueFirstJob('intent-crash-after-work');
+
+    const store = jobStoreFor(scope);
+    const claimed = store.claimNext(discord.now());
+    expect(claimed).toBeDefined();
+
+    // "Attempt 1": run the claimed row's tick directly — exactly what
+    // `JobWorker.runOnce` would do — so it does real, visible work (a bulk
+    // delete of the first 100 messages) and inserts its own successor row.
+    // Then the crash: `store.complete()` is deliberately never called, so
+    // the row is left `running` forever, exactly as if the process had died
+    // the instant after `run()` returned.
+    const ports = purgePortsFor();
+    const payload = modPurgePayload.parse(JSON.parse(claimed!.payload));
+    await runPurgeTick(ports, { payload, cursor: claimed!.cursor, jobId: claimed!.jobId });
+
+    const afterAttempt1 = discord.restCalls('bulkDeleteMessages');
+    expect(afterAttempt1).toHaveLength(1);
+    const attempt1DeletedIds = afterAttempt1[0]!.args[2] as readonly string[];
+    expect(attempt1DeletedIds).toHaveLength(100);
+
+    // Recover the stranded row exactly the way a fresh process does at
+    // startup, before anything else runs.
+    const recovered = store.requeueStranded(discord.now());
+    expect(recovered).toBe(1);
+
+    // A brand new worker reclaims the *same* row (same jobId) and retries
+    // it from scratch. Its own fetch necessarily sees a *different* page —
+    // attempt 1's 100 messages are already gone from Discord — so this
+    // "attempt 2" deletes a disjoint set of 100 more and tries to enqueue
+    // its own successor under the *same* dedupe key attempt 1's successor
+    // already holds (both are keyed off this row's one stable `jobId`).
+    discord.advance(3_000);
+    const workerC = newWorker();
+    const outcome = await workerC.runOnce();
+    expect(outcome).toEqual({
+      status: 'completed',
+      jobId: claimed!.jobId,
+      kind: JOB_KINDS.modPurge,
+    });
+
+    const afterAttempt2 = discord.restCalls('bulkDeleteMessages');
+    expect(afterAttempt2).toHaveLength(2);
+    const attempt2DeletedIds = afterAttempt2[1]!.args[2] as readonly string[];
+    expect(attempt2DeletedIds).toHaveLength(100);
+
+    // No message id was deleted twice across the two attempts.
+    const allDeletedIds = [...attempt1DeletedIds, ...attempt2DeletedIds];
+    expect(new Set(allDeletedIds).size).toBe(allDeletedIds.length);
+    expect(new Set(attempt1DeletedIds).size + new Set(attempt2DeletedIds).size).toBe(200);
+    for (const id of attempt2DeletedIds) expect(attempt1DeletedIds).not.toContain(id);
+
+    // Exactly one live `mod_purge` continuation exists — attempt 2's own
+    // enqueue collided with attempt 1's already-inserted successor and was
+    // silently dropped, per this row's stable dedupe key.
+    const queued = jobRepo
+      .listJobs(scope, { limit: 500 })
+      .filter((j) => j.kind === JOB_KINDS.modPurge && j.state === 'queued');
+    expect(queued).toHaveLength(1);
   });
 });

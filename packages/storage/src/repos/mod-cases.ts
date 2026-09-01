@@ -186,7 +186,26 @@ export interface RecordCaseEventInput {
   readonly actorId?: string;
 }
 
-/** Appends one event to a case's history. Plain guild-scoped insert. */
+/**
+ * Appends one event to a case's history.
+ *
+ * `onConflictDoNothing` is targeted at exactly the primary key
+ * `(guild_id, event_id)` — not the unqualified form other repos use for a
+ * whole-row dedupe — so it only ever suppresses a genuine duplicate
+ * `event_id`. Most callers mint a fresh `crypto.randomUUID()` per call, for
+ * which a collision is not a real possibility either way; the purge job
+ * (`packages/core/src/mod/purge.ts`, ADR 0037) is the caller this exists
+ * for — it mints a *deterministic* id (`<intentId>:<jobId>:<actionTaken>`)
+ * so a crash-and-retry of the same job row writes the identical event twice
+ * rather than two distinct ones, and this collapses the second write into a
+ * no-op instead of a duplicate row or a thrown constraint error. A targeted
+ * conflict clause matters here specifically because `action_taken` also
+ * carries a CHECK constraint (`schema.ts`) that must keep throwing on a
+ * genuinely invalid value — an unqualified `ON CONFLICT DO NOTHING` in
+ * SQLite (unlike Postgres) suppresses *any* constraint violation on the
+ * statement, CHECK included, which would have silently swallowed that
+ * failure too.
+ */
 export const recordCaseEvent = (scope: GuildScope, input: RecordCaseEventInput): void =>
   write(scope, ({ db }) => {
     db.insert(modCaseEvents)
@@ -204,6 +223,7 @@ export const recordCaseEvent = (scope: GuildScope, input: RecordCaseEventInput):
         refusalReason: input.refusalReason ?? null,
         actorId: input.actorId ?? null,
       })
+      .onConflictDoNothing({ target: [modCaseEvents.guildId, modCaseEvents.eventId] })
       .run();
   });
 

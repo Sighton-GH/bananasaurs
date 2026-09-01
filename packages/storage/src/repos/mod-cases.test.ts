@@ -94,6 +94,76 @@ describe('mod cases repo', () => {
   });
 
   /**
+   * ADR 0037's purge job mints a *deterministic* `eventId` so a crash-and-
+   * retry of the same job row writes the identical event twice rather than
+   * two distinct ones (CLAUDE.md rule 6). The targeted `ON CONFLICT
+   * (guild_id, event_id) DO NOTHING` this relies on must collapse a genuine
+   * duplicate silently — proven here directly against the repo, independent
+   * of the purge job's own tests.
+   */
+  it('a duplicate eventId is a silent no-op, not a duplicate row or a thrown error', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    const write = () =>
+      recordCaseEvent(scope, {
+        eventId: 'dup-1',
+        caseId,
+        ruleId: 'manual',
+        memberId: MEMBER,
+        at: 1000,
+        matchedCategory: 'purge',
+        matchedSnippet: 'first write',
+        actionTaken: 'purged',
+      });
+
+    expect(write).not.toThrow();
+    expect(() =>
+      recordCaseEvent(scope, {
+        eventId: 'dup-1',
+        caseId,
+        ruleId: 'manual',
+        memberId: MEMBER,
+        at: 2000,
+        matchedCategory: 'purge',
+        matchedSnippet: 'second write, should collapse',
+        actionTaken: 'purged',
+      }),
+    ).not.toThrow();
+
+    const events = listCaseEvents(scope, caseId);
+    expect(events).toHaveLength(1);
+    // The first write's content survives; the second was a no-op, not an
+    // update — matching `jobRepo.enqueue`'s own dedupe semantics.
+    expect(events[0]?.matchedSnippet).toBe('first write');
+  });
+
+  /**
+   * The other half of that same fix: the conflict clause names its target
+   * explicitly rather than using the unqualified form other repos use,
+   * because it must *not* swallow an unrelated CHECK constraint violation on
+   * the very same statement. An unqualified `ON CONFLICT DO NOTHING` in
+   * SQLite suppresses any constraint failure, CHECK included; a targeted one
+   * does not — this is the test that would have caught the regression.
+   */
+  it('still rejects an invalid action_taken even with the conflict clause present', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
+    expect(() =>
+      recordCaseEvent(scope, {
+        eventId: 'never-written',
+        caseId,
+        ruleId: 'r1',
+        memberId: MEMBER,
+        at: 1000,
+        matchedCategory: 'c1',
+        matchedSnippet: 'badword',
+        actionTaken: 'invented' as ModCaseActionTaken,
+      }),
+    ).toThrow();
+    expect(listCaseEvents(scope, caseId)).toHaveLength(0);
+  });
+
+  /**
    * The CHECK constraint is the real enforcement point for this vocabulary,
    * and a value the TypeScript union allows but the constraint rejects fails
    * only at runtime, in production, on the row that most needed writing.

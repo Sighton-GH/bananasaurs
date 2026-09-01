@@ -59,22 +59,37 @@ import { MANUAL_RULE_ID } from './warn.js';
  * `deleteMessage`. Resuming from an out-of-date cursor wastes no REST calls
  * and, more importantly, cannot delete the same message twice.
  *
- * ## The one bounded imprecision this leaves
+ * ## The two bounded imprecisions this leaves
  *
- * If a tick's row is claimed and run to completion **twice** (attempt 1
- * succeeds — deletes a page, enqueues a successor — but the process dies
- * before `store.complete()` persists; the row is stranded, reclaimed, and
- * attempt 2 runs the same tick fresh), attempt 2 will fetch a *different*
- * page than attempt 1 did, because attempt 1's page is already gone from
- * Discord by then. Attempt 2's own successor-enqueue call collides with
- * attempt 1's already-inserted row (same `jobId`-derived key) and is
- * silently dropped — so only attempt 1's successor survives, carrying
- * attempt 1's cursor, not attempt 2's. The eventual successor therefore
- * resumes from attempt 1's stopping point, and the messages attempt 2
- * additionally deleted are real, honestly attributed deletions that simply
- * are not re-counted into `deletedCount` — a bounded undercount of at most
- * one page (<=100) that can only occur on this specific crash timing, never
- * a double-deletion or a lost audit record.
+ * **1. An undercounted, but never double-deleted, page.** If a tick's row is
+ * claimed and run to completion **twice** (attempt 1 succeeds — deletes a
+ * page, enqueues a successor — but the process dies before
+ * `store.complete()` persists; the row is stranded, reclaimed, and attempt 2
+ * runs the same tick fresh), attempt 2 will fetch a *different* page than
+ * attempt 1 did, because attempt 1's page is already gone from Discord by
+ * then. Attempt 2's own successor-enqueue call collides with attempt 1's
+ * already-inserted row (same `jobId`-derived key) and is silently dropped —
+ * so only attempt 1's successor survives, carrying attempt 1's cursor, not
+ * attempt 2's. The eventual successor therefore resumes from attempt 1's
+ * stopping point, and the messages attempt 2 additionally deleted are real
+ * deletions that simply are not re-counted into `deletedCount` — a bounded
+ * undercount of at most one page (<=100) that can only occur on this
+ * specific crash timing, and never a double-deletion.
+ *
+ * **2. A narrow window where a real deletion can end up with no audit row
+ * and no attribution job.** `bulkDeleteMessages`/`deleteMessage` runs
+ * first; `recordDeletion` (audit row + self-enqueued `log_message_delete`,
+ * per message) runs afterward, in the same tick. A crash between "the
+ * delete call returned" and "every `recordDeletion` in this page's loop has
+ * finished" leaves whichever messages hadn't been recorded yet deleted with
+ * no audit trail at all — and since nothing here subscribes to
+ * `MESSAGE_DELETE_BULK`, nothing else covers that gap either (ADR 0037's
+ * whole reason for self-enqueuing in the first place). There is no clean
+ * redesign that closes this within one tick: recording the audit row
+ * *before* the delete call would claim deletions that may never actually
+ * happen if the delete call itself then fails. So this is an honest,
+ * accepted gap, not a solved one — bounded to at most one page (<=100)
+ * per purge, on this same narrow crash timing.
  */
 
 /** Mirrors `ModCaseRefusalReason` (`packages/storage/src/repos/mod-cases.ts`) — ADR 0014 boundary. */
@@ -215,10 +230,26 @@ const classifyRefusal = (state: ModerationSafetyState | undefined): InternalRefu
  * purge event to it. There is no violator to attach a channel cleanup to —
  * `never countsAsViolation`, since running a purge is not, itself, a
  * violation by the moderator who ran it.
+ *
+ * `eventId` is deterministic — `<intentId>:<jobId>:<actionTaken>` — rather
+ * than a fresh `crypto.randomUUID()` per call (CLAUDE.md rule 6: this runs
+ * inside a retryable job body). If this tick's row is claimed and run to
+ * completion twice (attempt 1 writes this event and enqueues a successor,
+ * but the process dies before `store.complete()` persists; the row is
+ * stranded and reclaimed; attempt 2 reaches the identical outcome), attempt
+ * 2 computes the *same* `eventId` — `jobId` is stable across the crash, and
+ * `intentId`/`actionTaken` do not depend on anything either attempt fetched
+ * from Discord. `mod_case_events`' primary key is `(guild_id, event_id)`
+ * with a targeted `ON CONFLICT ... DO NOTHING` on exactly that pair
+ * (`packages/storage/src/repos/mod-cases.ts`), so the second write
+ * collapses into a no-op rather than a duplicate row or a thrown
+ * constraint error — the same "insert once, key on identity" idiom
+ * `jobs_dedupe` already uses for the job row itself.
  */
 const recordPurgeCaseEvent = (
   ports: PurgePorts,
   payload: ModPurgePayload,
+  jobId: number,
   input: {
     actionTaken: 'purged' | 'purge_refused' | 'purge_failed';
     refusalReason: PurgeRefusalReason | undefined;
@@ -232,7 +263,7 @@ const recordPurgeCaseEvent = (
     countsAsViolation: false,
   });
   ports.recordCaseEvent({
-    eventId: crypto.randomUUID(),
+    eventId: `${payload.intentId}:${jobId}:${input.actionTaken}`,
     caseId,
     ruleId: MANUAL_RULE_ID,
     memberId: payload.initiatorUserId,
@@ -245,16 +276,30 @@ const recordPurgeCaseEvent = (
   });
 };
 
+/**
+ * `deletedCount` is the cursor's running total *before* this tick — a
+ * refusal can fire well into a multi-tick purge (a killswitch flip at tick
+ * 3, the budget tripping at tick 5), and `purge_refused` on its own reads as
+ * "nothing happened" even though up to `PURGE_MAX_MESSAGES` messages may
+ * already be gone. Folded into the snippet so a moderator reading case
+ * history sees the truth, not just the refusal.
+ */
 const recordRefusal = (
   ports: PurgePorts,
   payload: ModPurgePayload,
   reason: InternalRefusal,
+  deletedCount: number,
+  jobId: number,
   at: number,
 ): void => {
-  recordPurgeCaseEvent(ports, payload, {
+  const snippet =
+    deletedCount > 0
+      ? `purge of <#${payload.channelId}> refused after deleting ${deletedCount} message(s): ${reason}`
+      : `purge of <#${payload.channelId}> refused: ${reason}`;
+  recordPurgeCaseEvent(ports, payload, jobId, {
     actionTaken: 'purge_refused',
     refusalReason: CASE_REFUSAL_REASON[reason],
-    snippet: `purge of <#${payload.channelId}> refused: ${reason}`,
+    snippet,
     at,
   });
   ports.logger.warn(
@@ -265,6 +310,7 @@ const recordRefusal = (
       intentId: payload.intentId,
       outcome: 'refused',
       reason,
+      deletedCount,
     }),
     'purge refused',
   );
@@ -273,16 +319,18 @@ const recordRefusal = (
 const recordBudgetRefusal = (
   ports: PurgePorts,
   payload: ModPurgePayload,
+  deletedCount: number,
   prospectiveCount: number,
+  jobId: number,
   at: number,
 ): void => {
-  recordPurgeCaseEvent(ports, payload, {
+  recordPurgeCaseEvent(ports, payload, jobId, {
     actionTaken: 'purge_refused',
     // 'over-budget' has no PurgeRefusalReason counterpart either — the
     // vocabulary check in `recordCaseEvent`'s callers only "supports one, if
     // the vocabulary supports one" (task brief); the snippet carries it.
     refusalReason: undefined,
-    snippet: `purge of <#${payload.channelId}> refused: ${prospectiveCount} exceeds the ${PURGE_MAX_MESSAGES}-message budget`,
+    snippet: `purge of <#${payload.channelId}> refused: continuing would reach ${prospectiveCount} total messages (${deletedCount} already deleted), over the ${PURGE_MAX_MESSAGES}-message budget`,
     at,
   });
   ports.logger.warn(
@@ -293,7 +341,8 @@ const recordBudgetRefusal = (
       intentId: payload.intentId,
       outcome: 'refused',
       reason: 'over-budget',
-      count: prospectiveCount,
+      deletedCount,
+      prospectiveCount,
       budget: PURGE_MAX_MESSAGES,
     }),
     'purge refused: over budget',
@@ -303,10 +352,11 @@ const recordBudgetRefusal = (
 const completePurge = (
   ports: PurgePorts,
   payload: ModPurgePayload,
+  jobId: number,
   totalDeleted: number,
   at: number,
 ): void => {
-  recordPurgeCaseEvent(ports, payload, {
+  recordPurgeCaseEvent(ports, payload, jobId, {
     actionTaken: 'purged',
     refusalReason: undefined,
     snippet: `purged ${totalDeleted} message(s) from <#${payload.channelId}>`,
@@ -387,7 +437,7 @@ const runFreshTick = async (
   });
 
   if (page.messages.length === 0) {
-    completePurge(ports, payload, cursor.deletedCount, now);
+    completePurge(ports, payload, jobId, cursor.deletedCount, now);
     return;
   }
 
@@ -410,7 +460,7 @@ const runFreshTick = async (
   const prospectiveTotal = cursor.deletedCount + freshIds.length;
   const budget = checkPurgeBudget(prospectiveTotal, PURGE_MAX_MESSAGES);
   if (!budget.ok) {
-    recordBudgetRefusal(ports, payload, prospectiveTotal, now);
+    recordBudgetRefusal(ports, payload, cursor.deletedCount, prospectiveTotal, jobId, now);
     return;
   }
 
@@ -446,7 +496,7 @@ const runFreshTick = async (
   }
 
   if (page.nextBefore === undefined) {
-    completePurge(ports, payload, deletedCount, now);
+    completePurge(ports, payload, jobId, deletedCount, now);
     return;
   }
 
@@ -472,7 +522,7 @@ const runOldTick = async (
   });
 
   if (page.messages.length === 0) {
-    completePurge(ports, payload, cursor.deletedCount, now);
+    completePurge(ports, payload, jobId, cursor.deletedCount, now);
     return;
   }
 
@@ -480,7 +530,7 @@ const runOldTick = async (
   const prospectiveTotal = cursor.deletedCount + 1;
   const budget = checkPurgeBudget(prospectiveTotal, PURGE_MAX_MESSAGES);
   if (!budget.ok) {
-    recordBudgetRefusal(ports, payload, prospectiveTotal, now);
+    recordBudgetRefusal(ports, payload, cursor.deletedCount, prospectiveTotal, jobId, now);
     return;
   }
 
@@ -519,7 +569,7 @@ export const runPurgeTick = async (ports: PurgePorts, input: PurgeTickInput): Pr
 
   const refusal = classifyRefusal(ports.readSafetyState());
   if (refusal !== undefined) {
-    recordRefusal(ports, input.payload, refusal, now);
+    recordRefusal(ports, input.payload, refusal, cursor.deletedCount, input.jobId, now);
     return;
   }
 

@@ -10,14 +10,15 @@ import { runPurgeTick, type PurgePorts } from './purge.js';
  * `runPurgeTick`'s own tests (Task 5, ADR 0037): ports faked, one tick at a
  * time, pinned against the exact scenarios the task brief names. The
  * restart-resume proof (Step 3 — real `jobRepo`/`JobWorker`, a genuinely
- * fresh instance) lives in `apps/daemon/src/mod-purge.integration.test.ts`,
- * where the dedupe key's collision-avoidance is checked against SQLite's own
- * partial unique index rather than a simulation of it. This file still
- * proves the dedupe-key *scheme* itself — see the last `describe` block —
- * with an in-memory store that enforces the same "unique while live" rule
- * `jobs_dedupe` does, so the property under test is the real
- * `purgeDedupeKey` function and the real two-tick call sequence, not a stub
- * that always agrees with itself.
+ * fresh instance, actual `requeueStranded`) lives in
+ * `apps/daemon/src/mod-purge.integration.test.ts`, where the dedupe key's
+ * collision-avoidance is checked against SQLite's own partial unique index
+ * rather than a simulation of it. This file's last `describe` block proves
+ * the dedupe-key *function* (`purgeDedupeKey`) in isolation — every key it
+ * can produce, called directly, checked against a fake store that enforces
+ * the same "unique while live" rule `jobs_dedupe` does — which pins the
+ * scheme's logic precisely but does not exercise `runPurgeTick` or a real
+ * two-tick call sequence; that proof is the integration file's job.
  */
 
 const GUILD: Snowflake = '111111111111111111';
@@ -250,6 +251,66 @@ describe('runPurgeTick — fresh phase', () => {
     expect(h.singleDeleteCalls).toEqual(['900000000000000201']);
     expect(h.bulkDeleteCalls).toHaveLength(0);
   });
+
+  it('a mixed page bulk-deletes only the fresh portion and transitions to the old phase', async () => {
+    // Newest-first: 1102 > 1101 > 1100 (fresh) then 1099, 1098 (>=14 days).
+    // The scan must stop at the first old message and route the remainder
+    // to the 'old' phase rather than trying to bulk-delete them too.
+    const h = harness();
+    freshMessage(h, '900000000000001102');
+    freshMessage(h, '900000000000001101');
+    freshMessage(h, '900000000000001100');
+    oldMessage(h, '900000000000001099');
+    oldMessage(h, '900000000000001098');
+
+    await runPurgeTick(h.ports, { payload: payload(), cursor: null, jobId: 1 });
+
+    expect(h.bulkDeleteCalls).toHaveLength(1);
+    expect(new Set(h.bulkDeleteCalls[0])).toEqual(
+      new Set(['900000000000001102', '900000000000001101', '900000000000001100']),
+    );
+    expect(h.singleDeleteCalls).toHaveLength(0);
+    expect(h.continuations).toHaveLength(1);
+
+    const cursor = JSON.parse(h.continuations[0]!.cursor) as ModPurgeCursor;
+    expect(cursor.phase).toBe('old');
+    expect(cursor.deletedCount).toBe(3);
+    // Resumes right where the fresh batch stopped — the oldest message this
+    // tick actually deleted — not from the page's true end.
+    expect(cursor.lastMessageId).toBe('900000000000001100');
+  });
+
+  it('a page that opens directly on an old message deletes nothing and keeps the prior cursor position', async () => {
+    // Exercises the `freshIds.length > 0 ? … : cursor.lastMessageId`
+    // fallback: the fresh batch is empty, so there is nothing to derive a
+    // new resume point from — the incoming cursor's own position must
+    // survive unchanged into the 'old' phase.
+    const h = harness();
+    oldMessage(h, '900000000000001199');
+    oldMessage(h, '900000000000001198');
+    const cursor: ModPurgeCursor = {
+      phase: 'fresh',
+      lastMessageId: '900000000000001200',
+      deletedCount: 10,
+    };
+
+    await runPurgeTick(h.ports, {
+      payload: payload(),
+      cursor: JSON.stringify(cursor),
+      jobId: 1,
+    });
+
+    expect(h.bulkDeleteCalls).toHaveLength(0);
+    expect(h.singleDeleteCalls).toHaveLength(0);
+    expect(h.continuations).toHaveLength(1);
+
+    const next = JSON.parse(h.continuations[0]!.cursor) as ModPurgeCursor;
+    expect(next).toEqual({
+      phase: 'old',
+      lastMessageId: '900000000000001200', // unchanged from the input cursor
+      deletedCount: 10, // unchanged — nothing was deleted this tick
+    });
+  });
 });
 
 describe('runPurgeTick — old phase', () => {
@@ -273,17 +334,43 @@ describe('runPurgeTick — old phase', () => {
     // fetch is what discovers the channel is exhausted.
     expect(h.caseEvents).toHaveLength(0);
   });
+
+  it('refuses and deletes nothing once the prospective total exceeds the budget in the old phase too', async () => {
+    const h = harness();
+    oldMessage(h, '900000000000000302');
+    const cursor: ModPurgeCursor = {
+      phase: 'old',
+      lastMessageId: undefined,
+      deletedCount: PURGE_MAX_MESSAGES,
+    };
+
+    await runPurgeTick(h.ports, {
+      payload: payload(),
+      cursor: JSON.stringify(cursor),
+      jobId: 1,
+    });
+
+    expect(h.singleDeleteCalls).toHaveLength(0);
+    expect(h.bulkDeleteCalls).toHaveLength(0);
+    expect(h.continuations).toHaveLength(0);
+    expect(h.auditRows).toHaveLength(0);
+    expect(h.caseEvents).toEqual([
+      expect.objectContaining({ actionTaken: 'purge_refused', memberId: MOD, actorId: MOD }),
+    ]);
+    expect(h.caseEvents[0]!.matchedSnippet).toContain(String(PURGE_MAX_MESSAGES));
+  });
 });
 
 describe('runPurgeTick — budget', () => {
-  it('refuses and deletes nothing once the prospective total exceeds the budget', async () => {
+  it('refuses and deletes nothing once the prospective total exceeds the budget, naming the already-deleted count', async () => {
     const h = harness();
     freshMessage(h, '900000000000000401');
     freshMessage(h, '900000000000000402');
+    const alreadyDeleted = PURGE_MAX_MESSAGES - 1;
     const cursor: ModPurgeCursor = {
       phase: 'fresh',
       lastMessageId: undefined,
-      deletedCount: PURGE_MAX_MESSAGES - 1,
+      deletedCount: alreadyDeleted,
     };
 
     await runPurgeTick(h.ports, {
@@ -299,6 +386,10 @@ describe('runPurgeTick — budget', () => {
     expect(h.caseEvents).toEqual([
       expect.objectContaining({ actionTaken: 'purge_refused', memberId: MOD, actorId: MOD }),
     ]);
+    // A budget refusal mid-purge must not read as "nothing happened" — the
+    // already-deleted count (from the cursor, not the refused batch) is in
+    // the snippet.
+    expect(h.caseEvents[0]!.matchedSnippet).toContain(String(alreadyDeleted));
   });
 });
 
@@ -314,6 +405,41 @@ describe('runPurgeTick — the safety gate', () => {
     expect(h.caseEvents).toEqual([
       expect.objectContaining({ actionTaken: 'purge_refused', refusalReason: 'killswitch' }),
     ]);
+  });
+
+  it('refuses on an open breaker and deletes nothing', async () => {
+    const h = harness({ safety: { killswitch: false, breakerOpen: true, dryRun: false } });
+    freshMessage(h, '900000000000000502');
+
+    await runPurgeTick(h.ports, { payload: payload(), cursor: null, jobId: 1 });
+
+    expect(h.bulkDeleteCalls).toHaveLength(0);
+    expect(h.singleDeleteCalls).toHaveLength(0);
+    expect(h.caseEvents).toEqual([
+      expect.objectContaining({ actionTaken: 'purge_refused', refusalReason: 'breaker-open' }),
+    ]);
+  });
+
+  it('names how much was already deleted when the safety gate refuses mid-purge', async () => {
+    // A killswitch flip (or any other safety-gate trip) can fire well into a
+    // multi-tick purge — this must not read as "nothing happened".
+    const h = harness({ safety: { killswitch: true, breakerOpen: false, dryRun: false } });
+    const cursor: ModPurgeCursor = {
+      phase: 'fresh',
+      lastMessageId: '900000000000000550',
+      deletedCount: 342,
+    };
+
+    await runPurgeTick(h.ports, {
+      payload: payload(),
+      cursor: JSON.stringify(cursor),
+      jobId: 1,
+    });
+
+    expect(h.caseEvents).toEqual([
+      expect.objectContaining({ actionTaken: 'purge_refused', refusalReason: 'killswitch' }),
+    ]);
+    expect(h.caseEvents[0]!.matchedSnippet).toContain('342');
   });
 
   it('refuses when the guild is unknown', async () => {
@@ -399,14 +525,50 @@ describe('runPurgeTick — completion', () => {
 });
 
 /**
- * The dedupe-key scheme itself (see `purge.ts`'s module docstring and
- * `purgeDedupeKey`'s docstring in `jobs/kinds.ts`): proven here against a
- * fake store that enforces the *same* "unique while live" rule
- * `jobs_dedupe`'s partial unique index does, driving `runPurgeTick` through
- * two genuinely consecutive ticks rather than asserting on the key string in
- * isolation. The fully real version of this — actual `jobRepo`/`JobWorker`
- * SQLite state, actual `requeueStranded` — is
- * `apps/daemon/src/mod-purge.integration.test.ts`'s restart-resume test.
+ * A cursor read back from `jobs.cursor` is untrusted input exactly like a
+ * job payload (CLAUDE.md rule 3) — it was written by an earlier attempt, or
+ * by an older version of this process. `parseCursor` (`purge.ts`) must
+ * never throw on it; the safe fallback is restarting the fresh phase from
+ * the top, which is harmless because `fetchRecentMessages` excludes
+ * already-deleted messages (this module's own docstring).
+ */
+describe('runPurgeTick — a malformed cursor', () => {
+  it.each<[string, string]>([
+    ['not JSON at all', 'not-json{{{'],
+    ['valid JSON but the wrong shape', JSON.stringify({ phase: 'bogus', deletedCount: -1 })],
+  ])('%s restarts the fresh phase from the top rather than throwing', async (_label, rawCursor) => {
+    const h = harness();
+    freshMessage(h, '900000000000000901');
+    freshMessage(h, '900000000000000902');
+
+    await expect(
+      runPurgeTick(h.ports, { payload: payload(), cursor: rawCursor, jobId: 1 }),
+    ).resolves.toBeUndefined();
+
+    expect(h.bulkDeleteCalls).toHaveLength(1);
+    expect(new Set(h.bulkDeleteCalls[0])).toEqual(
+      new Set(['900000000000000901', '900000000000000902']),
+    );
+    // Started fresh at deletedCount 0, not carrying over anything from the
+    // cursor that failed to parse.
+    expect(h.caseEvents).toEqual([expect.objectContaining({ actionTaken: 'purged' })]);
+    expect(h.caseEvents[0]!.matchedSnippet).toContain('2');
+  });
+});
+
+/**
+ * The dedupe-key *function* itself (see `purge.ts`'s module docstring and
+ * `purgeDedupeKey`'s docstring in `jobs/kinds.ts`). Every test below calls
+ * `purgeDedupeKey` directly against a hand-rolled `FakeJobTable` that
+ * enforces the same "unique while live" rule `jobs_dedupe`'s partial unique
+ * index does — this pins the key-string logic (no self-collision, stable
+ * across a simulated retry) but does **not** drive `runPurgeTick` itself, so
+ * it is not a two-tick, end-to-end proof. That proof — a real `jobRepo`,
+ * a real `JobWorker`, a genuinely new worker instance, actual
+ * `requeueStranded` — is `apps/daemon/src/mod-purge.integration.test.ts`'s
+ * job: its restart-resume test and its stranded-retry test are what
+ * actually exercise `runPurgeTick` through two consecutive ticks against
+ * real SQLite state.
  */
 describe('the dedupe-key scheme avoids self-collision and de-duplicates a retried tick', () => {
   /** Mirrors `jobs_dedupe`: unique among keys currently `live`. */
