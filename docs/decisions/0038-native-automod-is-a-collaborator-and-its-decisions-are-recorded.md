@@ -146,6 +146,17 @@ The key is therefore derived in priority order:
 3. otherwise a fingerprint over `(guildId, ruleId, userId, actionType,
    hash(content), matchedKeyword)` within a bounded time window.
 
+This is not a new invention: it is the house pattern. `event_dedupe` is keyed
+`(guild_id, event_kind, fingerprint)`, **not** the `(guild_id,
+discord_event_id)` `REVIEW.md` §C8 prescribed, because gateway dispatches carry
+no event id — the reasoning is already written down at
+`packages/core/src/pipeline/fingerprint.ts:4-48` and mirrored at
+`packages/storage/src/schema.ts:357-375`. `fingerprintOf` is a `switch` over
+`event.kind` with no `default` and a `string | undefined` return, so adding a
+kind without adding its fingerprint case is a compile error rather than a
+silent gap. Returning `undefined` there is the explicit "not deduplicated"
+choice; this event returns a real fingerprint.
+
 **The accepted trade-off.** Case 3 collapses two byte-identical blocked
 messages from the same member inside the window into one recorded event, so a
 determined repeat offender is under-counted in the review queue's volume
@@ -182,7 +193,17 @@ caveat that qualifies it is the kind of quiet lie the gate exists to catch.
   lie about the guild's history, and the kill switch stops side effects, not
   observations.
 - A migration widening the `mod_case_events.action_taken` CHECK by four values.
-  Existing rows keep their meaning; nothing is rewritten.
+  Existing rows keep their meaning; nothing is rewritten. SQLite cannot alter a
+  CHECK in place, so drizzle-kit emits a full table rebuild, exactly the shape
+  migration `0008` took for ADR 0037's six values.
+- **The vocabulary lives in three hand-maintained places** and there is no
+  shared import to keep them honest, because `packages/core` may not import
+  `@bananasaurs/storage` (ADR 0014): the CHECK in
+  `packages/storage/src/schema.ts`, the `ModCaseActionTaken` union in
+  `packages/storage/src/repos/mod-cases.ts`, and `AutomodActionTaken` in
+  `packages/core/src/automod/subscriber.ts`. A value added to two of the three
+  fails at runtime on a CHECK violation, not at compile time. All three change
+  together, and a test asserts they agree.
 - A rule-level flag for the native-overlap disclosure, landing with the other
   `mod_rules` columns in Slice 6 rather than as its own migration.
 - `MESSAGE_CONTENT` is already held, so `content` and `matched_content` arrive
