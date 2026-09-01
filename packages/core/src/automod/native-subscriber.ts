@@ -65,6 +65,11 @@ export const createNativeAutomodSubscriber = (deps: NativeAutomodSubscriberDeps)
     // `violation_count` alone (ADR 0038's reason).
     const { caseId } = deps.openOrResolveCase(native.userId, { countsAsViolation: false });
 
+    // `native.channelId` is available but not yet recorded — this will be added
+    // in a later slice when the schema extends modCaseEvents to include it.
+    // That is an auditability improvement: "block commonly flagged words" firing
+    // in one noisy channel versus guild-wide is a signal worth preserving. It is
+    // deliberately not recorded now so this gap is not mistaken for an oversight.
     deps.recordCaseEvent({
       caseId,
       ruleId: `${NATIVE_RULE_PREFIX}${native.ruleId}`,
