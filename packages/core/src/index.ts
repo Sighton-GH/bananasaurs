@@ -221,6 +221,7 @@ export {
   MOD_COMMAND_NAME,
   type ModCommandCasePorts,
   type ModCommandDeps,
+  type NoteEvidenceCasePorts,
 } from './mod/commands.js';
 export {
   banConfirmDedupeKey,

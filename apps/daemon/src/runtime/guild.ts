@@ -522,6 +522,27 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           }),
         }),
     },
+    // Task 8: `note`/`evidence`. A third sibling port beside `cases` and
+    // `warnRepo` above (`NoteEvidenceCasePorts`'s own docstring explains
+    // why it is not a widening of either), but the same one underlying
+    // `modCaseRepo.recordCaseEvent` call every other manual-event port in
+    // this file already makes — no new repo function.
+    noteEvidenceCases: {
+      openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
+      recordCaseEvent: (input) =>
+        modCaseRepo.recordCaseEvent(scope, {
+          eventId: input.eventId,
+          caseId: input.caseId,
+          ruleId: input.ruleId,
+          memberId: input.memberId,
+          at: input.at,
+          matchedCategory: input.matchedCategory,
+          matchedSnippet: input.matchedSnippet,
+          actionTaken: input.actionTaken,
+          actorId: input.actorId,
+          ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
+        }),
+    },
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
       respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),

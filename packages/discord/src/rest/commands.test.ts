@@ -78,14 +78,30 @@ describe('the Release 2 command set', () => {
     expect(RELEASE_2_COMMANDS).toEqual([STATUS_COMMAND, MOD_COMMAND]);
   });
 
-  it('/mod carries the five Task 6 subcommands plus ban and purge (Task 7), each with a reason', () => {
+  it('/mod carries the five Task 6 subcommands, ban and purge (Task 7), and note/evidence (Task 8)', () => {
     expect(MOD_COMMAND.name).toBe('mod');
     const names = MOD_COMMAND.options?.map((o) => o.name);
-    expect(names).toEqual(['timeout', 'untimeout', 'kick', 'unban', 'warn', 'ban', 'purge']);
+    expect(names).toEqual([
+      'timeout',
+      'untimeout',
+      'kick',
+      'unban',
+      'warn',
+      'ban',
+      'purge',
+      'note',
+      'evidence',
+    ]);
+    // Only the six action subcommands take a `reason` — `note`/`evidence`
+    // (Task 8) carry their own content option (`text`/`url`) instead; a
+    // note's text or an evidence link is not "why", it is the payload.
+    const WITH_REASON = new Set(['timeout', 'untimeout', 'kick', 'unban', 'warn', 'ban', 'purge']);
     for (const sub of MOD_COMMAND.options ?? []) {
       expect(sub.type).toBe(1); // SUB_COMMAND
       const optionNames = sub.options?.map((o) => o.name) ?? [];
-      expect(optionNames).toContain('reason');
+      if (WITH_REASON.has(sub.name)) {
+        expect(optionNames).toContain('reason');
+      }
       // Every subcommand targets a member by id, except `purge`, which
       // targets a channel instead — there is no member to name.
       if (sub.name === 'purge') {
@@ -95,6 +111,20 @@ describe('the Release 2 command set', () => {
         expect(optionNames).toContain('target');
       }
     }
+  });
+
+  it('note takes target+text, capped well under Discord’s STRING ceiling', () => {
+    const note = MOD_COMMAND.options?.find((o) => o.name === 'note');
+    expect(note?.options?.map((o) => o.name)).toEqual(['target', 'text']);
+    const text = note?.options?.find((o) => o.name === 'text');
+    expect(text).toMatchObject({ type: 3, required: true, max_length: 1000 }); // STRING
+  });
+
+  it('evidence takes target+url, capped shorter than note’s free text', () => {
+    const evidence = MOD_COMMAND.options?.find((o) => o.name === 'evidence');
+    expect(evidence?.options?.map((o) => o.name)).toEqual(['target', 'url']);
+    const url = evidence?.options?.find((o) => o.name === 'url');
+    expect(url).toMatchObject({ type: 3, required: true, max_length: 500 }); // STRING
   });
 
   it('ban is a plain target+reason confirm-then-execute subcommand', () => {

@@ -12,6 +12,7 @@ import {
   MAX_TIMEOUT_MS,
   type ModCommandCasePorts,
   type ModCommandDeps,
+  type NoteEvidenceCasePorts,
 } from './commands.js';
 import type { WarnCasePorts } from './warn.js';
 
@@ -52,6 +53,8 @@ interface Harness {
     openOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
     recordCaseEvent: Parameters<ModCommandCasePorts['recordCaseEvent']>[0][];
     warnRecordCaseEvent: Parameters<WarnCasePorts['recordCaseEvent']>[0][];
+    noteEvidenceRecordCaseEvent: Parameters<NoteEvidenceCasePorts['recordCaseEvent']>[0][];
+    noteEvidenceOpenOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
     defer: { ref: InteractionRef; options: { ephemeral: boolean } }[];
     respond: { ref: InteractionRef; message: OutgoingMessage }[];
     fetchInvokerRoleIds: Snowflake[];
@@ -71,6 +74,8 @@ function buildHarness(
     openOrResolveCase: [],
     recordCaseEvent: [],
     warnRecordCaseEvent: [],
+    noteEvidenceRecordCaseEvent: [],
+    noteEvidenceOpenOrResolveCase: [],
     defer: [],
     respond: [],
     fetchInvokerRoleIds: [],
@@ -113,6 +118,22 @@ function buildHarness(
     recordEscalationOutcome: () => {},
   };
 
+  const noteEvidenceCases: NoteEvidenceCasePorts = {
+    openOrResolveCase: (input) => {
+      calls.noteEvidenceOpenOrResolveCase.push({
+        memberId: input.memberId,
+        countsAsViolation: input.countsAsViolation,
+      });
+      // A note/evidence event never counts, so a fresh case opens at 0 —
+      // the fake mirrors `openOrResolveCase`'s own real behaviour for a
+      // non-counting open (`packages/storage/src/repos/mod-cases.ts`).
+      return { caseId: 'case-1', violationCount: 0 };
+    },
+    recordCaseEvent: (input) => {
+      calls.noteEvidenceRecordCaseEvent.push(input);
+    },
+  };
+
   const responder: SlashResponder = {
     defer: async (ref, options) => {
       calls.defer.push({ ref, options });
@@ -132,6 +153,7 @@ function buildHarness(
     moderationGateway,
     cases,
     warnRepo,
+    noteEvidenceCases,
     responder,
     now: () => NOW_MS,
     logger: silentLogger,
@@ -184,8 +206,8 @@ describe('mod command subscriber', () => {
   it('ignores an unrecognised subcommand rather than guessing', async () => {
     const { deps, calls } = buildHarness();
     const subscriber = createModCommandSubscriber(deps);
-    // 'note' belongs to Task 8, not yet wired into this subscriber.
-    await subscriber.handle(slashCommandEvent({ subcommandPath: ['note'] }));
+    // 'history' belongs to Task 9, not yet wired into this subscriber.
+    await subscriber.handle(slashCommandEvent({ subcommandPath: ['history'] }));
     expect(calls.defer).toHaveLength(0);
     expect(calls.applyAction).toHaveLength(0);
   });
@@ -411,6 +433,145 @@ describe('mod command subscriber', () => {
       expect(calls.respond[0]?.message.content).toMatch(/Violation count: 3/);
       expect(calls.respond[0]?.message.content).toMatch(/escalation tier/i);
       expect(calls.respond[0]?.message.content).toMatch(/applied/);
+    });
+  });
+
+  describe('note', () => {
+    it('lands as action_taken=note, rule_id=manual, actor_id set — never touches the gateway', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['note'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'text', value: 'seen hanging around a raid server' },
+          ],
+        }),
+      );
+
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(1);
+      const event = calls.noteEvidenceRecordCaseEvent[0]!;
+      expect(event.actionTaken).toBe('note');
+      expect(event.ruleId).toBe('manual');
+      expect(event.actorId).toBe(MODERATOR);
+      expect(event.memberId).toBe(TARGET);
+      expect(event.matchedSnippet).toBe('seen hanging around a raid server');
+      expect(event.at).toBe(NOW_MS);
+      expect(calls.respond[0]?.message.content).toMatch(/note recorded/i);
+    });
+
+    it('opens a non-counting case at count 0 when the member has no open case', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['note'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'text', value: 'first observation' },
+          ],
+        }),
+      );
+
+      expect(calls.noteEvidenceOpenOrResolveCase).toEqual([
+        { memberId: TARGET, countsAsViolation: false },
+      ]);
+    });
+  });
+
+  describe('evidence', () => {
+    it('lands as action_taken=evidence_added with the URL as matchedSnippet', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['evidence'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'url', value: 'https://example.com/screenshot.png' },
+          ],
+        }),
+      );
+
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(1);
+      const event = calls.noteEvidenceRecordCaseEvent[0]!;
+      expect(event.actionTaken).toBe('evidence_added');
+      expect(event.matchedCategory).toBe('evidence');
+      expect(event.ruleId).toBe('manual');
+      expect(event.actorId).toBe(MODERATOR);
+      expect(event.memberId).toBe(TARGET);
+      expect(event.matchedSnippet).toBe('https://example.com/screenshot.png');
+      expect(calls.respond[0]?.message.content).toMatch(/evidence.*recorded/i);
+    });
+
+    it('also opens a non-counting case at count 0 when the member has no open case', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['evidence'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'url', value: 'https://example.com/log.txt' },
+          ],
+        }),
+      );
+
+      expect(calls.noteEvidenceOpenOrResolveCase).toEqual([
+        { memberId: TARGET, countsAsViolation: false },
+      ]);
+    });
+  });
+
+  describe('unauthorized caller: note and evidence', () => {
+    it('refuses note, never records a note event, but durably records the refusal', async () => {
+      const { deps, calls } = buildHarness({ authorized: false });
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['note'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'text', value: 'should never land' },
+          ],
+        }),
+      );
+
+      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(1);
+      const event = calls.noteEvidenceRecordCaseEvent[0]!;
+      expect(event.actionTaken).toBe('escalation_refused');
+      expect(event.refusalReason).toBe('unauthorized');
+      expect(event.actorId).toBe(MODERATOR);
+      expect(event.memberId).toBe(TARGET);
+      // Never the raw note/action_taken values a successful write would use.
+      expect(event.actionTaken).not.toBe('note');
+    });
+
+    it('refuses evidence, never records an evidence_added event, but durably records the refusal', async () => {
+      const { deps, calls } = buildHarness({ authorized: false });
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['evidence'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'url', value: 'https://example.com/should-not-land' },
+          ],
+        }),
+      );
+
+      expect(calls.respond[0]?.message.content).toMatch(/do not have permission/i);
+      expect(calls.noteEvidenceRecordCaseEvent).toHaveLength(1);
+      const event = calls.noteEvidenceRecordCaseEvent[0]!;
+      expect(event.actionTaken).toBe('escalation_refused');
+      expect(event.refusalReason).toBe('unauthorized');
+      expect(event.actorId).toBe(MODERATOR);
+      expect(event.memberId).toBe(TARGET);
+      expect(event.actionTaken).not.toBe('evidence_added');
     });
   });
 

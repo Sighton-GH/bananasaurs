@@ -30,11 +30,16 @@ import { issueWarn, MANUAL_RULE_ID, type WarnCasePorts } from './warn.js';
  * pending intent and render Confirm/Cancel buttons instead of calling the
  * gateway; the confirming click itself is a *different* event kind
  * (`InteractionEvent`, not `SlashCommandEvent`) and is handled entirely by
- * `confirmations.ts`'s own subscriber, not this one. `note`, `evidence` and
- * `history` belong to Tasks 8 and 9. `MOD_COMMAND`
- * (`packages/discord/src/rest/commands.ts`) registers only these seven
- * subcommands today — later tasks extend both that list and this
- * subscriber's `switch`, the same way `ADR 0037` point 9 describes the
+ * `confirmations.ts`'s own subscriber, not this one. `note` and `evidence`
+ * (Task 8) *are* handled here, by `handleNoteOrEvidence` below: unlike
+ * `ban`/`purge` they call no gateway at all — no Discord side effect, no
+ * hierarchy, no confirmation to hold open — so each is just an authorized
+ * moderator appending one durable `mod_case_events` row, the same shape as
+ * `handleDirectAction`'s "defer → authorize → act → respond" but with the
+ * "act" step being a repo write instead of a gateway call. `history`
+ * belongs to Task 9. `MOD_COMMAND` (`packages/discord/src/rest/commands.ts`)
+ * registers nine subcommands today — Task 9 extends both that list and this
+ * subscriber's dispatch, the same way `ADR 0037` point 9 describes the
  * registration endpoint being re-PUT with a growing set.
  *
  * The pattern mirrors `ops/commands/status-slash.ts`: defer ephemeral,
@@ -106,6 +111,43 @@ export interface ModCommandCasePorts {
   }): void;
 }
 
+/**
+ * The narrow slice of the case repo `note`/`evidence` call. A third sibling
+ * of `WarnCasePorts` (`./warn.js`) and `ModCommandCasePorts` above rather
+ * than a widening of either — Task 6/7's review settled this convention
+ * ("each module names only the `action_taken` values its own call sites
+ * write") and flagged that a third near-identical port here was expected,
+ * not a sign the two should be merged.
+ *
+ * Only three `actionTaken` values are possible from this module's own two
+ * call sites: `'note'`/`'evidence_added'` on success, `'escalation_refused'`
+ * on an unauthorized attempt (mirroring `recordDirectRefusal`'s and
+ * `handleWarn`'s own refusal recording — see `handleNoteOrEvidence` below).
+ * Neither ever sets `escalationAction`: a note or an evidence link names no
+ * `mod_case_events.escalation_action` value (`timeout`/`kick`/`ban`/`unban`)
+ * because neither is an escalation attempt at all.
+ */
+export interface NoteEvidenceCasePorts {
+  openOrResolveCase(input: { memberId: string; now: number; countsAsViolation: boolean }): {
+    caseId: string;
+    violationCount: number;
+  };
+  recordCaseEvent(input: {
+    eventId: string;
+    caseId: string;
+    ruleId: string;
+    memberId: string;
+    at: number;
+    matchedCategory: string;
+    matchedSnippet: string;
+    actionTaken: 'note' | 'evidence_added' | 'escalation_refused';
+    /** Set only when `actionTaken` is `'escalation_refused'`. */
+    refusalReason?: ModerationRefusalReason;
+    /** The moderator who invoked the command. Every manual event carries one (ADR 0037). */
+    actorId: string;
+  }): void;
+}
+
 export interface ModCommandDeps {
   readonly guildId: GuildId;
   readonly authz: AuthzStore;
@@ -119,6 +161,8 @@ export interface ModCommandDeps {
   readonly cases: ModCommandCasePorts;
   /** Passed straight through to `issueWarn` for the `warn` subcommand. */
   readonly warnRepo: WarnCasePorts;
+  /** Backs `note` and `evidence` (Task 8) — see `NoteEvidenceCasePorts`'s own docstring for why this is a third, separate port rather than a widening of `cases`. */
+  readonly noteEvidenceCases: NoteEvidenceCasePorts;
   readonly responder: SlashResponder;
   readonly now: () => number;
   readonly logger: Logger;
@@ -445,8 +489,146 @@ const handleWarn = async (
   await deps.responder.respond(ref, { content: lines.join('\n') });
 };
 
-const isKnownSubcommand = (value: string): value is DirectAction | 'warn' | 'ban' | 'purge' =>
-  DIRECT_ACTIONS.has(value) || value === 'warn' || value === 'ban' || value === 'purge';
+type NoteEvidenceKind = 'note' | 'evidence';
+
+/** `mod_case_events.action_taken` for a successful write of each kind. */
+const NOTE_EVIDENCE_ACTION_TAKEN: Record<NoteEvidenceKind, 'note' | 'evidence_added'> = {
+  note: 'note',
+  evidence: 'evidence_added',
+};
+
+/** Which STRING option on the subcommand carries the content. */
+const NOTE_EVIDENCE_CONTENT_OPTION: Record<NoteEvidenceKind, string> = {
+  note: 'text',
+  evidence: 'url',
+};
+
+/**
+ * `/mod note` and `/mod evidence` (Task 8, ADR 0037 points 4/5): a note's
+ * `matchedSnippet` is the note text itself; evidence's is the URL.
+ * `matchedCategory` is the subcommand name for both — `'evidence'` per the
+ * plan's exact wording, and `'note'` to match it (rather than reusing
+ * `MANUAL_RULE_ID` the way `issueWarn`'s own success write does): every
+ * other manual case event in this module (`recordDirectRefusal`,
+ * `recordDirectOutcome`, and `handleWarn`'s own refusal write) already uses
+ * the subcommand/action name as `matchedCategory`, so `'note'` keeps this
+ * event readable the same way and symmetric with `'evidence'`, rather than
+ * introducing the one place a note event's category says "manual" instead
+ * of "note".
+ *
+ * Neither subcommand calls `ModerationGatewayPort` — there is no Discord
+ * side effect, so no hierarchy check and no idempotency dedupe key beyond
+ * the ordinary interaction-replay dedupe the pipeline already handles
+ * upstream (CLAUDE.md rule 6 is about durable Discord side effects; this
+ * writes only a case-event row, and `recordCaseEvent`'s own `eventId`
+ * primary key already makes a duplicate write of the same event a no-op).
+ *
+ * Per the plan: a note (or evidence link) on a member with no open case
+ * opens one at count 0, non-counting — `openOrResolveCase` is called
+ * unconditionally, with `countsAsViolation: false`, mirroring exactly what
+ * `recordDirectRefusal`/`recordDirectOutcome` already do for a direct
+ * action, not `issueWarn`'s `true` (a note is not itself a violation being
+ * counted).
+ */
+const handleNoteOrEvidence = async (
+  deps: ModCommandDeps,
+  event: SlashCommandEvent,
+  ref: InteractionRef,
+  kind: NoteEvidenceKind,
+): Promise<void> => {
+  const nowMs = deps.now();
+  const targetId = parseSnowflakeId(optionValue(event.options, 'target'));
+  const content = stringOption(event.options, NOTE_EVIDENCE_CONTENT_OPTION[kind]);
+
+  const authResult = await authorizeInvoker(deps, event.userId);
+  if (!authResult.ok) {
+    // Durably recorded even though unauthorized — the same pattern
+    // `recordDirectRefusal` and `handleWarn`'s refusal path already follow
+    // (Task 7's review caught and fixed the same gap for ban/purge): an
+    // unauthorized attempt must be visible in case history, not log-only.
+    const { caseId } = deps.noteEvidenceCases.openOrResolveCase({
+      memberId: targetId,
+      now: nowMs,
+      countsAsViolation: false,
+    });
+    deps.noteEvidenceCases.recordCaseEvent({
+      eventId: randomUUID(),
+      caseId,
+      ruleId: MANUAL_RULE_ID,
+      memberId: targetId,
+      at: nowMs,
+      matchedCategory: kind,
+      matchedSnippet: content,
+      actionTaken: 'escalation_refused',
+      refusalReason: 'unauthorized',
+      actorId: event.userId,
+    });
+    deps.logger.warn(
+      safeLogFields({
+        component: 'mod-commands',
+        guildId: deps.guildId,
+        actorId: event.userId,
+        targetId,
+        action: kind,
+        outcome: 'unauthorized',
+      }),
+      '/mod command refused: caller lacks moderation.act',
+    );
+    await deps.responder.respond(ref, {
+      content:
+        kind === 'note'
+          ? 'You do not have permission to add notes to members.'
+          : 'You do not have permission to add evidence to members.',
+    });
+    return;
+  }
+
+  const { caseId } = deps.noteEvidenceCases.openOrResolveCase({
+    memberId: targetId,
+    now: nowMs,
+    countsAsViolation: false,
+  });
+  deps.noteEvidenceCases.recordCaseEvent({
+    eventId: randomUUID(),
+    caseId,
+    ruleId: MANUAL_RULE_ID,
+    memberId: targetId,
+    at: nowMs,
+    matchedCategory: kind,
+    matchedSnippet: content,
+    actionTaken: NOTE_EVIDENCE_ACTION_TAKEN[kind],
+    actorId: event.userId,
+  });
+
+  deps.logger.info(
+    safeLogFields({
+      component: 'mod-commands',
+      guildId: deps.guildId,
+      actorId: event.userId,
+      targetId,
+      action: kind,
+      outcome: 'recorded',
+    }),
+    '/mod note/evidence recorded',
+  );
+
+  await deps.responder.respond(ref, {
+    content:
+      kind === 'note'
+        ? `Note recorded for <@${targetId}>.`
+        : `Evidence link recorded for <@${targetId}>: ${content}`,
+  });
+};
+
+const isKnownSubcommand = (
+  value: string,
+): value is DirectAction | 'warn' | 'ban' | 'purge' | 'note' | 'evidence' =>
+  DIRECT_ACTIONS.has(value) ||
+  value === 'warn' ||
+  value === 'ban' ||
+  value === 'purge' ||
+  value === 'note' ||
+  value === 'evidence';
 
 export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => ({
   name: 'mod-commands',
@@ -455,11 +637,12 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
     if (event.commandName !== MOD_COMMAND_NAME) return;
 
     const subcommand = event.subcommandPath[0];
-    // Not one of this task's five — either a stale registration or a later
-    // task's subcommand this instance does not yet handle. Identified
-    // before acknowledging, the same rule `status-slash.ts` follows for a
-    // command that is not `/status`: never swallow an interaction that
-    // belongs to code not wired in yet.
+    // Not one of the nine subcommands this subscriber knows — either a
+    // stale registration or a later task's subcommand (`history`, Task 9)
+    // this instance does not yet handle. Identified before acknowledging,
+    // the same rule `status-slash.ts` follows for a command that is not
+    // `/status`: never swallow an interaction that belongs to code not
+    // wired in yet.
     if (subcommand === undefined || !isKnownSubcommand(subcommand)) return;
 
     const ref: InteractionRef = { interactionId: event.interactionId, token: event.token };
@@ -472,6 +655,8 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
         await handleBanPreview(deps.confirmations, event, ref);
       } else if (subcommand === 'purge') {
         await handlePurgePreview(deps.confirmations, event, ref);
+      } else if (subcommand === 'note' || subcommand === 'evidence') {
+        await handleNoteOrEvidence(deps, event, ref, subcommand);
       } else {
         await handleDirectAction(deps, event, ref, subcommand);
       }

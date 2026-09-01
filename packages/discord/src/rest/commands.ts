@@ -43,6 +43,15 @@ export interface GuildCommandOption {
   readonly required?: boolean;
   readonly min_value?: number;
   readonly max_value?: number;
+  /**
+   * Discord's own ceiling for a STRING option's value (max 6000). Set on
+   * `/mod note`'s `text` and `/mod evidence`'s `url` (Task 8) so an
+   * unbounded note or URL is rejected before the interaction ever reaches
+   * the handler — `mod_case_events.matched_snippet` carries no length CHECK
+   * of its own (`packages/storage/src/schema.ts`), so this option-level cap
+   * is the only bound either value gets.
+   */
+  readonly max_length?: number;
   /** A subcommand's own options, nested one level (Discord's own shape). */
   readonly options?: readonly GuildCommandOption[];
 }
@@ -96,6 +105,24 @@ const channelOption: GuildCommandOption = {
   required: true,
 };
 
+/** `text` on `/mod note`: the note itself, capped well under Discord's 6000-char STRING ceiling. */
+const noteTextOption: GuildCommandOption = {
+  name: 'text',
+  description: 'The note to add to this member’s case history',
+  type: ApplicationCommandOptionType.String,
+  required: true,
+  max_length: 1000,
+};
+
+/** `url` on `/mod evidence`: a link, not free text — capped shorter than `text`. */
+const evidenceUrlOption: GuildCommandOption = {
+  name: 'url',
+  description: 'Link to the evidence (screenshot, message link, etc.)',
+  type: ApplicationCommandOptionType.String,
+  required: true,
+  max_length: 500,
+};
+
 /**
  * `/mod` (ADR 0037, Task 6): moderator commands, gated in the handler by
  * `authorize('moderation.act')` against the real invoking member
@@ -107,14 +134,16 @@ const channelOption: GuildCommandOption = {
  * members holding none of them by default, while `authorize()` remains the
  * actual gate.
  *
- * Seven subcommands now: `timeout`, `untimeout`, `kick`, `unban`, `warn`
- * (Task 6, executing on invocation) plus `ban` and `purge` (Task 7,
+ * Nine subcommands now: `timeout`, `untimeout`, `kick`, `unban`, `warn`
+ * (Task 6, executing on invocation), `ban` and `purge` (Task 7,
  * confirm-then-execute — `packages/core/src/mod/confirmations.ts` writes a
  * pending intent and renders Confirm/Cancel buttons instead of acting
- * immediately). `note`/`evidence` are Task 8; `history` is Task 9. Each of
- * those tasks extends this `options` array — the registration endpoint
- * replaces the whole set on every `PUT` (this file's own docstring, ADR
- * 0032), so growing the array and redeploying is the entire mechanism.
+ * immediately), and `note`/`evidence` (Task 8, executing on invocation like
+ * Task 6's five — neither calls the moderation gateway at all, so there is
+ * nothing to preview or confirm). `history` is Task 9 and extends this
+ * `options` array too — the registration endpoint replaces the whole set on
+ * every `PUT` (this file's own docstring, ADR 0032), so growing the array
+ * and redeploying is the entire mechanism.
  */
 export const MOD_COMMAND: GuildCommandDefinition = {
   name: 'mod',
@@ -179,6 +208,18 @@ export const MOD_COMMAND: GuildCommandDefinition = {
         'Delete recent messages in a channel — shows a preview with Confirm/Cancel before anything happens',
       type: ApplicationCommandOptionType.Subcommand,
       options: [channelOption, reasonOption],
+    },
+    {
+      name: 'note',
+      description: 'Add a note to a member’s case history (not a violation by itself)',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, noteTextOption],
+    },
+    {
+      name: 'evidence',
+      description: 'Attach an evidence link to a member’s case history',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, evidenceUrlOption],
     },
   ],
 };
