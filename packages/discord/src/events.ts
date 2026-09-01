@@ -150,7 +150,7 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
 
   // --- native auto-moderation (ADR 0038) ----------------------------------
   client.on(Events.AutoModerationActionExecution, (execution: AutoModerationActionExecution) => {
-    translate('autoModerationAction', () => toAutoModerationEvent(execution, now()));
+    translate('autoModerationAction', () => toAutoModerationEvent(execution, now(), onError));
   });
 
   // --- members ------------------------------------------------------------
@@ -414,6 +414,7 @@ const TRIGGER_TYPES: Record<number, NativeAutoModTrigger> = {
 function toAutoModerationEvent(
   execution: AutoModerationActionExecution,
   receivedAtMs: number,
+  onError: (err: unknown, context: { event: string }) => void,
 ): DomainEvent | undefined {
   // No `if (!guildId) return undefined` guard here, unlike every other
   // translator in this file: `AutoModerationActionExecution.guild` is
@@ -423,8 +424,17 @@ function toAutoModerationEvent(
   const actionType = ACTION_TYPES[execution.action.type];
   // An action type we cannot name is dropped rather than guessed: unlike a
   // trigger type, the action is what the recorded vocabulary asserts happened,
-  // and recording "something" would put a falsehood in the case history.
-  if (actionType === undefined) return undefined;
+  // and recording "something" would put a falsehood in the case history. Report
+  // the gap so an unrecognised value is not silently swallowed — ADR 0038
+  // exists to record native decisions, and this branch produces exactly the
+  // unrecorded decision it warns against.
+  if (actionType === undefined) {
+    onError(
+      new Error(`Unrecognised native AutoMod action type: ${String(execution.action.type)}`),
+      { event: 'autoModerationAction' },
+    );
+    return undefined;
+  }
   return {
     kind: 'autoModerationAction',
     guildId: execution.guild.id,

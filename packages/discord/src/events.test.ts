@@ -505,9 +505,12 @@ describe('native auto-moderation (ADR 0038)', () => {
   /**
    * The asymmetric half of the mapping: an action type we cannot name is
    * dropped rather than guessed, unlike a trigger type. Covered separately
-   * because the brief's translator tests only exercise the trigger path.
+   * because the brief's translator tests only exercise the trigger path. A
+   * gap is reported so an unrecognised value is not silently swallowed —
+   * ADR 0038 exists to record native decisions, and silent drops produce
+   * exactly the unrecorded decision it warns against.
    */
-  it('drops the event entirely when the action type is unrecognised', () => {
+  it('drops the event but reports an error when the action type is unrecognised', () => {
     const h = harness();
     h.packet(
       'AutoModerationActionExecution',
@@ -515,7 +518,9 @@ describe('native auto-moderation (ADR 0038)', () => {
     );
 
     expect(h.events).toEqual([]);
-    expect(h.errors).toEqual([]);
+    expect(h.errors).toHaveLength(1);
+    expect(h.errors[0]).toBeInstanceOf(Error);
+    expect((h.errors[0] as Error).message).toContain('Unrecognised native AutoMod action type: 99');
   });
 
   it('drops an execution from a guild that is not allowlisted', () => {
