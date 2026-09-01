@@ -169,26 +169,40 @@ describe('mod cases repo', () => {
    * The CHECK constraint is the real enforcement point for this vocabulary,
    * and a value the TypeScript union allows but the constraint rejects fails
    * only at runtime, in production, on the row that most needed writing.
+   * Using Record<ModCaseActionTaken, true> makes exhaustiveness a compile-time
+   * error rather than a forgotten assertion.
    */
   it('accepts every action_taken value the union names, and rejects one it does not', () => {
     const scope = t.scopes.forGuild(GUILD);
     const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1000 });
 
-    const all: ModCaseActionTaken[] = [
-      'deleted',
-      'deleted_and_escalated',
-      'escalation_refused',
-      'escalation_failed',
-      'escalation_dry_run',
-      'escalation_skipped',
-      'would_delete',
-      'delete_failed',
-      'delete_blocked_killswitch',
-      'delete_blocked_breaker',
-      'delete_blocked_dry_run',
-      'delete_blocked_guild_unknown',
-    ];
-    all.forEach((actionTaken, index) => {
+    const all: Record<ModCaseActionTaken, true> = {
+      deleted: true,
+      deleted_and_escalated: true,
+      escalation_refused: true,
+      escalation_failed: true,
+      escalation_dry_run: true,
+      escalation_skipped: true,
+      would_delete: true,
+      delete_failed: true,
+      delete_blocked_killswitch: true,
+      delete_blocked_breaker: true,
+      delete_blocked_dry_run: true,
+      delete_blocked_guild_unknown: true,
+      warned: true,
+      note: true,
+      evidence_added: true,
+      purged: true,
+      purge_refused: true,
+      purge_failed: true,
+      manual_applied: true,
+      native_blocked: true,
+      native_alerted: true,
+      native_timeout: true,
+      native_blocked_interaction: true,
+    };
+    const allKeys = Object.keys(all) as ModCaseActionTaken[];
+    allKeys.forEach((actionTaken, index) => {
       recordCaseEvent(scope, {
         eventId: `e-${index}`,
         caseId,
@@ -200,7 +214,7 @@ describe('mod cases repo', () => {
         actionTaken,
       });
     });
-    expect(listCaseEvents(scope, caseId).map((e) => e.actionTaken)).toEqual(all);
+    expect(listCaseEvents(scope, caseId).map((e) => e.actionTaken)).toEqual(allKeys);
 
     expect(() =>
       recordCaseEvent(scope, {
@@ -502,39 +516,40 @@ describe('listCasesForMember', () => {
    * (ADR 0014 forbids the shared import that would remove the duplication).
    * A value added to two of the three fails at runtime, not at compile time
    * — so this test walks every member of the union through a real insert.
+   * Using Record<ModCaseActionTaken, true> makes exhaustiveness a compile-time
+   * error rather than a forgotten assertion.
    */
   it('every action_taken value the union names is accepted by the CHECK', () => {
     const scope = t.scopes.forGuild(GUILD);
     const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1 });
 
-    const all: ModCaseActionTaken[] = [
-      'deleted',
-      'deleted_and_escalated',
-      'escalation_refused',
-      'escalation_failed',
-      'escalation_dry_run',
-      'escalation_skipped',
-      'would_delete',
-      'delete_failed',
-      'delete_blocked_killswitch',
-      'delete_blocked_breaker',
-      'delete_blocked_dry_run',
-      'delete_blocked_guild_unknown',
-      'warned',
-      'note',
-      'evidence_added',
-      'purged',
-      'purge_refused',
-      'purge_failed',
-      'manual_applied',
-      'native_blocked',
-      'native_alerted',
-      'native_timeout',
-      'native_blocked_interaction',
-    ];
-    expect(all).toHaveLength(23);
+    const all: Record<ModCaseActionTaken, true> = {
+      deleted: true,
+      deleted_and_escalated: true,
+      escalation_refused: true,
+      escalation_failed: true,
+      escalation_dry_run: true,
+      escalation_skipped: true,
+      would_delete: true,
+      delete_failed: true,
+      delete_blocked_killswitch: true,
+      delete_blocked_breaker: true,
+      delete_blocked_dry_run: true,
+      delete_blocked_guild_unknown: true,
+      warned: true,
+      note: true,
+      evidence_added: true,
+      purged: true,
+      purge_refused: true,
+      purge_failed: true,
+      manual_applied: true,
+      native_blocked: true,
+      native_alerted: true,
+      native_timeout: true,
+      native_blocked_interaction: true,
+    };
 
-    for (const actionTaken of all) {
+    for (const actionTaken of Object.keys(all) as ModCaseActionTaken[]) {
       expect(() =>
         recordCaseEvent(scope, {
           eventId: `evt-${actionTaken}`,
