@@ -111,4 +111,20 @@ describe('native automod subscriber', () => {
     expect((recorded[0] as { matchedSnippet: string }).matchedSnippet).toBe('');
     expect((recorded[0] as { matchedCategory: string }).matchedCategory).toBe('spam');
   });
+
+  it('clamps a long matchedContent to 200 characters with an ellipsis', async () => {
+    // matchedContent can span most of the message for a native rule using regex.
+    // An 1,800-character snippet would overflow the 2,000-char ceiling on
+    // `/mod history` and cause every event on the case to be dropped. Clamping
+    // is consistent with what "snippet" means elsewhere.
+    const { subscriber, recorded } = deps();
+    const longContent = 'x'.repeat(300);
+    await subscriber.handle(
+      event({ matchedKeyword: undefined, matchedContent: longContent }),
+    );
+    expect(recorded).toHaveLength(1);
+    const snippet = (recorded[0] as { matchedSnippet: string }).matchedSnippet;
+    expect(snippet).toBe('x'.repeat(200) + '…');
+    expect(snippet.length).toBe(201);
+  });
 });

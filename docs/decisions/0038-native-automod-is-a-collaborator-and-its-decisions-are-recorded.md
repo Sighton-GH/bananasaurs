@@ -108,9 +108,13 @@ ADR 0037's six both were. Every existing value keeps its meaning:
 `matched_category`, reusing the columns the automod events already populate
 rather than adding native-specific ones.
 
-**The payload is untrusted input** (rule 3) and crosses a Zod validator on
-arrival like every other boundary, notwithstanding that it comes from Discord
-rather than from a model or a form.
+**The payload is untrusted input** (rule 3), and its boundary is guarded by the
+translator's own field-by-field mapping (selective choice of which fields to
+carry forward) and a length clamp on `matched_snippet`. The translator itself
+performs the validation, not a dedicated Zod layer — `attachGatewayTranslation`
+applies no post-translation validation for this event or any other, so that
+mechanism remains characteristic of this house pattern rather than an invariant
+across all gateway events.
 
 ### A native hit is recorded but does not count toward escalation
 

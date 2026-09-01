@@ -28,6 +28,16 @@ const ACTION_TO_RECORDED: Record<NativeAutoModAction, AutomodActionTaken> = {
   block_interaction: 'native_blocked_interaction',
 };
 
+/**
+ * Clamp a matched snippet to a bounded length, consistent with what "snippet"
+ * means elsewhere in this codebase. `matchedContent` can span most of the
+ * message for a native rule using regex, and an 1,800-character snippet in a
+ * single row would overflow the 2,000-char ceiling on `/mod history` and cause
+ * every event on the case to be dropped.
+ */
+const clampMatchedSnippet = (text: string): string =>
+  text.length <= 200 ? text : text.slice(0, 200) + '…';
+
 export interface NativeAutomodSubscriberDeps {
   readonly logger: Logger;
   readonly openOrResolveCase: (
@@ -63,7 +73,10 @@ export const createNativeAutomodSubscriber = (deps: NativeAutomodSubscriberDeps)
       // Discord names a keyword for keyword rules, a matched substring for
       // some others, and neither for spam. An empty snippet is honest; not
       // recording the event at all would lose a decision that really happened.
-      matchedSnippet: native.matchedKeyword ?? native.matchedContent ?? '',
+      // Clamp matchedContent (member-authored text) to prevent a single
+      // 1,800-character match from overflowing the 2,000-char ceiling on
+      // `/mod history` and hiding every event on the case.
+      matchedSnippet: clampMatchedSnippet(native.matchedKeyword ?? native.matchedContent ?? ''),
       actionTaken: ACTION_TO_RECORDED[native.actionType],
     });
 
