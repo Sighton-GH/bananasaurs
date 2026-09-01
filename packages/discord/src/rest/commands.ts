@@ -1,4 +1,10 @@
-import { ApplicationCommandType, Routes, type REST } from 'discord.js';
+import {
+  ApplicationCommandOptionType,
+  ApplicationCommandType,
+  PermissionFlagsBits,
+  Routes,
+  type REST,
+} from 'discord.js';
 import type { Snowflake } from '@bananasaurs/core';
 import { mapErrors } from './errors.js';
 
@@ -22,6 +28,26 @@ import { mapErrors } from './errors.js';
  */
 
 /**
+ * One option on a command or subcommand, in Discord's raw wire shape.
+ *
+ * `type` takes the numeric `ApplicationCommandOptionType` values directly
+ * (a subcommand is `1`, a `USER` option `6`, `STRING` `3`, `INTEGER` `4`) —
+ * discord.js exports the enum with the right numbers, imported here the same
+ * way this file already imports `ApplicationCommandType` for the command's
+ * own `type` field, rather than hand-writing the numerals.
+ */
+export interface GuildCommandOption {
+  readonly name: string;
+  readonly description: string;
+  readonly type: ApplicationCommandOptionType;
+  readonly required?: boolean;
+  readonly min_value?: number;
+  readonly max_value?: number;
+  /** A subcommand's own options, nested one level (Discord's own shape). */
+  readonly options?: readonly GuildCommandOption[];
+}
+
+/**
  * One command as Discord's registration endpoint wants it.
  *
  * Snake-case, because this is the wire payload rather than a discord.js builder.
@@ -43,7 +69,97 @@ export interface GuildCommandDefinition {
    * checks authorisation in its handler.
    */
   readonly default_member_permissions?: string;
+  /** A command's subcommands, top-level only (no subcommand groups needed yet). */
+  readonly options?: readonly GuildCommandOption[];
 }
+
+/** `target` on every `/mod` subcommand: any Discord user, resolved by id, not just a current guild member (`unban`'s target usually is not one). */
+const targetOption: GuildCommandOption = {
+  name: 'target',
+  description: 'The member (by mention or id)',
+  type: ApplicationCommandOptionType.User,
+  required: true,
+};
+
+const reasonOption: GuildCommandOption = {
+  name: 'reason',
+  description: 'Why — recorded on the case and in Discord’s own audit log',
+  type: ApplicationCommandOptionType.String,
+  required: true,
+};
+
+/**
+ * `/mod` (ADR 0037, Task 6): moderator commands, gated in the handler by
+ * `authorize('moderation.act')` against the real invoking member
+ * (`packages/core/src/mod/commands.ts`).
+ *
+ * `default_member_permissions` is Discord's own **advisory** first filter
+ * (see the field's docstring above) — combined here from
+ * `BanMembers`/`KickMembers`/`ModerateMembers` so the command is hidden from
+ * members holding none of them by default, while `authorize()` remains the
+ * actual gate.
+ *
+ * Five subcommands: `timeout`, `untimeout`, `kick`, `unban`, `warn` — the
+ * Task 6 brief's ruling on the ambiguous "ten subcommands" in the original
+ * plan text. `ban` and `purge` need the confirm-then-execute handshake Task 7
+ * builds; `note`/`evidence` are Task 8; `history` is Task 9. Each of those
+ * tasks extends this `options` array — the registration endpoint replaces the
+ * whole set on every `PUT` (this file's own docstring, ADR 0032), so growing
+ * the array and redeploying is the entire mechanism.
+ */
+export const MOD_COMMAND: GuildCommandDefinition = {
+  name: 'mod',
+  description: 'Moderator actions: timeout, kick, ban management, and warnings',
+  type: ApplicationCommandType.ChatInput,
+  default_member_permissions: (
+    PermissionFlagsBits.BanMembers |
+    PermissionFlagsBits.KickMembers |
+    PermissionFlagsBits.ModerateMembers
+  ).toString(),
+  options: [
+    {
+      name: 'timeout',
+      description: 'Time out a member',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [
+        targetOption,
+        {
+          name: 'duration_minutes',
+          description: 'How long, in minutes (max 40320 = 28 days; longer requests are clamped)',
+          type: ApplicationCommandOptionType.Integer,
+          required: true,
+          min_value: 1,
+          max_value: 40_320,
+        },
+        reasonOption,
+      ],
+    },
+    {
+      name: 'untimeout',
+      description: 'Remove an active timeout from a member',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, reasonOption],
+    },
+    {
+      name: 'kick',
+      description: 'Kick a member from the server',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, reasonOption],
+    },
+    {
+      name: 'unban',
+      description: 'Lift a ban',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, reasonOption],
+    },
+    {
+      name: 'warn',
+      description: 'Issue a warning; repeated warnings escalate automatically',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, reasonOption],
+    },
+  ],
+};
 
 /**
  * `/status` — the bot's own health, as `GET /api/health` reports it.
@@ -68,6 +184,19 @@ export const STATUS_COMMAND: GuildCommandDefinition = {
  * path that could be forgotten.
  */
 export const RELEASE_1_COMMANDS: readonly GuildCommandDefinition[] = [STATUS_COMMAND];
+
+/**
+ * Every command Release 2 registers — Release 1's set plus `/mod`
+ * (REVIEW.md §E: "Release 2 — Bananasaurs replaces the automod"). Kept as its
+ * own named array, not a mutation of `RELEASE_1_COMMANDS`, for the same
+ * reason that array is named for its release rather than called
+ * `COMMANDS`: the next release's set gets its own name too, and nothing here
+ * has to guess which array today's daemon should register.
+ */
+export const RELEASE_2_COMMANDS: readonly GuildCommandDefinition[] = [
+  ...RELEASE_1_COMMANDS,
+  MOD_COMMAND,
+];
 
 /** What one guild's registration did, so the caller can log it per guild. */
 export type GuildRegistration =

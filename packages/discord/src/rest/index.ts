@@ -22,10 +22,13 @@ export { toDiscordApiError } from './errors.js';
  * make one.
  */
 export {
+  MOD_COMMAND,
   RELEASE_1_COMMANDS,
+  RELEASE_2_COMMANDS,
   STATUS_COMMAND,
   registerGuildCommands,
   type GuildCommandDefinition,
+  type GuildCommandOption,
   type GuildRegistration,
   type RegisterCommandsDeps,
 } from './commands.js';

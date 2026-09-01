@@ -8,10 +8,12 @@ import {
   createInteractionSubscriber,
   createLoggingSubscriber,
   createMemberUpdateSubscriber,
+  createModCommandSubscriber,
   createReactionSubscriber,
   EffectGateway,
   JobWorker,
   JOB_KINDS,
+  ModerationActionGateway,
   parseGuildId,
   parseSnowflakeId,
   RateLimiter,
@@ -24,6 +26,9 @@ import {
   type LoggingPorts,
   type MemberUpdatePorts,
   type MessageDeleteAttributionPorts,
+  type ModCommandDeps,
+  type ModerationGatewayDeps,
+  type ModerationRefusalReason,
   type OpsPublishResult,
   type PurgePorts,
   type ReconcilePorts,
@@ -362,6 +367,104 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  // ADR 0037, Task 6: `/mod`'s five direct-invocation subcommands
+  // (`timeout`/`untimeout`/`kick`/`unban`/`warn`). Its own
+  // `ModerationActionGateway` instance, mirroring `automodGatewayFor`
+  // exactly except for the idempotency claim's `event_kind` — a distinct
+  // string so a moderator's `/mod timeout` and an automod ladder escalation
+  // can never be confused for the same claim in `event_dedupe`, even if the
+  // two ever produced an identical `dedupeKey` by coincidence.
+  const modCommandGateway = new ModerationActionGateway({
+    guildId,
+    authz: authzStoreFor(scope),
+    discord,
+    logger,
+    now,
+    state: { read: () => guildRepo.readSafetyState(scope) },
+    claims: {
+      claim: (dedupeKey) => ({
+        claimed: pipelineRepo.recordFirstSight(scope, {
+          eventKind: 'mod-command-moderation-action',
+          fingerprint: dedupeKey,
+          atMs: now(),
+        }),
+      }),
+    },
+  } satisfies ModerationGatewayDeps);
+
+  const modCommandDeps: ModCommandDeps = {
+    guildId,
+    authz: authzStoreFor(scope),
+    fetchInvokerRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
+    moderationGateway: modCommandGateway,
+    cases: {
+      openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
+      recordCaseEvent: (input) =>
+        modCaseRepo.recordCaseEvent(scope, {
+          eventId: input.eventId,
+          caseId: input.caseId,
+          ruleId: input.ruleId,
+          memberId: input.memberId,
+          at: input.at,
+          matchedCategory: input.matchedCategory,
+          matchedSnippet: input.matchedSnippet,
+          actionTaken: input.actionTaken,
+          actorId: input.actorId,
+          // `exactOptionalPropertyTypes` (tsconfig): included only when a
+          // value actually exists, the same idiom `automodPortsFor` and
+          // `purgePorts` above use.
+          ...(input.escalationAction !== undefined && { escalationAction: input.escalationAction }),
+          ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
+        }),
+    },
+    warnRepo: {
+      openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
+      recordCaseEvent: (input) =>
+        modCaseRepo.recordCaseEvent(scope, {
+          eventId: input.eventId,
+          caseId: input.caseId,
+          ruleId: input.ruleId,
+          memberId: input.memberId,
+          at: input.at,
+          matchedCategory: input.matchedCategory,
+          matchedSnippet: input.matchedSnippet,
+          actionTaken: input.actionTaken,
+          actorId: input.actorId,
+        }),
+      nextEscalationTier: (violationCount) => modCaseRepo.nextEscalationTier(violationCount),
+      recordEscalationOutcome: (input) =>
+        modCaseRepo.recordCaseEvent(scope, {
+          eventId: input.eventId,
+          caseId: input.caseId,
+          ruleId: input.ruleId,
+          memberId: input.memberId,
+          at: input.at,
+          matchedCategory: input.matchedCategory,
+          matchedSnippet: input.matchedSnippet,
+          actionTaken: input.actionTaken,
+          escalationAction: input.escalationAction,
+          actorId: input.actorId,
+          // `core`'s `WarnCasePorts.recordEscalationOutcome` widens this to a
+          // bare `string` so `packages/core` need not depend on
+          // `@bananasaurs/storage`'s `ModCaseRefusalReason` (ADR 0014). The
+          // composition root is exactly where it is narrowed back — the only
+          // values that ever flow through here are `ModerationOutcome['reason']`,
+          // whose `ModerationRefusalReason` union (also `core`) is identical to
+          // `ModCaseRefusalReason`'s, member for member. Same idiom
+          // `automodPortsFor` uses.
+          ...(input.refusalReason !== undefined && {
+            refusalReason: input.refusalReason as ModerationRefusalReason,
+          }),
+        }),
+    },
+    responder: {
+      defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+    },
+    now,
+    logger,
+  };
+
   const subscribers: Subscriber[] = [
     createConnectionSubscriber(
       {
@@ -381,6 +484,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createMemberUpdateSubscriber(memberUpdatePorts),
     createLoggingSubscriber(loggingPorts),
     createAutomodSubscriber(automodPorts),
+    createModCommandSubscriber(modCommandDeps),
   ];
 
   const worker = new JobWorker({

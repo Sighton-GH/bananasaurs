@@ -207,6 +207,21 @@ export {
   type PurgeTickInput,
 } from './mod/purge.js';
 export {
+  issueWarn,
+  MANUAL_RULE_ID,
+  type IssueWarnDeps,
+  type IssueWarnInput,
+  type IssueWarnResult,
+  type WarnCasePorts,
+} from './mod/warn.js';
+export {
+  createModCommandSubscriber,
+  MAX_TIMEOUT_MS,
+  MOD_COMMAND_NAME,
+  type ModCommandCasePorts,
+  type ModCommandDeps,
+} from './mod/commands.js';
+export {
   emojiKeySchema,
   optionByEmoji,
   optionById,

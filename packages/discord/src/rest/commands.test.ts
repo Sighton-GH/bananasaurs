@@ -2,7 +2,13 @@ import { describe, expect, it } from 'vitest';
 import { REST } from 'discord.js';
 import { DiscordApiError } from '@bananasaurs/core';
 import { REST_OPTIONS } from '../client.js';
-import { RELEASE_1_COMMANDS, STATUS_COMMAND, registerGuildCommands } from './commands.js';
+import {
+  MOD_COMMAND,
+  RELEASE_1_COMMANDS,
+  RELEASE_2_COMMANDS,
+  STATUS_COMMAND,
+  registerGuildCommands,
+} from './commands.js';
 
 /**
  * Slash-command registration (ADR 0032), tested against the real
@@ -64,6 +70,38 @@ describe('the Release 1 command set', () => {
      * recorded, and one a guild admin could silently change in Server Settings.
      */
     expect(STATUS_COMMAND.default_member_permissions).toBeUndefined();
+  });
+});
+
+describe('the Release 2 command set', () => {
+  it('is Release 1 plus /mod', () => {
+    expect(RELEASE_2_COMMANDS).toEqual([STATUS_COMMAND, MOD_COMMAND]);
+  });
+
+  it('/mod carries exactly the five Task 6 subcommands, each with a target and a reason', () => {
+    expect(MOD_COMMAND.name).toBe('mod');
+    const names = MOD_COMMAND.options?.map((o) => o.name);
+    expect(names).toEqual(['timeout', 'untimeout', 'kick', 'unban', 'warn']);
+    for (const sub of MOD_COMMAND.options ?? []) {
+      expect(sub.type).toBe(1); // SUB_COMMAND
+      const optionNames = sub.options?.map((o) => o.name) ?? [];
+      expect(optionNames).toContain('target');
+      expect(optionNames).toContain('reason');
+    }
+  });
+
+  it('timeout carries a bounded duration option', () => {
+    const timeout = MOD_COMMAND.options?.find((o) => o.name === 'timeout');
+    const duration = timeout?.options?.find((o) => o.name === 'duration_minutes');
+    expect(duration).toMatchObject({ type: 4, required: true, min_value: 1, max_value: 40_320 });
+  });
+
+  it('sets a moderator-appropriate advisory permission bitfield, as a decimal string', () => {
+    expect(MOD_COMMAND.default_member_permissions).toMatch(/^[0-9]+$/);
+    // BanMembers (1<<2) | KickMembers (1<<1) | ModerateMembers (1<<40).
+    expect(MOD_COMMAND.default_member_permissions).toBe(
+      ((1n << 2n) | (1n << 1n) | (1n << 40n)).toString(),
+    );
   });
 });
 

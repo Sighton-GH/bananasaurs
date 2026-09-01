@@ -1,6 +1,6 @@
 import type { Client } from 'discord.js';
 import { safeLogFields, type Config, type Logger } from '@bananasaurs/core';
-import { registerGuildCommands } from '@bananasaurs/discord/rest';
+import { RELEASE_2_COMMANDS, registerGuildCommands } from '@bananasaurs/discord/rest';
 
 /**
  * Telling Discord which slash commands exist (ADR 0032).
@@ -41,6 +41,9 @@ export async function announceCommands(
     applicationId: config.DISCORD_APPLICATION_ID,
     // The allowlist, looped rather than indexed (CLAUDE.md rule 2).
     guildIds: config.BANANASAURS_GUILD_ALLOWLIST,
+    // Release 2 (ADR 0037): `/status` plus `/mod`, explicit rather than the
+    // function's own `RELEASE_1_COMMANDS` default — this branch is Release 2.
+    commands: RELEASE_2_COMMANDS,
   });
 
   for (const result of results) {
