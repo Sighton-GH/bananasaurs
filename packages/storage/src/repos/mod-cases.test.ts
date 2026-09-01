@@ -496,4 +496,57 @@ describe('listCasesForMember', () => {
     expect(events.map((e) => e.eventId)).toEqual(['evt-1', 'evt-2']);
     expect(events.map((e) => e.actionTaken)).toEqual(['note', 'manual_applied']);
   });
+
+  /**
+   * The union, the CHECK and core's mirror are three hand-maintained copies
+   * (ADR 0014 forbids the shared import that would remove the duplication).
+   * A value added to two of the three fails at runtime, not at compile time
+   * — so this test walks every member of the union through a real insert.
+   */
+  it('every action_taken value the union names is accepted by the CHECK', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: 1 });
+
+    const all: ModCaseActionTaken[] = [
+      'deleted',
+      'deleted_and_escalated',
+      'escalation_refused',
+      'escalation_failed',
+      'escalation_dry_run',
+      'escalation_skipped',
+      'would_delete',
+      'delete_failed',
+      'delete_blocked_killswitch',
+      'delete_blocked_breaker',
+      'delete_blocked_dry_run',
+      'delete_blocked_guild_unknown',
+      'warned',
+      'note',
+      'evidence_added',
+      'purged',
+      'purge_refused',
+      'purge_failed',
+      'manual_applied',
+      'native_blocked',
+      'native_alerted',
+      'native_timeout',
+      'native_blocked_interaction',
+    ];
+    expect(all).toHaveLength(23);
+
+    for (const actionTaken of all) {
+      expect(() =>
+        recordCaseEvent(scope, {
+          eventId: `evt-${actionTaken}`,
+          caseId,
+          ruleId: 'native:222222222222222222',
+          memberId: MEMBER,
+          at: 1,
+          matchedCategory: 'keyword',
+          matchedSnippet: 'x',
+          actionTaken,
+        }),
+      ).not.toThrow();
+    }
+  });
 });

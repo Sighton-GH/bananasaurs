@@ -811,7 +811,8 @@ export const modCaseEvents = sqliteTable(
         'delete_blocked_killswitch','delete_blocked_breaker','delete_blocked_dry_run',
         'delete_blocked_guild_unknown',
         'warned','note','evidence_added','purged','purge_refused','purge_failed',
-        'manual_applied')`,
+        'manual_applied',
+        'native_blocked','native_alerted','native_timeout','native_blocked_interaction')`,
     ),
     check(
       'mod_case_events_escalation_action',

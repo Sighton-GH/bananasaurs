@@ -64,6 +64,13 @@
       "when": 1788194811559,
       "tag": "0008_mysterious_catseye",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1788287939971,
+      "tag": "0009_dizzy_slayback",
+      "breakpoints": true
     }
   ]
 }

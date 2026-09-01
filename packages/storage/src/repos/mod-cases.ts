@@ -73,7 +73,16 @@ export type ModCaseActionTaken =
   | 'purged'
   | 'purge_refused'
   | 'purge_failed'
-  | 'manual_applied';
+  | 'manual_applied'
+  /**
+   * Native Discord AutoMod acted (ADR 0038). Recorded, never counted: these
+   * carry `countsAsViolation: false`, because an algorithm nobody can inspect
+   * must not increment the counter that drives our timeouts and bans.
+   */
+  | 'native_blocked'
+  | 'native_alerted'
+  | 'native_timeout'
+  | 'native_blocked_interaction';
 export type ModCaseEscalationAction = 'timeout' | 'kick' | 'ban' | 'unban';
 export type ModCaseRefusalReason =
   | 'unauthorized'

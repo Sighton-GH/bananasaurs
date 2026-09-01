@@ -74,7 +74,14 @@ export type AutomodActionTaken =
   | 'delete_blocked_killswitch'
   | 'delete_blocked_breaker'
   | 'delete_blocked_dry_run'
-  | 'delete_blocked_guild_unknown';
+  | 'delete_blocked_guild_unknown'
+  /**
+   * Native Discord AutoMod acted (ADR 0038). Recorded, never counted.
+   */
+  | 'native_blocked'
+  | 'native_alerted'
+  | 'native_timeout'
+  | 'native_blocked_interaction';
 
 export interface AutomodSubscriberDeps {
   readonly logger: Logger;
