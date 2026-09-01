@@ -1,12 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import {
+  createAutomodSubscriber,
   createNativeAutomodSubscriber,
   parseGuildId,
   parseSnowflakeId,
   Pipeline,
 } from '@bananasaurs/core';
 import {
+  automodRuleRepo,
   guildRepo,
   pipelineRepo,
   read,
@@ -17,6 +19,7 @@ import {
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
 import { nativeAutomodPortsFor } from './automod/native-wiring.js';
+import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
 
 /**
  * Native Discord AutoMod observability, end to end on the fake gateway
@@ -30,7 +33,12 @@ import { nativeAutomodPortsFor } from './automod/native-wiring.js';
  */
 
 const GUILD = parseGuildId('111111111111111111');
+const CHANNEL_ID = parseSnowflakeId('333333333333333333');
 const MEMBER_ID = parseSnowflakeId('444444444444444444');
+
+const RULE_ID = 'rule-1';
+const CATEGORY_ID = 'cat-1';
+const TERM_ID = 'term-1';
 
 const logger = pino({ level: 'silent' });
 
@@ -39,19 +47,48 @@ let scope: GuildScope;
 let discord: FakeDiscord;
 let pipeline: Pipeline;
 
-/** Wires the native-automod subscriber onto the pipeline, exactly as `guild.ts` will. */
+/**
+ * Wires both the automod and the native-automod subscribers onto one
+ * pipeline, exactly as `runtime/guild.ts` does (both are always wired
+ * together in production — Task 6's property test needs the real ordering,
+ * not a narrower fixture).
+ */
 const buildPipeline = (): Pipeline => {
-  const nativeAutomodPorts = nativeAutomodPortsFor(scope, logger, () => discord.now());
+  const now = () => discord.now();
+  const automodGateway = automodGatewayFor(scope, discord, logger, now);
+  const automodAuth = automodAuthorization(scope);
+  const automodPorts = automodPortsFor(scope, discord, automodGateway, automodAuth, logger, now);
+  const nativeAutomodPorts = nativeAutomodPortsFor(scope, logger, now);
 
   return new Pipeline({
     allowlist: new Set([GUILD]),
     dedupe: {
       firstSight: (input) => pipelineRepo.recordFirstSight(scope, input),
     },
-    subscribers: [createNativeAutomodSubscriber(nativeAutomodPorts)],
+    subscribers: [
+      createAutomodSubscriber(automodPorts),
+      createNativeAutomodSubscriber(nativeAutomodPorts),
+    ],
     leaveGuild: async () => undefined,
     logger,
   });
+};
+
+/**
+ * Lifted from `automod.integration.test.ts`'s `seedRule`, not imported: that
+ * module exports no test helpers across files (Task 6 brief). Creates one
+ * enabled `keyword_filter` rule, in `enforce` mode, matching `term`.
+ */
+const seedEnforcingKeywordRule = (term: string): void => {
+  automodRuleRepo.createRule(scope, { ruleId: RULE_ID, name: 'test rule', now: discord.now() });
+  automodRuleRepo.addCategory(scope, {
+    categoryId: CATEGORY_ID,
+    ruleId: RULE_ID,
+    name: 'test category',
+    defaultAction: 'delete_and_case',
+  });
+  automodRuleRepo.addTerm(scope, { termId: TERM_ID, categoryId: CATEGORY_ID, text: term });
+  automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
 };
 
 function findCase(memberId: string) {
@@ -159,5 +196,69 @@ describe('native automod, end to end on the fake gateway', () => {
     await discord.emitAutoModerationAction(payload);
 
     expect(listCaseEvents(MEMBER_ID)).toHaveLength(1);
+  });
+});
+
+describe('native AutoMod and Bananasaurs do not double-punish (ADR 0038)', () => {
+  it('a blocked message produces a native record and no automod evaluation', async () => {
+    // Native blocked it, so no messageCreate is ever dispatched — the whole
+    // basis of the claim. Emitting only the auto-moderation event *is* the
+    // fidelity: the gateway genuinely sends nothing else.
+    seedEnforcingKeywordRule('badword');
+    discord.resetCalls();
+
+    await discord.emitAutoModerationAction({
+      ruleId: '222222222222222222',
+      userId: MEMBER_ID,
+      matchedKeyword: 'badword',
+      content: 'a badword here',
+    });
+
+    const events = listCaseEvents(MEMBER_ID);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.actionTaken).toBe('native_blocked');
+    // No deletion was attempted: our rule never saw the message.
+    expect(discord.restCalls('deleteMessage')).toEqual([]);
+    expect(findCase(MEMBER_ID)?.violationCount).toBe(0);
+  });
+
+  it('an alert-only native rule leaves our rule free to enforce, once', async () => {
+    // The one native configuration where both engines see the same content:
+    // alert does not block, so the message posts and messageCreate follows.
+    // Our rule enforces; native's alert is recorded. Two records, one
+    // punishment — which is the behaviour, not a bug.
+    //
+    // 'badword' rather than the brief's 'forbidden': `obscenity`'s
+    // `collapseDuplicatesTransformer` (`englishRecommendedTransformers`)
+    // collapses a doubled letter in the *input* before matching but not in a
+    // `parseRawPattern`-compiled term unless that letter is one of the six
+    // custom-thresholded ones (b/e/o/l/s/g); 'forbidden' has a doubled 'd',
+    // outside that set, so it silently never matches — confirmed directly
+    // against `obscenity`, independent of anything this task changed.
+    // 'badword' is `automod.integration.test.ts`'s own proven fixture term.
+    seedEnforcingKeywordRule('badword');
+    discord.resetCalls();
+
+    await discord.emitAutoModerationAction({
+      ruleId: '222222222222222222',
+      userId: MEMBER_ID,
+      actionType: 'alert',
+      alertMessageId: '888888888888888888',
+      messageId: '555555555555555555',
+      matchedKeyword: 'badword',
+      content: 'a badword here',
+    });
+    await discord.emitMessageCreate({
+      channelId: CHANNEL_ID,
+      messageId: '555555555555555555',
+      authorId: MEMBER_ID,
+      content: 'a badword here',
+    });
+
+    const taken = listCaseEvents(MEMBER_ID)
+      .map((e) => e.actionTaken)
+      .sort();
+    expect(taken).toEqual(['deleted', 'native_alerted']);
+    expect(discord.restCalls('deleteMessage')).toHaveLength(1);
   });
 });
