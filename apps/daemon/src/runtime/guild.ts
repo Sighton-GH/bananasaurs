@@ -9,6 +9,7 @@ import {
   createLoggingSubscriber,
   createMemberUpdateSubscriber,
   createModCommandSubscriber,
+  createModConfirmationSubscriber,
   createReactionSubscriber,
   EffectGateway,
   JobWorker,
@@ -27,6 +28,7 @@ import {
   type MemberUpdatePorts,
   type MessageDeleteAttributionPorts,
   type ModCommandDeps,
+  type ModConfirmationDeps,
   type ModerationGatewayDeps,
   type ModerationRefusalReason,
   type OpsPublishResult,
@@ -43,6 +45,7 @@ import {
   jobStoreFor,
   loggingRepo,
   modCaseRepo,
+  modPendingRepo,
   panelRepo,
   pipelineRepo,
   roleRepo,
@@ -392,11 +395,73 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     },
   } satisfies ModerationGatewayDeps);
 
+  // ADR 0037, Task 7: the ban/purge confirm-then-execute handshake
+  // (`mod_pending_actions`, Confirm/Cancel buttons). Its own deps object
+  // (`ModConfirmationDeps`) rather than flattened into `modCommandDeps`
+  // directly, mirroring `confirmations.ts`'s own module boundary — built
+  // once here and referenced both by `modCommandDeps.confirmations` (so
+  // `commands.ts`'s subscriber can route `ban`/`purge` previews into it)
+  // and by `createModConfirmationSubscriber` below (the confirm/cancel
+  // button-click subscriber, a sibling of `createModCommandSubscriber`
+  // rather than a branch inside it — the two answer different
+  // `DomainEvent` kinds).
+  const modConfirmationDeps: ModConfirmationDeps = {
+    guildId,
+    authz: authzStoreFor(scope),
+    fetchInvokerRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
+    // Reuses the same gateway instance `modCommandDeps` does — same claim
+    // partition (`event_kind: 'mod-command-moderation-action'`), so a
+    // confirmed ban and a Task 6 direct action can never coincidentally
+    // share a dedupe key without also sharing this claim table.
+    moderationGateway: modCommandGateway,
+    cases: {
+      openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
+      recordCaseEvent: (input) =>
+        modCaseRepo.recordCaseEvent(scope, {
+          eventId: input.eventId,
+          caseId: input.caseId,
+          ruleId: input.ruleId,
+          memberId: input.memberId,
+          at: input.at,
+          matchedCategory: input.matchedCategory,
+          matchedSnippet: input.matchedSnippet,
+          actionTaken: input.actionTaken,
+          actorId: input.actorId,
+          ...(input.escalationAction !== undefined && { escalationAction: input.escalationAction }),
+          ...(input.refusalReason !== undefined && { refusalReason: input.refusalReason }),
+        }),
+    },
+    pendingActions: {
+      put: (input) => modPendingRepo.putPendingAction(scope, input),
+      take: (intentId, now) => modPendingRepo.takePendingAction(scope, intentId, now),
+      peek: (intentId) => modPendingRepo.peekPendingAction(scope, intentId),
+    },
+    // Ignores the passed `guildId` in favour of this scope's own, the same
+    // discipline every other port in this file follows — `fetchRoles: () =>
+    // discord.fetchRoles(guildId)` above, for instance.
+    fetchRecentMessages: (_guildId, channelId, options) =>
+      discord.fetchRecentMessages(guildId, channelId, options),
+    enqueuePurgeJob: ({ payload, dedupeKey, now: enqueuedAt }) =>
+      void jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.modPurge,
+        payload,
+        dedupeKey,
+        now: enqueuedAt,
+      }),
+    responder: {
+      defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+    },
+    now,
+    logger,
+  };
+
   const modCommandDeps: ModCommandDeps = {
     guildId,
     authz: authzStoreFor(scope),
     fetchInvokerRoleIds: async (userId) => (await discord.fetchMember(guildId, userId)).roleIds,
     moderationGateway: modCommandGateway,
+    confirmations: modConfirmationDeps,
     cases: {
       openOrResolveCase: (input) => modCaseRepo.openOrResolveCase(scope, input),
       recordCaseEvent: (input) =>
@@ -485,6 +550,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createLoggingSubscriber(loggingPorts),
     createAutomodSubscriber(automodPorts),
     createModCommandSubscriber(modCommandDeps),
+    createModConfirmationSubscriber(modConfirmationDeps),
   ];
 
   const worker = new JobWorker({

@@ -16,17 +16,23 @@ import { parseSnowflakeId } from '../ids.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 import type { SlashResponder } from '../ops/commands/status-slash.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
+import { handleBanPreview, handlePurgePreview, type ModConfirmationDeps } from './confirmations.js';
 import { issueWarn, MANUAL_RULE_ID, type WarnCasePorts } from './warn.js';
 
 /**
  * `/mod` — the slash-command surface over `ModerationActionGateway` and
  * `issueWarn` (ADR 0037, Task 6).
  *
- * Scope, per the Task 6 brief's ruling: exactly `timeout`, `untimeout`,
- * `kick`, `unban`, `warn`. `ban` and `purge` need a confirm-then-execute
- * handshake (`mod_pending_actions`) that Task 7 builds from scratch; `note`,
- * `evidence` and `history` belong to Tasks 8 and 9. `MOD_COMMAND`
- * (`packages/discord/src/rest/commands.ts`) registers only these five
+ * Scope, per the Task 6 brief's ruling: `timeout`, `untimeout`, `kick`,
+ * `unban`, `warn` apply on invocation. `ban` and `purge` (Task 7) do not —
+ * this subscriber routes them straight to `./confirmations.js`'s preview
+ * builders (`handleBanPreview` / `handlePurgePreview`), which write a
+ * pending intent and render Confirm/Cancel buttons instead of calling the
+ * gateway; the confirming click itself is a *different* event kind
+ * (`InteractionEvent`, not `SlashCommandEvent`) and is handled entirely by
+ * `confirmations.ts`'s own subscriber, not this one. `note`, `evidence` and
+ * `history` belong to Tasks 8 and 9. `MOD_COMMAND`
+ * (`packages/discord/src/rest/commands.ts`) registers only these seven
  * subcommands today — later tasks extend both that list and this
  * subscriber's `switch`, the same way `ADR 0037` point 9 describes the
  * registration endpoint being re-PUT with a growing set.
@@ -116,6 +122,13 @@ export interface ModCommandDeps {
   readonly responder: SlashResponder;
   readonly now: () => number;
   readonly logger: Logger;
+  /**
+   * Everything `ban`'s and `purge`'s previews need (Task 7). A separate,
+   * self-contained deps object rather than flattened fields here — see
+   * `confirmations.ts`'s own docstring for why this module imports *from*
+   * it but never the reverse.
+   */
+  readonly confirmations: ModConfirmationDeps;
 }
 
 const optionValue = (
@@ -432,8 +445,8 @@ const handleWarn = async (
   await deps.responder.respond(ref, { content: lines.join('\n') });
 };
 
-const isKnownSubcommand = (value: string): value is DirectAction | 'warn' =>
-  DIRECT_ACTIONS.has(value) || value === 'warn';
+const isKnownSubcommand = (value: string): value is DirectAction | 'warn' | 'ban' | 'purge' =>
+  DIRECT_ACTIONS.has(value) || value === 'warn' || value === 'ban' || value === 'purge';
 
 export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => ({
   name: 'mod-commands',
@@ -455,6 +468,10 @@ export const createModCommandSubscriber = (deps: ModCommandDeps): Subscriber => 
     try {
       if (subcommand === 'warn') {
         await handleWarn(deps, event, ref);
+      } else if (subcommand === 'ban') {
+        await handleBanPreview(deps.confirmations, event, ref);
+      } else if (subcommand === 'purge') {
+        await handlePurgePreview(deps.confirmations, event, ref);
       } else {
         await handleDirectAction(deps, event, ref, subcommand);
       }

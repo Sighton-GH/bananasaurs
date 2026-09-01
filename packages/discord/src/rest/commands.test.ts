@@ -78,16 +78,34 @@ describe('the Release 2 command set', () => {
     expect(RELEASE_2_COMMANDS).toEqual([STATUS_COMMAND, MOD_COMMAND]);
   });
 
-  it('/mod carries exactly the five Task 6 subcommands, each with a target and a reason', () => {
+  it('/mod carries the five Task 6 subcommands plus ban and purge (Task 7), each with a reason', () => {
     expect(MOD_COMMAND.name).toBe('mod');
     const names = MOD_COMMAND.options?.map((o) => o.name);
-    expect(names).toEqual(['timeout', 'untimeout', 'kick', 'unban', 'warn']);
+    expect(names).toEqual(['timeout', 'untimeout', 'kick', 'unban', 'warn', 'ban', 'purge']);
     for (const sub of MOD_COMMAND.options ?? []) {
       expect(sub.type).toBe(1); // SUB_COMMAND
       const optionNames = sub.options?.map((o) => o.name) ?? [];
-      expect(optionNames).toContain('target');
       expect(optionNames).toContain('reason');
+      // Every subcommand targets a member by id, except `purge`, which
+      // targets a channel instead — there is no member to name.
+      if (sub.name === 'purge') {
+        expect(optionNames).toContain('channel');
+        expect(optionNames).not.toContain('target');
+      } else {
+        expect(optionNames).toContain('target');
+      }
     }
+  });
+
+  it('ban is a plain target+reason confirm-then-execute subcommand', () => {
+    const ban = MOD_COMMAND.options?.find((o) => o.name === 'ban');
+    expect(ban?.options?.map((o) => o.name)).toEqual(['target', 'reason']);
+  });
+
+  it('purge targets a channel, not a member', () => {
+    const purge = MOD_COMMAND.options?.find((o) => o.name === 'purge');
+    const channel = purge?.options?.find((o) => o.name === 'channel');
+    expect(channel).toMatchObject({ type: 7, required: true }); // CHANNEL
   });
 
   it('timeout carries a bounded duration option', () => {

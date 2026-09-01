@@ -135,6 +135,26 @@ function buildHarness(
     responder,
     now: () => NOW_MS,
     logger: silentLogger,
+    // Task 7's ban/purge preview deps. Never exercised by this file — it
+    // only proves `commands.ts` routes `ban`/`purge` to `confirmations.ts`,
+    // in the "ignores an unrecognised subcommand" test below (which
+    // predates Task 7 and now needs updating — see that test).
+    confirmations: {
+      guildId: GUILD,
+      authz,
+      fetchInvokerRoleIds: async () => [],
+      moderationGateway,
+      cases: {
+        openOrResolveCase: () => ({ caseId: 'case-1', violationCount: 1 }),
+        recordCaseEvent: () => {},
+      },
+      pendingActions: { put: () => {}, take: () => undefined, peek: () => undefined },
+      fetchRecentMessages: async () => ({ messages: [], nextBefore: undefined }),
+      enqueuePurgeJob: () => {},
+      responder,
+      now: () => NOW_MS,
+      logger: silentLogger,
+    },
   };
 
   return { deps, calls };
@@ -164,9 +184,49 @@ describe('mod command subscriber', () => {
   it('ignores an unrecognised subcommand rather than guessing', async () => {
     const { deps, calls } = buildHarness();
     const subscriber = createModCommandSubscriber(deps);
-    await subscriber.handle(slashCommandEvent({ subcommandPath: ['ban'] }));
+    // 'note' belongs to Task 8, not yet wired into this subscriber.
+    await subscriber.handle(slashCommandEvent({ subcommandPath: ['note'] }));
     expect(calls.defer).toHaveLength(0);
     expect(calls.applyAction).toHaveLength(0);
+  });
+
+  describe('ban and purge route to the confirmation preview, not direct execution', () => {
+    it('ban defers and never calls the gateway directly from this subscriber', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['ban'],
+          options: [
+            { name: 'target', value: TARGET },
+            { name: 'reason', value: 'raiding' },
+          ],
+        }),
+      );
+      expect(calls.defer).toHaveLength(1);
+      // The preview writes no case event and calls no gateway — only a
+      // confirmed click does, and that lives entirely in confirmations.ts.
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+      expect(calls.respond[0]?.message.content).toMatch(/ban preview/i);
+    });
+
+    it('purge defers and never calls the gateway directly from this subscriber', async () => {
+      const { deps, calls } = buildHarness();
+      const subscriber = createModCommandSubscriber(deps);
+      await subscriber.handle(
+        slashCommandEvent({
+          subcommandPath: ['purge'],
+          options: [
+            { name: 'channel', value: '555555555555555555' },
+            { name: 'reason', value: 'spam cleanup' },
+          ],
+        }),
+      );
+      expect(calls.defer).toHaveLength(1);
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.respond[0]?.message.content).toMatch(/purge preview/i);
+    });
   });
 
   describe('unauthorized caller', () => {

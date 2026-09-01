@@ -199,6 +199,7 @@ export {
 } from './automod/subscriber.js';
 export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
 export {
+  BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,
   runPurgeTick,
   type PurgeCasePorts,
@@ -221,6 +222,24 @@ export {
   type ModCommandCasePorts,
   type ModCommandDeps,
 } from './mod/commands.js';
+export {
+  banConfirmDedupeKey,
+  buildConfirmCancelComponents,
+  buildModCancelCustomId,
+  buildModConfirmCustomId,
+  createModConfirmationSubscriber,
+  handleBanPreview,
+  handlePurgePreview,
+  modPendingActionPayload,
+  parseModConfirmCustomId,
+  PENDING_ACTION_TTL_MS,
+  type ModConfirmationCasePorts,
+  type ModConfirmationDeps,
+  type ModPendingActionPayload,
+  type ModPendingActionPorts,
+  type ParsedModConfirmCustomId,
+  type PendingActionRowLike,
+} from './mod/confirmations.js';
 export {
   emojiKeySchema,
   optionByEmoji,

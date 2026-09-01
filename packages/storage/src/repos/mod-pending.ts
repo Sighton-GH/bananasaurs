@@ -1,6 +1,6 @@
 import { eq, lte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
-import { write } from '../write.js';
+import { read, write } from '../write.js';
 import { modPendingActions } from '../schema.js';
 
 /**
@@ -18,6 +18,25 @@ import { modPendingActions } from '../schema.js';
  * Guild scope is enforced by the composite primary key: an intent is
  * `(guild_id, intent_id)`, so another guild's intent is not "forbidden",
  * it is not there.
+ *
+ * ## `peekPendingAction` (Task 7)
+ *
+ * `takePendingAction` returning `undefined` collapses three distinct
+ * situations into one: the intent never existed, a prior confirm already
+ * took it, or it is sitting there but expired. A confirm handler that wants
+ * to tell a moderator "expired" rather than a generic "already executed"
+ * needs to tell those apart *before* deleting anything, which is what this
+ * read-only lookup is for.
+ *
+ * Deliberately does **not** replicate `takePendingAction`'s own expiry
+ * filter — a `peek` that quietly returned `undefined` for an expired-but-
+ * still-present row would recreate the exact ambiguity this function exists
+ * to resolve (an expired row and a genuinely absent one would both come
+ * back `undefined`, indistinguishable again). So this returns the row
+ * exactly as stored, whatever its `expiresAt` says, and it is the caller's
+ * job to compare `expiresAt` against its own `now` to decide "expired" vs.
+ * "still good." No delete, ever — a peek must never consume the one-shot
+ * claim `takePendingAction` guards.
  */
 
 export interface PutPendingActionInput {
@@ -90,6 +109,28 @@ export const takePendingAction = (
       .run();
     return row;
   });
+
+/**
+ * Reads an intent without taking it — see this module's docstring for why
+ * `takePendingAction`'s own expiry filter is deliberately not repeated here.
+ */
+export const peekPendingAction = (
+  scope: GuildScope,
+  intentId: string,
+): PendingActionRow | undefined =>
+  read(scope, (db) =>
+    db
+      .select({
+        intentId: modPendingActions.intentId,
+        payload: modPendingActions.payload,
+        createdBy: modPendingActions.createdBy,
+        createdAt: modPendingActions.createdAt,
+        expiresAt: modPendingActions.expiresAt,
+      })
+      .from(modPendingActions)
+      .where(scope.only(modPendingActions, eq(modPendingActions.intentId, intentId)))
+      .get(),
+  );
 
 /** Deletes every intent that can no longer confirm. Housekeeping, not a gate. */
 export const sweepExpiredPendingActions = (scope: GuildScope, now: number): number =>

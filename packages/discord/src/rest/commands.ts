@@ -88,6 +88,14 @@ const reasonOption: GuildCommandOption = {
   required: true,
 };
 
+/** `channel` on `/mod purge`: which channel to clean up. */
+const channelOption: GuildCommandOption = {
+  name: 'channel',
+  description: 'The channel to purge',
+  type: ApplicationCommandOptionType.Channel,
+  required: true,
+};
+
 /**
  * `/mod` (ADR 0037, Task 6): moderator commands, gated in the handler by
  * `authorize('moderation.act')` against the real invoking member
@@ -99,13 +107,14 @@ const reasonOption: GuildCommandOption = {
  * members holding none of them by default, while `authorize()` remains the
  * actual gate.
  *
- * Five subcommands: `timeout`, `untimeout`, `kick`, `unban`, `warn` — the
- * Task 6 brief's ruling on the ambiguous "ten subcommands" in the original
- * plan text. `ban` and `purge` need the confirm-then-execute handshake Task 7
- * builds; `note`/`evidence` are Task 8; `history` is Task 9. Each of those
- * tasks extends this `options` array — the registration endpoint replaces the
- * whole set on every `PUT` (this file's own docstring, ADR 0032), so growing
- * the array and redeploying is the entire mechanism.
+ * Seven subcommands now: `timeout`, `untimeout`, `kick`, `unban`, `warn`
+ * (Task 6, executing on invocation) plus `ban` and `purge` (Task 7,
+ * confirm-then-execute — `packages/core/src/mod/confirmations.ts` writes a
+ * pending intent and renders Confirm/Cancel buttons instead of acting
+ * immediately). `note`/`evidence` are Task 8; `history` is Task 9. Each of
+ * those tasks extends this `options` array — the registration endpoint
+ * replaces the whole set on every `PUT` (this file's own docstring, ADR
+ * 0032), so growing the array and redeploying is the entire mechanism.
  */
 export const MOD_COMMAND: GuildCommandDefinition = {
   name: 'mod',
@@ -157,6 +166,19 @@ export const MOD_COMMAND: GuildCommandDefinition = {
       description: 'Issue a warning; repeated warnings escalate automatically',
       type: ApplicationCommandOptionType.Subcommand,
       options: [targetOption, reasonOption],
+    },
+    {
+      name: 'ban',
+      description: 'Ban a member — shows a preview with Confirm/Cancel before anything happens',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [targetOption, reasonOption],
+    },
+    {
+      name: 'purge',
+      description:
+        'Delete recent messages in a channel — shows a preview with Confirm/Cancel before anything happens',
+      type: ApplicationCommandOptionType.Subcommand,
+      options: [channelOption, reasonOption],
     },
   ],
 };

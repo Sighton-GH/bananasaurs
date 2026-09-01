@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId, parseSnowflakeId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { upsertGuild } from './guilds.js';
-import { putPendingAction, takePendingAction } from './mod-pending.js';
+import { peekPendingAction, putPendingAction, takePendingAction } from './mod-pending.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const OTHER_GUILD = parseGuildId('333333333333333333');
@@ -76,5 +76,81 @@ describe('mod pending actions repo (ADR 0037 confirmation intents)', () => {
     });
     expect(takePendingAction(other, 'i-3', 1500)).toBeUndefined();
     expect(takePendingAction(scope, 'i-3', 1500)).not.toBeUndefined();
+  });
+
+  describe('peekPendingAction — the expired-vs-already-executed distinction (Task 7)', () => {
+    it('finds a fresh row without taking it — a second peek still finds it, and it can still be taken', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      putPendingAction(scope, {
+        intentId: 'i-4',
+        payload: JSON.stringify({ kind: 'ban', targetId: TARGET, reason: 'x' }),
+        createdBy: MOD,
+        now: 1000,
+        expiresAt: 1000 + 15 * 60_000,
+      });
+
+      const first = peekPendingAction(scope, 'i-4');
+      expect(first).not.toBeUndefined();
+      expect(first?.createdBy).toBe(MOD);
+      expect(first?.expiresAt).toBe(1000 + 15 * 60_000);
+
+      // Peeking twice is idempotent — it never deletes.
+      const second = peekPendingAction(scope, 'i-4');
+      expect(second).toEqual(first);
+
+      // And the row is still there to be actually taken afterward.
+      expect(takePendingAction(scope, 'i-4', 2000)).not.toBeUndefined();
+    });
+
+    it('takes no `now` and applies no expiry filter — the row comes back exactly as stored', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      putPendingAction(scope, {
+        intentId: 'i-5',
+        payload: JSON.stringify({ kind: 'purge', channelId: TARGET, reason: 'spam' }),
+        createdBy: MOD,
+        now: 1000,
+        expiresAt: 1000 + 15 * 60_000,
+      });
+
+      // `takePendingAction` at a `now` past `expiresAt` reports "nothing
+      // here" (and deletes the row); `peekPendingAction` has no `now`
+      // parameter at all, so a caller must compare `expiresAt` itself to
+      // decide "expired" vs. "still good" — that comparison is exactly what
+      // lets a confirm handler tell "expired" apart from "already executed".
+      const row = peekPendingAction(scope, 'i-5');
+      expect(row).not.toBeUndefined();
+      expect(row?.expiresAt).toBe(1000 + 15 * 60_000);
+      // Far past expiry — still returned, unfiltered.
+      expect((row?.expiresAt ?? 0) < 1000 + 20 * 60_000).toBe(true);
+    });
+
+    it('finds nothing for an intent that was never put, or already taken', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      expect(peekPendingAction(scope, 'never-existed')).toBeUndefined();
+
+      putPendingAction(scope, {
+        intentId: 'i-6',
+        payload: JSON.stringify({ kind: 'ban', targetId: TARGET, reason: 'x' }),
+        createdBy: MOD,
+        now: 1000,
+        expiresAt: 2000,
+      });
+      takePendingAction(scope, 'i-6', 1500);
+      expect(peekPendingAction(scope, 'i-6')).toBeUndefined();
+    });
+
+    it('is guild-scoped — another guild cannot peek the intent', () => {
+      const scope = t.scopes.forGuild(GUILD);
+      const other = t.scopes.forGuild(OTHER_GUILD);
+      putPendingAction(scope, {
+        intentId: 'i-7',
+        payload: JSON.stringify({ kind: 'ban', targetId: TARGET, reason: 'x' }),
+        createdBy: MOD,
+        now: 1000,
+        expiresAt: 2000,
+      });
+      expect(peekPendingAction(other, 'i-7')).toBeUndefined();
+      expect(peekPendingAction(scope, 'i-7')).not.toBeUndefined();
+    });
   });
 });

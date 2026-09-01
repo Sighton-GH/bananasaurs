@@ -179,8 +179,13 @@ export interface PurgeTickInput {
   readonly jobId: number;
 }
 
-/** Discord rejects a bulk-delete call carrying even one message this old or older. */
-const BULK_DELETE_CEILING_MS = 14 * 24 * 60 * 60 * 1000;
+/**
+ * Discord rejects a bulk-delete call carrying even one message this old or
+ * older. Exported so the purge preview (Task 7, `confirmations.ts`) can
+ * split its "age distribution" on the exact same boundary the job itself
+ * acts on, rather than a second hand-copied constant drifting from this one.
+ */
+export const BULK_DELETE_CEILING_MS = 14 * 24 * 60 * 60 * 1000;
 
 /** A page of `fetchRecentMessages`; also Discord's own bulk-delete cap. */
 const PAGE_LIMIT = 100;
