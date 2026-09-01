@@ -219,6 +219,13 @@ caveat that qualifies it is the kind of quiet lie the gate exists to catch.
   unauditable. Whether this is acceptable is separate from the technical deferral:
   "should Bananasaurs *manage* native rules?" This ADR reads native's decisions
   only, never writes them back.
+
+  **Outcome, 2026-09-01:** the owner granted `MANAGE_GUILD`. Native AutoMod
+  observability (Slice 0) is live: `AUTO_MODERATION_ACTION_EXECUTION` is
+  dispatched and recorded. The wider surface that grant also opens — the
+  AutoMod REST endpoints, guild settings, integrations, invites — remains
+  unused; managing native rules is still not decided here and is still out of
+  scope for this ADR.
 - `REQUIRED_INTENTS` gains `AutoModerationExecution`. It is not privileged, so
   no portal change is needed, but `doctor` and the intent assertions must be
   updated together or the daemon will assert against a stale set.
