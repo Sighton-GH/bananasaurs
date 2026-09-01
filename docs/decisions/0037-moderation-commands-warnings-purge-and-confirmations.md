@@ -240,8 +240,12 @@ component handler resolves everything else from the database row.
 authorization transfer to whoever clicks next.
 
 **The idempotency claim binds to the confirmed action, not the invocation.**
-The dedupe key (`mod:<guildId>:<action>:<intentId>`) is minted when the
-preview is created, travels inside the pending intent, and is claimed only
+The dedupe key (`mod:<guildId>:<action>:<intentId>`) has this exact shape
+from the preview onward, but nothing stores it: Task 7's implementation
+re-derives it deterministically from `(guildId, action, intentId)` at
+confirm time, identically to how it would have been minted at preview
+time — a stored copy could only ever drift from that derivation, never
+correct it, so there is no second copy to keep in sync. It is claimed only
 when the action executes — inside `ModerationActionGateway`'s existing claim
 layer for member actions, and inside the `jobs` table's dedupe for purge. A
 double-tap on Confirm therefore resolves to `skipped` ("already executed"),
