@@ -285,7 +285,11 @@ export interface CreateRuleInput {
   readonly ruleId: string;
   readonly kind: RuleKind;
   readonly name: string;
-  /** Serialised JSON. The caller validated it; the CHECK cannot. */
+  /**
+   * Serialised JSON. The caller must validate it with core's
+   * `validateRuleConfig(kind, config)` first — the CHECK cannot (ADR 0040 §2,
+   * `setRuleConfig`'s doc comment below has the full reasoning).
+   */
   readonly config: string;
   readonly now: number;
 }
@@ -332,6 +336,15 @@ export interface SetRuleConfigInput {
  * Replaces a rule's config wholesale — not a merge. A partial update would
  * need a read-modify-write, and the caller that has a validated config
  * object already has the whole of it.
+ *
+ * **The caller must call `validateRuleConfig(kind, config)` from
+ * `packages/core` first and refuse the write on `{ok: false}`.** This
+ * function does not, and cannot: ADR 0014 keeps the per-kind Zod schemas in
+ * core and bars storage from importing core's predicate registry, so this is
+ * a plain `UPDATE` with no validation of its own. ADR 0040 §2 requires
+ * `mod_rules.config` to be validated on write as well as on read (the read
+ * side is `compileRule`, called by the subscriber and by `doctor`) — the
+ * write-side guard has to live at the call site for exactly that reason.
  */
 export const setRuleConfig = (scope: GuildScope, input: SetRuleConfigInput): void =>
   write(scope, ({ db }) => {

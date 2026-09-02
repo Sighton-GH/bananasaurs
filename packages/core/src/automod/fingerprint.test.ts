@@ -111,8 +111,6 @@ describe('ruleFingerprint', () => {
     // Already in the subscriber's cache key; hashing it too would be
     // redundant rather than wrong, but the exclusion is deliberate and this
     // pins it the same way the `mode` exclusion above is pinned.
-    expect(ruleFingerprint(rule({ ruleId: 'a-different-rule-id' }))).toBe(
-      ruleFingerprint(rule()),
-    );
+    expect(ruleFingerprint(rule({ ruleId: 'a-different-rule-id' }))).toBe(ruleFingerprint(rule()));
   });
 });

@@ -47,6 +47,69 @@ export type CompileResult =
   | { readonly ok: true; readonly compiled: CompiledPredicate }
   | { readonly ok: false; readonly reason: CompileFailure; readonly detail: string };
 
+/** The subset of `CompileFailure` a config, on its own, can fail with. */
+export type ConfigValidationFailure = 'unknown-kind' | 'no-predicate' | 'invalid-config';
+
+export type ConfigValidationResult =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: ConfigValidationFailure; readonly detail: string };
+
+type ResolvedConfig =
+  | { readonly ok: true; readonly predicate: AnyPredicate; readonly config: unknown }
+  | { readonly ok: false; readonly reason: ConfigValidationFailure; readonly detail: string };
+
+/**
+ * Resolves `kind` to its predicate and parses+validates `configJson` against
+ * that predicate's schema, or says exactly why it could not.
+ *
+ * The one place both `validateRuleConfig` (below) and `compileRule` do this —
+ * so a rule's word list (which is not in `config`, ADR 0040 §3, and which
+ * only `compileRule` has) cannot leak into what counts as a valid *config*.
+ */
+const resolveConfig = (kind: string, configJson: string): ResolvedConfig => {
+  if (!isRuleKind(kind)) {
+    return { ok: false, reason: 'unknown-kind', detail: kind };
+  }
+  const predicate = PREDICATES[kind];
+  if (predicate === undefined) {
+    return { ok: false, reason: 'no-predicate', detail: kind };
+  }
+
+  try {
+    // Parsed and validated on the way *out* of the database, not only on the
+    // way in (CLAUDE.md rule 3, ADR 0037's `jobs.payload` precedent): a row
+    // written by an older schema version, or by hand in `sqlite3`, is exactly
+    // what this catches.
+    const config: unknown = predicate.config.parse(JSON.parse(configJson));
+    return { ok: true, predicate, config };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'invalid-config',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+};
+
+/**
+ * Validates a rule's `config` column against its kind's schema, without
+ * compiling it.
+ *
+ * ADR 0040 §2: `mod_rules.config` is validated on write *and* on read.
+ * `compileRule` below is the read-side validator, called from the subscriber
+ * and from `doctor`. This is the write-side validator: storage cannot
+ * validate (ADR 0014 — the Zod schemas live in core, and storage may not
+ * import core's predicate registry the way core may not import storage), so a
+ * writer of `mod_rules.config` — `createRule`, `setRuleConfig` — must call
+ * this first and refuse the write on `{ok: false}`. Mirrors `compileRule`'s
+ * `{ok: true} | {ok: false, reason, detail}` shape deliberately, so a caller
+ * that already knows one convention does not have to learn a second.
+ */
+export const validateRuleConfig = (kind: string, configJson: string): ConfigValidationResult => {
+  const resolved = resolveConfig(kind, configJson);
+  return resolved.ok ? { ok: true } : resolved;
+};
+
 /**
  * Validates a rule's config against its kind's schema and compiles it, or says
  * exactly why it could not.
@@ -57,28 +120,9 @@ export type CompileResult =
  * fingerprint and `doctor` reports it (ADR 0040 §4).
  */
 export const compileRule = (rule: AutomodRule): CompileResult => {
-  if (!isRuleKind(rule.kind)) {
-    return { ok: false, reason: 'unknown-kind', detail: rule.kind };
-  }
-  const predicate = PREDICATES[rule.kind];
-  if (predicate === undefined) {
-    return { ok: false, reason: 'no-predicate', detail: rule.kind };
-  }
-
-  let config: unknown;
-  try {
-    // Parsed and validated on the way *out* of the database, not only on the
-    // way in (CLAUDE.md rule 3, ADR 0037's `jobs.payload` precedent): a row
-    // written by an older schema version, or by hand in `sqlite3`, is exactly
-    // what this catches.
-    config = predicate.config.parse(JSON.parse(rule.config));
-  } catch (err) {
-    return {
-      ok: false,
-      reason: 'invalid-config',
-      detail: err instanceof Error ? err.message : String(err),
-    };
-  }
+  const resolved = resolveConfig(rule.kind, rule.config);
+  if (!resolved.ok) return resolved;
+  const { predicate, config } = resolved;
 
   // A `keyword_filter` rule whose last enabled term (or category) was just
   // removed has valid, empty config and compiles to a matcher that can never

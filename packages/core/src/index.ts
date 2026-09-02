@@ -223,8 +223,11 @@ export {
 export {
   compileRule,
   predicateFor,
+  validateRuleConfig,
   type CompileFailure,
   type CompileResult,
+  type ConfigValidationFailure,
+  type ConfigValidationResult,
 } from './automod/predicates/registry.js';
 export { ruleFingerprint } from './automod/fingerprint.js';
 export {
