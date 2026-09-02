@@ -9,31 +9,22 @@ import type {
 import type { Authorized } from '../authz.js';
 import { DiscordApiError } from '../discord/errors.js';
 import { parseSnowflakeId } from '../ids.js';
-import { buildMatcher, stripZeroWidth } from './matcher.js';
+import { stripZeroWidth } from './matcher.js';
+import { ruleFingerprint } from './fingerprint.js';
+import { compileRule } from './predicates/registry.js';
+import type { AutomodRule, CompiledPredicate, MatchTrace, PredicateMatch } from './predicates/types.js';
 
 /**
- * The automod subscriber (ADR 0035, Task 9): the decision logic that turns a
- * matcher hit into a moderation outcome, and — the thing this task exists to
- * fix relative to Release 1 — a *durable* record even when the moderation
+ * The automod subscriber (ADR 0035, Task 9; rewired onto the predicate
+ * registry by ADR 0040, Task 5): the decision logic that turns a predicate
+ * match into a moderation outcome, and — the thing Task 9 existed to fix
+ * relative to Release 1 — a *durable* record even when the moderation
  * gateway refuses.
  *
  * Every dependency arrives as a port on `AutomodSubscriberDeps`. This module
  * never imports `@bananasaurs/storage` (ADR 0014); the concrete repo calls
  * are wired in Task 10.
  */
-
-/**
- * Mirrors `packages/storage/src/repos/automod-rules.ts`'s `RuleWithWordList`
- * field for field (confirmed against that file while implementing this
- * task). Declared again here rather than imported, per the boundary rule
- * above — packages/core depends on the shape, not the package.
- */
-export interface RuleWithWordList {
-  readonly ruleId: string;
-  readonly mode: 'test' | 'observe' | 'enforce';
-  readonly terms: readonly { text: string; categoryId: string }[];
-  readonly allowlist: readonly string[];
-}
 
 /**
  * The narrow slice of `ModerationActionGateway` this subscriber calls.
@@ -87,7 +78,7 @@ export interface AutomodSubscriberDeps {
   readonly logger: Logger;
   /** Re-verified inside the gateway on every call; held here only to pass through. */
   readonly moderationAuth: Authorized<'moderation.act'>;
-  listRules(): readonly RuleWithWordList[];
+  listRules(): readonly AutomodRule[];
   /**
    * Whether this rule has a **role**-type exemption at all — a local read,
    * unlike the role ids it decides whether to fetch.
@@ -128,6 +119,15 @@ export interface AutomodSubscriberDeps {
     actionTaken: AutomodActionTaken;
     escalationAction: 'timeout' | 'kick' | undefined;
     refusalReason: string | undefined;
+    /**
+     * Why the predicate matched (ADR 0040). Threaded through deliberately
+     * unused for now: `mod_case_events` has nowhere to persist a trace until
+     * Slice 2 adds the column, so this task's composition root wiring
+     * (`apps/daemon/src/automod/wiring.ts`) receives it and drops it. That is
+     * a documented, deliberate gap — not a value silently lost by accident —
+     * and Task 7 makes it visible.
+     */
+    trace: MatchTrace;
   }): void;
   /**
    * The guild's live safety state — the *same* read
