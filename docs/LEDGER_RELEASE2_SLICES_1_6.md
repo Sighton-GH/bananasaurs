@@ -27,7 +27,7 @@ runs the observe window before the dashboard work starts.
 
 | Slice | ADR | Plan | Status |
 | --- | --- | --- | --- |
-| 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **in progress** — Task 1 of 7 complete and reviewed clean; Tasks 2–4 in flight |
+| 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **✅ complete** — 7 tasks, whole-branch reviewed, fix wave re-reviewed clean. 2026 tests (from 1953), typecheck + lint clean |
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | — | ADR written, plan pending |
 | 3 — precise tier (`regex`, `invite`, `link_domain`) | — | — | not started |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
@@ -379,6 +379,23 @@ needs a `keyword_filter` rule **with terms** sitting alongside it.
 
 **Housekeeping:** the decorative-guard table below claims four rows and names
 three. Corrected.
+
+### Slice 1 closed (2026-09-02)
+
+All six fix-wave items re-reviewed **ADDRESSED**, no new breakage. Final state:
+**2026 tests** (from 1953 at the branch point, none deleted), typecheck and
+lint clean, every gate run by the coordinator rather than taken on report.
+
+Two guards the coordinator watched fail personally: the migration's child-row
+survival check (neutralised the `foreign_keys = OFF` step — went red, restored,
+green) and the kind-list drift pin (added an eleventh kind to `RULE_KINDS` —
+went red, restored, green).
+
+The re-review confirmed the exclusion-based digest answers its own purpose: a
+field added to `AutomodRule` later is hashed **without anyone editing
+`fingerprint.ts`**, because the digest is built by inserting sorted keys rather
+than spreading in declaration order. That is what stops Slice 3's relational
+`invite`/`link_domain` allowlist from silently escaping the cache key.
 
 ## A pattern worth adding to `docs/22`
 
