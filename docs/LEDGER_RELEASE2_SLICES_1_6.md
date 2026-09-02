@@ -311,6 +311,75 @@ its fixture and name imply. The behaviour under test (fingerprint-driven
 recompile and re-log) is genuinely exercised, so this is a naming defect rather
 than a decorative guard — but it should say what it does.
 
+## Whole-branch review of Slice 1 (2026-09-02) — verdict ship-with-fixes
+
+0 Critical, 4 Important, 7 Minor, 1 decorative guard. Every one of the four
+Important findings is **cross-task** — an interaction between changes that were
+each individually reviewed and individually sound. This is the second time on
+this project that a whole-branch pass has found what per-task review
+structurally could not; `docs/22` priced it correctly.
+
+The reviewer verified clean: the enforcement path from the safety-state read
+down is byte-identical apart from indentation; the fingerprint covers
+everything `compile` reads *today*; `StoredAutomodRule`/`AutomodRule` agree and
+drift would be a compile error; `runMigrations` is correct and is the only
+migration path. It independently re-derived R-1's and R-5's premises rather
+than accepting them, and disagreed with none of R-1 … R-10.
+
+**R-11 — the fingerprint becomes exclusion-based, not an allowlist of fields.**
+`ruleFingerprint` hand-enumerates `{kind, config, terms, allowlist}`. ADR 0040
+§3 already commits Slice 3 to a *relational* allowlist for `invite` and
+`link_domain`; when that field lands, nothing forces it into the digest, and
+the stale-artifact bug this slice exists to kill returns for those predicates
+alone — silently, which is its whole character. Hash everything on the rule
+*except* an explicit exclusion list (`mode`, and `ruleId` which is already in
+the cache key). *Costs if wrong:* a future field that legitimately should not
+invalidate the cache has to be added to the exclusion list, which is a
+one-line change that fails loudly (over-invalidation costs a recompile) rather
+than silently (under-invalidation costs correctness). That asymmetry is the
+whole argument.
+
+**R-12 — a `keyword_filter` rule with zero enabled terms is unusable, and
+`doctor` must say so.** It currently compiles cleanly, so `doctor` reports
+"every enabled automod rule compiles" for a rule that cannot match anything.
+That is the precise state the R-5 cascade would have left the live guild in —
+and the precise shape of ADR 0039. A rule mid-configuration will briefly show
+in `doctor`; that is correct, not noise. *Costs if wrong:* an operator adding a
+rule before its terms sees one `doctor` finding until they add the first term.
+
+**R-13 — `PredicateInput` gains `eventKind`.** The subscriber evaluates both
+`messageCreate` and `messageUpdate`, and a predicate cannot currently tell them
+apart. Slice 4's `rapid_spam` and `duplicate_message` would count an edit as a
+new message — a member editing a typo three times would trip a rate rule. The
+reviewer is right that this is a subscriber-and-interface change far cheaper
+here than in Slice 4. *Costs if wrong:* one unused field until Slice 4.
+
+**R-14 — ADR 0040 §2's on-*write* config validation does not exist; build it
+rather than amend the ADR.** The read side is validated, so rule 3 holds today
+and nothing is currently broken. But `setRuleConfig` is a real writer with no
+guard, and storage may not validate (ADR 0014 — the Zod schemas live in core).
+Export `validateRuleConfig(kind, configJson)` from core now, with a test, so
+Slice 6's and Slice 8's write paths inherit a guard instead of inventing one.
+*Costs if wrong:* ~15 lines with one caller for now. The alternative — amending
+the ADR to say "validation on read only" — makes the document true by lowering
+it, and rule 3 says both directions.
+
+**R-15 — pin the three hand-maintained copies of the kind list against each
+other.** `mod_rules_kind`'s SQL CHECK, storage's `RuleKind` and core's
+`RULE_KINDS` are three copies that currently agree. A test asserting the SQL
+CHECK accepts exactly `RULE_KINDS` and nothing else makes drift a red test
+rather than an inert rule. Reviewer's suggestion, accepted.
+
+**Sixth decorative guard, and again one of mine.** The
+"keeps a non-keyword_filter rule out of the word-list hydration path" test
+(`automod-rules.test.ts`) puts a single `caps` rule in the database, so
+`terms`/`allowlist` come back empty under *any* implementation — including one
+that leaks another rule's terms, which is what its name claims to guard. It
+needs a `keyword_filter` rule **with terms** sitting alongside it.
+
+**Housekeeping:** the decorative-guard table below claims four rows and names
+three. Corrected.
+
 ## A pattern worth adding to `docs/22`
 
 **Four decorative guards in one slice.** `docs/22` already records one from
@@ -322,7 +391,8 @@ three more, and all four share a shape precise enough to write down as a rule:
 | Slice 0's byte-level `join` test | a one-element array never uses the separator |
 | The span test | its fixture contained the term **once**, so `indexOf` could not pick the wrong one |
 | The two-guild cache-key test | the fingerprint made the outcome correct regardless of whether the key carried the guild id |
-| (caught in review, never shipped) | — |
+| The "logs again after config changes" test | its `caps` fixture exercised `no-predicate`, not the `invalid-config` path its name and `'{not json'` fixture implied |
+| The non-`keyword_filter` hydration test | a single rule in the database, so `terms` came back empty under any implementation — including one that leaks another rule's terms |
 
 **The shape: a fixture too simple to reach the branch the test is named
 after.** Not a wrong assertion — a correct assertion on an input where the bug
