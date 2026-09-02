@@ -178,6 +178,17 @@ export interface AutomodSubscriberDeps {
  * real gap a later slice should close — most plausibly by extending the key
  * with a content hash/version, or by having the rule-editing command bump a
  * version the subscriber checks.
+ *
+ * ADR 0039 widens what "stale" means for an entry already in this cache:
+ * `buildMatcher`'s collapse-duplicate thresholds are now *derived* from the
+ * word list at build time (any doubled letter in a configured term gets
+ * threshold 2), not just the compiled patterns themselves. A term edit that
+ * changes which letters appear doubled — adding or removing the one term
+ * that introduced a given letter's threshold — is invisible to a cached
+ * matcher for exactly the same reason an added or removed term is: nothing
+ * here evicts the entry. Same gap, not a new one; noted so a future reader
+ * does not have to rediscover that the thresholds are part of what a stale
+ * cache entry gets wrong.
  */
 const matcherCache = new Map<string, ReturnType<typeof buildMatcher>>();
 

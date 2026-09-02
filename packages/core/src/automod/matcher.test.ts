@@ -40,3 +40,76 @@ describe('buildMatcher', () => {
     expect(matcher.match('hello world')).toBeUndefined();
   });
 });
+
+/**
+ * ADR 0039: `collapseDuplicatesTransformer` collapses doubled letters in the
+ * *matched input* but never in a `parseRawPattern`-compiled term, unless the
+ * letter is one of obscenity's six hand-tuned exceptions (b/e/o/l/s/g). A
+ * configured term with a doubled letter outside that set — `spammer`
+ * (doubled `m`), `forbidden` (doubled `d`), `bitter` (doubled `t`) — used to
+ * never match, at any stretch, including its own exact literal spelling.
+ * These cases are drawn directly from ADR 0039's validation suite.
+ */
+describe('buildMatcher — doubled-letter terms outside obscenity’s six exceptions (ADR 0039)', () => {
+  it('matches the exact literal spelling of a term with a doubled letter (m)', () => {
+    const matcher = buildMatcher([{ text: 'spammer', categoryId: 'cat-1' }], []);
+    expect(matcher.match('you are a spammer')).toBeDefined();
+  });
+
+  it('matches a stretched (evasion) spelling of the same term', () => {
+    const matcher = buildMatcher([{ text: 'spammer', categoryId: 'cat-1' }], []);
+    expect(matcher.match('you are a spaaaammmmer')).toBeDefined();
+  });
+
+  it('matches a term with a doubled letter (d) mid-word', () => {
+    const matcher = buildMatcher([{ text: 'forbidden', categoryId: 'cat-1' }], []);
+    expect(matcher.match('that is forbidden here')).toBeDefined();
+  });
+
+  it('matches a term with a doubled letter (t)', () => {
+    const matcher = buildMatcher([{ text: 'bitter', categoryId: 'cat-1' }], []);
+    expect(matcher.match('so bitter today')).toBeDefined();
+  });
+
+  it('still matches a plain, undoubled control term', () => {
+    const matcher = buildMatcher([{ text: 'badword', categoryId: 'cat-1' }], []);
+    expect(matcher.match('this has badword in it')).toBeDefined();
+  });
+
+  it('still matches a stretched plain control term', () => {
+    const matcher = buildMatcher([{ text: 'badword', categoryId: 'cat-1' }], []);
+    expect(matcher.match('this has baaaadword in it')).toBeDefined();
+  });
+
+  it('does NOT match an unrelated word that happens to be the single-letter form (no false positive)', () => {
+    const matcher = buildMatcher([{ text: 'spammer', categoryId: 'cat-1' }], []);
+    expect(matcher.match('please do not spamer me')).toBeUndefined();
+  });
+
+  it('cross-term: with both a doubled-letter term and a plain term configured, each still behaves independently', () => {
+    const matcher = buildMatcher(
+      [
+        { text: 'spammer', categoryId: 'cat-spam' },
+        { text: 'badword', categoryId: 'cat-bad' },
+      ],
+      [],
+    );
+    expect(matcher.match('this has badword in it')).toEqual({
+      categoryId: 'cat-bad',
+      snippet: 'badword',
+    });
+    expect(matcher.match('this has baaaadword in it')).toBeDefined();
+    expect(matcher.match('please do not spamer me')).toBeUndefined();
+    expect(matcher.match('you are a spammer')).toEqual({
+      categoryId: 'cat-spam',
+      snippet: 'spammer',
+    });
+  });
+
+  it('keeps matching terms already covered by obscenity’s six built-in thresholds', () => {
+    const bollocks = buildMatcher([{ text: 'bollocks', categoryId: 'cat-1' }], []);
+    expect(bollocks.match('a load of bollocks')).toBeDefined();
+    const assess = buildMatcher([{ text: 'assess', categoryId: 'cat-1' }], []);
+    expect(assess.match('let us assess this')).toBeDefined();
+  });
+});
