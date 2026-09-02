@@ -213,10 +213,10 @@ export interface EnforceRuleChannelScope {
  * (`apps/daemon/src/ops/wiring.ts`) needs to check the bot's live permissions
  * against the rest of the guild's channels.
  *
- * Deliberately narrower than `listEnabledKeywordFilterRules`: a `test` or
- * `observe` rule never calls `deleteMessage` (Task 9's subscriber), so a
- * missing `Manage Messages` there is not yet a finding — only `enforce` mode
- * makes the permission load-bearing.
+ * Deliberately narrower than `listEnabledRules`: a `test` or `observe` rule
+ * never calls `deleteMessage` (Task 9's subscriber), so a missing
+ * `Manage Messages` there is not yet a finding — only `enforce` mode makes
+ * the permission load-bearing.
  */
 export const listEnforceModeKeywordFilterRules = (
   scope: GuildScope,
@@ -261,9 +261,9 @@ export const listEnforceModeKeywordFilterRules = (
 /**
  * Whether a rule with this id exists at all — enabled or disabled.
  *
- * Deliberately broader than `listEnabledKeywordFilterRules`: that function
- * answers "what should the subscriber match against right now", which is
- * correctly silent about a disabled rule. This answers a different question —
+ * Deliberately broader than `listEnabledRules`: that function answers "what
+ * should the subscriber match against right now", which is correctly silent
+ * about a disabled rule. This answers a different question —
  * "has this specific id already been created" — which the daemon's first-run
  * seeding (`apps/daemon/src/runtime/daemon.ts`) needs so that a rule an owner
  * has deliberately disabled does not get a second, conflicting `INSERT`
@@ -283,15 +283,17 @@ export const ruleExists = (scope: GuildScope, ruleId: string): boolean =>
 
 export interface CreateRuleInput {
   readonly ruleId: string;
+  readonly kind: RuleKind;
   readonly name: string;
+  /** Serialised JSON. The caller validated it; the CHECK cannot. */
+  readonly config: string;
   readonly now: number;
 }
 
 /**
- * Creates a rule. Always `kind: 'keyword_filter'` — the only predicate kind
- * this slice implements (ADR 0035) — and always starts in `mode: 'test'`
- * (spec §8: automod ships observing, not enforcing, until an owner opts in),
- * whatever mode a later `setRuleMode` call moves it to.
+ * Creates a rule of any of the ten ADR 0040 kinds, always starting in
+ * `mode: 'test'` (spec §8: automod ships observing, not enforcing, until an
+ * owner opts in), whatever mode a later `setRuleMode` call moves it to.
  *
  * Callers that might run more than once against the same `ruleId` (the
  * daemon's first-run seeding) must check `ruleExists` first — this function
@@ -308,13 +310,34 @@ export const createRule = (scope: GuildScope, input: CreateRuleInput): void =>
       .values({
         guildId: scope.guildId,
         ruleId: input.ruleId,
-        kind: 'keyword_filter',
+        kind: input.kind,
         name: input.name,
+        config: input.config,
         mode: 'test',
         enabled: 1,
         createdAt: input.now,
         updatedAt: input.now,
       })
+      .run();
+  });
+
+export interface SetRuleConfigInput {
+  readonly ruleId: string;
+  /** Serialised JSON, already validated against the kind's schema by core. */
+  readonly config: string;
+  readonly now: number;
+}
+
+/**
+ * Replaces a rule's config wholesale — not a merge. A partial update would
+ * need a read-modify-write, and the caller that has a validated config
+ * object already has the whole of it.
+ */
+export const setRuleConfig = (scope: GuildScope, input: SetRuleConfigInput): void =>
+  write(scope, ({ db }) => {
+    db.update(modRules)
+      .set({ config: input.config, updatedAt: input.now })
+      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
       .run();
   });
 
