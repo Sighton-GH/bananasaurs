@@ -273,6 +273,40 @@ not fail in it. It is kept and joined by the repeated-term case. This is the
 third decorative-guard finding on this project; the pattern is a test whose
 fixture is too simple to exercise the branch it names.
 
+## A pattern worth adding to `docs/22`
+
+**Four decorative guards in one slice.** `docs/22` already records one from
+Slice 0 (a one-element `join` never reads its separator). Slice 1 produced
+three more, and all four share a shape precise enough to write down as a rule:
+
+| Guard | Why it could not fail |
+| --- | --- |
+| Slice 0's byte-level `join` test | a one-element array never uses the separator |
+| The span test | its fixture contained the term **once**, so `indexOf` could not pick the wrong one |
+| The two-guild cache-key test | the fingerprint made the outcome correct regardless of whether the key carried the guild id |
+| (caught in review, never shipped) | — |
+
+**The shape: a fixture too simple to reach the branch the test is named
+after.** Not a wrong assertion — a correct assertion on an input where the bug
+cannot occur. It passes before the fix and after, so it looks like coverage and
+provides none.
+
+**Two mitigations earned their keep here, and both belong in `docs/22`:**
+
+1. **Watch every guard fail.** Already the rule, and it caught the fingerprint
+   and cache-invalidation guards. It is the only mitigation that works
+   mechanically.
+2. **When a test names a specific failure mode, its fixture must contain the
+   *ambiguity* that failure mode needs.** A test for "picks the right one of
+   several" needs several. A test for "keeps guilds apart" needs the two guilds
+   to actually disagree. Reviewers should be asked this directly — the two
+   catches above both came from asking a reviewer "would this go red if the
+   implementation were subtly wrong?" rather than "is this correct?".
+
+Carried to handoff as a suggested `docs/22` amendment rather than edited in
+mid-run, because `docs/22` is a lessons file and this run is still producing
+lessons.
+
 ## Environment findings
 
 **E-1 — a git worktree here has no workspace symlinks, so cross-package
