@@ -85,7 +85,11 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
     const rule = ctx.ports.findAutomodRule(args.ruleId);
     if (rule === undefined) {
       return {
-        text: `there is no rule ${args.ruleId} in this guild`,
+        // "no *enabled* rule", because the port is enabled-only: a rule that
+        // exists but is disabled lands here too, and "there is no rule" would
+        // send an operator looking for a typo in an id that is perfectly
+        // correct.
+        text: `there is no enabled rule ${args.ruleId} in this guild (a disabled rule is not replayed)`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId },
       };
     }

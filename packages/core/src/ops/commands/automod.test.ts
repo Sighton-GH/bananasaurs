@@ -110,7 +110,11 @@ describe('automod dryrun', () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('no rule');
+    // "no *enabled* rule": the port is enabled-only, so a disabled rule lands
+    // here too, and an operator told "there is no rule" would go hunting for a
+    // typo in an id that is correct.
+    expect(res.text).toContain('no enabled rule');
+    expect(res.text).toContain('disabled rule is not replayed');
     expect(res.data).toMatchObject({ ok: false });
   });
 

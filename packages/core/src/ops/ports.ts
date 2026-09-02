@@ -245,7 +245,21 @@ export interface OpsPorts {
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
   findJob(jobId: number): OpsJobRow | undefined;
-  /** One enabled or disabled rule by id, hydrated the way the subscriber sees it. */
+  /**
+   * One **enabled** rule by id, hydrated exactly the way the subscriber sees
+   * it — `undefined` for a rule that is disabled, as well as for one that
+   * does not exist.
+   *
+   * Enabled-only is the honest thing to dry-run: a disabled rule will not
+   * match a message in production either, so replaying it would answer a
+   * question nobody asked and report a match count for a rule that cannot
+   * produce one. If replaying a disabled rule is ever wanted, it needs a
+   * repository function that says so, not a widening of this one.
+   *
+   * (This comment previously claimed "enabled or disabled", which the wiring
+   * never did — `listEnabledRules(...).find(...)`. Corrected after Task 8's
+   * review; the contradiction came from the plan, which stated both.)
+   */
   findAutomodRule(ruleId: string): AutomodRule | undefined;
   /**
    * The review corpus, oldest first.
