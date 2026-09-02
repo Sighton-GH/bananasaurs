@@ -9,15 +9,13 @@ import type {
 import type { Authorized } from '../authz.js';
 import { DiscordApiError } from '../discord/errors.js';
 import { parseSnowflakeId } from '../ids.js';
-import { stripZeroWidth } from './matcher.js';
-import { ruleFingerprint } from './fingerprint.js';
-import { compileRule } from './predicates/registry.js';
-import type {
-  AutomodRule,
-  CompiledPredicate,
-  MatchTrace,
-  PredicateMatch,
-} from './predicates/types.js';
+import {
+  createPredicateCache,
+  evaluateRule,
+  predicateInputFrom,
+  type PredicateCache,
+} from './evaluate.js';
+import type { AutomodRule, MatchTrace } from './predicates/types.js';
 
 /**
  * The automod subscriber (ADR 0035, Task 9; rewired onto the predicate
@@ -167,41 +165,6 @@ export interface AutomodSubscriberDeps {
 }
 
 /**
- * One compiled predicate per `(guildId, ruleId)`, held beside a fingerprint of
- * the rule it was compiled from (ADR 0040 §5).
- *
- * Lives in `createAutomodSubscriber`'s closure, not at module level: the
- * daemon builds one subscriber per guild, so a per-instance cache is bounded
- * by that guild's rules and cannot leak across guilds even in principle. The
- * key still carries the guild id (CLAUDE.md rule 2 names cache keys
- * explicitly) as defence in depth — `daemon.ts` seeds every guild's default
- * rule under the same id (`'default-word-filter'`), and "the composition root
- * happens to make a bare key safe today" is caller discipline, which rule 2
- * exists to replace.
- *
- * **This replaces the cache that had no invalidation.** Before ADR 0040, a
- * rule whose word list changed kept matching the stale list until the daemon
- * restarted, and ADR 0039 widened that: the matcher's collapse-duplicate
- * thresholds are now derived from the word list, so a term edit changes
- * matching for terms it did not touch. Both are gone — the fingerprint covers
- * everything `compile` reads, so a mismatch recompiles on the next message.
- *
- * The fingerprint lives *beside* the entry rather than *in* the key
- * deliberately: in the key, the map would grow one entry per edit for the life
- * of the process. Here it stays bounded by the number of rules.
- *
- * Costs nothing new: `listRules()` already runs per message and already
- * hydrates the full word list from three tables. The cache never saved that
- * read — it saved the `obscenity` compilation — so fingerprinting data already
- * in hand adds a hash over a few hundred bytes.
- */
-interface CacheEntry {
-  readonly fingerprint: string;
-  /** `undefined` when the rule could not be compiled; the reason was logged. */
-  readonly compiled: CompiledPredicate | undefined;
-}
-
-/**
  * One `action_taken` value per `ModerationOutcome` variant, after a deletion
  * that really happened.
  *
@@ -222,7 +185,7 @@ const ESCALATION_ACTION_TAKEN: Record<ModerationOutcome['status'], AutomodAction
 };
 
 export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber => {
-  const predicateCache = new Map<string, CacheEntry>();
+  const predicateCache: PredicateCache = createPredicateCache();
   return {
     name: 'automod',
     async handle(event) {
@@ -235,15 +198,14 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
       // lap. Every bot and webhook is skipped, not only this bot's own id:
       // another bot's output is not a member's speech to moderate either.
       if (event.authorIsBot) return;
-      if (event.authorId === undefined || event.content === undefined) return;
+      const input = predicateInputFrom({ from: 'message', event });
+      if (input === undefined) return;
+      const authorId = input.authorId;
 
       // Before anything else that costs something: a guild with no enabled
       // keyword-filter rule has nothing to check and nothing to fetch.
       const rules = deps.listRules();
       if (rules.length === 0) return;
-
-      const authorId = event.authorId;
-      const normalized = stripZeroWidth(event.content);
 
       /**
        * The author's role ids, fetched at most once per message and only if a
@@ -278,72 +240,47 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
           continue;
         }
 
-        // Guild-scoped, per CLAUDE.md rule 2 — a bare `ruleId` is not a key.
-        // `daemon.ts` seeds every guild's default rule under the same id
-        // (`'default-word-filter'`), so with a bare key whichever guild spoke
-        // first decided what every other guild was matched against.
-        const cacheKey = `${event.guildId}:${rule.ruleId}`;
-        const fingerprint = ruleFingerprint(rule);
-        let entry = predicateCache.get(cacheKey);
-        if (entry === undefined || entry.fingerprint !== fingerprint) {
-          const result = compileRule(rule);
-          if (result.ok) {
-            entry = { fingerprint, compiled: result.compiled };
-          } else {
-            entry = { fingerprint, compiled: undefined };
-            // Logged here — inside the fingerprint check — so it is emitted once
-            // per broken configuration rather than once per message, and again
-            // if the operator edits the rule (ADR 0040 §4). `doctor` reports the
-            // same rules as a failing check, because a log line nobody is
-            // watching is how ADR 0039's silent non-matching survived to
-            // production.
+        // `evaluation`, not `outcome`: this block shares a scope with the
+        // moderation `outcome` further down, and the two are different kinds
+        // of answer — one is "did the rule match", the other is "did Discord
+        // apply the punishment". Naming them alike is how a later edit reaches
+        // for the wrong one.
+        const evaluation = evaluateRule(predicateCache, rule, input);
+        if (evaluation.kind === 'unusable') {
+          if (evaluation.firstSeen) {
+            // Emitted once per broken configuration rather than once per
+            // message, and again if the operator edits the rule — an edit
+            // changes the fingerprint, which is what `firstSeen` tracks
+            // (ADR 0040 §4). `doctor` reports the same rules as a failing
+            // check, because a log line nobody is watching is how ADR 0039's
+            // silent non-matching survived to production.
             deps.logger.error(
               safeLogFields({
                 component: 'automod',
                 guildId: event.guildId,
                 ruleId: rule.ruleId,
-                outcome: result.reason,
-                compileError: result.detail,
+                outcome: evaluation.reason,
+                compileError: evaluation.detail,
               }),
               'the rule could not be compiled; it will not match until it is fixed',
             );
           }
-          predicateCache.set(cacheKey, entry);
+          continue;
         }
-        if (entry.compiled === undefined) continue;
-
-        // Wrapped for the same reason the old `buildMatcher` call was: a
-        // predicate that throws mid-evaluation is logged and skipped, and every
-        // other rule still runs for this message.
-        let hit: PredicateMatch | undefined;
-        try {
-          hit = entry.compiled.evaluate({
-            guildId: event.guildId,
-            channelId: event.channelId,
-            messageId: event.messageId,
-            authorId,
-            eventKind: event.kind,
-            content: normalized,
-            rawContent: event.content,
-            mentionedUserIds: event.mentionedUserIds,
-            mentionedRoleIds: event.mentionedRoleIds,
-            mentionsEveryone: event.mentionsEveryone,
-            attachments: event.attachments,
-            atMs: event.receivedAtMs,
-          });
-        } catch (err) {
+        if (evaluation.kind === 'threw') {
           deps.logger.error(
             safeLogFields({
               component: 'automod',
               guildId: event.guildId,
               ruleId: rule.ruleId,
-              err,
+              err: evaluation.error,
             }),
             'the predicate threw; message left unmatched for this rule',
           );
           continue;
         }
-        if (hit === undefined) continue;
+        if (evaluation.kind === 'no-match') continue;
+        const hit = evaluation.match;
 
         const record = (
           caseId: string,

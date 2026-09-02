@@ -238,6 +238,16 @@ export {
   type ParseTraceResult,
 } from './automod/trace.js';
 export {
+  createPredicateCache,
+  evaluateRule,
+  predicateCacheKey,
+  predicateInputFrom,
+  type CacheEntry,
+  type EvaluateOutcome,
+  type PredicateCache,
+  type PredicateInputSource,
+} from './automod/evaluate.js';
+export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,
   runPurgeTick,

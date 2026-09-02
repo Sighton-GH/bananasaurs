@@ -129,6 +129,26 @@ export interface PredicateMatch {
   readonly trace: MatchTrace;
 }
 
+/**
+ * One corpus row, as `core` sees it.
+ *
+ * Re-declared here rather than imported from `@bananasaurs/storage`
+ * (ADR 0014), the same arrangement `AutomodRule` has. `packages/storage`'s
+ * `AutomodFixture` is the authority on the columns; this is the shape the
+ * dry-run evaluator needs, which is a subset — `note` is a reviewer's prose
+ * and no predicate reads it.
+ */
+export interface FixtureRecord {
+  readonly fixtureId: string;
+  /** Zero-width stripped, exactly as the predicate saw it when captured. */
+  readonly content: string;
+  readonly authorId: string | undefined;
+  readonly label: 'should_match' | 'should_not_match' | 'unlabelled';
+  readonly source: 'observed' | 'handwritten';
+  /** The replay clock. `PredicateInput.atMs` comes from here (ADR 0041 §6). */
+  readonly createdAt: number;
+}
+
 /** A rule compiled once, then evaluated against many messages. */
 export interface CompiledPredicate {
   /** Synchronous and side-effect free with respect to Discord. */
