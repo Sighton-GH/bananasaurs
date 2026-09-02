@@ -85,6 +85,53 @@ describe('captureObservedFixture', () => {
   });
 });
 
+/**
+ * The invariant `/forgetme` actually rests on.
+ *
+ * `deleteObservedFixturesForMember` filters on both `author_id` and
+ * `source = 'observed'`, and the second predicate is *provably unreachable*:
+ * the `automod_fixtures_observed_has_author` CHECK makes a non-null
+ * `author_id` imply `source = 'observed'`, so a handwritten row can never be
+ * selected by the author predicate in the first place. Removing the `source`
+ * filter therefore does not change the deletion's behaviour, and a test that
+ * seeds a handwritten row and watches it survive cannot fail — it is
+ * decorative, correct about an input where the bug cannot occur.
+ *
+ * The falsifiable guard is this one: the CHECK is what keeps handwritten
+ * fixtures out of a member's deletion, so the CHECK is what gets tested.
+ * Written with raw SQL deliberately — `addHandwrittenFixture` always passes
+ * `author_id = null`, so going through the repository could only ever
+ * demonstrate that the repository is consistent with itself.
+ */
+describe('the automod_fixtures CHECK that makes /forgetme safe', () => {
+  it('refuses a handwritten fixture that carries an author id', () => {
+    expect(() =>
+      t.raw
+        .prepare(
+          `INSERT INTO automod_fixtures
+             (guild_id, fixture_id, content, author_id, label, source, note, created_at)
+           VALUES (?, 'smuggled', 'x', ?, 'unlabelled', 'handwritten', NULL, 0)`,
+        )
+        .run(GUILD, '800000000000000001'),
+    ).toThrow();
+  });
+
+  it('refuses an observed fixture with no author id', () => {
+    // The other half of the same CHECK. Without it, a captured message could
+    // exist that `/forgetme` has no way to find — the corpus would hold
+    // member content nobody could ask to have removed.
+    expect(() =>
+      t.raw
+        .prepare(
+          `INSERT INTO automod_fixtures
+             (guild_id, fixture_id, content, author_id, label, source, note, created_at)
+           VALUES (?, 'orphan', 'x', NULL, 'unlabelled', 'observed', NULL, 0)`,
+        )
+        .run(GUILD),
+    ).toThrow();
+  });
+});
+
 describe('deleteObservedFixturesForMember', () => {
   it('removes that member’s observed rows, and leaves handwritten ones and other members alone', () => {
     captureObservedFixture(scope, {

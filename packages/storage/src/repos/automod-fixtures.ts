@@ -197,9 +197,23 @@ export const setFixtureLabel = (
  * `source = 'observed'` is in the WHERE clause, not left implied by
  * `author_id`: handwritten fixtures are the project's own adversarial cases,
  * not member data, and must survive a member's deletion request (obligation
- * 3). The schema CHECK already makes their `author_id` null, so this
- * predicate is belt and braces — deliberately, because the cost of getting it
- * wrong is silently destroying the regression suite.
+ * 3).
+ *
+ * **That predicate is currently unreachable, and is kept anyway.** The
+ * `automod_fixtures_observed_has_author` CHECK makes a non-null `author_id`
+ * imply `source = 'observed'`, so no handwritten row can be selected by the
+ * author predicate to begin with — removing this filter would not change what
+ * gets deleted, and no test over this function can prove otherwise. It stays
+ * as defence against the CHECK being relaxed later, when the implication
+ * would quietly stop holding and this deletion would start eating the
+ * regression suite.
+ *
+ * The invariant that actually protects handwritten fixtures is therefore the
+ * CHECK, and the CHECK is what is tested — see "the automod_fixtures CHECK
+ * that makes /forgetme safe" in `automod-fixtures.test.ts`, which inserts the
+ * forbidden pairings with raw SQL and watches them throw. A test that seeded a
+ * handwritten row here and watched it survive would pass with this filter
+ * deleted, which is the definition of a decorative guard.
  */
 export const deleteObservedFixturesForMember = (scope: GuildScope, memberId: string): number =>
   write(scope, ({ db }) => {
