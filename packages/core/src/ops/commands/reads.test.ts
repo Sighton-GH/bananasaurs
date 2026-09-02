@@ -418,6 +418,7 @@ describe('bananasaurs doctor', () => {
     listPanels: () => [],
     listUnassignableRoles: () => [],
     listKeywordFilterRulesMissingManageMessages: () => [],
+    listUnusableAutomodRules: () => [],
   };
 
   it('reports ok when the gateway half is ok and nothing is stale', async () => {
@@ -501,6 +502,36 @@ describe('bananasaurs doctor', () => {
     if (!res.ok) return;
     expect(res.text).toContain('automod');
     expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('reports a rule whose config cannot be compiled, and fails the check', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listUnusableAutomodRules: () => [
+        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('shouting');
+    expect(res.text).toContain('no-predicate');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({
+      ok: false,
+      unusableAutomodRules: [
+        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+      ],
+    });
+  });
+
+  it('says so plainly when every rule compiles', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listUnusableAutomodRules: () => [],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('every enabled automod rule compiles');
   });
 
   it('survives a doctor report that could not be built', async () => {

@@ -1,5 +1,6 @@
 import { PermissionsBitField, type Client } from 'discord.js';
 import {
+  compileRule,
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,

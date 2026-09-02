@@ -143,6 +143,22 @@ export interface OpsKeywordFilterChannelMissingManageMessages {
   readonly channelId: string;
 }
 
+/**
+ * An enabled rule the subscriber cannot compile, and therefore one that
+ * silently never matches (ADR 0040 §4).
+ *
+ * Distinct from `listKeywordFilterRulesMissingManageMessages`, which is about
+ * a rule that matches correctly and then cannot act. This is a rule that never
+ * gets as far as matching.
+ */
+export interface OpsUnusableAutomodRule {
+  readonly ruleId: string;
+  readonly kind: string;
+  /** `CompileFailure` widened to a string, so `ops` need not import the registry's union. */
+  readonly reason: string;
+  readonly detail: string;
+}
+
 export interface OpsLogRoute {
   readonly eventKind: string;
   readonly channelId: string;
@@ -199,6 +215,8 @@ export interface OpsPorts {
    * rule applies and a live check found the bot without `Manage Messages`.
    */
   listKeywordFilterRulesMissingManageMessages(): readonly OpsKeywordFilterChannelMissingManageMessages[];
+  /** Every enabled rule `compileRule` cannot compile, and why. */
+  listUnusableAutomodRules(): readonly OpsUnusableAutomodRule[];
   listRoutes(): readonly OpsLogRoute[];
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */

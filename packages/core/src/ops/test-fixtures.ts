@@ -36,6 +36,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   listKeywordFilterRulesMissingManageMessages: unstubbed(
     'listKeywordFilterRulesMissingManageMessages',
   ),
+  listUnusableAutomodRules: unstubbed('listUnusableAutomodRules'),
   listRoutes: unstubbed('listRoutes'),
   listExcludedChannels: unstubbed('listExcludedChannels'),
   findJob: unstubbed('findJob'),

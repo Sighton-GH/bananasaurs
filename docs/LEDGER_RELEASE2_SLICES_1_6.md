@@ -273,6 +273,44 @@ not fail in it. It is kept and joined by the repeated-term case. This is the
 third decorative-guard finding on this project; the pattern is a test whose
 fixture is too simple to exercise the branch it names.
 
+**R-10 — the compile-failure log's `detail` field is silently dropped by the
+Pino allowlist. Fix it with a *narrowly named* field, not by allowlisting
+`detail`.**
+
+*What is wrong.* `subscriber.ts` logs `detail: result.detail` when a rule
+cannot be compiled. `detail` is absent from `LOGGABLE_FIELDS`
+(`packages/core/src/obs/logger.ts`), so `safeLogFields` drops it and the log
+records only `droppedFields: 1`. The `reason` code survives (`outcome` is
+allowlisted), so the operator learns *that* a rule failed to compile and never
+*why* — which is precisely the half ADR 0040 §4's "inert **and loud**" exists
+to deliver, and precisely the ADR 0039 failure mode it was written to prevent
+recurring.
+
+*Why not simply allowlist `detail`.* CLAUDE.md rule 4 says the redaction list
+is an allowlist, not a denylist, and every entry in `LOGGABLE_FIELDS` is a
+specific semantic concept — `ruleId`, `dedupeKey`, `breakerState`. `detail` is
+a generic bag; allowlisting it would let any future call site put arbitrary
+content into logs under a name that promises nothing. That is the shape of
+mistake the allowlist exists to prevent.
+
+*The fix.* A specifically named field — `compileError` — added to
+`LOGGABLE_FIELDS` with a comment stating what may flow into it: a Zod or
+`obscenity` error message derived from **operator-authored rule
+configuration** (a JSON config blob, a word-list term), never member message
+content. That property is worth stating because it is what makes the entry
+safe, and a future reader should not have to re-derive it.
+
+*Costs if wrong:* if a predicate is later added whose compile error could embed
+member content, this entry would leak it. The mitigation is the comment plus
+the narrow name — a predicate author adding such an error has to walk past a
+line saying what the field is for.
+
+*Also folded in:* the "logs again after config changes" test uses a `caps` rule,
+so it exercises `no-predicate` rather than the `invalid-config` JSON-parse path
+its fixture and name imply. The behaviour under test (fingerprint-driven
+recompile and re-log) is genuinely exercised, so this is a naming defect rather
+than a decorative guard — but it should say what it does.
+
 ## A pattern worth adding to `docs/22`
 
 **Four decorative guards in one slice.** `docs/22` already records one from
