@@ -285,12 +285,39 @@ describe('mod_rules.config', () => {
   });
 
   it('keeps a non-keyword_filter rule out of the word-list hydration path', () => {
-    // A `caps` rule has no categories or terms; hydration must return empty
-    // arrays rather than throwing or omitting the rule.
+    // A lone `caps` rule cannot exercise this: with no other rule in the
+    // database, `terms`/`allowlist` come back empty for *any* implementation
+    // of `hydrate`, including one that leaked another rule's word list — the
+    // failure this test is named for needs a second rule with a non-empty
+    // word list actually present to leak (docs/22: a fixture must contain
+    // the ambiguity its named failure mode needs). So a `keyword_filter` rule
+    // with a term and an allowlist phrase sits alongside the `caps` rule, and
+    // the assertion is that hydration keeps them apart in both directions.
     const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, {
+      ruleId: 'kw1',
+      kind: 'keyword_filter',
+      name: 'filter',
+      config: '{}',
+      now: 1,
+    });
+    addCategory(scope, {
+      categoryId: 'cat1',
+      ruleId: 'kw1',
+      name: 'profanity',
+      defaultAction: 'delete_and_case',
+    });
+    addTerm(scope, { termId: 'term1', categoryId: 'cat1', text: 'badword' });
+    addAllowlistPhrase(scope, { ruleId: 'kw1', phrase: 'assassin' });
+
     createRule(scope, { ruleId: 'c1', kind: 'caps', name: 'shouting', config: '{}', now: 1 });
-    const rule = listEnabledRules(scope)[0]!;
-    expect(rule.terms).toEqual([]);
-    expect(rule.allowlist).toEqual([]);
+
+    const rules = listEnabledRules(scope);
+    const capsRule = rules.find((r) => r.ruleId === 'c1')!;
+    const keywordRule = rules.find((r) => r.ruleId === 'kw1')!;
+    expect(capsRule.terms).toEqual([]);
+    expect(capsRule.allowlist).toEqual([]);
+    expect(keywordRule.terms).toEqual([{ text: 'badword', categoryId: 'cat1' }]);
+    expect(keywordRule.allowlist).toEqual(['assassin']);
   });
 });
