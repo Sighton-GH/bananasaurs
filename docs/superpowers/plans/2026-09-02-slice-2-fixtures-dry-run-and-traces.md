@@ -20,7 +20,7 @@ In force from `CLAUDE.md` and the ADRs this slice depends on. Every task's requi
 
 1. **Guild scope is a mandatory partition key** (CLAUDE.md rule 2). Every new query, index, cache key and repo signature takes `GuildScope` first. A function that *can* omit guild scope is a bug even if every current caller passes it.
 2. **Stored JSON is untrusted input** (CLAUDE.md rule 3). `mod_case_events.trace` gets a Zod validator on read, not a cast — the same treatment `mod_rules.config` gets in ADR 0040 and `jobs.payload` gets in ADR 0037.
-3. **`packages/core` must never import `@bananasaurs/storage`, and vice versa** (ADR 0014). Shapes are re-declared on each side. `packages/core/src/boundaries.test.ts` enforces this and will fail the build.
+3. **`packages/core` must never import `@bananasaurs/storage`** (ADR 0014). One direction, not both — corrected mid-slice after Task 2's reviewer caught this constraint stating it as mutual. The reverse is permitted and common: `packages/storage` imports `@bananasaurs/core` in `scope.ts`, `repos/authz.ts`, `repos/panels.ts` and others. What core needs from storage's row shapes it **re-declares** (`AutomodRule`, `FixtureRecord`), so core's types never depend on storage's. `packages/core/src/boundaries.test.ts` enforces the real rule and will fail the build. **Never justify a design decision by claiming storage cannot import core — that claim is false.**
 4. **No secrets, and no member content, in logs** (CLAUDE.md rule 4). Pino redaction is an allowlist: a field not in `LOGGABLE_FIELDS` (`packages/core/src/obs/logger.ts`) is silently dropped. Never add a field that can carry message text.
 5. **Every migration in this slice is additive: `CREATE TABLE` and `ALTER TABLE ... ADD COLUMN` only.** No table rebuild. A rebuild inside drizzle-orm's single-transaction migrator cascades child deletes — see `packages/storage/src/db.ts`'s `runMigrations` and the ledger's R-5. Task 1 verifies the generated SQL contains no `DROP TABLE`.
 6. **Every table is `STRICT` and carries `guild_id`.** `scripts/strictify.mjs` adds `STRICT` after generation; `packages/storage/src/schema-invariants.test.ts` reads the live schema and fails the build if a table lacks either.
@@ -1696,11 +1696,15 @@ In `packages/storage/src/repos/mod-cases.ts`, add to `RecordCaseEventInput`:
    * Why the rule matched, as JSON (ADR 0041 §4). Absent for a manual event
    * and for a native AutoMod event, neither of which came from a predicate.
    *
-   * Deliberately a `string`, not a parsed object: `packages/storage` may not
-   * import `packages/core` (ADR 0014), and the Zod schema that gives this
-   * text meaning lives in `packages/core/src/automod/trace.ts`. The composition
-   * root serialises on the way in and `core` validates on the way out — the
-   * same arrangement `mod_rules.config` has.
+   * Deliberately a `string`, not a parsed object — and **not** because
+   * storage cannot import core. It can, and does elsewhere (`scope.ts`,
+   * `repos/authz.ts`). The reason is that validation belongs at the one
+   * place that gives the text meaning: the Zod schema lives in
+   * `packages/core/src/automod/trace.ts` beside the `MatchTrace` it
+   * validates, and a repository that parsed it would be a second opinion
+   * about a shape it does not own. The composition root serialises on the
+   * way in and `core` validates on the way out — exactly the arrangement
+   * `mod_rules.config` already has (ADR 0040).
    */
   readonly trace?: string;
   /**
