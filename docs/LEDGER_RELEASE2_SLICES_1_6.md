@@ -552,7 +552,20 @@ Collected as they arise, so the final handoff is not reconstructed from memory.
    positives are reviewable from the trace and the matched snippet, not from
    the whole message. If that is too thin for the review you actually want to
    do, widening it is a privacy decision and therefore yours.
-6. **Rehearse a trace before flip day.** The spec's own pre-flip gate: run
+6. **`PRIVACY.md`'s new row promises `/forgetme`, which does not exist yet.**
+   Caught by Task 1's reviewer, and kept deliberately after adjudication.
+   The row reads "`/forgetme` removes yours", and the storage function it
+   names (`deleteObservedFixturesForMember`) ships tested in Slice 2 — but
+   the Discord command that would call it is Release 3's R3-10. The row is
+   consistent with the rest of that document, which already names
+   `/privacy`, `/mydata` and `/forgetme`, none of which are implemented:
+   `PRIVACY.md` is written as the policy that publishes *with* `/privacy`,
+   and `/privacy` and `/forgetme` land in the same Release 3 item. So the
+   row is true on the day anyone can read it.
+   **The thing to hold onto: do not publish this policy before `/forgetme`
+   ships, or reword the row at publication time.** That is the only way the
+   claim becomes false, and it would be by accident.
+7. **Rehearse a trace before flip day.** The spec's own pre-flip gate: run
    `bananasaurs automod dryrun <ruleId>` and `bananasaurs automod review`
    against each real rule and read the output. A trace nobody can read
    produces an observe window that yields nothing, and that is discovered

@@ -274,7 +274,22 @@ describe('migration 0012 adds the fixture corpus without disturbing existing cas
 
     // A database migrated to the *previous* state, seeded, then migrated the
     // rest of the way — the shape a real upgrade takes, and the only shape in
-    // which a table rebuild's cascade (R-5) would be visible.
+    // which a rebuild of `mod_case_events` could be caught losing its rows.
+    //
+    // Precise about what this does and does not prove. R-5's *cascade*
+    // mechanism — a rebuild of table X silently emptying X's `ON DELETE
+    // CASCADE` children — needs a populated child table, and
+    // `mod_case_events` has none: `mod_match_reviews` is created by this very
+    // migration, so nothing references `mod_case_events` before 0012 runs.
+    // The Slice 1 fixture in `schema-invariants.test.ts` (`mod_rules` ->
+    // `word_categories`/`word_terms`/`word_allowlist`/`mod_rule_exemptions`)
+    // is the test that reproduces the cascade itself, and it stays the
+    // authority on it.
+    //
+    // What this guards is the other half: that 0012 leaves the rows already
+    // in `mod_case_events` intact and readable, with the two new columns
+    // null. A drizzle-kit table rebuild that copied columns wrongly, or
+    // dropped and recreated without copying, fails here.
     runMigrations(raw, db, migrationsFolderUpTo(11));
 
     raw
@@ -306,7 +321,12 @@ describe('migration 0012 adds the fixture corpus without disturbing existing cas
       fixture_id: string | null;
     }[];
     expect(events).toEqual([{ event_id: 'e1', trace: null, fixture_id: null }]);
-    expect(raw.pragma('foreign_key_check')).toEqual([]);
+    // Deliberately no `foreign_key_check` assertion here: `runMigrations`
+    // already runs that pragma and throws on a violation before returning
+    // (`db.ts`), so an assertion at this point could never be the thing that
+    // caught one. `schema-invariants.test.ts` tests that detection separately,
+    // against a synthetic broken migration — which is the only way to make it
+    // fail on purpose, and therefore the only way it is worth testing.
 
     raw.close();
   });
