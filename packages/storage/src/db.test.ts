@@ -3,9 +3,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { applyPragmas, openDatabase } from './db.js';
+import { applyPragmas, openDatabase, runMigrations } from './db.js';
 import { DatabaseLockedError } from './lock.js';
 import * as schema from './schema.js';
 
@@ -124,7 +123,7 @@ describe('openDatabase', () => {
 
   it('checkpoints the WAL on close so the .db file alone is complete', () => {
     const opened = openDatabase({ dbPath });
-    migrate(opened.db, { migrationsFolder: './drizzle' });
+    runMigrations(opened.raw, opened.db, './drizzle');
     opened.db
       .insert(schema.guilds)
       .values({
@@ -152,7 +151,7 @@ describe('schema constraints', () => {
     const raw = new Database(':memory:');
     raw.pragma('foreign_keys = ON');
     const db = drizzle(raw, { schema });
-    migrate(db, { migrationsFolder: './drizzle' });
+    runMigrations(raw, db, './drizzle');
     return { db, raw };
   }
 

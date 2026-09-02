@@ -1,11 +1,11 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import * as schema from './schema.js';
+import { runMigrations } from './db.js';
 import { MIGRATIONS_FOLDER, openMigratedTestDatabase, type MigratedTestDatabase } from './test-support.js';
 
 /**
@@ -290,7 +290,7 @@ describe('mod_rules.config migration (0010/0011) carries child-table rows throug
 
     // Pre-Task-1 schema: `mod_rules` has no `config` column and its `kind`
     // CHECK admits only 'keyword_filter'.
-    migrate(db, { migrationsFolder: migrationsFolderUpTo(9) });
+    runMigrations(raw, db, migrationsFolderUpTo(9));
 
     raw
       .prepare(
@@ -327,8 +327,10 @@ describe('mod_rules.config migration (0010/0011) carries child-table rows throug
 
     // Applies every migration the real folder carries that is not yet
     // recorded as applied — 0010 (`ALTER TABLE … ADD config`) and 0011 (the
-    // `mod_rules_kind` rebuild), against the data just inserted.
-    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+    // `mod_rules_kind` rebuild), against the data just inserted. Goes
+    // through `runMigrations`, not `migrate()` directly — this is the exact
+    // call this guard exists to prove is now safe (ADR 0040 ledger R-5).
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
 
     const rule = raw
       .prepare(`SELECT kind, config, name FROM mod_rules WHERE guild_id = ? AND rule_id = ?`)
@@ -356,6 +358,77 @@ describe('mod_rules.config migration (0010/0011) carries child-table rows throug
       )
       .get(GUILD_ID, RULE_ID) as { exempt_type: string; exempt_id: string } | undefined;
     expect(exemption).toEqual({ exempt_type: 'role', exempt_id: ROLE_ID });
+
+    raw.close();
+  });
+});
+
+/**
+ * The other half of `runMigrations` (`db.ts`): disabling `foreign_keys` for
+ * the run is only safe because `PRAGMA foreign_key_check` runs immediately
+ * afterwards and fails loudly if the migration left anything referentially
+ * broken. This cannot be exercised against the real `drizzle/` migrations —
+ * none of them are broken — so this builds a throwaway, single-migration
+ * fixture folder whose own SQL inserts a child row with no matching parent.
+ * That insert only succeeds *because* `runMigrations` has enforcement off
+ * for the duration of the migration, which is exactly the scenario the
+ * check exists to catch on the way out.
+ */
+describe('runMigrations fails the run when a migration leaves a dangling reference', () => {
+  /** A one-migration fixture folder: `sql` is the migration's full body. */
+  const fakeMigrationsFolder = (sql: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dangling-fk-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const tag = '0000_dangling';
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({
+        version: '7',
+        dialect: 'sqlite',
+        entries: [{ idx: 0, version: '6', when: Date.now(), tag, breakpoints: true }],
+      }),
+    );
+    fs.writeFileSync(path.join(dir, `${tag}.sql`), sql);
+    return dir;
+  };
+
+  it('throws instead of returning a database with an orphaned row', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    const folder = fakeMigrationsFolder(
+      [
+        `CREATE TABLE parent (id INTEGER PRIMARY KEY) STRICT;`,
+        `CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, FOREIGN KEY (parent_id) REFERENCES parent(id)) STRICT;`,
+        // Only succeeds because runMigrations has foreign_keys off for the
+        // migration itself — with enforcement on, this INSERT would throw
+        // and this fixture would prove nothing.
+        `INSERT INTO child (id, parent_id) VALUES (1, 999);`,
+      ].join('\n--> statement-breakpoint\n'),
+    );
+
+    expect(() => runMigrations(raw, db, folder)).toThrow(/foreign key violation/i);
+
+    raw.close();
+  });
+
+  it('leaves foreign_keys restored to on after the failed run', () => {
+    // A thrown migration must not leave the connection permanently
+    // unprotected for whatever runs next against it.
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const folder = fakeMigrationsFolder(
+      [
+        `CREATE TABLE parent (id INTEGER PRIMARY KEY) STRICT;`,
+        `CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, FOREIGN KEY (parent_id) REFERENCES parent(id)) STRICT;`,
+        `INSERT INTO child (id, parent_id) VALUES (1, 999);`,
+      ].join('\n--> statement-breakpoint\n'),
+    );
+
+    expect(() => runMigrations(raw, db, folder)).toThrow();
+    expect(raw.pragma('foreign_keys', { simple: true })).toBe(1);
 
     raw.close();
   });

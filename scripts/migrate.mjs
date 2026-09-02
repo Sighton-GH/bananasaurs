@@ -4,8 +4,7 @@
 //
 //   npm run build && npm run db:migrate
 import process from 'node:process';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { openDatabase } from '../packages/storage/dist/db.js';
+import { openDatabase, runMigrations } from '../packages/storage/dist/db.js';
 
 const dbPath = process.env.BANANASAURS_DB_PATH ?? './data/bananasaurs.db';
 
@@ -14,7 +13,7 @@ const opened = openDatabase({
   onStaleReclaim: (reason) => console.warn(`reclaimed stale lock: ${reason}`),
 });
 try {
-  migrate(opened.db, { migrationsFolder: './drizzle' });
+  runMigrations(opened.raw, opened.db, './drizzle');
   console.log(`migrations applied to ${dbPath}`);
 } finally {
   opened.close();

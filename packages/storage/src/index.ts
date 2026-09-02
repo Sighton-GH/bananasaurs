@@ -2,6 +2,7 @@ export {
   openDatabase,
   openTestDatabase,
   applyPragmas,
+  runMigrations,
   type Db,
   type OpenedDatabase,
 } from './db.js';
