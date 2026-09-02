@@ -56,10 +56,15 @@ export interface CaptureObservedFixtureInput {
  * event to it.
  *
  * `onConflictDoNothing` is targeted at the primary key rather than left
- * unqualified: an unqualified `ON CONFLICT DO NOTHING` in SQLite (unlike
- * Postgres) also swallows CHECK violations, which would silently discard a
- * fixture whose `source`/`author_id` pairing is wrong instead of throwing —
- * the same reasoning `recordCaseEvent` records for its own conflict target.
+ * unqualified, so this suppresses only the collision it expects — a replayed
+ * capture of the same message — and a *new* unique constraint added to this
+ * table later surfaces as an error instead of being silently absorbed.
+ *
+ * It is **not** targeted to keep the `source`/`author_id` CHECK throwing:
+ * `ON CONFLICT DO NOTHING` never suppressed CHECK violations in the first
+ * place (only the `INSERT OR IGNORE` prefix does, which drizzle does not
+ * emit). An earlier version of this comment said otherwise, copied from
+ * `recordCaseEvent`, which has since been corrected.
  *
  * The first capture wins, so `created_at` is when the message was first seen
  * rather than when a gateway replay re-delivered it.

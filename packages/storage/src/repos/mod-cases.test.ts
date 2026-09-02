@@ -144,12 +144,23 @@ describe('mod cases repo', () => {
   });
 
   /**
-   * The other half of that same fix: the conflict clause names its target
-   * explicitly rather than using the unqualified form other repos use,
-   * because it must *not* swallow an unrelated CHECK constraint violation on
-   * the very same statement. An unqualified `ON CONFLICT DO NOTHING` in
-   * SQLite suppresses any constraint failure, CHECK included; a targeted one
-   * does not — this is the test that would have caught the regression.
+   * That the `action_taken` CHECK still fires through the repository path,
+   * conflict clause and all.
+   *
+   * **This comment used to claim more than the test proves**, and the
+   * correction is worth keeping visible. It said a *targeted* conflict clause
+   * was what kept the CHECK throwing, because an unqualified
+   * `ON CONFLICT DO NOTHING` suppresses any constraint failure in SQLite.
+   * That is false — measured against this repo's own better-sqlite3, plain,
+   * unqualified and targeted inserts all three throw on a CHECK violation;
+   * only the `INSERT OR IGNORE` statement prefix swallows one, and drizzle
+   * does not emit it. So this test passes with either clause and could never
+   * have caught the regression it named.
+   *
+   * It is kept because what it does prove is still worth pinning: an invalid
+   * `action_taken` does not reach the database through this function. The
+   * reasoning behind the clause itself now lives, corrected, on
+   * `recordCaseEvent`.
    */
   it('still rejects an invalid action_taken even with the conflict clause present', () => {
     const scope = t.scopes.forGuild(GUILD);
@@ -682,12 +693,31 @@ describe('listUnreviewedMatches', () => {
   it('orders oldest first, breaking ties in insertion order', () => {
     const scope = t.scopes.forGuild(GUILD);
     // Same `at`: only insertion order (rowid) can break the tie.
-    seedMatchEvent(scope, { eventId: 'first', trace: '{}', at: 1_000 });
-    seedMatchEvent(scope, { eventId: 'second', trace: '{}', at: 1_000 });
+    //
+    // The ids are deliberately reverse-alphabetical to insertion order. With
+    // 'first'/'second' this test passed with the rowid tiebreaker deleted
+    // outright — the primary-key index happens to return them in id order,
+    // which for those two names is also insertion order, so the assertion was
+    // correct about an input where the bug cannot occur. 'zzz' inserted before
+    // 'aaa' separates the two orderings, so only a real tiebreaker satisfies
+    // it. Found by Task 5's reviewer.
+    seedMatchEvent(scope, { eventId: 'zzz', trace: '{}', at: 1_000 });
+    seedMatchEvent(scope, { eventId: 'aaa', trace: '{}', at: 1_000 });
 
     expect(listUnreviewedMatches(scope, { limit: 50 }).map((m) => m.eventId)).toEqual([
-      'first',
-      'second',
+      'zzz',
+      'aaa',
     ]);
+  });
+
+  it('returns no more than the limit asks for', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    seedMatchEvent(scope, { eventId: 'e1', trace: '{}', at: 1_000 });
+    seedMatchEvent(scope, { eventId: 'e2', trace: '{}', at: 2_000 });
+    seedMatchEvent(scope, { eventId: 'e3', trace: '{}', at: 3_000 });
+
+    // The CLI pages through the review queue, so a limit that is accepted and
+    // ignored would hand an operator the whole window's matches at once.
+    expect(listUnreviewedMatches(scope, { limit: 2 }).map((m) => m.eventId)).toEqual(['e1', 'e2']);
   });
 });

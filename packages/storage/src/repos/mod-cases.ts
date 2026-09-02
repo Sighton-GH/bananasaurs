@@ -228,13 +228,23 @@ export interface RecordCaseEventInput {
  * for — it mints a *deterministic* id (`<intentId>:<jobId>:<actionTaken>`)
  * so a crash-and-retry of the same job row writes the identical event twice
  * rather than two distinct ones, and this collapses the second write into a
- * no-op instead of a duplicate row or a thrown constraint error. A targeted
- * conflict clause matters here specifically because `action_taken` also
- * carries a CHECK constraint (`schema.ts`) that must keep throwing on a
- * genuinely invalid value — an unqualified `ON CONFLICT DO NOTHING` in
- * SQLite (unlike Postgres) suppresses *any* constraint violation on the
- * statement, CHECK included, which would have silently swallowed that
- * failure too.
+ * no-op instead of a duplicate row or a thrown constraint error.
+ *
+ * **A correction, kept rather than quietly deleted.** This comment used to
+ * claim a targeted clause was *necessary* because an unqualified
+ * `ON CONFLICT DO NOTHING` in SQLite suppresses any constraint violation,
+ * CHECK included. That is false, and it survived here long enough to be
+ * copied into two new repositories in Slice 2 before a reviewer challenged
+ * it. Measured against this repo's own better-sqlite3: a plain insert, an
+ * unqualified `ON CONFLICT DO NOTHING`, and a targeted
+ * `ON CONFLICT(...) DO NOTHING` all three throw on a CHECK violation. Only
+ * the statement *prefix* `INSERT OR IGNORE` swallows it — a different piece
+ * of syntax, which drizzle's `onConflictDoNothing` does not emit.
+ *
+ * The targeting stays, because it is still the better clause: it says which
+ * collision is expected, so a *new* unique constraint added later surfaces
+ * as an error here instead of being silently absorbed. That is a real
+ * reason, unlike the one it replaces.
  */
 export const recordCaseEvent = (scope: GuildScope, input: RecordCaseEventInput): void =>
   write(scope, ({ db }) => {

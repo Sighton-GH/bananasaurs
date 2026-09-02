@@ -76,9 +76,11 @@ export const recordVerdict = (
       })
       // A reviewer who changes their mind updates the verdict rather than
       // appending a second one (plan ruling PR-4). Targeted at the primary
-      // key, not unqualified: an unqualified conflict clause in SQLite also
-      // swallows CHECK violations, which would silently discard an invalid
-      // verdict instead of throwing.
+      // key so it names the collision it expects — an unrelated unique
+      // constraint added later then errors here rather than being silently
+      // absorbed. (Not, as an earlier version of this comment claimed, to
+      // keep the verdict CHECK throwing: `ON CONFLICT DO NOTHING` never
+      // suppressed CHECK violations. See `recordCaseEvent`'s correction.)
       .onConflictDoUpdate({
         target: [modMatchReviews.guildId, modMatchReviews.eventId],
         set: {
