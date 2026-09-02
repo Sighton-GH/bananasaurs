@@ -235,6 +235,44 @@ match* — otherwise this regresses silently, which is exactly how it arrived.
 a way that looks like it works. The test named above is what makes forgetting
 impossible.
 
+**R-8 SUPERSEDED by R-9 — fixed in Slice 1 after all, together with a live bug
+the task review found.** The deferral above was overtaken within the hour; kept
+here rather than deleted so the reasoning that changed is visible.
+
+**R-9 — the keyword filter's trace span pointed at the wrong occurrence of a
+repeated term. Fixed in Slice 1, together with R-8, because they are one
+edit.**
+
+*What was wrong.* `keyword-filter.ts` computed the span with
+`input.content.indexOf(hit.snippet)` — the *first* occurrence of that text,
+not the occurrence that actually matched. The task reviewer reproduced it: a
+message whose first `badword` is allowlisted and whose second is a real
+violation produced a span covering the allowlisted, non-violating text.
+
+*Whose fault, plainly.* Mine. The plan I wrote carried the comment "`indexOf`
+on the already-normalised content is exact here: `snippet` was produced by
+slicing that same string", which is true only when the term occurs once, and it
+justified a bad trade — not widening `AutomodMatcher`'s return "because it
+would churn `matcher.test.ts`". `obscenity`'s `RegExpMatcher` already returns
+`termId`, `startIndex` and `endIndex` against the original string; the code was
+throwing them away and then guessing.
+
+*Why R-8 folds into it.* Both defects are repaired by the same widening —
+`match()` returns the configured term text and the real indices. Doing that
+once in Slice 1 is cheaper than doing half of it now and half in Slice 2, and
+it means no wrong span is ever persisted.
+
+*Costs if wrong:* `matcher.test.ts` churns, which is the cost the plan was
+wrongly avoiding. Two new tests pin the behaviour — a repeated-term span with
+the first occurrence allowlisted, and `matchedOn !== snippet` on a fuzzy
+match — and both must be watched failing first.
+
+*Also noted from the same review:* the original span test was **decorative**
+for this bug — its content contained the term only once, so `indexOf` could
+not fail in it. It is kept and joined by the repeated-term case. This is the
+third decorative-guard finding on this project; the pattern is a test whose
+fixture is too simple to exercise the branch it names.
+
 ## Environment findings
 
 **E-1 — a git worktree here has no workspace symlinks, so cross-package
