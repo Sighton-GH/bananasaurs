@@ -204,6 +204,30 @@ export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
 export { createNativeAutomodSubscriber } from './automod/native-subscriber.js';
 export type { NativeAutomodSubscriberDeps } from './automod/native-subscriber.js';
 export {
+  isRuleKind,
+  RULE_KINDS,
+  type AnyPredicate,
+  type AutomodRule,
+  type CompiledPredicate,
+  type ConfigSchema,
+  type MatchTrace,
+  type Predicate,
+  type PredicateInput,
+  type PredicateMatch,
+  type RuleKind,
+} from './automod/predicates/types.js';
+export {
+  keywordFilterConfig,
+  keywordFilterPredicate,
+  type KeywordFilterConfig,
+} from './automod/predicates/keyword-filter.js';
+export {
+  compileRule,
+  predicateFor,
+  type CompileFailure,
+  type CompileResult,
+} from './automod/predicates/registry.js';
+export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,
   runPurgeTick,
