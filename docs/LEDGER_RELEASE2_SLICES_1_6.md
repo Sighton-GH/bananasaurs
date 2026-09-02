@@ -399,6 +399,13 @@ checkout's `dist`. Carried to handoff as a suggested `docs/` note.
 Raised by review, judged not worth a fix round, carried to the whole-branch
 review for triage.
 
+- **Slice 1 Tasks 6-7** — `packages/core/src/ops/commands/reads.ts:78`:
+  `doctor`'s rendered line for an unusable rule does not escape delimiters in
+  `ruleId` / `kind` / `reason` / `detail`. A rule id containing the separator
+  garbles the human-readable CLI output. Deliberately left: this is display
+  text, never a cache key, a fingerprint or an equality check, so it cannot
+  cause a wrong decision — unlike the fingerprint separator case in Task 4,
+  which is why that one got a test and this one gets a line here.
 - **Slice 1 Task 1** — `packages/storage/src/repos/automod-rules.ts`,
   `hydrate`: `row.kind as RuleKind` is an unchecked cast. Safe only because the
   `mod_rules_kind` CHECK constrains the value, and it mirrors the pre-existing
