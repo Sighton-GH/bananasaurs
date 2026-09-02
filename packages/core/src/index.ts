@@ -247,6 +247,11 @@ export {
   type PredicateCache,
   type PredicateInputSource,
 } from './automod/evaluate.js';
+// The corpus row shape `runDryRun` and the ops fixture port take. Exported
+// beside them because the composition root hands storage's rows across this
+// boundary, and a consumer outside `packages/core` cannot use a relative
+// import to name the type it is passing.
+export type { FixtureRecord } from './automod/predicates/types.js';
 export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,

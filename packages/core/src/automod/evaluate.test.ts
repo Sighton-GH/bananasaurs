@@ -135,7 +135,6 @@ describe('evaluateRule', () => {
           throw new Error('predicate exploded');
         },
       },
-      failure: undefined,
     });
 
     const outcome = evaluateRule(cache, rule, inputWith('hello badword'));
@@ -185,6 +184,50 @@ describe('predicateInputFrom', () => {
     expect(input?.mentionedRoleIds).toEqual(['500000000000000001']);
     expect(input?.mentionsEveryone).toBe(true);
     expect(input?.attachments).toEqual([]);
+  });
+
+  it.each([
+    ['an email whose domain starts "here"', 'write to user@heretical.com for help'],
+    ['a longer word beginning "@here"', 'the @hereditary principle'],
+    ['an email at a domain starting "everyone"', 'ping ops@everyonesbusiness.example'],
+  ])('does not read %s as an @everyone mention', (_label, content) => {
+    // `content.includes('@here')` said true for every one of these. On the
+    // replay path that is not cosmetic: Slice 4's `mention_spam` dry run would
+    // report matches on ordinary messages, and the output would be read as
+    // evidence the rule over-fires when the rule is fine.
+    const input = predicateInputFrom({
+      from: 'fixture',
+      guildId: '100000000000000001',
+      fixture: {
+        fixtureId: 'handwritten-1',
+        content,
+        authorId: undefined,
+        label: 'should_not_match',
+        source: 'handwritten',
+        createdAt: 1,
+      },
+    });
+    expect(input?.mentionsEveryone).toBe(false);
+  });
+
+  it.each([
+    ['at the start of a message', '@everyone stand up'],
+    ['after whitespace', 'hey @here look at this'],
+    ['after punctuation', 'right, @everyone: meeting moved'],
+  ])('still reads a real mention %s', (_label, content) => {
+    const input = predicateInputFrom({
+      from: 'fixture',
+      guildId: '100000000000000001',
+      fixture: {
+        fixtureId: 'handwritten-2',
+        content,
+        authorId: undefined,
+        label: 'should_match',
+        source: 'handwritten',
+        createdAt: 1,
+      },
+    });
+    expect(input?.mentionsEveryone).toBe(true);
   });
 
   it('takes the replay clock from the fixture, never from the wall clock', () => {

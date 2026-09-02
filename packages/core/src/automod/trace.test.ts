@@ -21,8 +21,14 @@ describe('serialiseTrace / parseMatchTrace', () => {
     const result = parseMatchTrace(serialiseTrace(spanless));
     expect(result.ok).toBe(true);
     // `JSON.stringify` drops an `undefined` property entirely, so the parser
-    // has to put it back rather than leaving the key missing — otherwise a
+    // has to put the key back rather than leaving it missing — otherwise a
     // `MatchTrace` fails `exactOptionalPropertyTypes` on the way out.
+    //
+    // `toBeUndefined()` alone does not prove that: it reads the same on an
+    // absent key as on one explicitly set to `undefined`, which are exactly
+    // the two states this test exists to tell apart. So the key's *presence*
+    // is asserted first, and the value second.
+    expect(result.ok && 'span' in result.trace).toBe(true);
     expect(result.ok && result.trace.span).toBeUndefined();
   });
 
@@ -90,5 +96,36 @@ describe('renderTrace', () => {
   it('renders a spanless trace without a message excerpt', () => {
     const text = renderTrace({ ...TRACE, span: undefined }, 'hello badword everyone');
     expect(text).not.toContain('[badword]');
+  });
+
+  it('marks a match at the very start and end of the message', () => {
+    // The excerpt window's arithmetic (`start - WINDOW`, `end + WINDOW`) is
+    // where an off-by-one would live, and every other test sits comfortably
+    // inside the message. A truncated highlight is not a cosmetic bug here:
+    // the excerpt is the evidence a reviewer judges a false positive from,
+    // and one that clips the match shows them the wrong text.
+    const atStart = renderTrace({ ...TRACE, matchedOn: 'bad', span: [0, 3] }, 'bad start');
+    expect(atStart).toContain('[bad] start');
+
+    const atEnd = renderTrace({ ...TRACE, matchedOn: 'end', span: [7, 10] }, 'at the end');
+    expect(atEnd).toContain('at the [end]');
+  });
+
+  it('does not add ellipses when the whole message already fits', () => {
+    const text = renderTrace(TRACE, 'hello badword everyone');
+    expect(text).toContain('excerpt         hello [badword] everyone');
+    expect(text).not.toContain('...');
+  });
+
+  it('elides with ellipses only on the side that is actually cut', () => {
+    // 80 characters before the match, nothing after it: the lead is elided,
+    // the tail is not. A renderer that printed both would tell a reviewer
+    // there is more message to see when there is not.
+    const lead = 'x'.repeat(80);
+    const content = `${lead}badword`;
+    const text = renderTrace({ ...TRACE, span: [80, 87] }, content);
+    expect(text).toContain('...');
+    expect(text).toContain('[badword]');
+    expect(text.endsWith('...')).toBe(false);
   });
 });

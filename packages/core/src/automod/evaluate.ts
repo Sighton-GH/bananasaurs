@@ -27,12 +27,21 @@ import type {
  * module a logger is what would make it un-callable from a dry run.
  */
 
-export interface CacheEntry {
-  readonly fingerprint: string;
-  /** `undefined` when the rule could not be compiled; `failure` says why. */
-  readonly compiled: CompiledPredicate | undefined;
-  readonly failure: { readonly reason: CompileFailure; readonly detail: string } | undefined;
-}
+/**
+ * A cached compile: either an artifact, or the reason there isn't one.
+ *
+ * A union rather than one record with two nullable fields, so "compiled to
+ * nothing, and no reason why" cannot be constructed. The record shape needed
+ * a fallback for that state, and a fallback for a state that cannot occur
+ * reads like error handling while testing nothing — this codebase has shipped
+ * enough of those. The union deletes the state instead of guarding it.
+ */
+export type CacheEntry =
+  | { readonly fingerprint: string; readonly compiled: CompiledPredicate }
+  | {
+      readonly fingerprint: string;
+      readonly failure: { readonly reason: CompileFailure; readonly detail: string };
+    };
 
 /**
  * Compiled artifacts, keyed by `<guildId>:<ruleId>` and invalidated by a
@@ -95,21 +104,18 @@ export const evaluateRule = (
     firstSeen = true;
     const result = compileRule(rule);
     entry = result.ok
-      ? { fingerprint, compiled: result.compiled, failure: undefined }
-      : {
-          fingerprint,
-          compiled: undefined,
-          failure: { reason: result.reason, detail: result.detail },
-        };
+      ? { fingerprint, compiled: result.compiled }
+      : { fingerprint, failure: { reason: result.reason, detail: result.detail } };
     cache.set(key, entry);
   }
 
-  if (entry.compiled === undefined) {
-    const failure = entry.failure ?? {
-      reason: 'compile-failed' as const,
-      detail: 'the rule has no compiled artifact and no recorded reason',
+  if ('failure' in entry) {
+    return {
+      kind: 'unusable',
+      reason: entry.failure.reason,
+      detail: entry.failure.detail,
+      firstSeen,
     };
-    return { kind: 'unusable', reason: failure.reason, detail: failure.detail, firstSeen };
   }
 
   try {
@@ -131,6 +137,27 @@ export const evaluateRule = (
  */
 const USER_MENTION = /<@!?(\d{17,20})>/g;
 const ROLE_MENTION = /<@&(\d{17,20})>/g;
+
+/**
+ * `@everyone` / `@here`, as a *mention* rather than as a substring.
+ *
+ * A bare `content.includes('@here')` says true for `user@heretical.com`, and
+ * for any email address whose domain starts `here`. That matters more than it
+ * looks: this is the fixture-replay path, so a false positive here would make
+ * Slice 4's `mention_spam` dry run report matches on ordinary messages and
+ * would be read as evidence the rule is over-firing when the rule is fine.
+ *
+ * Two conditions, and both are needed. The lookbehind rejects an `@` glued to
+ * a preceding word character, which is what an email address looks like. The
+ * trailing `\b` rejects `@heretical`, where `@here` is a prefix of a longer
+ * word. Neither alone is sufficient.
+ *
+ * The live path never reaches this: a real message carries Discord's own
+ * `mentions_everyone` flag on the gateway event, and that flag is the
+ * authority. This exists only because a text-only fixture has to reconstruct
+ * the fact, which is the cost plan ruling PR-3 accepted.
+ */
+const EVERYONE_MENTION = /(?<!\w)@(?:everyone|here)\b/;
 
 const matchIds = (content: string, pattern: RegExp): string[] =>
   [...content.matchAll(pattern)].map((m) => m[1]).filter((id): id is string => id !== undefined);
@@ -218,7 +245,7 @@ export const predicateInputFrom = (source: PredicateInputSource): PredicateInput
     rawContent: fixture.content,
     mentionedUserIds: matchIds(fixture.content, USER_MENTION),
     mentionedRoleIds: matchIds(fixture.content, ROLE_MENTION),
-    mentionsEveryone: fixture.content.includes('@everyone') || fixture.content.includes('@here'),
+    mentionsEveryone: EVERYONE_MENTION.test(fixture.content),
     attachments: [],
     atMs: fixture.createdAt,
   };
