@@ -78,4 +78,38 @@ describe('keywordFilterPredicate', () => {
     const [start, end] = match!.trace.span!;
     expect(content.slice(start, end)).toBe(match!.snippet);
   });
+
+  /**
+   * Fix round 1, Finding 1. The old implementation recovered the span with
+   * `input.content.indexOf(hit.snippet)`, which finds the *first* occurrence
+   * of the matched text — not necessarily the occurrence obscenity actually
+   * matched. This test's content contains "badword" twice: the first inside
+   * an allowlisted phrase (suppressed, must not match), the second bare (must
+   * match). The previous span test above is not enough to catch this, because
+   * its content contains the term only once — `indexOf` cannot fail there.
+   */
+  it('points the span at the occurrence that actually matched, not the first occurrence of that text', () => {
+    const compiled = compile(rule({ allowlist: ['that badword'] }));
+    const content = 'that badword is fine but this badword is not';
+    const match = compiled.evaluate(message(content));
+    expect(match).toBeDefined();
+    const [start, end] = match!.trace.span!;
+    // The allowlisted occurrence starts at index 5; a naive `indexOf` would
+    // land there. The real match is the second, unallowlisted occurrence.
+    expect(start).not.toBe(5);
+    expect(content.slice(start, end)).toBe('badword');
+    expect(content.slice(0, start)).toBe('that badword is fine but this ');
+  });
+
+  /**
+   * Fix round 1, Finding 2. `matchedOn` must name the *configured* term, not
+   * whatever spelling matched — Slice 9's one-click suppression allowlists
+   * `matchedOn`, and allowlisting a fuzzy spelling like `b4dw0rd` would leave
+   * the term `badword` matching every other spelling untouched.
+   */
+  it('names the configured term in matchedOn, not the fuzzy spelling that matched', () => {
+    const match = compile().evaluate(message('this is b4dw0rd here'));
+    expect(match?.snippet).toBe('b4dw0rd');
+    expect(match?.trace.matchedOn).toBe('badword');
+  });
 });

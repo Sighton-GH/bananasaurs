@@ -15,12 +15,25 @@ describe('buildMatcher', () => {
   it('matches a configured term and reports its category', () => {
     const matcher = buildMatcher([{ text: 'badword', categoryId: 'cat-1' }], []);
     const result = matcher.match('this message has badword in it');
-    expect(result).toEqual({ categoryId: 'cat-1', snippet: 'badword' });
+    expect(result).toEqual({
+      categoryId: 'cat-1',
+      termText: 'badword',
+      snippet: 'badword',
+      startIndex: 17,
+      endIndex: 23,
+    });
   });
 
   it('matches leetspeak-substituted evasion via obscenity transformers', () => {
     const matcher = buildMatcher([{ text: 'badword', categoryId: 'cat-1' }], []);
     expect(matcher.match('b4dw0rd')).toBeDefined();
+  });
+
+  it('reports the configured term text, not the evasive spelling that matched', () => {
+    const matcher = buildMatcher([{ text: 'badword', categoryId: 'cat-1' }], []);
+    const result = matcher.match('b4dw0rd');
+    expect(result?.termText).toBe('badword');
+    expect(result?.snippet).toBe('b4dw0rd');
   });
 
   it('does not match after zero-width characters are stripped, then matches', () => {
@@ -96,13 +109,19 @@ describe('buildMatcher — doubled-letter terms outside obscenity’s six except
     );
     expect(matcher.match('this has badword in it')).toEqual({
       categoryId: 'cat-bad',
+      termText: 'badword',
       snippet: 'badword',
+      startIndex: 9,
+      endIndex: 15,
     });
     expect(matcher.match('this has baaaadword in it')).toBeDefined();
     expect(matcher.match('please do not spamer me')).toBeUndefined();
     expect(matcher.match('you are a spammer')).toEqual({
       categoryId: 'cat-spam',
+      termText: 'spammer',
       snippet: 'spammer',
+      startIndex: 10,
+      endIndex: 16,
     });
   });
 

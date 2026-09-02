@@ -17,10 +17,15 @@ export const keywordFilterConfig = z.object({}).strict();
 export type KeywordFilterConfig = z.infer<typeof keywordFilterConfig>;
 
 /**
- * The first `Predicate` (ADR 0040). Behaviour is unchanged from the subscriber's
- * inline matching — `buildMatcher` moved behind `compile`, `match` behind
- * `evaluate` — and `matcher.test.ts` plus `subscriber.test.ts` staying green,
- * unmodified, is the proof.
+ * The first `Predicate` (ADR 0040). Matching behaviour is unchanged from the
+ * subscriber's inline matching — `buildMatcher` moved behind `compile`,
+ * `match` behind `evaluate` — and `subscriber.test.ts` staying green,
+ * unmodified, is the proof. `AutomodMatcher.match()`'s *return shape* did
+ * widen (fix round 1): it now reports the configured term text and the raw
+ * match span alongside the category, so this predicate's trace can name the
+ * term Slice 9 suppression needs rather than the possibly-evasive snippet
+ * that matched, and can point at the actual matched occurrence rather than
+ * the first occurrence of that snippet's text anywhere in the message.
  */
 export const keywordFilterPredicate: Predicate<KeywordFilterConfig> = {
   kind: 'keyword_filter',
@@ -36,21 +41,21 @@ export const keywordFilterPredicate: Predicate<KeywordFilterConfig> = {
         const hit = matcher.match(input.content);
         if (hit === undefined) return undefined;
 
-        // Recovered rather than returned by `match()`, because `AutomodMatcher`
-        // is also used directly by `matcher.test.ts` and widening its return
-        // type would churn that. `indexOf` on the already-normalised content
-        // is exact here: `snippet` was produced by slicing that same string.
-        const start = input.content.indexOf(hit.snippet);
-        const span: readonly [number, number] | undefined =
-          start === -1 ? undefined : [start, start + hit.snippet.length];
-
         return {
           categoryId: hit.categoryId,
           snippet: hit.snippet,
           trace: {
             kind: 'keyword_filter',
-            matchedOn: hit.snippet,
-            span,
+            // The *configured* term, not the matched (possibly evasive)
+            // spelling: Slice 9's one-click suppression allowlists this
+            // value, and allowlisting `b@dw0rd` while `badword` still
+            // matched everything else would be a suppression that looked
+            // like it worked and had not.
+            matchedOn: hit.termText,
+            // `AutomodMatchResult.endIndex` is inclusive (obscenity's own
+            // convention); `+ 1` makes this the half-open `[start, end)`
+            // `MatchTrace.span` promises.
+            span: [hit.startIndex, hit.endIndex + 1],
             normalisations: [
               'zero-width stripped',
               'confusables resolved',
