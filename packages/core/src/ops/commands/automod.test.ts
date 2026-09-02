@@ -1,10 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import { createDispatcher, type RegisteredCommand } from '../dispatch.js';
 import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
-import type { OpsPorts } from '../ports.js';
+import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
 import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
-import { automodDryRunCommand } from './automod.js';
+import { automodDryRunCommand, automodReviewCommand, automodVerdictCommand } from './automod.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -23,6 +23,53 @@ const drive = (
     }),
     instance: fakeOpsInstance(),
   }).dispatch({ v: 1, command: command.name, args });
+
+/**
+ * Like `drive`, but for a write command: carries `--confirm` and the
+ * claimed Unix user through to the dispatcher, the way `writes.test.ts`'s
+ * harness does — so a test also exercises the machinery's own guarantees
+ * (`--confirm` required, an audit record filled by the dispatcher) rather
+ * than calling `run` directly and bypassing them.
+ */
+const driveWrite = (
+  command: RegisteredCommand,
+  ports: Partial<OpsPorts>,
+  args: Record<string, unknown> = {},
+  options: { readonly confirm?: boolean; readonly unixUserClaimed?: string } = {},
+) =>
+  createDispatcher({
+    commands: [command],
+    guildIds: [FIXTURE_GUILD_ID],
+    contextFor: () => ({
+      guildId: FIXTURE_GUILD_ID,
+      now: () => NOW,
+      ports: fakeOpsPorts(ports),
+    }),
+    instance: fakeOpsInstance(),
+  }).dispatch({
+    v: 1,
+    command: command.name,
+    args,
+    confirm: options.confirm ?? true,
+    unixUserClaimed: options.unixUserClaimed ?? 'bryan',
+  });
+
+/** A reviewable match, with a trace and a fixture message present by default. */
+const reviewableMatch = (
+  over: Partial<OpsReviewableMatch> & { eventId: string },
+): OpsReviewableMatch => ({
+  ruleId: 'r1',
+  memberId: '800000000000000001',
+  at: NOW,
+  matchedCategory: 'profanity',
+  matchedSnippet: 'badword',
+  actionTaken: 'would_delete',
+  trace:
+    '{"kind":"keyword_filter","matchedOn":"badword","span":[6,13],' +
+    '"normalisations":["lowercased"],"detail":{}}',
+  fixtureContent: 'hello badword everyone',
+  ...over,
+});
 
 /** A `keyword_filter` rule with one term per word, all in one category. */
 const ruleWith = (words: readonly string[], over: Partial<AutomodRule> = {}): AutomodRule => ({
@@ -169,5 +216,182 @@ describe('automod dryrun', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('corpus is empty');
+  });
+});
+
+describe('automod review', () => {
+  it('is registered as a read, so it needs no --confirm and writes no audit row', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod review');
+    expect(automodReviewCommand.write).toBe(false);
+  });
+
+  it('lists unreviewed matches with the message and the rendered trace', async () => {
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1' })],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('e1');
+    expect(res.text).toContain('hello [badword] everyone');
+    expect(res.text).toContain('bananasaurs automod verdict e1');
+  });
+
+  it('renders a match whose trace is malformed without hiding the match', async () => {
+    // A trace read back from the database is untrusted (CLAUDE.md rule 3).
+    // A row this build cannot parse is still a match a human must rule on,
+    // so the trace is replaced by a reason, not the row by nothing.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1', trace: 'not json' })],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('e1');
+    expect(res.text).toContain('trace could not be read');
+  });
+
+  it('renders a match whose fixture has been forgotten', async () => {
+    // /forgetme removed the message. The match is still reviewable from the
+    // trace and the snippet — worse evidence, honestly labelled.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1', fixtureContent: undefined })],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('message no longer stored');
+  });
+
+  it('says so when there is nothing to review', async () => {
+    const res = await drive(automodReviewCommand, { listUnreviewedMatches: () => [] });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('nothing to review');
+  });
+
+  it('threads --rule and --limit through to the query, so the dry-run forward reference resolves', async () => {
+    let seen: { ruleId?: string; limit: number } | undefined;
+    const res = await drive(
+      automodReviewCommand,
+      {
+        listUnreviewedMatches: (query) => {
+          seen = query;
+          return [];
+        },
+      },
+      { rule: 'r5', limit: 7 },
+    );
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual({ ruleId: 'r5', limit: 7 });
+  });
+
+  it('defaults the limit to 20 when --limit is not given', async () => {
+    let seen: { ruleId?: string; limit: number } | undefined;
+    await drive(automodReviewCommand, {
+      listUnreviewedMatches: (query) => {
+        seen = query;
+        return [];
+      },
+    });
+    expect(seen).toEqual({ limit: 20 });
+  });
+});
+
+describe('automod verdict', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod verdict');
+    expect(automodVerdictCommand.write).toBe(true);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodVerdictCommand,
+      { recordMatchVerdict: () => 'recorded' },
+      { eventId: 'e1', verdict: 'false_positive' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+
+  it('records a verdict and returns an audit record naming the event', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'recorded',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { eventId: 'e1', verdict: 'false_positive', note: 'ordinary club chat' },
+    );
+    expect(res.ok).toBe(true);
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.verdict_recorded',
+        subjectType: 'mod_case_event',
+        subjectId: 'e1',
+        after: { verdict: 'false_positive' },
+      }),
+    ]);
+  });
+
+  it('attributes the verdict to the Unix user the invocation claimed', async () => {
+    // Provenance, not authorisation (plan ruling PR-9, ADR 0024): the
+    // socket's group permissions are the control, and the dispatcher's audit
+    // row is the authoritative record of who ran this.
+    let seen: string | undefined;
+    await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: (input) => {
+          seen = input.reviewedBy;
+          return 'recorded';
+        },
+        recordAudit: () => {},
+      },
+      { eventId: 'e1', verdict: 'true_positive' },
+      { unixUserClaimed: 'bryan' },
+    );
+    expect(seen).toBe('cli:bryan');
+  });
+
+  it('refuses an event id that is not there, but still writes an audit row', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'no-such-event',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { eventId: 'nope', verdict: 'unclear' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('no match');
+    // An audit row is owed even for a refusal: "an operator tried to rule
+    // on a match that does not exist" is a fact worth having.
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.verdict_recorded',
+        subjectType: 'mod_case_event',
+        subjectId: 'nope',
+        after: { outcome: 'no-such-event' },
+      }),
+    ]);
+  });
+
+  it('refuses a verdict outside the vocabulary at the validator', async () => {
+    // Untrusted input meets Zod here, same as a form submission.
+    const res = await driveWrite(
+      automodVerdictCommand,
+      { recordMatchVerdict: () => 'recorded' },
+      { eventId: 'e1', verdict: 'maybe' },
+    );
+    expect(res.ok).toBe(false);
   });
 });

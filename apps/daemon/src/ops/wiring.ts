@@ -19,6 +19,8 @@ import {
   jobRepo,
   listBackups,
   loggingRepo,
+  modCaseRepo,
+  modMatchReviewRepo,
   panelRepo,
   roleRepo,
   type GuildScope,
@@ -168,9 +170,15 @@ export const opsPortsFor = (
   findAutomodRule: (ruleId) =>
     automodRuleRepo.listEnabledRules(scope).find((r) => r.ruleId === ruleId),
   listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
+  listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
 
   // --- write commands (13d) --------------------------------------------------
   applySetting: (change) => applySetting(scope, change, now()),
+  recordMatchVerdict: (input) =>
+    // `reviewedAt` comes from this composition root's clock, not from the
+    // command: a command does not get to choose when it happened, the same
+    // way it does not get to choose its own audit attribution.
+    modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
 
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {

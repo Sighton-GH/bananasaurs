@@ -150,8 +150,14 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   listAutomodFixtures: () => {
     throw new Error('not used by the dashboard routes under test');
   },
+  listUnreviewedMatches: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
 
   applySetting: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  recordMatchVerdict: () => {
     throw new Error('not used by the dashboard routes under test');
   },
   setRoute: (input) =>
