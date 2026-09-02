@@ -172,6 +172,39 @@ look right before the next migration. *Costs if wrong:* if 0002 did destroy
 panel options on the live install, they were rebuilt by hand during Release 1
 smoke testing and nobody noticed the cause. Worth one look, not a slice.
 
+### R-7 follow-up: the live database, inspected read-only (2026-09-01)
+
+Ran `PRAGMA foreign_key_check` and row counts against
+`/home/bryan/projects/bananasaurs/data/bananasaurs.db`, read-only, no writes.
+
+```
+foreign_key_check: []          (no violations)
+guilds 1 · panels 1 · panel_options 1 · panel_blocked_roles 0
+mod_rules … mod_case_events:   tables absent
+applied migrations:            5
+```
+
+**R-7 is answered for this file: nothing was destroyed.** `panel_options`
+survived migration 0002, and there are no foreign-key violations.
+
+**But two things this turned up matter more than the answer.**
+
+1. **This database is at migration 5 and has no automod tables at all** — no
+   `mod_rules`, no `mod_cases`, no `mod_case_events`. `STATE.md` describes the
+   automod engine, the `/mod` surface and Slice 0 as shipped and live, which
+   cannot be true of *this* file. Either the operational database lives
+   somewhere else (`BANANASAURS_DB_PATH` overrides the default) or this one is
+   a stale artefact from late August (its mtime is 2026-08-30 19:13). **The
+   owner should confirm which file is real before running `db:migrate`.**
+2. **On whichever database is real, the R-5 bug would not have bitten on this
+   particular upgrade anyway** — and it is worth being precise about why,
+   rather than claiming a save that did not happen. Applying 0005→0011 in one
+   `migrate()` call creates `mod_rules` in an earlier migration and rebuilds it
+   in 0011 while it is still empty, so there is nothing for the cascade to
+   delete. The bug bites on the *next* rebuild after the daemon has run and
+   `seedAutomodDefaults` has populated the word list. The fix is still
+   required; it is simply not yet load-bearing on this specific migration path.
+
 ## Environment findings
 
 **E-1 — a git worktree here has no workspace symlinks, so cross-package
