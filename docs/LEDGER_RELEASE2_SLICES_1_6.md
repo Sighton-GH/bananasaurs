@@ -205,6 +205,36 @@ survived migration 0002, and there are no foreign-key violations.
    `seedAutomodDefaults` has populated the word list. The fix is still
    required; it is simply not yet load-bearing on this specific migration path.
 
+**R-8 — `MatchTrace.matchedOn` must carry the *configured term*, not the matched
+snippet. Deferred to Slice 2, which owns the trace format, and recorded as a
+required deliverable there.**
+
+*What is wrong.* `keyword-filter.ts` currently sets `matchedOn: hit.snippet`,
+which is the same value as `PredicateMatch.snippet` sitting beside it. A field
+whose stated job is "which configured thing matched" that duplicates the field
+next to it carries no information at all.
+
+*Why it matters, concretely.* ADR 0041 §5 and the roadmap's Slice 9 both
+promise one-click suppression "appropriate to the predicate that fired" — for
+`keyword_filter`, that is *allowlist this term*. If the trace names the
+snippet, a reviewer suppressing a false positive on `b@dw0rd` would allowlist
+that one evasion spelling and leave the underlying term matching everything
+else. The suppression would appear to work and would not.
+
+*Why Slice 2 rather than now.* ADR 0041 makes Slice 2 the owner of the trace
+format, and Slice 2 is where the trace is first *persisted* — getting it right
+before any trace is written to a column is what actually matters, and no trace
+is stored until then. Doing it now would churn Task 5's tests for no gain. The
+fix is contained: `buildMatcher` already keeps `categoryByTermId`, so it keeps
+the term text the same way and `AutomodMatcher`'s return widens by one field.
+
+*Slice 2 must ship a test asserting `matchedOn !== snippet` for a fuzzy
+match* — otherwise this regresses silently, which is exactly how it arrived.
+
+*Costs if wrong:* if Slice 2 forgets, Slice 9's suppression is subtly broken in
+a way that looks like it works. The test named above is what makes forgetting
+impossible.
+
 ## Environment findings
 
 **E-1 — a git worktree here has no workspace symlinks, so cross-package
