@@ -231,6 +231,13 @@ export {
 } from './automod/predicates/registry.js';
 export { ruleFingerprint } from './automod/fingerprint.js';
 export {
+  matchTraceSchema,
+  parseMatchTrace,
+  renderTrace,
+  serialiseTrace,
+  type ParseTraceResult,
+} from './automod/trace.js';
+export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,
   runPurgeTick,
