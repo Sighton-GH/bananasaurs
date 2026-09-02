@@ -345,6 +345,33 @@ Carried to handoff as a suggested `docs/22` amendment rather than edited in
 mid-run, because `docs/22` is a lessons file and this run is still producing
 lessons.
 
+## A coordinator mistake, recorded rather than tidied away
+
+**Commit `7be2e4f` is mislabelled. It says "docs: ruling R-10…" and it also
+contains the whole of Slice 1 Task 6** — the `doctor` unusable-rules check
+across `ops/ports.ts`, `ops/commands/reads.ts`, `ops/test-fixtures.ts`,
+`apps/daemon/src/ops/wiring.ts` and `packages/http/src/test-support.ts`.
+
+*Cause.* The coordinator ran `git add -A` to commit a ledger entry while an
+implementer was working uncommitted **in the same worktree**. `git add -A`
+stages everything, so the implementer's in-progress Task 6 files were swept
+into a documentation commit. The implementer noticed, verified nothing was
+lost, re-ran its tests, and flagged it.
+
+*Not fixed by rewriting history*, deliberately. The branch is unpushed and a
+rebase would be safe in isolation, but subagent reports already reference these
+SHAs, and `docs/22`'s whole argument for the ledger is that **the commits it
+names exist in git even when context no longer remembers creating them**. A
+rewrite invalidates exactly that. Correcting the record here is the cheaper and
+more honest repair: `7be2e4f` is Task 6 plus a ledger entry, and now says so
+somewhere a reader will find it.
+
+*Practice changed for the rest of this run:* the coordinator stages explicit
+paths (`git add docs/…`) and never `git add -A` while any implementer is live.
+
+*Costs if wrong:* a reader running `git log --oneline` sees one commit whose
+subject under-describes it. Contained, and documented here.
+
 ## Environment findings
 
 **E-1 — a git worktree here has no workspace symlinks, so cross-package
