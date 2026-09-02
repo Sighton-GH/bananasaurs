@@ -600,9 +600,12 @@ export const messageDeleteRuns = sqliteTable(
 
 /**
  * A configured automod rule. `kind` is the extension point for the
- * predicate types the roadmap names beyond this slice's `keyword_filter`
- * (ADR 0035) — adding one is a new predicate implementation against this
- * table, not a schema change.
+ * predicate types the roadmap names beyond `keyword_filter` (ADR 0035). ADR
+ * 0035's claim that adding a predicate needs no schema change held only for
+ * `keyword_filter` itself: ADR 0040 widens `mod_rules_kind` once, here, to
+ * all ten kinds Release 2 ships, and adds `config` as the scalar carrier a
+ * predicate's whole-rule settings live in — a predicate implementation is
+ * pure code from here on, not a migration.
  */
 export const modRules = sqliteTable(
   'mod_rules',
@@ -611,6 +614,19 @@ export const modRules = sqliteTable(
     ruleId: text('rule_id').notNull(),
     kind: text('kind').notNull(),
     name: text('name').notNull(),
+    /**
+     * Scalar, whole-rule predicate configuration as a JSON object (ADR 0040).
+     * Validated per `kind` by a Zod schema in
+     * `packages/core/src/automod/predicates/`, on write *and* on read — JSON
+     * this process wrote is still untrusted on the way back in (CLAUDE.md
+     * rule 3, the same reason `jobs.payload` has a validator, ADR 0037).
+     *
+     * List-shaped data an operator edits item by item stays relational:
+     * `keyword_filter`'s word list is three tables and its `config` is `{}`.
+     * ADR 0040 states that split as a rule so Slices 3-5 do not re-decide it
+     * per predicate.
+     */
+    config: text('config').notNull().default('{}'),
     mode: text('mode').notNull().default('test'),
     enabled: integer('enabled').notNull().default(1),
     createdAt: integer('created_at').notNull(),
@@ -620,7 +636,17 @@ export const modRules = sqliteTable(
     primaryKey({ columns: [t.guildId, t.ruleId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('mod_rules_guild_id_snowflake', snowflakeCheck(t.guildId)),
-    check('mod_rules_kind', sql`${t.kind} IN ('keyword_filter')`),
+    /**
+     * The ten predicate kinds Release 2 ships (ADR 0040). Widened once, here,
+     * rather than one migration per predicate slice, so Slices 3-5 are pure
+     * code. A kind is permitted by the CHECK before its predicate exists; a
+     * rule whose kind has no registered predicate is inert, logged, and
+     * reported by `doctor` — the same handling as an unparseable config.
+     */
+    check(
+      'mod_rules_kind',
+      sql`${t.kind} IN ('keyword_filter','regex','invite','link_domain','mention_spam','rapid_spam','duplicate_message','caps','attachment_type','emoji')`,
+    ),
     check('mod_rules_mode', sql`${t.mode} IN ('test','observe','enforce')`),
     check('mod_rules_enabled_bool', boolCheck(t.enabled)),
   ],
