@@ -92,4 +92,27 @@ describe('ruleFingerprint', () => {
   it('is a 64-character lowercase hex digest', () => {
     expect(ruleFingerprint(rule())).toMatch(/^[0-9a-f]{64}$/);
   });
+
+  it('changes when a field is added to the rule that the digest does not name', () => {
+    // The digest is built by iterating the rule's own keys, not by hand-listing
+    // them, precisely so a field a later slice adds — ADR 0040 §3's relational
+    // `invite`/`link_domain` allowlist — is hashed without anyone having to
+    // remember to add it here. `AutomodRule`'s type does not have this field
+    // yet, hence the cast: the point is what `ruleFingerprint` does at
+    // runtime with a rule shape it has not been specifically taught about.
+    const withExtraField = {
+      ...rule(),
+      inviteAllowlist: ['discord.gg/legit'],
+    } as AutomodRule;
+    expect(ruleFingerprint(withExtraField)).not.toBe(ruleFingerprint(rule()));
+  });
+
+  it('does not hash ruleId', () => {
+    // Already in the subscriber's cache key; hashing it too would be
+    // redundant rather than wrong, but the exclusion is deliberate and this
+    // pins it the same way the `mode` exclusion above is pinned.
+    expect(ruleFingerprint(rule({ ruleId: 'a-different-rule-id' }))).toBe(
+      ruleFingerprint(rule()),
+    );
+  });
 });
