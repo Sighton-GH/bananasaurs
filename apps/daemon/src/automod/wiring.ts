@@ -3,16 +3,20 @@ import {
   authorize,
   ModerationActionGateway,
   parseGuildId,
+  safeLogFields,
+  serialiseTrace,
   type Actor,
   type AutomodSubscriberDeps,
   type Authorized,
   type DiscordPort,
   type Logger,
+  type MatchTrace,
   type ModerationGatewayDeps,
   type ModerationRefusalReason,
 } from '@bananasaurs/core';
 import {
   authzStoreFor,
+  automodFixtureRepo,
   automodRuleRepo,
   guildRepo,
   modCaseRepo,
@@ -43,6 +47,28 @@ import {
  * rule 1: only deterministic, authorised code executes anything).
  */
 export const AUTOMOD_ACTOR: Actor = { type: 'system', id: undefined, roleIds: [] };
+
+/**
+ * Serialises a trace, or gives up and says so (plan ruling PR-8).
+ *
+ * `serialiseTrace` throws when a predicate produced a trace its own schema
+ * rejects — a bug in our code, which is why it throws rather than returning a
+ * result. But the composition root is not the place to let that bug become a
+ * moderation outage: the case event is the record ADR 0036 exists to
+ * guarantee, and losing it to save a field of evidence is the wrong trade.
+ * So the failure is logged loudly and the event is written without a trace.
+ */
+const traceJson = (scope: GuildScope, logger: Logger, trace: MatchTrace): string | undefined => {
+  try {
+    return serialiseTrace(trace);
+  } catch (err) {
+    logger.error(
+      safeLogFields({ component: 'automod', guildId: scope.guildId, err }),
+      'the predicate produced a trace that failed validation; the case event was recorded without it',
+    );
+    return undefined;
+  }
+};
 
 /** The witness the automod subscriber runs under. Obtained honestly, never cast. */
 export const automodAuthorization = (scope: GuildScope): Authorized<'moderation.act'> => {
@@ -136,11 +162,18 @@ export const automodPortsFor = (
         now: now(),
         countsAsViolation: options.countsAsViolation,
       }),
-    // `trace` is threaded through the subscriber from Slice 1 so ten
-    // predicates do not each need retrofitting later (ADR 0040), but
-    // `mod_case_events` has nowhere to put it until Slice 2 adds the column
-    // and the trace format. Dropped here, deliberately and visibly.
-    recordCaseEvent: ({ trace: _trace, ...input }) =>
+    captureFixture: (input) =>
+      automodFixtureRepo.captureObservedFixture(scope, {
+        messageId: input.messageId,
+        content: input.content,
+        authorId: input.authorId,
+        createdAt: input.atMs,
+      }),
+    recordCaseEvent: (input) => {
+      // Computed once, not once per spread branch below: `serialiseTrace`
+      // parses and re-stringifies the trace, so calling it twice would do
+      // that work twice for no reason (plan ruling PR-8).
+      const trace = traceJson(scope, logger, input.trace);
       modCaseRepo.recordCaseEvent(scope, {
         eventId: randomUUID(),
         at: now(),
@@ -168,7 +201,10 @@ export const automodPortsFor = (
         ...(input.refusalReason !== undefined && {
           refusalReason: input.refusalReason as ModerationRefusalReason,
         }),
-      }),
+        ...(input.fixtureId !== undefined && { fixtureId: input.fixtureId }),
+        ...(trace !== undefined && { trace }),
+      });
+    },
     nextEscalationTier: (violationCount) => modCaseRepo.nextEscalationTier(violationCount),
     // Literally the same call `automodGatewayFor` above passes as the
     // gateway's `state.read()`. Deliberately one function referenced twice
