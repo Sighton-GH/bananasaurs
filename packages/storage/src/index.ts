@@ -38,6 +38,7 @@ export {
 } from './backup.js';
 export * as accountRepo from './repos/accounts.js';
 export * as automodRuleRepo from './repos/automod-rules.js';
+export * as automodFixtureRepo from './repos/automod-fixtures.js';
 export * as modCaseRepo from './repos/mod-cases.js';
 export * as modPendingRepo from './repos/mod-pending.js';
 export * as sessionRepo from './repos/sessions.js';
