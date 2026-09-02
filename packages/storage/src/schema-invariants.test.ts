@@ -6,7 +6,11 @@ import os from 'node:os';
 import path from 'node:path';
 import * as schema from './schema.js';
 import { runMigrations } from './db.js';
-import { MIGRATIONS_FOLDER, openMigratedTestDatabase, type MigratedTestDatabase } from './test-support.js';
+import {
+  MIGRATIONS_FOLDER,
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from './test-support.js';
 
 /**
  * The invariants every Release 1 table must satisfy, read from the live schema
@@ -293,9 +297,7 @@ describe('mod_rules.config migration (0010/0011) carries child-table rows throug
     runMigrations(raw, db, migrationsFolderUpTo(9));
 
     raw
-      .prepare(
-        `INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`,
-      )
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
       .run(GUILD_ID);
     raw
       .prepare(

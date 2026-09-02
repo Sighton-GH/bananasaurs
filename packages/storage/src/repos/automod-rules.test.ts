@@ -36,7 +36,13 @@ beforeEach(() => {
 describe('automod rules repo', () => {
   it('assembles a rule with its categories, terms and allowlist', () => {
     const scope = t.scopes.forGuild(GUILD);
-    createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'default filter', config: '{}', now: 1000 });
+    createRule(scope, {
+      ruleId: 'r1',
+      kind: 'keyword_filter',
+      name: 'default filter',
+      config: '{}',
+      now: 1000,
+    });
     addCategory(scope, {
       categoryId: 'c1',
       ruleId: 'r1',
@@ -79,7 +85,13 @@ describe('automod rules repo', () => {
   describe('hasRoleExemption', () => {
     it('is false for a rule with no exemptions, and for a channel-only exemption', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       expect(hasRoleExemption(scope, 'r1')).toBe(false);
 
       addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
@@ -88,8 +100,20 @@ describe('automod rules repo', () => {
 
     it('is true once a role exemption exists, and stays scoped to its own rule', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
-      createRule(scope, { ruleId: 'r2', kind: 'keyword_filter', name: 'y', config: '{}', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
+      createRule(scope, {
+        ruleId: 'r2',
+        kind: 'keyword_filter',
+        name: 'y',
+        config: '{}',
+        now: 1000,
+      });
       addRoleExemption(scope, { ruleId: 'r1', roleId: ROLE });
 
       expect(hasRoleExemption(scope, 'r1')).toBe(true);
@@ -100,9 +124,21 @@ describe('automod rules repo', () => {
   describe('listEnforceModeKeywordFilterRules', () => {
     it('excludes a rule that is disabled or not in enforce mode', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'test-mode', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
+      createRule(scope, {
+        ruleId: 'test-mode',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
 
-      createRule(scope, { ruleId: 'disabled-enforce', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
+      createRule(scope, {
+        ruleId: 'disabled-enforce',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       setRuleMode(scope, {
         ruleId: 'disabled-enforce',
         mode: 'enforce',
@@ -115,7 +151,13 @@ describe('automod rules repo', () => {
 
     it('lists an enabled enforce-mode rule with its channel exemptions', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       setRuleMode(scope, { ruleId: 'r1', mode: 'enforce', now: 1000 });
       addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
 
@@ -128,7 +170,13 @@ describe('automod rules repo', () => {
       const other = parseGuildId('444444444444444444');
       upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 0 });
 
-      createRule(t.scopes.forGuild(GUILD), { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
+      createRule(t.scopes.forGuild(GUILD), {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       setRuleMode(t.scopes.forGuild(GUILD), { ruleId: 'r1', mode: 'enforce', now: 1000 });
 
       expect(listEnforceModeKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);
@@ -140,7 +188,13 @@ describe('automod rules repo', () => {
       const scope = t.scopes.forGuild(GUILD);
       expect(ruleExists(scope, 'r1')).toBe(false);
 
-      createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       expect(ruleExists(scope, 'r1')).toBe(true);
 
       // The daemon's first-run seeding guard relies on exactly this: a

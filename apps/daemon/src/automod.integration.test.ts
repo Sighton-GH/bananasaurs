@@ -79,7 +79,13 @@ const buildPipeline = (): Pipeline => {
 
 /** Creates one enabled `keyword_filter` rule with a single term, 'badword'. */
 const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
-  automodRuleRepo.createRule(scope, { ruleId: RULE_ID, name: 'test rule', now: discord.now() });
+  automodRuleRepo.createRule(scope, {
+    ruleId: RULE_ID,
+    kind: 'keyword_filter',
+    name: 'test rule',
+    config: '{}',
+    now: discord.now(),
+  });
   automodRuleRepo.addCategory(scope, {
     categoryId: CATEGORY_ID,
     ruleId: RULE_ID,

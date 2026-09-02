@@ -402,7 +402,7 @@ describe('automod default word list seeding', () => {
 
     const scope = t.scopes.forGuild(GUILD);
     expect(automodRuleRepo.ruleExists(scope, DEFAULT_AUTOMOD_RULE_ID)).toBe(true);
-    expect(automodRuleRepo.listEnabledKeywordFilterRules(scope)).toEqual([
+    expect(automodRuleRepo.listEnabledRules(scope)).toEqual([
       expect.objectContaining({ ruleId: DEFAULT_AUTOMOD_RULE_ID, mode: 'test' }),
     ]);
   });
@@ -417,7 +417,7 @@ describe('automod default word list seeding', () => {
     daemon = start();
 
     const scope = t.scopes.forGuild(GUILD);
-    const rule = automodRuleRepo.listEnabledKeywordFilterRules(scope)[0];
+    const rule = automodRuleRepo.listEnabledRules(scope)[0];
     // `|` is obscenity's word-boundary assertion (its `Pattern` grammar), and
     // `parseRawPattern` — what the live matcher runs on `word_terms.text` —
     // is the parser that reads it.
@@ -451,7 +451,7 @@ describe('automod default word list seeding', () => {
       daemon = start();
     }).not.toThrow();
 
-    expect(automodRuleRepo.listEnabledKeywordFilterRules(scope)).toEqual([]);
+    expect(automodRuleRepo.listEnabledRules(scope)).toEqual([]);
     // Re-seeding must not have run at all, not merely "ran harmlessly" — a
     // second seeding pass would also re-attempt `addCategory`/`addTerm`,
     // which have the same duplicate-key exposure `createRule` did.

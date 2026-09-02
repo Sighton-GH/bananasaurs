@@ -120,7 +120,7 @@ export const automodPortsFor = (
   return {
     logger,
     moderationAuth: auth,
-    listRules: () => automodRuleRepo.listEnabledKeywordFilterRules(scope),
+    listRules: () => automodRuleRepo.listEnabledRules(scope),
     hasRoleExemption: (ruleId) => automodRuleRepo.hasRoleExemption(scope, ruleId),
     isExempt: (ruleId, input) => automodRuleRepo.isExempt(scope, ruleId, input),
     // Narrower than `DiscordPort.deleteMessage(guildId, ref, reason)` — the
