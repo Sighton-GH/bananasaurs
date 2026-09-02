@@ -4,8 +4,11 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { parseGuildId, RULE_KINDS } from '@bananasaurs/core';
 import * as schema from './schema.js';
 import { runMigrations } from './db.js';
+import { createRule, type RuleKind } from './repos/automod-rules.js';
+import { upsertGuild } from './repos/guilds.js';
 import {
   MIGRATIONS_FOLDER,
   openMigratedTestDatabase,
@@ -226,6 +229,61 @@ describe('every snowflake column has a format CHECK', () => {
           `constraint list.`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * `mod_rules_kind`'s SQL CHECK, storage's `RuleKind` union
+ * (`repos/automod-rules.ts`) and core's `RULE_KINDS` array
+ * (`@bananasaurs/core`) are three hand-maintained copies of the same ten
+ * values, agreeing today only because nobody has edited one without editing
+ * the other two. Proved here against the *live* CHECK, independent of
+ * `schema.ts`'s own literal, so drift becomes a red test rather than an
+ * inert rule a hand-edited row or a future migration could quietly widen or
+ * narrow out of step with core.
+ */
+describe("mod_rules_kind's CHECK matches core's RULE_KINDS exactly", () => {
+  const GUILD_ID = parseGuildId('999999999999999999');
+
+  it('accepts every one of the ten values RULE_KINDS names', () => {
+    const scope = t.scopes.forGuild(GUILD_ID);
+    upsertGuild(scope, { name: 'kind-pin-guild', now: 0 });
+    for (const [i, kind] of RULE_KINDS.entries()) {
+      // `RULE_KINDS` (core, `@bananasaurs/core`) and `RuleKind`
+      // (`repos/automod-rules.ts`) are independently declared unions of the
+      // same ten literals (ADR 0014 bars importing one from the other), so
+      // TypeScript accepts a `RULE_KINDS` element here with no cast — which
+      // is itself only a compile-time fact about the two *declarations*.
+      // What this loop actually proves is that the live CHECK, the thing
+      // neither declaration is, agrees with both.
+      expect(() =>
+        createRule(scope, {
+          ruleId: `kind-pin-${String(i)}`,
+          kind,
+          name: kind,
+          config: '{}',
+          now: 1,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it('rejects a kind RULE_KINDS does not name', () => {
+    const scope = t.scopes.forGuild(GUILD_ID);
+    expect(() =>
+      createRule(scope, {
+        // Deliberately outside RULE_KINDS. If a future RULE_KINDS entry is
+        // ever named 'telepathy' this assertion stops meaning anything —
+        // acceptable, because that would mean core had actually grown an
+        // eleventh kind, which is exactly the drift this file exists to
+        // notice, loudly, rather than silently.
+        kind: 'telepathy' as RuleKind,
+        ruleId: 'kind-pin-rejected',
+        name: 'telepathy',
+        config: '{}',
+        now: 1,
+      }),
+    ).toThrow();
   });
 });
 
