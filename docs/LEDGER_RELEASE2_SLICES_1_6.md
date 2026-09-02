@@ -27,8 +27,8 @@ runs the observe window before the dashboard work starts.
 
 | Slice | ADR | Plan | Status |
 | --- | --- | --- | --- |
-| 1 — predicate abstraction + `mod_rules.config` | 0040 | — | not started |
-| 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 | — | not started |
+| 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **in progress** — Task 1 of 7 complete and reviewed clean; Tasks 2–4 in flight |
+| 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | — | ADR written, plan pending |
 | 3 — precise tier (`regex`, `invite`, `link_domain`) | — | — | not started |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
 | 5 — shape tier (`caps`, `attachment_type`, `emoji`) | — | — | not started |
@@ -229,4 +229,29 @@ checkout's `dist`. Carried to handoff as a suggested `docs/` note.
 
 ## Deferred minors
 
-_None yet._
+Raised by review, judged not worth a fix round, carried to the whole-branch
+review for triage.
+
+- **Slice 1 Task 1** — `packages/storage/src/repos/automod-rules.ts`,
+  `hydrate`: `row.kind as RuleKind` is an unchecked cast. Safe only because the
+  `mod_rules_kind` CHECK constrains the value, and it mirrors the pre-existing
+  `row.mode as RuleMode` cast on the next line, so it is consistent with the
+  file rather than new sloppiness. Worth revisiting only if the CHECK and the
+  union ever drift apart — which `packages/core`'s `compileRule` already
+  handles by reporting `unknown-kind` rather than trusting the cast.
+
+## Handoff checklist for the owner
+
+Collected as they arise, so the final handoff is not reconstructed from memory.
+
+1. **Confirm which database is real.** `data/bananasaurs.db` is at migration 5
+   with no automod tables, which contradicts `STATE.md`. Check
+   `BANANASAURS_DB_PATH`. Do this **before** running `npm run db:migrate`.
+2. **`PRIVACY.md` changes in Slice 2** — it gains a retention row for the
+   fixture corpus. Your own policy says material changes are announced in the
+   server. The announcement is yours to make.
+3. **Restart the observe clock for any rule whose data predates ADR 0039.**
+   Carried forward from the kickoff; the rule was not firing, so its data
+   measured nothing.
+4. **A worktree needs `npm ci` (or workspace symlinks) before its gates mean
+   anything** — see E-1. Worth a line in `docs/` if worktrees become routine.
