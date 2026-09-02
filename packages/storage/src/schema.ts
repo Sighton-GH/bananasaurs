@@ -801,6 +801,42 @@ export const modCaseEvents = sqliteTable(
      * action records actor" is a Release 2 gate, not a convention.
      */
     actorId: snowflake('actor_id'),
+    /**
+     * Why the rule matched, as JSON (ADR 0041 §4). Nullable — every row
+     * written before this slice has none, and a manual `/mod` event never
+     * has one.
+     *
+     * Stored rather than recomputed at review time, because the rule may
+     * have been edited in the two weeks between the match and the review:
+     * recomputing would answer "what would this rule decide about that
+     * message today", which is a different question from the one the
+     * reviewer is being asked and looks identical on screen.
+     *
+     * Storage never validates it (ADR 0014 — the Zod schema lives in
+     * `packages/core/src/automod/trace.ts`). It comes back out as raw text
+     * and core parses it, the same arrangement `mod_rules.config` has.
+     *
+     * **Never carries the whole message.** Whole-message content lives in
+     * `automod_fixtures` under the owner's explicit decision; a second copy
+     * here would put member content somewhere that decision did not reach.
+     */
+    trace: text('trace'),
+    /**
+     * The `automod_fixtures` row captured from the same message, when there
+     * was one (plan ruling PR-5).
+     *
+     * This is what makes ADR 0041's "a verdict recorded during the window is
+     * a labelled fixture afterwards" an implementation rather than an
+     * aspiration: recording a verdict follows this link to set the fixture's
+     * label. Null for enforce-mode matches (nothing is captured — PR-2), for
+     * manual events, and for every row written before this slice.
+     *
+     * Deliberately *not* a foreign key. A fixture deleted by `/forgetme`
+     * must not cascade into the moderation record, and `ON DELETE SET NULL`
+     * would be a write to an append-only table. A dangling id resolves to
+     * "no fixture", which is the truthful answer after a deletion.
+     */
+    fixtureId: text('fixture_id'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.eventId] }),
@@ -850,6 +886,144 @@ export const modCaseEvents = sqliteTable(
         ('unauthorized','guild-unknown','killswitch','breaker-open','rate-cap','discord-owner','role-above-bot')`,
     ),
     check('mod_case_events_actor_id_snowflake', nullableSnowflakeCheck(t.actorId)),
+  ],
+);
+
+/**
+ * The automod review corpus (ADR 0041 §1).
+ *
+ * Holds whole messages, which is a deliberate, owner-approved extension of
+ * what Bananasaurs keeps — `PRIVACY.md`'s retention table carries the
+ * matching row, added in the same commit as this table, because a policy
+ * that is not true is worse than no policy.
+ *
+ * Two sources with different rules. An `observed` row is a real member's
+ * message, captured because a `test`/`observe` rule matched it, and
+ * `deleteObservedFixturesForMember` can remove every one of a member's rows
+ * — the path Release 3's `/forgetme` (R3-10) wires up rather than invents.
+ * A `handwritten` row is an adversarial case the project wrote itself: not
+ * member data, and never deleted by `/forgetme`.
+ *
+ * `content` is the zero-width-stripped text the predicate actually saw, so a
+ * replay reproduces the original evaluation exactly rather than a
+ * re-normalised approximation of it.
+ */
+export const automodFixtures = sqliteTable(
+  'automod_fixtures',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    /**
+     * For an `observed` fixture, `<messageId>:<first 16 hex of sha256(content)>`
+     * (plan ruling PR-1): a gateway replay of the identical message is the
+     * same fixture and collapses into one row, while an edit that matches
+     * again is different evidence and gets its own. For a `handwritten`
+     * fixture, a UUID.
+     *
+     * TEXT rather than a snowflake column: only half of it is a snowflake,
+     * and a handwritten fixture's id is not one at all.
+     */
+    fixtureId: text('fixture_id').notNull(),
+    content: text('content').notNull(),
+    /**
+     * The message's author, so a member's own rows can be found and removed.
+     * Null for `handwritten` fixtures, which have no member behind them.
+     */
+    authorId: snowflake('author_id'),
+    label: text('label').notNull().default('unlabelled'),
+    source: text('source').notNull(),
+    /** Why a human labelled it this way. Free text, nullable. */
+    note: text('note'),
+    /**
+     * Also the replay clock: `PredicateInput.atMs` comes from here, never
+     * from `Date.now()`, which is what makes the window tier's dry run
+     * deterministic (ADR 0041 §6).
+     */
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.fixtureId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('automod_fixtures_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('automod_fixtures_author_id_snowflake', nullableSnowflakeCheck(t.authorId)),
+    check(
+      'automod_fixtures_label',
+      sql`${t.label} IN ('should_match','should_not_match','unlabelled')`,
+    ),
+    check('automod_fixtures_source', sql`${t.source} IN ('observed','handwritten')`),
+    /**
+     * A `handwritten` fixture has no author and an `observed` one must have
+     * one — the invariant `deleteObservedFixturesForMember` depends on. Left
+     * to the database rather than the repo, so a row inserted by hand in
+     * `sqlite3` cannot break the `/forgetme` promise either.
+     */
+    check(
+      'automod_fixtures_observed_has_author',
+      sql`(${t.source} = 'observed' AND ${t.authorId} IS NOT NULL)
+        OR (${t.source} = 'handwritten' AND ${t.authorId} IS NULL)`,
+    ),
+    /** The dry run reads the whole corpus in `created_at` order (ADR 0041 §6). */
+    index('automod_fixtures_replay').on(t.guildId, t.createdAt),
+    /** `deleteObservedFixturesForMember`'s lookup. */
+    index('automod_fixtures_by_author').on(t.guildId, t.authorId),
+  ],
+);
+
+/**
+ * A human's verdict on one recorded match (ADR 0041 §5).
+ *
+ * Its own table rather than a column on `mod_case_events`, for the reason
+ * ADR 0036 exists: a case event is the record of what happened and must
+ * never be rewritten. A verdict is a later judgement *about* that record,
+ * made by a named person at a known time — a different fact with a different
+ * lifetime. Merging them would let a review edit history.
+ *
+ * One row per event (plan ruling PR-4): a reviewer who changes their mind
+ * updates the verdict rather than appending a second one. The current
+ * verdict is the fact Slice 6's gate reads; the history of a *revised*
+ * verdict is not something anything needs today, and adding it later is an
+ * additive table rather than a migration of this one.
+ */
+export const modMatchReviews = sqliteTable(
+  'mod_match_reviews',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    eventId: text('event_id').notNull(),
+    verdict: text('verdict').notNull(),
+    /**
+     * Who thought this — plain TEXT, deliberately not a snowflake column
+     * (plan ruling PR-9).
+     *
+     * Two reviewers with two kinds of identity write here. Slice 9's
+     * dashboard authenticates a Discord user and writes a snowflake; the
+     * operator CLI, which ships first and covers the whole first fortnight
+     * of the observe window, has only the Unix user the invocation claimed
+     * (ADR 0024) and writes `cli:<user>`. A snowflake CHECK would make the
+     * path that exists on flip day impossible to write.
+     *
+     * Provenance, not authorisation: the socket's group permissions are the
+     * access control, and the dispatcher's `audit_events` row is the
+     * authoritative record of who ran the command.
+     */
+    reviewedBy: text('reviewed_by').notNull(),
+    reviewedAt: integer('reviewed_at').notNull(),
+    note: text('note'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.eventId] }),
+    foreignKey({
+      columns: [t.guildId, t.eventId],
+      foreignColumns: [modCaseEvents.guildId, modCaseEvents.eventId],
+    }).onDelete('cascade'),
+    check('mod_match_reviews_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    /**
+     * `unclear` is a real verdict, not a missing one: the spec's decision 16
+     * counts it as a false positive for the Slice 6 gate. Recording it
+     * faithfully here is this slice's whole job; the counting is Slice 6's.
+     */
+    check(
+      'mod_match_reviews_verdict',
+      sql`${t.verdict} IN ('false_positive','true_positive','unclear')`,
+    ),
   ],
 );
 

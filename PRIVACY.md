@@ -32,6 +32,7 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 
 - Moderation records — warnings, notes, timeouts, kicks, bans — including who acted, on whom, why, and when
 - Automod matches and the action taken
+- Messages an automod rule matched while it was being tested, kept as examples so a human can check whether the rule was right
 - Role changes made by the bot, such as reaction-role assignments
 - Join and leave events
 - Commands run against the bot, and the answers it gave
@@ -75,6 +76,7 @@ Bananasaurs only uses providers whose terms state they **do not train models on 
 | Messages from enabled channels | Kept until the owner deletes them or changes the policy |
 | Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case |
 | Moderation records | Kept as long as the server needs them for consistent moderation |
+| Automod test examples | Kept while the rule they test is in use, so its accuracy can be checked and improved. `/forgetme` removes yours. |
 | Bot conversations and answers | Kept until deleted on request |
 | Attachments | Same as the messages they belong to |
 

@@ -85,6 +85,13 @@
       "when": 1788312363903,
       "tag": "0011_high_tyger_tiger",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "6",
+      "when": 1788368469681,
+      "tag": "0012_illegal_darkstar",
+      "breakpoints": true
     }
   ]
 }
