@@ -368,6 +368,13 @@ function toMessageEvent(
 ): DomainEvent | undefined {
   const guildId = message.guildId;
   if (!guildId) return undefined;
+
+  // A partial message carries ids and nothing else — the same reason `content`
+  // is `undefined` above. Reading `.mentions` off one yields empty collections
+  // at best and throws at worst, and "no mentions known" must not be reported
+  // as "no mentions present", so the partial case is branched explicitly.
+  const mentions = message.partial ? undefined : message.mentions;
+
   return {
     kind,
     guildId,
@@ -387,6 +394,16 @@ function toMessageEvent(
      */
     content: message.partial ? undefined : (message.content ?? undefined),
     editedTimestampMs: message.editedTimestamp ?? undefined,
+    mentionedUserIds: mentions ? [...mentions.users.keys()] : [],
+    mentionedRoleIds: mentions ? [...mentions.roles.keys()] : [],
+    mentionsEveryone: mentions?.everyone ?? false,
+    attachments: message.partial
+      ? []
+      : [...message.attachments.values()].map((a) => ({
+          fileName: a.name,
+          contentType: a.contentType ?? undefined,
+          sizeBytes: a.size,
+        })),
   };
 }
 

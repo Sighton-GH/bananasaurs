@@ -53,6 +53,10 @@ describe('native automod subscriber', () => {
       authorIsBot: false,
       content: 'hello',
       editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
     });
     expect(recorded).toEqual([]);
   });

@@ -398,6 +398,10 @@ describe('messages', () => {
         authorIsBot: false,
         content: 'hello',
         editedTimestampMs: undefined,
+        mentionedUserIds: [],
+        mentionedRoleIds: [],
+        mentionsEveryone: false,
+        attachments: [],
       },
     ]);
   });
@@ -445,6 +449,60 @@ describe('messages', () => {
     const h = harness({ allow: [OTHER_GUILD] });
     h.packet('MessageCreate', messageCreatePacket());
     expect(h.events).toEqual([]);
+  });
+
+  /**
+   * Mentions and attachments, for Slice 4's `mention_spam` and Slice 5's
+   * `attachment_type`. `ROLE` is already cached by the harness (a mentioned
+   * role discord.js cannot resolve from `guild.roles.cache` is dropped, not
+   * reported as an id), so it stands in for a real mention here.
+   */
+  it('carries mentions and attachments on messageCreate', () => {
+    const h = harness();
+    h.packet(
+      'MessageCreate',
+      messageCreatePacket({
+        content: 'hey @everyone',
+        mentions: [{ id: USER, username: 'mentioned', discriminator: '0' }],
+        mention_roles: [ROLE],
+        mention_everyone: true,
+        attachments: [
+          {
+            id: '1',
+            filename: 'payload.exe',
+            content_type: 'application/octet-stream',
+            size: 4096,
+          },
+        ],
+      }),
+    );
+    expect(h.events[0]).toMatchObject({
+      mentionedUserIds: [USER],
+      mentionedRoleIds: [ROLE],
+      mentionsEveryone: true,
+      attachments: [
+        { fileName: 'payload.exe', contentType: 'application/octet-stream', sizeBytes: 4096 },
+      ],
+    });
+  });
+
+  /**
+   * A `MESSAGE_DELETE` for an id the client never cached arrives partial — the
+   * dispatch carries only ids (`Action.getMessage`). Empty arrays and `false`
+   * say "nothing is known", which is what every predicate downstream must
+   * treat as "do not match" — the same reading `content: undefined` already
+   * gets above.
+   */
+  it('reports no mentions and no attachments for a partial message', () => {
+    const h = harness();
+    h.packet('MessageDelete', { id: MESSAGE, channel_id: CHANNEL, guild_id: GUILD });
+    expect(h.events[0]).toMatchObject({
+      kind: 'messageDelete',
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+    });
   });
 });
 

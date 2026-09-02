@@ -76,6 +76,10 @@ const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
   authorIsBot: false,
   content: 'this message has badword in it',
   editedTimestampMs: undefined,
+  mentionedUserIds: [],
+  mentionedRoleIds: [],
+  mentionsEveryone: false,
+  attachments: [],
   ...over,
 });
 
