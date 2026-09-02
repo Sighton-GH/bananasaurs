@@ -50,6 +50,8 @@ Before claiming any task is done: `npm run typecheck && npm run lint && npm run 
 - Preserve clean boundaries around interfaces, providers, context, tools, authorisation, and storage. Avoid speculative abstractions everywhere else.
 - Do not split into services. One process. (ADR 0006)
 - Write the test first for anything touching permissions, hierarchy, idempotency, retention, or guild scope.
+- **Verify, do not assert.** Check a library's behaviour against the copy in `node_modules`, not from memory; re-run the gates yourself rather than believing a report; and never trust a guard you have not watched fail. Slice 0 shipped four claims that were confidently wrong until tested — the record is in `docs/22`.
+- **Delegate implementation and review to subagents; keep decisions and verification here.** Hand briefs and diffs over as files, take back five-line reports, and specify a model on every dispatch. See `docs/22_DELEGATION_AND_CONTEXT.md`.
 
 ## Current release scope
 
