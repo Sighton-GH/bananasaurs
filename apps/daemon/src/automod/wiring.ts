@@ -136,7 +136,11 @@ export const automodPortsFor = (
         now: now(),
         countsAsViolation: options.countsAsViolation,
       }),
-    recordCaseEvent: (input) =>
+    // `trace` is threaded through the subscriber from Slice 1 so ten
+    // predicates do not each need retrofitting later (ADR 0040), but
+    // `mod_case_events` has nowhere to put it until Slice 2 adds the column
+    // and the trace format. Dropped here, deliberately and visibly.
+    recordCaseEvent: ({ trace: _trace, ...input }) =>
       modCaseRepo.recordCaseEvent(scope, {
         eventId: randomUUID(),
         at: now(),

@@ -226,6 +226,7 @@ export {
   type CompileFailure,
   type CompileResult,
 } from './automod/predicates/registry.js';
+export { ruleFingerprint } from './automod/fingerprint.js';
 export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,

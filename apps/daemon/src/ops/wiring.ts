@@ -126,6 +126,25 @@ export const opsPortsFor = (
   listKeywordFilterRulesMissingManageMessages: () =>
     keywordFilterRulesMissingManageMessages(scope, client),
 
+  // Compiles every enabled rule on every `doctor` call, which is correct
+  // rather than a shortcut worth removing: `doctor` is human-invoked, not a
+  // hot path, and compiling *is* the check (ADR 0040 §4) — inspecting the
+  // config string without compiling it would not catch a `no-predicate` or
+  // `compile-failed` rule at all.
+  listUnusableAutomodRules: () =>
+    automodRuleRepo
+      .listEnabledRules(scope)
+      .map((rule) => ({ rule, result: compileRule(rule) }))
+      .filter(({ result }) => !result.ok)
+      .map(({ rule, result }) => ({
+        ruleId: rule.ruleId,
+        kind: rule.kind,
+        // Narrowed by the filter above; TypeScript cannot see that through
+        // `.filter`, so this reads the discriminant again rather than casting.
+        reason: result.ok ? '' : result.reason,
+        detail: result.ok ? '' : result.detail,
+      })),
+
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       eventKind: route.eventKind,
