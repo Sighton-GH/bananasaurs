@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { pino } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
@@ -195,23 +196,74 @@ describe('runDryRun', () => {
     );
   });
 
+  /**
+   * The behavioural gate above has a ceiling, and it is worth naming rather
+   * than discovering in Slice 4.
+   *
+   * It compares two real matches, so it can only detect a divergence in a
+   * field some shipped predicate actually reads. `keyword_filter` is the only
+   * one, and it reads `content`. So the gate catches a mangled `content` or a
+   * dropped trace — verified — but a reviewer probing it found three
+   * divergences it does **not** catch: a wrong `atMs`, a bypassed predicate
+   * cache, and a hand-built `PredicateInput` that skips
+   * `predicateInputFrom`'s mention and attachment reconstruction. All three
+   * stay green today because nothing reads those fields yet, and all three
+   * become live the moment the window tier ships.
+   *
+   * This test closes that gap from the other side. Rather than comparing
+   * behaviour, it asserts the *structure* ADR 0041 §3 actually specifies:
+   * that this module builds no `PredicateInput` of its own and performs no
+   * evaluation of its own. That is checkable now, holds for fields no
+   * predicate has read yet, and fails the moment someone inlines a second
+   * construction site — which is precisely the drift the behavioural gate
+   * cannot see.
+   *
+   * Source-level assertions are an established shape here:
+   * `packages/core/src/boundaries.test.ts` runs ESLint over sources to prove
+   * the import boundaries are enforced rather than merely intended.
+   */
+  it('builds no PredicateInput of its own — the one-code-path invariant, structurally', () => {
+    const source = readFileSync(new URL('./dry-run.ts', import.meta.url), 'utf8');
+
+    // The two fields only a hand-rolled `PredicateInput` would ever set.
+    // `predicateInputFrom` is the one place either belongs.
+    expect(source).not.toMatch(/\beventKind\s*:/);
+    expect(source).not.toMatch(/\batMs\s*:/);
+
+    // And it must reach the shared path rather than the registry directly:
+    // calling `compileRule` here would be a second evaluation site even if
+    // every field of the input were correct.
+    expect(source).toMatch(/predicateInputFrom/);
+    expect(source).toMatch(/evaluateRule/);
+    expect(source).not.toMatch(/\bcompileRule\b/);
+  });
+
   it('takes each fixture’s clock from its own created_at', () => {
-    // `atMs` is not observable directly from `DryRunReport`, but the window
-    // tier (Slice 4) will read it from `PredicateInput.atMs`; for now this is
-    // proven through `predicateInputFrom`, which is the one place `atMs` is
-    // set from a fixture. A `keyword_filter` rule does not branch on it, so
-    // this asserts the wiring exists rather than a *visible* behavioural
-    // difference — there is none to observe yet with only `keyword_filter`
-    // shipped.
+    // `atMs` is genuinely unobservable through `DryRunReport` while
+    // `keyword_filter` is the only predicate — it does not branch on the
+    // clock, so no assertion on a report can distinguish a correct `atMs`
+    // from a hardcoded one. An earlier version of this test asserted
+    // `matched === true` and called that clock coverage; it passed with
+    // `atMs` hardcoded to 0, which makes it decorative.
+    //
+    // The real, falsifiable coverage lives one layer down, on the function
+    // that sets the field: `evaluate.test.ts`'s "takes the replay clock from
+    // the fixture, never from the wall clock" asserts
+    // `predicateInputFrom(...).atMs` directly and does go red when `atMs` is
+    // hardcoded. What is left here is the ordering guarantee that clock
+    // drives, which *is* observable from a report.
     const rule = ruleWith(['badword']);
-    const oneFixture: FixtureRecord = fixture({
-      fixtureId: '9:ffff',
-      content: 'a badword message',
-      createdAt: 987_654,
-      label: 'should_match',
+    const out = runDryRun({
+      guildId: GUILD_ID,
+      rule,
+      fixtures: [
+        fixture({ fixtureId: '9:cccc', content: 'third badword', createdAt: 3_000 }),
+        fixture({ fixtureId: '9:aaaa', content: 'first badword', createdAt: 1_000 }),
+        fixture({ fixtureId: '9:bbbb', content: 'second badword', createdAt: 2_000 }),
+      ],
     });
-    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: [oneFixture] });
-    expect(report.results[0]?.matched).toBe(true);
+
+    expect(out.results.map((r) => r.fixtureId)).toEqual(['9:aaaa', '9:bbbb', '9:cccc']);
   });
 
   it('counts a should_not_match fixture that matched as a false positive', () => {

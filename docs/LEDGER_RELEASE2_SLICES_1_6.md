@@ -417,6 +417,45 @@ pre-flight conflict scan and live in
 | PR-8 | Trace serialisation and label propagation are best-effort; neither may cost a moderation record. | A field of evidence goes missing where a louder failure might have surfaced the bug sooner. |
 | PR-9 | `mod_match_reviews.reviewed_by` is plain TEXT — the CLI writes `cli:<unix user>`, the dashboard a snowflake. | Slice 9's screen branches on a string prefix to render a reviewer. |
 
+### The one-code-path gate has a ceiling, and Slice 4 is where it bites
+
+Slice 2's named gate (spec §4) asserts the dry-run evaluator and the live
+subscriber produce byte-identical matches. It does — verified twice, once by
+the implementer and once by a reviewer who devised its own divergences.
+
+**But it is a behavioural comparison, so it can only see a divergence in a
+field some shipped predicate actually reads.** `keyword_filter` is the only
+one, and it reads `content`. The reviewer's probes found three divergences the
+gate does **not** catch today:
+
+| Divergence | Caught? | Why |
+| --- | --- | --- |
+| Mangled `content` | ✅ red | `keyword_filter` reads it |
+| Match returned without its trace | ✅ red | compared explicitly |
+| Wrong `atMs` | ❌ green | nothing reads the clock yet |
+| Predicate cache bypassed entirely | ❌ green | no observable difference with one stateless predicate |
+| Hand-built `PredicateInput` skipping mention/attachment reconstruction | ❌ green | no predicate reads those fields yet |
+
+All three become live the moment the window tier ships. `rapid_spam` and
+`duplicate_message` carry sliding-window state on the compiled artifact and
+read `atMs`; `mention_spam` reads the mention lists.
+
+**Half of this is already closed.** Slice 2 added a *structural* guard beside
+the behavioural one: `dry-run.test.ts` asserts at source level that
+`dry-run.ts` builds no `PredicateInput` of its own (no `eventKind:`, no
+`atMs:`) and calls `predicateInputFrom`/`evaluateRule` rather than
+`compileRule`. That holds for fields no predicate has read yet, and it was
+watched failing — inlining a construction site turns it red. It follows the
+shape `boundaries.test.ts` already established here.
+
+**What Slice 4 must do, and must not skip:** extend the *behavioural* gate the
+moment a predicate reads a second field. Concretely — when `mention_spam`
+lands, the gate should compare a match on a message with mentions; when
+`rapid_spam` lands, it should compare a *sequence* whose result depends on
+`atMs` and on the compiled artifact's state. Until then the guarantee is
+"identical for content-only predicates", which is true and narrower than it
+sounds.
+
 **Why PR-2 is the one to re-examine first.** It is the only ruling here that
 narrows what the observe window can measure *after* flip day, and it was
 decided on a privacy ground rather than an engineering one: `PRIVACY.md`
