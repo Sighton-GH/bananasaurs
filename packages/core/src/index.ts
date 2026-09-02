@@ -198,7 +198,6 @@ export {
   createAutomodSubscriber,
   type AutomodSubscriberDeps,
   type ModerationGatewayPort,
-  type RuleWithWordList,
 } from './automod/subscriber.js';
 export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
 export { createNativeAutomodSubscriber } from './automod/native-subscriber.js';

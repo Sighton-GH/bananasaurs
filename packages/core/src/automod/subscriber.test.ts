@@ -1,5 +1,5 @@
 import { Writable } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
@@ -10,11 +10,12 @@ import type {
   ModerationOutcome,
   ModerationSafetyState,
 } from '../effects/moderation-gateway.js';
+import type { AutomodRule } from './predicates/types.js';
+import * as registry from './predicates/registry.js';
 import {
   createAutomodSubscriber,
   type AutomodSubscriberDeps,
   type ModerationGatewayPort,
-  type RuleWithWordList,
 } from './subscriber.js';
 
 /**
@@ -31,7 +32,17 @@ const NOW_MS = 1_700_000_000_000;
 
 const silentLogger = pino({ level: 'silent' });
 
-/** A real pino instance over a captured stream, so redaction runs for real. */
+/**
+ * A real pino instance over a captured stream, so redaction runs for real —
+ * no test-only stub standing in for `Logger`, which is pino's own type and
+ * too large a surface to hand-fake convincingly.
+ *
+ * `errors` re-parses `lines` on every access rather than snapshotting a count
+ * at creation, so a case that calls `handle` several times and checks
+ * `errors.length` between calls sees the truth each time — precisely the
+ * property the "logs once per rule, not once per message" tests below rely
+ * on. Pino's numeric `level` is 50 for `error` (trace 10 … fatal 60).
+ */
 const capturingLogger = () => {
   const lines: string[] = [];
   const stream = new Writable({
@@ -40,7 +51,15 @@ const capturingLogger = () => {
       callback();
     },
   });
-  return { logger: pino({ level: 'info' }, stream), lines };
+  return {
+    logger: pino({ level: 'info' }, stream),
+    lines,
+    get errors(): { ruleId?: string; msg?: string }[] {
+      return lines
+        .map((l) => JSON.parse(l) as { level: number; ruleId?: string; msg?: string })
+        .filter((l) => l.level === 50);
+    },
+  };
 };
 
 const permissiveAuthz: AuthzStore = { hasGrant: () => true };
@@ -59,12 +78,25 @@ const moderationAuth: Authorized<'moderation.act'> = (() => {
   return result.value;
 })();
 
-const rule = (over: Partial<RuleWithWordList> & { ruleId: string }): RuleWithWordList => ({
+const rule = (over: Partial<AutomodRule> & { ruleId: string }): AutomodRule => ({
+  kind: 'keyword_filter',
+  config: '{}',
   mode: 'enforce',
   terms: [{ text: 'badword', categoryId: 'cat-1' }],
   allowlist: [],
   ...over,
 });
+
+/**
+ * A `keyword_filter` rule named only by its word list, for the
+ * cache-invalidation tests below — those cases mutate `terms`/`allowlist`
+ * between messages, so the shape they want is "one rule, everything else
+ * defaulted" rather than `rule`'s `ruleId`-first shape.
+ */
+const ruleWith = (
+  terms: readonly { text: string; categoryId: string }[],
+  allowlist: readonly string[] = [],
+): AutomodRule => rule({ ruleId: 'cache-rule', terms, allowlist });
 
 const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
   kind: 'messageCreate',
@@ -103,7 +135,7 @@ const LIVE: ModerationSafetyState = { killswitch: false, breakerOpen: false, dry
 
 function buildHarness(
   opts: {
-    rules?: readonly RuleWithWordList[];
+    rules?: readonly AutomodRule[];
     exemptRuleIds?: ReadonlySet<string>;
     violationCount?: number;
     tier?: { action: 'timeout' | 'kick' | undefined; timeoutMs: number | undefined };
@@ -258,6 +290,10 @@ describe('automod subscriber', () => {
         actionTaken: 'deleted',
         escalationAction: undefined,
         refusalReason: undefined,
+        // The predicate's own trace, threaded through unchanged (Task 5):
+        // `matchedOn` names the *configured* term, not the possibly-evasive
+        // matched spelling, which is what Slice 9's suppression will key on.
+        trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
     expect(calls.applyAction).toHaveLength(0);
@@ -343,6 +379,7 @@ describe('automod subscriber', () => {
         actionTaken: 'deleted_and_escalated',
         escalationAction: 'timeout',
         refusalReason: undefined,
+        trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
   });
@@ -373,11 +410,12 @@ describe('automod subscriber', () => {
         actionTaken: 'escalation_refused',
         escalationAction: 'kick',
         refusalReason: 'discord-owner',
+        trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
   });
 
-  it('a matcher throwing is caught, logged, and does not stop the message from being processed by other rules', async () => {
+  it('a rule whose word list fails to compile is caught, logged, and does not stop the message from being processed by other rules', async () => {
     const { logger, lines } = capturingLogger();
     const brokenRule = rule({
       ruleId: 'rule-8-broken',
@@ -389,10 +427,18 @@ describe('automod subscriber', () => {
 
     await expect(subscriber.handle(messageCreate())).resolves.toBeUndefined();
 
-    // The broken rule logged an error and produced no case event of its own...
+    // The broken rule logged an error and produced no case event of its own.
+    // The message names "could not be compiled" now, not "matcher threw":
+    // `[unclosed` is an invalid `obscenity` pattern, so `buildMatcher` throws
+    // inside `Predicate.compile` itself, which `compileRule` (Task 3) catches
+    // as `compile-failed` before the subscriber ever gets to evaluate a
+    // message — a compile-time failure, not a per-message one, which is the
+    // whole point of caching it behind the fingerprint (ADR 0040 §4).
     const parsed = lines.map((l) => JSON.parse(l) as { ruleId?: string; msg?: string });
     expect(
-      parsed.some((l) => l.ruleId === 'rule-8-broken' && (l.msg ?? '').includes('matcher threw')),
+      parsed.some(
+        (l) => l.ruleId === 'rule-8-broken' && (l.msg ?? '').includes('could not be compiled'),
+      ),
     ).toBe(true);
     // ...while the second rule still ran and matched normally.
     expect(calls.deleteMessage).toEqual([
@@ -654,7 +700,7 @@ describe('automod subscriber', () => {
    */
   describe('the violation counter', () => {
     it('does not move for a test-mode match, so flipping to enforce starts at one', async () => {
-      const rules: RuleWithWordList[] = [rule({ ruleId: 'rule-rollout', mode: 'test' })];
+      const rules: AutomodRule[] = [rule({ ruleId: 'rule-rollout', mode: 'test' })];
       const { deps, calls } = buildHarness({ rules });
       const subscriber = createAutomodSubscriber(deps);
 
@@ -722,5 +768,180 @@ describe('automod subscriber', () => {
         ]);
       });
     }
+  });
+});
+
+describe('the compiled-predicate cache', () => {
+  // No reset hook: the cache lives in `createAutomodSubscriber`'s closure, so
+  // each `createAutomodSubscriber(...)` call below starts empty. Each of these
+  // cases builds ONE subscriber and sends it several messages — building a new
+  // subscriber per message would clear the cache and test nothing.
+
+  it('picks up an added term on the very next message, with no restart', async () => {
+    // The gap ADR 0035 left and ADR 0039 made sharper: the operator adds a
+    // term through the dashboard, sees it listed, and it never matches.
+    let terms = [{ text: 'badword', categoryId: 'c' }];
+    const { deps, calls } = buildHarness({ rules: [] });
+    deps.listRules = () => [ruleWith(terms)];
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate({ content: 'spammer here' }));
+    expect(calls.recordCaseEvent).toHaveLength(0);
+
+    terms = [
+      { text: 'badword', categoryId: 'c' },
+      { text: 'spammer', categoryId: 'c' },
+    ];
+    await subscriber.handle(messageCreate({ content: 'spammer here' }));
+    expect(calls.recordCaseEvent).toHaveLength(1);
+  });
+
+  it('picks up a removed term on the very next message', async () => {
+    let terms = [{ text: 'badword', categoryId: 'c' }];
+    const { deps, calls } = buildHarness({ rules: [] });
+    deps.listRules = () => [ruleWith(terms)];
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate({ content: 'badword here' }));
+    expect(calls.recordCaseEvent).toHaveLength(1);
+
+    terms = [];
+    await subscriber.handle(messageCreate({ content: 'badword here' }));
+    expect(calls.recordCaseEvent).toHaveLength(1); // no second record
+  });
+
+  it('picks up a changed allowlist on the very next message', async () => {
+    let allowlist: string[] = [];
+    const { deps, calls } = buildHarness({ rules: [] });
+    deps.listRules = () => [ruleWith([{ text: 'badword', categoryId: 'c' }], allowlist)];
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate({ content: 'a badword phrase' }));
+    expect(calls.recordCaseEvent).toHaveLength(1);
+
+    allowlist = ['a badword phrase'];
+    await subscriber.handle(messageCreate({ content: 'a badword phrase' }));
+    expect(calls.recordCaseEvent).toHaveLength(1);
+  });
+
+  it('does not recompile when nothing changed', async () => {
+    // The cache still has to be a cache, or this task has replaced a
+    // correctness bug with a performance one. `obscenity` compilation is the
+    // cost being avoided, so the assertion is on the number of compiles.
+    const spy = vi.spyOn(registry, 'compileRule');
+    const { deps, calls } = buildHarness({
+      rules: [ruleWith([{ text: 'badword', categoryId: 'c' }])],
+    });
+    const subscriber = createAutomodSubscriber(deps);
+    await subscriber.handle(messageCreate({ content: 'badword one' }));
+    await subscriber.handle(messageCreate({ content: 'badword two' }));
+    await subscriber.handle(messageCreate({ content: 'badword three' }));
+    expect(spy).toHaveBeenCalledTimes(1);
+    expect(calls.recordCaseEvent).toHaveLength(3);
+    spy.mockRestore();
+  });
+
+  /**
+   * `daemon.ts` seeds every guild's default rule under the same id
+   * (`'default-word-filter'`). A bare rule-id key let whichever guild spoke
+   * first decide what every other guild was matched against — CLAUDE.md
+   * rule 2 names cache keys explicitly.
+   *
+   * Defence in depth as of this slice: the cache now lives per subscriber
+   * and the daemon builds one per guild, so a bare key would not actually
+   * leak today. This asserts the property anyway, because "today's
+   * composition root happens to make it safe" is caller discipline, which
+   * rule 2 exists to replace. ONE subscriber, two guilds' events.
+   *
+   * **Verified this test is not decorative** (the concern `docs/22` records):
+   * with a bare `rule.ruleId` key, the *matching outcome* below still passes
+   * — the fingerprint check catches the content difference between guild
+   * one's and guild two's rule regardless of what the cache key is, and
+   * recompiles from the caller's own current rule object either way, so no
+   * guild is ever matched against the wrong word list even with a bare key.
+   * What a bare key actually breaks is caching itself: two guilds sharing an
+   * id would evict each other's entry on every message, recompiling forever
+   * instead of once each. The third `handle` call and the compile-count
+   * assertion below exist to catch exactly that regression, which the
+   * matching-outcome assertion alone cannot.
+   */
+  it('keeps two guilds’ rules apart even when they share a rule id', async () => {
+    const rulesByGuild: Record<string, string> = {
+      '111111111111111111': 'alpha',
+      '222222222222222222': 'beta',
+    };
+    let currentGuild = '111111111111111111';
+    const { deps, calls } = buildHarness({ rules: [] });
+    deps.listRules = () => [ruleWith([{ text: rulesByGuild[currentGuild]!, categoryId: 'c' }])];
+    const subscriber = createAutomodSubscriber(deps);
+    const spy = vi.spyOn(registry, 'compileRule');
+
+    await subscriber.handle(
+      messageCreate({ guildId: parseGuildId(currentGuild), content: 'alpha here' }),
+    );
+    currentGuild = '222222222222222222';
+    await subscriber.handle(
+      messageCreate({ guildId: parseGuildId(currentGuild), content: 'alpha here' }),
+    );
+
+    // One match, from guild one. Guild two's rule matches `beta`, and a
+    // guild-scoped key is the only thing that stops it reusing guild one's
+    // compiled `alpha` matcher.
+    expect(calls.recordCaseEvent).toHaveLength(1);
+
+    // Back to guild one, same content as its first message. A guild-scoped
+    // key still has guild one's untouched cache entry from the first call —
+    // no third compile. A bare key would have had its one shared entry
+    // overwritten by guild two's compile above, so guild one's unchanged
+    // rule would look "changed" (the cached fingerprint is now guild two's)
+    // and force a third, wasted compile.
+    currentGuild = '111111111111111111';
+    await subscriber.handle(
+      messageCreate({ guildId: parseGuildId(currentGuild), content: 'alpha here' }),
+    );
+    expect(spy).toHaveBeenCalledTimes(2);
+    spy.mockRestore();
+  });
+});
+
+describe('a rule that cannot be compiled', () => {
+  it('is skipped, and every other rule still runs', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [
+        { ...ruleWith([]), ruleId: 'broken', kind: 'caps', config: '{not json' },
+        { ...ruleWith([{ text: 'badword', categoryId: 'c' }]), ruleId: 'working' },
+      ],
+    });
+    await createAutomodSubscriber(deps).handle(messageCreate({ content: 'badword' }));
+    expect(calls.recordCaseEvent.map((r) => r.ruleId)).toEqual(['working']);
+  });
+
+  it('logs it once per rule, not once per message', async () => {
+    // `capturing` (not a destructured `errors`) deliberately: `errors` is a
+    // getter that re-reads the captured stream on every access, and
+    // destructuring it here would freeze it at zero — exactly the
+    // decorative-guard trap this test exists to avoid falling into itself.
+    const capturing = capturingLogger();
+    const { deps } = buildHarness({
+      rules: [{ ...ruleWith([]), ruleId: 'broken', kind: 'caps', config: '{not json' }],
+      logger: capturing.logger,
+    });
+    const subscriber = createAutomodSubscriber(deps);
+    await subscriber.handle(messageCreate({ content: 'one' }));
+    await subscriber.handle(messageCreate({ content: 'two' }));
+    await subscriber.handle(messageCreate({ content: 'three' }));
+    expect(capturing.errors).toHaveLength(1);
+  });
+
+  it('logs again after the config changes, because the operator may have fixed it', async () => {
+    let config = '{not json';
+    const capturing = capturingLogger();
+    const { deps } = buildHarness({ rules: [], logger: capturing.logger });
+    deps.listRules = () => [{ ...ruleWith([]), ruleId: 'broken', kind: 'caps', config }];
+    const subscriber = createAutomodSubscriber(deps);
+    await subscriber.handle(messageCreate({ content: 'one' }));
+    config = '{"still":"wrong"}';
+    await subscriber.handle(messageCreate({ content: 'two' }));
+    expect(capturing.errors).toHaveLength(2);
   });
 });
