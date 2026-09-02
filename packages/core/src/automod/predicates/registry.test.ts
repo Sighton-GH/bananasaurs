@@ -58,6 +58,19 @@ describe('compileRule', () => {
     }
   });
 
+  it('reports a keyword_filter rule with zero enabled terms rather than compiling it as a matcher that can never fire', () => {
+    // `buildMatcher([], [])` compiles cleanly — this is not `compile-failed`.
+    // An operator who deletes the last term, or disables the last category,
+    // is left with a rule that looks configured and silently never matches:
+    // exactly the ADR 0039 shape this ADR exists to keep out of `doctor`.
+    const result = compileRule(rule({ terms: [] }));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.reason).toBe('no-terms');
+      expect(result.detail.length).toBeGreaterThan(0);
+    }
+  });
+
   it('reports a predicate whose compile step throws', () => {
     // A word list obscenity cannot parse. An empty term does NOT actually
     // throw — verified directly against `parseRawPattern` before writing

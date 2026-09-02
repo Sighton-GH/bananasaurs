@@ -31,7 +31,17 @@ export type CompileFailure =
   /** `config` is not JSON, or fails its kind's Zod schema. */
   | 'invalid-config'
   /** The predicate's own `compile` threw — an invalid regex, an unparseable term. */
-  | 'compile-failed';
+  | 'compile-failed'
+  /**
+   * A `keyword_filter` rule whose word list has no enabled terms.
+   *
+   * `buildMatcher([], [])` compiles cleanly — an empty blacklist is a valid
+   * `RegExpMatcher` — so this is not a `compile-failed`. It is the same shape
+   * of failure ADR 0039 spent a slice on: a rule that looks configured and
+   * can never match. "Cannot be compiled" is a strict subset of "cannot ever
+   * match"; this closes the gap between them (ADR 0040 §4, review IMPORTANT-2).
+   */
+  | 'no-terms';
 
 export type CompileResult =
   | { readonly ok: true; readonly compiled: CompiledPredicate }
@@ -67,6 +77,20 @@ export const compileRule = (rule: AutomodRule): CompileResult => {
       ok: false,
       reason: 'invalid-config',
       detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+
+  // A `keyword_filter` rule whose last enabled term (or category) was just
+  // removed has valid, empty config and compiles to a matcher that can never
+  // fire. Checked here, against the hydrated word list, because it cannot be
+  // caught by validating `config` above — the word list is not in `config`
+  // (ADR 0040 §3) — and `predicate.compile` below has no reason to throw on
+  // an empty term list, which is correct behaviour for `buildMatcher` itself.
+  if (rule.kind === 'keyword_filter' && rule.terms.length === 0) {
+    return {
+      ok: false,
+      reason: 'no-terms',
+      detail: 'no enabled terms in this rule; it can never match a message',
     };
   }
 
