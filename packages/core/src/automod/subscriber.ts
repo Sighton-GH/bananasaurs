@@ -303,7 +303,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
                 guildId: event.guildId,
                 ruleId: rule.ruleId,
                 outcome: result.reason,
-                detail: result.detail,
+                compileError: result.detail,
               }),
               'the rule could not be compiled; it will not match until it is fixed',
             );

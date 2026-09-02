@@ -434,12 +434,25 @@ describe('automod subscriber', () => {
     // as `compile-failed` before the subscriber ever gets to evaluate a
     // message — a compile-time failure, not a per-message one, which is the
     // whole point of caching it behind the fingerprint (ADR 0040 §4).
-    const parsed = lines.map((l) => JSON.parse(l) as { ruleId?: string; msg?: string });
+    const parsed = lines.map(
+      (l) => JSON.parse(l) as { ruleId?: string; msg?: string; compileError?: string },
+    );
     expect(
       parsed.some(
         (l) => l.ruleId === 'rule-8-broken' && (l.msg ?? '').includes('could not be compiled'),
       ),
     ).toBe(true);
+    // The free-text reason — not just the `reason` code — reaches the log.
+    // `compileRule` is the source of truth for what that text actually is;
+    // asserting against its own output (rather than a hard-coded string this
+    // test would have to keep in sync with `obscenity`'s wording) proves the
+    // value that made it into `safeLogFields` is the same one `compileRule`
+    // produced, not merely that *some* string is present.
+    const directResult = registry.compileRule(brokenRule);
+    expect(directResult.ok).toBe(false);
+    const expectedDetail = directResult.ok ? '' : directResult.detail;
+    expect(expectedDetail.length).toBeGreaterThan(0);
+    expect(parsed.find((l) => l.ruleId === 'rule-8-broken')?.compileError).toBe(expectedDetail);
     // ...while the second rule still ran and matched normally.
     expect(calls.deleteMessage).toEqual([
       { channelId: CHANNEL, messageId: MESSAGE, reason: 'automod: rule-8-ok' },
@@ -933,11 +946,50 @@ describe('a rule that cannot be compiled', () => {
     expect(capturing.errors).toHaveLength(1);
   });
 
+  it('carries the compile error message itself through safeLogFields, not just the reason code', async () => {
+    // `compileRule`'s `detail` — the actual Zod/`obscenity` text explaining
+    // *what* was wrong, not just the `reason` code — must reach the emitted
+    // log line under the `compileError` field. Guards against the field being
+    // dropped silently: `safeLogFields` (`packages/core/src/obs/logger.ts`)
+    // drops any key absent from `LOGGABLE_FIELDS` with no error of its own, so
+    // a field-name mismatch here fails only by the value going missing, which
+    // is exactly what this test watches for.
+    const capturing = capturingLogger();
+    const brokenRule = {
+      ...ruleWith([{ text: '[unclosed', categoryId: 'cat-x' }]),
+      ruleId: 'broken-detail',
+    };
+    const { deps } = buildHarness({ rules: [brokenRule], logger: capturing.logger });
+    const directResult = registry.compileRule(brokenRule);
+    expect(directResult.ok).toBe(false);
+    const expectedDetail = directResult.ok ? '' : directResult.detail;
+    expect(expectedDetail.length).toBeGreaterThan(0);
+
+    await createAutomodSubscriber(deps).handle(messageCreate());
+
+    const parsedLines = capturing.lines.map(
+      (l) => JSON.parse(l) as { ruleId?: string; compileError?: string; droppedFields?: number },
+    );
+    const line = parsedLines.find((l) => l.ruleId === 'broken-detail');
+    expect(line?.compileError).toBe(expectedDetail);
+    expect(line?.droppedFields).toBeUndefined();
+  });
+
   it('logs again after the config changes, because the operator may have fixed it', async () => {
+    // `kind: 'keyword_filter'` (the `ruleWith` default) deliberately, not
+    // `'caps'`: `'caps'` has no registered predicate, so `compileRule` returns
+    // `'no-predicate'` before it ever reaches `JSON.parse` — this test would
+    // then exercise the no-predicate path while its name and its `'{not json'`
+    // fixture both claim to be about a config that can be fixed. With a real
+    // predicate registered, both configs below genuinely fail
+    // `keywordFilterConfig`'s `.strict()` schema — the first is not JSON at
+    // all, the second is valid JSON with a field the schema rejects — so this
+    // now tests what it says it tests, while still exercising the fingerprint
+    // recompile-and-relog behaviour it was written for.
     let config = '{not json';
     const capturing = capturingLogger();
     const { deps } = buildHarness({ rules: [], logger: capturing.logger });
-    deps.listRules = () => [{ ...ruleWith([]), ruleId: 'broken', kind: 'caps', config }];
+    deps.listRules = () => [{ ...ruleWith([]), ruleId: 'broken', config }];
     const subscriber = createAutomodSubscriber(deps);
     await subscriber.handle(messageCreate({ content: 'one' }));
     config = '{"still":"wrong"}';
