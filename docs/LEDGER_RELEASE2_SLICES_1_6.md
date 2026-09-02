@@ -100,6 +100,100 @@ and reported by `doctor`** — not a crash, and not a silent skip. *Costs if
 wrong:* nothing; this is the ADR 0039 failure mode being closed rather than
 re-opened.
 
+**R-5 — migrations run with foreign keys disabled at the *connection* level,
+bracketed by a `PRAGMA foreign_key_check` that fails the migration if it finds
+a violation.** This is the fix for a real, reproduced data-loss bug, not a
+preference.
+
+*What was found.* Slice 1's `mod_rules` change forces a CHECK widen, which
+SQLite cannot do in place, so drizzle-kit emits the table-rebuild dance
+(`CREATE __new_mod_rules` → `INSERT…SELECT` → `DROP mod_rules` → `RENAME`).
+The generated SQL brackets that in `PRAGMA foreign_keys=OFF; … ON;` — correctly
+— but `drizzle-orm`'s migrator wraps *every* pending migration in a single
+`BEGIN … COMMIT`, and `PRAGMA foreign_keys` is a documented no-op once a
+transaction is open. So enforcement stays on through the `DROP`, and the
+`ON DELETE CASCADE` from `word_categories`, `word_allowlist` and
+`mod_rule_exemptions` onto `mod_rules(guild_id, rule_id)` fires and silently
+deletes every child row. No error is raised.
+
+*Verified by the coordinator, not taken on report.* A standalone reproduction
+migrated a database to 0009, inserted one rule with one category, one term, one
+allowlist phrase and one exemption, then applied 0010+0011:
+
+```
+BEFORE {mod_rules:1, word_categories:1, word_terms:1, word_allowlist:1, mod_rule_exemptions:1}
+AFTER  {mod_rules:1, word_categories:0, word_terms:0, word_allowlist:0, mod_rule_exemptions:0}
+```
+
+*Why this is not hypothetical.* `seedAutomodDefaults` already created
+`default-word-filter` with the seeded word list on the live install. This
+migration would delete that rule's entire word list on upgrade and leave a rule
+that looks configured and matches nothing — the ADR 0039 failure mode again,
+total rather than partial.
+
+*The fix.* SQLite's own documented procedure for this kind of schema change
+requires `foreign_keys=OFF` **outside** any transaction. So the `migrate()`
+call sites — `scripts/migrate.mjs`, `packages/storage/src/test-support.ts`, and
+any other — disable foreign keys on the connection, migrate, run
+`PRAGMA foreign_key_check`, and re-enable. The `foreign_key_check` is the part
+that stops this being a licence to write broken migrations: enforcement is off
+during the rebuild, so a violation introduced by a migration must be caught on
+the way out rather than never.
+
+*Rejected alternative:* calling `migrate()` once per migration file. It does
+not work — drizzle opens a transaction per call regardless, so the pragma is
+still a no-op. Worth recording so nobody tries it.
+
+*Costs if wrong:* foreign-key enforcement is off for the duration of a
+migration run. A migration that inserts referentially broken rows would not be
+rejected at insert time; `foreign_key_check` catches it immediately afterwards
+and fails the run, so the window is one migration batch and the failure is
+loud. The alternative — hand-editing each rebuild migration to re-insert
+children — is fragile, per-migration, and has to be remembered every time.
+
+**R-6 — the schema change ships as two migrations (0010 `ALTER TABLE … ADD
+COLUMN`, 0011 the CHECK-forced rebuild), not one.** drizzle-kit 0.31.10 emits
+invalid SQL when a column add and a table rebuild land in the same `generate`
+call: the rebuild's `INSERT INTO __new_mod_rules(…, "config", …) SELECT …,
+"config", … FROM mod_rules` reads a column the *old* table does not yet have,
+so the migration throws `no such column: "config"` and nothing applies.
+Confirmed by reading the generated 0011, which is valid only because 0010 added
+`config` first. Two sequential `db:generate` runs; both files are pure
+drizzle-kit output, neither hand-written. *Costs if wrong:* one extra migration
+file in the journal. Nothing else.
+
+**R-7 — `0002_solid_titanium_man.sql` carries the same latent hazard and is
+recorded rather than fixed.** It rebuilds `panels`, which owns cascading
+children (`panel_options`, `panel_blocked_roles`). It has already been applied
+to the live database, so whatever it did is done; R-5 prevents recurrence for
+every future rebuild. *Action carried to handoff:* run `PRAGMA
+foreign_key_check` on the live database and confirm `panel_options` row counts
+look right before the next migration. *Costs if wrong:* if 0002 did destroy
+panel options on the live install, they were rebuilt by hand during Release 1
+smoke testing and nobody noticed the cause. Worth one look, not a slice.
+
+## Environment findings
+
+**E-1 — a git worktree here has no workspace symlinks, so cross-package
+typechecks silently read the *main checkout's* build.** The worktree's
+`node_modules/` contained only `.vite`; Node's resolution walked up to
+`/home/bryan/projects/bananasaurs/node_modules/@bananasaurs/*`, every one of
+which symlinks into the **main** checkout's `packages/`. So `packages/discord`
+in the worktree typechecked against the main checkout's
+`packages/core/dist/index.d.ts`, which was stale (built 08:42, before Slice 0's
+exports landed) — producing 14 errors about missing `NativeAutoModAction`,
+`createNativeAutomodSubscriber` and friends that looked like a broken baseline
+and were nothing of the kind.
+
+Fixed for this worktree by creating `node_modules/@bananasaurs/*` symlinks
+pointing at the worktree's own packages. After that, `npm run typecheck` shows
+only the expected mid-TDD errors.
+
+**This matters beyond this session.** Any future worktree needs the same links
+(or an `npm install` inside it) before any gate run there means anything — and
+worse, without them a `tsc --build` in a worktree can write into the main
+checkout's `dist`. Carried to handoff as a suggested `docs/` note.
+
 ## Deferred minors
 
 _None yet._
