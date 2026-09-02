@@ -170,6 +170,20 @@ deliberate: it keeps the map bounded by the number of rules, where putting a
 version in the key would grow it by one entry per edit for the life of the
 process.
 
+**The cache also stops being module state.** ADR 0035's spec asked for "a
+plain Map in the subscriber's own module state, not a new abstraction", which
+was defensible while the cache was write-once. It is not defensible now. The
+replacement lives in `createAutomodSubscriber`'s closure — one per subscriber
+instance, and the daemon builds one subscriber per guild — so it is bounded by
+that guild's rules rather than by every rule in the process, cannot leak across
+guilds even in principle, and needs no test-only reset export, because every
+test constructs its own subscriber and gets isolation for free.
+
+The guild id stays in the cache key regardless. That is now defence in depth
+rather than the only thing preventing a leak, and it stays for the reason
+rule 2 gives: "the composition root happens to make a bare key safe today" is
+caller discipline, which is what rule 2 exists to replace.
+
 ## Consequences
 
 - Adding predicate #2 through #10 becomes: write a Zod config schema, write a

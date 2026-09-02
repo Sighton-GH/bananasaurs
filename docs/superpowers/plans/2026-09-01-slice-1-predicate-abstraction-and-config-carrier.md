@@ -156,7 +156,15 @@ describe('mod_rules.config', () => {
     const scope = /* … */;
     expect(() =>
       automodRuleRepo.createRule(scope, {
-        ruleId: 'r4', kind: 'telepathy', name: 'nope', config: '{}', now: 1,
+        ruleId: 'r4',
+        // Cast deliberately. The point of this test is that the *database*
+        // CHECK rejects the value even when TypeScript is bypassed — a
+        // hand-written row, a future caller, a schema drift. A case the type
+        // system already covers cannot be written any other way.
+        kind: 'telepathy' as RuleKind,
+        name: 'nope',
+        config: '{}',
+        now: 1,
       }),
     ).toThrow();
   });
@@ -1112,7 +1120,6 @@ a guard that has never been watched failing is not a guard (docs/22).
 - [ ] **Step 1: Write the failing tests**
 
 ```ts
-import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { ruleFingerprint } from './fingerprint.js';
 import type { AutomodRule } from './predicates/types.js';
@@ -1273,8 +1280,25 @@ git commit -m "automod: content fingerprint over everything Predicate.compile re
     `readonly RuleWithWordList[]`).
   - `AutomodSubscriberDeps.recordCaseEvent` gains `trace: MatchTrace` on its
     input.
-  - `resetPredicateCacheForTests(): void` — exported for tests only.
   - `RuleWithWordList` is deleted from this module.
+  - The module-level `matcherCache` is deleted. Its replacement lives **inside
+    `createAutomodSubscriber`'s closure**, one per subscriber instance — see
+    the ruling below.
+
+**Coordinator ruling (F-3), binding on this task.** ADR 0035's spec asked for
+the cache to be module state, and that was defensible when it was write-once.
+It is not defensible now. Put the replacement cache in
+`createAutomodSubscriber`'s closure instead:
+
+- It is bounded by one guild's rules rather than by every rule in the process.
+- It cannot leak across guilds even in principle — the daemon constructs one
+  subscriber per guild.
+- It needs no test-only export, because every test builds its own subscriber
+  and therefore gets isolation for free. **Do not add
+  `resetPredicateCacheForTests`.**
+
+The guild id **stays** in the cache key regardless, as defence in depth against
+a future caller that shares one subscriber across guilds, and its test stays.
 
 **The behaviour that must not change.** Everything from "is this author a bot"
 down through safety state, deletion, escalation and `mod_case_events` is
@@ -1305,11 +1329,12 @@ Two mechanical notes before you copy these in:
 
 ```ts
 describe('the compiled-predicate cache', () => {
-  beforeEach(() => {
-    resetPredicateCacheForTests();
-  });
+  // No reset hook: the cache lives in `createAutomodSubscriber`'s closure, so
+  // each `createAutomodSubscriber(...)` call below starts empty. Each of these
+  // cases builds ONE subscriber and sends it several messages — building a new
+  // subscriber per message would clear the cache and test nothing.
 
-  it('picks up an added term on the very next message, with no restart', () => {
+  it('picks up an added term on the very next message, with no restart', async () => {
     // The gap ADR 0035 left and ADR 0039 made sharper: the operator adds a
     // term through the dashboard, sees it listed, and it never matches.
     let terms = [{ text: 'badword', categoryId: 'c' }];
@@ -1372,16 +1397,35 @@ describe('the compiled-predicate cache', () => {
     spy.mockRestore();
   });
 
-  it('keeps two guilds’ rules apart even when they share a rule id', () => {
-    // `daemon.ts` seeds every guild's default rule as `'default-word-filter'`.
-    // A bare rule-id key let whichever guild spoke first decide what every
-    // other guild matched against (CLAUDE.md rule 2 names cache keys).
-    const a = makeDeps({ guildId: '111111111111111111', listRules: () => [ruleWith([{ text: 'alpha', categoryId: 'c' }])] });
-    const b = makeDeps({ guildId: '222222222222222222', listRules: () => [ruleWith([{ text: 'beta', categoryId: 'c' }])] });
-    await createAutomodSubscriber(a).handle(messageEvent({ guildId: '111111111111111111', content: 'alpha' }));
-    await createAutomodSubscriber(b).handle(messageEvent({ guildId: '222222222222222222', content: 'alpha' }));
-    expect(a.recorded).toHaveLength(1);
-    expect(b.recorded).toHaveLength(0);
+  it('keeps two guilds’ rules apart even when they share a rule id', async () => {
+    // `daemon.ts` seeds every guild's default rule under the same id
+    // (`'default-word-filter'`). A bare rule-id key let whichever guild spoke
+    // first decide what every other guild was matched against — CLAUDE.md
+    // rule 2 names cache keys explicitly.
+    //
+    // Defence in depth as of this slice: the cache now lives per subscriber
+    // and the daemon builds one per guild, so a bare key would not actually
+    // leak today. This asserts the property anyway, because "today's
+    // composition root happens to make it safe" is caller discipline, which
+    // rule 2 exists to replace. ONE subscriber, two guilds' events.
+    const rulesByGuild: Record<string, string> = {
+      '111111111111111111': 'alpha',
+      '222222222222222222': 'beta',
+    };
+    let currentGuild = '111111111111111111';
+    const deps = makeDeps({
+      listRules: () => [ruleWith([{ text: rulesByGuild[currentGuild]!, categoryId: 'c' }])],
+    });
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageEvent({ guildId: currentGuild, content: 'alpha here' }));
+    currentGuild = '222222222222222222';
+    await subscriber.handle(messageEvent({ guildId: currentGuild, content: 'alpha here' }));
+
+    // One match, from guild one. Guild two's rule matches `beta`, and a
+    // guild-scoped key is the only thing that stops it reusing guild one's
+    // compiled `alpha` matcher.
+    expect(deps.recorded).toHaveLength(1);
   });
 });
 
@@ -1433,18 +1477,35 @@ Expected: FAIL.
 
 - [ ] **Step 3: Rewrite the cache and the match step**
 
-Replace the `matcherCache` block in `subscriber.ts` with:
+Delete the module-level `matcherCache` and its doc comment entirely. Declare
+the replacement **inside `createAutomodSubscriber`**, above the returned object,
+so each subscriber instance owns its own:
+
+```ts
+export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber => {
+  const predicateCache = new Map<string, CacheEntry>();
+  return {
+    name: 'automod',
+    async handle(event) { /* … */ },
+  };
+};
+```
+
+with `CacheEntry` declared at module level (a type, not state):
 
 ```ts
 /**
  * One compiled predicate per `(guildId, ruleId)`, held beside a fingerprint of
  * the rule it was compiled from (ADR 0040 §5).
  *
- * Module-level, so shared by every guild in the process — which is exactly why
- * the key carries the guild id (CLAUDE.md rule 2 names cache keys explicitly):
- * `daemon.ts` seeds every guild's default rule under the same id
- * (`'default-word-filter'`), so with a bare key whichever guild spoke first
- * decided what every other guild was matched against.
+ * Lives in `createAutomodSubscriber`'s closure, not at module level: the
+ * daemon builds one subscriber per guild, so a per-instance cache is bounded
+ * by that guild's rules and cannot leak across guilds even in principle. The
+ * key still carries the guild id (CLAUDE.md rule 2 names cache keys
+ * explicitly) as defence in depth — `daemon.ts` seeds every guild's default
+ * rule under the same id (`'default-word-filter'`), and "the composition root
+ * happens to make a bare key safe today" is caller discipline, which rule 2
+ * exists to replace.
  *
  * **This replaces the cache that had no invalidation.** Before ADR 0040, a
  * rule whose word list changed kept matching the stale list until the daemon
@@ -1467,13 +1528,11 @@ interface CacheEntry {
   /** `undefined` when the rule could not be compiled; the reason was logged. */
   readonly compiled: CompiledPredicate | undefined;
 }
-const predicateCache = new Map<string, CacheEntry>();
-
-/** Tests only. The cache is module state and would otherwise leak across cases. */
-export const resetPredicateCacheForTests = (): void => {
-  predicateCache.clear();
-};
 ```
+
+**Do not add a `resetPredicateCacheForTests` export.** A per-instance cache
+needs no reset hook, and a test-only export in production code is a cost with
+no remaining benefit.
 
 And inside the per-rule loop, replace the `buildMatcher` block:
 
@@ -1551,9 +1610,9 @@ import of `buildMatcher` — `stripZeroWidth` is still used for `normalized`.
 - [ ] **Step 4: Reshape the existing test fakes**
 
 `subscriber.test.ts`'s `listRules` fakes now return `AutomodRule`, so each
-needs `kind: 'keyword_filter'` and `config: '{}'`. Add
-`resetPredicateCacheForTests()` to the file's top-level `beforeEach` — without
-it, a matcher cached by one case leaks into the next.
+needs `kind: 'keyword_filter'` and `config: '{}'`. No cache-reset hook is
+needed: the cache lives in `createAutomodSubscriber`'s closure, so any case
+that builds its own subscriber already starts with an empty one.
 
 - [ ] **Step 5: Run the tests**
 
@@ -1791,8 +1850,8 @@ Export from `packages/core/src/index.ts`: `RULE_KINDS`, `isRuleKind`, and the
 types `RuleKind`, `AutomodRule`, `PredicateInput`, `PredicateMatch`,
 `MatchTrace`, `CompiledPredicate`, `Predicate`, `AnyPredicate`,
 `CompileResult`, `CompileFailure`; and the functions `compileRule`,
-`predicateFor`, `ruleFingerprint`, `resetPredicateCacheForTests`. Follow the
-file's existing grouping and comment style.
+`predicateFor`, `ruleFingerprint`. Follow the file's existing grouping and
+comment style.
 
 - [ ] **Step 4: Run everything**
 
