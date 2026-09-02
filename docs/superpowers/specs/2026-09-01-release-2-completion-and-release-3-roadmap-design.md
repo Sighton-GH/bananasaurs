@@ -774,17 +774,22 @@ it — which is the Release 3 gate's own requirement.
 ## 9. ADRs this plan requires
 
 Written **before** the implementation they describe, per CLAUDE.md's working
-style, numbered sequentially from 0038:
+style, numbered sequentially from 0038. **0039 was taken out of sequence** by
+the keyword-filter collapse-threshold fix (a live bug found while closing out
+Slice 0, fixed before Slice 1 began — see
+`docs/decisions/0039-keyword-filter-collapse-thresholds-derive-from-the-word-list.md`),
+so the table below shifts by one from what earlier drafts of this plan named:
 
 | ADR | Subject | Precedes |
 | --- | --- | --- |
 | 0038 | Native AutoMod is a first-class collaborator, and its decisions are recorded | Slice 0 |
-| 0039 | The predicate interface and the `mod_rules.config` carrier | Slice 1 |
-| 0040 | Fixtures, the dry-run evaluator, and the one-code-path invariant | Slice 2 |
-| 0041 | Cutover state and the tiered false-positive gate together decide when enforcement is offerable; `counts_as_violation` becomes a rule property; automod testing mode is a third lever | Slice 6 |
-| 0042 | The dashboard's stack, design system, and information architecture | Slice 7 |
-| 0043 | AI proposes, deterministic code disposes: the tool registry and the proposed-action pipeline | R3-4 |
-| 0044 | Resource and document ingestion, and the outbound destinations it authorises | R3-3 |
+| 0039 | Keyword filter collapse thresholds derive from the configured word list | (bugfix, not a slice) |
+| 0040 | The predicate interface and the `mod_rules.config` carrier | Slice 1 |
+| 0041 | Fixtures, the dry-run evaluator, and the one-code-path invariant | Slice 2 |
+| 0042 | Cutover state and the tiered false-positive gate together decide when enforcement is offerable; `counts_as_violation` becomes a rule property; automod testing mode is a third lever | Slice 6 |
+| 0043 | The dashboard's stack, design system, and information architecture | Slice 7 |
+| 0044 | AI proposes, deterministic code disposes: the tool registry and the proposed-action pipeline | R3-4 |
+| 0045 | Resource and document ingestion, and the outbound destinations it authorises | R3-3 |
 
 ---
 

@@ -1188,4 +1188,4 @@ git commit -m "test: assert native AutoMod and Bananasaurs cannot double-punish"
 
 Per the spec's §4 per-phase checkpoint, Slice 0 does **not** end at Task 6. Phase 1 (Slices 0-2) closes with a whole-branch review by a fresh agent that did not write the code — ADR 0036 exists because exactly that review caught three defects twelve per-task reviews had each missed, including a guild in dry run really deleting real members' messages.
 
-Next slice: Slice 1 — the predicate abstraction and `mod_rules.config` carrier, preceded by ADR 0039.
+Next slice: Slice 1 — the predicate abstraction and `mod_rules.config` carrier, preceded by ADR 0040. (ADR 0039 was taken out of sequence by the keyword-filter collapse-threshold bugfix found while closing out Slice 0 — see `docs/decisions/0039-keyword-filter-collapse-thresholds-derive-from-the-word-list.md` — so every ADR this plan named from Slice 1 onward shifted up by one.)
