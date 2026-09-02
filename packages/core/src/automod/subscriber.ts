@@ -96,6 +96,31 @@ export interface AutomodSubscriberDeps {
   isExempt(ruleId: string, input: { authorRoleIds: readonly string[]; channelId: string }): boolean;
   deleteMessage(channelId: string, messageId: string, reason: string): Promise<void>;
   /**
+   * Records this message as review evidence, and returns the fixture id — or
+   * `undefined` if nothing was captured.
+   *
+   * Called only for a match by a rule in `test` or `observe` mode (ADR 0041
+   * §2, plan ruling PR-2). Three boundaries meet here and all three are
+   * deliberate:
+   *
+   * - **Only matched messages.** Capturing traffic that matched nothing would
+   *   build a message archive by the back door, under a decision the owner
+   *   made about a *review corpus* — and Release 3 gates archive ingestion
+   *   behind a default-deny channel scope (ADR 0009).
+   * - **Not in `enforce` mode.** `PRIVACY.md` promises deleted-message
+   *   content is kept 30 days; a fixture has no expiry, so capturing the
+   *   content of a message the bot just deleted would make the policy untrue.
+   * - **Never fatal.** The call site wraps this in a `try`/`catch`: a corpus
+   *   write failing must not stop a deletion or an escalation.
+   */
+  captureFixture(input: {
+    messageId: string;
+    /** Zero-width stripped — what the predicate matched against. */
+    content: string;
+    authorId: string;
+    atMs: number;
+  }): string | undefined;
+  /**
    * Resolves the member's case so an event can be attached to it, and — only
    * when `countsAsViolation` — moves the per-member violation counter the
    * escalation ladder reads.
@@ -122,15 +147,10 @@ export interface AutomodSubscriberDeps {
     actionTaken: AutomodActionTaken;
     escalationAction: 'timeout' | 'kick' | undefined;
     refusalReason: string | undefined;
-    /**
-     * Why the predicate matched (ADR 0040). Threaded through deliberately
-     * unused for now: `mod_case_events` has nowhere to persist a trace until
-     * Slice 2 adds the column, so this task's composition root wiring
-     * (`apps/daemon/src/automod/wiring.ts`) receives it and drops it. That is
-     * a documented, deliberate gap — not a value silently lost by accident —
-     * and Task 7 makes it visible.
-     */
+    /** Why the predicate matched (ADR 0040, ADR 0041 §4). */
     trace: MatchTrace;
+    /** The corpus row captured from this message, if there was one (PR-5). */
+    fixtureId: string | undefined;
   }): void;
   /**
    * The guild's live safety state — the *same* read
@@ -282,6 +302,40 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         if (evaluation.kind === 'no-match') continue;
         const hit = evaluation.match;
 
+        // Evidence for the observe window, captured before anything is done
+        // about the match — so a review is possible even if the moderation
+        // action below fails or is refused. Not in `enforce` mode (ADR 0041
+        // §2, plan ruling PR-2): `PRIVACY.md` promises deleted-message
+        // content is kept 30 days, and a fixture has no expiry, so capturing
+        // what the bot is about to delete would make that policy untrue in
+        // the same release that added the row claiming it is true.
+        //
+        // The corpus is evidence, not enforcement (plan ruling PR-8): a
+        // capture failure must never stop a deletion or an escalation, so the
+        // call is wrapped here, at its one call site, rather than trusted to
+        // every port implementation to swallow its own errors.
+        let fixtureId: string | undefined;
+        if (rule.mode !== 'enforce') {
+          try {
+            fixtureId = deps.captureFixture({
+              messageId: input.messageId,
+              content: input.content,
+              authorId,
+              atMs: input.atMs,
+            });
+          } catch (err) {
+            deps.logger.error(
+              safeLogFields({
+                component: 'automod',
+                guildId: event.guildId,
+                ruleId: rule.ruleId,
+                err,
+              }),
+              'capturing the matched message as review evidence failed; continuing without a fixture',
+            );
+          }
+        }
+
         const record = (
           caseId: string,
           actionTaken: AutomodActionTaken,
@@ -298,6 +352,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
             escalationAction,
             refusalReason,
             trace: hit.trace,
+            fixtureId,
           });
         };
 

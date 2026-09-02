@@ -127,6 +127,7 @@ interface Harness {
     readSafetyState: number;
     authorRoleIds: string[];
     nextEscalationTier: number[];
+    captureFixture: { messageId: string; content: string; authorId: string; atMs: number }[];
   };
 }
 
@@ -150,6 +151,10 @@ function buildHarness(
     /** Thrown by `authorRoleIds`, i.e. `fetchMember` rejecting. */
     authorRoleIdsError?: Error;
     authorRoleIds?: readonly string[];
+    /** What `captureFixture` returns; `undefined` by default (nothing captured). */
+    captureFixtureResult?: string;
+    /** Thrown by `captureFixture`, mimicking a corpus write failure. */
+    captureFixtureError?: Error;
   } = {},
 ): Harness {
   const calls: Harness['calls'] = {
@@ -162,6 +167,7 @@ function buildHarness(
     readSafetyState: 0,
     authorRoleIds: [],
     nextEscalationTier: [],
+    captureFixture: [],
   };
 
   const exempt = opts.exemptRuleIds ?? new Set<string>();
@@ -215,6 +221,11 @@ function buildHarness(
       calls.readSafetyState += 1;
       const state = opts.safetyState === undefined ? LIVE : opts.safetyState;
       return state ?? undefined;
+    },
+    captureFixture: (input) => {
+      calls.captureFixture.push(input);
+      if (opts.captureFixtureError !== undefined) throw opts.captureFixtureError;
+      return opts.captureFixtureResult;
     },
   };
 
@@ -325,6 +336,116 @@ describe('automod subscriber', () => {
     expect(calls.recordCaseEvent).toEqual([
       expect.objectContaining({ ruleId: 'rule-4', actionTaken: 'would_delete' }),
     ]);
+  });
+
+  /**
+   * ADR 0041 §2 / plan ruling PR-2: the review corpus captures a matched
+   * message only for a rule in `test` or `observe` mode, never `enforce` —
+   * `PRIVACY.md` promises deleted-message content is kept 30 days, and a
+   * fixture has no expiry, so capturing what the bot just deleted would make
+   * that policy untrue. Plan ruling PR-8: the capture is best-effort and must
+   * never cost a moderation record.
+   */
+  describe('capturing review evidence', () => {
+    it('captures a matched message as review evidence in test mode', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-capture', mode: 'test' })],
+        captureFixtureResult: 'fixture-1',
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.captureFixture).toEqual([
+        {
+          messageId: MESSAGE,
+          content: 'this message has badword in it',
+          authorId: AUTHOR,
+          atMs: NOW_MS,
+        },
+      ]);
+    });
+
+    it('does not capture in enforce mode', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-enforce-no-capture', mode: 'enforce' })],
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.captureFixture).toHaveLength(0);
+      expect(calls.deleteMessage).toHaveLength(1);
+    });
+
+    it('does not capture a message no rule matched', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-no-match', mode: 'test' })],
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate({ content: 'nothing to see here' }));
+
+      expect(calls.captureFixture).toHaveLength(0);
+      expect(calls.recordCaseEvent).toHaveLength(0);
+    });
+
+    it('records the fixture id and the trace on the case event', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-fixture-id', mode: 'observe' })],
+        captureFixtureResult: 'fixture-xyz',
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({
+          fixtureId: 'fixture-xyz',
+          trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
+        }),
+      ]);
+    });
+
+    /**
+     * A message matching two rules — an `observe`-mode rule whose capture
+     * fails, followed by an `enforce`-mode rule. Deliberately not a
+     * single-rule enforce-mode case: `captureFixture` is never called for an
+     * `enforce`-mode match (PR-2), so a single enforce-mode rule could never
+     * exercise a capture throw at all. This proves what the try/catch is
+     * actually for — a capture failure on one rule must not abort the loop
+     * and skip every rule after it, deletion and escalation included.
+     */
+    it('still deletes and escalates when capture throws', async () => {
+      const observeRule = rule({ ruleId: 'rule-observe-throws', mode: 'observe' });
+      const enforceRule = rule({ ruleId: 'rule-enforce-after', mode: 'enforce' });
+      const { deps, calls } = buildHarness({
+        rules: [observeRule, enforceRule],
+        captureFixtureError: new Error('disk full'),
+        violationCount: 3,
+        tier: { action: 'timeout', timeoutMs: 600_000 },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await expect(subscriber.handle(messageCreate())).resolves.toBeUndefined();
+
+      expect(calls.captureFixture).toHaveLength(1);
+      expect(calls.deleteMessage).toEqual([
+        { channelId: CHANNEL, messageId: MESSAGE, reason: `automod: ${enforceRule.ruleId}` },
+      ]);
+      expect(calls.applyAction).toHaveLength(1);
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({
+          ruleId: 'rule-observe-throws',
+          actionTaken: 'would_delete',
+          fixtureId: undefined,
+        }),
+        expect.objectContaining({
+          ruleId: 'rule-enforce-after',
+          actionTaken: 'deleted_and_escalated',
+        }),
+      ]);
+    });
   });
 
   it('skips an exempt author/channel entirely', async () => {
