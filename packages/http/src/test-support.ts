@@ -144,6 +144,13 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     };
   },
 
+  findAutomodRule: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  listAutomodFixtures: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+
   applySetting: () => {
     throw new Error('not used by the dashboard routes under test');
   },

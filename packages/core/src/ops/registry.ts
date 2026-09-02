@@ -1,4 +1,5 @@
 import type { RegisteredCommand } from './dispatch.js';
+import { automodDryRunCommand } from './commands/automod.js';
 import { backupListCommand, backupNowCommand } from './commands/backup.js';
 import { bootstrapReissueCommand } from './commands/bootstrap.js';
 import { killswitchCommand } from './commands/killswitch.js';
@@ -41,6 +42,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   auditTailCommand,
   jobsListCommand,
   backupListCommand,
+  automodDryRunCommand,
 
   // Writes. Each needs `--confirm` and each records an audit row; the
   // dispatcher enforces both, so the ordering here is for `--help` only.

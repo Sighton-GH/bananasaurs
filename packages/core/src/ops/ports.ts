@@ -1,3 +1,4 @@
+import type { AutomodRule, FixtureRecord } from '../automod/predicates/types.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -221,6 +222,19 @@ export interface OpsPorts {
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
   findJob(jobId: number): OpsJobRow | undefined;
+  /** One enabled or disabled rule by id, hydrated the way the subscriber sees it. */
+  findAutomodRule(ruleId: string): AutomodRule | undefined;
+  /**
+   * The review corpus, oldest first.
+   *
+   * The whole corpus, not a page: a dry run's numbers are only meaningful
+   * over the whole thing, and a truncated replay would report a
+   * false-positive count for a subset while looking like one for the corpus.
+   * At club volume this is a few thousand rows.
+   */
+  listAutomodFixtures(filter: {
+    readonly source?: 'observed' | 'handwritten';
+  }): readonly FixtureRecord[];
 
   // --- write commands (13d) --------------------------------------------------
   /**

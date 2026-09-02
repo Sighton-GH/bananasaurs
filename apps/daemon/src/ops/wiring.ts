@@ -12,6 +12,7 @@ import {
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  automodFixtureRepo,
   automodRuleRepo,
   effectRepo,
   guildRepo,
@@ -159,6 +160,14 @@ export const opsPortsFor = (
     const job = jobRepo.findJob(scope, jobId);
     return job === undefined ? undefined : jobRow(job);
   },
+
+  // `listEnabledRules` returns only enabled rules — the honest thing to
+  // dry-run, since a disabled rule is not going to match anything in
+  // production either. Replaying a disabled rule is a repo function this
+  // task does not add.
+  findAutomodRule: (ruleId) =>
+    automodRuleRepo.listEnabledRules(scope).find((r) => r.ruleId === ruleId),
+  listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
 
   // --- write commands (13d) --------------------------------------------------
   applySetting: (change) => applySetting(scope, change, now()),

@@ -40,6 +40,8 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   listRoutes: unstubbed('listRoutes'),
   listExcludedChannels: unstubbed('listExcludedChannels'),
   findJob: unstubbed('findJob'),
+  findAutomodRule: unstubbed('findAutomodRule'),
+  listAutomodFixtures: unstubbed('listAutomodFixtures'),
   applySetting: unstubbed('applySetting'),
   setRoute: unstubbed('setRoute'),
   setRouteEnabled: unstubbed('setRouteEnabled'),
