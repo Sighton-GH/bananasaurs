@@ -58,6 +58,23 @@ export interface PredicateInput {
   readonly channelId: string;
   readonly messageId: string;
   readonly authorId: string;
+  /**
+   * Which gateway event produced this input.
+   *
+   * Nothing in Slice 1 reads this — `keyword_filter` matches content, not
+   * event history — which is expected: it is added now, ahead of need,
+   * because the subscriber evaluates both `messageCreate` and
+   * `messageUpdate` (`subscriber.ts`'s handler guard) and a predicate has no
+   * other way to tell them apart. Slice 4's window-tier predicates
+   * (`rapid_spam`, `duplicate_message`) count *events*, and without this a
+   * member editing one message five times would count as five messages
+   * rather than one — each predicate would have to re-derive "have I already
+   * counted this `messageId`" from a fact the subscriber already has.
+   * Cheaper to carry the field now than to retrofit it into every predicate's
+   * interface and fixtures once the window tier needs it (the same reasoning
+   * ADR 0040 gives for carrying `MatchTrace` a slice early).
+   */
+  readonly eventKind: 'messageCreate' | 'messageUpdate';
   /** Zero-width stripped (`stripZeroWidth`). What content predicates match. */
   readonly content: string;
   /** Exactly as Discord delivered it, for traces that must quote the original. */

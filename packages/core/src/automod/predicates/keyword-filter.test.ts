@@ -17,6 +17,7 @@ const message = (content: string): PredicateInput => ({
   channelId: '222222222222222222',
   messageId: '333333333333333333',
   authorId: '444444444444444444',
+  eventKind: 'messageCreate',
   content,
   rawContent: content,
   mentionedUserIds: [],

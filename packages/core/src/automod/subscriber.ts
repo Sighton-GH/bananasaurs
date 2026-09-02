@@ -322,6 +322,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
             channelId: event.channelId,
             messageId: event.messageId,
             authorId,
+            eventKind: event.kind,
             content: normalized,
             rawContent: event.content,
             mentionedUserIds: event.mentionedUserIds,
