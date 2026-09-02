@@ -28,7 +28,7 @@ runs the observe window before the dashboard work starts.
 | Slice | ADR | Plan | Status |
 | --- | --- | --- | --- |
 | 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **✅ complete** — 7 tasks, whole-branch reviewed, fix wave re-reviewed clean. 2026 tests (from 1953), typecheck + lint clean |
-| 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | — | ADR written, plan pending |
+| 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **in progress** — 9 tasks, pre-flight scan clean, executing |
 | 3 — precise tier (`regex`, `invite`, `link_domain`) | — | — | not started |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
 | 5 — shape tier (`caps`, `attachment_type`, `emoji`) | — | — | not started |
@@ -397,6 +397,34 @@ field added to `AutomodRule` later is hashed **without anyone editing
 than spreading in declaration order. That is what stops Slice 3's relational
 `invite`/`link_domain` allowlist from silently escaping the cache key.
 
+## Slice 2 rulings (2026-09-02)
+
+Nine decisions ADR 0041 does not name, taken at plan time so execution does
+not stall on them. Full text with costs-if-wrong lives in the plan's **Plan
+rulings** section; this is the index. Two more (E-2, E-3) came out of the
+pre-flight conflict scan and live in
+`.superpowers/sdd/2026-09-02-slice-2-fixtures-dry-run-and-traces/progress.md`.
+
+| # | Ruling | Cost if wrong |
+| --- | --- | --- |
+| PR-1 | An observed fixture's id is `<messageId>:<first 16 hex of sha256(content)>`. A replay collapses; an edit is separate evidence. | An edited-then-rematched message yields two rows where one was wanted — visible, deletable. |
+| PR-2 | Capture happens only for `test`/`observe` matches. Enforce-mode matches are **not** captured. | The corpus stops growing after flip day; post-flip review reads trace + snippet, not the whole message. |
+| PR-3 | A fixture-derived `PredicateInput` parses mentions from content, leaves `attachments` empty, uses synthetic channel ids. | `attachment_type` (Slice 5) cannot be dry-run against observed traffic — handwritten cases only. **Carried to Slice 5.** |
+| PR-4 | `mod_match_reviews` PK is `(guild_id, event_id)`; a re-review updates. | The history of a *changed* verdict is lost. Additive table fixes it later if needed. |
+| PR-5 | `mod_case_events` gains nullable `fixture_id`; a verdict propagates a label onto the linked fixture. | One nullable column on an append-only table, ignorable if unwanted. |
+| PR-6 | Three CLI commands: `automod dryrun`, `automod review` (reads), `automod verdict` (write, `--confirm` + audit). | One more command in `--help`. |
+| PR-7 | A match is reviewable exactly when it has a trace (`trace IS NOT NULL`), not by an `action_taken` allowlist. | A genuine match with no trace is invisible — only possible for pre-Slice-2 rows, whose clocks are restarting anyway. |
+| PR-8 | Trace serialisation and label propagation are best-effort; neither may cost a moderation record. | A field of evidence goes missing where a louder failure might have surfaced the bug sooner. |
+| PR-9 | `mod_match_reviews.reviewed_by` is plain TEXT — the CLI writes `cli:<unix user>`, the dashboard a snowflake. | Slice 9's screen branches on a string prefix to render a reviewer. |
+
+**Why PR-2 is the one to re-examine first.** It is the only ruling here that
+narrows what the observe window can measure *after* flip day, and it was
+decided on a privacy ground rather than an engineering one: `PRIVACY.md`
+promises deleted-message content is kept 30 days, a fixture has no expiry, so
+capturing what the bot just deleted would make the policy untrue in the same
+commit that adds a row claiming it is true. If post-flip review turns out too
+thin in practice, widening it is **the owner's decision**, not a later slice's.
+
 ## A pattern worth adding to `docs/22`
 
 **Four decorative guards in one slice.** `docs/22` already records one from
@@ -516,3 +544,16 @@ Collected as they arise, so the final handoff is not reconstructed from memory.
    measured nothing.
 4. **A worktree needs `npm ci` (or workspace symlinks) before its gates mean
    anything** — see E-1. Worth a line in `docs/` if worktrees become routine.
+5. **Decide, before flip day, whether the corpus should keep growing after
+   it.** Slice 2 captures a matched message only while its rule is in `test`
+   or `observe` (ruling PR-2), because a fixture has no expiry and
+   `PRIVACY.md` promises deleted-message content is kept 30 days. The
+   consequence is that once you flip a rule to `enforce`, post-flip false
+   positives are reviewable from the trace and the matched snippet, not from
+   the whole message. If that is too thin for the review you actually want to
+   do, widening it is a privacy decision and therefore yours.
+6. **Rehearse a trace before flip day.** The spec's own pre-flip gate: run
+   `bananasaurs automod dryrun <ruleId>` and `bananasaurs automod review`
+   against each real rule and read the output. A trace nobody can read
+   produces an observe window that yields nothing, and that is discovered
+   two weeks late rather than on the day.
