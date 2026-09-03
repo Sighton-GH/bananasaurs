@@ -33,6 +33,13 @@ export const isRuleKind = (value: string): value is RuleKind =>
  * relational data in a type every predicate has to satisfy. `terms` and
  * `allowlist` are empty for every other kind (ADR 0040's split: scalar config
  * in JSON, list-shaped data in tables).
+ *
+ * `inviteAllowlist` and `linkDomains` are the same split applied to `invite`
+ * and `link_domain` (ADR 0040 §3): each a relational list rather than JSON in
+ * `config`, because the label/`listType` is per-item metadata and Slice 9's
+ * one-click suppression for both predicates is a row edit. Empty for every
+ * other kind. Mirrors storage's `StoredAutomodRule` field for field;
+ * re-declared here rather than imported, per ADR 0014.
  */
 export interface AutomodRule {
   readonly ruleId: string;
@@ -42,6 +49,8 @@ export interface AutomodRule {
   readonly config: string;
   readonly terms: readonly { text: string; categoryId: string }[];
   readonly allowlist: readonly string[];
+  readonly inviteAllowlist: readonly { code: string; label: string }[];
+  readonly linkDomains: readonly { domain: string; listType: 'allow' | 'deny' }[];
 }
 
 /**

@@ -742,6 +742,76 @@ export const wordAllowlist = sqliteTable(
   ],
 );
 
+/**
+ * `invite`'s allowlist: the club's own invite codes plus partner and
+ * sister-club codes, each with a human label (spec section 3, Slice 3).
+ *
+ * Relational rather than JSON in `mod_rules.config`, per ADR 0040 section 3:
+ * the label is per-item metadata, and Slice 9's one-click suppression for
+ * this predicate is "add this code to the allowlist", which is a row.
+ *
+ * **No `last_matched_at`, deliberately** (plan ruling PR-14). The spec asks
+ * for one so a stale partner code is visible, but writing it means either a
+ * database write on the hot path for every allowlisted invite in every
+ * message, or widening every predicate's return type so a non-match can
+ * carry observations. Carried to Slice 9, where the review surface can
+ * derive staleness from match history instead. The label is what keeps the
+ * list readable until then.
+ */
+export const automodInviteAllowlist = sqliteTable(
+  'automod_invite_allowlist',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    /** The invite code as it appears after `discord.gg/`. Case-preserving; matched case-insensitively. */
+    code: text('code').notNull(),
+    /** Why this code is allowed, for the human reading the list a year from now. */
+    label: text('label').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId, t.code] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('automod_invite_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/**
+ * `link_domain`'s allow and deny lists (spec section 3, Slice 3).
+ *
+ * One table with a `list_type` rather than two tables: the two lists are the
+ * same shape and are always read together, and a domain that appears on both
+ * is a configuration error the primary key makes impossible to express.
+ *
+ * Matching is label-wise suffix, not registrable-domain (plan ruling PR-15):
+ * `example.com` matches `example.com` and `gist.example.com` but not
+ * `notexample.com`. No Public Suffix List, and therefore no dependency and no
+ * data file to go stale.
+ */
+export const automodLinkDomains = sqliteTable(
+  'automod_link_domains',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    /** Stored lower-cased, without a scheme, port or path. */
+    domain: text('domain').notNull(),
+    listType: text('list_type').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId, t.domain] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('automod_link_domains_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('automod_link_domains_list_type', sql`${t.listType} IN ('allow','deny')`),
+  ],
+);
+
 /** Per-member violation history. What escalation reads to pick the next tier. */
 export const modCases = sqliteTable(
   'mod_cases',

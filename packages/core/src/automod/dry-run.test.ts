@@ -98,6 +98,8 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
   config: '{}',
   terms: terms.map((text) => ({ text, categoryId: 'cat-1' })),
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
 });
 
 const fixture = (over: Partial<FixtureRecord> & { fixtureId: string }): FixtureRecord => ({

@@ -23,9 +23,12 @@ const EXCLUDED_FIELDS: ReadonlySet<string> = new Set(['ruleId', 'mode']);
  *
  * `terms` and `allowlist` need sorting: `hydrate` queries terms per category,
  * so their order tracks category order, which no caller controls, and an
- * order change is not a rule change. Everything else is a scalar (`kind`,
- * `config`, and any future field ADR 0040 §3 adds in the same shape) and
- * needs no treatment beyond `JSON.stringify`'s own.
+ * order change is not a rule change. `inviteAllowlist` and `linkDomains` need
+ * the same treatment for the same reason — `hydrate` reads them with a query
+ * ordered by `code`/`domain`, which is belt and braces, not a substitute for
+ * this: the digest must not depend on the query plan either. Everything else
+ * is a scalar (`kind`, `config`) and needs no treatment beyond
+ * `JSON.stringify`'s own.
  */
 const canonicalise = (key: string, value: unknown): unknown => {
   if (key === 'terms' && Array.isArray(value)) {
@@ -35,6 +38,19 @@ const canonicalise = (key: string, value: unknown): unknown => {
   }
   if (key === 'allowlist' && Array.isArray(value)) {
     return [...(value as readonly string[])].sort((a, b) => a.localeCompare(b));
+  }
+  if (key === 'inviteAllowlist' && Array.isArray(value)) {
+    return (value as readonly { code: string; label: string }[])
+      .map((entry) => [entry.code, entry.label] as const)
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
+  }
+  if (key === 'linkDomains' && Array.isArray(value)) {
+    // `listType` is part of the sort key, not just carried along: a domain
+    // moving from allow to deny at the same list position must produce a
+    // different canonical structure, not the same one in a different order.
+    return (value as readonly { domain: string; listType: 'allow' | 'deny' }[])
+      .map((entry) => [entry.domain, entry.listType] as const)
+      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
   }
   return value;
 };
@@ -48,12 +64,16 @@ const canonicalise = (key: string, value: unknown): unknown => {
  * carried since ADR 0035, which ADR 0039 made sharper by deriving the
  * matcher's collapse thresholds from the word list too.
  *
- * **Exclusion-based, not enumerated.** ADR 0040 §3 already commits a later
- * slice to a *relational* allowlist field for `invite` and `link_domain`; a
- * digest that hand-lists `{kind, config, terms, allowlist}` would not hash
- * that field, the compiled artifact would go stale, and the exact
- * silent-non-matching bug this slice exists to kill would come back for those
- * predicates. So this builds the hashed object by iterating `rule`'s own
+ * **Exclusion-based, not enumerated.** ADR 0040 §3 committed an earlier slice
+ * to *relational* allowlist fields for `invite` and `link_domain` —
+ * `inviteAllowlist` and `linkDomains`, added to `AutomodRule` in Task 6 — and
+ * this is exactly why the digest is built this way rather than hand-listing
+ * `{kind, config, terms, allowlist}`: that would not have hashed the two new
+ * fields, the compiled artifact would go stale, and the exact silent-
+ * non-matching bug this slice exists to kill would come back for those two
+ * predicates (obligation 2 of the slices 3-5 handoff, verified by a test that
+ * was watched failing with `inviteAllowlist` added to `EXCLUDED_FIELDS` and
+ * then restored). So this builds the hashed object by iterating `rule`'s own
  * keys, sorted, and skipping only `EXCLUDED_FIELDS` — a field added to
  * `AutomodRule` later is hashed by default, and *omitting* one is the
  * deliberate act, made by adding it to `EXCLUDED_FIELDS` with a reason.

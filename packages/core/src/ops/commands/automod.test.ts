@@ -79,6 +79,8 @@ const ruleWith = (words: readonly string[], over: Partial<AutomodRule> = {}): Au
   config: '{}',
   terms: words.map((text) => ({ text, categoryId: 'c1' })),
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
   ...over,
 });
 

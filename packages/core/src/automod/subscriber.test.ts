@@ -89,6 +89,8 @@ const rule = (over: Partial<AutomodRule> & { ruleId: string }): AutomodRule => (
   mode: 'enforce',
   terms: [{ text: 'badword', categoryId: 'cat-1' }],
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
   ...over,
 });
 

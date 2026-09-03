@@ -1,13 +1,16 @@
-import { and, eq } from 'drizzle-orm';
+import { and, asc, eq } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import {
+  automodInviteAllowlist,
+  automodLinkDomains,
   modRuleExemptions,
   modRules,
   wordAllowlist,
   wordCategories,
   wordTerms,
 } from '../schema.js';
+import type { InviteAllowlistEntry, LinkDomainEntry } from './automod-rule-lists.js';
 
 /**
  * Automod rules and the word list `keyword_filter` rules carry.
@@ -56,8 +59,9 @@ export type RuleKind =
  * import storage (ADR 0014), so the string is the boundary.
  *
  * `terms` and `allowlist` are empty for every kind but `keyword_filter`,
- * whose data is relational by ADR 0040's split. A later predicate with
- * list-shaped data adds its own field here the same way.
+ * whose data is relational by ADR 0040's split. `inviteAllowlist` and
+ * `linkDomains` are the same split applied to `invite` and `link_domain`
+ * (ADR 0040 §3): empty for every other kind.
  */
 export interface StoredAutomodRule {
   readonly ruleId: string;
@@ -66,6 +70,8 @@ export interface StoredAutomodRule {
   readonly config: string;
   readonly terms: readonly { text: string; categoryId: string }[];
   readonly allowlist: readonly string[];
+  readonly inviteAllowlist: readonly InviteAllowlistEntry[];
+  readonly linkDomains: readonly LinkDomainEntry[];
 }
 
 type RuleRow = { ruleId: string; kind: string; mode: string; config: string };
@@ -80,7 +86,11 @@ type RuleRow = { ruleId: string; kind: string; mode: string; config: string };
  *
  * Every kind but `keyword_filter` simply has no `word_categories` rows, so
  * `terms`/`allowlist` come back `[]` naturally — no branch on `kind` needed
- * here.
+ * here. The same is true of `inviteAllowlist` and `linkDomains` below: every
+ * kind but `invite`/`link_domain` has no rows in those tables either, so they
+ * are queried unconditionally too, with no branch on `kind` (Task 6, plan
+ * Step 6) — a `kind` branch here would be a second place that has to be
+ * updated when a kind is added.
  */
 const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
   read(scope, (db) => {
@@ -115,6 +125,25 @@ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
       .all()
       .map((r) => r.phrase);
 
+    // Ordered by `code`/`domain`: this feeds the rule fingerprint, and a
+    // digest that changed with the query plan would recompile every matcher
+    // in the guild at random (the fingerprint also sorts, so this is belt and
+    // braces, matching `automod-rule-lists.ts`'s own repository functions).
+    const inviteAllowlist = db
+      .select({ code: automodInviteAllowlist.code, label: automodInviteAllowlist.label })
+      .from(automodInviteAllowlist)
+      .where(scope.only(automodInviteAllowlist, eq(automodInviteAllowlist.ruleId, row.ruleId)))
+      .orderBy(asc(automodInviteAllowlist.code))
+      .all();
+
+    const linkDomains = db
+      .select({ domain: automodLinkDomains.domain, listType: automodLinkDomains.listType })
+      .from(automodLinkDomains)
+      .where(scope.only(automodLinkDomains, eq(automodLinkDomains.ruleId, row.ruleId)))
+      .orderBy(asc(automodLinkDomains.domain))
+      .all()
+      .map((r) => ({ domain: r.domain, listType: r.listType as 'allow' | 'deny' }));
+
     return {
       ruleId: row.ruleId,
       kind: row.kind as RuleKind,
@@ -122,6 +151,8 @@ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
       config: row.config,
       terms,
       allowlist,
+      inviteAllowlist,
+      linkDomains,
     };
   });
 

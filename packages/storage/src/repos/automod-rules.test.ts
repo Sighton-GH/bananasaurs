@@ -18,6 +18,7 @@ import {
   setRuleMode,
   type RuleKind,
 } from './automod-rules.js';
+import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const ROLE = parseSnowflakeId('222222222222222222');
@@ -319,5 +320,39 @@ describe('mod_rules.config', () => {
     expect(capsRule.allowlist).toEqual([]);
     expect(keywordRule.terms).toEqual([{ text: 'badword', categoryId: 'cat1' }]);
     expect(keywordRule.allowlist).toEqual(['assassin']);
+  });
+
+  it("keeps each rule's invite allowlist and link domains to itself", () => {
+    // NOT decorative: two rules, each WITH entries in both new tables, so an
+    // implementation of `hydrate` that dropped the `rule_id` predicate on
+    // either query hands both lists to both rules and this goes red. One
+    // rule with entries and one without would pass under that exact bug —
+    // the shape `docs/22` records (Task 6, plan Step 8).
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'inv1', kind: 'invite', name: 'invites', config: '{}', now: 1 });
+    addInviteAllowlistEntry(scope, {
+      ruleId: 'inv1',
+      code: 'clubhouse',
+      label: 'our server',
+      now: 1,
+    });
+
+    createRule(scope, {
+      ruleId: 'link1',
+      kind: 'link_domain',
+      name: 'links',
+      config: '{}',
+      now: 1,
+    });
+    addLinkDomain(scope, { ruleId: 'link1', domain: 'example.com', listType: 'deny', now: 1 });
+
+    const rules = listEnabledRules(scope);
+    const inviteRule = rules.find((r) => r.ruleId === 'inv1')!;
+    const linkRule = rules.find((r) => r.ruleId === 'link1')!;
+
+    expect(inviteRule.inviteAllowlist).toEqual([{ code: 'clubhouse', label: 'our server' }]);
+    expect(inviteRule.linkDomains).toEqual([]);
+    expect(linkRule.inviteAllowlist).toEqual([]);
+    expect(linkRule.linkDomains).toEqual([{ domain: 'example.com', listType: 'deny' }]);
   });
 });

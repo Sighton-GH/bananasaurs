@@ -27,6 +27,8 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
   config: '{}',
   terms: terms.map((text) => ({ text, categoryId: 'profanity' })),
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
 });
 
 const inputWith = (content: string): PredicateInput => ({
