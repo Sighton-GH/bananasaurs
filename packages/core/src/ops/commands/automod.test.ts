@@ -324,8 +324,7 @@ describe('automod review', () => {
       listUnreviewedMatches: () => [
         reviewableMatch({
           eventId: 'e1',
-          trace:
-            '{"kind":"keyword_filter","matchedOn":"badword","normalisations":[],"detail":{}}',
+          trace: '{"kind":"keyword_filter","matchedOn":"badword","normalisations":[],"detail":{}}',
           fixtureContent: 'hello badword everyone',
         }),
       ],

@@ -1160,9 +1160,7 @@ describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
     const storedVerdict = modMatchReviewRepo.findVerdict(scope(), 'e1');
     expect(storedVerdict?.verdict).toBe('true_positive');
 
-    const fixture = automodFixtureRepo
-      .listFixtures(scope())
-      .find((f) => f.fixtureId === fixtureId);
+    const fixture = automodFixtureRepo.listFixtures(scope()).find((f) => f.fixtureId === fixtureId);
     expect(fixture?.label).toBe('should_match');
 
     // The match is now reviewed, so a second `automod review` must not
