@@ -70,6 +70,20 @@ describe('the caps predicate', () => {
     expect(
       compiled.evaluate(message('here you go ```SELECT * FROM MOD_RULES WHERE ENABLED = 1```')),
     ).toBeUndefined();
+
+    // Decorative guard 3: the assertion above passes for two reasons at
+    // once — the code is stripped, *and* the surviving prose ('here you go')
+    // happens to have a 0.0 caps ratio, so it would pass even if stripping
+    // did nothing at all and the whole message (mixed-case prose plus
+    // upper-case SQL) were scored together. A shout *outside* the fence
+    // pins the actual intent: it must still fire after the fenced block is
+    // removed, which only holds if stripping — not a coincidentally low
+    // ratio — is what is under test.
+    const shoutOutsideFence = compiled.evaluate(
+      message('LOOK AT THIS RIGHT NOW ```select * from mod_rules where enabled = 1``` EVERYONE'),
+    );
+    expect(shoutOutsideFence).toBeDefined();
+    expect(shoutOutsideFence?.trace.detail.ratio).toBe(1);
   });
 
   it('does not divide by zero on a message with no letters', () => {
