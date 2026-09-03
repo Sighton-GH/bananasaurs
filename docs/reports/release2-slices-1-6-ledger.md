@@ -85,6 +85,42 @@ asking "should this table have been excluded?" finds the answer rather than
 re-opening it. Diagnostics bundles are unchanged — they were never a
 whole-database dump.
 
+**OD-3 (2026-09-02) — the fixture corpus also stores each attachment's
+filename, content type and size.** Asked ahead of Slice 5 rather than at it, so
+the run would not stall. This reverses plan ruling PR-3's consequence:
+`attachment_type` *can* now be dry-run against observed traffic, and its
+regression suite is real rather than hand-written.
+
+It is a widening of what Bananasaurs retains about members, and the owner was
+told so before choosing: **filenames routinely carry personal information** —
+`Bryan_resume_2026.pdf`, `medical_letter.docx` — and this stores them for as
+long as the corpus keeps the message.
+
+Four obligations follow, none of them optional, all in the same slice that adds
+the columns:
+
+1. **`PRIVACY.md` gains a line naming attachments**, in the same commit as the
+   migration — the rule ADR 0041 §1 set for the corpus itself, for the same
+   reason: a policy that is not true is worse than none.
+2. **The owner announces it.** Same standing requirement as the Slice 2 privacy
+   change; both can go in one announcement if Slice 2's has not happened yet.
+3. **`/forgetme` must reach it.** If the columns live on `automod_fixtures`,
+   `deleteObservedFixturesForMember` covers them with no code change — **verify
+   that with a test rather than assuming it**, because the whole point of
+   shipping that function two releases early was that the corpus stays
+   un-makeable.
+4. **`captureObservedFixture` must record them**, which means the subscriber's
+   `captureFixture` port has to carry attachments through. They are already on
+   `PredicateInput`; they stop at the corpus boundary today.
+
+**A narrower option the owner may still prefer, recorded because it was not on
+the table when the choice was made:** storing only the *extension*, content
+type and size — dropping the filename — would let `attachment_type` replay
+just as well, since the predicate matches on type rather than name. The
+filename earns its place only if a human reviewing a match wants to see it
+(`invoice.exe` reads differently from `game_mod.exe`). One word from the owner
+narrows this; until then, implement what was approved.
+
 ## Rulings
 
 Rulings taken on the owner's behalf, each with what it costs if wrong.
