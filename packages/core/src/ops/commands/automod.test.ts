@@ -136,6 +136,53 @@ describe('automod dryrun', () => {
     expect(res.data).toMatchObject({ total: 3, matched: 2, falsePositives: 1, falseNegatives: 0 });
   });
 
+  it('refuses to print a false-positive rate when nothing in the corpus is labelled', async () => {
+    // CRITICAL-1: "41/300 matched · 0 false positive(s) · 0 missed" reads
+    // exactly like a rule 296 humans confirmed correct, when in fact nobody
+    // has labelled anything — the same failure shape the unusable-rule and
+    // empty-corpus guards above already close, and the only one of the three
+    // that happens on an ordinary day.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'unlabelled' }),
+          fixture({ fixtureId: 'f2', content: 'ordinary chat', label: 'unlabelled' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('2 of 2 fixtures unlabelled');
+    expect(res.text).toContain('ADR 0041');
+    // Hyphenated "false-positive" (the refusal sentence) is fine; the
+    // numeric "false positive(s)" count must not appear when the rate was
+    // refused, or a reader skimming for a count finds the misleading one.
+    expect(res.text).not.toMatch(/\d+ false positive\(s\)/);
+    expect(res.data).toMatchObject({ unlabelled: 2 });
+  });
+
+  it('prints the false-positive rate with its labelled denominator once some fixtures are labelled', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+          fixture({ fixtureId: 'f2', content: 'badword again', label: 'should_not_match' }),
+          fixture({ fixtureId: 'f3', content: 'nothing here', label: 'unlabelled' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('1 false positive(s) of 2 labelled');
+    expect(res.data).toMatchObject({ unlabelled: 1 });
+  });
+
   it('says the rule is unusable rather than reporting a clean zero', async () => {
     // ADR 0040 §4: a rule that cannot compile matches nothing, and "0
     // matches" reads exactly like a rule behaving perfectly.
@@ -241,28 +288,100 @@ describe('automod review', () => {
     expect(res.text).toContain('bananasaurs automod verdict e1');
   });
 
-  it('renders a match whose trace is malformed without hiding the match', async () => {
+  it('shows the message and the matched snippet as their own lines, unconditionally', async () => {
+    // CRITICAL-2: before this fix, `matchedSnippet`/`matchedCategory` were
+    // fetched and projected into `data` but never printed in `text` at all —
+    // the excerpt inside `renderTrace` was the only route to the message, and
+    // that route is gated on a span existing.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          fixtureContent: 'hello badword everyone',
+          matchedSnippet: 'badword',
+          matchedCategory: 'profanity',
+        }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('message');
+    expect(res.text).toContain('hello badword everyone');
+    expect(res.text).toContain('matched');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('profanity');
+  });
+
+  it('shows the message even when the trace has no span', async () => {
+    // `span` is `.optional()` on `MatchTrace`. `keyword_filter` always sets
+    // one; Slices 3-5 land predicates during this same observe window
+    // (`rapid_spam`, `duplicate_message`, `mention_spam`, `attachment_type`)
+    // that judge the whole message rather than a substring of it and so have
+    // no span. Before this fix, a spanless trace meant `renderTrace` never
+    // printed the excerpt line, and nothing else printed the message either
+    // — the review queue would show no message at all.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          trace:
+            '{"kind":"keyword_filter","matchedOn":"badword","normalisations":[],"detail":{}}',
+          fixtureContent: 'hello badword everyone',
+        }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('hello badword everyone');
+  });
+
+  it('renders a match whose trace is malformed without hiding the message or the snippet', async () => {
     // A trace read back from the database is untrusted (CLAUDE.md rule 3).
     // A row this build cannot parse is still a match a human must rule on,
-    // so the trace is replaced by a reason, not the row by nothing.
+    // so the trace is replaced by a reason — but the message and the
+    // snippet, which do not come from the trace, must still appear. Before
+    // this fix `match.fixtureContent` sat in scope, unprinted, whenever the
+    // trace failed to parse: an event id, a rule id, a member id, a
+    // timestamp, an error, and then a command inviting a verdict.
     const res = await drive(automodReviewCommand, {
-      listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1', trace: 'not json' })],
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          trace: 'not json',
+          fixtureContent: 'hello badword everyone',
+          matchedSnippet: 'badword',
+          matchedCategory: 'profanity',
+        }),
+      ],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('e1');
     expect(res.text).toContain('trace could not be read');
+    expect(res.text).toContain('hello badword everyone');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('profanity');
   });
 
-  it('renders a match whose fixture has been forgotten', async () => {
+  it('renders a match whose fixture has been forgotten, still showing the matched snippet', async () => {
     // /forgetme removed the message. The match is still reviewable from the
-    // trace and the snippet — worse evidence, honestly labelled.
+    // trace and the snippet — worse evidence, honestly labelled, and never
+    // printed as though the snippet were the whole message.
     const res = await drive(automodReviewCommand, {
-      listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1', fixtureContent: undefined })],
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          fixtureContent: undefined,
+          matchedSnippet: 'badword',
+          matchedCategory: 'profanity',
+        }),
+      ],
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('message no longer stored');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('profanity');
   });
 
   it('says so when there is nothing to review', async () => {

@@ -32,6 +32,10 @@ const automodDryRunArgs = z.object({
   source: z.enum(['observed', 'handwritten']).optional(),
 });
 
+/** Fixtures nobody has ruled on yet — neither `should_match` nor `should_not_match`. */
+const unlabelledCount = (report: DryRunReport): number =>
+  report.results.filter((result) => result.label === 'unlabelled').length;
+
 /** `DryRunReport`, projected to plain `JsonValue` — no readonly arrays, no `undefined`. */
 const projectReport = (report: DryRunReport): JsonValue => ({
   ruleId: report.ruleId,
@@ -45,6 +49,10 @@ const projectReport = (report: DryRunReport): JsonValue => ({
   matched: report.matched,
   falsePositives: report.falsePositives,
   falseNegatives: report.falseNegatives,
+  // CRITICAL-1: the denominator behind `falsePositives`/`falseNegatives`
+  // belongs beside them in `data`, not only worked out from `results` by
+  // whoever reads it — see the summary line below for the reasoning.
+  unlabelled: unlabelledCount(report),
   results: report.results.map((result) => ({
     fixtureId: result.fixtureId,
     label: result.label,
@@ -126,10 +134,25 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
 
     const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
 
-    const lines = [
-      `${report.matched}/${report.total} matched · ${report.falsePositives} false ` +
-        `positive(s) · ${report.falseNegatives} missed`,
-    ];
+    // CRITICAL-1: "41/300 matched · 0 false positive(s) · 0 missed" is true
+    // and unreadable — it is indistinguishable from a rule 296 humans
+    // confirmed correct, when in fact nobody has labelled anything yet. This
+    // is the same failure shape the two guards above already close (an
+    // unusable rule, an empty corpus) and the only one that happens on an
+    // ordinary day, so the denominator behind the numerator goes on the same
+    // line as the numerator, always.
+    const unlabelled = unlabelledCount(report);
+    const labelled = report.total - unlabelled;
+    const summary =
+      labelled === 0
+        ? `${report.matched}/${report.total} matched · ${unlabelled} of ${report.total} ` +
+          `fixtures unlabelled — no false-positive rate can be computed from this corpus yet ` +
+          `(the Release 2 gate is measured from \`automod review\` verdicts, not from a corpus ` +
+          `replay — ADR 0041 §2)`
+        : `${report.matched}/${report.total} matched · ${report.falsePositives} false ` +
+          `positive(s) of ${labelled} labelled · ${report.falseNegatives} missed`;
+
+    const lines = [summary];
 
     for (const result of report.results) {
       // Narrowed on `result.match` itself, not on `result.matched`: the two
@@ -201,15 +224,35 @@ const projectReviewableMatch = (match: OpsReviewableMatch): JsonValue => ({
 /**
  * Renders one match for a human to rule on.
  *
- * Two rendering rules, neither decorative:
+ * CRITICAL-2: the message and the matched snippet are their own lines,
+ * printed unconditionally, independent of whether a trace is present, parses,
+ * or carries a span. Before this fix both were fetched, carried through
+ * `OpsReviewableMatch`, projected into `data` — and only ever reached `text`
+ * as a side effect of `renderTrace`'s excerpt line, which is gated on
+ * `trace.span !== undefined`. That meant a malformed trace (case 1 below)
+ * rendered with no evidence at all, and the first predicate with no natural
+ * span — `rapid_spam`, `duplicate_message`, `mention_spam`, `attachment_type`,
+ * all landing during this same observe window — would have produced a review
+ * queue where no message was ever shown.
  *
- * - A trace `parseMatchTrace` rejects renders as a reason, and the match
- *   still appears — stored JSON is untrusted input (CLAUDE.md rule 3), and a
- *   trace this build cannot parse is still a match a human must rule on.
- * - `fixtureContent === undefined` renders as "message no longer stored",
- *   never as though the matched snippet were the whole message — a reviewer
- *   judging a false positive from a fragment they think is the full text
- *   would judge wrong.
+ * Rendering rules, neither decorative:
+ *
+ * - `message` prints whenever `fixtureContent` is present; otherwise "message
+ *   no longer stored" — never the matched snippet standing in for the whole
+ *   message, because a reviewer judging a false positive from a fragment they
+ *   think is the full text would judge wrong.
+ * - `matched` prints unconditionally, from `matchedSnippet`/`matchedCategory`
+ *   — the documented post-flip and post-`/forgetme` fallback (plan ruling
+ *   PR-2, ADR 0041's consequences, `docs/LEDGER_RELEASE2_SLICES_1_6.md`
+ *   handoff item 5) — labelled distinctly from `message` so the two are never
+ *   mistaken for each other.
+ * - A trace `parseMatchTrace` rejects still renders — as a reason, under the
+ *   message and the snippet, not instead of them — because stored JSON is
+ *   untrusted input (CLAUDE.md rule 3) and a trace this build cannot parse is
+ *   still a match a human must rule on.
+ * - `renderTrace`'s excerpt (when a span exists) stays as an *addition* on
+ *   top of `message`, highlighting where in it the rule matched — not the
+ *   only route to the text itself.
  *
  * The follow-up `automod verdict` command is printed under every match: the
  * whole point of shipping this before the dashboard is that a human reviews
@@ -228,7 +271,18 @@ const renderReviewableMatch = (match: OpsReviewableMatch): string => {
         'message no longer stored (removed at the member’s request, or the rule was enforcing)',
       ),
     );
+  } else {
+    // Padded to 16 columns, the same convention `renderTrace` uses for its
+    // own field labels, so the two blend into one reading rather than two
+    // inconsistently-aligned ones.
+    lines.push(indented(`${'message'.padEnd(16)}${match.fixtureContent}`));
   }
+
+  // Always shown, and always distinct from `message` above: this is the
+  // substring the rule matched on, not the whole message (CRITICAL-2).
+  lines.push(
+    indented(`${'matched'.padEnd(16)}"${match.matchedSnippet}"  (${match.matchedCategory})`),
+  );
 
   if (match.trace === undefined) {
     // Not reachable through `listUnreviewedMatches`'s own filter (plan
