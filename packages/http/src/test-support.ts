@@ -160,6 +160,24 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   recordMatchVerdict: () => {
     throw new Error('not used by the dashboard routes under test');
   },
+  addInviteAllowlistEntry: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  listInviteAllowlist: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  removeInviteAllowlistEntry: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  addLinkDomain: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  listLinkDomains: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  removeLinkDomain: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {
       eventKind: input.eventKind,

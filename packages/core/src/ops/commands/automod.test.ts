@@ -4,7 +4,15 @@ import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixture
 import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
 import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
-import { automodDryRunCommand, automodReviewCommand, automodVerdictCommand } from './automod.js';
+import {
+  automodDomainAddCommand,
+  automodDomainRmCommand,
+  automodDryRunCommand,
+  automodInviteAllowCommand,
+  automodInviteDenyCommand,
+  automodReviewCommand,
+  automodVerdictCommand,
+} from './automod.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -577,5 +585,271 @@ describe('automod verdict', () => {
       { eventId: 'e1', verdict: 'maybe' },
     );
     expect(res.ok).toBe(false);
+  });
+});
+
+describe('automod invite-allow', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod invite-allow');
+    expect(automodInviteAllowCommand.write).toBe(true);
+  });
+
+  it('adds an invite allowlist entry and audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'added',
+        listInviteAllowlist: () => [{ code: 'clubhouse', label: 'our own server' }],
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'invite-rule', code: 'clubhouse', label: 'our own server' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, code: 'clubhouse', alreadyPresent: false });
+    expect(res.text).toContain('added clubhouse');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_added',
+        subjectType: 'mod_rule',
+        subjectId: 'invite-rule',
+      }),
+    ]);
+  });
+
+  it('says a code is already allowed rather than erroring on a repeat add', async () => {
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'already-present',
+        listInviteAllowlist: () => [{ code: 'clubhouse', label: 'our own server' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'invite-rule', code: 'clubhouse', label: 'our own server' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, alreadyPresent: true });
+    expect(res.text).toContain('already on');
+  });
+
+  it('refuses to add an entry to a rule that does not exist, but still audits it', async () => {
+    // A usage answer, not a fault — the same treatment `automod verdict`
+    // gives a mistyped event id, and for the same reason: an operator at a
+    // terminal will mistype a rule id. An audit row is still owed.
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'no-such-rule',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', code: 'x', label: 'y' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_added',
+        subjectType: 'mod_rule',
+        subjectId: 'no-such-rule',
+        after: expect.objectContaining({ outcome: 'no-such-rule' }),
+      }),
+    ]);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      { addInviteAllowlistEntry: () => 'added', listInviteAllowlist: () => [] },
+      { ruleId: 'r1', code: 'x', label: 'y' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+});
+
+describe('automod invite-deny', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod invite-deny');
+    expect(automodInviteDenyCommand.write).toBe(true);
+  });
+
+  it('removes an invite allowlist entry', async () => {
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'removed',
+        listInviteAllowlist: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'invite-rule', code: 'clubhouse' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: true });
+    expect(res.text).toContain('removed clubhouse');
+  });
+
+  it('says a code was not on the list rather than erroring', async () => {
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'not-present',
+        listInviteAllowlist: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'invite-rule', code: 'ghost' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: false });
+    expect(res.text).toContain('was not on');
+  });
+
+  it('refuses a rule that does not exist, but still audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'no-such-rule',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', code: 'x' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([
+      expect.objectContaining({ action: 'automod.invite_allowlist_removed' }),
+    ]);
+  });
+});
+
+describe('automod domain-add', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod domain-add');
+    expect(automodDomainAddCommand.write).toBe(true);
+  });
+
+  it('adds a domain and audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => 'added',
+        listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, domain: 'example.com', listType: 'deny' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.link_domain_added',
+        subjectType: 'mod_rule',
+        subjectId: 'domain-rule',
+      }),
+    ]);
+  });
+
+  it('refuses a listType outside allow|deny at the validator', async () => {
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      { addLinkDomain: () => 'added', listLinkDomains: () => [] },
+      { ruleId: 'r1', domain: 'example.com', listType: 'block' },
+    );
+    expect(res.ok).toBe(false);
+  });
+
+  it('refuses a rule that does not exist, but still audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => 'no-such-rule',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', domain: 'example.com', listType: 'allow' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_added' })]);
+  });
+});
+
+describe('automod domain-rm', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod domain-rm');
+    expect(automodDomainRmCommand.write).toBe(true);
+  });
+
+  it('removes a domain', async () => {
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => 'removed',
+        listLinkDomains: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: true });
+  });
+
+  it('says a domain was not on the list rather than erroring', async () => {
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => 'not-present',
+        listLinkDomains: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'ghost.example' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: false });
+  });
+
+  it('refuses a rule that does not exist, but still audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => 'no-such-rule',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_removed' })]);
   });
 });

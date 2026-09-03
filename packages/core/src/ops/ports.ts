@@ -314,6 +314,50 @@ export interface OpsPorts {
      */
     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
   /** Points an event kind at a channel, creating or re-pointing the route. */
+  /**
+   * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
+   * PR-19). `'already-present'` is a real answer, not a refusal: the
+   * repository's `onConflictDoNothing` makes a repeated add a no-op, and
+   * telling the operator "that code was already allowed" beats both silence
+   * and a fault. `'no-such-rule'` is a usage answer for an operator who
+   * mistyped a rule id — the composite foreign key would otherwise surface an
+   * opaque `FOREIGN KEY constraint failed`.
+   */
+  addInviteAllowlistEntry(input: {
+    readonly ruleId: string;
+    readonly code: string;
+    readonly label: string;
+  }): 'added' | 'already-present' | 'no-such-rule';
+  /** `ruleId`'s invite allowlist, ordered by code — for printing after a write. */
+  listInviteAllowlist(ruleId: string): readonly { readonly code: string; readonly label: string }[];
+  /**
+   * Removes one code from `ruleId`'s invite allowlist. `'not-present'` is a
+   * real answer, the same shape `unexcludeChannel`'s boolean already uses for
+   * "nothing to remove is not a fault".
+   */
+  removeInviteAllowlistEntry(input: {
+    readonly ruleId: string;
+    readonly code: string;
+  }): 'removed' | 'not-present' | 'no-such-rule';
+  /**
+   * Adds one domain to `ruleId`'s allow or deny list (ADR 0040 §3, plan
+   * ruling PR-19). Same three-way answer as `addInviteAllowlistEntry`, for
+   * the same two reasons.
+   */
+  addLinkDomain(input: {
+    readonly ruleId: string;
+    readonly domain: string;
+    readonly listType: 'allow' | 'deny';
+  }): 'added' | 'already-present' | 'no-such-rule';
+  /** `ruleId`'s allow and deny domain lists together, ordered by domain. */
+  listLinkDomains(
+    ruleId: string,
+  ): readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
+  /** Removes one domain from either of `ruleId`'s lists. */
+  removeLinkDomain(input: {
+    readonly ruleId: string;
+    readonly domain: string;
+  }): 'removed' | 'not-present' | 'no-such-rule';
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */
   setRouteEnabled(eventKind: string, enabled: boolean): boolean;

@@ -429,3 +429,299 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
     };
   },
 });
+
+/**
+ * `automod invite-allow` / `automod invite-deny` / `automod domain-add` /
+ * `automod domain-rm` (plan ruling PR-19, Task 9 of the slices 3-5 plan).
+ *
+ * Task 6 built `invite`'s labelled code allowlist and `link_domain`'s
+ * allow/deny lists in storage, and shipped no caller — nothing outside a test
+ * could add the club's own invite code to the allowlist. That is not merely
+ * untidy: `observe` mode never touches Discord, so an empty allowlist harms
+ * nobody during the observe window, but an `invite` rule with an empty
+ * allowlist fires on the club's own invite links every time a member posts
+ * one, and Slice 6's release gate demands zero false positives for a rule
+ * that feeds the escalation counter. That rule cannot pass its gate until an
+ * operator can populate the list, so this is in Release 2 even though the
+ * dashboard screen (Slice 8/9) is not.
+ *
+ * Four commands under the existing `automod` namespace (plan ruling PR-6
+ * named the precedent). Reads are not separate commands: this build has no
+ * `automod rules` command to list a rule's own configuration, so each write
+ * prints the resulting list itself — a list nobody can see is worse than one
+ * nobody can edit, and inventing a fifth command to do only that would be
+ * scope this task does not need.
+ */
+
+/** One line per invite allowlist entry, in the order the port already sorted them. */
+const renderInviteAllowlist = (
+  ruleId: string,
+  entries: readonly { readonly code: string; readonly label: string }[],
+): string =>
+  entries.length === 0
+    ? `rule ${ruleId}'s invite allowlist is now empty`
+    : `rule ${ruleId}'s invite allowlist:\n` +
+      entries.map((entry) => `  ${entry.code}  (${entry.label})`).join('\n');
+
+const projectInviteAllowlist = (
+  entries: readonly { readonly code: string; readonly label: string }[],
+): JsonValue => entries.map((entry) => ({ code: entry.code, label: entry.label }));
+
+/** One line per domain, in the order the port already sorted them. */
+const renderLinkDomains = (
+  ruleId: string,
+  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+): string =>
+  entries.length === 0
+    ? `rule ${ruleId}'s domain lists are now empty`
+    : `rule ${ruleId}'s domain lists:\n` +
+      entries.map((entry) => `  ${entry.listType.padEnd(5)} ${entry.domain}`).join('\n');
+
+const projectLinkDomains = (
+  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+): JsonValue => entries.map((entry) => ({ domain: entry.domain, listType: entry.listType }));
+
+const automodInviteAllowArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    code: z.string().min(1).max(64),
+    label: z.string().min(1).max(200),
+  })
+  .strict();
+
+export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInviteAllowArgs>>({
+  name: 'automod invite-allow',
+  write: true,
+  summary: "add a code to a rule's invite allowlist",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the invite rule to edit' },
+    { name: 'code', required: true, describe: 'the invite code, e.g. clubhouse' },
+    {
+      name: 'label',
+      required: true,
+      describe: 'what this code is, for whoever reads the list later',
+    },
+  ],
+  args: automodInviteAllowArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.addInviteAllowlistEntry({
+      ruleId: args.ruleId,
+      code: args.code,
+      label: args.label,
+    });
+
+    if (outcome === 'no-such-rule') {
+      // A usage answer, not a fault: an operator at a terminal will mistype
+      // a rule id, and the composite foreign key would otherwise surface an
+      // opaque `FOREIGN KEY constraint failed`. An audit row is still owed —
+      // "an operator tried to edit a rule that does not exist" is a fact
+      // worth having, the same treatment `automod verdict` gives a mistyped
+      // event id.
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', code: args.code },
+        },
+      };
+    }
+
+    const list = ctx.ports.listInviteAllowlist(args.ruleId);
+    const alreadyPresent = outcome === 'already-present';
+
+    return {
+      text:
+        (alreadyPresent
+          ? `${args.code} was already on rule ${args.ruleId}'s invite allowlist`
+          : `added ${args.code} (${args.label}) to rule ${args.ruleId}'s invite allowlist`) +
+        '\n' +
+        renderInviteAllowlist(args.ruleId, list),
+      data: {
+        ok: true,
+        code: args.code,
+        alreadyPresent,
+        allowlist: projectInviteAllowlist(list),
+      },
+      audit: {
+        action: 'automod.invite_allowlist_added',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { code: args.code, label: args.label, alreadyPresent },
+      },
+    };
+  },
+});
+
+const automodInviteDenyArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    code: z.string().min(1),
+  })
+  .strict();
+
+export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInviteDenyArgs>>({
+  name: 'automod invite-deny',
+  write: true,
+  summary: "remove a code from a rule's invite allowlist",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the invite rule to edit' },
+    { name: 'code', required: true, describe: 'the invite code to remove' },
+  ],
+  args: automodInviteDenyArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.removeInviteAllowlistEntry({ ruleId: args.ruleId, code: args.code });
+
+    if (outcome === 'no-such-rule') {
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', code: args.code },
+        },
+      };
+    }
+
+    const list = ctx.ports.listInviteAllowlist(args.ruleId);
+    const removed = outcome === 'removed';
+
+    return {
+      text:
+        (removed
+          ? `removed ${args.code} from rule ${args.ruleId}'s invite allowlist`
+          : `${args.code} was not on rule ${args.ruleId}'s invite allowlist`) +
+        '\n' +
+        renderInviteAllowlist(args.ruleId, list),
+      data: { ok: true, code: args.code, removed, allowlist: projectInviteAllowlist(list) },
+      audit: {
+        action: 'automod.invite_allowlist_removed',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { code: args.code, removed },
+      },
+    };
+  },
+});
+
+const automodDomainAddArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    domain: z.string().min(1),
+    listType: z.enum(['allow', 'deny']),
+  })
+  .strict();
+
+export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomainAddArgs>>({
+  name: 'automod domain-add',
+  write: true,
+  summary: "add a domain to a rule's allow or deny list",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the link_domain rule to edit' },
+    { name: 'domain', required: true, describe: 'the domain, e.g. example.com' },
+    { name: 'listType', required: true, describe: 'allow | deny' },
+  ],
+  args: automodDomainAddArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.addLinkDomain({
+      ruleId: args.ruleId,
+      domain: args.domain,
+      listType: args.listType,
+    });
+
+    if (outcome === 'no-such-rule') {
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', domain: args.domain },
+        },
+      };
+    }
+
+    const list = ctx.ports.listLinkDomains(args.ruleId);
+    const alreadyPresent = outcome === 'already-present';
+
+    return {
+      text:
+        (alreadyPresent
+          ? `${args.domain} was already on rule ${args.ruleId}'s ${args.listType} list`
+          : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`) +
+        '\n' +
+        renderLinkDomains(args.ruleId, list),
+      data: {
+        ok: true,
+        domain: args.domain,
+        listType: args.listType,
+        alreadyPresent,
+        domains: projectLinkDomains(list),
+      },
+      audit: {
+        action: 'automod.link_domain_added',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { domain: args.domain, listType: args.listType, alreadyPresent },
+      },
+    };
+  },
+});
+
+const automodDomainRmArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    domain: z.string().min(1),
+  })
+  .strict();
+
+export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomainRmArgs>>({
+  name: 'automod domain-rm',
+  write: true,
+  summary: "remove a domain from a rule's allow or deny list",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the link_domain rule to edit' },
+    { name: 'domain', required: true, describe: 'the domain to remove' },
+  ],
+  args: automodDomainRmArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.removeLinkDomain({ ruleId: args.ruleId, domain: args.domain });
+
+    if (outcome === 'no-such-rule') {
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', domain: args.domain },
+        },
+      };
+    }
+
+    const list = ctx.ports.listLinkDomains(args.ruleId);
+    const removed = outcome === 'removed';
+
+    return {
+      text:
+        (removed
+          ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
+          : `${args.domain} was not on rule ${args.ruleId}'s domain lists`) +
+        '\n' +
+        renderLinkDomains(args.ruleId, list),
+      data: { ok: true, domain: args.domain, removed, domains: projectLinkDomains(list) },
+      audit: {
+        action: 'automod.link_domain_removed',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { domain: args.domain, removed },
+      },
+    };
+  },
+});

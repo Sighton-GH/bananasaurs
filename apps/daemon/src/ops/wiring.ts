@@ -13,6 +13,7 @@ import {
 import {
   accountRepo,
   automodFixtureRepo,
+  automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
   guildRepo,
@@ -179,6 +180,48 @@ export const opsPortsFor = (
     // command: a command does not get to choose when it happened, the same
     // way it does not get to choose its own audit attribution.
     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
+
+  // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
+  // lists Task 6 built with no caller. `ruleExists` is checked first because
+  // the composite foreign key would otherwise surface an opaque
+  // `FOREIGN KEY constraint failed` to an operator who mistyped a rule id —
+  // `'no-such-rule'` is a usage answer, not a fault.
+  //
+  // "Already present" is read back from a before/after count rather than
+  // duplicated canonicalisation logic (`addLinkDomain` lower-cases and strips
+  // `www.` inside the repository): comparing the list's length before and
+  // after the write is correct regardless of what canonical form the
+  // repository settles on, and never drifts from it.
+  addInviteAllowlistEntry: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const before = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+    automodRuleListsRepo.addInviteAllowlistEntry(scope, { ...input, now: now() });
+    const after = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+    return after > before ? 'added' : 'already-present';
+  },
+  listInviteAllowlist: (ruleId) => automodRuleListsRepo.listInviteAllowlist(scope, ruleId),
+  removeInviteAllowlistEntry: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const removed = automodRuleListsRepo.removeInviteAllowlistEntry(
+      scope,
+      input.ruleId,
+      input.code,
+    );
+    return removed ? 'removed' : 'not-present';
+  },
+  addLinkDomain: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const before = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
+    automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
+    const after = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
+    return after > before ? 'added' : 'already-present';
+  },
+  listLinkDomains: (ruleId) => automodRuleListsRepo.listLinkDomains(scope, ruleId),
+  removeLinkDomain: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
+    return removed ? 'removed' : 'not-present';
+  },
 
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {

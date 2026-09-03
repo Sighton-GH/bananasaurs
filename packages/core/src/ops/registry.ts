@@ -1,6 +1,10 @@
 import type { RegisteredCommand } from './dispatch.js';
 import {
+  automodDomainAddCommand,
+  automodDomainRmCommand,
   automodDryRunCommand,
+  automodInviteAllowCommand,
+  automodInviteDenyCommand,
   automodReviewCommand,
   automodVerdictCommand,
 } from './commands/automod.js';
@@ -53,6 +57,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   // dispatcher enforces both, so the ordering here is for `--help` only.
   configSetCommand,
   automodVerdictCommand,
+  automodInviteAllowCommand,
+  automodInviteDenyCommand,
+  automodDomainAddCommand,
+  automodDomainRmCommand,
   logRoutingSetCommand,
   logRoutingOffCommand,
   logRoutingExcludeCommand,
