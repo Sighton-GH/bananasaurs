@@ -76,7 +76,7 @@ Bananasaurs only uses providers whose terms state they **do not train models on 
 | Messages from enabled channels | Kept until the owner deletes them or changes the policy |
 | Deleted messages | Content kept for 30 days, then removed — unless attached to an active moderation case |
 | Moderation records | Kept as long as the server needs them for consistent moderation |
-| Automod test examples | Kept while the rule they test is in use, so its accuracy can be checked and improved. `/forgetme` removes yours. |
+| Automod test examples | Kept until the owner removes them. `/forgetme` removes yours. |
 | Bot conversations and answers | Kept until deleted on request |
 | Attachments | Same as the messages they belong to |
 
