@@ -2,6 +2,7 @@ import { attachmentTypePredicate } from './attachment-type.js';
 import { invitePredicate } from './invite.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
 import { linkDomainPredicate } from './link-domain.js';
+import { regexPredicate } from './regex.js';
 import {
   isRuleKind,
   type AnyPredicate,
@@ -24,6 +25,7 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   attachment_type: attachmentTypePredicate,
   invite: invitePredicate,
   link_domain: linkDomainPredicate,
+  regex: regexPredicate,
 };
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>
