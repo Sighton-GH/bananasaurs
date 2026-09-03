@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { pino } from 'pino';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId } from '../ids.js';
 import type { DomainEvent, MessageEvent } from '../discord/events.js';
@@ -8,6 +8,11 @@ import type { ModerationOutcome, ModerationSafetyState } from '../effects/modera
 import { createAutomodSubscriber, type AutomodSubscriberDeps } from './subscriber.js';
 import type { AutomodRule, FixtureRecord, MatchTrace } from './predicates/types.js';
 import { runDryRun } from './dry-run.js';
+// Namespace import, not a named one, because `compileRule` needs to be
+// spy-able on the same module object `evaluate.ts` calls through
+// (`subscriber.test.ts`'s "does not recompile when nothing changed" uses
+// the identical pattern).
+import * as registry from './predicates/registry.js';
 
 /**
  * Tests for `runDryRun`. The most important one in this file — the first
@@ -176,12 +181,31 @@ describe('the one-code-path invariant', () => {
 });
 
 describe('runDryRun', () => {
-  it('is deterministic across runs, and across a rule that carries state', () => {
-    // Every run compiles a fresh artifact (ADR 0041 §6), so the window
-    // tier's sliding-window state cannot leak between runs. Two identical
-    // runs must give identical reports.
+  it('is deterministic across runs, and recompiles fresh rather than sharing a cache (ADR 0041 §6)', () => {
+    // IMPORTANT-6: comparing two `runDryRun(...)` reports for equality
+    // cannot prove per-run isolation on its own. With `keyword_filter` —
+    // whose compiled artifact is an immutable `obscenity` matcher — report
+    // equality holds whether or not the cache is shared across runs.
+    // Verified by breaking it: replacing the per-run `createPredicateCache()`
+    // inside `runDryRun` with a module-level shared one left all nine tests
+    // in this file green, this one included.
+    //
+    // The spy on `compileRule` is what actually distinguishes "fresh cache
+    // per run" from "reused across runs": a shared cache compiles once,
+    // ever, no matter how many runs follow; a fresh cache recompiles every
+    // run. That is exactly the property the window tier (Slice 4) needs —
+    // its sliding-window state must not leak between runs.
+    const spy = vi.spyOn(registry, 'compileRule');
     const args = { guildId: GUILD_ID, rule: ruleWith(['badword']), fixtures: FIXTURES };
-    expect(runDryRun(args)).toEqual(runDryRun(args));
+
+    const first = runDryRun(args);
+    expect(spy).toHaveBeenCalledTimes(1);
+
+    const second = runDryRun(args);
+    expect(spy).toHaveBeenCalledTimes(2);
+
+    expect(first).toEqual(second);
+    spy.mockRestore();
   });
 
   it('replays fixtures oldest first', () => {
@@ -213,10 +237,13 @@ describe('runDryRun', () => {
    * This test closes that gap from the other side. Rather than comparing
    * behaviour, it asserts the *structure* ADR 0041 §3 actually specifies:
    * that this module builds no `PredicateInput` of its own and performs no
-   * evaluation of its own. That is checkable now, holds for fields no
-   * predicate has read yet, and fails the moment someone inlines a second
-   * construction site — which is precisely the drift the behavioural gate
-   * cannot see.
+   * evaluation of its own, and — closing the "bypassed predicate cache" gap
+   * named above (IMPORTANT-6) — that it gets that cache from
+   * `createPredicateCache()` in its own body rather than from a module-level
+   * one a future edit could hoist out and share across runs. That is
+   * checkable now, holds for fields no predicate has read yet, and fails the
+   * moment someone inlines a second construction site or a shared cache —
+   * which is precisely the drift the behavioural gate cannot see.
    *
    * Source-level assertions are an established shape here:
    * `packages/core/src/boundaries.test.ts` runs ESLint over sources to prove
@@ -236,6 +263,12 @@ describe('runDryRun', () => {
     expect(source).toMatch(/predicateInputFrom/);
     expect(source).toMatch(/evaluateRule/);
     expect(source).not.toMatch(/\bcompileRule\b/);
+
+    // And the cache itself must be constructed inside `runDryRun`, not
+    // hoisted to module scope — a shared cache is exactly the drift
+    // ADR 0041 §6 forbids, and the behavioural determinism test above cannot
+    // see it while `keyword_filter` is the only predicate (IMPORTANT-6).
+    expect(source).toMatch(/createPredicateCache\(/);
   });
 
   it('takes each fixture’s clock from its own created_at', () => {
