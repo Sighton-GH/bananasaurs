@@ -611,6 +611,61 @@ them. Full table in the plan.
   `http://EXAMPLE.com` → `example.com`;
   `https://user:pw@example.com:8443/x` → `example.com`. PR-15 relies on it.
 
+### Slices 3+5 execution log
+
+**Plan review (2026-09-03) — verdict EXECUTE-WITH-FIXES.** 1 blocking, 1
+decorative guard, 6 non-blocking; all eight accepted and fixed before any code
+was written. Report: [`slices-3-5-plan-review.md`](slices-3-5-plan-review.md).
+Fixes recorded in the plan's own "Plan review, and what it changed" table.
+
+The blocking one is worth remembering because it was structural rather than a
+typo: **Tasks 3 and 5 built `AutomodRule` literals containing the two fields
+Task 6 adds, while the dispatch table ran Task 3 first** — so `npm run
+typecheck` failed at a task boundary the plan itself named. Fixed by moving
+Task 6 second, ahead of every predicate, so each literal is written once against
+a finished interface. The decorative guard was the regex span test: its fixture
+made `indexOf` and the engine's index agree, so it could not fail for the bug it
+was named after. **Both were mine, and both are the shapes this run keeps
+producing** — a cross-task sequencing error, and a fixture too simple to reach
+its own branch.
+
+**Dispatch A (Tasks 1–2, OD-3's attachment corpus) — complete.** Commits
+`d48a1c4` (storage) and `cd34d0e` (core). **2159 tests / 102 files** from 2148,
+typecheck and lint clean, **gates re-run by the coordinator** rather than taken
+on report. The +11 is 6 new tests plus 5 `it.each` cases that
+`schema-invariants.test.ts` generates automatically for each new
+guild-partitioned table.
+
+Verified personally, not on report: migration `0013_concerned_leo.sql` is a pure
+`CREATE TABLE … STRICT` with `ON DELETE cascade` and **no rebuild** (the R-5
+hazard is avoided); `PRIVACY.md`'s attachment line is in `d48a1c4`, the *same
+commit as the migration*, as OD-3 obligation 1 requires; and the superseded
+half of PR-3's comment in `evaluate.ts` was rewritten to name OD-3, while the
+half about *mentions* — which still holds — was correctly left alone.
+
+Three findings from this dispatch worth carrying:
+
+1. **The cascade guard fails by a different route than the plan predicted, and
+   is still not decorative.** With `foreign_keys = ON`, removing
+   `ON DELETE cascade` makes the parent `DELETE` itself throw
+   `FOREIGN KEY constraint failed` — the orphan-count assertion is never
+   reached. So the assertion's own failure mode is narrower than it looks: it
+   fires only if foreign-key enforcement is *off*, which is precisely the state
+   R-5 puts a migration run into. It earns its place for that reason, not the
+   one the plan gave.
+2. **A plan file-list gap: `captureObservedFixture` had nine call sites the
+   plan did not name** (`mod-cases.test.ts` ×2, `mod-match-reviews.test.ts` ×6,
+   `ops.integration.test.ts` ×1), all broken by making `attachments` required.
+   Found by running `typecheck`, not by reading. When a plan makes a field
+   required on an existing interface, its file list is a lower bound.
+3. **`d48a1c4` on its own does not typecheck** — `wiring.ts`'s port
+   implementation is Task 2's to fix, so the storage commit is red in isolation
+   and green once `cd34d0e` lands. Not rewritten, following this ledger's own
+   precedent for `7be2e4f`: subagent reports already name these SHAs. **The
+   lesson for later tasks: an interface change that spans packages belongs in
+   one commit**, because a monorepo with a single `typecheck` has no way to make
+   the intermediate state green.
+
 ### A second worktree, and E-1 confirmed fixed by `npm ci`
 
 Slices 3–6 run in `.claude/worktrees/release2-slices-3-6` on branch
