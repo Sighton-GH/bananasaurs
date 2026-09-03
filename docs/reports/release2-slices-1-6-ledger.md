@@ -46,9 +46,8 @@ per-slice execution log, and the findings worth carrying forward.
 | --- | --- | --- | --- |
 | 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **✅ complete** — 7 tasks, whole-branch reviewed, fix wave re-reviewed clean. 2026 tests (from 1953), typecheck + lint clean |
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
-| 3 — precise tier (`regex`, `invite`, `link_domain`) | — | — | not started |
+| 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **in progress** — plan written (`dc69cf6`), plan review dispatched |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
-| 5 — shape tier (`caps`, `attachment_type`, `emoji`) | — | — | not started |
 | 6 — cutover tracking, observe gating, automod testing mode | 0042 | — | not started |
 
 ## Owner decisions taken during this run
@@ -554,6 +553,77 @@ Global Constraints stated as mutual and all nine briefs inherited.
 **Plan defects found by the people implementing it: eight**, one in nearly every
 task. The pattern from Slice 1 held — the prose was reliable, the code and the
 cross-references were not.
+
+## Slices 3+5 rulings (2026-09-02)
+
+Nine decisions the spec and ADR 0040/0041 do not name, taken at plan time so
+execution does not stall on them. Full text with costs-if-wrong lives in
+[the plan's **Plan rulings** section](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md);
+this is the index. Numbering continues from Slice 2's PR-1…PR-9.
+
+| # | Ruling | Cost if wrong |
+| --- | --- | --- |
+| PR-10 | The ReDoS defence is a hard per-evaluation timeout via `node:vm`, not an `re2` dependency. The spec permits either. | An evaluation costs 120 µs instead of 0.05 µs, and a pathological pattern burns the timeout budget per message rather than being rejected outright — bounded and loud, where today it is unbounded and silent. |
+| PR-11 | The timeout budget is 25 ms, a module constant, **not** operator configuration. | A legitimately slow pattern over a very long message is reported as a timeout. The only use for a tunable timeout is raising it until the hang returns. |
+| PR-12 | A timed-out regex **throws**, surfacing through the existing `EvaluateOutcome.threw` path, once per message. | One error log per message while a rule is degraded. That is the correct noise; returning "no match" would be the ADR 0039 silent failure for a fourth time. |
+| PR-13 | The `g` and `y` flags are **refused** by the config schema. Measured, not cautious — see the facts table below. | An operator who typed `g` from habit gets a validation error naming the flag instead of a rule that is wrong every other message. |
+| PR-14 | `invite`'s allowlist ships with `label`; **`last_matched_at` is deferred to Slice 9 and its column is not created.** | A rotated partner code sits unnoticed until someone reads the list. **A named spec feature deliberately deferred — flagged to the owner in the closing handoff.** |
+| PR-15 | `link_domain` matches by **label-wise suffix**, not by computing a registrable domain, and takes no Public Suffix List dependency. | An operator who deny-lists a public suffix (`co.uk`) denies everything under it. Visible in the list, and for a deny list arguably intended. |
+| PR-16 | `attachment_type`'s blocked extensions and content types live in `mod_rules.config`, **not** in relational tables. | If Slice 9 wants per-type metadata it needs an additive migration. Additive is cheap; the rebuild path (R-5) is the expensive one, and this avoids it. |
+| PR-17 | `caps` measures capitals against **letters**, and strips fenced and inline code spans first. | A message that is entirely a shouted code block is not caught — the safe direction for the predicate the spec singles out as carrying the tier's false-positive risk. |
+| PR-18 | `emoji` counts **graphemes** via `Intl.Segmenter`, testing pictographic *or* regional-indicator *or* keycap. | A novel Unicode sequence is counted as more than one. A slight over-count on exotic input, against an operator-set threshold. |
+
+**Why PR-14 and PR-16 are the two to re-examine first.** PR-14 is the only one
+that drops a feature the spec names, and it is dropped because implementing it
+honestly requires either a hot-path database write on a single-writer SQLite
+(`REVIEW.md` §C12) or widening `CompiledPredicate.evaluate`'s return type for
+all ten predicates — which is the handoff's "the abstraction failing" test, and
+therefore a ruling rather than a workaround. PR-16 is the only one that departs
+from a reading of ADR 0040 §3: the ADR enumerates the relational cases and does
+not name `attachment_type`, and the ADR's *justification* for relational
+(per-item metadata, per-item suppression) does not apply to an extension list.
+
+### Environment facts measured for this slice, not recalled
+
+Recorded here because they cost probes and because the plan's code depends on
+them. Full table in the plan.
+
+- **`vm.Script.runInContext(ctx, { timeout })` interrupts catastrophic
+  backtracking on this Node.** `^(a+)+$` against 26 a's takes **3052 ms**
+  directly; inside a vm context with a 200 ms budget it threw at 204 ms. The
+  timeout still fires when the `Script` *and* the context are created once and
+  reused, and a context that has already timed out stays usable. This is what
+  makes PR-10 possible without a native dependency.
+- **Cost of that wrapper: 120 µs/call** against 0.05 µs for a direct `exec`,
+  over 20 000 iterations. Affordable on this path.
+- **A `g` or `y` flagged RegExp carries `lastIndex` between calls.** On a reused
+  `/a/g`: `test('banana')` → true (lastIndex 2), again → true (lastIndex 4),
+  then `test('xyz')` → false (lastIndex 0). The same message gets different
+  answers depending on what preceded it — and this predicate reuses one
+  compiled regex for a rule's whole lifetime. This is PR-13's whole basis.
+- **`\p{Extended_Pictographic}` does not match a regional-indicator flag
+  (`🇬🇧`), a keycap (`1️⃣`) or `#️⃣`.** All three are single graphemes scoring
+  zero pictographic characters, so a pictographic-only counter silently
+  under-counts every flag and keycap. `Intl.Segmenter` counts a ZWJ family
+  `👨‍👩‍👧‍👦` as **1** grapheme where a code-point scan reports 4. This is PR-18's
+  basis, and it is the shape of bug that ships looking correct.
+- **`new URL(u).hostname` lower-cases the host and strips port and userinfo**:
+  `http://EXAMPLE.com` → `example.com`;
+  `https://user:pw@example.com:8443/x` → `example.com`. PR-15 relies on it.
+
+### A second worktree, and E-1 confirmed fixed by `npm ci`
+
+Slices 3–6 run in `.claude/worktrees/release2-slices-3-6` on branch
+`worktree-release2-slices-3-6`, branched from `main` at `f6bddff` (the merge of
+Slices 1–2). The Slices 1–2 worktree is still locked by a live process, so it
+could not be reused.
+
+**E-1's fix is confirmed to be `npm ci` inside the worktree**, which takes ~5 s
+against a warm cache and creates `node_modules/@bananasaurs/*` symlinks pointing
+at *that worktree's* packages. Verified before any gate was trusted: baseline in
+the new worktree is **2148 tests / 102 files, typecheck and lint clean** — which
+matches this ledger's Slice 2 close-out exactly, and is what proves the gates
+are measuring this worktree rather than the main checkout's `dist`.
 
 ## A pattern worth adding to `docs/22`
 
