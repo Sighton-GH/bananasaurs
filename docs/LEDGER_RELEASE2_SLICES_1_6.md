@@ -28,7 +28,7 @@ runs the observe window before the dashboard work starts.
 | Slice | ADR | Plan | Status |
 | --- | --- | --- | --- |
 | 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **✅ complete** — 7 tasks, whole-branch reviewed, fix wave re-reviewed clean. 2026 tests (from 1953), typecheck + lint clean |
-| 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **in progress** — 9 tasks, pre-flight scan clean, executing |
+| 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
 | 3 — precise tier (`regex`, `invite`, `link_domain`) | — | — | not started |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
 | 5 — shape tier (`caps`, `attachment_type`, `emoji`) | — | — | not started |
@@ -463,6 +463,44 @@ promises deleted-message content is kept 30 days, a fixture has no expiry, so
 capturing what the bot just deleted would make the policy untrue in the same
 commit that adds a row claiming it is true. If post-flip review turns out too
 thin in practice, widening it is **the owner's decision**, not a later slice's.
+
+## Slice 2 closed (2026-09-02)
+
+31 commits since Slice 1 closed. **2148 tests / 102 files**, from 2026 at the
+branch point — none deleted. Typecheck and lint clean, every gate run by the
+coordinator rather than taken on report.
+
+Whole-branch review (strongest model) returned **SHIP-WITH-FIXES**: 2 CRITICAL,
+7 IMPORTANT, 7 MINOR. All CRITICAL and IMPORTANT findings fixed, re-reviewed,
+and one residual defect found *in the fix wave itself* fixed after that.
+
+**The two criticals were both about the same thing: a number or a screen that
+reads as reassuring when it is not.**
+
+- `automod review` showed a human almost no evidence — the message and the
+  matched snippet were fetched, carried, and put in the JSON, but never
+  printed. A match whose trace failed to parse rendered as an id, a timestamp,
+  an error, and an invitation to record a verdict. Every predicate in Slices
+  3–5 without a natural span would have produced a queue where no message was
+  ever shown, with nothing failing when it happened.
+- `automod dryrun` printed `41/300 matched · 0 false positive(s)` over a corpus
+  where 296 rows were unlabelled — the ADR 0039 failure shape for a third time,
+  in the one place it happens on an ordinary day.
+
+**Decorative guards found and fixed across the slice: ten.** A project record,
+and the direct product of putting "break it and watch it fail" in every brief.
+Two were caught by implementers before shipping; eight by reviewers. Every one
+asserted something true about an input where the bug it was named after could
+not occur.
+
+**Two factual errors corrected that were not this slice's to begin with:**
+the SQLite `ON CONFLICT` claim (false, and propagating out of pre-existing code
+into two new repositories), and ADR 0014's direction, which the plan's own
+Global Constraints stated as mutual and all nine briefs inherited.
+
+**Plan defects found by the people implementing it: eight**, one in nearly every
+task. The pattern from Slice 1 held — the prose was reliable, the code and the
+cross-references were not.
 
 ## A pattern worth adding to `docs/22`
 
