@@ -313,7 +313,6 @@ export interface OpsPorts {
      * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
      */
     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
-  /** Points an event kind at a channel, creating or re-pointing the route. */
   /**
    * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
    * PR-19). `'already-present'` is a real answer, not a refusal: the
@@ -358,6 +357,7 @@ export interface OpsPorts {
     readonly ruleId: string;
     readonly domain: string;
   }): 'removed' | 'not-present' | 'no-such-rule';
+  /** Points an event kind at a channel, creating or re-pointing the route. */
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */
   setRouteEnabled(eventKind: string, enabled: boolean): boolean;
