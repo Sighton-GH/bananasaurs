@@ -83,12 +83,24 @@ describe('evaluateRule', () => {
   });
 
   it('reuses the compiled artifact when nothing changed', () => {
+    // IMPORTANT-5: `cache.size` alone cannot prove reuse — a same-key
+    // `Map.set` never changes `size`, so that assertion cannot fail no
+    // matter what the cache does (verified: it stayed green with caching
+    // removed entirely). Object identity of the cache *entry* across two
+    // calls is the thing that actually distinguishes "recompiled and
+    // overwrote the same key" from "reused the existing artifact".
     const cache = createPredicateCache();
     const rule = ruleWith(['badword']);
+    const key = predicateCacheKey(GUILD, rule.ruleId);
+
     evaluateRule(cache, rule, inputWith('hello badword'));
-    const sizeAfterFirst = cache.size;
+    const entryAfterFirst = cache.get(key);
+    expect(entryAfterFirst).toBeDefined();
+
     evaluateRule(cache, rule, inputWith('hello badword again'));
-    expect(cache.size).toBe(sizeAfterFirst);
+    const entryAfterSecond = cache.get(key);
+
+    expect(entryAfterSecond).toBe(entryAfterFirst);
   });
 
   it('keys the cache by guild as well as rule, so two guilds cannot share a matcher', () => {
