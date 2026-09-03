@@ -1114,6 +1114,7 @@ describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
       content: 'hello badword everyone',
       authorId: MEMBER,
       createdAt: discord.now(),
+      attachments: [],
     });
 
     const { caseId } = modCaseRepo.openOrResolveCase(scope(), {

@@ -71,6 +71,7 @@ describe('recordVerdict', () => {
       content: 'perfectly ordinary sentence',
       authorId: MEMBER,
       createdAt: 1_000,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
 
@@ -99,6 +100,7 @@ describe('recordVerdict', () => {
       content: 'a genuinely bad message',
       authorId: MEMBER,
       createdAt: 1_000,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
 
@@ -122,6 +124,7 @@ describe('recordVerdict', () => {
       content: 'ambiguous message',
       authorId: MEMBER,
       createdAt: 1_000,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
 
@@ -169,6 +172,7 @@ describe('recordVerdict', () => {
       content: 'a message that will be forgotten',
       authorId: MEMBER,
       createdAt: 1_000,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{}' });
     deleteObservedFixturesForMember(scope, MEMBER);
@@ -197,6 +201,7 @@ describe('recordVerdict', () => {
       content: 'a message two different rules both matched',
       authorId: MEMBER,
       createdAt: 1_000,
+      attachments: [],
     });
     seedMatchEvent(scope, {
       eventId: 'e1',
@@ -252,6 +257,7 @@ describe('recordVerdict', () => {
       content: 'a message one rule matched, reviewed twice',
       authorId: MEMBER,
       createdAt: 1_000,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, ruleId: 'rule-a', trace: '{}' });
 

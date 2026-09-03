@@ -40,12 +40,14 @@ describe('captureObservedFixture', () => {
       content: 'hello badword',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
     const second = captureObservedFixture(scope, {
       messageId: '900000000000000001',
       content: 'hello badword',
       authorId: '800000000000000001',
       createdAt: 2_000,
+      attachments: [],
     });
 
     expect(second).toBe(first);
@@ -62,12 +64,14 @@ describe('captureObservedFixture', () => {
       content: 'hello badword',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
     const after = captureObservedFixture(scope, {
       messageId: '900000000000000001',
       content: 'hello worseword',
       authorId: '800000000000000001',
       createdAt: 2_000,
+      attachments: [],
     });
 
     expect(after).not.toBe(before);
@@ -80,6 +84,7 @@ describe('captureObservedFixture', () => {
       content: 'guild A only',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
     expect(listFixtures(scopeB)).toEqual([]);
   });
@@ -139,12 +144,14 @@ describe('deleteObservedFixturesForMember', () => {
       content: 'mine',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
     captureObservedFixture(scope, {
       messageId: '900000000000000002',
       content: 'someone else’s',
       authorId: '800000000000000002',
       createdAt: 2_000,
+      attachments: [],
     });
     addHandwrittenFixture(scope, {
       fixtureId: 'adversarial-1',
@@ -166,12 +173,14 @@ describe('deleteObservedFixturesForMember', () => {
       content: 'guild A',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
     captureObservedFixture(scopeB, {
       messageId: '900000000000000002',
       content: 'guild B',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
 
     expect(deleteObservedFixturesForMember(scopeA, '800000000000000001')).toBe(1);
@@ -204,6 +213,110 @@ describe('setFixtureLabel', () => {
     });
     expect(setFixtureLabel(scopeB, 'f1', 'should_match')).toBe(false);
     expect(listFixtures(scopeA)[0]?.label).toBe('unlabelled');
+  });
+});
+
+describe('attachments (OD-3)', () => {
+  it('round-trips an observed fixture with several attachments', () => {
+    captureObservedFixture(scope, {
+      messageId: '900000000000000001',
+      content: 'here you go',
+      authorId: '800000000000000001',
+      createdAt: 1_000,
+      attachments: [
+        { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
+        { fileName: 'notes.txt', contentType: undefined, sizeBytes: 12 },
+      ],
+    });
+
+    const [fixture] = listFixtures(scope);
+    // Two attachments, in a deterministic order, with `undefined` preserved
+    // rather than flattened to '' — MessageAttachment.contentType is
+    // `string | undefined` and "Discord declared none" is a real, different
+    // fact from "Discord declared the empty string".
+    expect(fixture?.attachments).toEqual([
+      { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
+      { fileName: 'notes.txt', contentType: undefined, sizeBytes: 12 },
+    ]);
+  });
+
+  it('keeps each fixture’s attachments to itself', () => {
+    // NOT decorative: two fixtures, each WITH attachments, so an
+    // implementation that joined without the fixture_id predicate would hand
+    // both lists to both rows and this goes red. One fixture with attachments
+    // and one without would pass under that bug.
+    captureObservedFixture(scope, {
+      messageId: '900000000000000001',
+      content: 'first',
+      authorId: '800000000000000001',
+      createdAt: 1_000,
+      attachments: [{ fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 }],
+    });
+    captureObservedFixture(scope, {
+      messageId: '900000000000000002',
+      content: 'second',
+      authorId: '800000000000000002',
+      createdAt: 2_000,
+      attachments: [{ fileName: 'b.pdf', contentType: 'application/pdf', sizeBytes: 2 }],
+    });
+
+    const fixtures = listFixtures(scope);
+    expect(fixtures.map((f) => f.attachments.map((a) => a.fileName))).toEqual([
+      ['a.png'],
+      ['b.pdf'],
+    ]);
+  });
+
+  it('deleteObservedFixturesForMember removes the member’s attachments too', () => {
+    // OD-3 obligation 3, and the ledger says verify rather than assume: the
+    // whole point of shipping deleteObservedFixturesForMember two releases
+    // early was that the corpus stays un-makeable.
+    captureObservedFixture(scope, {
+      messageId: '900000000000000001',
+      content: 'mine',
+      authorId: '800000000000000001',
+      createdAt: 1_000,
+      attachments: [
+        { fileName: 'Bryan_resume_2026.pdf', contentType: 'application/pdf', sizeBytes: 9 },
+      ],
+    });
+
+    expect(deleteObservedFixturesForMember(scope, '800000000000000001')).toBe(1);
+
+    // Asserted against the raw table, not through listFixtures: the parent
+    // row is gone either way, so reading through the repository could not
+    // tell an orphaned child row from a deleted one. This is the assertion
+    // that fails if the cascade is missing.
+    const orphans = t.raw
+      .prepare('SELECT COUNT(*) AS n FROM automod_fixture_attachments')
+      .get() as { n: number };
+    expect(orphans.n).toBe(0);
+  });
+
+  it('another member’s attachments survive a deletion', () => {
+    // The ambiguity the previous test lacks: proves the cascade is scoped to
+    // the deleted rows rather than emptying the table.
+    captureObservedFixture(scope, {
+      messageId: '900000000000000001',
+      content: 'mine',
+      authorId: '800000000000000001',
+      createdAt: 1_000,
+      attachments: [{ fileName: 'mine.pdf', contentType: undefined, sizeBytes: 1 }],
+    });
+    captureObservedFixture(scope, {
+      messageId: '900000000000000002',
+      content: 'theirs',
+      authorId: '800000000000000002',
+      createdAt: 2_000,
+      attachments: [{ fileName: 'theirs.pdf', contentType: undefined, sizeBytes: 2 }],
+    });
+
+    deleteObservedFixturesForMember(scope, '800000000000000001');
+
+    const rows = t.raw.prepare('SELECT file_name FROM automod_fixture_attachments').all() as {
+      file_name: string;
+    }[];
+    expect(rows.map((r) => r.file_name)).toEqual(['theirs.pdf']);
   });
 });
 
@@ -246,6 +359,7 @@ describe('listFixtures', () => {
       content: 'observed one',
       authorId: '800000000000000001',
       createdAt: 1_000,
+      attachments: [],
     });
     addHandwrittenFixture(scope, {
       fixtureId: 'h1',

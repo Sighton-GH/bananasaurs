@@ -969,6 +969,50 @@ export const automodFixtures = sqliteTable(
 );
 
 /**
+ * One attachment on a corpus message: filename, declared content type, size
+ * (OD-3).
+ *
+ * A child table rather than columns on `automod_fixtures` because a message
+ * carries up to ten attachments, and neither a JSON blob nor an arbitrary
+ * three-column cap is a schema.
+ *
+ * **This stores personal information and the owner was told so before
+ * approving it.** Filenames routinely carry it — `Bryan_resume_2026.pdf`,
+ * `medical_letter.docx` — and this keeps them for as long as the corpus keeps
+ * the message. `PRIVACY.md` names attachments in the same commit that created
+ * this table, and the `ON DELETE CASCADE` below is what makes `/forgetme`
+ * (R3-10) reach them through `deleteObservedFixturesForMember`. That cascade
+ * is tested, not assumed.
+ *
+ * No `attachment_id` from Discord: the corpus is evidence about a message,
+ * not a mirror of Discord's own ids, and the ordinal is enough to keep two
+ * identically-named files apart.
+ */
+export const automodFixtureAttachments = sqliteTable(
+  'automod_fixture_attachments',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    fixtureId: text('fixture_id').notNull(),
+    /** Position on the message, 0-based. Part of the key: two attachments can share a name. */
+    ordinal: integer('ordinal').notNull(),
+    fileName: text('file_name').notNull(),
+    /** Null when Discord declared none. Never flattened to '' — that is a different fact. */
+    contentType: text('content_type'),
+    sizeBytes: integer('size_bytes').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.fixtureId, t.ordinal] }),
+    foreignKey({
+      columns: [t.guildId, t.fixtureId],
+      foreignColumns: [automodFixtures.guildId, automodFixtures.fixtureId],
+    }).onDelete('cascade'),
+    check('automod_fixture_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('automod_fixture_attachments_ordinal_nonnegative', sql`${t.ordinal} >= 0`),
+    check('automod_fixture_attachments_size_nonnegative', sql`${t.sizeBytes} >= 0`),
+  ],
+);
+
+/**
  * A human's verdict on one recorded match (ADR 0041 §5).
  *
  * Its own table rather than a column on `mod_case_events`, for the reason
