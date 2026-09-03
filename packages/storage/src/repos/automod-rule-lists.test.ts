@@ -12,13 +12,32 @@ import {
 import { evaluateRule } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { upsertGuild } from './guilds.js';
-import { createRule, listEnabledRules, ruleExists } from './automod-rules.js';
+import { createRule, findRuleKindAndConfig, listEnabledRules } from './automod-rules.js';
 import {
   addInviteAllowlistEntry,
+  addLinkDomain,
   listInviteAllowlist,
+  listLinkDomains,
   removeInviteAllowlistEntry,
+  removeLinkDomain,
 } from './automod-rule-lists.js';
 import type { GuildScope } from '../scope.js';
+
+/**
+ * A `link_domain` rule's configured `mode`, read the same tolerant way
+ * `apps/daemon/src/ops/wiring.ts`'s `linkDomainModeOf` does (duplicated
+ * rather than imported: that module lives in `apps/daemon`, which `storage`
+ * may not depend on, the same reason `portsFor` below reimplements the ports
+ * themselves instead of calling `opsPortsFor`).
+ */
+const linkDomainModeOf = (configJson: string): 'allow' | 'deny' | undefined => {
+  try {
+    const parsed = JSON.parse(configJson) as { mode?: unknown };
+    return parsed.mode === 'allow' || parsed.mode === 'deny' ? parsed.mode : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 /**
  * The end-to-end test the Task 9 brief names as the one that makes this task
@@ -97,12 +116,16 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   listUnreviewedMatches: notNeeded('listUnreviewedMatches'),
   applySetting: notNeeded('applySetting'),
   recordMatchVerdict: notNeeded('recordMatchVerdict'),
-  // The three ports this test exercises for real — the same logic
-  // `apps/daemon/src/ops/wiring.ts` uses: a `ruleExists` guard ahead of the
-  // insert, so a mistyped rule id is a usage answer rather than an opaque
-  // `FOREIGN KEY constraint failed`.
+  // The ports this test exercises for real — the same logic
+  // `apps/daemon/src/ops/wiring.ts` uses: `findRuleKindAndConfig` guards both
+  // existence and kind ahead of the write (IMPORTANT-7), so a mistyped rule
+  // id is a usage answer rather than an opaque `FOREIGN KEY constraint
+  // failed`, and a rule of the wrong kind is refused rather than writing a
+  // row nothing will ever read.
   addInviteAllowlistEntry: (input) => {
-    if (!ruleExists(s, input.ruleId)) return 'no-such-rule';
+    const rule = findRuleKindAndConfig(s, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
     const before = listInviteAllowlist(s, input.ruleId).length;
     addInviteAllowlistEntry(s, { ...input, now: NOW });
     const after = listInviteAllowlist(s, input.ruleId).length;
@@ -110,13 +133,37 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   },
   listInviteAllowlist: (ruleId) => listInviteAllowlist(s, ruleId),
   removeInviteAllowlistEntry: (input) => {
-    if (!ruleExists(s, input.ruleId)) return 'no-such-rule';
+    const rule = findRuleKindAndConfig(s, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
     const removed = removeInviteAllowlistEntry(s, input.ruleId, input.code);
     return removed ? 'removed' : 'not-present';
   },
-  addLinkDomain: notNeeded('addLinkDomain'),
-  listLinkDomains: notNeeded('listLinkDomains'),
-  removeLinkDomain: notNeeded('removeLinkDomain'),
+  // Mirrors `wiring.ts`'s `addLinkDomain`/`removeLinkDomain`: the repository
+  // reports the canonical domain and whether the insert actually happened
+  // (IMPORTANT-1), so the port names the *stored* listType on a no-op
+  // instead of the operator's requested one.
+  addLinkDomain: (input) => {
+    const rule = findRuleKindAndConfig(s, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const result = addLinkDomain(s, { ...input, now: NOW });
+    if (result.inserted) return { outcome: 'added', mode };
+    const stored = listLinkDomains(s, input.ruleId).find(
+      (entry) => entry.domain === result.domain,
+    );
+    return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
+  },
+  listLinkDomains: (ruleId) => listLinkDomains(s, ruleId),
+  removeLinkDomain: (input) => {
+    const rule = findRuleKindAndConfig(s, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const removed = removeLinkDomain(s, input.ruleId, input.domain);
+    return { outcome: removed ? 'removed' : 'not-present', mode };
+  },
   setRoute: notNeeded('setRoute'),
   setRouteEnabled: notNeeded('setRouteEnabled'),
   excludeChannel: notNeeded('excludeChannel'),
@@ -234,5 +281,144 @@ describe('the CLI write path for the invite allowlist (Task 9, plan ruling PR-19
     expect(parsed.result).toMatchObject({
       data: { ok: false, reason: 'no-such-rule' },
     });
+  });
+
+  it('refuses invite-allow against a rule that exists but is the wrong kind, rather than writing a row nothing will ever read (IMPORTANT-7)', () => {
+    // `keyword_filter`'s `compile` never reads `inviteAllowlist` — a write
+    // through this command against such a rule would be silently inert
+    // forever, which is exactly the failure `ruleExists` alone could not
+    // catch (it only answers "does this id name a rule at all").
+    createRule(scope, {
+      ruleId: 'word-filter-rule',
+      kind: 'keyword_filter',
+      name: 'words',
+      config: '{}',
+      now: NOW,
+    });
+
+    const command = OPERATOR_COMMANDS.find((c) => c.name === 'automod invite-allow');
+    if (command === undefined) throw new Error('automod invite-allow must be registered');
+    const ctx: OpsContext = {
+      guildId: GUILD,
+      now: () => NOW,
+      ports: portsFor(scope),
+      actor,
+      instance,
+    };
+
+    const parsed = command.runParsed(ctx, {
+      ruleId: 'word-filter-rule',
+      code: 'clubhouse',
+      label: 'our own server',
+    });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.result).toMatchObject({ data: { ok: false, reason: 'wrong-kind' } });
+
+    // Nothing was written: the rule's invite allowlist stays empty.
+    expect(listInviteAllowlist(scope, 'word-filter-rule')).toEqual([]);
+  });
+});
+
+describe('the CLI write path for the link_domain lists (Task 9, plan ruling PR-19)', () => {
+  it("names the domain's stored listType, not the operator's requested one, on a repeat add under the other list (IMPORTANT-1)", () => {
+    createRule(scope, {
+      ruleId: 'domain-rule',
+      kind: 'link_domain',
+      name: 'links',
+      config: '{"mode":"allow"}',
+      now: NOW,
+    });
+
+    const addCommand = OPERATOR_COMMANDS.find((c) => c.name === 'automod domain-add');
+    if (addCommand === undefined) throw new Error('automod domain-add must be registered');
+    const ctx: OpsContext = {
+      guildId: GUILD,
+      now: () => NOW,
+      ports: portsFor(scope),
+      actor,
+      instance,
+    };
+
+    const first = addCommand.runParsed(ctx, {
+      ruleId: 'domain-rule',
+      domain: 'example.com',
+      listType: 'deny',
+    });
+    expect(first.ok).toBe(true);
+    if (!first.ok) return;
+    const firstResult = first.result;
+    if (firstResult instanceof Promise) throw new Error('expected a synchronous result');
+    expect(firstResult.data).toMatchObject({ ok: true, listType: 'deny' });
+
+    // Same domain, the *other* listType: the primary key is (guild, rule,
+    // domain), so this is a no-op — and the message must name the listType
+    // actually stored (deny, from the first add), not the one just asked
+    // for (allow), or an operator reading it would believe a move happened
+    // that did not.
+    const second = addCommand.runParsed(ctx, {
+      ruleId: 'domain-rule',
+      domain: 'example.com',
+      listType: 'allow',
+    });
+    expect(second.ok).toBe(true);
+    if (!second.ok) return;
+    const secondResult = second.result;
+    if (secondResult instanceof Promise) throw new Error('expected a synchronous result');
+    expect(secondResult.data).toMatchObject({ ok: true, alreadyPresent: true, listType: 'deny' });
+    expect(secondResult.text).toContain("already on rule domain-rule's deny list");
+    expect(secondResult.text).not.toContain("already on rule domain-rule's allow list");
+
+    expect(listLinkDomains(scope, 'domain-rule')).toEqual([
+      { domain: 'example.com', listType: 'deny' },
+    ]);
+  });
+
+  it('removes a domain added in a different case, because removal canonicalises the same way add does (IMPORTANT-2)', () => {
+    createRule(scope, {
+      ruleId: 'domain-rule-2',
+      kind: 'link_domain',
+      name: 'links',
+      config: '{"mode":"deny"}',
+      now: NOW,
+    });
+
+    const addCommand = OPERATOR_COMMANDS.find((c) => c.name === 'automod domain-add');
+    const rmCommand = OPERATOR_COMMANDS.find((c) => c.name === 'automod domain-rm');
+    if (addCommand === undefined || rmCommand === undefined) {
+      throw new Error('automod domain-add / domain-rm must be registered');
+    }
+    const ctx: OpsContext = {
+      guildId: GUILD,
+      now: () => NOW,
+      ports: portsFor(scope),
+      actor,
+      instance,
+    };
+
+    addCommand.runParsed(ctx, {
+      ruleId: 'domain-rule-2',
+      domain: 'example.com',
+      listType: 'deny',
+    });
+    expect(listLinkDomains(scope, 'domain-rule-2')).toEqual([
+      { domain: 'example.com', listType: 'deny' },
+    ]);
+
+    // Removing 'WWW.Example.COM' must find the row stored as 'example.com':
+    // `addLinkDomain` canonicalises (lower-case, strip leading www.), and
+    // until IMPORTANT-2's fix `removeLinkDomain` compared verbatim, so this
+    // deleted nothing and the operator had to reverse-engineer the stored
+    // form from the printed list.
+    const removed = rmCommand.runParsed(ctx, {
+      ruleId: 'domain-rule-2',
+      domain: 'WWW.Example.COM',
+    });
+    expect(removed.ok).toBe(true);
+    if (!removed.ok) return;
+    const removedResult = removed.result;
+    if (removedResult instanceof Promise) throw new Error('expected a synchronous result');
+    expect(removedResult.data).toMatchObject({ ok: true, removed: true });
+    expect(listLinkDomains(scope, 'domain-rule-2')).toEqual([]);
   });
 });
