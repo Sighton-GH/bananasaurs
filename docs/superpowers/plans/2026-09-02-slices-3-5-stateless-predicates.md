@@ -318,8 +318,20 @@ for what to do next.
 | --- | --- | --- |
 | A | 1, 2 | OD-3 end to end: storage, then core. Task 2 consumes Task 1's shape. |
 | B | **6** | The two relational tables **and the `AutomodRule` widening**. Alone, because everything after it constructs an `AutomodRule`. |
-| C | 3, 4 | Pure `core` predicate files, no schema. |
 | D | 5, 7, 8 | Task 5 needs Tasks 1–2; Tasks 7–8 need Task 6's hydrated lists. |
+| C | 3, 4 | Pure `core` predicate files, no schema. |
+| E | **9** | The CLI write path for Task 6's lists (added later, ruling PR-19). |
+
+**These dispatches run strictly one at a time, never in parallel.** Every
+predicate task adds an entry to `predicates/registry.ts`, so two concurrent
+implementers would collide there — and the ledger already records what
+overlapping work in one worktree costs (commit `7be2e4f`, where a coordinator's
+`git add -A` swept a live implementer's in-progress files into a documentation
+commit). The coordinator stages explicit paths and runs one dispatch at a time.
+
+D before C is deliberate and carries no dependency either way; it simply
+reflects the order they were sent. Task 9 was added after dispatch B and is last
+because it consumes Task 6 and nothing else.
 
 **Why Task 6 moved ahead of the predicates** (plan review finding B1, and it
 was a real defect in the first draft of this table). Every predicate's test file
@@ -2470,6 +2482,191 @@ for **seven** of the ten kinds, and the three absent ones are exactly
 
 ---
 
+### Task 9: a CLI write path for the two relational lists
+
+**Added after dispatch B, per plan ruling PR-19.** Task 6 built repository
+functions with no caller: nothing outside a test can add an invite code or a
+link domain. This task gives them one.
+
+**Files:**
+- Modify: `packages/core/src/ops/commands/automod.ts`
+- Modify: `packages/core/src/ops/registry.ts`
+- Modify: `packages/core/src/ops/ports.ts`
+- Modify: `packages/core/src/ops/test-fixtures.ts`
+- Modify: `apps/daemon/src/ops/wiring.ts`
+- Modify: `packages/http/src/test-support.ts` (if it stubs the ops ports —
+  check; Slice 1 Task 6 had to)
+- Test: `packages/core/src/ops/commands/automod.test.ts`
+
+**Interfaces:**
+- Consumes: Task 6's repository —
+  `listInviteAllowlist`, `addInviteAllowlistEntry`,
+  `removeInviteAllowlistEntry`, `listLinkDomains`, `addLinkDomain`,
+  `removeLinkDomain`. **Read their real signatures from
+  `packages/storage/src/repos/automod-rule-lists.ts` rather than trusting this
+  list** — Task 6 may have adjusted names, and the file is the authority.
+- Produces: four commands — `automod allow-invite`, `automod allow-invite rm`
+  … see the naming decision below.
+
+**Why this is in Release 2 at all**, since a reviewer will ask. `observe` mode
+never touches Discord, so an empty allowlist harms nobody during the window —
+but an `invite` rule with an empty allowlist fires on **the club's own invite
+links**, every time a member posts one. Slice 6's gate demands zero false
+positives for a rule that feeds the escalation counter, so that rule can never
+pass its gate until the list is populated. The spec's pre-flip rehearsal exists
+so this is discovered on the day rather than two weeks into the window. A list
+an operator cannot write to is not a shipped feature.
+
+**Naming.** Four commands under the existing `automod` namespace, matching
+Slice 2's `automod dryrun` / `automod review` / `automod verdict` (ruling PR-6):
+
+| Command | Kind |
+| --- | --- |
+| `automod invite-allow <ruleId> <code> <label>` | write |
+| `automod invite-deny <ruleId> <code>` | write (removes an entry) |
+| `automod domain-add <ruleId> <domain> <allow\|deny>` | write |
+| `automod domain-rm <ruleId> <domain>` | write |
+
+Reads are **not** separate commands: `automod rules` already lists rules, and a
+list nobody can see is worse than one nobody can edit, so each write command
+prints the resulting list. If `automod rules` does not exist under that name,
+print the list from the write command and say so in your report rather than
+inventing a fifth command.
+
+- [ ] **Step 1: Write the failing tests**
+
+Follow `automod.test.ts`'s existing conventions exactly — it already has
+fixtures for a write command with an audit row (`automod verdict` is the model).
+
+```ts
+it('adds an invite allowlist entry and audits it', () => {
+  const ctx = testContext(); // whatever this file already uses
+  const result = automodInviteAllowCommand.run(ctx, {
+    ruleId: 'invite-rule',
+    code: 'clubhouse',
+    label: 'our own server',
+  });
+
+  expect(result.audit?.action).toBe('automod.invite_allowlist_added');
+  expect(result.data).toMatchObject({ ok: true, code: 'clubhouse' });
+});
+
+it('refuses to add an entry to a rule that does not exist', () => {
+  // A usage answer, not a fault — the same treatment `automod verdict` gives
+  // a mistyped event id, and for the same reason: an operator at a terminal
+  // will mistype a rule id. An audit row is still owed.
+  const ctx = testContext();
+  const result = automodInviteAllowCommand.run(ctx, {
+    ruleId: 'no-such-rule',
+    code: 'x',
+    label: 'y',
+  });
+  expect(result.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+});
+
+it('an added code stops the invite predicate firing on it', () => {
+  // The test that makes this task worth having rather than a CRUD wrapper:
+  // it goes end to end from the command to the predicate's verdict. If the
+  // command writes to a table the fingerprint or the hydration does not
+  // read, this is what says so.
+  //
+  // Build a guild with an `invite` rule, evaluate a message carrying
+  // discord.gg/clubhouse and assert it MATCHES; run the command; re-read the
+  // rule through listEnabledRules and evaluate again; assert it does NOT.
+  //
+  // Use a fresh predicate cache for the second evaluation ONLY if the
+  // fingerprint does not change — and it must change, so do NOT use a fresh
+  // one. Reusing the cache is the point: it proves the fingerprint
+  // invalidated the compiled artifact rather than the test working around a
+  // stale one. This is obligation 2 observed from the outside.
+});
+```
+
+That third test is the important one and it belongs in
+`packages/core/src/automod/` rather than in the ops tests if the ops test
+harness cannot reach `listEnabledRules`. Put it wherever it can genuinely run;
+say in your report where you put it and why.
+
+- [ ] **Step 2: Run them and watch them fail**
+
+Expected: FAIL — the commands do not exist.
+
+- [ ] **Step 3: Add the ports**
+
+In `packages/core/src/ops/ports.ts`, beside `recordMatchVerdict`. Every port
+takes the values the command parsed and returns a small discriminated result,
+never a thrown error for a mistyped id — match `recordMatchVerdict`'s
+`'no-such-event'` shape:
+
+```ts
+  addInviteAllowlistEntry(input: {
+    ruleId: string;
+    code: string;
+    label: string;
+  }): 'added' | 'already-present' | 'no-such-rule';
+```
+
+and the three others in the same shape. `'already-present'` is a real answer
+rather than an error: `onConflictDoNothing` makes a repeated add a no-op, and
+telling the operator "that code was already allowed" is more useful than
+either silence or a fault.
+
+`no-such-rule` needs a rule existence check — the composite foreign key would
+otherwise throw an opaque `FOREIGN KEY constraint failed` at the operator.
+Check with whatever `automod-rules.ts` already offers; if it offers nothing,
+say so rather than adding a repository function in this task.
+
+- [ ] **Step 4: Add the commands and register them**
+
+Follow `automodVerdictCommand` line for line: `defineCommand`, `write: true`,
+`positional`, `args` (a Zod schema, `.strict()`), and a `run` returning
+`{ text, data, audit }`. The `audit.action` strings:
+`automod.invite_allowlist_added`, `automod.invite_allowlist_removed`,
+`automod.link_domain_added`, `automod.link_domain_removed`.
+
+`subjectType` is `'mod_rule'` and `subjectId` is the rule id for all four —
+the entry is not itself an auditable subject, the rule is.
+
+Register all four in `packages/core/src/ops/registry.ts`.
+
+- [ ] **Step 5: Wire the daemon and any test doubles**
+
+`apps/daemon/src/ops/wiring.ts` implements the four ports against the Task 6
+repository, guild-scoped through the existing `scope`.
+
+**Run `npm run typecheck` immediately after adding the ports**, before writing
+the wiring: every stub of the ops ports in the repo will break, and the
+compiler is the only reliable way to find them. Slice 1 Task 6 had to touch
+`packages/core/src/ops/test-fixtures.ts` and
+`packages/http/src/test-support.ts` for exactly this. **Report how many you
+touched.**
+
+- [ ] **Step 6: Run the tests, and break one guard**
+
+Run: `npm run typecheck && npm run lint && npm run test`
+
+Then break the end-to-end guard: make `addInviteAllowlistEntry`'s wiring write
+the code **without** lower-casing it (or to the wrong rule id), and confirm the
+third test — the one that evaluates the predicate before and after — goes red.
+Restore. Report what you saw.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add packages/core/src/ops packages/http/src/test-support.ts apps/daemon/src/ops/wiring.ts
+git commit -m "feat(automod): an operator can edit the invite allowlist and link domain lists
+
+Plan ruling PR-19. Task 6 shipped repository functions with no caller, so the
+lists could only be written by a test. An invite rule with an empty allowlist
+fires on the club's own invite links, and Slice 6's gate demands zero false
+positives for a counter-feeding rule, so that rule could never pass its gate.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SAXL4Tpn7zGArAzZs9vKNW"
+```
+
+---
+
 ## Self-review — spec coverage
 
 | Spec requirement | Task |
@@ -2482,6 +2679,7 @@ for **seven** of the ten kinds, and the three absent ones are exactly
 | `invite`: allowlist with a human label | 6 (table), 7 (predicate) |
 | `invite`: allowlist is relational, not JSON | 6 |
 | `invite`: last-matched timestamp | **deferred, PR-14** — flag to owner |
+| `invite`/`link_domain`: an operator can actually edit the lists | 9 (added after dispatch B, PR-19) |
 | `link_domain`: URL extraction plus allow/deny | 8 |
 | `link_domain`: no fetching, resolution or DNS | 8 |
 | `caps`: minimum-length floor | 4 |

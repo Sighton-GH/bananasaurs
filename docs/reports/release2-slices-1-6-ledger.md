@@ -666,6 +666,48 @@ Three findings from this dispatch worth carrying:
    one commit**, because a monorepo with a single `typecheck` has no way to make
    the intermediate state green.
 
+**Dispatch B (Task 6, the relational lists) — complete.** Commit `84f4d9e`.
+**2174 tests / 102 files** from 2159, typecheck and lint clean, gates re-run by
+the coordinator. Migration `0014_lethal_xorn.sql` verified personally: two pure
+`CREATE TABLE … STRICT` with cascading composite foreign keys to
+`mod_rules(guild_id, rule_id)`, and **no rebuild** — `rg` for
+`__new_|DROP TABLE|RENAME` returns nothing.
+
+**Obligation 2 is met, and was watched failing.** Adding `inviteAllowlist` to
+`EXCLUDED_FIELDS` turned both invite fingerprint tests red; restored, green.
+The hydration guard was watched too: dropping the `rule_id` predicate from the
+two new `hydrate` queries leaked a `link_domain` row onto the `invite` rule and
+turned the two-rules-each-with-entries test red. Both are real mechanisms, not
+tautologies.
+
+One detail in the implementation worth keeping: `canonicalise` makes
+`listType` **part of the sort key** for `linkDomains`, not a value carried
+alongside it. Without that, a domain moving from `allow` to `deny` would produce
+the same canonical structure in a different order and the digest would not
+change — a rule whose meaning inverted while its compiled artifact stayed
+cached.
+
+**PR-19 (2026-09-03) — the two relational lists get a CLI write path in this
+slice, as Task 9.** Dispatch B correctly flagged that it had built repository
+functions with no caller: nothing outside a test can add an invite code or a
+link domain. Recorded as a ruling because it is a scope decision, not a bug fix.
+
+*Why it cannot wait for the dashboard.* `observe` mode never touches Discord
+(`subscriber.ts`: "Non-enforce modes never touch Discord at all"), so an empty
+allowlist is harmless during the window — **but it makes the window's data
+useless for the one rule it affects.** An `invite` rule with an empty allowlist
+fires on the club's own invite links, every time anyone posts one. Slice 6's
+gate requires **zero** false positives for a rule that feeds the escalation
+counter and a 20-match minimum before a rate means anything, so that rule
+cannot pass its gate until the allowlist is populated — and the spec's own
+pre-flip rehearsal exists precisely so this is found on the day rather than two
+weeks late. A list an operator cannot write to is not a shipped feature.
+
+*Scope.* A CLI surface only, following Slice 2's PR-6 precedent, which already
+established the `automod` command namespace (`dryrun`, `review`, `verdict`).
+**Not** the dashboard — that is Slice 8 and stays there. *Costs if wrong:* two
+more commands in `--help`, which is what PR-6 paid for the same reason.
+
 ### A second worktree, and E-1 confirmed fixed by `npm ci`
 
 Slices 3–6 run in `.claude/worktrees/release2-slices-3-6` on branch
