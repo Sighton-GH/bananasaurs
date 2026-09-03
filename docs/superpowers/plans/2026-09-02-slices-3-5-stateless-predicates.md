@@ -16,10 +16,15 @@ interface, the subscriber and the evaluator are **not** modified to accommodate
 any predicate — if a predicate seems to need that, stop and say so (see Global
 Constraint 9).
 
-**Tech Stack:** TypeScript (Node 22, strict) · Zod 3.24 · Drizzle ORM 0.45 +
-drizzle-kit 0.31.10 · better-sqlite3 13 · Vitest 2 · `node:vm` (already in
-Node) for the regex execution timeout · `Intl.Segmenter` (already in Node) for
-emoji grapheme counting. **No new dependency is added by this plan.**
+**Tech Stack:** TypeScript (Node 22, strict) · Zod **3.25.76** installed
+(`package.json` asks for `^3.24.1`) · Drizzle ORM **0.45.2** + drizzle-kit
+0.31.10 · better-sqlite3 13 · Vitest 2 · `node:vm` (already in Node) for the
+regex execution timeout · `Intl.Segmenter` (already in Node) for emoji grapheme
+counting. **No new dependency is added by this plan.**
+
+Those two version numbers are the *installed* ones, read from
+`node_modules/*/package.json` rather than from `package.json`'s range — the
+distinction cost a review finding when an earlier draft said "Zod 3.24".
 
 **Spec:**
 `docs/superpowers/specs/2026-09-01-release-2-completion-and-release-3-roadmap-design.md`
@@ -218,6 +223,17 @@ the exact bug obligation 2 exists to prevent. *Costs if wrong:* if Slice 9
 later wants per-type metadata, it needs an additive migration. Additive
 migrations are cheap; the rebuild path is the expensive one, and this avoids it.
 
+*One thing Slice 9's implementer needs to be told, found by the plan review.*
+The spec describes suppression **per tier**, and says the shape tier's is "a
+raised threshold or a role/channel exemption". `attachment_type` does not fit
+that: it has no numeric threshold to raise, and its only sensible one-click
+suppression is removing the offending extension or content type from the list —
+which is the *precise* tier's shape. It is a shape-tier predicate with
+precise-tier suppression. This does not change the ruling, because editing a
+JSON array and editing a table row are both list edits and neither is easier for
+Slice 9 to build. It is recorded so Slice 9 does not inherit a tier-level
+generalisation that is false for one of its nine predicates.
+
 **PR-17 — `caps` measures the ratio of upper-case letters among *letters*, and
 strips fenced and inline code spans before measuring.** Counting upper-case
 against *all* characters would let punctuation and digits dilute the ratio, so
@@ -225,6 +241,19 @@ against *all* characters would let punctuation and digits dilute the ratio, so
 Stripping code spans directly addresses one of the three false-positive sources
 the spec names for this predicate ("acronyms, short messages, code snippets");
 the minimum-length floor, which the spec requires, addresses the second.
+
+*The third source — acronyms — is addressed by the combination rather than by
+anything aimed at it, and the plan review was right that an earlier draft
+counted to two and did not notice.* An acronym inside ordinary prose barely
+moves a ratio measured over letters: "the API is down again" is 18 letters of
+which 3 are upper case, a ratio of 0.17, nowhere near a plausible threshold. An
+acronym *alone* — "API", "FYI" — is 100% upper case and is caught by the
+minimum-length floor instead. So the two mechanisms cover the third source
+between them, at both ends of the length range, and no acronym allowlist is
+needed. **If a real acronym false positive does show up in the observe window,
+that reasoning is what it falsifies** — and the response is to narrow the rule
+(raise the floor, raise the ratio), never to move the gate's bar.
+
 *Costs if wrong:* a message that is entirely a shouted code block is not
 caught. That is the safe direction for the predicate the spec singles out as
 carrying the tier's false-positive risk, and `caps` is also the rule the spec
@@ -281,12 +310,39 @@ operator-set number.
 
 Batched 2–3 tasks per implementer dispatch, per the handoff's lean protocol.
 
-| Dispatch | Tasks | Why together |
+**Task numbers below are stable; the execution order is not the numeric one.**
+Task 6 runs second, before every predicate. Read this table, not the numbering,
+for what to do next.
+
+| Dispatch | Tasks, in order | Why together |
 | --- | --- | --- |
 | A | 1, 2 | OD-3 end to end: storage, then core. Task 2 consumes Task 1's shape. |
-| B | 3, 4 | Pure `core` predicate files, no schema. Disjoint from A. |
-| C | 5, 6 | Task 5 needs Tasks 1–2 done; Task 6 is the second migration. |
-| D | 7, 8 | Both consume Task 6's hydrated lists. |
+| B | **6** | The two relational tables **and the `AutomodRule` widening**. Alone, because everything after it constructs an `AutomodRule`. |
+| C | 3, 4 | Pure `core` predicate files, no schema. |
+| D | 5, 7, 8 | Task 5 needs Tasks 1–2; Tasks 7–8 need Task 6's hydrated lists. |
+
+**Why Task 6 moved ahead of the predicates** (plan review finding B1, and it
+was a real defect in the first draft of this table). Every predicate's test file
+builds an object annotated `AutomodRule` and hands it to `compileRule`. Task 6
+adds `inviteAllowlist` and `linkDomains` to that interface. So there is no
+ordering in which a predicate task can write a *complete* `AutomodRule` literal
+before Task 6 has run — a literal written earlier either omits two required
+fields, or names two that do not exist yet, and TypeScript's excess-property
+check on a directly-annotated literal rejects the second outright.
+`npm run typecheck` fails either way.
+
+Doing Task 6 first means every later literal is written once, correctly, against
+a finished interface — instead of a fixup wave touching all six new test files.
+The alternative (strip the fields now, repair them in Task 6) was considered and
+rejected: it spreads one interface change across seven files and two dispatches,
+and Task 2's Step 6 already shows how tedious that is for a *single* added
+field.
+
+**The literals in Tasks 3, 5, 7 and 8 already include both fields**, because
+they are written on the assumption that Task 6 has run. That is correct under
+this order. If you are implementing Task 3 or 4 and those two fields do **not**
+exist on `AutomodRule`, then dispatch B has not happened — **stop and say so**
+rather than deleting the fields to make it compile.
 
 ---
 
@@ -833,18 +889,34 @@ describe('the regex predicate', () => {
   });
 
   it('points the span at the occurrence that actually matched', () => {
-    // The ambiguity ruling R-9 was written about: the term appears twice, so
-    // an implementation using indexOf on the matched text rather than the
-    // engine's own index picks the wrong one and this goes red.
-    const compiled = compileRule(rule('{"pattern":"n[o0]w"}'));
+    // The ambiguity ruling R-9 was written about, and the fixture matters
+    // more than the assertion. The matched text 'cat' occurs TWICE in this
+    // content: once embedded in 'concatenate' at index 3, and once as the
+    // real word at index 14. The word-boundary pattern matches only the
+    // second, so:
+    //
+    //   content.indexOf('cat')        === 3   (wrong: inside 'concatenate')
+    //   /\bcat\b/.exec(content).index === 14  (right: the real word)
+    //
+    // An implementation that computes the span with indexOf on the matched
+    // text therefore produces a different, wrong span and this goes red.
+    //
+    // The first draft of this test used /n[o0]w/ against 'now or n0w', where
+    // the two alternatives are different literals occurring once each — so
+    // indexOf and the engine agreed and the test could not fail for the bug
+    // it names. That is the decorative-guard shape docs/22 records: a fixture
+    // too simple to reach the branch the test is named after.
+    const compiled = compileRule(rule('{"pattern":"\\\\bcat\\\\b"}'));
     if (!compiled.ok) throw new Error('should compile');
-    const content = 'now or n0w';
+    const content = 'concatenate a cat';
     const match = compiled.compiled.evaluate(message(content));
-    // 'n0w' at index 7 is what the pattern's second alternative matched...
-    // except 'now' at index 0 matches first. Assert the FIRST match's span,
-    // and pick a fixture where the two are genuinely distinguishable.
-    expect(match?.trace.span).toEqual([0, 3]);
-    expect(content.slice(0, 3)).toBe('now');
+
+    expect(match?.snippet).toBe('cat');
+    expect(match?.trace.span).toEqual([14, 17]);
+    // Pins the fixture's own premise: if someone edits `content` and breaks
+    // the two-occurrence property, this fails loudly rather than quietly
+    // turning the test above decorative again.
+    expect(content.indexOf('cat')).toBe(3);
   });
 
   it('rejects a pattern that does not compile', () => {
@@ -1094,6 +1166,66 @@ Claude-Session: https://claude.ai/code/session_01SAXL4Tpn7zGArAzZs9vKNW"
 Both are whole-message properties, so **`MatchTrace.span` is `undefined`** for
 both — the interface documents that case explicitly and it is the right answer
 here, not a shortcut.
+
+- [ ] **Step 0: The test helpers both files need**
+
+The test blocks below call `compile(...)` and `message(...)`. Put this at the
+top of **each** of `caps.test.ts` and `emoji.test.ts` — file-local in both,
+not shared through a helper module. Task 3's `regex.test.ts` has the same two
+functions and they are also file-local there.
+
+*Why duplicated rather than extracted:* a predicate test's fixtures are the
+readable part of it, and a reader should not have to open a second file to see
+what "a message" means. Three small copies is the codebase's existing habit
+here — `keyword-filter.test.ts` does the same — and the moment they need to
+diverge (Task 5's needs attachments, Task 7's needs an invite allowlist) a
+shared helper would grow options nobody wants.
+
+```ts
+import { describe, expect, it } from 'vitest';
+import { compileRule } from './registry.js';
+import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
+
+/**
+ * Compiles a rule of this file's kind, failing the test loudly if it does not
+ * compile. Returning the artifact rather than the `CompileResult` keeps every
+ * test below one line, and a compile failure is never the thing under test in
+ * this file — it has its own tests.
+ */
+const compile = (config: string, kind = 'caps'): CompiledPredicate => {
+  const rule: AutomodRule = {
+    ruleId: 'r1',
+    kind,
+    mode: 'test',
+    config,
+    terms: [],
+    allowlist: [],
+    inviteAllowlist: [],
+    linkDomains: [],
+  };
+  const result = compileRule(rule);
+  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
+  return result.compiled;
+};
+
+const message = (content: string): PredicateInput => ({
+  guildId: '100000000000000001',
+  channelId: '200000000000000001',
+  messageId: '300000000000000001',
+  authorId: '400000000000000001',
+  eventKind: 'messageCreate',
+  content,
+  rawContent: content,
+  mentionedUserIds: [],
+  mentionedRoleIds: [],
+  mentionsEveryone: false,
+  attachments: [],
+  atMs: 1_000,
+});
+```
+
+In `emoji.test.ts`, pass `'emoji'` as the second argument to `compile`, or
+default the parameter to `'emoji'` in that copy.
 
 - [ ] **Step 1: Write the failing `caps` tests**
 
@@ -2163,6 +2295,28 @@ describe('the link_domain predicate', () => {
     ).toBeUndefined();
   });
 
+  it('still matches when the URL ends a sentence', () => {
+    // Without trailing-punctuation stripping, `new URL` reports the hostname
+    // as 'example.com.' — which equals neither 'example.com' nor '.example.com'
+    // under hostMatches, so the deny list is bypassed by a full stop. A silent
+    // false negative: nothing in the output would say so.
+    expect(
+      compile(rule([{ domain: 'example.com', listType: 'deny' }]))
+        .evaluate(message('blocked at https://example.com.')),
+    ).toBeDefined();
+  });
+
+  it('excludes the trailing punctuation from the span', () => {
+    // The span is evidence a reviewer reads against the message text, so it
+    // must cover the URL and not the full stop after it.
+    const content = 'blocked at https://example.com.';
+    const match = compile(rule([{ domain: 'example.com', listType: 'deny' }]))
+      .evaluate(message(content));
+    expect(match?.snippet).toBe('https://example.com');
+    const [start, end] = match?.trace.span ?? [0, 0];
+    expect(content.slice(start, end)).toBe('https://example.com');
+  });
+
   it('finds the denied link when an allowed one comes first', () => {
     // Two links, only the second denied: an implementation checking only the
     // first link goes red.
@@ -2193,6 +2347,22 @@ import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
  * predicate whose whole job is precision.
  */
 const URL_LIKE = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
+
+/**
+ * Punctuation a sentence puts after a URL rather than inside it.
+ *
+ * Without this, `'blocked at https://example.com.'` extracts
+ * `https://example.com.` and `new URL` reports the hostname `example.com.`
+ * — which matches neither `example.com` (not equal) nor `.example.com` (wrong
+ * suffix), so a denied domain quoted at the end of a sentence slips through.
+ * A false negative rather than a false positive, and therefore the safe
+ * direction, but a silent one: nothing about the output would tell an
+ * operator their deny list had been bypassed by a full stop.
+ *
+ * Trailing `)` is included because a URL in parentheses is far more common in
+ * prose than a URL genuinely ending in one.
+ */
+const TRAILING_PUNCTUATION = /[.,;:!?)\]}'"]+$/;
 
 export const linkDomainConfig = z
   .object({
@@ -2233,14 +2403,25 @@ export const linkDomainPredicate: Predicate<LinkDomainConfig> = {
     return {
       evaluate(input) {
         for (const found of input.content.matchAll(URL_LIKE)) {
-          const text = found[0];
+          // Trailing sentence punctuation is not part of the URL. Stripped
+          // before parsing, because `new URL` keeps it in the hostname and a
+          // trailing dot makes every list comparison below silently miss.
+          const text = found[0].replace(TRAILING_PUNCTUATION, '');
+          if (text === '') continue;
           let host: string;
           try {
             // `new URL` does the normalisation this predicate would
             // otherwise get wrong by hand: it lower-cases the host and
             // strips the port and any userinfo. Verified on this Node:
             // 'https://user:pw@example.com:8443/x' -> 'example.com'.
-            host = new URL(text.startsWith('www.') ? `https://${text}` : text).hostname;
+            // The trailing dot is stripped a second time, on the host: a
+            // fully-qualified `https://example.com./x` is legal and `new URL`
+            // preserves the root label, which would defeat the comparison
+            // below just as sentence punctuation would.
+            host = new URL(text.startsWith('www.') ? `https://${text}` : text).hostname.replace(
+              /\.$/,
+              '',
+            );
           } catch {
             // Not a URL after all. A message is not malformed for containing
             // 'https://' in prose, so this is a skip, not an error.
@@ -2323,3 +2504,45 @@ this plan.
 **Not in this plan, by design:** `mention_spam`, `rapid_spam` and
 `duplicate_message` are Slice 4; `cutover_state`, `counts_as_violation` and
 the tiered false-positive gate are Slice 6.
+
+---
+
+## Plan review, and what it changed
+
+Reviewed against the spec before any code was written (protocol step 3), by an
+agent that did not write the plan. Verdict **EXECUTE-WITH-FIXES**: 1 blocking,
+1 decorative guard, 6 non-blocking. Full report:
+`docs/reports/slices-3-5-plan-review.md`. **Every finding was accepted and is
+fixed above** — this section records what changed so a reader of the git history
+does not have to diff.
+
+| Finding | Fix applied |
+| --- | --- |
+| **B1 (blocking)** — Tasks 3 and 5 build `AutomodRule` literals containing `inviteAllowlist`/`linkDomains`, which only Task 6 adds; the dispatch table ran Task 3 first, so `typecheck` fails at the task boundary the plan itself names. | Dispatch order changed: **Task 6 runs second, before every predicate.** The reasoning, and the instruction to stop rather than delete the fields if they are missing, are in "Task order and dispatch batching". |
+| **D1 (decorative guard)** — the regex span test used `/n[o0]w/` on `'now or n0w'`, where `indexOf` and the engine both return 0, so it could not fail for the bug it names. | Fixture replaced with `/\bcat\b/` on `'concatenate a cat'`: `indexOf('cat')` is 3, the engine's index is 14. Plus an assertion pinning the fixture's two-occurrence premise so it cannot silently go decorative again. |
+| Zod stated as 3.24; installed is 3.25.76. | Corrected, with a note that both version numbers are the *installed* ones rather than `package.json`'s range. |
+| PR-16: `attachment_type` is a shape-tier predicate whose suppression is precise-tier shaped, contradicting the spec's per-tier generalisation. | Recorded in PR-16 for Slice 9's implementer. Ruling unchanged — the storage shape does not affect what Slice 9 can build. |
+| PR-17 counted two of the spec's three named false-positive sources and did not notice the third. | PR-17 now argues why **acronyms** are covered by the ratio-over-letters measure and the length floor between them, at both ends of the length range — and says what a real acronym false positive in the observe window would falsify. |
+| Task 4 called `compile`/`message` helpers it never defined. | New **Step 0** defines both, with the reason they are file-local per test file rather than shared. |
+| `link_domain` swallows trailing sentence punctuation: `https://example.com.` yields hostname `example.com.`, matching nothing. | `TRAILING_PUNCTUATION` stripping plus a trailing-dot strip on the host, and **two** new tests — one that the deny list still fires, one that the span excludes the full stop. |
+
+**PR-14 was argued as instructed and survived.** The reviewer independently
+searched for a third way to populate `invite`'s `last_matched_at` and found
+none: an allowlisted invite is a *non-match* by construction, so there is no
+existing side channel — not even `recordCaseEvent`, which fires only for a real
+match — through which it could be written without either a hot-path database
+write or widening every predicate's return type. The deferral stands, and the
+owner flag stands with it.
+
+**What the review verified clean**, and is therefore not worth re-deriving
+during execution: the spec-coverage table row by row; the exclusion-based
+fingerprint genuinely hashing new fields without editing `fingerprint.ts`; the
+existing one-code-path gate being blind to `attachments` today and Task 5's test
+genuinely reaching it; `MessageAttachment`/`FixtureAttachment` field-for-field
+identity; `deleteObservedFixturesForMember` composing correctly with the new
+cascade; `drizzle-orm@0.45.2`'s `onConflictDoNothing({ target })` accepting the
+composite targets used here; and — the one worth knowing — **`matchAll` on a
+`g`-flagged regex does not mutate `lastIndex` across calls**, which is what
+makes `invite.ts` and `link-domain.ts` safe to reuse a module-level `g` pattern
+even though PR-13 refuses `g` in the operator-configured `regex` predicate.
+Those two facts are not in tension and the files say why.
