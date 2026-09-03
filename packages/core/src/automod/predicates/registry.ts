@@ -3,7 +3,7 @@ import { capsPredicate } from './caps.js';
 import { emojiPredicate } from './emoji.js';
 import { invitePredicate } from './invite.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
-import { linkDomainPredicate } from './link-domain.js';
+import { linkDomainPredicate, type LinkDomainConfig } from './link-domain.js';
 import { regexPredicate } from './regex.js';
 import {
   isRuleKind,
@@ -45,13 +45,19 @@ export type CompileFailure =
   /** The predicate's own `compile` threw — an invalid regex, an unparseable term. */
   | 'compile-failed'
   /**
-   * A `keyword_filter` rule whose word list has no enabled terms.
+   * A rule whose active list has nothing on it — a `keyword_filter` rule
+   * with no enabled terms, or a `link_domain` rule with no row on the list
+   * its own `config.mode` names.
    *
    * `buildMatcher([], [])` compiles cleanly — an empty blacklist is a valid
    * `RegExpMatcher` — so this is not a `compile-failed`. It is the same shape
    * of failure ADR 0039 spent a slice on: a rule that looks configured and
-   * can never match. "Cannot be compiled" is a strict subset of "cannot ever
-   * match"; this closes the gap between them (ADR 0040 §4, review IMPORTANT-2).
+   * can never match, or — for `link_domain` in `allow` mode specifically —
+   * one that matches everything, which is just as much "cannot be trusted to
+   * do what its configuration says" as never matching is. "Cannot be
+   * compiled" is a strict subset of "cannot be trusted to do what it says";
+   * this closes the gap between them (ADR 0040 §4, review IMPORTANT-2 and
+   * CRITICAL-2).
    */
   | 'no-terms';
 
@@ -148,6 +154,47 @@ export const compileRule = (rule: AutomodRule): CompileResult => {
       reason: 'no-terms',
       detail: 'no enabled terms in this rule; it can never match a message',
     };
+  }
+
+  /**
+   * `link_domain` compiles from `rule.linkDomains.filter(entry =>
+   * entry.listType === config.mode)` (CRITICAL-2, review of Slices 3+5).
+   * When that filter is empty the failure is silent and, in `allow` mode,
+   * backwards from what an operator would expect:
+   *
+   * - `mode: 'deny'` with no deny rows: the rule can never fire. ADR 0039's
+   *   exact failure mode, for the one kind whose guard was never
+   *   generalised past `keyword_filter`.
+   * - `mode: 'allow'` with no allow rows: "on neither list" is true of every
+   *   link, so the rule matches **everything** — in `enforce` mode, every
+   *   message containing a link.
+   *
+   * Refusing to compile either state is deliberately louder than letting
+   * `allow` mode fire on everything: `doctor`'s `listUnusableAutomodRules`
+   * reports both, and a rule that cannot compile is a rule an operator is
+   * told to fix, not one quietly deleting every linked message.
+   *
+   * `invite` gets no equivalent guard, deliberately: an `invite` rule with
+   * an empty allowlist is correct and useful — it fires on every invite,
+   * which is the point of the predicate (there is only one list, not an
+   * allow/deny pair whose meaning flips on emptiness). The asymmetry is
+   * real, not an oversight — `link_domain`'s `allow` mode inverts its
+   * meaning when its list empties; `invite`'s single list does not invert
+   * anything by being empty.
+   */
+  if (rule.kind === 'link_domain') {
+    const mode = (config as LinkDomainConfig).mode;
+    const hasActiveRow = rule.linkDomains.some((entry) => entry.listType === mode);
+    if (!hasActiveRow) {
+      return {
+        ok: false,
+        reason: 'no-terms',
+        detail:
+          mode === 'allow'
+            ? 'this rule is a whitelist (mode allow) with no domains on its allow list; it would match every link, so it is treated as unusable rather than compiled'
+            : 'this rule is a blocklist (mode deny) with no domains on its deny list; it can never match a link',
+      };
+    }
   }
 
   try {

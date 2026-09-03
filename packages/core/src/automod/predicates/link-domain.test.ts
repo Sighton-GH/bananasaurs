@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { compileRule } from './registry.js';
+import { linkDomainPredicate } from './link-domain.js';
 import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
 
 /**
@@ -129,6 +130,50 @@ describe('the link_domain predicate', () => {
     const detailHost = match?.trace.detail.host;
     expect(typeof detailHost).toBe('string');
     expect((detailHost as string).length).toBeLessThanOrEqual(120);
+  });
+
+  it('refuses to compile a deny-mode rule with no deny rows, rather than a rule that silently never matches (CRITICAL-2)', () => {
+    const emptyDeny: AutomodRule = { ...rule([]), config: '{"mode":"deny"}' };
+    const result = compileRule(emptyDeny);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('no-terms');
+    expect(result.detail).toContain('deny');
+  });
+
+  it('refuses to compile an allow-mode rule with no allow rows, rather than a rule that matches every link (CRITICAL-2)', () => {
+    // The dangerous direction: "on neither list" is true of every link once
+    // the allow list is empty, so an unguarded compile would make this rule
+    // fire on everything rather than nothing.
+    const emptyAllow: AutomodRule = { ...rule([]), config: '{"mode":"allow"}' };
+    const result = compileRule(emptyAllow);
+    expect(result.ok).toBe(false);
+    if (result.ok) return;
+    expect(result.reason).toBe('no-terms');
+    expect(result.detail).toContain('allow');
+  });
+
+  it('a deny row on the other list does not satisfy the allow-mode guard', () => {
+    // Rows of the *other* listType exist in the table (Task 6's schema keeps
+    // both on one table) but are not what config.mode names as active, so
+    // they must not count toward "this rule has something on its list".
+    const mismatched: AutomodRule = {
+      ...rule([{ domain: 'example.com', listType: 'deny' }]),
+      config: '{"mode":"allow"}',
+    };
+    const result = compileRule(mismatched);
+    expect(result.ok).toBe(false);
+  });
+
+  it('the predicate itself would match everything if an allow-mode rule with no rows were ever compiled — documenting the hazard compileRule now refuses (CRITICAL-2)', () => {
+    // Bypasses compileRule's guard on purpose, calling the predicate's own
+    // `compile` directly, to keep the hazard visible in the suite rather
+    // than only in a comment: if this guard is ever removed or narrowed,
+    // this is what comes back.
+    const emptyAllowRule: AutomodRule = { ...rule([]), config: '{"mode":"allow"}' };
+    const compiled = linkDomainPredicate.compile(emptyAllowRule, { mode: 'allow' });
+    expect(compiled.evaluate(message('nothing link-shaped in sight'))).toBeUndefined();
+    expect(compiled.evaluate(message('see https://anything-at-all.example/x'))).toBeDefined();
   });
 
   it('finds the denied link when an allowed one comes first', () => {

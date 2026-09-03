@@ -36,8 +36,15 @@ export const linkDomainConfig = z
      * `deny` fires on a link whose host is on the deny list. `allow` fires on
      * a link whose host is on neither list — a whitelist for a locked-down
      * channel. Explicit rather than inferred from which rows exist, because
-     * inferring it would make deleting the last allow row silently change
-     * the rule from a whitelist into a no-op.
+     * inferring it from an empty list would be ambiguous about which
+     * direction "empty" means: deleting the last **deny** row would silently
+     * turn the rule into a no-op (never matches), but deleting the last
+     * **allow** row does the opposite — it makes the rule match every link,
+     * since "on neither list" is trivially true of everything once the allow
+     * list is empty. `compileRule` (`registry.ts`) closes both directions by
+     * refusing to compile a `link_domain` rule with no row on its configured
+     * `mode` at all (CRITICAL-2, review of Slices 3+5), rather than this
+     * predicate silently doing either thing.
      */
     mode: z.enum(['allow', 'deny']),
   })
