@@ -49,24 +49,66 @@ import {
 export const AUTOMOD_ACTOR: Actor = { type: 'system', id: undefined, roleIds: [] };
 
 /**
- * Serialises a trace, or gives up and says so (plan ruling PR-8).
+ * The longest string `matchTraceSchema`'s `detail` accepts (`trace.ts`).
+ * Kept in sync by hand rather than imported, because `trace.ts` does not
+ * export the number — this is a copy for the truncation below, not a second
+ * source of truth for the schema's own bound.
+ */
+const DETAIL_MAX = 120;
+
+/**
+ * A valid trace that says a valid one could not be produced (IMPORTANT-3,
+ * coordinator ruling).
+ *
+ * `listUnreviewedMatches` filters on `trace IS NOT NULL` to cleanly exclude
+ * manual `/mod` events and native AutoMod events, which have no trace and
+ * are not ours to review. PR-7's plan ruling justified that filter by saying
+ * only pre-Slice-2 rows can lack a trace — which is false: when a predicate
+ * produces a trace its *own* schema rejects, writing the case event without
+ * one would silently and permanently exclude that match from review, and
+ * the class of predicate that gets its trace construction wrong correlates
+ * with the class that gets its matching wrong. So the case event always
+ * gets *a* trace — a placeholder naming the failure — and stays reviewable.
+ */
+const placeholderTrace = (kind: MatchTrace['kind'], reason: string): MatchTrace => ({
+  kind,
+  matchedOn: '(the predicate produced an invalid trace)',
+  span: undefined,
+  normalisations: [],
+  detail: {
+    traceError: reason.length > DETAIL_MAX ? `${reason.slice(0, DETAIL_MAX - 3)}...` : reason,
+  },
+});
+
+/**
+ * Serialises a trace, falling back to a placeholder that says serialisation
+ * failed (plan ruling PR-8, revised by the IMPORTANT-3 coordinator ruling).
  *
  * `serialiseTrace` throws when a predicate produced a trace its own schema
- * rejects — a bug in our code, which is why it throws rather than returning a
- * result. But the composition root is not the place to let that bug become a
- * moderation outage: the case event is the record ADR 0036 exists to
- * guarantee, and losing it to save a field of evidence is the wrong trade.
- * So the failure is logged loudly and the event is written without a trace.
+ * rejects — a bug in our code, which is why it throws rather than returning
+ * a result. The composition root is not the place to let that bug become a
+ * moderation outage, so the case event is always written (ADR 0036), and
+ * always with a trace: writing `undefined` here used to mean the match
+ * vanished from `automod review` forever (IMPORTANT-3). The placeholder is
+ * serialised through the same validator as any other trace — if *that*
+ * fails, it is a bug in the placeholder, not a reason to give up and return
+ * nothing, so it is allowed to throw here rather than being caught again.
+ *
+ * Exported — not private to this module's own `recordCaseEvent` closure —
+ * so `wiring.test.ts` can prove the fallback path directly rather than only
+ * through a full pipeline integration test standing up a predicate that
+ * deliberately misbehaves.
  */
-const traceJson = (scope: GuildScope, logger: Logger, trace: MatchTrace): string | undefined => {
+export const traceJson = (scope: GuildScope, logger: Logger, trace: MatchTrace): string => {
   try {
     return serialiseTrace(trace);
   } catch (err) {
     logger.error(
       safeLogFields({ component: 'automod', guildId: scope.guildId, err }),
-      'the predicate produced a trace that failed validation; the case event was recorded without it',
+      'the predicate produced a trace that failed validation; recording a placeholder trace instead',
     );
-    return undefined;
+    const reason = err instanceof Error ? err.message : String(err);
+    return serialiseTrace(placeholderTrace(trace.kind, reason));
   }
 };
 
@@ -202,7 +244,7 @@ export const automodPortsFor = (
           refusalReason: input.refusalReason as ModerationRefusalReason,
         }),
         ...(input.fixtureId !== undefined && { fixtureId: input.fixtureId }),
-        ...(trace !== undefined && { trace }),
+        trace,
       });
     },
     nextEscalationTier: (violationCount) => modCaseRepo.nextEscalationTier(violationCount),
