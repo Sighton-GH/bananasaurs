@@ -301,7 +301,18 @@ export interface OpsPorts {
     readonly verdict: 'false_positive' | 'true_positive' | 'unclear';
     readonly reviewedBy: string;
     readonly note?: string;
-  }): 'recorded' | 'no-such-event';
+  }):
+    /**
+     * `'recorded-with-label-conflict'` is a success, not a failure: the verdict
+     * is stored either way. It says the *fixture* this match came from could not
+     * be labelled, because another rule's verdict on the same message implies
+     * the opposite label and a fixture's label has no rule dimension. The
+     * reviewer needs to be told, because from their side nothing looks
+     * different — they ruled on one match and the regression corpus quietly
+     * gained nothing. See `recordVerdict` in
+     * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
+     */
+    'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
   /** Points an event kind at a channel, creating or re-pointing the route. */
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */

@@ -392,14 +392,39 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
       };
     }
 
+    const conflicted = outcome === 'recorded-with-label-conflict';
+
     return {
-      text: `recorded ${args.verdict} for ${args.eventId} (${reviewedBy})`,
-      data: { ok: true, eventId: args.eventId, verdict: args.verdict },
+      // The verdict is stored either way — this is a success line, not a
+      // warning about a failure. But the reviewer has to be told when the
+      // regression corpus gained nothing from their work, because from their
+      // side the two cases look identical: they ruled on one match and
+      // pressed on. A fixture's label has no rule dimension, so when another
+      // rule's verdict on the same message implies the opposite label there
+      // is no honest single answer and the label resets to unlabelled
+      // (IMPORTANT-1). Saying so here is what stops that being invisible.
+      text: conflicted
+        ? `recorded ${args.verdict} for ${args.eventId} (${reviewedBy})\n` +
+          `note: another rule’s verdict on this same message disagrees, so the saved ` +
+          `example was reset to unlabelled rather than one verdict overwriting the ` +
+          `other — your verdict still counts toward the rule’s false-positive rate, ` +
+          `but this message is no longer part of the regression corpus`
+        : `recorded ${args.verdict} for ${args.eventId} (${reviewedBy})`,
+      data: {
+        ok: true,
+        eventId: args.eventId,
+        verdict: args.verdict,
+        fixtureLabelConflict: conflicted,
+      },
       audit: {
         action: 'automod.verdict_recorded',
         subjectType: 'mod_case_event',
         subjectId: args.eventId,
-        after: { verdict: args.verdict },
+        // The conflict goes in the audit row too: it is a change to the
+        // corpus (a label removed) made as a side effect of this command,
+        // and an audit trail that recorded only the verdict would not show
+        // where the label went.
+        after: { verdict: args.verdict, fixtureLabelConflict: conflicted },
       },
     };
   },

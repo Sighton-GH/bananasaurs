@@ -437,6 +437,61 @@ describe('automod verdict', () => {
     expect(res.code).toBe('needs-confirm');
   });
 
+  it('tells the reviewer when their verdict cost the corpus its label', async () => {
+    // IMPORTANT-1: one message matching two rules shares one fixture, and a
+    // fixture's label has no rule dimension — so when a second rule's verdict
+    // disagrees, the label resets to unlabelled rather than one verdict
+    // silently overwriting the other. From the reviewer's side that is
+    // invisible: they ruled on a match and moved on. If the command does not
+    // say so, the regression corpus quietly stops growing and nobody knows
+    // why. The verdict itself is still recorded — this is a success line.
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'recorded-with-label-conflict',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { eventId: 'e1', verdict: 'true_positive' },
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('recorded true_positive for e1');
+    expect(res.text).toContain('another rule');
+    expect(res.text).toContain('reset to unlabelled');
+    // The verdict still counts toward the gate — say so, or a reviewer reads
+    // this as "my verdict was thrown away".
+    expect(res.text).toContain('your verdict still counts');
+    expect(res.data).toMatchObject({ ok: true, fixtureLabelConflict: true });
+    // The corpus lost a label as a side effect of this command, so the audit
+    // trail has to show where it went.
+    expect(audit).toEqual([
+      expect.objectContaining({
+        after: expect.objectContaining({ fixtureLabelConflict: true }),
+      }),
+    ]);
+  });
+
+  it('says nothing about conflicts on an ordinary verdict', async () => {
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'recorded',
+        recordAudit: () => {
+          /* a write command's audit row is written by the dispatcher */
+        },
+      },
+      { eventId: 'e1', verdict: 'true_positive' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('another rule');
+    expect(res.data).toMatchObject({ fixtureLabelConflict: false });
+  });
+
   it('records a verdict and returns an audit record naming the event', async () => {
     const audit: unknown[] = [];
     const res = await driveWrite(
@@ -455,7 +510,11 @@ describe('automod verdict', () => {
         action: 'automod.verdict_recorded',
         subjectType: 'mod_case_event',
         subjectId: 'e1',
-        after: { verdict: 'false_positive' },
+        // `fixtureLabelConflict` is part of the audited `after` because a
+        // conflict removes a label from the corpus as a side effect of this
+        // command, and a trail recording only the verdict would not show
+        // where the label went.
+        after: { verdict: 'false_positive', fixtureLabelConflict: false },
       }),
     ]);
   });
