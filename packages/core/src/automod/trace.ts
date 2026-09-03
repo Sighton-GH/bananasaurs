@@ -18,15 +18,23 @@ import { RULE_KINDS, type MatchTrace } from './predicates/types.js';
  */
 
 /**
- * `.strict()` throughout, deliberately.
+ * `.strict()` throughout, and `detail`'s string values are bounded.
  *
- * A trace carrying a field nothing declares was written by code that
- * disagrees with this schema, and the review screen would render it as if it
- * were understood. The specific failure worth being loud about: a predicate
- * that put the whole message into its trace. ADR 0041 §4 says the trace
- * never carries whole-message content — whole messages live in
- * `automod_fixtures` under the owner's explicit privacy decision — and a
- * strict schema is what makes that a rule rather than a hope.
+ * These are two different guards for two different things, and the
+ * distinction matters (IMPORTANT-2). `.strict()` closes the *top-level*
+ * object: a trace carrying a field nothing declares was written by code that
+ * disagrees with this schema, and it stops a new top-level field appearing
+ * unnoticed. It does **not** bound `detail`, which is an open record — before
+ * the `.max(120)` below, `detail: { message: input.content }` serialised,
+ * stored and parsed cleanly, because nothing checked the *length* of a
+ * `detail` value. `.strict()` alone was never the guard that kept
+ * whole-message content out.
+ *
+ * ADR 0041 §4 says the trace never carries whole-message content — whole
+ * messages live in `automod_fixtures` under the owner's explicit privacy
+ * decision — and `detail`'s `.max(120)` is what actually makes that a rule
+ * rather than a hope: 120 characters is more than any predicate-specific
+ * scalar needs, and well short of a message.
  */
 export const matchTraceSchema = z
   .object({
@@ -43,7 +51,7 @@ export const matchTraceSchema = z
      */
     span: z.tuple([z.number().int().nonnegative(), z.number().int().nonnegative()]).optional(),
     normalisations: z.array(z.string()),
-    detail: z.record(z.union([z.string(), z.number(), z.boolean()])),
+    detail: z.record(z.union([z.string().max(120), z.number(), z.boolean()])),
   })
   .strict();
 

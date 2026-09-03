@@ -62,6 +62,27 @@ describe('serialiseTrace / parseMatchTrace', () => {
     expect(result.ok).toBe(false);
   });
 
+  it('refuses a detail string long enough to smuggle whole-message content', () => {
+    // IMPORTANT-2: `.strict()` only closes the top-level object. `detail` was
+    // an open record accepting any string of any length, so a predicate
+    // writing `detail: { message: input.content }` serialised, stored, and
+    // parsed cleanly — putting whole member message text into
+    // `mod_case_events.trace`, a column whose own comment says it never
+    // holds that. A bound on `detail`'s string values is what actually keeps
+    // content out; `.strict()` alone does not.
+    const smuggled = {
+      ...TRACE,
+      detail: {
+        message:
+          'hey everyone here is my whole private message, all of it, ' +
+          'padded well past a hundred and twenty characters so this can only ' +
+          'be a smuggled whole message rather than a short predicate scalar',
+      },
+    };
+    const result = parseMatchTrace(JSON.stringify(smuggled));
+    expect(result.ok).toBe(false);
+  });
+
   it('refuses to serialise a trace that would not parse back', () => {
     const broken = { ...TRACE, kind: 'telepathy' } as unknown as MatchTrace;
     expect(() => serialiseTrace(broken)).toThrow();
