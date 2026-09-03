@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   authorize,
+  isRuleKind,
   ModerationActionGateway,
   parseGuildId,
   safeLogFields,
@@ -57,6 +58,42 @@ export const AUTOMOD_ACTOR: Actor = { type: 'system', id: undefined, roleIds: []
 const DETAIL_MAX = 120;
 
 /**
+ * The kind a placeholder trace claims when the rejected trace's own `kind`
+ * cannot be trusted. Any valid member would do — `matchedOn` and
+ * `detail.kindReplaced` are what tell a reader the value is a substitution,
+ * and the case event's `rule_id` is where the real rule is identified.
+ */
+const FALLBACK_KIND: MatchTrace['kind'] = 'keyword_filter';
+
+/**
+ * A short, value-free description of why a trace failed validation.
+ *
+ * **Never the validator's own message.** Zod's `invalid_enum_value` and
+ * `invalid_type` messages quote the value they received, so if the field a
+ * predicate corrupted happens to hold message content, the raw message
+ * carries that content into the stored trace *and* into the log — past
+ * `safeLogFields`, which passes `Error.message` through. ADR 0041 §4 says
+ * the trace never holds whole-message content and CLAUDE.md rule 4 says the
+ * logs never do; a validator's error string is exactly the sort of
+ * innocent-looking channel that defeats both. Issue codes and field paths
+ * say everything an operator debugging a predicate needs, and quote nothing.
+ */
+const failureSummary = (err: unknown): string => {
+  const issues: unknown = (err as { issues?: unknown })?.issues;
+  if (Array.isArray(issues)) {
+    const summary = issues
+      .map((issue: unknown) => {
+        const { path, code } = (issue ?? {}) as { path?: unknown; code?: unknown };
+        const where = Array.isArray(path) && path.length > 0 ? path.join('.') : '(root)';
+        return `${where}:${typeof code === 'string' ? code : 'invalid'}`;
+      })
+      .join(', ');
+    return summary.length > DETAIL_MAX ? `${summary.slice(0, DETAIL_MAX - 3)}...` : summary;
+  }
+  return 'trace failed validation';
+};
+
+/**
  * A valid trace that says a valid one could not be produced (IMPORTANT-3,
  * coordinator ruling).
  *
@@ -69,15 +106,46 @@ const DETAIL_MAX = 120;
  * the class of predicate that gets its trace construction wrong correlates
  * with the class that gets its matching wrong. So the case event always
  * gets *a* trace — a placeholder naming the failure — and stays reviewable.
+ *
+ * **Nothing here is copied from the rejected trace.** The first version of
+ * this reused `trace.kind` verbatim, which reintroduced the bug it fixes the
+ * moment `kind` is itself the corrupted field: the placeholder then failed
+ * validation too, `traceJson` threw uncaught, and the case event — the record
+ * ADR 0036 exists to guarantee — was lost outright. Found by the fix wave's
+ * re-review. `kind` is now validated before it is trusted, and a rejected one
+ * falls back to a constant with the substitution stated in `matchedOn`, so
+ * nothing reads as a claim about which predicate ran. The reviewer identifies
+ * the rule from the case event's own `rule_id`, which `automod review`
+ * already prints, so no information is actually lost.
  */
-const placeholderTrace = (kind: MatchTrace['kind'], reason: string): MatchTrace => ({
-  kind,
-  matchedOn: '(the predicate produced an invalid trace)',
+const placeholderTrace = (kind: unknown, err: unknown): MatchTrace => {
+  const usable = typeof kind === 'string' && isRuleKind(kind);
+  return {
+    kind: usable ? kind : FALLBACK_KIND,
+    matchedOn: usable
+      ? '(the predicate produced an invalid trace)'
+      : '(the predicate produced an invalid trace; its recorded kind was not a rule kind and was replaced)',
+    span: undefined,
+    normalisations: [],
+    detail: { traceError: failureSummary(err), kindReplaced: !usable },
+  };
+};
+
+/**
+ * The last resort, built and validated once at module load.
+ *
+ * If `placeholderTrace` itself ever fails to serialise, `traceJson` must
+ * still return *something* valid rather than throw — throwing costs the case
+ * event, which is strictly worse than any trace problem. Constructing this at
+ * import time means a mistake in the constant fails the daemon at startup,
+ * where it is obvious, instead of on a rare error path in production.
+ */
+const LAST_RESORT_TRACE_JSON = serialiseTrace({
+  kind: FALLBACK_KIND,
+  matchedOn: '(no usable trace could be recorded for this match)',
   span: undefined,
   normalisations: [],
-  detail: {
-    traceError: reason.length > DETAIL_MAX ? `${reason.slice(0, DETAIL_MAX - 3)}...` : reason,
-  },
+  detail: { traceError: 'placeholder trace also failed validation' },
 });
 
 /**
@@ -103,12 +171,31 @@ export const traceJson = (scope: GuildScope, logger: Logger, trace: MatchTrace):
   try {
     return serialiseTrace(trace);
   } catch (err) {
+    // `compileError`, not `err`: the allowlist passes `Error.message`
+    // through, and a validator's message quotes the value it rejected — so
+    // a predicate that put message content in the field it corrupted would
+    // put that content in the log. `failureSummary` carries codes and paths
+    // and quotes nothing (CLAUDE.md rule 4).
     logger.error(
-      safeLogFields({ component: 'automod', guildId: scope.guildId, err }),
+      safeLogFields({
+        component: 'automod',
+        guildId: scope.guildId,
+        compileError: failureSummary(err),
+      }),
       'the predicate produced a trace that failed validation; recording a placeholder trace instead',
     );
-    const reason = err instanceof Error ? err.message : String(err);
-    return serialiseTrace(placeholderTrace(trace.kind, reason));
+    try {
+      return serialiseTrace(placeholderTrace(trace.kind, err));
+    } catch {
+      // Unreachable by construction — `placeholderTrace` copies nothing from
+      // the rejected trace — but the cost of being wrong about that is the
+      // case event itself, so this never throws. See LAST_RESORT_TRACE_JSON.
+      logger.error(
+        safeLogFields({ component: 'automod', guildId: scope.guildId }),
+        'the placeholder trace failed validation too; recording the last-resort trace',
+      );
+      return LAST_RESORT_TRACE_JSON;
+    }
   }
 };
 

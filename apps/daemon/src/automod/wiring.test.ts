@@ -87,4 +87,55 @@ describe('traceJson', () => {
     expect(parsed.ok).toBe(true);
     t.close();
   });
+
+  it('survives a trace whose own kind is the corrupted field', () => {
+    // The first version of the placeholder reused `trace.kind` verbatim. When
+    // `kind` is itself what the predicate corrupted, the placeholder failed
+    // validation too and `traceJson` threw uncaught — losing the case event
+    // outright, which is worse than the bug the placeholder was added to fix
+    // and contradicts ADR 0036. Found by the fix wave's re-review.
+    const t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    const invalid = {
+      kind: 'not-a-rule-kind',
+      matchedOn: 'badword',
+      span: undefined,
+      normalisations: [],
+      detail: {},
+    } as unknown as MatchTrace;
+
+    const json = traceJson(scope, logger, invalid);
+
+    const parsed = parseMatchTrace(json);
+    expect(parsed.ok).toBe(true);
+    // The substitution is stated rather than silent: nothing here should read
+    // as a claim about which predicate ran. The reviewer identifies the rule
+    // from the case event's own rule_id, which `automod review` prints.
+    expect(parsed.ok && parsed.trace.matchedOn).toContain('was replaced');
+    expect(parsed.ok && parsed.trace.detail.kindReplaced).toBe(true);
+    t.close();
+  });
+
+  it('never quotes the rejected value into the stored trace', () => {
+    // A validator's message quotes what it rejected. If the field a predicate
+    // corrupted holds message content, using that message as the failure
+    // reason would carry member content into `mod_case_events.trace` — the
+    // table ADR 0041 §4 says never holds it — and, through `Error.message`,
+    // past the Pino allowlist into the logs (CLAUDE.md rule 4).
+    const secret = 'MEMBERSECRETCONTENT';
+    const t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    const invalid = {
+      kind: secret,
+      matchedOn: 'badword',
+      span: undefined,
+      normalisations: [],
+      detail: {},
+    } as unknown as MatchTrace;
+
+    const json = traceJson(scope, logger, invalid);
+
+    expect(json).not.toContain(secret);
+    t.close();
+  });
 });
