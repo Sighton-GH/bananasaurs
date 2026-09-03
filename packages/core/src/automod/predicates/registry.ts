@@ -1,3 +1,4 @@
+import { attachmentTypePredicate } from './attachment-type.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
 import {
   isRuleKind,
@@ -18,6 +19,7 @@ import {
  */
 const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   keyword_filter: keywordFilterPredicate,
+  attachment_type: attachmentTypePredicate,
 };
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>

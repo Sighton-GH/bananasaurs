@@ -182,6 +182,67 @@ describe('the one-code-path invariant', () => {
     expect(replayed?.categoryId).toEqual(recorded.categoryId);
     expect(replayed?.snippet).toEqual(recorded.snippet);
   });
+
+  it('the dry run and the live subscriber agree on a message with attachments', async () => {
+    // Obligation 3 of the slices 3-5 handoff. The gate above is a
+    // behavioural comparison, so it can only see a divergence in a field some
+    // shipped predicate reads — and keyword_filter reads only `content`. A
+    // hand-built PredicateInput that skipped attachment reconstruction was
+    // invisible to it. attachment_type is the first predicate to read a
+    // second field, so this reaches that field from both the live subscriber
+    // and the fixture replay.
+    const rule: AutomodRule = {
+      ruleId: 'attachments-rule',
+      kind: 'attachment_type',
+      mode: 'test',
+      config: '{"blockedExtensions":["exe"]}',
+      terms: [],
+      allowlist: [],
+      inviteAllowlist: [],
+      linkDomains: [],
+    };
+    const attachments = [{ fileName: 'setup.exe', contentType: 'text/plain', sizeBytes: 4096 }];
+
+    const recorded: { trace?: MatchTrace; categoryId?: string; snippet?: string } = {};
+    const subscriber = createAutomodSubscriber({
+      ...fakeDeps(),
+      listRules: () => [rule],
+      recordCaseEvent: (input) => {
+        recorded.trace = input.trace;
+        recorded.categoryId = input.matchedCategory;
+        recorded.snippet = input.matchedSnippet;
+      },
+    });
+    await subscriber.handle(
+      messageEvent({ content: 'have a look', attachments, receivedAtMs: 1_000 }),
+    );
+
+    const report = runDryRun({
+      guildId: GUILD_ID,
+      rule,
+      fixtures: [
+        {
+          fixtureId: '444444444444444444:abcdef0123456789',
+          content: 'have a look',
+          authorId: AUTHOR,
+          label: 'unlabelled',
+          source: 'observed',
+          createdAt: 1_000,
+          attachments,
+        },
+      ],
+    });
+
+    const replayed = report.results[0]?.match;
+    expect(replayed).toBeDefined();
+    expect(recorded.trace).toBeDefined();
+    expect(replayed?.trace).toEqual(recorded.trace);
+    expect(replayed?.categoryId).toEqual(recorded.categoryId);
+    expect(replayed?.snippet).toEqual(recorded.snippet);
+    // And it is a real match on both sides, not two identical nothings — a
+    // comparison of two undefineds would pass under every implementation.
+    expect(replayed?.trace.kind).toBe('attachment_type');
+  });
 });
 
 describe('runDryRun', () => {
