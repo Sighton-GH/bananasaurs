@@ -708,6 +708,36 @@ established the `automod` command namespace (`dryrun`, `review`, `verdict`).
 **Not** the dashboard — that is Slice 8 and stays there. *Costs if wrong:* two
 more commands in `--help`, which is what PR-6 paid for the same reason.
 
+**Dispatch D (Tasks 5, 7, 8 — `attachment_type`, `invite`, `link_domain`) —
+complete.** Commits `30fee50`, `2f4ca8e`, `dc9933f`. **2203 tests / 105 files**
+from 2174, typecheck and lint clean, gates re-run by the coordinator.
+
+**Obligation 3 is met, and the coordinator watched it fail personally rather
+than taking it on report.** Setting `attachments: []` back in
+`predicateInputFrom`'s fixture branch fails **exactly one** of
+`dry-run.test.ts`'s ten tests — the new attachment gate,
+`expected undefined to be defined` at line 237 — while the other nine, including
+the pre-existing `keyword_filter` one-code-path gate, stay green. Restored,
+10/10. That contrast *is* the obligation: the behavioural gate was blind to
+every field no shipped predicate read, and it no longer is.
+
+**The implementer improved on the plan here and was right to.** The plan's Task 5
+snippet called `predicateInputFrom` and `evaluateRule` directly, which
+`dry-run.test.ts` does not do — it compares the **live subscriber** against
+`runDryRun`. The implementer adapted the new test to the file's real shape, so
+the gate now drives `createAutomodSubscriber(...).handle(messageEvent(...))` and
+compares its recorded trace, category and snippet against the replay. That is a
+stronger comparison than the plan asked for, because it goes through the
+subscriber's own path rather than around it.
+
+**A coordinator arithmetic error, corrected by the implementer.** Dispatch D's
+brief said `predicateFor` would cover "five of ten kinds if dispatch C has not
+landed". It is **four** — `keyword_filter` was the only pre-existing entry, plus
+this dispatch's three. The implementer flagged it in its report rather than
+quietly reconciling, which is exactly the instruction. Recorded because the
+briefs are written from the coordinator's memory of the registry and that memory
+was wrong; the count belongs in `rg` output, not in a brief.
+
 ### A second worktree, and E-1 confirmed fixed by `npm ci`
 
 Slices 3–6 run in `.claude/worktrees/release2-slices-3-6` on branch
