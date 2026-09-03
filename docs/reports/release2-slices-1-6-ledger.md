@@ -709,6 +709,27 @@ only the expected mid-TDD errors.
 worse, without them a `tsc --build` in a worktree can write into the main
 checkout's `dist`. Carried to handoff as a suggested `docs/` note.
 
+**E-4 — a bare-pattern `rg` is blocked by the sandbox, and every dispatch will
+hit it.** `rg -n "pattern"` with no path argument can default to searching the
+whole tree, which includes `.env`; the permission layer cannot tell from the
+outside that a particular invocation was reading piped stdin, so it refuses the
+worst case. Two agents in this run hit it within minutes, once as
+`sed … | rg -n "pattern"` — a command that genuinely could not have read
+`.env`, and was refused anyway, correctly.
+
+This interacts badly with the standing advice in every handoff to prefer `rg`
+over `grep` (which returns false negatives here). **The fix is the command's
+form: always give `rg` an explicit file or directory.**
+
+```
+rg -n "predicateInputFrom|evaluateRule" packages/core/src/automod/dry-run.test.ts
+```
+
+*Carried into every brief written from here on*, and worth a line in the
+"Things that will bite you" section of the next handoff. Denying these is the
+right call and nobody should approve one to unblock an agent — a subagent
+reading `.env` is CLAUDE.md rule 4 failing, and the scoped form costs nothing.
+
 ## Deferred minors
 
 Raised by review, judged not worth a fix round, carried to the whole-branch
