@@ -1,4 +1,6 @@
 import { attachmentTypePredicate } from './attachment-type.js';
+import { capsPredicate } from './caps.js';
+import { emojiPredicate } from './emoji.js';
 import { invitePredicate } from './invite.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
 import { linkDomainPredicate } from './link-domain.js';
@@ -26,6 +28,8 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   invite: invitePredicate,
   link_domain: linkDomainPredicate,
   regex: regexPredicate,
+  caps: capsPredicate,
+  emoji: emojiPredicate,
 };
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>

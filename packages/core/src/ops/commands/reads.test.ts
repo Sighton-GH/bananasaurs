@@ -508,7 +508,12 @@ describe('bananasaurs doctor', () => {
     const res = await drive(doctorCommand, {
       ...healthy,
       listUnusableAutomodRules: () => [
-        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+        {
+          ruleId: 'shouting',
+          kind: 'mention_spam',
+          reason: 'no-predicate',
+          detail: 'mention_spam',
+        },
       ],
     });
     expect(res.ok).toBe(true);
@@ -519,7 +524,12 @@ describe('bananasaurs doctor', () => {
     expect(res.data).toMatchObject({
       ok: false,
       unusableAutomodRules: [
-        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+        {
+          ruleId: 'shouting',
+          kind: 'mention_spam',
+          reason: 'no-predicate',
+          detail: 'mention_spam',
+        },
       ],
     });
   });
