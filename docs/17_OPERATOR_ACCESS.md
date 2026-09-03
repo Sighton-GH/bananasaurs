@@ -41,7 +41,19 @@ bananasaurs backup now --confirm            # take a backup immediately, apply r
 bananasaurs backup list                     # every backup on disk, oldest first
 ```
 
-Later releases add `case`, `automod`, `archive search`, `channels enable|disable`.
+### Release 2 additions
+
+```bash
+bananasaurs automod dryrun <rule-id> [--source observed|handwritten]
+                                             # replay a rule over the fixture corpus (ADR 0041 §7)
+bananasaurs automod review [--rule <id>] [--limit N]
+                                             # unreviewed matches, with the message and the
+                                             # matched snippet — prints member message content,
+                                             # see the warning below
+bananasaurs automod verdict <event-id> <false_positive|true_positive|unclear> --confirm
+```
+
+Later releases add `case`, `archive search`, `channels enable|disable`.
 
 **Restore is deliberately not on this list.** ADR 0034: it needs the daemon
 stopped, which a socket command can never guarantee about itself. It is
@@ -230,6 +242,17 @@ Say when you do not know rather than inferring.
 ```
 
 Read commands run without prompting. Anything with `--confirm` is not in the allowlist, so Claude Code asks you first and you approve it deliberately. That is the posture you want for a live system.
+
+**`bananasaurs automod review` and `bananasaurs automod dryrun` are deliberately not on this
+allowlist, and must not be added to it.** Both print whole member message content to stdout
+(the matched snippet and, for `review`, the full stored message — CRITICAL-2 of the Slice 2
+review). Adding either here — the natural-looking thing to do the next time this block is
+edited to keep pace with the CLI surface — would route club members' messages into this
+Claude session's context and, from there, to the model provider on every ordinary read. That
+is a CLAUDE.md rule 5 / Discord Developer Policy (rule 21) question, not a convenience one:
+member content may only reach a provider flagged `trainsOnInput: "no"` with a cited ToS clause,
+and this ops session is not that path. Run both from your own terminal instead, the same way
+you run any other write command's `--confirm` today.
 
 To make a write, drop the readonly env for that session: `BANANASAURS_READONLY=0 claude`.
 
