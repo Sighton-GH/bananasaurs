@@ -312,6 +312,40 @@ export const ruleExists = (scope: GuildScope, ruleId: string): boolean =>
         .get() !== undefined,
   );
 
+export interface RuleKindAndConfig {
+  readonly kind: RuleKind;
+  /** Raw JSON text, unparsed — same boundary reasoning as `StoredAutomodRule.config`. */
+  readonly config: string;
+}
+
+/**
+ * A rule's `kind` and raw `config`, or `undefined` if no rule with this id
+ * exists — enabled or disabled, mirroring `ruleExists` (IMPORTANT-7, review
+ * of Slices 3+5).
+ *
+ * `ruleExists` alone answers "does this id name a rule", which is not enough
+ * to guard `automod invite-allow` / `invite-deny` / `domain-add` / `domain-rm`:
+ * those four commands each require one specific `kind`, and a rule id that
+ * exists but is the wrong kind (a `keyword_filter` rule handed to
+ * `invite-allow`, say) writes a row nothing will ever read. The composition
+ * root uses `kind` for that check, and `config` for `link_domain`'s
+ * `config.mode` — needed to report what an empty active list means
+ * (CRITICAL-2) — without a second read for it.
+ */
+export const findRuleKindAndConfig = (
+  scope: GuildScope,
+  ruleId: string,
+): RuleKindAndConfig | undefined => {
+  const row = read(scope, (db) =>
+    db
+      .select({ kind: modRules.kind, config: modRules.config })
+      .from(modRules)
+      .where(scope.only(modRules, eq(modRules.ruleId, ruleId)))
+      .get(),
+  );
+  return row === undefined ? undefined : { kind: row.kind as RuleKind, config: row.config };
+};
+
 export interface CreateRuleInput {
   readonly ruleId: string;
   readonly kind: RuleKind;

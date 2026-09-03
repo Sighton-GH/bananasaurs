@@ -1,4 +1,4 @@
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { automodInviteAllowlist, automodLinkDomains } from '../schema.js';
@@ -84,7 +84,19 @@ export const addInviteAllowlistEntry = (
       .run();
   });
 
-/** Returns whether there was an entry to remove. False is a real answer. */
+/**
+ * Removes one code from `ruleId`'s invite allowlist. Returns whether there
+ * was an entry to remove — false is a real answer.
+ *
+ * Matched case-insensitively against the stored, case-preserving `code`
+ * (IMPORTANT-2, review of Slices 3+5): `addInviteAllowlistEntry` stores the
+ * operator's code verbatim — case-preserving, because the label is for a
+ * human reading the list later — and `invite.ts`'s predicate already
+ * matches codes case-insensitively (`code.toLowerCase()`), so removal must
+ * use the same rule or `automod invite-deny r1 CLUBHOUSE` silently fails to
+ * remove `clubhouse`. This is deliberate consistency with the predicate, not
+ * drift from the add path's case-preserving storage.
+ */
 export const removeInviteAllowlistEntry = (
   scope: GuildScope,
   ruleId: string,
@@ -96,7 +108,10 @@ export const removeInviteAllowlistEntry = (
       .where(
         scope.only(
           automodInviteAllowlist,
-          and(eq(automodInviteAllowlist.ruleId, ruleId), eq(automodInviteAllowlist.code, code)),
+          and(
+            eq(automodInviteAllowlist.ruleId, ruleId),
+            sql`lower(${automodInviteAllowlist.code}) = lower(${code})`,
+          ),
         ),
       )
       .run();
@@ -121,6 +136,18 @@ export const listLinkDomains = (scope: GuildScope, ruleId: string): readonly Lin
       .map((row) => ({ domain: row.domain, listType: row.listType as 'allow' | 'deny' })),
   );
 
+/**
+ * The one place that knows `link_domain`'s canonical domain form (IMPORTANT-2,
+ * review of Slices 3+5): lower-cased, with a leading `www.` stripped, so
+ * `www.example.com` and `example.com` cannot both be entered as if they were
+ * different rows — the primary key would not catch that on its own. Used by
+ * both `addLinkDomain` and `removeLinkDomain` so there is exactly one place
+ * to update if the rule ever changes, rather than two copies that can drift
+ * (which is exactly how `removeLinkDomain` used to compare verbatim while
+ * `addLinkDomain` canonicalised).
+ */
+const canonicalDomain = (domain: string): string => domain.toLowerCase().replace(/^www\./, '');
+
 export interface AddLinkDomainInput {
   readonly ruleId: string;
   readonly domain: string;
@@ -128,34 +155,59 @@ export interface AddLinkDomainInput {
   readonly now: number;
 }
 
+export interface AddLinkDomainResult {
+  /** The canonical form actually written or matched, for the caller to look up the stored row. */
+  readonly domain: string;
+  /** Whether the insert changed anything. False means the domain was already on one of the lists. */
+  readonly inserted: boolean;
+}
+
 /**
  * Adds one domain to `ruleId`'s allow or deny list, or does nothing if it is
- * already on it.
+ * already on it — under either `listType`, since the primary key is
+ * `(guild, rule, domain)` (IMPORTANT-1, review of Slices 3+5).
  *
- * Lower-cases the domain and strips a leading `www.` before storing, so the
- * list holds one canonical form and `www.example.com` and `example.com`
- * cannot both be entered as if they were different rows — the primary key
- * would not catch that on its own.
+ * Returns the canonical domain and whether the insert actually happened,
+ * rather than `void`, so the composition root can report the domain's real
+ * stored `listType` on a no-op without re-deriving the canonical form itself
+ * — that duplication is exactly what let `removeLinkDomain` drift in the
+ * first place.
  */
-export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): void => {
-  const domain = input.domain.toLowerCase().replace(/^www\./, '');
-  write(scope, ({ db }) => {
-    db.insert(automodLinkDomains)
-      .values({
-        guildId: scope.guildId,
-        ruleId: input.ruleId,
-        domain,
-        listType: input.listType,
-        addedAt: input.now,
-      })
-      .onConflictDoNothing({
-        target: [automodLinkDomains.guildId, automodLinkDomains.ruleId, automodLinkDomains.domain],
-      })
-      .run();
-  });
+export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): AddLinkDomainResult => {
+  const domain = canonicalDomain(input.domain);
+  const changes = write(
+    scope,
+    ({ db }) =>
+      db
+        .insert(automodLinkDomains)
+        .values({
+          guildId: scope.guildId,
+          ruleId: input.ruleId,
+          domain,
+          listType: input.listType,
+          addedAt: input.now,
+        })
+        .onConflictDoNothing({
+          target: [
+            automodLinkDomains.guildId,
+            automodLinkDomains.ruleId,
+            automodLinkDomains.domain,
+          ],
+        })
+        .run().changes,
+  );
+  return { domain, inserted: changes > 0 };
 };
 
-/** Returns whether there was a domain to remove. False is a real answer. */
+/**
+ * Removes one domain from either of `ruleId`'s lists. Returns whether there
+ * was a domain to remove — false is a real answer.
+ *
+ * Canonicalises before comparing (IMPORTANT-2): `addLinkDomain` stores the
+ * canonical form, but until this fix `removeLinkDomain` compared the
+ * operator's string verbatim, so `automod domain-rm r1 WWW.Example.COM`
+ * deleted nothing for a domain added as `example.com`.
+ */
 export const removeLinkDomain = (scope: GuildScope, ruleId: string, domain: string): boolean =>
   write(scope, ({ db }) => {
     const result = db
@@ -163,7 +215,10 @@ export const removeLinkDomain = (scope: GuildScope, ruleId: string, domain: stri
       .where(
         scope.only(
           automodLinkDomains,
-          and(eq(automodLinkDomains.ruleId, ruleId), eq(automodLinkDomains.domain, domain)),
+          and(
+            eq(automodLinkDomains.ruleId, ruleId),
+            eq(automodLinkDomains.domain, canonicalDomain(domain)),
+          ),
         ),
       )
       .run();

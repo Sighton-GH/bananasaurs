@@ -678,6 +678,19 @@ describe('automod verdict', () => {
   });
 });
 
+/**
+ * These four suites drive `fakeOpsPorts` with canned outcomes and assert on
+ * rendered text — they test the renderer, not the repository, so they
+ * cannot by themselves catch IMPORTANT-1 (the wrong `listType` printed),
+ * IMPORTANT-2 (canonicalisation asymmetry between add and remove) or
+ * IMPORTANT-7 (no kind check) — the fake never disagrees with what the
+ * command asks it to say (decorative guard 1, review of Slices 3+5). Real
+ * round-trip coverage against a migrated database and the real repository
+ * lives in `packages/storage/src/repos/automod-rule-lists.test.ts`, which is
+ * the one place that can reach both (`core` may not import `@bananasaurs/
+ * storage`, ADR 0014).
+ */
+
 describe('automod invite-allow', () => {
   it('is registered as a write', () => {
     const names = OPERATOR_COMMANDS.map((c) => c.name);
@@ -755,6 +768,30 @@ describe('automod invite-allow', () => {
     ]);
   });
 
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'wrong-kind',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', code: 'clubhouse', label: 'our own server' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not an invite rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_added',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
+  });
+
   it('refuses without --confirm', async () => {
     const res = await driveWrite(
       automodInviteAllowCommand,
@@ -826,6 +863,30 @@ describe('automod invite-deny', () => {
       expect.objectContaining({ action: 'automod.invite_allowlist_removed' }),
     ]);
   });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'wrong-kind',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', code: 'clubhouse' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not an invite rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_removed',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
+  });
 });
 
 describe('automod domain-add', () => {
@@ -840,7 +901,7 @@ describe('automod domain-add', () => {
     const res = await driveWrite(
       automodDomainAddCommand,
       {
-        addLinkDomain: () => 'added',
+        addLinkDomain: () => ({ outcome: 'added', mode: 'deny' }),
         listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
         recordAudit: (input) => {
           audit.push(input);
@@ -860,10 +921,49 @@ describe('automod domain-add', () => {
     ]);
   });
 
+  it("names the domain's stored listType, not the operator's requested one, on a repeat add under the other list (IMPORTANT-1)", async () => {
+    // The primary key is (guild, rule, domain), so re-adding under the
+    // *other* listType is a no-op the port reports as `already-present`
+    // with the listType actually stored — here, `allow`, even though the
+    // operator asked for `deny`.
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'already-present', listType: 'allow', mode: 'allow' }),
+        listLinkDomains: () => [{ domain: 'example.com', listType: 'allow' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, alreadyPresent: true, listType: 'allow' });
+    expect(res.text).toContain("already on rule domain-rule's allow list");
+    expect(res.text).not.toContain("already on rule domain-rule's deny list");
+    expect(res.text).toContain('move it to deny');
+  });
+
+  it('warns when the add leaves the rule matching every link — an allow-mode rule with nothing on its allow list (CRITICAL-2)', async () => {
+    // Adding a deny-listType domain to an allow-mode rule does not touch the
+    // active (allow) list, so it can still be empty after the write.
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'added', mode: 'allow' }),
+        listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('matches every link');
+  });
+
   it('refuses a listType outside allow|deny at the validator', async () => {
     const res = await driveWrite(
       automodDomainAddCommand,
-      { addLinkDomain: () => 'added', listLinkDomains: () => [] },
+      { addLinkDomain: () => ({ outcome: 'added', mode: 'allow' }), listLinkDomains: () => [] },
       { ruleId: 'r1', domain: 'example.com', listType: 'block' },
     );
     expect(res.ok).toBe(false);
@@ -874,7 +974,7 @@ describe('automod domain-add', () => {
     const res = await driveWrite(
       automodDomainAddCommand,
       {
-        addLinkDomain: () => 'no-such-rule',
+        addLinkDomain: () => ({ outcome: 'no-such-rule' }),
         recordAudit: (input) => {
           audit.push(input);
         },
@@ -885,6 +985,30 @@ describe('automod domain-add', () => {
     if (!res.ok) return;
     expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
     expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_added' })]);
+  });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'wrong-kind' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', domain: 'example.com', listType: 'allow' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not a link_domain rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.link_domain_added',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
   });
 });
 
@@ -899,8 +1023,8 @@ describe('automod domain-rm', () => {
     const res = await driveWrite(
       automodDomainRmCommand,
       {
-        removeLinkDomain: () => 'removed',
-        listLinkDomains: () => [],
+        removeLinkDomain: () => ({ outcome: 'removed', mode: 'deny' }),
+        listLinkDomains: () => [{ domain: 'other.example', listType: 'deny' }],
         recordAudit: () => {},
       },
       { ruleId: 'domain-rule', domain: 'example.com' },
@@ -914,8 +1038,8 @@ describe('automod domain-rm', () => {
     const res = await driveWrite(
       automodDomainRmCommand,
       {
-        removeLinkDomain: () => 'not-present',
-        listLinkDomains: () => [],
+        removeLinkDomain: () => ({ outcome: 'not-present', mode: 'deny' }),
+        listLinkDomains: () => [{ domain: 'other.example', listType: 'deny' }],
         recordAudit: () => {},
       },
       { ruleId: 'domain-rule', domain: 'ghost.example' },
@@ -925,12 +1049,45 @@ describe('automod domain-rm', () => {
     expect(res.data).toMatchObject({ ok: true, removed: false });
   });
 
+  it('warns that the rule is now inert when the last deny row is removed (CRITICAL-2)', async () => {
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'removed', mode: 'deny' }),
+        listLinkDomains: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('can never match');
+  });
+
+  it('warns that the rule now matches every link when the last allow row is removed (CRITICAL-2)', async () => {
+    // The dangerous direction, not just the inert one: "the domain lists are
+    // now empty" used to read as a tidy-up regardless of which one this is.
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'removed', mode: 'allow' }),
+        listLinkDomains: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'club.org' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('matches every link');
+    expect(res.text).toContain('add a domain or disable the rule');
+  });
+
   it('refuses a rule that does not exist, but still audits it', async () => {
     const audit: unknown[] = [];
     const res = await driveWrite(
       automodDomainRmCommand,
       {
-        removeLinkDomain: () => 'no-such-rule',
+        removeLinkDomain: () => ({ outcome: 'no-such-rule' }),
         recordAudit: (input) => {
           audit.push(input);
         },
@@ -941,5 +1098,29 @@ describe('automod domain-rm', () => {
     if (!res.ok) return;
     expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
     expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_removed' })]);
+  });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'wrong-kind' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not a link_domain rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.link_domain_removed',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
   });
 });

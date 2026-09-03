@@ -548,6 +548,40 @@ const projectLinkDomains = (
   entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
 ): JsonValue => entries.map((entry) => ({ domain: entry.domain, listType: entry.listType }));
 
+/**
+ * Says what an empty *active* list means for this rule, or `undefined` when
+ * the active list — the one `config.mode` names — has at least one domain
+ * (CRITICAL-2, review of Slices 3+5).
+ *
+ * "The domain lists are now empty" used to read as a completed tidy-up
+ * regardless of which direction it failed in. It is either "this rule is now
+ * inert" (`deny` with nothing on the deny list — ADR 0039's silent
+ * non-matching) or "this rule now matches every link" (`allow` with nothing
+ * on the allow list — the dangerous direction, since in `enforce` mode that
+ * deletes every message containing a link). The command has the rule id and
+ * now the port hands back `config.mode`, so it can say which.
+ *
+ * `mode` is `undefined` only if the rule's stored config failed to parse as
+ * `{mode: 'allow' | 'deny'}` — a state `compileRule`/`doctor` already report
+ * on their own path; this degrades to silence rather than guessing.
+ */
+const linkDomainStatusLine = (
+  ruleId: string,
+  mode: 'allow' | 'deny' | undefined,
+  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+): string | undefined => {
+  if (mode === undefined) return undefined;
+  const activeCount = entries.filter((entry) => entry.listType === mode).length;
+  if (activeCount > 0) return undefined;
+  return mode === 'allow'
+    ? `rule ${ruleId} is a whitelist (mode allow) and its allow list is empty, so it matches every link; add a domain or disable the rule`
+    : `rule ${ruleId} is a blocklist (mode deny) and its deny list is empty, so it can never match; add a domain or disable the rule`;
+};
+
+/** Appends a status line, when there is one, on its own line. */
+const withStatusLine = (text: string, statusLine: string | undefined): string =>
+  statusLine === undefined ? text : `${text}\n${statusLine}`;
+
 const automodInviteAllowArgs = z
   .object({
     ruleId: z.string().min(1),
@@ -592,6 +626,24 @@ export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInv
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
           after: { outcome: 'no-such-rule', code: args.code },
+        },
+      };
+    }
+
+    if (outcome === 'wrong-kind') {
+      // IMPORTANT-7: `ruleExists` alone cannot tell a real-but-wrong-kind
+      // rule id from the operator's intended one — without this, the write
+      // below would succeed against e.g. a `keyword_filter` rule, whose
+      // `compile` never reads `inviteAllowlist`. A usage answer, the same
+      // treatment as `no-such-rule`, and an audit row for the same reason.
+      return {
+        text: `rule ${args.ruleId} is not an invite rule; invite-allow only edits invite rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', code: args.code },
         },
       };
     }
@@ -654,6 +706,19 @@ export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInvi
       };
     }
 
+    if (outcome === 'wrong-kind') {
+      return {
+        text: `rule ${args.ruleId} is not an invite rule; invite-deny only edits invite rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', code: args.code },
+        },
+      };
+    }
+
     const list = ctx.ports.listInviteAllowlist(args.ruleId);
     const removed = outcome === 'removed';
 
@@ -700,7 +765,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
       listType: args.listType,
     });
 
-    if (outcome === 'no-such-rule') {
+    if (outcome.outcome === 'no-such-rule') {
       return {
         text: `no rule ${args.ruleId} in this guild`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
@@ -713,20 +778,46 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
       };
     }
 
+    if (outcome.outcome === 'wrong-kind') {
+      // IMPORTANT-7, same reasoning as invite-allow above: a rule id that
+      // exists but is not a `link_domain` rule would otherwise accept a
+      // write its own `compile` never reads.
+      return {
+        text: `rule ${args.ruleId} is not a link_domain rule; domain-add only edits link_domain rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', domain: args.domain },
+        },
+      };
+    }
+
     const list = ctx.ports.listLinkDomains(args.ruleId);
-    const alreadyPresent = outcome === 'already-present';
+    const alreadyPresent = outcome.outcome === 'already-present';
+    // IMPORTANT-1: the primary key is (guild, rule, domain), so re-adding a
+    // domain under the *other* listType is a no-op — the port reports the
+    // listType actually stored, which may differ from what the operator
+    // asked for. Naming the requested one here would assert a state that is
+    // false, with the real state printed right below it in `renderLinkDomains`.
+    const storedListType = alreadyPresent ? outcome.listType : args.listType;
+    const mainLine = alreadyPresent
+      ? `${args.domain} is already on rule ${args.ruleId}'s ${storedListType} list; nothing changed` +
+        (storedListType === args.listType
+          ? ''
+          : ` (remove it first to move it to ${args.listType})`)
+      : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`;
 
     return {
-      text:
-        (alreadyPresent
-          ? `${args.domain} was already on rule ${args.ruleId}'s ${args.listType} list`
-          : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`) +
-        '\n' +
-        renderLinkDomains(args.ruleId, list),
+      text: withStatusLine(
+        `${mainLine}\n${renderLinkDomains(args.ruleId, list)}`,
+        linkDomainStatusLine(args.ruleId, outcome.mode, list),
+      ),
       data: {
         ok: true,
         domain: args.domain,
-        listType: args.listType,
+        listType: storedListType,
         alreadyPresent,
         domains: projectLinkDomains(list),
       },
@@ -734,7 +825,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
         action: 'automod.link_domain_added',
         subjectType: 'mod_rule',
         subjectId: args.ruleId,
-        after: { domain: args.domain, listType: args.listType, alreadyPresent },
+        after: { domain: args.domain, listType: storedListType, alreadyPresent },
       },
     };
   },
@@ -759,7 +850,7 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
   run(ctx: OpsContext, args): OpsWriteResult {
     const outcome = ctx.ports.removeLinkDomain({ ruleId: args.ruleId, domain: args.domain });
 
-    if (outcome === 'no-such-rule') {
+    if (outcome.outcome === 'no-such-rule') {
       return {
         text: `no rule ${args.ruleId} in this guild`,
         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
@@ -772,16 +863,33 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
       };
     }
 
+    if (outcome.outcome === 'wrong-kind') {
+      return {
+        text: `rule ${args.ruleId} is not a link_domain rule; domain-rm only edits link_domain rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', domain: args.domain },
+        },
+      };
+    }
+
     const list = ctx.ports.listLinkDomains(args.ruleId);
-    const removed = outcome === 'removed';
+    const removed = outcome.outcome === 'removed';
+    // CRITICAL-2: "the domain lists are now empty" used to read as a
+    // completed tidy-up regardless of which direction it failed in.
+    // `linkDomainStatusLine` says which, using the rule's own `config.mode`.
+    const mainLine = removed
+      ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
+      : `${args.domain} was not on rule ${args.ruleId}'s domain lists`;
 
     return {
-      text:
-        (removed
-          ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
-          : `${args.domain} was not on rule ${args.ruleId}'s domain lists`) +
-        '\n' +
-        renderLinkDomains(args.ruleId, list),
+      text: withStatusLine(
+        `${mainLine}\n${renderLinkDomains(args.ruleId, list)}`,
+        linkDomainStatusLine(args.ruleId, outcome.mode, list),
+      ),
       data: { ok: true, domain: args.domain, removed, domains: projectLinkDomains(list) },
       audit: {
         action: 'automod.link_domain_removed',

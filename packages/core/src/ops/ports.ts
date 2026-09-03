@@ -320,43 +320,75 @@ export interface OpsPorts {
    * telling the operator "that code was already allowed" beats both silence
    * and a fault. `'no-such-rule'` is a usage answer for an operator who
    * mistyped a rule id — the composite foreign key would otherwise surface an
-   * opaque `FOREIGN KEY constraint failed`.
+   * opaque `FOREIGN KEY constraint failed`. `'wrong-kind'` (IMPORTANT-7) is
+   * the same usage-answer treatment for a rule id that exists but is not an
+   * `invite` rule: `ruleExists` alone cannot tell a typo'd-but-real rule id
+   * from the operator's intended one, and writing the row anyway would be a
+   * write nothing will ever read.
    */
   addInviteAllowlistEntry(input: {
     readonly ruleId: string;
     readonly code: string;
     readonly label: string;
-  }): 'added' | 'already-present' | 'no-such-rule';
+  }): 'added' | 'already-present' | 'no-such-rule' | 'wrong-kind';
   /** `ruleId`'s invite allowlist, ordered by code — for printing after a write. */
   listInviteAllowlist(ruleId: string): readonly { readonly code: string; readonly label: string }[];
   /**
    * Removes one code from `ruleId`'s invite allowlist. `'not-present'` is a
    * real answer, the same shape `unexcludeChannel`'s boolean already uses for
-   * "nothing to remove is not a fault".
+   * "nothing to remove is not a fault". `'wrong-kind'` is the same guard
+   * `addInviteAllowlistEntry` carries, for the same reason.
    */
   removeInviteAllowlistEntry(input: {
     readonly ruleId: string;
     readonly code: string;
-  }): 'removed' | 'not-present' | 'no-such-rule';
+  }): 'removed' | 'not-present' | 'no-such-rule' | 'wrong-kind';
   /**
    * Adds one domain to `ruleId`'s allow or deny list (ADR 0040 §3, plan
-   * ruling PR-19). Same three-way answer as `addInviteAllowlistEntry`, for
-   * the same two reasons.
+   * ruling PR-19).
+   *
+   * A discriminated union rather than a bare string, unlike
+   * `addInviteAllowlistEntry`: `already-present` on its own would repeat
+   * IMPORTANT-1 (review of Slices 3+5) — the primary key is `(guild, rule,
+   * domain)`, so re-adding a domain under the *other* `listType` is also a
+   * no-op, and a command that could only print the operator's requested
+   * `listType` would assert a state that is false. `listType` here is the
+   * **stored** one, always, so the message can name it truthfully.
+   * `mode` is the rule's own `config.mode`, so the command can say what an
+   * empty active list actually means (CRITICAL-2) without a second port
+   * call. `'wrong-kind'` is `addInviteAllowlistEntry`'s guard, mirrored for
+   * `link_domain` (IMPORTANT-7).
    */
   addLinkDomain(input: {
     readonly ruleId: string;
     readonly domain: string;
     readonly listType: 'allow' | 'deny';
-  }): 'added' | 'already-present' | 'no-such-rule';
+  }):
+    | { readonly outcome: 'added'; readonly mode: 'allow' | 'deny' | undefined }
+    | {
+        readonly outcome: 'already-present';
+        readonly listType: 'allow' | 'deny';
+        readonly mode: 'allow' | 'deny' | undefined;
+      }
+    | { readonly outcome: 'no-such-rule' }
+    | { readonly outcome: 'wrong-kind' };
   /** `ruleId`'s allow and deny domain lists together, ordered by domain. */
   listLinkDomains(
     ruleId: string,
   ): readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
-  /** Removes one domain from either of `ruleId`'s lists. */
-  removeLinkDomain(input: {
-    readonly ruleId: string;
-    readonly domain: string;
-  }): 'removed' | 'not-present' | 'no-such-rule';
+  /**
+   * Removes one domain from either of `ruleId`'s lists.
+   *
+   * Same discriminated-union shape as `addLinkDomain` and for the same
+   * reason: `mode` lets the command say whether the removal just emptied the
+   * rule's active list (CRITICAL-2), which it cannot know from `'removed'`
+   * alone.
+   */
+  removeLinkDomain(input: { readonly ruleId: string; readonly domain: string }):
+    | { readonly outcome: 'removed'; readonly mode: 'allow' | 'deny' | undefined }
+    | { readonly outcome: 'not-present'; readonly mode: 'allow' | 'deny' | undefined }
+    | { readonly outcome: 'no-such-rule' }
+    | { readonly outcome: 'wrong-kind' };
   /** Points an event kind at a channel, creating or re-pointing the route. */
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */

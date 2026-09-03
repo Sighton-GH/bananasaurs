@@ -182,18 +182,19 @@ export const opsPortsFor = (
     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
 
   // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
-  // lists Task 6 built with no caller. `ruleExists` is checked first because
-  // the composite foreign key would otherwise surface an opaque
-  // `FOREIGN KEY constraint failed` to an operator who mistyped a rule id —
-  // `'no-such-rule'` is a usage answer, not a fault.
-  //
-  // "Already present" is read back from a before/after count rather than
-  // duplicated canonicalisation logic (`addLinkDomain` lower-cases and strips
-  // `www.` inside the repository): comparing the list's length before and
-  // after the write is correct regardless of what canonical form the
-  // repository settles on, and never drifts from it.
+  // lists Task 6 built with no caller. `findRuleKindAndConfig` replaces a
+  // bare `ruleExists` check (IMPORTANT-7, review of Slices 3+5):
+  // `ruleExists` answers only "does this id name a rule", so a rule id that
+  // exists but is the wrong kind — a `keyword_filter` rule handed to
+  // `invite-allow` — used to write a row nothing will ever read.
+  // `'no-such-rule'` and `'wrong-kind'` are both usage answers, not faults —
+  // the composite foreign key would otherwise surface an opaque `FOREIGN KEY
+  // constraint failed` for the first, and the second is caught here because
+  // nothing else in the write path knows to.
   addInviteAllowlistEntry: (input) => {
-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
     const before = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
     automodRuleListsRepo.addInviteAllowlistEntry(scope, { ...input, now: now() });
     const after = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
@@ -201,7 +202,9 @@ export const opsPortsFor = (
   },
   listInviteAllowlist: (ruleId) => automodRuleListsRepo.listInviteAllowlist(scope, ruleId),
   removeInviteAllowlistEntry: (input) => {
-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
     const removed = automodRuleListsRepo.removeInviteAllowlistEntry(
       scope,
       input.ruleId,
@@ -209,18 +212,38 @@ export const opsPortsFor = (
     );
     return removed ? 'removed' : 'not-present';
   },
+  // `addLinkDomain`/`removeLinkDomain` return the repository's own
+  // `inserted`/`changes` result rather than a before/after count
+  // (IMPORTANT-1): re-adding a domain under the *other* `listType` is also a
+  // no-op on the same primary key, and only the repository — which just
+  // canonicalised the domain to do the write — can say which `listType` is
+  // actually stored without duplicating that canonicalisation here (the same
+  // drift that let `removeLinkDomain` compare verbatim while `addLinkDomain`
+  // canonicalised, IMPORTANT-2, is what this avoids re-introducing).
   addLinkDomain: (input) => {
-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
-    const before = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
-    automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
-    const after = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
-    return after > before ? 'added' : 'already-present';
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const result = automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
+    if (result.inserted) return { outcome: 'added', mode };
+    const stored = automodRuleListsRepo
+      .listLinkDomains(scope, input.ruleId)
+      .find((entry) => entry.domain === result.domain);
+    // `stored` is always found in practice — the row that blocked the insert
+    // is the row `listLinkDomains` just re-read — but a fallback to the
+    // operator's requested `listType` keeps this total rather than throwing
+    // on a data race this port cannot otherwise observe.
+    return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
   },
   listLinkDomains: (ruleId) => automodRuleListsRepo.listLinkDomains(scope, ruleId),
   removeLinkDomain: (input) => {
-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
     const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
-    return removed ? 'removed' : 'not-present';
+    return { outcome: removed ? 'removed' : 'not-present', mode };
   },
 
   setRoute: (input) =>
@@ -288,6 +311,30 @@ const enqueued = (result: ReturnType<typeof jobRepo.enqueue>) => ({
   enqueued: result.enqueued,
   jobId: result.jobId,
 });
+
+/**
+ * A `link_domain` rule's configured `mode`, read from its raw `config` JSON
+ * for display only (CRITICAL-2, review of Slices 3+5) — `domain-add` and
+ * `domain-rm` need it to say what an empty active list means, and they have
+ * only the rule id.
+ *
+ * Deliberately tolerant rather than a Zod parse: `ports.ts` may not import
+ * `@bananasaurs/core`'s predicate registry here just to read one field for a
+ * status line (ADR 0014 is about the storage package, not this composition
+ * root, but there is still no reason to couple a display string to the full
+ * schema), and a rule whose config fails real validation already gets its
+ * own report from `compileRule`/`doctor` — this returns `undefined` rather
+ * than throwing, so a malformed config degrades the message instead of the
+ * command.
+ */
+const linkDomainModeOf = (configJson: string): 'allow' | 'deny' | undefined => {
+  try {
+    const parsed = JSON.parse(configJson) as { mode?: unknown };
+    return parsed.mode === 'allow' || parsed.mode === 'deny' ? parsed.mode : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 /**
  * One validated setting change, applied to the column that holds it.
