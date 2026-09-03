@@ -12,26 +12,22 @@ Scope: Slices 1–6 of
 Slices 7–12 are explicitly **not** in this run — the owner flips the rules and
 runs the observe window before the dashboard work starts.
 
-## Start here (a new session reads this section first)
+## Start here
 
-Slices 0, 1 and 2 are merged. **Slice 3 is next** — precise tier (`regex`,
-`invite`, `link_domain`), no ADR named. Slices 3–6 remain before flip day.
+**This file is the record. What to do next is in the handoff:
+`docs/reports/release2-slice-<n>-handoff.md`** — currently
+[`release2-slice-3-handoff.md`](release2-slice-3-handoff.md), which carries the
+next slice's scope, the obligations binding Slices 3–6, the owner actions
+outstanding, and the protocol.
 
-Four obligations bind the remaining slices. Each is expanded in its own section
-below; this is the index so none is discovered late:
+Kept apart deliberately, and the split is the same one `docs/reports/` already
+uses: a handoff is written once for the unit it hands off, and is finished when
+that unit starts. This ledger runs across all six slices and is appended to as
+they go. Duplicating the obligations into both is how they drift and one copy
+becomes wrong.
 
-| # | Slice | Obligation |
-| --- | --- | --- |
-| 1 | **3** | The spec's slice-specific gate: a **ReDoS test** for `regex` — a catastrophic-backtracking pattern, asserting the timeout or the linear-time engine holds. Do not ship `regex` without it; a rule an operator can write that hangs the subscriber takes moderation down for the whole guild. |
-| 2 | **4** | **Widen the one-code-path gate.** It is a behavioural comparison, so it only detects divergences in fields a shipped predicate reads, and `keyword_filter` reads `content`. A wrong `atMs`, a bypassed predicate cache, and a hand-built `PredicateInput` all pass today. The window tier reads the clock and carries state on the compiled artifact, so all three go live in Slice 4. See "The one-code-path gate has a ceiling" below. |
-| 3 | **5** | **Ask the owner about attachment metadata** before writing `attachment_type`. It cannot be dry-run against observed fixtures (ruling PR-3) — the corpus holds text, author and timestamp only. Handwritten cases are the fallback; extending the corpus is a privacy decision, not an engineering one. |
-| 4 | **all** | **Ten decorative guards** were found across Slices 1–2. Keep "break it and watch it fail" in every implementer and reviewer brief, and treat a guard that stays green when its target is broken as a defect in the test, not a pass. |
-
-Process for each slice: ADR first if §9 of the roadmap spec names one, then
-`superpowers:writing-plans`, then `superpowers:subagent-driven-development`.
-Implementers and task reviewers on sonnet; one whole-branch review per slice on
-the strongest model. `docs/22` governs delegation. **Stop at flip day** — the
-owner flips the rules and runs the window.
+Below: rulings taken on the owner's behalf with what each costs if wrong, the
+per-slice execution log, and the findings worth carrying forward.
 
 ## Carried-forward obligations (owner-assigned at kickoff)
 

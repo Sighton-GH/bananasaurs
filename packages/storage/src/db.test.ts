@@ -223,7 +223,7 @@ describe('schema constraints', () => {
  * Migration 0012 (ADR 0041, Task 1) adds `automod_fixtures`, `mod_match_reviews`,
  * and two nullable columns on `mod_case_events`. Every statement in it is
  * additive (`CREATE TABLE` / `ALTER TABLE ... ADD COLUMN`), but the ledger's
- * R-5 finding (`docs/LEDGER_RELEASE2_SLICES_1_6.md`) is that "additive" is
+ * R-5 finding (`docs/reports/release2-slices-1-6-ledger.md`) is that "additive" is
  * exactly the property that must be demonstrated against real data, not
  * inferred from reading the SQL — a table-rebuild disguised as an ALTER would
  * still pass a typecheck and a schema-invariants read.

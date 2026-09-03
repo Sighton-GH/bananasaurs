@@ -73,7 +73,7 @@ In force from `CLAUDE.md` and the ADRs this slice depends on. Every task's requi
 
 ## Plan rulings
 
-Decisions this plan makes that ADR 0041 does not name. Each is reversible; each states what it costs if wrong. The executor records these in `docs/LEDGER_RELEASE2_SLICES_1_6.md` before Task 1 and does not re-open them.
+Decisions this plan makes that ADR 0041 does not name. Each is reversible; each states what it costs if wrong. The executor records these in `docs/reports/release2-slices-1-6-ledger.md` before Task 1 and does not re-open them.
 
 **PR-1 — An observed fixture's id is `<messageId>:<first 16 hex of sha256(content)>`.**
 A gateway replay of the identical message must not create a second fixture (CLAUDE.md rule 6 assumes replays). An *edit* that matches again is genuinely different evidence and should be captured separately, so the content hash is in the key rather than the messageId alone. *Cost if wrong:* an edited-then-rematched message yields two corpus rows where one was wanted — visible and deletable, not silent.

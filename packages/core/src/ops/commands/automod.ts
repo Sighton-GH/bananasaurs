@@ -243,7 +243,7 @@ const projectReviewableMatch = (match: OpsReviewableMatch): JsonValue => ({
  *   think is the full text would judge wrong.
  * - `matched` prints unconditionally, from `matchedSnippet`/`matchedCategory`
  *   — the documented post-flip and post-`/forgetme` fallback (plan ruling
- *   PR-2, ADR 0041's consequences, `docs/LEDGER_RELEASE2_SLICES_1_6.md`
+ *   PR-2, ADR 0041's consequences, `docs/reports/release2-slices-1-6-ledger.md`
  *   handoff item 5) — labelled distinctly from `message` so the two are never
  *   mistaken for each other.
  * - A trace `parseMatchTrace` rejects still renders — as a reason, under the

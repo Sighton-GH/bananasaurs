@@ -113,7 +113,7 @@ export function applyPragmas(raw: Database.Database): void {
  * fires and silently deletes every row in a child table. Reproduced against
  * `mod_rules`' four children (`word_categories`, `word_terms`,
  * `word_allowlist`, `mod_rule_exemptions`) before this function existed —
- * see `docs/LEDGER_RELEASE2_SLICES_1_6.md` R-5. Calling `migrate()` once per
+ * see `docs/reports/release2-slices-1-6-ledger.md` R-5. Calling `migrate()` once per
  * migration file does not fix it either: drizzle opens a transaction per
  * call regardless.
  *
