@@ -410,4 +410,101 @@ describe('runDryRun', () => {
     expect(report.failure?.reason).toBe('no-terms');
     expect(report.matched).toBe(0);
   });
+
+  describe('a predicate that throws (CRITICAL-1, IMPORTANT-5)', () => {
+    // `node:vm`'s timeout is *designed* to throw at evaluate time (plan
+    // ruling PR-12), so this is not a hypothetical: `regex` is the first
+    // predicate that does it. Forcing it here through a `compileRule` spy
+    // rather than an actual catastrophic-backtracking pattern keeps this
+    // suite fast — `regex.test.ts`'s Obligation 1 gate already proves the
+    // real thing takes multiple seconds.
+    const throwingCompile = (): ReturnType<typeof registry.compileRule> => ({
+      ok: true,
+      compiled: {
+        evaluate: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+
+    it('scores a fixture the predicate threw on as unlabelled, never agreed, and counts the throw', () => {
+      const spy = vi.spyOn(registry, 'compileRule').mockImplementation(throwingCompile);
+      try {
+        const rule = ruleWith(['badword']);
+        // FIXTURES has both a should_match and a should_not_match fixture;
+        // before this fix a throw was folded into `matched: false`, which
+        // scores a should_not_match fixture 'agreed' — exactly the false
+        // reassurance CRITICAL-1 is about.
+        const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: FIXTURES });
+
+        expect(report.threw).toBeGreaterThan(0);
+        for (const result of report.results) {
+          expect(result.outcome).toBe('threw');
+          expect(result.matched).toBe(false);
+          expect(result.match).toBeUndefined();
+          expect(result.agreement).toBe('unlabelled');
+        }
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('abandons the replay after five throws rather than paying the whole corpus (IMPORTANT-5)', () => {
+      const spy = vi.spyOn(registry, 'compileRule').mockImplementation(throwingCompile);
+      try {
+        const rule = ruleWith(['badword']);
+        const corpus = Array.from({ length: 20 }, (_, i) =>
+          fixture({
+            fixtureId: `many:${String(i)}`,
+            content: `fixture ${String(i)}`,
+            createdAt: i,
+          }),
+        );
+        const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: corpus });
+
+        // Exactly five throws, and evaluation stopped there — not 20.
+        expect(report.threw).toBe(5);
+        expect(report.total).toBe(5);
+        // But the corpus that exists is still reported, so an operator can
+        // tell the run was abandoned rather than having replayed everything.
+        expect(report.corpusSize).toBe(20);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it('does not abandon a run where the predicate throws on fewer than five fixtures', () => {
+      // Abandonment must be triggered by the throw count, not merely by any
+      // throw occurring — a single malformed fixture must not truncate an
+      // otherwise-informative replay of the rest of the corpus.
+      //
+      // `compileRule` is memoised per rule fingerprint (`evaluate.ts`), so it
+      // is called once for this whole run and its `compiled.evaluate` reused
+      // for every fixture — the mock has to vary its *own* behaviour per
+      // call to produce "some throw, some do not", rather than varying which
+      // `compileRule` call wins.
+      let evaluations = 0;
+      const spy = vi.spyOn(registry, 'compileRule').mockReturnValue({
+        ok: true,
+        compiled: {
+          evaluate: () => {
+            evaluations += 1;
+            if (evaluations <= 2) throw new Error('boom');
+            return undefined;
+          },
+        },
+      });
+      try {
+        const rule = ruleWith(['badword']);
+        const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: FIXTURES });
+        expect(report.threw).toBe(2);
+        // Not abandoned: every fixture in the 5-fixture corpus was still
+        // evaluated, because two throws is below `MAX_THROWS_BEFORE_ABANDON`.
+        expect(report.total).toBe(FIXTURES.length);
+        expect(report.corpusSize).toBe(FIXTURES.length);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
 });

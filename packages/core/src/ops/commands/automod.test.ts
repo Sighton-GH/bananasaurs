@@ -1,8 +1,12 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDispatcher, type RegisteredCommand } from '../dispatch.js';
 import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
 import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
+// Namespace import so `compileRule` can be spied on the same module object
+// `evaluate.ts` calls through — the same pattern `dry-run.test.ts` uses to
+// force a predicate throw without an actual multi-second ReDoS timeout.
+import * as automodRegistry from '../../automod/predicates/registry.js';
 import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
 import {
   automodDomainAddCommand,
@@ -278,6 +282,92 @@ describe('automod dryrun', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('corpus is empty');
+  });
+
+  it('reports a throw rather than a clean summary, and abandons after five throws (CRITICAL-1, IMPORTANT-5)', async () => {
+    // Forced through a `compileRule` spy rather than an actual
+    // catastrophic-backtracking `regex` pattern, to keep this test fast —
+    // `regex.test.ts`'s Obligation 1 gate already proves the real timeout
+    // takes multiple seconds. Before this fix, this exact scenario rendered
+    // as "0/20 matched · 0 false positive(s) of ... labelled · 0 missed" —
+    // indistinguishable from a rule that behaved perfectly.
+    const spy = vi.spyOn(automodRegistry, 'compileRule').mockReturnValue({
+      ok: true,
+      compiled: {
+        evaluate: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    try {
+      const res = await drive(
+        automodDryRunCommand,
+        {
+          findAutomodRule: () => ruleWith(['badword']),
+          listAutomodFixtures: () =>
+            Array.from({ length: 20 }, (_, i) =>
+              fixture({ fixtureId: `f${String(i)}`, content: `fixture ${String(i)}` }),
+            ),
+        },
+        { ruleId: 'r1' },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.text).toContain('5 of 5 evaluation(s) failed');
+      expect(res.text).toContain('abandoned');
+      expect(res.text).toContain('5 of 20 fixtures');
+      // The rendering rule that matters most: no match table, no per-fixture
+      // trace, once the predicate threw — a table under a report where most
+      // fixtures never actually ran is worse than useless.
+      expect(res.text).not.toContain('matched on');
+      expect(res.data).toMatchObject({ threw: 5, total: 5, corpusSize: 20 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('says how many fixtures carry attachment metadata, for an attachment_type rule (IMPORTANT-6)', async () => {
+    // `attachment_type` can only ever match a fixture with attachment rows,
+    // and a fixture captured before migration 0013 has none. Over a corpus
+    // where most fixtures predate that migration, "0/3 matched" reads as
+    // "no bad files were posted" when it is actually "no fixture here
+    // records a file either way".
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () =>
+          ruleWith([], { kind: 'attachment_type', config: '{"blockedExtensions":["exe"]}' }),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'no file here' }),
+          fixture({ fixtureId: 'f2', content: 'no file here either' }),
+          fixture({
+            fixtureId: 'f3',
+            content: 'has a file',
+            attachments: [{ fileName: 'x.txt', contentType: 'text/plain', sizeBytes: 1 }],
+          }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('1 of 3 fixtures carry attachment metadata');
+    expect(res.data).toMatchObject({ attachmentMetadata: { withMetadata: 1, total: 3 } });
+  });
+
+  it('does not mention attachment metadata for a rule kind that does not read attachments', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello badword' })],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('attachment metadata');
+    expect(res.data).toMatchObject({ attachmentMetadata: null });
   });
 });
 

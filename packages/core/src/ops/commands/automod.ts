@@ -36,8 +36,17 @@ const automodDryRunArgs = z.object({
 const unlabelledCount = (report: DryRunReport): number =>
   report.results.filter((result) => result.label === 'unlabelled').length;
 
+/** How much of the corpus a rule reading attachments actually has to work with (IMPORTANT-6). */
+interface AttachmentAwareness {
+  readonly withMetadata: number;
+  readonly total: number;
+}
+
 /** `DryRunReport`, projected to plain `JsonValue` — no readonly arrays, no `undefined`. */
-const projectReport = (report: DryRunReport): JsonValue => ({
+const projectReport = (
+  report: DryRunReport,
+  attachmentAwareness: AttachmentAwareness | undefined,
+): JsonValue => ({
   ruleId: report.ruleId,
   kind: report.kind,
   usable: report.usable,
@@ -45,6 +54,11 @@ const projectReport = (report: DryRunReport): JsonValue => ({
     report.failure === undefined
       ? null
       : { reason: report.failure.reason, detail: report.failure.detail },
+  // CRITICAL-1: a throw is not a plain non-match, and `data` must be able to
+  // say so on its own — a consumer reading only `matched`/`total` must not be
+  // able to reconstruct "clean" from a rule that mostly threw.
+  threw: report.threw,
+  corpusSize: report.corpusSize,
   total: report.total,
   matched: report.matched,
   falsePositives: report.falsePositives,
@@ -53,11 +67,19 @@ const projectReport = (report: DryRunReport): JsonValue => ({
   // belongs beside them in `data`, not only worked out from `results` by
   // whoever reads it — see the summary line below for the reasoning.
   unlabelled: unlabelledCount(report),
+  // IMPORTANT-6: null for every kind but `attachment_type`, whose real
+  // denominator (fixtures that carry attachment metadata at all) is not the
+  // same number as `total` once the corpus predates OD-3's migration.
+  attachmentMetadata:
+    attachmentAwareness === undefined
+      ? null
+      : { withMetadata: attachmentAwareness.withMetadata, total: attachmentAwareness.total },
   results: report.results.map((result) => ({
     fixtureId: result.fixtureId,
     label: result.label,
     matched: result.matched,
     agreement: result.agreement,
+    outcome: result.outcome,
     match:
       result.match === undefined
         ? null
@@ -106,7 +128,27 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
       args.source === undefined ? {} : { source: args.source },
     );
     const report = runDryRun({ guildId: ctx.guildId, rule, fixtures });
-    const data = projectReport(report);
+    const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
+
+    // IMPORTANT-6: `attachment_type` can only ever match a fixture that has
+    // attachment rows, and every fixture captured before migration 0013 has
+    // none (`types.ts`: "an empty list is the honest representation"). Over
+    // a corpus captured early in the observe window this rule's summary
+    // denominator is the fixture count, not the count that could possibly
+    // match — "0/300 matched" then reads as "no bad files were posted" when
+    // it is actually "no fixture in this corpus records a file either way".
+    // Computed for every branch below (not only the final summary) so it
+    // reaches `data` even when the run is abandoned or the corpus is empty.
+    const attachmentAwareness: AttachmentAwareness | undefined =
+      report.kind === 'attachment_type'
+        ? {
+            withMetadata: report.results.filter(
+              (result) => (byFixtureId.get(result.fixtureId)?.attachments.length ?? 0) > 0,
+            ).length,
+            total: report.total,
+          }
+        : undefined;
+    const data = projectReport(report, attachmentAwareness);
 
     // Case 1: the rule cannot even compile. A match count under it is worse
     // than useless — "0 matches" reads exactly like a rule behaving
@@ -132,7 +174,26 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
       };
     }
 
-    const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
+    // Case 3 (CRITICAL-1, IMPORTANT-5): the predicate threw on at least one
+    // fixture. Treated the way !usable is treated above: a match table under
+    // a report where some fixtures never actually ran the predicate is worse
+    // than useless, because "0/300 matched" is indistinguishable from a rule
+    // that behaved perfectly. `runDryRun` abandons the replay after five
+    // throws, so `report.total` (evaluated) can be well short of
+    // `report.corpusSize` (what exists) — said explicitly, because the run
+    // was abandoned, not completed.
+    if (report.threw > 0) {
+      const abandoned = report.total < report.corpusSize;
+      return {
+        text:
+          `${report.threw} of ${report.total} evaluation(s) failed (the predicate threw)` +
+          (abandoned
+            ? `; the run was abandoned after evaluating ${report.total} of ` +
+              `${report.corpusSize} fixtures in the corpus`
+            : ''),
+        data,
+      };
+    }
 
     // CRITICAL-1: "41/300 matched · 0 false positive(s) · 0 missed" is true
     // and unreadable — it is indistinguishable from a rule 296 humans
@@ -153,6 +214,12 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
           `positive(s) of ${labelled} labelled · ${report.falseNegatives} missed`;
 
     const lines = [summary];
+    if (attachmentAwareness !== undefined) {
+      lines.push(
+        `${attachmentAwareness.withMetadata} of ${attachmentAwareness.total} fixtures carry ` +
+          `attachment metadata (the rest predate it and cannot match this rule)`,
+      );
+    }
 
     for (const result of report.results) {
       // Narrowed on `result.match` itself, not on `result.matched`: the two
