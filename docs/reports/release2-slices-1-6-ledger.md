@@ -738,6 +738,66 @@ quietly reconciling, which is exactly the instruction. Recorded because the
 briefs are written from the coordinator's memory of the registry and that memory
 was wrong; the count belongs in `rg` output, not in a brief.
 
+**Dispatch C (Tasks 3, 4 — `regex`, `caps`, `emoji`) — complete.** Commits
+`9b779fc`, `56bd768`. **2221 tests / 108 files** from 2203, typecheck and lint
+clean, gates re-run by the coordinator.
+
+**Obligation 1 is met, and the coordinator watched the ReDoS gate fail
+personally — with a result that corrects this plan.** Replacing
+`script.runInContext(context, { timeout })` with a direct
+`pattern.exec(messageInput.content)` and running `regex.test.ts` produced **no
+output at all**: the run hung until an external `timeout 45` killed it
+(SIGTERM, exit 143). Restored, 8/8 green.
+
+**The plan predicted the wrong symptom, and the difference matters.** It said
+the hang "will be observed as vitest's 20-second per-test timeout firing".
+**Vitest's timeout never fires** — catastrophic backtracking is synchronous
+CPU-bound work, and it blocks the very event loop vitest's timer needs to
+notice. So the failure mode of an unprotected `regex` predicate is not a slow
+test, it is a **wedged process**, which is precisely what the handoff meant by
+"takes moderation down for the whole guild".
+
+This is also the strongest available argument for PR-10, stronger than the one
+the ruling gives: a `vm` watchdog running on its own thread is not merely *a*
+way to bound a runaway pattern, it is the **only** mechanism available in
+JavaScript that can interrupt one. A `setTimeout`, a promise race, an
+`AbortSignal` and vitest's own timeout all lose to the same blocked loop.
+
+**A structural consequence for Slice 4, found here and worth having in advance.**
+Registering `caps` broke four pre-existing tests that used `'caps'` as their
+"a kind with no registered predicate" fixture; the implementer correctly
+repointed them to `'mention_spam'`
+(`predicates/registry.test.ts` ×3, `ops/commands/reads.test.ts`, and the
+`no-predicate` assertions in each).
+
+**Slice 4 registers the last three kinds, and at that point no real `RuleKind`
+value is left to stand for "unregistered".** `resolveConfig` checks
+`isRuleKind` *first*, so a made-up string yields `unknown-kind`, never
+`no-predicate` — the two failures are deliberately different and a cast cannot
+reach the second. So Slice 4 must do one of these, deliberately:
+
+1. give the registry a test seam (a `predicateFor` that can be asked about an
+   empty registry, or an injectable `PREDICATES`), keeping `no-predicate`
+   tested; or
+2. delete those four assertions **and say in the ledger that the branch is now
+   unreachable except via a future eleventh kind** — which is a real guard worth
+   keeping in the code even with no test, since R-2 widened the SQL CHECK to all
+   ten kinds ahead of the predicates precisely so an unshipped kind was inert
+   and loud.
+
+Either is defensible; silently discovering four red tests is not. Note that
+`doctor`'s unusable-rules check does **not** lose its teeth either way —
+`invalid-config`, `compile-failed` and R-12's `no-terms` all remain reachable.
+
+*Second time this shape has bitten.* R-10 already recorded a test whose `caps`
+fixture exercised `no-predicate` rather than the `invalid-config` path its name
+implied. **Using a real-but-unshipped kind as a stand-in for "unregistered" is
+inherently temporary**, and it expires on a schedule the test does not mention.
+
+**One more plan defect from this dispatch:** Task 3's test snippet imported
+`regexConfig` without using it, which fails `typecheck` under this repo's
+settings. Removed by the implementer.
+
 ### A second worktree, and E-1 confirmed fixed by `npm ci`
 
 Slices 3–6 run in `.claude/worktrees/release2-slices-3-6` on branch
