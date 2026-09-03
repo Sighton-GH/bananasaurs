@@ -12,6 +12,23 @@ Scope: Slices 1–6 of
 Slices 7–12 are explicitly **not** in this run — the owner flips the rules and
 runs the observe window before the dashboard work starts.
 
+## Start here
+
+**This file is the record. What to do next is in the handoff:
+`docs/reports/release2-slice-<n>-handoff.md`** — currently
+[`release2-slice-3-handoff.md`](release2-slice-3-handoff.md), which carries the
+next slice's scope, the obligations binding Slices 3–6, the owner actions
+outstanding, and the protocol.
+
+Kept apart deliberately, and the split is the same one `docs/reports/` already
+uses: a handoff is written once for the unit it hands off, and is finished when
+that unit starts. This ledger runs across all six slices and is appended to as
+they go. Duplicating the obligations into both is how they drift and one copy
+becomes wrong.
+
+Below: rulings taken on the owner's behalf with what each costs if wrong, the
+per-slice execution log, and the findings worth carrying forward.
+
 ## Carried-forward obligations (owner-assigned at kickoff)
 
 1. **The matcher cache never invalidates on term edits.** `subscriber.ts`'s
