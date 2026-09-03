@@ -1,5 +1,6 @@
 import { PermissionsBitField, type Client } from 'discord.js';
 import {
+  compileRule,
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,
@@ -11,12 +12,15 @@ import {
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  automodFixtureRepo,
   automodRuleRepo,
   effectRepo,
   guildRepo,
   jobRepo,
   listBackups,
   loggingRepo,
+  modCaseRepo,
+  modMatchReviewRepo,
   panelRepo,
   roleRepo,
   type GuildScope,
@@ -125,6 +129,25 @@ export const opsPortsFor = (
   listKeywordFilterRulesMissingManageMessages: () =>
     keywordFilterRulesMissingManageMessages(scope, client),
 
+  // Compiles every enabled rule on every `doctor` call, which is correct
+  // rather than a shortcut worth removing: `doctor` is human-invoked, not a
+  // hot path, and compiling *is* the check (ADR 0040 §4) — inspecting the
+  // config string without compiling it would not catch a `no-predicate` or
+  // `compile-failed` rule at all.
+  listUnusableAutomodRules: () =>
+    automodRuleRepo
+      .listEnabledRules(scope)
+      .map((rule) => ({ rule, result: compileRule(rule) }))
+      .filter(({ result }) => !result.ok)
+      .map(({ rule, result }) => ({
+        ruleId: rule.ruleId,
+        kind: rule.kind,
+        // Narrowed by the filter above; TypeScript cannot see that through
+        // `.filter`, so this reads the discriminant again rather than casting.
+        reason: result.ok ? '' : result.reason,
+        detail: result.ok ? '' : result.detail,
+      })),
+
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       eventKind: route.eventKind,
@@ -140,8 +163,22 @@ export const opsPortsFor = (
     return job === undefined ? undefined : jobRow(job);
   },
 
+  // `listEnabledRules` returns only enabled rules — the honest thing to
+  // dry-run, since a disabled rule is not going to match anything in
+  // production either. Replaying a disabled rule is a repo function this
+  // task does not add.
+  findAutomodRule: (ruleId) =>
+    automodRuleRepo.listEnabledRules(scope).find((r) => r.ruleId === ruleId),
+  listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
+  listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
+
   // --- write commands (13d) --------------------------------------------------
   applySetting: (change) => applySetting(scope, change, now()),
+  recordMatchVerdict: (input) =>
+    // `reviewedAt` comes from this composition root's clock, not from the
+    // command: a command does not get to choose when it happened, the same
+    // way it does not get to choose its own audit attribution.
+    modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
 
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {

@@ -47,6 +47,16 @@ export const LOGGABLE_FIELDS = new Set([
   'outcome',
   'reason',
   'code',
+  /**
+   * The message from a `CompileResult`'s `invalid-config`/`compile-failed`
+   * detail (`packages/core/src/automod/predicates/registry.ts`): a Zod
+   * validation error or an `obscenity` pattern-compile error. Safe under rule
+   * 4 only because both are derived exclusively from operator-authored rule
+   * configuration — a `mod_rules.config` JSON blob or a `word_terms` entry —
+   * never from a member's message content. A future predicate whose compile
+   * error could echo message content must not be logged under this name.
+   */
+  'compileError',
   'status',
   'count',
   'total',

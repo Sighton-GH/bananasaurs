@@ -80,7 +80,13 @@ const buildPipeline = (): Pipeline => {
  * enabled `keyword_filter` rule, in `enforce` mode, matching `term`.
  */
 const seedEnforcingKeywordRule = (term: string): void => {
-  automodRuleRepo.createRule(scope, { ruleId: RULE_ID, name: 'test rule', now: discord.now() });
+  automodRuleRepo.createRule(scope, {
+    ruleId: RULE_ID,
+    kind: 'keyword_filter',
+    name: 'test rule',
+    config: '{}',
+    now: discord.now(),
+  });
   automodRuleRepo.addCategory(scope, {
     categoryId: CATEGORY_ID,
     ruleId: RULE_ID,

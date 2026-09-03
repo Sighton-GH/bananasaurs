@@ -14,8 +14,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import Database from 'better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { openDatabase } from '../packages/storage/dist/db.js';
+import { openDatabase, runMigrations } from '../packages/storage/dist/db.js';
 import { performBackup } from '../packages/storage/dist/backup.js';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
@@ -60,7 +59,7 @@ const readGuildNames = (path_) => {
 
 const seedAndBackup = () => {
   const opened = openDatabase({ dbPath });
-  migrate(opened.db, { migrationsFolder: MIGRATIONS });
+  runMigrations(opened.raw, opened.db, MIGRATIONS);
   seed(opened, '111111111111111111', 'content-A');
   opened.close();
 

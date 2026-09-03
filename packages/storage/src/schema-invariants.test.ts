@@ -1,5 +1,19 @@
 import { afterAll, describe, expect, it } from 'vitest';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from './test-support.js';
+import Database from 'better-sqlite3';
+import { drizzle } from 'drizzle-orm/better-sqlite3';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { parseGuildId, RULE_KINDS } from '@bananasaurs/core';
+import * as schema from './schema.js';
+import { runMigrations } from './db.js';
+import { createRule, type RuleKind } from './repos/automod-rules.js';
+import { upsertGuild } from './repos/guilds.js';
+import {
+  MIGRATIONS_FOLDER,
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from './test-support.js';
 
 /**
  * The invariants every Release 1 table must satisfy, read from the live schema
@@ -215,5 +229,267 @@ describe('every snowflake column has a format CHECK', () => {
           `constraint list.`,
       ).toBe(true);
     }
+  });
+});
+
+/**
+ * `mod_rules_kind`'s SQL CHECK, storage's `RuleKind` union
+ * (`repos/automod-rules.ts`) and core's `RULE_KINDS` array
+ * (`@bananasaurs/core`) are three hand-maintained copies of the same ten
+ * values, agreeing today only because nobody has edited one without editing
+ * the other two. Proved here against the *live* CHECK, independent of
+ * `schema.ts`'s own literal, so drift becomes a red test rather than an
+ * inert rule a hand-edited row or a future migration could quietly widen or
+ * narrow out of step with core.
+ */
+describe("mod_rules_kind's CHECK matches core's RULE_KINDS exactly", () => {
+  const GUILD_ID = parseGuildId('999999999999999999');
+
+  it('accepts every one of the ten values RULE_KINDS names', () => {
+    const scope = t.scopes.forGuild(GUILD_ID);
+    upsertGuild(scope, { name: 'kind-pin-guild', now: 0 });
+    for (const [i, kind] of RULE_KINDS.entries()) {
+      // `RULE_KINDS` (core, `@bananasaurs/core`) and `RuleKind`
+      // (`repos/automod-rules.ts`) are independently declared unions of the
+      // same ten literals (ADR 0014 bars importing one from the other), so
+      // TypeScript accepts a `RULE_KINDS` element here with no cast — which
+      // is itself only a compile-time fact about the two *declarations*.
+      // What this loop actually proves is that the live CHECK, the thing
+      // neither declaration is, agrees with both.
+      expect(() =>
+        createRule(scope, {
+          ruleId: `kind-pin-${String(i)}`,
+          kind,
+          name: kind,
+          config: '{}',
+          now: 1,
+        }),
+      ).not.toThrow();
+    }
+  });
+
+  it('rejects a kind RULE_KINDS does not name', () => {
+    const scope = t.scopes.forGuild(GUILD_ID);
+    expect(() =>
+      createRule(scope, {
+        // Deliberately outside RULE_KINDS. If a future RULE_KINDS entry is
+        // ever named 'telepathy' this assertion stops meaning anything —
+        // acceptable, because that would mean core had actually grown an
+        // eleventh kind, which is exactly the drift this file exists to
+        // notice, loudly, rather than silently.
+        kind: 'telepathy' as RuleKind,
+        ruleId: 'kind-pin-rejected',
+        name: 'telepathy',
+        config: '{}',
+        now: 1,
+      }),
+    ).toThrow();
+  });
+});
+
+/**
+ * `mod_rules`'s `config`/CHECK migration (ADR 0040, Task 1) rebuilds the
+ * table — SQLite cannot `ALTER TABLE … ADD CONSTRAINT` — and four tables
+ * carry composite foreign keys onto `mod_rules(guild_id, rule_id)`:
+ * `mod_rule_exemptions`, `word_categories`, `word_allowlist`, and
+ * (transitively, through `word_categories`) `word_terms`. A rebuild that
+ * drops and recreates the parent table is exactly the shape of change that
+ * can silently orphan or cascade-delete those children if the generated
+ * migration gets the column list, the FK pragma, or the drop/rename order
+ * wrong — so this is proved directly, against real migration files, rather
+ * than trusted from reading the SQL.
+ *
+ * Deliberately does not use `openMigratedTestDatabase()`: that applies every
+ * migration to an empty database, so `mod_rules` is created *once*, already
+ * in its final shape, and the table-rebuild statements in migrations
+ * 0010/0011 never actually run against data. This test instead migrates a
+ * database up to the last pre-Task-1 migration (0009), inserts one rule with
+ * a category, a term, an allowlist phrase and a role exemption — the same
+ * shape `automod-rules.test.ts` builds through the repo — then applies the
+ * remaining (real, shipped) migration files and reads the rows back with raw
+ * SQL, independent of the repo layer this same task rewrites.
+ */
+describe('mod_rules.config migration (0010/0011) carries child-table rows through the rebuild', () => {
+  const GUILD_ID = '111111111111111111';
+  const RULE_ID = 'rule-pre-existing';
+  const CATEGORY_ID = 'cat-1';
+  const TERM_ID = 'term-1';
+  const ROLE_ID = '222222222222222222';
+
+  /**
+   * A migrations folder containing only the journal entries and `.sql` files
+   * for migrations up to and including `tag`, so `migrate()` can be run
+   * against a snapshot of the schema older than what ships. `readMigrationFiles`
+   * (`drizzle-orm/migrator.js`) needs only `meta/_journal.json` and the `.sql`
+   * files it names — not the `meta/*_snapshot.json` files, which are
+   * drizzle-kit's own bookkeeping for the *next* `generate`, never read by
+   * `migrate()`.
+   */
+  const migrationsFolderUpTo = (lastIdx: number): string => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mod-rules-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const entries = journal.entries.filter((e) => e.idx <= lastIdx);
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries) {
+      fs.copyFileSync(
+        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+        path.join(dir, `${entry.tag}.sql`),
+      );
+    }
+    return dir;
+  };
+
+  it('keeps the rule, its word list and its exemption readable after the rebuild', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // Pre-Task-1 schema: `mod_rules` has no `config` column and its `kind`
+    // CHECK admits only 'keyword_filter'.
+    runMigrations(raw, db, migrationsFolderUpTo(9));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_rules (guild_id, rule_id, kind, name, mode, enabled, created_at, updated_at)
+         VALUES (?, ?, 'keyword_filter', 'pre-existing', 'test', 1, 0, 0)`,
+      )
+      .run(GUILD_ID, RULE_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_categories (guild_id, category_id, rule_id, name, default_action, enabled)
+         VALUES (?, ?, ?, 'profanity', 'delete', 1)`,
+      )
+      .run(GUILD_ID, CATEGORY_ID, RULE_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_terms (guild_id, term_id, category_id, text, enabled)
+         VALUES (?, ?, ?, 'badword', 1)`,
+      )
+      .run(GUILD_ID, TERM_ID, CATEGORY_ID);
+    raw
+      .prepare(`INSERT INTO word_allowlist (guild_id, rule_id, phrase) VALUES (?, ?, 'assassin')`)
+      .run(GUILD_ID, RULE_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_rule_exemptions (guild_id, rule_id, exempt_type, exempt_id)
+         VALUES (?, ?, 'role', ?)`,
+      )
+      .run(GUILD_ID, RULE_ID, ROLE_ID);
+
+    // Applies every migration the real folder carries that is not yet
+    // recorded as applied — 0010 (`ALTER TABLE … ADD config`) and 0011 (the
+    // `mod_rules_kind` rebuild), against the data just inserted. Goes
+    // through `runMigrations`, not `migrate()` directly — this is the exact
+    // call this guard exists to prove is now safe (ADR 0040 ledger R-5).
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const rule = raw
+      .prepare(`SELECT kind, config, name FROM mod_rules WHERE guild_id = ? AND rule_id = ?`)
+      .get(GUILD_ID, RULE_ID) as { kind: string; config: string; name: string } | undefined;
+    expect(rule).toEqual({ kind: 'keyword_filter', config: '{}', name: 'pre-existing' });
+
+    const category = raw
+      .prepare(`SELECT name FROM word_categories WHERE guild_id = ? AND category_id = ?`)
+      .get(GUILD_ID, CATEGORY_ID) as { name: string } | undefined;
+    expect(category?.name).toBe('profanity');
+
+    const term = raw
+      .prepare(`SELECT text FROM word_terms WHERE guild_id = ? AND term_id = ?`)
+      .get(GUILD_ID, TERM_ID) as { text: string } | undefined;
+    expect(term?.text).toBe('badword');
+
+    const allowlist = raw
+      .prepare(`SELECT phrase FROM word_allowlist WHERE guild_id = ? AND rule_id = ?`)
+      .all(GUILD_ID, RULE_ID) as { phrase: string }[];
+    expect(allowlist.map((r) => r.phrase)).toEqual(['assassin']);
+
+    const exemption = raw
+      .prepare(
+        `SELECT exempt_type, exempt_id FROM mod_rule_exemptions WHERE guild_id = ? AND rule_id = ?`,
+      )
+      .get(GUILD_ID, RULE_ID) as { exempt_type: string; exempt_id: string } | undefined;
+    expect(exemption).toEqual({ exempt_type: 'role', exempt_id: ROLE_ID });
+
+    raw.close();
+  });
+});
+
+/**
+ * The other half of `runMigrations` (`db.ts`): disabling `foreign_keys` for
+ * the run is only safe because `PRAGMA foreign_key_check` runs immediately
+ * afterwards and fails loudly if the migration left anything referentially
+ * broken. This cannot be exercised against the real `drizzle/` migrations —
+ * none of them are broken — so this builds a throwaway, single-migration
+ * fixture folder whose own SQL inserts a child row with no matching parent.
+ * That insert only succeeds *because* `runMigrations` has enforcement off
+ * for the duration of the migration, which is exactly the scenario the
+ * check exists to catch on the way out.
+ */
+describe('runMigrations fails the run when a migration leaves a dangling reference', () => {
+  /** A one-migration fixture folder: `sql` is the migration's full body. */
+  const fakeMigrationsFolder = (sql: string): string => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dangling-fk-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const tag = '0000_dangling';
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({
+        version: '7',
+        dialect: 'sqlite',
+        entries: [{ idx: 0, version: '6', when: Date.now(), tag, breakpoints: true }],
+      }),
+    );
+    fs.writeFileSync(path.join(dir, `${tag}.sql`), sql);
+    return dir;
+  };
+
+  it('throws instead of returning a database with an orphaned row', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    const folder = fakeMigrationsFolder(
+      [
+        `CREATE TABLE parent (id INTEGER PRIMARY KEY) STRICT;`,
+        `CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, FOREIGN KEY (parent_id) REFERENCES parent(id)) STRICT;`,
+        // Only succeeds because runMigrations has foreign_keys off for the
+        // migration itself — with enforcement on, this INSERT would throw
+        // and this fixture would prove nothing.
+        `INSERT INTO child (id, parent_id) VALUES (1, 999);`,
+      ].join('\n--> statement-breakpoint\n'),
+    );
+
+    expect(() => runMigrations(raw, db, folder)).toThrow(/foreign key violation/i);
+
+    raw.close();
+  });
+
+  it('leaves foreign_keys restored to on after the failed run', () => {
+    // A thrown migration must not leave the connection permanently
+    // unprotected for whatever runs next against it.
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const folder = fakeMigrationsFolder(
+      [
+        `CREATE TABLE parent (id INTEGER PRIMARY KEY) STRICT;`,
+        `CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL, FOREIGN KEY (parent_id) REFERENCES parent(id)) STRICT;`,
+        `INSERT INTO child (id, parent_id) VALUES (1, 999);`,
+      ].join('\n--> statement-breakpoint\n'),
+    );
+
+    expect(() => runMigrations(raw, db, folder)).toThrow();
+    expect(raw.pragma('foreign_keys', { simple: true })).toBe(1);
+
+    raw.close();
   });
 });

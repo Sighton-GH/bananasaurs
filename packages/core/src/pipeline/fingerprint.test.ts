@@ -49,6 +49,10 @@ const messageEvent = (
   authorIsBot: false,
   content: undefined,
   editedTimestampMs: undefined,
+  mentionedUserIds: [],
+  mentionedRoleIds: [],
+  mentionsEveryone: false,
+  attachments: [],
   ...over,
 });
 

@@ -9,15 +9,20 @@ import {
   parseConfig,
   parseGuildId,
   parseSnowflakeId,
+  serialiseTrace,
   unicodeEmojiKey,
   type Config,
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  automodFixtureRepo,
+  automodRuleRepo,
   effectRepo,
   guildRepo,
   jobRepo,
   loggingRepo,
+  modCaseRepo,
+  modMatchReviewRepo,
   panelRepo,
   roleRepo,
 } from '@bananasaurs/storage';
@@ -1067,6 +1072,102 @@ describe('the operator CLI, end to end', () => {
       expect(jobRepo.listJobs(scope(), {})).toEqual([]);
       expect(effectRepo.tailAudit(scope())).toEqual([]);
     });
+  });
+});
+
+/**
+ * IMPORTANT-4: the four automod port bindings in `opsPortsFor`
+ * (`findAutomodRule`, `listAutomodFixtures`, `listUnreviewedMatches`,
+ * `recordMatchVerdict`) are the only code that connects `automod dryrun` /
+ * `automod review` / `automod verdict` to the real repositories. Every other
+ * test exercising those three commands drives them through `fakeOpsPorts`
+ * (`packages/core/src/ops/commands/automod.test.ts`), so the bindings had
+ * `typecheck` as their entire coverage — the path that runs on flip day had
+ * never been executed. One test, over the real socket against a real
+ * migrated database, covers all four.
+ */
+describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
+  const scope = () => t.scopes.forGuild(GUILD);
+  const MEMBER = parseSnowflakeId('456789012345678901');
+
+  it('carries a match from dryrun through review to a recorded verdict and a propagated fixture label', async () => {
+    startDaemon();
+    guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
+
+    automodRuleRepo.createRule(scope(), {
+      ruleId: 'r1',
+      kind: 'keyword_filter',
+      name: 'word filter',
+      config: '{}',
+      now: discord.now(),
+    });
+    automodRuleRepo.addCategory(scope(), {
+      categoryId: 'c1',
+      ruleId: 'r1',
+      name: 'profanity',
+      defaultAction: 'log_only',
+    });
+    automodRuleRepo.addTerm(scope(), { termId: 't1', categoryId: 'c1', text: 'badword' });
+
+    const fixtureId = automodFixtureRepo.captureObservedFixture(scope(), {
+      messageId: '900000000000000001',
+      content: 'hello badword everyone',
+      authorId: MEMBER,
+      createdAt: discord.now(),
+    });
+
+    const { caseId } = modCaseRepo.openOrResolveCase(scope(), {
+      memberId: MEMBER,
+      now: discord.now(),
+    });
+    modCaseRepo.recordCaseEvent(scope(), {
+      eventId: 'e1',
+      caseId,
+      ruleId: 'r1',
+      memberId: MEMBER,
+      at: discord.now(),
+      matchedCategory: 'profanity',
+      matchedSnippet: 'badword',
+      actionTaken: 'would_delete',
+      trace: serialiseTrace({
+        kind: 'keyword_filter',
+        matchedOn: 'badword',
+        span: [6, 13],
+        normalisations: ['lowercased'],
+        detail: {},
+      }),
+      fixtureId,
+    });
+
+    // `automod dryrun r1` — exercises `findAutomodRule` and
+    // `listAutomodFixtures`.
+    const dryrun = await cli('automod dryrun r1');
+    expect(dryrun.code, dryrun.err).toBe(0);
+    expect(dryrun.out).toContain('badword');
+
+    // `automod review` — exercises `listUnreviewedMatches`.
+    const review = await cli('automod review');
+    expect(review.code, review.err).toBe(0);
+    expect(review.out).toContain('e1');
+    expect(review.out).toContain('hello badword everyone');
+
+    // `automod verdict e1 true_positive --confirm` — exercises
+    // `recordMatchVerdict`.
+    const verdict = await cli('automod verdict e1 true_positive --confirm');
+    expect(verdict.code, verdict.err).toBe(0);
+    expect(verdict.out).toContain('true_positive');
+
+    const storedVerdict = modMatchReviewRepo.findVerdict(scope(), 'e1');
+    expect(storedVerdict?.verdict).toBe('true_positive');
+
+    const fixture = automodFixtureRepo.listFixtures(scope()).find((f) => f.fixtureId === fixtureId);
+    expect(fixture?.label).toBe('should_match');
+
+    // The match is now reviewed, so a second `automod review` must not
+    // still list it — proof the write actually reached the same database
+    // the read commands query, not just a side channel.
+    const reviewAgain = await cli('automod review');
+    expect(reviewAgain.out).not.toContain('e1');
   });
 });
 

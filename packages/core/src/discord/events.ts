@@ -113,6 +113,22 @@ export interface SlashCommandEvent extends Base {
   userId: Snowflake;
 }
 
+/**
+ * One file attached to a message, as Discord declared it.
+ *
+ * `contentType` is Discord's `content_type`, which is **the uploader's
+ * declaration**, not a sniffed type — trivially spoofed by renaming a file.
+ * That is exactly why Slice 5's `attachment_type` predicate matches on the
+ * declared type *and* the file extension rather than either alone. No bytes
+ * are fetched here or anywhere in Release 2.
+ */
+export interface MessageAttachment {
+  readonly fileName: string;
+  /** Absent when Discord did not declare one. Never flattened to `''`. */
+  readonly contentType: string | undefined;
+  readonly sizeBytes: number;
+}
+
 export interface MessageEvent extends Base {
   kind: 'messageCreate' | 'messageUpdate' | 'messageDelete';
   channelId: Snowflake;
@@ -131,6 +147,16 @@ export interface MessageEvent extends Base {
   /** Absent when the message was not cached, or when content logging is off. */
   content: string | undefined;
   editedTimestampMs: number | undefined;
+  /**
+   * Resolved mentions, for Slice 4's `mention_spam`. Empty for a partial
+   * message, where nothing is known — which every predicate must read as "do
+   * not match", the same way `content: undefined` is read today.
+   */
+  mentionedUserIds: readonly Snowflake[];
+  mentionedRoleIds: readonly Snowflake[];
+  mentionsEveryone: boolean;
+  /** For Slice 5's `attachment_type`. Metadata only; no bytes are fetched. */
+  attachments: readonly MessageAttachment[];
 }
 
 /** Which action Discord's own AutoMod executed. */

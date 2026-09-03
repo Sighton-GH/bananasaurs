@@ -93,13 +93,37 @@ export function collapseThresholdsFor(terms: readonly string[]): Map<string, num
   return thresholds;
 }
 
+export interface AutomodMatchResult {
+  readonly categoryId: string;
+  /**
+   * The *configured* term's own text — `"badword"`, not `"b@dw0rd"`. Slice
+   * 9's one-click suppression allowlists this, so it must name the term that
+   * was configured, not the (possibly evasive) spelling that happened to
+   * match: allowlisting a single evasion spelling would look like it fixed
+   * a false positive while leaving the term matching everything else.
+   */
+  readonly termText: string;
+  /** The substring of the (already zero-width-stripped) input that matched. */
+  readonly snippet: string;
+  /**
+   * Both inclusive, indexing the zero-width-stripped content `match()`
+   * received — `obscenity`'s own convention
+   * (`RegExpMatcher.getAllMatches`, `node_modules/obscenity/dist/matcher/RegExpMatcher.js`),
+   * carried through unconverted. A caller wanting a half-open `[start, end)`
+   * span needs `endIndex + 1`; verified directly against `obscenity`
+   * (`content.slice(startIndex, endIndex + 1) === snippet` for every match).
+   */
+  readonly startIndex: number;
+  readonly endIndex: number;
+}
+
 export interface AutomodMatcher {
   /**
    * `undefined` means no configured term matched. `match()` normalizes
    * zero-width characters itself, so pre-stripping is a caller convenience,
    * not a requirement.
    */
-  match(content: string): { categoryId: string; snippet: string } | undefined;
+  match(content: string): AutomodMatchResult | undefined;
 }
 
 /**
@@ -124,8 +148,10 @@ export function buildMatcher(
   allowlist: readonly string[],
 ): AutomodMatcher {
   const categoryByTermId = new Map<number, string>();
+  const termTextByTermId = new Map<number, string>();
   const blacklistedTerms = terms.map((term, id) => {
     categoryByTermId.set(id, term.categoryId);
+    termTextByTermId.set(id, term.text);
     return { id, pattern: parseRawPattern(term.text) };
   });
 
@@ -177,7 +203,12 @@ export function buildMatcher(
       const first = matches[0]!;
       return {
         categoryId: categoryByTermId.get(first.termId) ?? 'unknown',
+        termText: termTextByTermId.get(first.termId) ?? 'unknown',
+        // `endIndex` is inclusive (obscenity's own convention) — `+ 1` for a
+        // half-open slice. See `AutomodMatchResult`'s doc comment.
         snippet: normalized.slice(first.startIndex, first.endIndex + 1),
+        startIndex: first.startIndex,
+        endIndex: first.endIndex,
       };
     },
   };

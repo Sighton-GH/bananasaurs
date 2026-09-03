@@ -538,7 +538,9 @@ function seedAutomodDefaults(
 
   automodRuleRepo.createRule(scope, {
     ruleId: DEFAULT_AUTOMOD_RULE_ID,
+    kind: 'keyword_filter',
     name: 'Default word filter (obscenity englishDataset)',
+    config: '{}',
     now: nowMs,
   });
   seedDefaultWordList(

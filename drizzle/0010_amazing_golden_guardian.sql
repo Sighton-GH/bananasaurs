@@ -1,0 +1,1 @@
+ALTER TABLE `mod_rules` ADD `config` text DEFAULT '{}' NOT NULL;

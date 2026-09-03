@@ -115,6 +115,10 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },
 
+  listUnusableAutomodRules: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       eventKind: route.eventKind,
@@ -140,7 +144,20 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     };
   },
 
+  findAutomodRule: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  listAutomodFixtures: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  listUnreviewedMatches: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+
   applySetting: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  recordMatchVerdict: () => {
     throw new Error('not used by the dashboard routes under test');
   },
   setRoute: (input) =>

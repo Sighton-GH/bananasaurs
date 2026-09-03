@@ -198,11 +198,66 @@ export {
   createAutomodSubscriber,
   type AutomodSubscriberDeps,
   type ModerationGatewayPort,
-  type RuleWithWordList,
 } from './automod/subscriber.js';
 export { seedDefaultWordList, type SeedPorts } from './automod/seed.js';
 export { createNativeAutomodSubscriber } from './automod/native-subscriber.js';
 export type { NativeAutomodSubscriberDeps } from './automod/native-subscriber.js';
+export {
+  isRuleKind,
+  RULE_KINDS,
+  type AnyPredicate,
+  type AutomodRule,
+  type CompiledPredicate,
+  type ConfigSchema,
+  type MatchTrace,
+  type Predicate,
+  type PredicateInput,
+  type PredicateMatch,
+  type RuleKind,
+} from './automod/predicates/types.js';
+export {
+  keywordFilterConfig,
+  keywordFilterPredicate,
+  type KeywordFilterConfig,
+} from './automod/predicates/keyword-filter.js';
+export {
+  compileRule,
+  predicateFor,
+  validateRuleConfig,
+  type CompileFailure,
+  type CompileResult,
+  type ConfigValidationFailure,
+  type ConfigValidationResult,
+} from './automod/predicates/registry.js';
+export { ruleFingerprint } from './automod/fingerprint.js';
+export {
+  matchTraceSchema,
+  parseMatchTrace,
+  renderTrace,
+  serialiseTrace,
+  type ParseTraceResult,
+} from './automod/trace.js';
+export {
+  createPredicateCache,
+  evaluateRule,
+  predicateCacheKey,
+  predicateInputFrom,
+  type CacheEntry,
+  type EvaluateOutcome,
+  type PredicateCache,
+  type PredicateInputSource,
+} from './automod/evaluate.js';
+export {
+  runDryRun,
+  type DryRunFixtureResult,
+  type DryRunReport,
+  type RunDryRunInput,
+} from './automod/dry-run.js';
+// The corpus row shape `runDryRun` and the ops fixture port take. Exported
+// beside them because the composition root hands storage's rows across this
+// boundary, and a consumer outside `packages/core` cannot use a relative
+// import to name the type it is passing.
+export type { FixtureRecord } from './automod/predicates/types.js';
 export {
   BULK_DELETE_CEILING_MS,
   PURGE_TICK_SPACING_MS,

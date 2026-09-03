@@ -109,6 +109,10 @@ const messageEdit = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   authorIsBot: false,
   content: 'edited text',
   editedTimestampMs: 5,
+  mentionedUserIds: [],
+  mentionedRoleIds: [],
+  mentionsEveryone: false,
+  attachments: [],
   ...over,
 });
 
@@ -227,6 +231,10 @@ const messageDelete = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   authorIsBot: false,
   content: undefined,
   editedTimestampMs: undefined,
+  mentionedUserIds: [],
+  mentionedRoleIds: [],
+  mentionsEveryone: false,
+  attachments: [],
   ...over,
 });
 

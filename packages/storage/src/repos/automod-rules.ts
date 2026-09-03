@@ -10,16 +10,20 @@ import {
 } from '../schema.js';
 
 /**
- * Automod rules and the word list each one carries.
+ * Automod rules and the word list `keyword_filter` rules carry.
  *
- * A `mod_rules` row names a `keyword_filter` (ADR 0035's only predicate kind
- * this slice implements); its word list lives across three more tables —
- * `word_categories`, `word_terms`, `word_allowlist` — the same shape
- * `panels.ts` already established for "several tables, one aggregate": no
- * caller outside this module assembles a `RuleWithWordList` from parts,
- * because the subscriber (Task 9) builds one fuzzy matcher per rule from
- * exactly this shape, and a rule read without its terms is a rule that
- * silently stops matching.
+ * A `mod_rules` row names its `kind` (one of the ten ADR 0040 permits) and
+ * carries `config` — a scalar, whole-rule JSON blob validated by
+ * `packages/core`'s predicate registry, not here (ADR 0014: storage may not
+ * import core, so the string is the boundary; rule 3, CLAUDE.md: it is
+ * untrusted input on the way back out just as much as on the way in).
+ * `keyword_filter` is the one kind whose settings are *not* in `config`: its
+ * word list lives across three more tables — `word_categories`, `word_terms`,
+ * `word_allowlist` — the same shape `panels.ts` already established for
+ * "several tables, one aggregate". No caller outside this module assembles a
+ * `StoredAutomodRule` from parts, because the subscriber (Task 9) builds one
+ * fuzzy matcher per rule from exactly this shape, and a rule read without its
+ * terms is a rule that silently stops matching.
  *
  * Every function takes a `GuildScope` first, like every repository here.
  * `word_categories`/`word_terms`/`word_allowlist` all carry composite foreign
@@ -30,22 +34,41 @@ import {
 export type RuleMode = 'test' | 'observe' | 'enforce';
 export type WordAction = 'log_only' | 'delete' | 'delete_and_case';
 
+/** The ten predicate kinds `mod_rules_kind` permits (ADR 0040). */
+export type RuleKind =
+  | 'keyword_filter'
+  | 'regex'
+  | 'invite'
+  | 'link_domain'
+  | 'mention_spam'
+  | 'rapid_spam'
+  | 'duplicate_message'
+  | 'caps'
+  | 'attachment_type'
+  | 'emoji';
+
 /**
- * What the automod subscriber (Task 9) needs to build a matcher and log a
- * hit: the rule's own id and mode, its flattened terms, and its allowlist.
- * Deliberately does not carry categories' `defaultAction` or terms'
- * `actionOverride` — Task 9's plan records every hit as `'deleted'` (or an
- * escalation variant) regardless of category, so those columns exist for a
- * later release's per-category action to read, not this one.
+ * One enabled rule as stored, with its relational word list attached.
+ *
+ * `config` is the **raw JSON text**, deliberately unparsed. Parsing and
+ * validating it belongs to `packages/core`'s predicate registry, which owns
+ * the per-kind Zod schemas; storage may not import core and core may not
+ * import storage (ADR 0014), so the string is the boundary.
+ *
+ * `terms` and `allowlist` are empty for every kind but `keyword_filter`,
+ * whose data is relational by ADR 0040's split. A later predicate with
+ * list-shaped data adds its own field here the same way.
  */
-export interface RuleWithWordList {
+export interface StoredAutomodRule {
   readonly ruleId: string;
+  readonly kind: RuleKind;
   readonly mode: RuleMode;
+  readonly config: string;
   readonly terms: readonly { text: string; categoryId: string }[];
   readonly allowlist: readonly string[];
 }
 
-type RuleRow = { ruleId: string; mode: string };
+type RuleRow = { ruleId: string; kind: string; mode: string; config: string };
 
 /**
  * Assembles one rule's word list from its three tables.
@@ -54,8 +77,12 @@ type RuleRow = { ruleId: string; mode: string };
  * join, deliberately, mirroring `panels.ts`'s `hydrate`: a join across
  * categories and terms multiplies rows and needs de-duplicating in code,
  * which is where the bug would be. A guild's word list is small.
+ *
+ * Every kind but `keyword_filter` simply has no `word_categories` rows, so
+ * `terms`/`allowlist` come back `[]` naturally — no branch on `kind` needed
+ * here.
  */
-const hydrate = (scope: GuildScope, row: RuleRow): RuleWithWordList =>
+const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
   read(scope, (db) => {
     const categories = db
       .select({ categoryId: wordCategories.categoryId })
@@ -90,28 +117,34 @@ const hydrate = (scope: GuildScope, row: RuleRow): RuleWithWordList =>
 
     return {
       ruleId: row.ruleId,
+      kind: row.kind as RuleKind,
       mode: row.mode as RuleMode,
+      config: row.config,
       terms,
       allowlist,
     };
   });
 
 /**
- * Every enabled `keyword_filter` rule, with its word list assembled.
+ * Every enabled rule, of any kind, with its word list assembled (empty for
+ * every kind but `keyword_filter`).
  *
  * The subscriber (Task 9) calls this once per message and builds/caches one
  * matcher per rule from the result — a disabled rule never reaches it, which
  * is the whole of what "disabled" means here (there is no separate enforcement
  * check downstream).
  */
-export const listEnabledKeywordFilterRules = (scope: GuildScope): readonly RuleWithWordList[] => {
+export const listEnabledRules = (scope: GuildScope): readonly StoredAutomodRule[] => {
   const rows = read(scope, (db) =>
     db
-      .select({ ruleId: modRules.ruleId, mode: modRules.mode })
+      .select({
+        ruleId: modRules.ruleId,
+        kind: modRules.kind,
+        mode: modRules.mode,
+        config: modRules.config,
+      })
       .from(modRules)
-      .where(
-        scope.only(modRules, and(eq(modRules.kind, 'keyword_filter'), eq(modRules.enabled, 1))),
-      )
+      .where(scope.only(modRules, eq(modRules.enabled, 1)))
       .all(),
   );
   return rows.map((row) => hydrate(scope, row));
@@ -180,10 +213,10 @@ export interface EnforceRuleChannelScope {
  * (`apps/daemon/src/ops/wiring.ts`) needs to check the bot's live permissions
  * against the rest of the guild's channels.
  *
- * Deliberately narrower than `listEnabledKeywordFilterRules`: a `test` or
- * `observe` rule never calls `deleteMessage` (Task 9's subscriber), so a
- * missing `Manage Messages` there is not yet a finding — only `enforce` mode
- * makes the permission load-bearing.
+ * Deliberately narrower than `listEnabledRules`: a `test` or `observe` rule
+ * never calls `deleteMessage` (Task 9's subscriber), so a missing
+ * `Manage Messages` there is not yet a finding — only `enforce` mode makes
+ * the permission load-bearing.
  */
 export const listEnforceModeKeywordFilterRules = (
   scope: GuildScope,
@@ -228,9 +261,9 @@ export const listEnforceModeKeywordFilterRules = (
 /**
  * Whether a rule with this id exists at all — enabled or disabled.
  *
- * Deliberately broader than `listEnabledKeywordFilterRules`: that function
- * answers "what should the subscriber match against right now", which is
- * correctly silent about a disabled rule. This answers a different question —
+ * Deliberately broader than `listEnabledRules`: that function answers "what
+ * should the subscriber match against right now", which is correctly silent
+ * about a disabled rule. This answers a different question —
  * "has this specific id already been created" — which the daemon's first-run
  * seeding (`apps/daemon/src/runtime/daemon.ts`) needs so that a rule an owner
  * has deliberately disabled does not get a second, conflicting `INSERT`
@@ -250,15 +283,21 @@ export const ruleExists = (scope: GuildScope, ruleId: string): boolean =>
 
 export interface CreateRuleInput {
   readonly ruleId: string;
+  readonly kind: RuleKind;
   readonly name: string;
+  /**
+   * Serialised JSON. The caller must validate it with core's
+   * `validateRuleConfig(kind, config)` first — the CHECK cannot (ADR 0040 §2,
+   * `setRuleConfig`'s doc comment below has the full reasoning).
+   */
+  readonly config: string;
   readonly now: number;
 }
 
 /**
- * Creates a rule. Always `kind: 'keyword_filter'` — the only predicate kind
- * this slice implements (ADR 0035) — and always starts in `mode: 'test'`
- * (spec §8: automod ships observing, not enforcing, until an owner opts in),
- * whatever mode a later `setRuleMode` call moves it to.
+ * Creates a rule of any of the ten ADR 0040 kinds, always starting in
+ * `mode: 'test'` (spec §8: automod ships observing, not enforcing, until an
+ * owner opts in), whatever mode a later `setRuleMode` call moves it to.
  *
  * Callers that might run more than once against the same `ruleId` (the
  * daemon's first-run seeding) must check `ruleExists` first — this function
@@ -275,13 +314,43 @@ export const createRule = (scope: GuildScope, input: CreateRuleInput): void =>
       .values({
         guildId: scope.guildId,
         ruleId: input.ruleId,
-        kind: 'keyword_filter',
+        kind: input.kind,
         name: input.name,
+        config: input.config,
         mode: 'test',
         enabled: 1,
         createdAt: input.now,
         updatedAt: input.now,
       })
+      .run();
+  });
+
+export interface SetRuleConfigInput {
+  readonly ruleId: string;
+  /** Serialised JSON, already validated against the kind's schema by core. */
+  readonly config: string;
+  readonly now: number;
+}
+
+/**
+ * Replaces a rule's config wholesale — not a merge. A partial update would
+ * need a read-modify-write, and the caller that has a validated config
+ * object already has the whole of it.
+ *
+ * **The caller must call `validateRuleConfig(kind, config)` from
+ * `packages/core` first and refuse the write on `{ok: false}`.** This
+ * function does not, and cannot: ADR 0014 keeps the per-kind Zod schemas in
+ * core and bars storage from importing core's predicate registry, so this is
+ * a plain `UPDATE` with no validation of its own. ADR 0040 §2 requires
+ * `mod_rules.config` to be validated on write as well as on read (the read
+ * side is `compileRule`, called by the subscriber and by `doctor`) — the
+ * write-side guard has to live at the call site for exactly that reason.
+ */
+export const setRuleConfig = (scope: GuildScope, input: SetRuleConfigInput): void =>
+  write(scope, ({ db }) => {
+    db.update(modRules)
+      .set({ config: input.config, updatedAt: input.now })
+      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
       .run();
   });
 

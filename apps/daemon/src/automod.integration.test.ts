@@ -1,10 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
+import { Client } from 'discord.js';
 import {
   createAutomodSubscriber,
+  createDispatcher,
+  doctorCommand,
   parseGuildId,
   parseSnowflakeId,
   Pipeline,
+  type OpsInstance,
 } from '@bananasaurs/core';
 import {
   automodRuleRepo,
@@ -17,8 +21,11 @@ import {
   type GuildScope,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import { buildClientOptions } from '@bananasaurs/discord';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
+import { opsPortsFor } from './ops/wiring.js';
+import type { GuildOperations } from './runtime/guild.js';
 
 /**
  * Automod, end to end on the fake gateway (Task 12, ADR 0035).
@@ -79,7 +86,13 @@ const buildPipeline = (): Pipeline => {
 
 /** Creates one enabled `keyword_filter` rule with a single term, 'badword'. */
 const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
-  automodRuleRepo.createRule(scope, { ruleId: RULE_ID, name: 'test rule', now: discord.now() });
+  automodRuleRepo.createRule(scope, {
+    ruleId: RULE_ID,
+    kind: 'keyword_filter',
+    name: 'test rule',
+    config: '{}',
+    now: discord.now(),
+  });
   automodRuleRepo.addCategory(scope, {
     categoryId: CATEGORY_ID,
     ruleId: RULE_ID,
@@ -314,5 +327,101 @@ describe('automod, end to end on the fake gateway', () => {
     expect(discord.restCalls('timeoutMember')).toHaveLength(0);
     expect(discord.restCalls('kickMember')).toHaveLength(0);
     expect(discord.memberModerationState(OWNER)).toBeUndefined();
+  });
+
+  /**
+   * End-to-end proof of ADR 0040 §5 against a real database: the unit test in
+   * `subscriber.test.ts` fakes `listRules`, so this is the one that shows the
+   * repository, the fingerprint and the cache agreeing — a term added mid-run
+   * takes effect on the very next message, with no daemon restart. That gap
+   * is what ADR 0035 left open and ADR 0039 made sharper.
+   */
+  it('applies a term added after the subscriber has already matched, with no restart', async () => {
+    seedRule('enforce');
+
+    await sendMessage(MEMBER, 'zapzap incoming');
+    expect(discord.restCalls('deleteMessage')).toHaveLength(0);
+    expect(findCase(MEMBER)).toBeUndefined();
+
+    automodRuleRepo.addTerm(scope, { termId: 'term-2', categoryId: CATEGORY_ID, text: 'zapzap' });
+
+    await sendMessage(MEMBER, 'zapzap incoming');
+
+    expect(discord.restCalls('deleteMessage')).toHaveLength(1);
+    const modCase = findCase(MEMBER);
+    expect(modCase?.violationCount).toBe(1);
+    const events = modCaseRepo.listCaseEvents(scope, modCase!.caseId);
+    expect(events).toHaveLength(1);
+    expect(events[0]?.matchedCategory).toBe(CATEGORY_ID);
+  });
+
+  /**
+   * `doctor`, end to end against the same real database and the real
+   * `apps/daemon/src/ops/wiring.ts#opsPortsFor` this daemon runs in
+   * production — not the fakes `packages/core/src/ops/commands/reads.test.ts`
+   * uses for its own unit coverage. A `caps` rule is one of the nine kinds
+   * `mod_rules_kind` permits with no predicate behind it until Slice 5
+   * (ADR 0040 §4); it must never silently do nothing.
+   */
+  it('a rule whose kind has no predicate yet is inert and shows up in doctor', async () => {
+    automodRuleRepo.createRule(scope, {
+      ruleId: 'caps-rule',
+      kind: 'caps',
+      name: 'shouting check',
+      config: '{}',
+      now: discord.now(),
+    });
+
+    // Never called by `doctor`: `opsPortsFor` only reaches `GuildOperations`
+    // through `publishPanel`/the adoption allowance ports, none of which the
+    // `doctor` command touches.
+    const notUsedByDoctor = (name: string) => (): never => {
+      throw new Error(`GuildOperations.${name} was called but this test did not stub it`);
+    };
+    const operations: GuildOperations = {
+      publishPanel: notUsedByDoctor('publishPanel'),
+      grantAdoptionAllowance: notUsedByDoctor('grantAdoptionAllowance'),
+      adoptionAllowance: notUsedByDoctor('adoptionAllowance'),
+    };
+    // Never connected to the gateway — `opsPortsFor`'s only use of the client
+    // is `listKeywordFilterRulesMissingManageMessages`, which stays silent
+    // for a guild absent from `client.guilds.cache` (see that function's own
+    // comment), exactly this client's state.
+    const client = new Client(buildClientOptions(() => BOT_USER_ID));
+    const ports = opsPortsFor(scope, operations, () => discord.now(), client);
+
+    const notUsedByDoctorInstance = (name: string) => (): never => {
+      throw new Error(`OpsInstance.${name} was called but this test did not stub it`);
+    };
+    const instance: OpsInstance = {
+      startedAtMs: 0,
+      readonly: false,
+      env: 'test',
+      gateway: notUsedByDoctorInstance('gateway'),
+      doctor: () => ({ ok: true, text: 'gateway: ok', data: null }),
+      redactedConfig: notUsedByDoctorInstance('redactedConfig'),
+      reissueBootstrapToken: notUsedByDoctorInstance('reissueBootstrapToken'),
+      backupNow: notUsedByDoctorInstance('backupNow'),
+      backupList: notUsedByDoctorInstance('backupList'),
+    };
+
+    const dispatcher = createDispatcher({
+      commands: [doctorCommand],
+      guildIds: [GUILD],
+      contextFor: () => ({ guildId: GUILD, now: () => discord.now(), ports }),
+      instance,
+    });
+
+    const res = await dispatcher.dispatch({ v: 1, command: 'doctor', args: {} });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('caps-rule');
+    expect(res.text).toContain('no-predicate');
+    expect(res.data).toMatchObject({
+      ok: false,
+      unusableAutomodRules: [
+        { ruleId: 'caps-rule', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+      ],
+    });
   });
 });

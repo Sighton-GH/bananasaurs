@@ -3,11 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import Database from 'better-sqlite3';
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import { drizzle } from 'drizzle-orm/better-sqlite3';
-import { applyPragmas, openDatabase } from './db.js';
+import { applyPragmas, openDatabase, runMigrations } from './db.js';
 import { DatabaseLockedError } from './lock.js';
 import * as schema from './schema.js';
+import { MIGRATIONS_FOLDER } from './test-support.js';
 
 let dir: string;
 let dbPath: string;
@@ -124,7 +124,7 @@ describe('openDatabase', () => {
 
   it('checkpoints the WAL on close so the .db file alone is complete', () => {
     const opened = openDatabase({ dbPath });
-    migrate(opened.db, { migrationsFolder: './drizzle' });
+    runMigrations(opened.raw, opened.db, './drizzle');
     opened.db
       .insert(schema.guilds)
       .values({
@@ -152,7 +152,7 @@ describe('schema constraints', () => {
     const raw = new Database(':memory:');
     raw.pragma('foreign_keys = ON');
     const db = drizzle(raw, { schema });
-    migrate(db, { migrationsFolder: './drizzle' });
+    runMigrations(raw, db, './drizzle');
     return { db, raw };
   }
 
@@ -215,6 +215,119 @@ describe('schema constraints', () => {
         })
         .run(),
     ).toThrow(/CHECK/i);
+    raw.close();
+  });
+});
+
+/**
+ * Migration 0012 (ADR 0041, Task 1) adds `automod_fixtures`, `mod_match_reviews`,
+ * and two nullable columns on `mod_case_events`. Every statement in it is
+ * additive (`CREATE TABLE` / `ALTER TABLE ... ADD COLUMN`), but the ledger's
+ * R-5 finding (`docs/LEDGER_RELEASE2_SLICES_1_6.md`) is that "additive" is
+ * exactly the property that must be demonstrated against real data, not
+ * inferred from reading the SQL — a table-rebuild disguised as an ALTER would
+ * still pass a typecheck and a schema-invariants read.
+ *
+ * Reuses the harness `schema-invariants.test.ts`'s
+ * "mod_rules.config migration (0010/0011)" test established: migrate to the
+ * last pre-Task-1 migration, seed a row with raw SQL the way a real upgrade
+ * would find it, then apply the remaining shipped migration files through
+ * `runMigrations` (never `migrate()` directly) and read the result back with
+ * raw SQL, independent of the repo layer.
+ */
+describe('migration 0012 adds the fixture corpus without disturbing existing case events', () => {
+  const GUILD_ID = '111111111111111111';
+  const MEMBER_ID = '222222222222222222';
+
+  /**
+   * A migrations folder containing only the journal entries and `.sql` files
+   * up to and including `tag`, so `migrate()` can run against a snapshot of
+   * the schema older than what ships. `readMigrationFiles`
+   * (`drizzle-orm/migrator.js`) needs only `meta/_journal.json` and the named
+   * `.sql` files — not `meta/*_snapshot.json`, which is drizzle-kit's own
+   * bookkeeping for the *next* `generate` and is never read by `migrate()`.
+   */
+  const migrationsFolderUpTo = (lastIdx: number): string => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'fixture-corpus-migration-'));
+    fs.mkdirSync(path.join(dir, 'meta'));
+    const entries = journal.entries.filter((e) => e.idx <= lastIdx);
+    fs.writeFileSync(
+      path.join(dir, 'meta', '_journal.json'),
+      JSON.stringify({ ...journal, entries }),
+    );
+    for (const entry of entries) {
+      fs.copyFileSync(
+        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+        path.join(dir, `${entry.tag}.sql`),
+      );
+    }
+    return dir;
+  };
+
+  it('keeps the seeded case event readable, with the new columns null, after the migration', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // A database migrated to the *previous* state, seeded, then migrated the
+    // rest of the way — the shape a real upgrade takes, and the only shape in
+    // which a rebuild of `mod_case_events` could be caught losing its rows.
+    //
+    // Precise about what this does and does not prove. R-5's *cascade*
+    // mechanism — a rebuild of table X silently emptying X's `ON DELETE
+    // CASCADE` children — needs a populated child table, and
+    // `mod_case_events` has none: `mod_match_reviews` is created by this very
+    // migration, so nothing references `mod_case_events` before 0012 runs.
+    // The Slice 1 fixture in `schema-invariants.test.ts` (`mod_rules` ->
+    // `word_categories`/`word_terms`/`word_allowlist`/`mod_rule_exemptions`)
+    // is the test that reproduces the cascade itself, and it stays the
+    // authority on it.
+    //
+    // What this guards is the other half: that 0012 leaves the rows already
+    // in `mod_case_events` intact and readable, with the two new columns
+    // null. A drizzle-kit table rebuild that copied columns wrongly, or
+    // dropped and recreated without copying, fails here.
+    runMigrations(raw, db, migrationsFolderUpTo(11));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_cases (guild_id, case_id, member_id, opened_at)
+         VALUES (?, 'c1', ?, 0)`,
+      )
+      .run(GUILD_ID, MEMBER_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_case_events
+           (guild_id, event_id, case_id, rule_id, member_id, at, matched_category, matched_snippet, action_taken)
+         VALUES (?, 'e1', 'c1', 'rule-1', ?, 0, 'profanity', 'badword', 'would_delete')`,
+      )
+      .run(GUILD_ID, MEMBER_ID);
+
+    // Applies every migration the real folder carries that is not yet
+    // recorded as applied — 0012 — against the data just inserted. Goes
+    // through `runMigrations`, not `migrate()` directly, exercising the same
+    // foreign-key-off / foreign_key_check bracket a real upgrade uses.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const events = raw.prepare('SELECT event_id, trace, fixture_id FROM mod_case_events').all() as {
+      event_id: string;
+      trace: string | null;
+      fixture_id: string | null;
+    }[];
+    expect(events).toEqual([{ event_id: 'e1', trace: null, fixture_id: null }]);
+    // Deliberately no `foreign_key_check` assertion here: `runMigrations`
+    // already runs that pragma and throws on a violation before returning
+    // (`db.ts`), so an assertion at this point could never be the thing that
+    // caught one. `schema-invariants.test.ts` tests that detection separately,
+    // against a synthetic broken migration — which is the only way to make it
+    // fail on purpose, and therefore the only way it is worth testing.
+
     raw.close();
   });
 });

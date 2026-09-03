@@ -1,0 +1,578 @@
+import { describe, expect, it } from 'vitest';
+import { createDispatcher, type RegisteredCommand } from '../dispatch.js';
+import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
+import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
+import { OPERATOR_COMMANDS } from '../registry.js';
+import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
+import { automodDryRunCommand, automodReviewCommand, automodVerdictCommand } from './automod.js';
+
+const NOW = 1_700_000_000_000;
+
+const drive = (
+  command: RegisteredCommand,
+  ports: Partial<OpsPorts>,
+  args: Record<string, unknown> = {},
+) =>
+  createDispatcher({
+    commands: [command],
+    guildIds: [FIXTURE_GUILD_ID],
+    contextFor: () => ({
+      guildId: FIXTURE_GUILD_ID,
+      now: () => NOW,
+      ports: fakeOpsPorts(ports),
+    }),
+    instance: fakeOpsInstance(),
+  }).dispatch({ v: 1, command: command.name, args });
+
+/**
+ * Like `drive`, but for a write command: carries `--confirm` and the
+ * claimed Unix user through to the dispatcher, the way `writes.test.ts`'s
+ * harness does — so a test also exercises the machinery's own guarantees
+ * (`--confirm` required, an audit record filled by the dispatcher) rather
+ * than calling `run` directly and bypassing them.
+ */
+const driveWrite = (
+  command: RegisteredCommand,
+  ports: Partial<OpsPorts>,
+  args: Record<string, unknown> = {},
+  options: { readonly confirm?: boolean; readonly unixUserClaimed?: string } = {},
+) =>
+  createDispatcher({
+    commands: [command],
+    guildIds: [FIXTURE_GUILD_ID],
+    contextFor: () => ({
+      guildId: FIXTURE_GUILD_ID,
+      now: () => NOW,
+      ports: fakeOpsPorts(ports),
+    }),
+    instance: fakeOpsInstance(),
+  }).dispatch({
+    v: 1,
+    command: command.name,
+    args,
+    confirm: options.confirm ?? true,
+    unixUserClaimed: options.unixUserClaimed ?? 'bryan',
+  });
+
+/** A reviewable match, with a trace and a fixture message present by default. */
+const reviewableMatch = (
+  over: Partial<OpsReviewableMatch> & { eventId: string },
+): OpsReviewableMatch => ({
+  ruleId: 'r1',
+  memberId: '800000000000000001',
+  at: NOW,
+  matchedCategory: 'profanity',
+  matchedSnippet: 'badword',
+  actionTaken: 'would_delete',
+  trace:
+    '{"kind":"keyword_filter","matchedOn":"badword","span":[6,13],' +
+    '"normalisations":["lowercased"],"detail":{}}',
+  fixtureContent: 'hello badword everyone',
+  ...over,
+});
+
+/** A `keyword_filter` rule with one term per word, all in one category. */
+const ruleWith = (words: readonly string[], over: Partial<AutomodRule> = {}): AutomodRule => ({
+  ruleId: 'r1',
+  kind: 'keyword_filter',
+  mode: 'observe',
+  config: '{}',
+  terms: words.map((text) => ({ text, categoryId: 'c1' })),
+  allowlist: [],
+  ...over,
+});
+
+const fixture = (
+  over: Partial<FixtureRecord> & { fixtureId: string; content: string },
+): FixtureRecord => ({
+  authorId: 'member-1',
+  label: 'unlabelled',
+  source: 'observed',
+  createdAt: NOW,
+  ...over,
+});
+
+describe('automod dryrun', () => {
+  it('is registered, so the CLI can reach it', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod dryrun');
+  });
+
+  it('is a read, so it needs no --confirm and writes no audit row', () => {
+    expect(automodDryRunCommand.write).toBe(false);
+  });
+
+  it('refuses a rule id that is not there, without pretending it matched nothing', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      { findAutomodRule: () => undefined },
+      { ruleId: 'no-such-rule' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // "no *enabled* rule": the port is enabled-only, so a disabled rule lands
+    // here too, and an operator told "there is no rule" would go hunting for a
+    // typo in an id that is correct.
+    expect(res.text).toContain('no enabled rule');
+    expect(res.text).toContain('disabled rule is not replayed');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('reports matches, misses, and the label disagreements', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+          fixture({ fixtureId: 'f2', content: 'ordinary chat', label: 'should_not_match' }),
+          fixture({ fixtureId: 'f3', content: 'badword again', label: 'should_not_match' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ total: 3, matched: 2, falsePositives: 1, falseNegatives: 0 });
+  });
+
+  it('refuses to print a false-positive rate when nothing in the corpus is labelled', async () => {
+    // CRITICAL-1: "41/300 matched · 0 false positive(s) · 0 missed" reads
+    // exactly like a rule 296 humans confirmed correct, when in fact nobody
+    // has labelled anything — the same failure shape the unusable-rule and
+    // empty-corpus guards above already close, and the only one of the three
+    // that happens on an ordinary day.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'unlabelled' }),
+          fixture({ fixtureId: 'f2', content: 'ordinary chat', label: 'unlabelled' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('2 of 2 fixtures unlabelled');
+    expect(res.text).toContain('ADR 0041');
+    // Hyphenated "false-positive" (the refusal sentence) is fine; the
+    // numeric "false positive(s)" count must not appear when the rate was
+    // refused, or a reader skimming for a count finds the misleading one.
+    expect(res.text).not.toMatch(/\d+ false positive\(s\)/);
+    expect(res.data).toMatchObject({ unlabelled: 2 });
+  });
+
+  it('prints the false-positive rate with its labelled denominator once some fixtures are labelled', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+          fixture({ fixtureId: 'f2', content: 'badword again', label: 'should_not_match' }),
+          fixture({ fixtureId: 'f3', content: 'nothing here', label: 'unlabelled' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('1 false positive(s) of 2 labelled');
+    expect(res.data).toMatchObject({ unlabelled: 1 });
+  });
+
+  it('says the rule is unusable rather than reporting a clean zero', async () => {
+    // ADR 0040 §4: a rule that cannot compile matches nothing, and "0
+    // matches" reads exactly like a rule behaving perfectly.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith([]),
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'anything' })],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be compiled');
+    expect(res.data).toMatchObject({ usable: false });
+    // The rendering rule that matters most: no summary line, no count, once
+    // the rule is unusable — a count here is noise at best and misleading
+    // at worst.
+    expect(res.text).not.toMatch(/matched/i);
+  });
+
+  it("renders each match's trace against the fixture's own message", async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword there', label: 'should_match' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('[badword]');
+    expect(res.text).toContain('matched on');
+  });
+
+  it('prints the follow-up command under each match', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword there', label: 'should_match' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('bananasaurs automod review --rule r1');
+  });
+
+  it('flags a should_match fixture the rule missed, without listing ordinary non-matches', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'no trigger here', label: 'should_match' }),
+          fixture({ fixtureId: 'f2', content: 'also clean', label: 'unlabelled' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('f1');
+    expect(res.text).toContain('MISSED');
+    expect(res.text).not.toContain('f2');
+  });
+
+  it('says so plainly when the corpus is empty', async () => {
+    // The first day of the observe window has no fixtures, and a report of
+    // "0 matches, 0 false positives" would read as a passing rule.
+    const res = await drive(
+      automodDryRunCommand,
+      { findAutomodRule: () => ruleWith(['badword']), listAutomodFixtures: () => [] },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('corpus is empty');
+  });
+});
+
+describe('automod review', () => {
+  it('is registered as a read, so it needs no --confirm and writes no audit row', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod review');
+    expect(automodReviewCommand.write).toBe(false);
+  });
+
+  it('lists unreviewed matches with the message and the rendered trace', async () => {
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [reviewableMatch({ eventId: 'e1' })],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('e1');
+    expect(res.text).toContain('hello [badword] everyone');
+    expect(res.text).toContain('bananasaurs automod verdict e1');
+  });
+
+  it('shows the message and the matched snippet as their own lines, unconditionally', async () => {
+    // CRITICAL-2: before this fix, `matchedSnippet`/`matchedCategory` were
+    // fetched and projected into `data` but never printed in `text` at all —
+    // the excerpt inside `renderTrace` was the only route to the message, and
+    // that route is gated on a span existing.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          fixtureContent: 'hello badword everyone',
+          matchedSnippet: 'badword',
+          matchedCategory: 'profanity',
+        }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('message');
+    expect(res.text).toContain('hello badword everyone');
+    expect(res.text).toContain('matched');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('profanity');
+  });
+
+  it('shows the message even when the trace has no span', async () => {
+    // `span` is `.optional()` on `MatchTrace`. `keyword_filter` always sets
+    // one; Slices 3-5 land predicates during this same observe window
+    // (`rapid_spam`, `duplicate_message`, `mention_spam`, `attachment_type`)
+    // that judge the whole message rather than a substring of it and so have
+    // no span. Before this fix, a spanless trace meant `renderTrace` never
+    // printed the excerpt line, and nothing else printed the message either
+    // — the review queue would show no message at all.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          trace: '{"kind":"keyword_filter","matchedOn":"badword","normalisations":[],"detail":{}}',
+          fixtureContent: 'hello badword everyone',
+        }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('hello badword everyone');
+  });
+
+  it('renders a match whose trace is malformed without hiding the message or the snippet', async () => {
+    // A trace read back from the database is untrusted (CLAUDE.md rule 3).
+    // A row this build cannot parse is still a match a human must rule on,
+    // so the trace is replaced by a reason — but the message and the
+    // snippet, which do not come from the trace, must still appear. Before
+    // this fix `match.fixtureContent` sat in scope, unprinted, whenever the
+    // trace failed to parse: an event id, a rule id, a member id, a
+    // timestamp, an error, and then a command inviting a verdict.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          trace: 'not json',
+          fixtureContent: 'hello badword everyone',
+          matchedSnippet: 'badword',
+          matchedCategory: 'profanity',
+        }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('e1');
+    expect(res.text).toContain('trace could not be read');
+    expect(res.text).toContain('hello badword everyone');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('profanity');
+  });
+
+  it('renders a match whose fixture has been forgotten, still showing the matched snippet', async () => {
+    // /forgetme removed the message. The match is still reviewable from the
+    // trace and the snippet — worse evidence, honestly labelled, and never
+    // printed as though the snippet were the whole message.
+    const res = await drive(automodReviewCommand, {
+      listUnreviewedMatches: () => [
+        reviewableMatch({
+          eventId: 'e1',
+          fixtureContent: undefined,
+          matchedSnippet: 'badword',
+          matchedCategory: 'profanity',
+        }),
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('message no longer stored');
+    expect(res.text).toContain('"badword"');
+    expect(res.text).toContain('profanity');
+  });
+
+  it('says so when there is nothing to review', async () => {
+    const res = await drive(automodReviewCommand, { listUnreviewedMatches: () => [] });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('nothing to review');
+  });
+
+  it('threads --rule and --limit through to the query, so the dry-run forward reference resolves', async () => {
+    let seen: { ruleId?: string; limit: number } | undefined;
+    const res = await drive(
+      automodReviewCommand,
+      {
+        listUnreviewedMatches: (query) => {
+          seen = query;
+          return [];
+        },
+      },
+      { rule: 'r5', limit: 7 },
+    );
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual({ ruleId: 'r5', limit: 7 });
+  });
+
+  it('defaults the limit to 20 when --limit is not given', async () => {
+    let seen: { ruleId?: string; limit: number } | undefined;
+    await drive(automodReviewCommand, {
+      listUnreviewedMatches: (query) => {
+        seen = query;
+        return [];
+      },
+    });
+    expect(seen).toEqual({ limit: 20 });
+  });
+});
+
+describe('automod verdict', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod verdict');
+    expect(automodVerdictCommand.write).toBe(true);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodVerdictCommand,
+      { recordMatchVerdict: () => 'recorded' },
+      { eventId: 'e1', verdict: 'false_positive' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+
+  it('tells the reviewer when their verdict cost the corpus its label', async () => {
+    // IMPORTANT-1: one message matching two rules shares one fixture, and a
+    // fixture's label has no rule dimension — so when a second rule's verdict
+    // disagrees, the label resets to unlabelled rather than one verdict
+    // silently overwriting the other. From the reviewer's side that is
+    // invisible: they ruled on a match and moved on. If the command does not
+    // say so, the regression corpus quietly stops growing and nobody knows
+    // why. The verdict itself is still recorded — this is a success line.
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'recorded-with-label-conflict',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { eventId: 'e1', verdict: 'true_positive' },
+    );
+
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('recorded true_positive for e1');
+    expect(res.text).toContain('another rule');
+    expect(res.text).toContain('reset to unlabelled');
+    // The verdict still counts toward the gate — say so, or a reviewer reads
+    // this as "my verdict was thrown away".
+    expect(res.text).toContain('your verdict still counts');
+    expect(res.data).toMatchObject({ ok: true, fixtureLabelConflict: true });
+    // The corpus lost a label as a side effect of this command, so the audit
+    // trail has to show where it went.
+    expect(audit).toEqual([
+      expect.objectContaining({
+        after: expect.objectContaining({ fixtureLabelConflict: true }),
+      }),
+    ]);
+  });
+
+  it('says nothing about conflicts on an ordinary verdict', async () => {
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'recorded',
+        recordAudit: () => {
+          /* a write command's audit row is written by the dispatcher */
+        },
+      },
+      { eventId: 'e1', verdict: 'true_positive' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('another rule');
+    expect(res.data).toMatchObject({ fixtureLabelConflict: false });
+  });
+
+  it('records a verdict and returns an audit record naming the event', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'recorded',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { eventId: 'e1', verdict: 'false_positive', note: 'ordinary club chat' },
+    );
+    expect(res.ok).toBe(true);
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.verdict_recorded',
+        subjectType: 'mod_case_event',
+        subjectId: 'e1',
+        // `fixtureLabelConflict` is part of the audited `after` because a
+        // conflict removes a label from the corpus as a side effect of this
+        // command, and a trail recording only the verdict would not show
+        // where the label went.
+        after: { verdict: 'false_positive', fixtureLabelConflict: false },
+      }),
+    ]);
+  });
+
+  it('attributes the verdict to the Unix user the invocation claimed', async () => {
+    // Provenance, not authorisation (plan ruling PR-9, ADR 0024): the
+    // socket's group permissions are the control, and the dispatcher's audit
+    // row is the authoritative record of who ran this.
+    let seen: string | undefined;
+    await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: (input) => {
+          seen = input.reviewedBy;
+          return 'recorded';
+        },
+        recordAudit: () => {},
+      },
+      { eventId: 'e1', verdict: 'true_positive' },
+      { unixUserClaimed: 'bryan' },
+    );
+    expect(seen).toBe('cli:bryan');
+  });
+
+  it('refuses an event id that is not there, but still writes an audit row', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodVerdictCommand,
+      {
+        recordMatchVerdict: () => 'no-such-event',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { eventId: 'nope', verdict: 'unclear' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('no match');
+    // An audit row is owed even for a refusal: "an operator tried to rule
+    // on a match that does not exist" is a fact worth having.
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.verdict_recorded',
+        subjectType: 'mod_case_event',
+        subjectId: 'nope',
+        after: { outcome: 'no-such-event' },
+      }),
+    ]);
+  });
+
+  it('refuses a verdict outside the vocabulary at the validator', async () => {
+    // Untrusted input meets Zod here, same as a form submission.
+    const res = await driveWrite(
+      automodVerdictCommand,
+      { recordMatchVerdict: () => 'recorded' },
+      { eventId: 'e1', verdict: 'maybe' },
+    );
+    expect(res.ok).toBe(false);
+  });
+});

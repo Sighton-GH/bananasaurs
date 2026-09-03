@@ -1,3 +1,4 @@
+import type { AutomodRule, FixtureRecord } from '../automod/predicates/types.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -143,6 +144,45 @@ export interface OpsKeywordFilterChannelMissingManageMessages {
   readonly channelId: string;
 }
 
+/**
+ * An enabled rule the subscriber cannot compile, and therefore one that
+ * silently never matches (ADR 0040 §4).
+ *
+ * Distinct from `listKeywordFilterRulesMissingManageMessages`, which is about
+ * a rule that matches correctly and then cannot act. This is a rule that never
+ * gets as far as matching.
+ */
+export interface OpsUnusableAutomodRule {
+  readonly ruleId: string;
+  readonly kind: string;
+  /** `CompileFailure` widened to a string, so `ops` need not import the registry's union. */
+  readonly reason: string;
+  readonly detail: string;
+}
+
+/**
+ * One row of the review queue (ADR 0041 §5, §7): a recorded match nobody has
+ * ruled on yet, with the evidence `automod review` renders.
+ *
+ * `actionTaken` is a plain `string`, not storage's `ModCaseActionTaken`
+ * union — `ports.ts` may not import `@bananasaurs/storage` (ADR 0014), the
+ * same reason `OpsUnusableAutomodRule.reason` widens `CompileFailure` to a
+ * string above.
+ */
+export interface OpsReviewableMatch {
+  readonly eventId: string;
+  readonly ruleId: string;
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string;
+  readonly matchedSnippet: string;
+  readonly actionTaken: string;
+  /** Raw JSON; `undefined` should not occur given `listUnreviewedMatches`'s own filter, but is not trusted not to. */
+  readonly trace: string | undefined;
+  /** `undefined` once a member's `/forgetme` has removed the fixture. Never the matched snippet standing in for the whole message. */
+  readonly fixtureContent: string | undefined;
+}
+
 export interface OpsLogRoute {
   readonly eventKind: string;
   readonly channelId: string;
@@ -199,10 +239,47 @@ export interface OpsPorts {
    * rule applies and a live check found the bot without `Manage Messages`.
    */
   listKeywordFilterRulesMissingManageMessages(): readonly OpsKeywordFilterChannelMissingManageMessages[];
+  /** Every enabled rule `compileRule` cannot compile, and why. */
+  listUnusableAutomodRules(): readonly OpsUnusableAutomodRule[];
   listRoutes(): readonly OpsLogRoute[];
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
   findJob(jobId: number): OpsJobRow | undefined;
+  /**
+   * One **enabled** rule by id, hydrated exactly the way the subscriber sees
+   * it — `undefined` for a rule that is disabled, as well as for one that
+   * does not exist.
+   *
+   * Enabled-only is the honest thing to dry-run: a disabled rule will not
+   * match a message in production either, so replaying it would answer a
+   * question nobody asked and report a match count for a rule that cannot
+   * produce one. If replaying a disabled rule is ever wanted, it needs a
+   * repository function that says so, not a widening of this one.
+   *
+   * (This comment previously claimed "enabled or disabled", which the wiring
+   * never did — `listEnabledRules(...).find(...)`. Corrected after Task 8's
+   * review; the contradiction came from the plan, which stated both.)
+   */
+  findAutomodRule(ruleId: string): AutomodRule | undefined;
+  /**
+   * The review corpus, oldest first.
+   *
+   * The whole corpus, not a page: a dry run's numbers are only meaningful
+   * over the whole thing, and a truncated replay would report a
+   * false-positive count for a subset while looking like one for the corpus.
+   * At club volume this is a few thousand rows.
+   */
+  listAutomodFixtures(filter: {
+    readonly source?: 'observed' | 'handwritten';
+  }): readonly FixtureRecord[];
+  /**
+   * Matches nobody has ruled on yet, oldest first (ADR 0041 §5, §7) — the
+   * CLI review queue `automod review` renders.
+   */
+  listUnreviewedMatches(query: {
+    readonly ruleId?: string;
+    readonly limit: number;
+  }): readonly OpsReviewableMatch[];
 
   // --- write commands (13d) --------------------------------------------------
   /**
@@ -214,6 +291,28 @@ export interface OpsPorts {
    * branch here fails to compile rather than failing at runtime.
    */
   applySetting(change: OpsSettingChange): void;
+  /**
+   * Records a human's verdict on one recorded match (ADR 0041 §5, §7,
+   * plan ruling PR-9). `'no-such-event'` is a usage answer, not a fault: an
+   * operator typing an event id at a terminal will mistype one.
+   */
+  recordMatchVerdict(input: {
+    readonly eventId: string;
+    readonly verdict: 'false_positive' | 'true_positive' | 'unclear';
+    readonly reviewedBy: string;
+    readonly note?: string;
+  }):
+    /**
+     * `'recorded-with-label-conflict'` is a success, not a failure: the verdict
+     * is stored either way. It says the *fixture* this match came from could not
+     * be labelled, because another rule's verdict on the same message implies
+     * the opposite label and a fixture's label has no rule dimension. The
+     * reviewer needs to be told, because from their side nothing looks
+     * different — they ruled on one match and the regression corpus quietly
+     * gained nothing. See `recordVerdict` in
+     * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
+     */
+    'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
   /** Points an event kind at a channel, creating or re-pointing the route. */
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */

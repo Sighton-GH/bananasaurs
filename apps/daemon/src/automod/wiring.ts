@@ -1,18 +1,23 @@
 import { randomUUID } from 'node:crypto';
 import {
   authorize,
+  isRuleKind,
   ModerationActionGateway,
   parseGuildId,
+  safeLogFields,
+  serialiseTrace,
   type Actor,
   type AutomodSubscriberDeps,
   type Authorized,
   type DiscordPort,
   type Logger,
+  type MatchTrace,
   type ModerationGatewayDeps,
   type ModerationRefusalReason,
 } from '@bananasaurs/core';
 import {
   authzStoreFor,
+  automodFixtureRepo,
   automodRuleRepo,
   guildRepo,
   modCaseRepo,
@@ -43,6 +48,156 @@ import {
  * rule 1: only deterministic, authorised code executes anything).
  */
 export const AUTOMOD_ACTOR: Actor = { type: 'system', id: undefined, roleIds: [] };
+
+/**
+ * The longest string `matchTraceSchema`'s `detail` accepts (`trace.ts`).
+ * Kept in sync by hand rather than imported, because `trace.ts` does not
+ * export the number — this is a copy for the truncation below, not a second
+ * source of truth for the schema's own bound.
+ */
+const DETAIL_MAX = 120;
+
+/**
+ * The kind a placeholder trace claims when the rejected trace's own `kind`
+ * cannot be trusted. Any valid member would do — `matchedOn` and
+ * `detail.kindReplaced` are what tell a reader the value is a substitution,
+ * and the case event's `rule_id` is where the real rule is identified.
+ */
+const FALLBACK_KIND: MatchTrace['kind'] = 'keyword_filter';
+
+/**
+ * A short, value-free description of why a trace failed validation.
+ *
+ * **Never the validator's own message.** Zod's `invalid_enum_value` and
+ * `invalid_type` messages quote the value they received, so if the field a
+ * predicate corrupted happens to hold message content, the raw message
+ * carries that content into the stored trace *and* into the log — past
+ * `safeLogFields`, which passes `Error.message` through. ADR 0041 §4 says
+ * the trace never holds whole-message content and CLAUDE.md rule 4 says the
+ * logs never do; a validator's error string is exactly the sort of
+ * innocent-looking channel that defeats both. Issue codes and field paths
+ * say everything an operator debugging a predicate needs, and quote nothing.
+ */
+const failureSummary = (err: unknown): string => {
+  const issues: unknown = (err as { issues?: unknown })?.issues;
+  if (Array.isArray(issues)) {
+    const summary = issues
+      .map((issue: unknown) => {
+        const { path, code } = (issue ?? {}) as { path?: unknown; code?: unknown };
+        const where = Array.isArray(path) && path.length > 0 ? path.join('.') : '(root)';
+        return `${where}:${typeof code === 'string' ? code : 'invalid'}`;
+      })
+      .join(', ');
+    return summary.length > DETAIL_MAX ? `${summary.slice(0, DETAIL_MAX - 3)}...` : summary;
+  }
+  return 'trace failed validation';
+};
+
+/**
+ * A valid trace that says a valid one could not be produced (IMPORTANT-3,
+ * coordinator ruling).
+ *
+ * `listUnreviewedMatches` filters on `trace IS NOT NULL` to cleanly exclude
+ * manual `/mod` events and native AutoMod events, which have no trace and
+ * are not ours to review. PR-7's plan ruling justified that filter by saying
+ * only pre-Slice-2 rows can lack a trace — which is false: when a predicate
+ * produces a trace its *own* schema rejects, writing the case event without
+ * one would silently and permanently exclude that match from review, and
+ * the class of predicate that gets its trace construction wrong correlates
+ * with the class that gets its matching wrong. So the case event always
+ * gets *a* trace — a placeholder naming the failure — and stays reviewable.
+ *
+ * **Nothing here is copied from the rejected trace.** The first version of
+ * this reused `trace.kind` verbatim, which reintroduced the bug it fixes the
+ * moment `kind` is itself the corrupted field: the placeholder then failed
+ * validation too, `traceJson` threw uncaught, and the case event — the record
+ * ADR 0036 exists to guarantee — was lost outright. Found by the fix wave's
+ * re-review. `kind` is now validated before it is trusted, and a rejected one
+ * falls back to a constant with the substitution stated in `matchedOn`, so
+ * nothing reads as a claim about which predicate ran. The reviewer identifies
+ * the rule from the case event's own `rule_id`, which `automod review`
+ * already prints, so no information is actually lost.
+ */
+const placeholderTrace = (kind: unknown, err: unknown): MatchTrace => {
+  const usable = typeof kind === 'string' && isRuleKind(kind);
+  return {
+    kind: usable ? kind : FALLBACK_KIND,
+    matchedOn: usable
+      ? '(the predicate produced an invalid trace)'
+      : '(the predicate produced an invalid trace; its recorded kind was not a rule kind and was replaced)',
+    span: undefined,
+    normalisations: [],
+    detail: { traceError: failureSummary(err), kindReplaced: !usable },
+  };
+};
+
+/**
+ * The last resort, built and validated once at module load.
+ *
+ * If `placeholderTrace` itself ever fails to serialise, `traceJson` must
+ * still return *something* valid rather than throw — throwing costs the case
+ * event, which is strictly worse than any trace problem. Constructing this at
+ * import time means a mistake in the constant fails the daemon at startup,
+ * where it is obvious, instead of on a rare error path in production.
+ */
+const LAST_RESORT_TRACE_JSON = serialiseTrace({
+  kind: FALLBACK_KIND,
+  matchedOn: '(no usable trace could be recorded for this match)',
+  span: undefined,
+  normalisations: [],
+  detail: { traceError: 'placeholder trace also failed validation' },
+});
+
+/**
+ * Serialises a trace, falling back to a placeholder that says serialisation
+ * failed (plan ruling PR-8, revised by the IMPORTANT-3 coordinator ruling).
+ *
+ * `serialiseTrace` throws when a predicate produced a trace its own schema
+ * rejects — a bug in our code, which is why it throws rather than returning
+ * a result. The composition root is not the place to let that bug become a
+ * moderation outage, so the case event is always written (ADR 0036), and
+ * always with a trace: writing `undefined` here used to mean the match
+ * vanished from `automod review` forever (IMPORTANT-3). The placeholder is
+ * serialised through the same validator as any other trace — if *that*
+ * fails, it is a bug in the placeholder, not a reason to give up and return
+ * nothing, so it is allowed to throw here rather than being caught again.
+ *
+ * Exported — not private to this module's own `recordCaseEvent` closure —
+ * so `wiring.test.ts` can prove the fallback path directly rather than only
+ * through a full pipeline integration test standing up a predicate that
+ * deliberately misbehaves.
+ */
+export const traceJson = (scope: GuildScope, logger: Logger, trace: MatchTrace): string => {
+  try {
+    return serialiseTrace(trace);
+  } catch (err) {
+    // `compileError`, not `err`: the allowlist passes `Error.message`
+    // through, and a validator's message quotes the value it rejected — so
+    // a predicate that put message content in the field it corrupted would
+    // put that content in the log. `failureSummary` carries codes and paths
+    // and quotes nothing (CLAUDE.md rule 4).
+    logger.error(
+      safeLogFields({
+        component: 'automod',
+        guildId: scope.guildId,
+        compileError: failureSummary(err),
+      }),
+      'the predicate produced a trace that failed validation; recording a placeholder trace instead',
+    );
+    try {
+      return serialiseTrace(placeholderTrace(trace.kind, err));
+    } catch {
+      // Unreachable by construction — `placeholderTrace` copies nothing from
+      // the rejected trace — but the cost of being wrong about that is the
+      // case event itself, so this never throws. See LAST_RESORT_TRACE_JSON.
+      logger.error(
+        safeLogFields({ component: 'automod', guildId: scope.guildId }),
+        'the placeholder trace failed validation too; recording the last-resort trace',
+      );
+      return LAST_RESORT_TRACE_JSON;
+    }
+  }
+};
 
 /** The witness the automod subscriber runs under. Obtained honestly, never cast. */
 export const automodAuthorization = (scope: GuildScope): Authorized<'moderation.act'> => {
@@ -120,7 +275,7 @@ export const automodPortsFor = (
   return {
     logger,
     moderationAuth: auth,
-    listRules: () => automodRuleRepo.listEnabledKeywordFilterRules(scope),
+    listRules: () => automodRuleRepo.listEnabledRules(scope),
     hasRoleExemption: (ruleId) => automodRuleRepo.hasRoleExemption(scope, ruleId),
     isExempt: (ruleId, input) => automodRuleRepo.isExempt(scope, ruleId, input),
     // Narrower than `DiscordPort.deleteMessage(guildId, ref, reason)` — the
@@ -136,7 +291,18 @@ export const automodPortsFor = (
         now: now(),
         countsAsViolation: options.countsAsViolation,
       }),
-    recordCaseEvent: (input) =>
+    captureFixture: (input) =>
+      automodFixtureRepo.captureObservedFixture(scope, {
+        messageId: input.messageId,
+        content: input.content,
+        authorId: input.authorId,
+        createdAt: input.atMs,
+      }),
+    recordCaseEvent: (input) => {
+      // Computed once, not once per spread branch below: `serialiseTrace`
+      // parses and re-stringifies the trace, so calling it twice would do
+      // that work twice for no reason (plan ruling PR-8).
+      const trace = traceJson(scope, logger, input.trace);
       modCaseRepo.recordCaseEvent(scope, {
         eventId: randomUUID(),
         at: now(),
@@ -164,7 +330,10 @@ export const automodPortsFor = (
         ...(input.refusalReason !== undefined && {
           refusalReason: input.refusalReason as ModerationRefusalReason,
         }),
-      }),
+        ...(input.fixtureId !== undefined && { fixtureId: input.fixtureId }),
+        trace,
+      });
+    },
     nextEscalationTier: (violationCount) => modCaseRepo.nextEscalationTier(violationCount),
     // Literally the same call `automodGatewayFor` above passes as the
     // gateway's `state.read()`. Deliberately one function referenced twice

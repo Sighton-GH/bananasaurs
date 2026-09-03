@@ -345,6 +345,10 @@ export class FakeDiscord implements DiscordPort {
       authorIsBot: p.authorIsBot ?? p.authorId === BOT_USER_ID,
       content: p.content,
       editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
     });
   }
 
@@ -669,6 +673,10 @@ export class FakeDiscord implements DiscordPort {
       authorIsBot: message.cached && message.authorId === BOT_USER_ID,
       content: undefined,
       editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
     });
   }
 

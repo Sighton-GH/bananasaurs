@@ -26,6 +26,10 @@ const messageEditEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   authorIsBot: false,
   content: 'hello world',
   editedTimestampMs: 2,
+  mentionedUserIds: [],
+  mentionedRoleIds: [],
+  mentionsEveryone: false,
+  attachments: [],
   ...over,
 });
 

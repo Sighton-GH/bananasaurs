@@ -11,10 +11,12 @@ import {
   createRule,
   hasRoleExemption,
   isExempt,
-  listEnabledKeywordFilterRules,
+  listEnabledRules,
   listEnforceModeKeywordFilterRules,
   ruleExists,
+  setRuleConfig,
   setRuleMode,
+  type RuleKind,
 } from './automod-rules.js';
 
 const GUILD = parseGuildId('111111111111111111');
@@ -34,7 +36,13 @@ beforeEach(() => {
 describe('automod rules repo', () => {
   it('assembles a rule with its categories, terms and allowlist', () => {
     const scope = t.scopes.forGuild(GUILD);
-    createRule(scope, { ruleId: 'r1', name: 'default filter', now: 1000 });
+    createRule(scope, {
+      ruleId: 'r1',
+      kind: 'keyword_filter',
+      name: 'default filter',
+      config: '{}',
+      now: 1000,
+    });
     addCategory(scope, {
       categoryId: 'c1',
       ruleId: 'r1',
@@ -44,7 +52,7 @@ describe('automod rules repo', () => {
     addTerm(scope, { termId: 't1', categoryId: 'c1', text: 'badword' });
     addAllowlistPhrase(scope, { ruleId: 'r1', phrase: 'assassin' });
 
-    const rules = listEnabledKeywordFilterRules(scope);
+    const rules = listEnabledRules(scope);
     expect(rules).toHaveLength(1);
     expect(rules[0]).toMatchObject({
       ruleId: 'r1',
@@ -56,14 +64,14 @@ describe('automod rules repo', () => {
 
   it('does not list a disabled rule', () => {
     const scope = t.scopes.forGuild(GUILD);
-    createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+    createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
     setRuleMode(scope, { ruleId: 'r1', enabled: false, now: 1000 });
-    expect(listEnabledKeywordFilterRules(scope)).toEqual([]);
+    expect(listEnabledRules(scope)).toEqual([]);
   });
 
   it('exempts a member by role', () => {
     const scope = t.scopes.forGuild(GUILD);
-    createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+    createRule(scope, { ruleId: 'r1', kind: 'keyword_filter', name: 'x', config: '{}', now: 1000 });
     // exemption insert goes through the repo once its write function exists —
     // implement addRoleExemption alongside the others, same table shape.
     expect(isExempt(scope, 'r1', { authorRoleIds: [ROLE], channelId: CHANNEL })).toBe(false);
@@ -77,7 +85,13 @@ describe('automod rules repo', () => {
   describe('hasRoleExemption', () => {
     it('is false for a rule with no exemptions, and for a channel-only exemption', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       expect(hasRoleExemption(scope, 'r1')).toBe(false);
 
       addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
@@ -86,8 +100,20 @@ describe('automod rules repo', () => {
 
     it('is true once a role exemption exists, and stays scoped to its own rule', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
-      createRule(scope, { ruleId: 'r2', name: 'y', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
+      createRule(scope, {
+        ruleId: 'r2',
+        kind: 'keyword_filter',
+        name: 'y',
+        config: '{}',
+        now: 1000,
+      });
       addRoleExemption(scope, { ruleId: 'r1', roleId: ROLE });
 
       expect(hasRoleExemption(scope, 'r1')).toBe(true);
@@ -98,9 +124,21 @@ describe('automod rules repo', () => {
   describe('listEnforceModeKeywordFilterRules', () => {
     it('excludes a rule that is disabled or not in enforce mode', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'test-mode', name: 'x', now: 1000 });
+      createRule(scope, {
+        ruleId: 'test-mode',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
 
-      createRule(scope, { ruleId: 'disabled-enforce', name: 'x', now: 1000 });
+      createRule(scope, {
+        ruleId: 'disabled-enforce',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       setRuleMode(scope, {
         ruleId: 'disabled-enforce',
         mode: 'enforce',
@@ -113,7 +151,13 @@ describe('automod rules repo', () => {
 
     it('lists an enabled enforce-mode rule with its channel exemptions', () => {
       const scope = t.scopes.forGuild(GUILD);
-      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       setRuleMode(scope, { ruleId: 'r1', mode: 'enforce', now: 1000 });
       addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
 
@@ -126,7 +170,13 @@ describe('automod rules repo', () => {
       const other = parseGuildId('444444444444444444');
       upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 0 });
 
-      createRule(t.scopes.forGuild(GUILD), { ruleId: 'r1', name: 'x', now: 1000 });
+      createRule(t.scopes.forGuild(GUILD), {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       setRuleMode(t.scopes.forGuild(GUILD), { ruleId: 'r1', mode: 'enforce', now: 1000 });
 
       expect(listEnforceModeKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);
@@ -138,7 +188,13 @@ describe('automod rules repo', () => {
       const scope = t.scopes.forGuild(GUILD);
       expect(ruleExists(scope, 'r1')).toBe(false);
 
-      createRule(scope, { ruleId: 'r1', name: 'x', now: 1000 });
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
       expect(ruleExists(scope, 'r1')).toBe(true);
 
       // The daemon's first-run seeding guard relies on exactly this: a
@@ -147,5 +203,121 @@ describe('automod rules repo', () => {
       setRuleMode(scope, { ruleId: 'r1', enabled: false, now: 1000 });
       expect(ruleExists(scope, 'r1')).toBe(true);
     });
+  });
+});
+
+describe('mod_rules.config', () => {
+  it('defaults to an empty JSON object', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, {
+      ruleId: 'r1',
+      kind: 'keyword_filter',
+      name: 'words',
+      config: '{}',
+      now: 1,
+    });
+    const rules = listEnabledRules(scope);
+    expect(rules).toHaveLength(1);
+    expect(rules[0]!.kind).toBe('keyword_filter');
+    expect(rules[0]!.config).toBe('{}');
+  });
+
+  it('round-trips a non-empty config verbatim', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, {
+      ruleId: 'r2',
+      kind: 'caps',
+      name: 'shouting',
+      config: '{"ratio":0.7,"minLength":20}',
+      now: 1,
+    });
+    expect(listEnabledRules(scope)[0]!.config).toBe('{"ratio":0.7,"minLength":20}');
+  });
+
+  it('setRuleConfig replaces the stored config', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, {
+      ruleId: 'r3',
+      kind: 'caps',
+      name: 'shouting',
+      config: '{}',
+      now: 1,
+    });
+    setRuleConfig(scope, { ruleId: 'r3', config: '{"ratio":0.5}', now: 2 });
+    expect(listEnabledRules(scope)[0]!.config).toBe('{"ratio":0.5}');
+  });
+
+  it('rejects a kind outside the ten the CHECK permits', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    expect(() =>
+      createRule(scope, {
+        ruleId: 'r4',
+        // Cast deliberately. The point of this test is that the *database*
+        // CHECK rejects the value even when TypeScript is bypassed — a
+        // hand-written row, a future caller, a schema drift. A case the type
+        // system already covers cannot be written any other way.
+        kind: 'telepathy' as RuleKind,
+        name: 'nope',
+        config: '{}',
+        now: 1,
+      }),
+    ).toThrow();
+  });
+
+  it('accepts every one of the ten permitted kinds', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const kinds: RuleKind[] = [
+      'keyword_filter',
+      'regex',
+      'invite',
+      'link_domain',
+      'mention_spam',
+      'rapid_spam',
+      'duplicate_message',
+      'caps',
+      'attachment_type',
+      'emoji',
+    ];
+    for (const [i, kind] of kinds.entries()) {
+      createRule(scope, { ruleId: `k${String(i)}`, kind, name: kind, config: '{}', now: 1 });
+    }
+    expect(listEnabledRules(scope)).toHaveLength(kinds.length);
+  });
+
+  it('keeps a non-keyword_filter rule out of the word-list hydration path', () => {
+    // A lone `caps` rule cannot exercise this: with no other rule in the
+    // database, `terms`/`allowlist` come back empty for *any* implementation
+    // of `hydrate`, including one that leaked another rule's word list — the
+    // failure this test is named for needs a second rule with a non-empty
+    // word list actually present to leak (docs/22: a fixture must contain
+    // the ambiguity its named failure mode needs). So a `keyword_filter` rule
+    // with a term and an allowlist phrase sits alongside the `caps` rule, and
+    // the assertion is that hydration keeps them apart in both directions.
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, {
+      ruleId: 'kw1',
+      kind: 'keyword_filter',
+      name: 'filter',
+      config: '{}',
+      now: 1,
+    });
+    addCategory(scope, {
+      categoryId: 'cat1',
+      ruleId: 'kw1',
+      name: 'profanity',
+      defaultAction: 'delete_and_case',
+    });
+    addTerm(scope, { termId: 'term1', categoryId: 'cat1', text: 'badword' });
+    addAllowlistPhrase(scope, { ruleId: 'kw1', phrase: 'assassin' });
+
+    createRule(scope, { ruleId: 'c1', kind: 'caps', name: 'shouting', config: '{}', now: 1 });
+
+    const rules = listEnabledRules(scope);
+    const capsRule = rules.find((r) => r.ruleId === 'c1')!;
+    const keywordRule = rules.find((r) => r.ruleId === 'kw1')!;
+    expect(capsRule.terms).toEqual([]);
+    expect(capsRule.allowlist).toEqual([]);
+    expect(keywordRule.terms).toEqual([{ text: 'badword', categoryId: 'cat1' }]);
+    expect(keywordRule.allowlist).toEqual(['assassin']);
   });
 });
