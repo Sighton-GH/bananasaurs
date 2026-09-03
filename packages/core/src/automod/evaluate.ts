@@ -178,15 +178,17 @@ export type PredicateInputSource =
  * deliver (an embed-only system message, a partial the adapter could not
  * resolve). A fixture always produces an input.
  *
- * **What a fixture cannot reproduce**, and why that is recorded here rather
- * than discovered later (plan ruling PR-3): `automod_fixtures` holds text,
- * an author and a timestamp, because that is the shape the owner approved.
- * Mentions come back by parsing the content, since Discord puts them there.
- * Attachments do not — they are metadata the corpus does not hold — so
- * `attachments` is empty for every fixture, and Slice 5's `attachment_type`
- * predicate therefore cannot be dry-run against observed traffic. Its
- * regression cases must be handwritten, and whether the corpus should carry
- * attachment metadata is an owner question for that slice.
+ * **What a fixture can and cannot reproduce.** Mentions come back by parsing
+ * the content, since Discord puts them there. Attachments come from the
+ * corpus's own `automod_fixture_attachments` child table, added by OD-3 —
+ * which supersedes plan ruling PR-3's note that they were metadata the corpus
+ * did not hold. `attachment_type` can therefore be dry-run against observed
+ * traffic: a fixture's `attachments` is the same shape a live message's is,
+ * because `FixtureRecord.attachments` and `PredicateInput.attachments` are
+ * both `readonly MessageAttachment[]`. A fixture captured before that
+ * migration has none — an empty list is the honest representation of a real
+ * message whose attachments were never recorded, not a gap being papered
+ * over.
  */
 export const predicateInputFrom = (source: PredicateInputSource): PredicateInput | undefined => {
   if (source.from === 'message') {
@@ -246,7 +248,7 @@ export const predicateInputFrom = (source: PredicateInputSource): PredicateInput
     mentionedUserIds: matchIds(fixture.content, USER_MENTION),
     mentionedRoleIds: matchIds(fixture.content, ROLE_MENTION),
     mentionsEveryone: EVERYONE_MENTION.test(fixture.content),
-    attachments: [],
+    attachments: fixture.attachments,
     atMs: fixture.createdAt,
   };
 };

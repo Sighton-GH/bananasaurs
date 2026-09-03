@@ -147,6 +147,21 @@ export interface FixtureRecord {
   readonly source: 'observed' | 'handwritten';
   /** The replay clock. `PredicateInput.atMs` comes from here (ADR 0041 §6). */
   readonly createdAt: number;
+  /**
+   * Filename, declared content type and size for each file on the message
+   * (OD-3).
+   *
+   * `MessageAttachment` is the same shape the live path carries, deliberately:
+   * `attachment_type` must not be able to tell a replayed fixture from a live
+   * message, because the one-code-path invariant (ADR 0041 section 3) is only
+   * worth something if the input it produces is the same on both sides.
+   *
+   * Empty for a handwritten fixture that names no files, and for every
+   * fixture captured before the OD-3 migration — those rows are real evidence
+   * about a message whose attachments were never recorded, and an empty list
+   * is the honest representation of that.
+   */
+  readonly attachments: readonly MessageAttachment[];
 }
 
 /** A rule compiled once, then evaluated against many messages. */

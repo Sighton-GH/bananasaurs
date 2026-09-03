@@ -106,6 +106,7 @@ const fixture = (over: Partial<FixtureRecord> & { fixtureId: string }): FixtureR
   label: 'unlabelled',
   source: 'observed',
   createdAt: 1_000,
+  attachments: [],
   ...over,
 });
 
@@ -167,6 +168,7 @@ describe('the one-code-path invariant', () => {
           label: 'unlabelled',
           source: 'observed',
           createdAt: 1_000,
+          attachments: [],
         },
       ],
     });

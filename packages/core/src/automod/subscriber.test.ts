@@ -4,7 +4,12 @@ import { pino } from 'pino';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
-import type { DomainEvent, MessageEvent, ReactionEvent } from '../discord/events.js';
+import type {
+  DomainEvent,
+  MessageAttachment,
+  MessageEvent,
+  ReactionEvent,
+} from '../discord/events.js';
 import type {
   ModerationIntent,
   ModerationOutcome,
@@ -127,7 +132,13 @@ interface Harness {
     readSafetyState: number;
     authorRoleIds: string[];
     nextEscalationTier: number[];
-    captureFixture: { messageId: string; content: string; authorId: string; atMs: number }[];
+    captureFixture: {
+      messageId: string;
+      content: string;
+      authorId: string;
+      atMs: number;
+      attachments: readonly MessageAttachment[];
+    }[];
   };
 }
 
@@ -362,7 +373,30 @@ describe('automod subscriber', () => {
           content: 'this message has badword in it',
           authorId: AUTHOR,
           atMs: NOW_MS,
+          attachments: [],
         },
+      ]);
+    });
+
+    it('carries the message’s attachments into the corpus', async () => {
+      // The ambiguity that makes this non-decorative: the message has an
+      // attachment AND content, so an implementation that passed `[]`
+      // through would still capture the fixture and still pass every other
+      // assertion in this file. Only this expectation goes red.
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-capture-attachments', mode: 'test' })],
+        captureFixtureResult: 'fixture-1',
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(
+        messageCreate({
+          attachments: [{ fileName: 'a.exe', contentType: undefined, sizeBytes: 7 }],
+        }),
+      );
+
+      expect(calls.captureFixture[0]?.attachments).toEqual([
+        { fileName: 'a.exe', contentType: undefined, sizeBytes: 7 },
       ]);
     });
 

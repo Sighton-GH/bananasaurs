@@ -297,6 +297,10 @@ export const automodPortsFor = (
         content: input.content,
         authorId: input.authorId,
         createdAt: input.atMs,
+        // `MessageAttachment` (core) and `FixtureAttachment` (storage) are
+        // field-for-field identical, which is what lets this be a direct
+        // pass-through rather than a mapping someone forgot.
+        attachments: input.attachments,
       }),
     recordCaseEvent: (input) => {
       // Computed once, not once per spread branch below: `serialiseTrace`

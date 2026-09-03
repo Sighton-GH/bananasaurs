@@ -89,6 +89,7 @@ const fixture = (
   label: 'unlabelled',
   source: 'observed',
   createdAt: NOW,
+  attachments: [],
   ...over,
 });
 

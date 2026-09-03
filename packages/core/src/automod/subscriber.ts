@@ -8,6 +8,7 @@ import type {
 } from '../effects/moderation-gateway.js';
 import type { Authorized } from '../authz.js';
 import { DiscordApiError } from '../discord/errors.js';
+import type { MessageAttachment } from '../discord/events.js';
 import { parseSnowflakeId } from '../ids.js';
 import {
   createPredicateCache,
@@ -119,6 +120,8 @@ export interface AutomodSubscriberDeps {
     content: string;
     authorId: string;
     atMs: number;
+    /** Filename, declared content type and size for each file (OD-3). */
+    attachments: readonly MessageAttachment[];
   }): string | undefined;
   /**
    * Resolves the member's case so an event can be attached to it, and — only
@@ -322,6 +325,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
               content: input.content,
               authorId,
               atMs: input.atMs,
+              attachments: input.attachments,
             });
           } catch (err) {
             deps.logger.error(
