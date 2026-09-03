@@ -40,19 +40,25 @@ describe('traceJson', () => {
   });
 
   it('writes a valid placeholder trace, never undefined, when the predicate’s own trace fails validation', () => {
-    // A `detail` string past `trace.ts`'s 120-character bound (IMPORTANT-2)
-    // is exactly the shape of bug this guards against: type-correct as a
-    // `MatchTrace`, but rejected by `matchTraceSchema` at the point
-    // `serialiseTrace` tries to write it.
+    // A `detail` value that is not a scalar at all is the shape of bug this
+    // guards against: type-correct as a `MatchTrace` from a predicate's
+    // point of view (it built the object, TypeScript did not stop it), but
+    // rejected by `matchTraceSchema` at the point `serialiseTrace` tries to
+    // write it. An over-long `detail` *string* used to be this file's
+    // example, but `trace.ts`'s IMPORTANT-3 fix (whole-branch review,
+    // Slices 3-5) narrowed `serialiseTrace` to truncate an over-long string
+    // rather than throw on it — a filename or a hostname is not a bug — so
+    // that shape no longer reaches this fallback at all, and a genuinely
+    // malformed value is needed to exercise it.
     const t = openMigratedTestDatabase();
     const scope = t.scopes.forGuild(GUILD);
-    const invalid: MatchTrace = {
+    const invalid = {
       kind: 'keyword_filter',
       matchedOn: 'badword',
       span: undefined,
       normalisations: [],
-      detail: { message: 'x'.repeat(200) },
-    };
+      detail: { nested: { a: 1 } },
+    } as unknown as MatchTrace;
 
     const json = traceJson(scope, logger, invalid);
 

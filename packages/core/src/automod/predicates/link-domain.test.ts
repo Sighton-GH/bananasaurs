@@ -114,6 +114,23 @@ describe('the link_domain predicate', () => {
     expect(content.slice(start, end)).toBe('https://example.com');
   });
 
+  it('truncates a very long host in the trace detail rather than a value serialiseTrace would reject (IMPORTANT-3)', () => {
+    // In `allow` mode any host matches, so a member picks the value — and
+    // hostnames run to 253 characters against `detail`'s 120-character cap.
+    // Node's `URL` does not enforce DNS label lengths, so this is a value a
+    // real message can produce.
+    const host = `${'x'.repeat(200)}.com`;
+    const allowOnly: AutomodRule = {
+      ...rule([{ domain: 'club.org', listType: 'allow' }]),
+      config: '{"mode":"allow"}',
+    };
+    const match = compile(allowOnly).evaluate(message(`https://${host}/path`));
+    expect(match).toBeDefined();
+    const detailHost = match?.trace.detail.host;
+    expect(typeof detailHost).toBe('string');
+    expect((detailHost as string).length).toBeLessThanOrEqual(120);
+  });
+
   it('finds the denied link when an allowed one comes first', () => {
     // Two links, only the second denied: an implementation checking only the
     // first link goes red.

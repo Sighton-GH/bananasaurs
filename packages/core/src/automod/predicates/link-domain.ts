@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { truncateDetailString } from '../trace.js';
 import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
 
 /**
@@ -113,7 +114,16 @@ export const linkDomainPredicate: Predicate<LinkDomainConfig> = {
               matchedOn: host,
               span: [found.index, found.index + text.length],
               normalisations: ['zero-width stripped'],
-              detail: { host, mode: config.mode, listSize: listed.length },
+              // `host` is member-controlled — in `allow` mode any host
+              // matches, so a member picks the value — and hostnames run to
+              // 253 characters against `detail`'s 120-character cap
+              // (IMPORTANT-3). Truncated here, deliberately, rather than
+              // relying on `serialiseTrace`'s truncation to salvage it.
+              detail: {
+                host: truncateDetailString(host),
+                mode: config.mode,
+                listSize: listed.length,
+              },
             },
           };
         }
