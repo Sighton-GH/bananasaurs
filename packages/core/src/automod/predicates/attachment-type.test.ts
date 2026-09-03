@@ -60,10 +60,12 @@ describe('the attachment_type predicate', () => {
     expect(match?.trace.detail.matchedOn).toBe('contentType');
   });
 
-  it('names the offending file, not the first file', () => {
+  it('describes the offending file, not the first file', () => {
     // The ambiguity: three attachments and only the third is blocked, so an
     // implementation reporting attachments[0] goes red. A single-attachment
-    // fixture could not tell the two apart.
+    // fixture could not tell the two apart. `sizeBytes` is the only field
+    // that distinguishes the three redacted snippets, since (a) and (b) are
+    // both innocent and never reach `redactedDescription`.
     const match = compile(config).evaluate(
       withAttachments([
         { fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 },
@@ -71,7 +73,24 @@ describe('the attachment_type predicate', () => {
         { fileName: 'c.scr', contentType: 'text/plain', sizeBytes: 3 },
       ]),
     );
-    expect(match?.snippet).toBe('c.scr');
+    expect(match?.snippet).toBe('*.scr (text/plain, 3 bytes)');
+  });
+
+  it('redacts the snippet to extension, content type and size — never the filename (IMPORTANT-4)', () => {
+    // A filename is not the decision basis this predicate matches on, and it
+    // lands in a permanent moderation record (`mod_case_events`) that
+    // `/forgetme` does not delete. The stem must not survive into either
+    // `snippet` or `trace.detail`, even though the extension (which is not
+    // personal information) legitimately does.
+    const match = compile(config).evaluate(
+      withAttachments([
+        { fileName: 'medical_letter.exe', contentType: 'text/plain', sizeBytes: 4_096 },
+      ]),
+    );
+    expect(match?.snippet).not.toContain('medical_letter');
+    expect(match?.snippet).toBe('*.exe (text/plain, 4096 bytes)');
+    expect(match?.trace.detail.fileName).toBeUndefined();
+    expect(JSON.stringify(match?.trace.detail)).not.toContain('medical_letter');
   });
 
   it('is case-insensitive about both the extension and the content type', () => {

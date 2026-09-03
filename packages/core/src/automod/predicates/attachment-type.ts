@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { truncateDetailString } from '../trace.js';
 import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
 
 /**
@@ -42,6 +43,23 @@ const bareContentType = (contentType: string | undefined): string =>
   (contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
 
 /**
+ * A redacted description of the file that matched — extension, declared
+ * content type and size, never the name (IMPORTANT-4).
+ *
+ * This predicate matches on content type and extension, never on the
+ * filename itself, so the filename was never the decision basis and does not
+ * belong in the record of *why* the rule fired. That record —
+ * `mod_case_events`, via `PredicateMatch.snippet` and `.trace.detail` — is a
+ * moderation record `/forgetme` does not delete (`PRIVACY.md`), unlike the
+ * fixture corpus, whose retention row and `/forgetme` reach OD-3's filenames
+ * deliberately. Putting a filename here as well would be a widening the
+ * owner was never asked about.
+ */
+const redactedDescription = (extension: string, contentType: string, sizeBytes: number): string =>
+  `${extension === '' ? '(no extension)' : `*.${extension}`} ` +
+  `(${contentType === '' ? 'unknown type' : contentType}, ${String(sizeBytes)} bytes)`;
+
+/**
  * `attachment_type` — matches on the declared content type **and** the file
  * extension, since either alone is trivially spoofed by the uploader (spec
  * section 3, Slice 5). A hit on either list is enough; the two are belt and
@@ -79,10 +97,13 @@ export const attachmentTypePredicate: Predicate<AttachmentTypeConfig> = {
 
           return {
             categoryId: 'attachment_type',
-            // The filename, which is what a reviewer needs to see. The
-            // owner was told filenames carry personal information when they
-            // approved OD-3; this is the same fact appearing in a trace.
-            snippet: attachment.fileName,
+            // Redacted (IMPORTANT-4): the extension, declared content type
+            // and size, never the filename itself — see
+            // `redactedDescription`'s comment for why. The full filename
+            // stays in the fixture corpus (`automod_fixtures` +
+            // `automod_fixture_attachments`), which OD-3's retention row and
+            // `/forgetme` already cover.
+            snippet: redactedDescription(extension, contentType, attachment.sizeBytes),
             trace: {
               kind: 'attachment_type',
               matchedOn: byExtension ? extension : contentType,
@@ -91,8 +112,12 @@ export const attachmentTypePredicate: Predicate<AttachmentTypeConfig> = {
               normalisations: [],
               detail: {
                 matchedOn: byExtension ? 'extension' : 'contentType',
-                fileName: attachment.fileName,
-                declaredContentType: contentType,
+                // Member-controlled and unbounded in principle — Discord's
+                // declared content type is the uploader's own claim
+                // (`discord/events.ts`) — truncated defensively at the
+                // producer the same way `link-domain.ts`'s `host` is
+                // (IMPORTANT-3), even though it is short in practice.
+                declaredContentType: truncateDetailString(contentType),
                 sizeBytes: attachment.sizeBytes,
                 attachmentCount: input.attachments.length,
               },
