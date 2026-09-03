@@ -798,6 +798,50 @@ inherently temporary**, and it expires on a schedule the test does not mention.
 `regexConfig` without using it, which fails `typecheck` under this repo's
 settings. Removed by the implementer.
 
+**Dispatch E (Task 9, the CLI write path) — complete, recovered from the working
+tree.** Commit `1963723`. **2240 tests / 109 files** from 2221, typecheck and
+lint clean.
+
+**A usage limit killed the implementer at its commit step**, after the code was
+written and passing. Recovered rather than re-run, per the handoff's own
+instruction — the third time that has paid on this project. What the coordinator
+had to finish: `prettier --write` on three files, the break-it-and-watch-it-fail
+guard, the gates, and the commit. **Cost of recovery: four commands. Cost of
+re-running: a whole dispatch.** Worth stating plainly because the instinct on
+seeing a failed agent is to start it again.
+
+**The guard, watched by the coordinator.** Task 9's end-to-end test reuses **one**
+predicate cache across both evaluations — which is what makes it prove
+fingerprint invalidation rather than working around a cache that was never
+populated. Adding `inviteAllowlist` to `EXCLUDED_FIELDS` turns it red with
+`Expected "no-match", Received "match"`: the operator adds their own club's
+code, the row is in the database, hydration returns it, **and the rule still
+fires off the stale compiled artifact.** That is ADR 0039's failure mode
+observed from the operator's side rather than at the unit level, and it is the
+first test on this project that reaches it end to end. Restored, 2/2 green.
+
+**A coordinator correction, recorded rather than tidied away.** On finding
+`automod-rule-lists.test.ts` untracked, the coordinator said dispatch B had
+"never committed its test file". That was wrong — the file is dispatch E's, and
+nothing of dispatch B's was uncommitted. But checking it turned up a real,
+narrower gap:
+
+**Task 6 shipped 171 lines of repository with no dedicated test file**, contrary
+to its own file list in the plan (`automod-rule-lists.ts` **+ `.test.ts`**).
+Dispatch B put a hydration test in `automod-rules.test.ts` and the fingerprint
+guards in `fingerprint.test.ts` — both real, both committed — and those exercise
+`addInviteAllowlistEntry` and `addLinkDomain` through the real functions. But
+**`listInviteAllowlist`, `listLinkDomains`, `removeInviteAllowlistEntry` and
+`removeLinkDomain` had no coverage at all** until Task 9's commands began
+calling them.
+
+*How it got past the coordinator:* dispatch B's five-line report was accurate
+about what it did, the gates were green, and the missing file was invisible in a
+test count that went up by 15. **A plan's file list is a checklist the
+coordinator has to tick, not a prediction** — the same lesson as dispatch A's
+"file list is a lower bound", running the other way. Carried to the whole-branch
+review as a specific thing to look at.
+
 ### A second worktree, and E-1 confirmed fixed by `npm ci`
 
 Slices 3–6 run in `.claude/worktrees/release2-slices-3-6` on branch
