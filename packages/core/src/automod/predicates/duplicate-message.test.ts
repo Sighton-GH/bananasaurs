@@ -76,6 +76,26 @@ describe('the duplicate_message predicate', () => {
     expect(say(3_000, 'buy crypto now')).toBeUndefined();
   });
 
+  it('still fires when the repeats are interleaved with a different message (CRITICAL-1)', () => {
+    // The buffer used to be sized `maxRepeats + 1` — enough events *in
+    // total*, but this predicate counts events *of one text*
+    // (`countMatching`), and `record` puts every message in the same buffer.
+    // So one interleaved message evicted a repeat before the count could ever
+    // exceed the threshold, at every configuration. The test above could not
+    // catch this: three messages against a buffer of three never evicts
+    // anything. This one uses a buffer that would be sized 2 under the old
+    // arithmetic (`maxRepeats: 1`) and four messages — spam / filler / spam —
+    // which the old sizing evicts the first "spam" to make room for
+    // "filler", so the second "spam" only ever counts 1 match and never
+    // fires. It must fire.
+    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":1}');
+    const say = (ms: number, text: string) =>
+      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
+    expect(say(1_000, 'spam')).toBeUndefined();
+    expect(say(2_000, 'filler')).toBeUndefined();
+    expect(say(3_000, 'spam')).toBeDefined();
+  });
+
   it('treats case and spacing differences as the same message', () => {
     const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
     const say = (ms: number, text: string) =>
@@ -128,6 +148,19 @@ describe('the duplicate_message predicate', () => {
       compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
     expect(say(1_000, 'ok')).toBeUndefined();
     expect(say(2_000, 'ok')).toBeDefined();
+  });
+
+  it('does not treat two captionless attachment-only posts as a repeat (CRITICAL-2)', () => {
+    // `minLength: 0` is deliberate — refusing to invent a floor an operator
+    // did not ask for. But an attachment-only message has `content === ''`,
+    // and `0 < 0` is false, so `''` used to be recorded as the member's
+    // "repeated text" and two captionless images matched on the default
+    // config. Absent content is not short content; it must never fire.
+    const compiled = compile('{"maxRepeats":1,"windowMs":30000}');
+    const say = (ms: number) =>
+      compiled.evaluate(message('', { atMs: ms, messageId: `m${String(ms)}` }));
+    expect(say(1_000)).toBeUndefined();
+    expect(say(2_000)).toBeUndefined();
   });
 
   it('does not count an edit as a new message (ruling PR-23)', () => {

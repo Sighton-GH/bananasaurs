@@ -1,6 +1,11 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { stripZeroWidth } from '../matcher.js';
-import { createWindowStore, DEFAULT_MAX_TRACKED_MEMBERS } from '../window.js';
+import {
+  createWindowStore,
+  DEFAULT_MAX_EVENTS_PER_MEMBER,
+  DEFAULT_MAX_TRACKED_MEMBERS,
+} from '../window.js';
 import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
 
 export const duplicateMessageConfig = z
@@ -70,6 +75,29 @@ export function normaliseForDuplicateCheck(text: string): string {
 }
 
 /**
+ * Fingerprints the normalised text for storage in the window (IMPORTANT-3,
+ * IMPORTANT-4, whole-branch review).
+ *
+ * `countMatching` only ever tests equality (`e.value === value`), never
+ * substring or prefix matching, so a fixed-size digest is behaviourally
+ * identical to storing the text itself — two messages normalise to the same
+ * hash if and only if they normalise to the same string (collisions aside,
+ * and a 16-hex-char slice of sha256 is not a threat model this predicate needs
+ * to defend against). Storing the hash instead of the text settles two
+ * things at once: memory per event becomes a small constant instead of an
+ * uncapped normalised string (IMPORTANT-3's ceiling), and no member-authored
+ * message content sits resident in process memory with no time bound at all,
+ * which is what age-based pruning's deletion (`6bbc60a`) left open — pruning
+ * was correctly deleted on the two grounds argued there (no observable effect
+ * on a verdict, and the array was already capped), but a member who posts
+ * twice and never posts again used to keep those two strings resident until
+ * the process restarts or the rule's fingerprint changes. Record the
+ * reasoning here rather than re-adding pruning to solve it.
+ */
+const hashNormalised = (normalised: string): string =>
+  createHash('sha256').update(normalised).digest('hex').slice(0, 16);
+
+/**
  * `duplicate_message` — the same normalised text repeated within a window
  * (Task 4). Consumes Task 1's `createWindowStore` via `countMatching`.
  *
@@ -79,17 +107,34 @@ export function normaliseForDuplicateCheck(text: string): string {
  * resetting the window. That is correct: a repeat count accrued under an old
  * threshold should not be judged against a new one.
  *
- * The ring buffer's capacity is `maxRepeats + 1`, for the same reason
- * `rapid_spam`'s is `maxMessages + 1`: this predicate must be able to observe
- * one repeat more than the threshold allows, and a buffer capped at exactly
- * the threshold could never hold that many at once.
+ * **The buffer's capacity is `DEFAULT_MAX_EVENTS_PER_MEMBER`, not
+ * `maxRepeats + 1`.** An earlier version of this predicate reasoned "for the
+ * same reason `rapid_spam`'s is `maxMessages + 1`" — that reasoning does not
+ * carry over, and stating it as settled is exactly how the bug it hid
+ * survived per-task review (CRITICAL-1, whole-branch review). `rapid_spam`
+ * counts *every* event in its buffer (`countWithin`), so a buffer of
+ * `maxMessages + 1` can always hold "one too many". This predicate counts
+ * only the events whose value matches *this* message's normalised text
+ * (`countMatching`), but `record` puts *every* message the member posts —
+ * matching or not — into the same buffer. A buffer sized `maxRepeats + 1`
+ * therefore holds enough events in total but not enough of one text: a single
+ * other message posted between two repeats evicts the earlier repeat before
+ * the matching count can ever exceed the threshold, at every configuration —
+ * confirmed against the built code before this fix; the evasion was simply
+ * typing something else between repeats, which is also the ordinary shape of
+ * the spam this predicate exists to catch. `DEFAULT_MAX_EVENTS_PER_MEMBER`
+ * (`window.ts`) decouples the buffer size from the threshold; see its own
+ * doc comment for the residual evasion this leaves (more than that many
+ * distinct messages between two repeats). The normalised text is not part of
+ * the `WindowKey` either — that would turn the 500-member cap into a
+ * 500-distinct-*text* cap and put member-authored content in a cache key.
  */
 export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
   kind: 'duplicate_message',
   config: duplicateMessageConfig,
   compile(rule: AutomodRule, config: DuplicateMessageConfig): CompiledPredicate {
     const store = createWindowStore({
-      maxEventsPerMember: config.maxRepeats + 1,
+      maxEventsPerMember: DEFAULT_MAX_EVENTS_PER_MEMBER,
       maxMembers: DEFAULT_MAX_TRACKED_MEMBERS,
     });
 
@@ -100,8 +145,21 @@ export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
         if (input.eventKind !== 'messageCreate') return undefined;
 
         const normalised = normaliseForDuplicateCheck(input.content);
+        // CRITICAL-2: absent content, not short content. An attachment-only,
+        // sticker-only or embed-only message has `content === ''`
+        // (`events.ts`'s `?? undefined` only ever produces `undefined` for a
+        // partial message, never for a real one with no text), so
+        // `normalised` is `''` here. `minLength: 0` is deliberate — the
+        // schema must not invent a floor the operator did not configure — but
+        // that ruling was about short text, not absent text: matching on the
+        // *absence* of content would make two captionless image posts a
+        // match on the default config, in the one tier that must have zero
+        // false positives. Checked before the `minLength` comparison so an
+        // operator who explicitly sets `minLength: 0` still gets this.
+        if (normalised.length === 0) return undefined;
         if (normalised.length < config.minLength) return undefined;
 
+        const hashed = hashNormalised(normalised);
         const window = store.for({
           // CLAUDE.md rule 2: guildId is named explicitly even though the
           // artifact this store lives inside is already per-guild.
@@ -109,8 +167,8 @@ export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
           memberId: input.authorId,
           ruleId: rule.ruleId,
         });
-        window.record(input.atMs, normalised);
-        const count = window.countMatching(input.atMs, config.windowMs, normalised);
+        window.record(input.atMs, hashed);
+        const count = window.countMatching(input.atMs, config.windowMs, hashed);
         if (count <= config.maxRepeats) return undefined;
 
         return {

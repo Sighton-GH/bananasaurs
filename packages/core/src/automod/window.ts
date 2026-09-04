@@ -193,10 +193,49 @@ export const createWindowStore = (options: {
  * cannot drift to different undocumented numbers — each builds its own store,
  * because window state lives per compiled artifact (PR-21).
  *
- * 500 is deliberately modest: Bananasaurs serves **one** engineering-club guild
- * (`CLAUDE.md`), so 500 simultaneously-active posters is far beyond a realistic
- * burst, and the memory cost is one small ring buffer each. If a raid ever
- * exceeds it, PR-22's eviction is the documented behaviour rather than a
- * failure.
+ * **The real memory ceiling is a product, not this constant alone**
+ * (whole-branch review, IMPORTANT-3): `(number of compiled windowed rules) ×
+ * DEFAULT_MAX_TRACKED_MEMBERS × (that rule's own per-member cap) × (bytes per
+ * event)`. The per-member cap is operator-controlled — `rapid_spam` sizes it
+ * from `maxMessages` (up to 1 000 by schema) — and used to be true for
+ * `duplicate_message` too before it stored a fixed-size hash instead of the
+ * message text (see `DEFAULT_MAX_EVENTS_PER_MEMBER` below); this comment
+ * previously reasoned about 500 members alone and concluded "one small ring
+ * buffer each", which was only true for `rapid_spam`. 500 is still deliberately
+ * modest for the member dimension: Bananasaurs serves **one** engineering-club
+ * guild (`CLAUDE.md`), so 500 simultaneously-active posters is far beyond a
+ * realistic burst. If a raid ever exceeds it, PR-22's eviction is the
+ * documented behaviour rather than a failure. Nothing validates the product
+ * across rules, and nothing bounds the rule count — a future rule kind with a
+ * large per-member cap and unbounded event size should not assume this
+ * constant alone protects it.
  */
 export const DEFAULT_MAX_TRACKED_MEMBERS = 500;
+
+/**
+ * The per-member ring buffer capacity for `duplicate_message` (CRITICAL-1,
+ * whole-branch review).
+ *
+ * **This must not be derived from `maxRepeats`.** `rapid_spam`'s buffer is
+ * sized `maxMessages + 1` because it counts *every* event in the buffer
+ * (`countWithin`) — a buffer of `maxMessages + 1` can always hold "one too
+ * many". `duplicate_message` counts only the events whose `value` equals this
+ * message's normalised text (`countMatching`), but `record` puts *every*
+ * message a member posts into the same buffer, repeats and non-repeats alike.
+ * Sizing that buffer `maxRepeats + 1` — the false analogy an earlier version
+ * of this predicate drew — means the buffer holds enough events *in total*
+ * but not enough *of one text*: a single other message the member posts
+ * between repeats evicts a repeat before the count can ever exceed the
+ * threshold, defeating the rule at every configuration against the ordinary
+ * shape of the spam it exists to catch (the same text interleaved with other
+ * chatter).
+ *
+ * Decoupling the two means `duplicate_message`'s buffer holds up to this many
+ * of a member's most recent events (of any text), of which only the ones
+ * matching a given text are ever counted. **The residual evasion this leaves:
+ * a member who posts more than this many *distinct* messages between two
+ * repeats will still evict the earlier repeat out of the buffer entirely.**
+ * 50 is chosen to make that require a deliberate flood of unrelated messages,
+ * not one "lol" between two repeats.
+ */
+export const DEFAULT_MAX_EVENTS_PER_MEMBER = 50;
