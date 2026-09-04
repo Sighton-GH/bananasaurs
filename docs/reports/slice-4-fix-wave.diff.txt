@@ -1,0 +1,612 @@
+diff --git a/packages/core/src/automod/dry-run.test.ts b/packages/core/src/automod/dry-run.test.ts
+index ab0bf70..f746d35 100644
+--- a/packages/core/src/automod/dry-run.test.ts
++++ b/packages/core/src/automod/dry-run.test.ts
+@@ -336,6 +336,135 @@ describe('the one-code-path invariant', () => {
+     expect(report.results.map((r) => r.matched)).toEqual([false, false, false, false]);
+     expect(report.matched).toBe(0);
+   });
++
++  /**
++   * IMPORTANT-5 (whole-branch review): Case A and Case B close exactly the
++   * two blind spots the Slice 4 handoff enumerated (a wrong `atMs`, a
++   * bypassed predicate cache), but window state opens more than two, and
++   * neither case above ever constructs a `messageUpdate` on either side —
++   * the asymmetric, replay-only divergence that matters most, because it is
++   * also the mechanism of CRITICAL-3's over-report term. Case C closes that
++   * gap. Case D closes a separate one named in the same finding: the
++   * differential gate covered `rapid_spam` only, and never compared a trace
++   * for the window tier at all.
++   */
++
++  it('Case C — a messageUpdate in the live sequence never inflates rapid_spam’s count on either path, and the edited message appears once in the corpus (IMPORTANT-5)', async () => {
++    // PR-23: only messageCreate counts toward rapid_spam's rate; an edit is
++    // not a new post. `predicateInputFrom`'s fixture branch hard-codes
++    // `eventKind: 'messageCreate'` for every corpus row, so a live path that
++    // regressed into counting `messageUpdate` would diverge from the replay
++    // here — invisible to Case A/B, which never build one.
++    const rule: AutomodRule = {
++      ruleId: 'rapid-spam-case-c',
++      kind: 'rapid_spam',
++      mode: 'test',
++      config: '{"maxMessages":1,"windowMs":10000}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++
++    // Live path: a create, then an edit of that *same* message (content
++    // unchanged — Discord sends messageUpdate for edits that touch only
++    // metadata, e.g. an unfurled embed, not only for text changes), then a
++    // second, different message.
++    let currentMs = 0;
++    const liveMatchedAt: number[] = [];
++    const subscriber = createAutomodSubscriber({
++      ...fakeDeps(),
++      listRules: () => [rule],
++      recordCaseEvent: () => {
++        liveMatchedAt.push(currentMs);
++      },
++    });
++    currentMs = 1_000;
++    await subscriber.handle(
++      messageEvent({ content: 'hello', receivedAtMs: 1_000, messageId: 'live-c-a' }),
++    );
++    currentMs = 1_500;
++    await subscriber.handle(
++      messageEvent({
++        kind: 'messageUpdate',
++        content: 'hello',
++        receivedAtMs: 1_500,
++        messageId: 'live-c-a',
++      }),
++    );
++    currentMs = 2_000;
++    await subscriber.handle(
++      messageEvent({ content: 'hello', receivedAtMs: 2_000, messageId: 'live-c-b' }),
++    );
++    // Two messageCreate events with threshold 1 fires on the second — the
++    // update in between must not count as a third.
++    expect(liveMatchedAt).toEqual([2_000]);
++
++    // Dry-run path: because the edit's content is unchanged, PR-1's fixture
++    // id (`<messageId>:<hash(content)>`) is identical for the create and the
++    // edit, so the message appears once in the corpus, not twice — exactly
++    // what `captureObservedFixture`'s `onConflictDoNothing` would leave
++    // behind in practice.
++    const fixtures: FixtureRecord[] = [
++      fixture({ fixtureId: 'live-c-a:hash', content: 'hello', createdAt: 1_000 }),
++      fixture({ fixtureId: 'live-c-b:hash', content: 'hello', createdAt: 2_000 }),
++    ];
++    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
++
++    expect(report.results.map((r) => r.matched)).toEqual([false, true]);
++    expect(report.matched).toBe(1);
++  });
++
++  it('Case D — duplicate_message’s trace also matches across paths, closing the gate’s other blind spot (IMPORTANT-5)', async () => {
++    // The differential gate above (and Case A/B) exercises rapid_spam only.
++    // duplicate_message is the one predicate that exercises countMatching and
++    // the value half of the window store — genuinely new code the gate never
++    // reached — and unlike Case A/B, this also compares the trace, which
++    // neither Case A nor Case B does for the window tier.
++    const rule: AutomodRule = {
++      ruleId: 'duplicate-message-case-d',
++      kind: 'duplicate_message',
++      mode: 'test',
++      config: '{"maxRepeats":1,"windowMs":10000,"minLength":1}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const TIMESTAMPS = [1_000, 2_000];
++
++    const recorded: { trace?: MatchTrace; categoryId?: string; snippet?: string } = {};
++    const subscriber = createAutomodSubscriber({
++      ...fakeDeps(),
++      listRules: () => [rule],
++      recordCaseEvent: (input) => {
++        recorded.trace = input.trace;
++        recorded.categoryId = input.matchedCategory;
++        recorded.snippet = input.matchedSnippet;
++      },
++    });
++    for (const ms of TIMESTAMPS) {
++      await subscriber.handle(
++        messageEvent({
++          content: 'buy crypto now',
++          receivedAtMs: ms,
++          messageId: `live-d-${String(ms)}`,
++        }),
++      );
++    }
++    expect(recorded.trace).toBeDefined();
++
++    const fixtures = TIMESTAMPS.map((ms) =>
++      fixture({ fixtureId: `dup-d:${String(ms)}`, content: 'buy crypto now', createdAt: ms }),
++    );
++    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
++
++    const replayed = report.results[1]?.match;
++    expect(replayed).toBeDefined();
++    expect(replayed?.trace).toEqual(recorded.trace);
++    expect(replayed?.categoryId).toEqual(recorded.categoryId);
++    expect(replayed?.snippet).toEqual(recorded.snippet);
++  });
+ });
+ 
+ describe('runDryRun', () => {
+diff --git a/packages/core/src/automod/evaluate.ts b/packages/core/src/automod/evaluate.ts
+index 7f68491..7c21273 100644
+--- a/packages/core/src/automod/evaluate.ts
++++ b/packages/core/src/automod/evaluate.ts
+@@ -237,8 +237,19 @@ export const predicateInputFrom = (source: PredicateInputSource): PredicateInput
+     authorId: fixture.authorId ?? 'fixture',
+     // A fixture is a message as first posted. Nothing in the corpus records
+     // that a message was an edit, so replaying every fixture as a create is
+-    // the only honest option — and it is the conservative one for Slice 4,
+-    // where treating an edit as a create counts it once rather than not at all.
++    // the only honest option. **"Conservative" holds for content predicates
++    // only** (CRITICAL-3, whole-branch review) — an earlier version of this
++    // comment claimed it unconditionally, which is the load-bearing-comment
++    // failure this project keeps hitting. For `keyword_filter` and the other
++    // content predicates, treating an edit as a create counts it once rather
++    // than not at all — genuinely conservative. For the window tier
++    // (`rapid_spam`, `duplicate_message`), PR-1 gives every edit of the same
++    // message its own corpus row, so this line turns each of those rows into
++    // a separately counted event in a replay, where the live path (PR-23)
++    // counts one create and ignores every edit — an over-count, not a
++    // conservative under-count. `automod dryrun`'s `windowedCorpusCaveat`
++    // (`ops/commands/automod.ts`) says so to whoever reads a windowed rule's
++    // replay.
+     eventKind: 'messageCreate',
+     // Already zero-width stripped when captured; stripped again so a
+     // handwritten fixture typed with a zero-width character behaves like a
+diff --git a/packages/core/src/automod/fingerprint.ts b/packages/core/src/automod/fingerprint.ts
+index e26efc3..b4273c6 100644
+--- a/packages/core/src/automod/fingerprint.ts
++++ b/packages/core/src/automod/fingerprint.ts
+@@ -15,6 +15,25 @@ import type { AutomodRule } from './predicates/types.js';
+  * Everything else on `AutomodRule` is hashed, by construction (see below) —
+  * this set is the only place a field can opt out, and opting out is meant to
+  * read as a deliberate act.
++ *
++ * **A field that changes with traffic rather than with configuration MUST be
++ * added here** (whole-branch review, IMPORTANT-6). Before Release 2 Slice 4
++ * this digest recompiling on every write to `AutomodRule` was, at worst, a
++ * wasted CPU cycle — the exclusion-based design's stated safety property ("a
++ * field added later is hashed by default") held without qualification. Since
++ * Slice 4, `rapid_spam` and `duplicate_message` carry a sliding-window store
++ * in the closure of their compiled artifact (`window.ts`), and a recompile
++ * discards that store — a config edit resetting the window is correct
++ * (plan ruling PR-21), but a field that changes on every message the rule
++ * merely *observes* would recompile — and reset the window — on every
++ * message, so the rule can never accumulate enough events to fire. That is
++ * ADR 0039's silent-non-matching failure, reintroduced through the mechanism
++ * built to prevent it: no log line, no `doctor` entry, a rule that reads as
++ * enabled and configured. PR-14 (ledger, Slice 3) defers exactly such a
++ * field — `invite`'s per-rule `last_matched_at` — to Slice 9; when it lands
++ * on `AutomodRule` it belongs in this set, and needs a test asserting that a
++ * rule differing only in that field keeps its fingerprint (to be written
++ * when the field arrives, since it does not exist to test against yet).
+  */
+ const EXCLUDED_FIELDS: ReadonlySet<string> = new Set(['ruleId', 'mode']);
+ 
+diff --git a/packages/core/src/automod/predicates/duplicate-message.test.ts b/packages/core/src/automod/predicates/duplicate-message.test.ts
+index 3569f45..d2ef15d 100644
+--- a/packages/core/src/automod/predicates/duplicate-message.test.ts
++++ b/packages/core/src/automod/predicates/duplicate-message.test.ts
+@@ -76,6 +76,26 @@ describe('the duplicate_message predicate', () => {
+     expect(say(3_000, 'buy crypto now')).toBeUndefined();
+   });
+ 
++  it('still fires when the repeats are interleaved with a different message (CRITICAL-1)', () => {
++    // The buffer used to be sized `maxRepeats + 1` — enough events *in
++    // total*, but this predicate counts events *of one text*
++    // (`countMatching`), and `record` puts every message in the same buffer.
++    // So one interleaved message evicted a repeat before the count could ever
++    // exceed the threshold, at every configuration. The test above could not
++    // catch this: three messages against a buffer of three never evicts
++    // anything. This one uses a buffer that would be sized 2 under the old
++    // arithmetic (`maxRepeats: 1`) and four messages — spam / filler / spam —
++    // which the old sizing evicts the first "spam" to make room for
++    // "filler", so the second "spam" only ever counts 1 match and never
++    // fires. It must fire.
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":1}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'spam')).toBeUndefined();
++    expect(say(2_000, 'filler')).toBeUndefined();
++    expect(say(3_000, 'spam')).toBeDefined();
++  });
++
+   it('treats case and spacing differences as the same message', () => {
+     const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
+     const say = (ms: number, text: string) =>
+@@ -130,6 +150,19 @@ describe('the duplicate_message predicate', () => {
+     expect(say(2_000, 'ok')).toBeDefined();
+   });
+ 
++  it('does not treat two captionless attachment-only posts as a repeat (CRITICAL-2)', () => {
++    // `minLength: 0` is deliberate — refusing to invent a floor an operator
++    // did not ask for. But an attachment-only message has `content === ''`,
++    // and `0 < 0` is false, so `''` used to be recorded as the member's
++    // "repeated text" and two captionless images matched on the default
++    // config. Absent content is not short content; it must never fire.
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000}');
++    const say = (ms: number) =>
++      compiled.evaluate(message('', { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000)).toBeUndefined();
++    expect(say(2_000)).toBeUndefined();
++  });
++
+   it('does not count an edit as a new message (ruling PR-23)', () => {
+     const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
+     expect(
+diff --git a/packages/core/src/automod/predicates/duplicate-message.ts b/packages/core/src/automod/predicates/duplicate-message.ts
+index e4c75d4..1578763 100644
+--- a/packages/core/src/automod/predicates/duplicate-message.ts
++++ b/packages/core/src/automod/predicates/duplicate-message.ts
+@@ -1,6 +1,11 @@
++import { createHash } from 'node:crypto';
+ import { z } from 'zod';
+ import { stripZeroWidth } from '../matcher.js';
+-import { createWindowStore, DEFAULT_MAX_TRACKED_MEMBERS } from '../window.js';
++import {
++  createWindowStore,
++  DEFAULT_MAX_EVENTS_PER_MEMBER,
++  DEFAULT_MAX_TRACKED_MEMBERS,
++} from '../window.js';
+ import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
+ 
+ export const duplicateMessageConfig = z
+@@ -69,6 +74,29 @@ export function normaliseForDuplicateCheck(text: string): string {
+   return stripZeroWidth(text).toLowerCase().replace(/\s+/g, ' ').trim();
+ }
+ 
++/**
++ * Fingerprints the normalised text for storage in the window (IMPORTANT-3,
++ * IMPORTANT-4, whole-branch review).
++ *
++ * `countMatching` only ever tests equality (`e.value === value`), never
++ * substring or prefix matching, so a fixed-size digest is behaviourally
++ * identical to storing the text itself — two messages normalise to the same
++ * hash if and only if they normalise to the same string (collisions aside,
++ * and a 16-hex-char slice of sha256 is not a threat model this predicate needs
++ * to defend against). Storing the hash instead of the text settles two
++ * things at once: memory per event becomes a small constant instead of an
++ * uncapped normalised string (IMPORTANT-3's ceiling), and no member-authored
++ * message content sits resident in process memory with no time bound at all,
++ * which is what age-based pruning's deletion (`6bbc60a`) left open — pruning
++ * was correctly deleted on the two grounds argued there (no observable effect
++ * on a verdict, and the array was already capped), but a member who posts
++ * twice and never posts again used to keep those two strings resident until
++ * the process restarts or the rule's fingerprint changes. Record the
++ * reasoning here rather than re-adding pruning to solve it.
++ */
++const hashNormalised = (normalised: string): string =>
++  createHash('sha256').update(normalised).digest('hex').slice(0, 16);
++
+ /**
+  * `duplicate_message` — the same normalised text repeated within a window
+  * (Task 4). Consumes Task 1's `createWindowStore` via `countMatching`.
+@@ -79,17 +107,34 @@ export function normaliseForDuplicateCheck(text: string): string {
+  * resetting the window. That is correct: a repeat count accrued under an old
+  * threshold should not be judged against a new one.
+  *
+- * The ring buffer's capacity is `maxRepeats + 1`, for the same reason
+- * `rapid_spam`'s is `maxMessages + 1`: this predicate must be able to observe
+- * one repeat more than the threshold allows, and a buffer capped at exactly
+- * the threshold could never hold that many at once.
++ * **The buffer's capacity is `DEFAULT_MAX_EVENTS_PER_MEMBER`, not
++ * `maxRepeats + 1`.** An earlier version of this predicate reasoned "for the
++ * same reason `rapid_spam`'s is `maxMessages + 1`" — that reasoning does not
++ * carry over, and stating it as settled is exactly how the bug it hid
++ * survived per-task review (CRITICAL-1, whole-branch review). `rapid_spam`
++ * counts *every* event in its buffer (`countWithin`), so a buffer of
++ * `maxMessages + 1` can always hold "one too many". This predicate counts
++ * only the events whose value matches *this* message's normalised text
++ * (`countMatching`), but `record` puts *every* message the member posts —
++ * matching or not — into the same buffer. A buffer sized `maxRepeats + 1`
++ * therefore holds enough events in total but not enough of one text: a single
++ * other message posted between two repeats evicts the earlier repeat before
++ * the matching count can ever exceed the threshold, at every configuration —
++ * confirmed against the built code before this fix; the evasion was simply
++ * typing something else between repeats, which is also the ordinary shape of
++ * the spam this predicate exists to catch. `DEFAULT_MAX_EVENTS_PER_MEMBER`
++ * (`window.ts`) decouples the buffer size from the threshold; see its own
++ * doc comment for the residual evasion this leaves (more than that many
++ * distinct messages between two repeats). The normalised text is not part of
++ * the `WindowKey` either — that would turn the 500-member cap into a
++ * 500-distinct-*text* cap and put member-authored content in a cache key.
+  */
+ export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
+   kind: 'duplicate_message',
+   config: duplicateMessageConfig,
+   compile(rule: AutomodRule, config: DuplicateMessageConfig): CompiledPredicate {
+     const store = createWindowStore({
+-      maxEventsPerMember: config.maxRepeats + 1,
++      maxEventsPerMember: DEFAULT_MAX_EVENTS_PER_MEMBER,
+       maxMembers: DEFAULT_MAX_TRACKED_MEMBERS,
+     });
+ 
+@@ -100,8 +145,21 @@ export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
+         if (input.eventKind !== 'messageCreate') return undefined;
+ 
+         const normalised = normaliseForDuplicateCheck(input.content);
++        // CRITICAL-2: absent content, not short content. An attachment-only,
++        // sticker-only or embed-only message has `content === ''`
++        // (`events.ts`'s `?? undefined` only ever produces `undefined` for a
++        // partial message, never for a real one with no text), so
++        // `normalised` is `''` here. `minLength: 0` is deliberate — the
++        // schema must not invent a floor the operator did not configure — but
++        // that ruling was about short text, not absent text: matching on the
++        // *absence* of content would make two captionless image posts a
++        // match on the default config, in the one tier that must have zero
++        // false positives. Checked before the `minLength` comparison so an
++        // operator who explicitly sets `minLength: 0` still gets this.
++        if (normalised.length === 0) return undefined;
+         if (normalised.length < config.minLength) return undefined;
+ 
++        const hashed = hashNormalised(normalised);
+         const window = store.for({
+           // CLAUDE.md rule 2: guildId is named explicitly even though the
+           // artifact this store lives inside is already per-guild.
+@@ -109,8 +167,8 @@ export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
+           memberId: input.authorId,
+           ruleId: rule.ruleId,
+         });
+-        window.record(input.atMs, normalised);
+-        const count = window.countMatching(input.atMs, config.windowMs, normalised);
++        window.record(input.atMs, hashed);
++        const count = window.countMatching(input.atMs, config.windowMs, hashed);
+         if (count <= config.maxRepeats) return undefined;
+ 
+         return {
+diff --git a/packages/core/src/automod/window.ts b/packages/core/src/automod/window.ts
+index f7cea30..6eda7d5 100644
+--- a/packages/core/src/automod/window.ts
++++ b/packages/core/src/automod/window.ts
+@@ -193,10 +193,49 @@ export const createWindowStore = (options: {
+  * cannot drift to different undocumented numbers — each builds its own store,
+  * because window state lives per compiled artifact (PR-21).
+  *
+- * 500 is deliberately modest: Bananasaurs serves **one** engineering-club guild
+- * (`CLAUDE.md`), so 500 simultaneously-active posters is far beyond a realistic
+- * burst, and the memory cost is one small ring buffer each. If a raid ever
+- * exceeds it, PR-22's eviction is the documented behaviour rather than a
+- * failure.
++ * **The real memory ceiling is a product, not this constant alone**
++ * (whole-branch review, IMPORTANT-3): `(number of compiled windowed rules) ×
++ * DEFAULT_MAX_TRACKED_MEMBERS × (that rule's own per-member cap) × (bytes per
++ * event)`. The per-member cap is operator-controlled — `rapid_spam` sizes it
++ * from `maxMessages` (up to 1 000 by schema) — and used to be true for
++ * `duplicate_message` too before it stored a fixed-size hash instead of the
++ * message text (see `DEFAULT_MAX_EVENTS_PER_MEMBER` below); this comment
++ * previously reasoned about 500 members alone and concluded "one small ring
++ * buffer each", which was only true for `rapid_spam`. 500 is still deliberately
++ * modest for the member dimension: Bananasaurs serves **one** engineering-club
++ * guild (`CLAUDE.md`), so 500 simultaneously-active posters is far beyond a
++ * realistic burst. If a raid ever exceeds it, PR-22's eviction is the
++ * documented behaviour rather than a failure. Nothing validates the product
++ * across rules, and nothing bounds the rule count — a future rule kind with a
++ * large per-member cap and unbounded event size should not assume this
++ * constant alone protects it.
+  */
+ export const DEFAULT_MAX_TRACKED_MEMBERS = 500;
++
++/**
++ * The per-member ring buffer capacity for `duplicate_message` (CRITICAL-1,
++ * whole-branch review).
++ *
++ * **This must not be derived from `maxRepeats`.** `rapid_spam`'s buffer is
++ * sized `maxMessages + 1` because it counts *every* event in the buffer
++ * (`countWithin`) — a buffer of `maxMessages + 1` can always hold "one too
++ * many". `duplicate_message` counts only the events whose `value` equals this
++ * message's normalised text (`countMatching`), but `record` puts *every*
++ * message a member posts into the same buffer, repeats and non-repeats alike.
++ * Sizing that buffer `maxRepeats + 1` — the false analogy an earlier version
++ * of this predicate drew — means the buffer holds enough events *in total*
++ * but not enough *of one text*: a single other message the member posts
++ * between repeats evicts a repeat before the count can ever exceed the
++ * threshold, defeating the rule at every configuration against the ordinary
++ * shape of the spam it exists to catch (the same text interleaved with other
++ * chatter).
++ *
++ * Decoupling the two means `duplicate_message`'s buffer holds up to this many
++ * of a member's most recent events (of any text), of which only the ones
++ * matching a given text are ever counted. **The residual evasion this leaves:
++ * a member who posts more than this many *distinct* messages between two
++ * repeats will still evict the earlier repeat out of the buffer entirely.**
++ * 50 is chosen to make that require a deliberate flood of unrelated messages,
++ * not one "lol" between two repeats.
++ */
++export const DEFAULT_MAX_EVENTS_PER_MEMBER = 50;
+diff --git a/packages/core/src/ops/commands/automod.test.ts b/packages/core/src/ops/commands/automod.test.ts
+index 62a7772..935bb13 100644
+--- a/packages/core/src/ops/commands/automod.test.ts
++++ b/packages/core/src/ops/commands/automod.test.ts
+@@ -369,6 +369,51 @@ describe('automod dryrun', () => {
+     expect(res.text).not.toContain('attachment metadata');
+     expect(res.data).toMatchObject({ attachmentMetadata: null });
+   });
++
++  it('caveats a windowed rule’s replay: the corpus under-counts and PR-1’s edit rows over-count (CRITICAL-3)', async () => {
++    // The corpus (`captureObservedFixture`) records only messages that
++    // already matched, so the events that *built* a window count are absent
++    // from it by construction — a genuinely working rule reports MISSED over
++    // this corpus. And PR-1 gives every edit of the same message its own
++    // fixture row, which the fixture replay treats as a separate
++    // `messageCreate` each — two rows here share the message id `abc`, which
++    // is the over-report term made visible. Without the caveat, both facts
++    // are invisible to whoever reads this command's output.
++    const res = await drive(
++      automodDryRunCommand,
++      {
++        findAutomodRule: () =>
++          ruleWith([], { kind: 'rapid_spam', config: '{"maxMessages":100,"windowMs":10000}' }),
++        listAutomodFixtures: () => [
++          fixture({ fixtureId: 'abc:hash1', content: 'first version', label: 'should_match' }),
++          fixture({ fixtureId: 'abc:hash2', content: 'edited version', label: 'should_match' }),
++          fixture({ fixtureId: 'xyz:hash3', content: 'unrelated message' }),
++        ],
++      },
++      { ruleId: 'r1' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).toContain('holds only previously-matched messages');
++    expect(res.text).toContain('not a rate over traffic');
++    expect(res.text).toContain('2 of 3');
++    expect(res.data).toMatchObject({ windowedCorpusCaveat: { editedMessageRows: 2 } });
++  });
++
++  it('does not caveat a non-windowed rule’s replay', async () => {
++    const res = await drive(
++      automodDryRunCommand,
++      {
++        findAutomodRule: () => ruleWith(['badword']),
++        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello badword' })],
++      },
++      { ruleId: 'r1' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).not.toContain('not a rate over traffic');
++    expect(res.data).toMatchObject({ windowedCorpusCaveat: null });
++  });
+ });
+ 
+ describe('automod review', () => {
+diff --git a/packages/core/src/ops/commands/automod.ts b/packages/core/src/ops/commands/automod.ts
+index 29ecc06..70ff07d 100644
+--- a/packages/core/src/ops/commands/automod.ts
++++ b/packages/core/src/ops/commands/automod.ts
+@@ -10,6 +10,7 @@ import {
+ } from '../dispatch.js';
+ import type { OpsReviewableMatch } from '../ports.js';
+ import type { JsonValue } from '../protocol.js';
++import type { FixtureRecord } from '../../automod/predicates/types.js';
+ 
+ /**
+  * `automod dryrun <ruleId>` (ADR 0041 §7): replay one rule over the saved
+@@ -42,10 +43,63 @@ interface AttachmentAwareness {
+   readonly total: number;
+ }
+ 
++/**
++ * Why a windowed rule's (`rapid_spam`, `duplicate_message`) replay count is
++ * not a rate over traffic in either direction (CRITICAL-3, whole-branch
++ * review) — the caveat this command owes an operator beside the summary,
++ * modelled on `AttachmentAwareness` above, which is a strictly weaker version
++ * of the same problem (`attachment_type`'s denominator including fixtures
++ * that could not possibly match).
++ *
++ * **Under-report.** `captureObservedFixture` records only a message that
++ * already matched, so the events that *built* a windowed rule's count —
++ * the messages before the "one too many" one — are absent from the corpus by
++ * construction. A rule that fired correctly on a burst captures only the
++ * message(s) that matched; replayed alone, they produce a lower count and
++ * `MISSED` for a rule that is working perfectly.
++ *
++ * **Over-report.** PR-1 gives every *edit* of a message its own corpus row
++ * (`<messageId>:<hash(content)>`), and `predicateInputFrom`'s fixture branch
++ * hard-codes `eventKind: 'messageCreate'` for every row it builds. For a rate
++ * predicate that is not conservative: one message edited three times, each
++ * edit captured, becomes four corpus rows and therefore four counted events
++ * in a replay, where the live rule counted one create and ignored the edits
++ * (PR-23). `editedMessageRows` makes that term visible: how many rows in this
++ * corpus share a message id with another row.
++ */
++interface WindowedCorpusCaveat {
++  readonly editedMessageRows: number;
++}
++
++/** An observed fixture's message id is the text before PR-1's `:<hash>` suffix. */
++const fixtureMessageId = (fixtureId: string): string => fixtureId.split(':')[0] ?? fixtureId;
++
++/**
++ * How many observed fixtures in `fixtures` share a message id with another
++ * row — the corpus rows a single edited message produced (CRITICAL-3's
++ * over-report term). Handwritten fixtures are excluded: they have no message
++ * behind them (`predicateInputFrom` uses the fixture id itself), so they
++ * cannot be an edit of anything.
++ */
++const countEditedMessageRows = (fixtures: readonly FixtureRecord[]): number => {
++  const observed = fixtures.filter((f) => f.source === 'observed');
++  const counts = new Map<string, number>();
++  for (const f of observed) {
++    const messageId = fixtureMessageId(f.fixtureId);
++    counts.set(messageId, (counts.get(messageId) ?? 0) + 1);
++  }
++  return observed.filter((f) => (counts.get(fixtureMessageId(f.fixtureId)) ?? 0) > 1).length;
++};
++
++/** The two kinds `window.ts`-backed predicates compile to (CRITICAL-3). */
++const isWindowedKind = (kind: string): boolean =>
++  kind === 'rapid_spam' || kind === 'duplicate_message';
++
+ /** `DryRunReport`, projected to plain `JsonValue` — no readonly arrays, no `undefined`. */
+ const projectReport = (
+   report: DryRunReport,
+   attachmentAwareness: AttachmentAwareness | undefined,
++  windowedCorpusCaveat: WindowedCorpusCaveat | undefined,
+ ): JsonValue => ({
+   ruleId: report.ruleId,
+   kind: report.kind,
+@@ -74,6 +128,13 @@ const projectReport = (
+     attachmentAwareness === undefined
+       ? null
+       : { withMetadata: attachmentAwareness.withMetadata, total: attachmentAwareness.total },
++  // CRITICAL-3: null for every kind but the two windowed ones, whose replay
++  // count is not a rate over traffic in either direction — see
++  // `WindowedCorpusCaveat`'s doc comment.
++  windowedCorpusCaveat:
++    windowedCorpusCaveat === undefined
++      ? null
++      : { editedMessageRows: windowedCorpusCaveat.editedMessageRows },
+   results: report.results.map((result) => ({
+     fixtureId: result.fixtureId,
+     label: result.label,
+@@ -148,7 +209,16 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
+             total: report.total,
+           }
+         : undefined;
+-    const data = projectReport(report, attachmentAwareness);
++
++    // CRITICAL-3: the same "computed for every branch" treatment as
++    // attachmentAwareness above — a windowed rule's replay count is wrong in
++    // both directions regardless of which branch below ends up printing, so
++    // the caveat belongs in `data` even when the run is abandoned or the
++    // corpus is empty.
++    const windowedCorpusCaveat: WindowedCorpusCaveat | undefined = isWindowedKind(report.kind)
++      ? { editedMessageRows: countEditedMessageRows(fixtures) }
++      : undefined;
++    const data = projectReport(report, attachmentAwareness, windowedCorpusCaveat);
+ 
+     // Case 1: the rule cannot even compile. A match count under it is worse
+     // than useless — "0 matches" reads exactly like a rule behaving
+@@ -220,6 +290,21 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
+           `attachment metadata (the rest predate it and cannot match this rule)`,
+       );
+     }
++    if (windowedCorpusCaveat !== undefined) {
++      // CRITICAL-3: said in both directions. The corpus holds only
++      // previously-matched messages, so this rule's count is not a rate over
++      // traffic — a MISSED result here is expected, not a defect — and the
++      // named rows are the over-report term: PR-1 gives every edit of a
++      // message its own row, which this replay counts once each where the
++      // live rule counts only the original create (PR-23).
++      lines.push(
++        `note: this corpus holds only previously-matched messages, so this rule's count is not ` +
++          `a rate over traffic — a MISSED result on a windowed rule is expected here, not a ` +
++          `defect; ${windowedCorpusCaveat.editedMessageRows} of ${report.total} row(s) in this ` +
++          `corpus are extra rows for an edited message, which this replay counts once each where ` +
++          `the live rule counts only the original create`,
++      );
++    }
+ 
+     for (const result of report.results) {
+       // Narrowed on `result.match` itself, not on `result.matched`: the two

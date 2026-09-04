@@ -47,7 +47,7 @@ per-slice execution log, and the findings worth carrying forward.
 | 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **✅ complete** — 7 tasks, whole-branch reviewed, fix wave re-reviewed clean. 2026 tests (from 1953), typecheck + lint clean |
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
 | 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **✅ complete** — 9 tasks in 5 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES), two fix waves, re-review's two residuals fixed. 2267 tests (from 2148), typecheck + lint clean |
-| 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
+| 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — (spec §9 names none) | [plan](superpowers/plans/2026-09-03-slice-4-window-tier.md) | **✅ complete** — 5 tasks in 3 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES: 3 CRITICAL), fix wave, re-review found a new CRITICAL in the fix, fixed. 2312 tests (from 2267), all gates green by exit code |
 | 6 — cutover tracking, observe gating, automod testing mode | 0042 | — | not started |
 
 ## Owner decisions taken during this run
@@ -1053,6 +1053,99 @@ safe. **Deleted** (`6bbc60a`).
 to justify or delete.** "Break it and watch it fail" has been treated as a test
 quality check; here it worked as a *design* check, and that is the more valuable
 use.
+
+## Slice 4 closed (2026-09-04)
+
+**2312 tests / 113 files**, from 2267 at the slice's start — none deleted.
+Typecheck, lint and test all verified by **exit code** by the coordinator.
+**All ten predicate kinds `mod_rules_kind` permits now have an implementation.**
+
+Whole-branch review (strongest model) returned **SHIP-WITH-FIXES**: 3 CRITICAL,
+6 IMPORTANT, 6 MINOR — and it confirmed all three CRITICALs **by running the
+built code**, not by reading it. One fix wave, then a re-review that found a new
+CRITICAL *in* the fix wave, then that fix, then one more gap closed. All three
+CRITICALs trace to this plan.
+
+**CRITICAL-1 — `duplicate_message` never fired if the member said anything
+between repeats.** The plan told Task 4 to size its buffer from its own config
+by analogy with `rapid_spam`. **The analogy is false:** `rapid_spam` counts
+*every* event in its buffer, so `maxMessages + 1` always holds the "one too
+many"; `duplicate_message` counts only events matching *this* text
+(`countMatching`) while `record` puts every message in the same buffer. Measured
+at four configurations: interleaved repeats fired at index `null` — never. **The
+evasion was typing `lol` between posts**, which is also the ordinary shape of the
+spam it exists for. And the test named for exactly this used three messages
+against a buffer of three, so nothing evicted and it stayed green.
+
+**Then the fix reintroduced the same failure at the other end.** Replacing the
+threshold-scaled buffer with a *flat* `DEFAULT_MAX_EVENTS_PER_MEMBER = 50` made
+every `maxRepeats >= 50` unreachable — roughly 95% of the range the config
+schema permits — silently, with no log line and no `doctor` entry. Caught by the
+re-review running 61 consecutive identical messages, the easiest possible case.
+**The lesson: the buffer needed a *floor*, not a replacement.**
+`Math.max(DEFAULT_MAX_EVENTS_PER_MEMBER, maxRepeats + 1)` — the floor buys
+interleaving headroom, the second term keeps the threshold reachable. Both terms
+load-bearing; each alone is a total failure at one end.
+
+**CRITICAL-2 — the `minLength: 0` default made two captionless images a match.**
+That default came from an accepted plan-review fix, on the reasoning that a
+non-zero default would "quietly choose a false-negative rate on the operator's
+behalf". Sound, and it considered short text while never considering **absent**
+text: an attachment-only message has `content === ''`, so `''` became the
+member's repeated "text". `snippet=""`, a case opened, on the default config, in
+the most ordinary thing that happens in a club's photo channel. **This is the
+"verify both directions of a boundary" rule from this slice's own handoff,
+written by the coordinator and then not applied to the coordinator's own
+default.** The ruling stands untouched — refusing to invent a floor is not the
+same as matching on the absence of content.
+
+**CRITICAL-3 — a windowed rule's dry-run count is wrong in both directions.**
+The corpus holds only *already-matched* messages, so the events that built a
+window count are absent by construction and a perfectly working rule reports
+`0/3 matched · 3 missed`. The dangerous reading arrives at flip day: *"this rule
+barely fires over 300 fixtures, it is safe to enforce."* Meanwhile PR-1 gives
+each edit its own row that the fixture branch replays as a create, over-counting
+rate rules. `automod dryrun` **already carried this exact caveat pattern** for
+`attachment_type` — a strictly weaker version of the same problem — and Slice 4
+did not extend it. Fixed, both directions, in text and in `data`.
+
+**One more gap closed after the re-review argued it was worse than it looked.**
+`predicateInputFrom` maps every handwritten fixture's null author to one literal,
+so a windowed rule replayed over handwritten fixtures sees **one member's
+burst**. The scenario that bites is the natural pre-flip check — "three different
+members each post this phrase once, which must not trip `duplicate_message`" —
+which collapses and **matches**. The tool answers the opposite of the truth about
+the one property an operator would use it to check, and it takes two rows. The
+new guard's own failure output is the evidence: `1/2 matched` for two fixtures
+meant to be two different people. **Warned loudly; the real fix needs a way to
+express authorship on a handwritten fixture without storing member data — a
+migration, carried to Slice 9.**
+
+### What Slice 4 teaches that the earlier slices did not
+
+1. **A false analogy in a comment is worse than no comment.** CRITICAL-1
+   survived per-task review because the doc comment *asserted* the sizing
+   reasoning as settled. Task 1 reviewed a correct buffer; Task 4 reviewed a
+   correct call into it; the defect lived only in the arithmetic relating them,
+   and the comment that should have raised it closed the question instead.
+2. **Fixing a bound at one end can break it at the other.** Both of
+   `duplicate_message`'s buffer defects were "capacity wrong relative to
+   threshold", in opposite directions, and the second was introduced *by the fix
+   for the first*. When a fix changes a bound, test both ends of its range.
+3. **Run the code.** All three CRITICALs were confirmed by executing the built
+   predicate at several configurations. Reading found none of them in per-task
+   review, and reading would not have found them here either.
+4. **"Verify both directions of a boundary" applies to the coordinator's own
+   rulings.** It was written into this slice's handoff, and CRITICAL-2 is that
+   rule being broken by the person who wrote it, in the same slice.
+
+**Decorative guards found in Slice 4: two** — CRITICAL-1's namesake test, and
+one caught by the plan review before any code. **Running total: sixteen.**
+
+**Plan defects found by implementers: four**, including two "break it" exercises
+that could not have gone red (PR-25) and a zero-width test fixture whose literal
+form could not pass under the normaliser PR-20 mandates — reported plainly rather
+than reconciled, which is the instruction working.
 
 ## A pattern worth adding to `docs/22`
 
