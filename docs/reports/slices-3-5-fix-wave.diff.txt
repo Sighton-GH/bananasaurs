@@ -1,0 +1,2136 @@
+diff --git a/apps/daemon/src/automod/wiring.test.ts b/apps/daemon/src/automod/wiring.test.ts
+index 6ff954c..013336f 100644
+--- a/apps/daemon/src/automod/wiring.test.ts
++++ b/apps/daemon/src/automod/wiring.test.ts
+@@ -40,19 +40,25 @@ describe('traceJson', () => {
+   });
+ 
+   it('writes a valid placeholder trace, never undefined, when the predicate’s own trace fails validation', () => {
+-    // A `detail` string past `trace.ts`'s 120-character bound (IMPORTANT-2)
+-    // is exactly the shape of bug this guards against: type-correct as a
+-    // `MatchTrace`, but rejected by `matchTraceSchema` at the point
+-    // `serialiseTrace` tries to write it.
++    // A `detail` value that is not a scalar at all is the shape of bug this
++    // guards against: type-correct as a `MatchTrace` from a predicate's
++    // point of view (it built the object, TypeScript did not stop it), but
++    // rejected by `matchTraceSchema` at the point `serialiseTrace` tries to
++    // write it. An over-long `detail` *string* used to be this file's
++    // example, but `trace.ts`'s IMPORTANT-3 fix (whole-branch review,
++    // Slices 3-5) narrowed `serialiseTrace` to truncate an over-long string
++    // rather than throw on it — a filename or a hostname is not a bug — so
++    // that shape no longer reaches this fallback at all, and a genuinely
++    // malformed value is needed to exercise it.
+     const t = openMigratedTestDatabase();
+     const scope = t.scopes.forGuild(GUILD);
+-    const invalid: MatchTrace = {
++    const invalid = {
+       kind: 'keyword_filter',
+       matchedOn: 'badword',
+       span: undefined,
+       normalisations: [],
+-      detail: { message: 'x'.repeat(200) },
+-    };
++      detail: { nested: { a: 1 } },
++    } as unknown as MatchTrace;
+ 
+     const json = traceJson(scope, logger, invalid);
+ 
+diff --git a/apps/daemon/src/ops/wiring.ts b/apps/daemon/src/ops/wiring.ts
+index b58d4fa..d64e30e 100644
+--- a/apps/daemon/src/ops/wiring.ts
++++ b/apps/daemon/src/ops/wiring.ts
+@@ -182,18 +182,19 @@ export const opsPortsFor = (
+     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
+ 
+   // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
+-  // lists Task 6 built with no caller. `ruleExists` is checked first because
+-  // the composite foreign key would otherwise surface an opaque
+-  // `FOREIGN KEY constraint failed` to an operator who mistyped a rule id —
+-  // `'no-such-rule'` is a usage answer, not a fault.
+-  //
+-  // "Already present" is read back from a before/after count rather than
+-  // duplicated canonicalisation logic (`addLinkDomain` lower-cases and strips
+-  // `www.` inside the repository): comparing the list's length before and
+-  // after the write is correct regardless of what canonical form the
+-  // repository settles on, and never drifts from it.
++  // lists Task 6 built with no caller. `findRuleKindAndConfig` replaces a
++  // bare `ruleExists` check (IMPORTANT-7, review of Slices 3+5):
++  // `ruleExists` answers only "does this id name a rule", so a rule id that
++  // exists but is the wrong kind — a `keyword_filter` rule handed to
++  // `invite-allow` — used to write a row nothing will ever read.
++  // `'no-such-rule'` and `'wrong-kind'` are both usage answers, not faults —
++  // the composite foreign key would otherwise surface an opaque `FOREIGN KEY
++  // constraint failed` for the first, and the second is caught here because
++  // nothing else in the write path knows to.
+   addInviteAllowlistEntry: (input) => {
+-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
++    if (rule === undefined) return 'no-such-rule';
++    if (rule.kind !== 'invite') return 'wrong-kind';
+     const before = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+     automodRuleListsRepo.addInviteAllowlistEntry(scope, { ...input, now: now() });
+     const after = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+@@ -201,7 +202,9 @@ export const opsPortsFor = (
+   },
+   listInviteAllowlist: (ruleId) => automodRuleListsRepo.listInviteAllowlist(scope, ruleId),
+   removeInviteAllowlistEntry: (input) => {
+-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
++    if (rule === undefined) return 'no-such-rule';
++    if (rule.kind !== 'invite') return 'wrong-kind';
+     const removed = automodRuleListsRepo.removeInviteAllowlistEntry(
+       scope,
+       input.ruleId,
+@@ -209,18 +212,38 @@ export const opsPortsFor = (
+     );
+     return removed ? 'removed' : 'not-present';
+   },
++  // `addLinkDomain`/`removeLinkDomain` return the repository's own
++  // `inserted`/`changes` result rather than a before/after count
++  // (IMPORTANT-1): re-adding a domain under the *other* `listType` is also a
++  // no-op on the same primary key, and only the repository — which just
++  // canonicalised the domain to do the write — can say which `listType` is
++  // actually stored without duplicating that canonicalisation here (the same
++  // drift that let `removeLinkDomain` compare verbatim while `addLinkDomain`
++  // canonicalised, IMPORTANT-2, is what this avoids re-introducing).
+   addLinkDomain: (input) => {
+-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+-    const before = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
+-    automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
+-    const after = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
+-    return after > before ? 'added' : 'already-present';
++    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
++    if (rule === undefined) return { outcome: 'no-such-rule' };
++    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
++    const mode = linkDomainModeOf(rule.config);
++    const result = automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
++    if (result.inserted) return { outcome: 'added', mode };
++    const stored = automodRuleListsRepo
++      .listLinkDomains(scope, input.ruleId)
++      .find((entry) => entry.domain === result.domain);
++    // `stored` is always found in practice — the row that blocked the insert
++    // is the row `listLinkDomains` just re-read — but a fallback to the
++    // operator's requested `listType` keeps this total rather than throwing
++    // on a data race this port cannot otherwise observe.
++    return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
+   },
+   listLinkDomains: (ruleId) => automodRuleListsRepo.listLinkDomains(scope, ruleId),
+   removeLinkDomain: (input) => {
+-    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
++    if (rule === undefined) return { outcome: 'no-such-rule' };
++    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
++    const mode = linkDomainModeOf(rule.config);
+     const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
+-    return removed ? 'removed' : 'not-present';
++    return { outcome: removed ? 'removed' : 'not-present', mode };
+   },
+ 
+   setRoute: (input) =>
+@@ -289,6 +312,30 @@ const enqueued = (result: ReturnType<typeof jobRepo.enqueue>) => ({
+   jobId: result.jobId,
+ });
+ 
++/**
++ * A `link_domain` rule's configured `mode`, read from its raw `config` JSON
++ * for display only (CRITICAL-2, review of Slices 3+5) — `domain-add` and
++ * `domain-rm` need it to say what an empty active list means, and they have
++ * only the rule id.
++ *
++ * Deliberately tolerant rather than a Zod parse: `ports.ts` may not import
++ * `@bananasaurs/core`'s predicate registry here just to read one field for a
++ * status line (ADR 0014 is about the storage package, not this composition
++ * root, but there is still no reason to couple a display string to the full
++ * schema), and a rule whose config fails real validation already gets its
++ * own report from `compileRule`/`doctor` — this returns `undefined` rather
++ * than throwing, so a malformed config degrades the message instead of the
++ * command.
++ */
++const linkDomainModeOf = (configJson: string): 'allow' | 'deny' | undefined => {
++  try {
++    const parsed = JSON.parse(configJson) as { mode?: unknown };
++    return parsed.mode === 'allow' || parsed.mode === 'deny' ? parsed.mode : undefined;
++  } catch {
++    return undefined;
++  }
++};
++
+ /**
+  * One validated setting change, applied to the column that holds it.
+  *
+diff --git a/packages/core/src/automod/dry-run.test.ts b/packages/core/src/automod/dry-run.test.ts
+index 079995a..e454fd9 100644
+--- a/packages/core/src/automod/dry-run.test.ts
++++ b/packages/core/src/automod/dry-run.test.ts
+@@ -410,4 +410,101 @@ describe('runDryRun', () => {
+     expect(report.failure?.reason).toBe('no-terms');
+     expect(report.matched).toBe(0);
+   });
++
++  describe('a predicate that throws (CRITICAL-1, IMPORTANT-5)', () => {
++    // `node:vm`'s timeout is *designed* to throw at evaluate time (plan
++    // ruling PR-12), so this is not a hypothetical: `regex` is the first
++    // predicate that does it. Forcing it here through a `compileRule` spy
++    // rather than an actual catastrophic-backtracking pattern keeps this
++    // suite fast — `regex.test.ts`'s Obligation 1 gate already proves the
++    // real thing takes multiple seconds.
++    const throwingCompile = (): ReturnType<typeof registry.compileRule> => ({
++      ok: true,
++      compiled: {
++        evaluate: () => {
++          throw new Error('boom');
++        },
++      },
++    });
++
++    it('scores a fixture the predicate threw on as unlabelled, never agreed, and counts the throw', () => {
++      const spy = vi.spyOn(registry, 'compileRule').mockImplementation(throwingCompile);
++      try {
++        const rule = ruleWith(['badword']);
++        // FIXTURES has both a should_match and a should_not_match fixture;
++        // before this fix a throw was folded into `matched: false`, which
++        // scores a should_not_match fixture 'agreed' — exactly the false
++        // reassurance CRITICAL-1 is about.
++        const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: FIXTURES });
++
++        expect(report.threw).toBeGreaterThan(0);
++        for (const result of report.results) {
++          expect(result.outcome).toBe('threw');
++          expect(result.matched).toBe(false);
++          expect(result.match).toBeUndefined();
++          expect(result.agreement).toBe('unlabelled');
++        }
++      } finally {
++        spy.mockRestore();
++      }
++    });
++
++    it('abandons the replay after five throws rather than paying the whole corpus (IMPORTANT-5)', () => {
++      const spy = vi.spyOn(registry, 'compileRule').mockImplementation(throwingCompile);
++      try {
++        const rule = ruleWith(['badword']);
++        const corpus = Array.from({ length: 20 }, (_, i) =>
++          fixture({
++            fixtureId: `many:${String(i)}`,
++            content: `fixture ${String(i)}`,
++            createdAt: i,
++          }),
++        );
++        const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: corpus });
++
++        // Exactly five throws, and evaluation stopped there — not 20.
++        expect(report.threw).toBe(5);
++        expect(report.total).toBe(5);
++        // But the corpus that exists is still reported, so an operator can
++        // tell the run was abandoned rather than having replayed everything.
++        expect(report.corpusSize).toBe(20);
++      } finally {
++        spy.mockRestore();
++      }
++    });
++
++    it('does not abandon a run where the predicate throws on fewer than five fixtures', () => {
++      // Abandonment must be triggered by the throw count, not merely by any
++      // throw occurring — a single malformed fixture must not truncate an
++      // otherwise-informative replay of the rest of the corpus.
++      //
++      // `compileRule` is memoised per rule fingerprint (`evaluate.ts`), so it
++      // is called once for this whole run and its `compiled.evaluate` reused
++      // for every fixture — the mock has to vary its *own* behaviour per
++      // call to produce "some throw, some do not", rather than varying which
++      // `compileRule` call wins.
++      let evaluations = 0;
++      const spy = vi.spyOn(registry, 'compileRule').mockReturnValue({
++        ok: true,
++        compiled: {
++          evaluate: () => {
++            evaluations += 1;
++            if (evaluations <= 2) throw new Error('boom');
++            return undefined;
++          },
++        },
++      });
++      try {
++        const rule = ruleWith(['badword']);
++        const report = runDryRun({ guildId: GUILD_ID, rule, fixtures: FIXTURES });
++        expect(report.threw).toBe(2);
++        // Not abandoned: every fixture in the 5-fixture corpus was still
++        // evaluated, because two throws is below `MAX_THROWS_BEFORE_ABANDON`.
++        expect(report.total).toBe(FIXTURES.length);
++        expect(report.corpusSize).toBe(FIXTURES.length);
++      } finally {
++        spy.mockRestore();
++      }
++    });
++  });
+ });
+diff --git a/packages/core/src/automod/dry-run.ts b/packages/core/src/automod/dry-run.ts
+index e925f66..616b175 100644
+--- a/packages/core/src/automod/dry-run.ts
++++ b/packages/core/src/automod/dry-run.ts
+@@ -29,8 +29,20 @@ export interface DryRunFixtureResult {
+    * during the observe window most of the corpus is unlabelled, and counting
+    * an unlabelled non-match as a success would make every rule look perfect
+    * on the day it shipped.
++   *
++   * A `'threw'` outcome (below) is always `'unlabelled'` here, never
++   * `'agreed'` or `'disagreed'` — a throw is not evidence the rule behaved
++   * correctly (or incorrectly) on this fixture, it is evidence the rule did
++   * not run on it at all (CRITICAL-1).
+    */
+   readonly agreement: 'agreed' | 'disagreed' | 'unlabelled';
++  /**
++   * `'threw'` when `evaluateRule` returned `{ kind: 'threw' }` for this
++   * fixture, rather than a match or a non-match (CRITICAL-1). Kept as its own
++   * field rather than folded into `matched: false`, which is what let a rule
++   * that timed out on every fixture in the corpus report as a clean rule.
++   */
++  readonly outcome: 'ok' | 'threw';
+ }
+ 
+ export interface DryRunReport {
+@@ -44,6 +56,23 @@ export interface DryRunReport {
+    */
+   readonly usable: boolean;
+   readonly failure: { readonly reason: CompileFailure; readonly detail: string } | undefined;
++  /**
++   * How many fixtures the predicate threw on instead of matching or not
++   * (CRITICAL-1). Every dry run over a corpus a pathological pattern reaches
++   * used to report as clean, because the throw was folded into a plain
++   * non-match and `DryRunReport` had no field to say otherwise.
++   */
++  readonly threw: number;
++  /**
++   * How many fixtures exist in the corpus this run was asked to replay —
++   * independent of `total`, the number actually evaluated. They differ only
++   * when the run was abandoned after `MAX_THROWS_BEFORE_ABANDON` throws
++   * (IMPORTANT-5): a pathological predicate would otherwise pay 25ms per
++   * fixture, synchronously, with nothing else in this one process (ADR 0006)
++   * able to run — a corpus of ~1,700 fixtures is enough to pass Discord's
++   * gateway heartbeat interval and force a reconnect.
++   */
++  readonly corpusSize: number;
+   readonly total: number;
+   readonly matched: number;
+   /** `should_not_match` fixtures the rule matched anyway. */
+@@ -59,6 +88,19 @@ export interface RunDryRunInput {
+   readonly fixtures: readonly FixtureRecord[];
+ }
+ 
++/**
++ * Abandon the replay after this many throws (IMPORTANT-5).
++ *
++ * The live subscriber pays 25ms per timing-out rule per *message*, bounded
++ * by rule count — survivable. The dry run is fully synchronous, one process
++ * (ADR 0006), and replays the *whole* corpus: 300 fixtures x 25ms is 7.5s of
++ * completely blocked event loop, and the corpus has no cap. Five throws
++ * bounds the stall at ~125ms and is also what fixes CRITICAL-1's reporting —
++ * an operator sees that the run stopped early rather than a report that
++ * looks clean because most of the corpus was never reached.
++ */
++const MAX_THROWS_BEFORE_ABANDON = 5;
++
+ export const runDryRun = (input: RunDryRunInput): DryRunReport => {
+   // A fresh cache per run, never a shared one: the window tier (Slice 4)
+   // carries mutable sliding-window state on its compiled artifact, so a
+@@ -75,6 +117,7 @@ export const runDryRun = (input: RunDryRunInput): DryRunReport => {
+ 
+   const results: DryRunFixtureResult[] = [];
+   let failure: DryRunReport['failure'];
++  let threw = 0;
+ 
+   for (const fixture of ordered) {
+     const predicateInput = predicateInputFrom({
+@@ -97,13 +140,37 @@ export const runDryRun = (input: RunDryRunInput): DryRunReport => {
+         matched: false,
+         match: undefined,
+         agreement: 'unlabelled',
++        outcome: 'ok',
+       });
+       continue;
+     }
+ 
+-    // A predicate that throws on one fixture is recorded as a non-match for
+-    // that fixture and the replay continues — one malformed message must not
+-    // end the run, the same way it does not end the live handler.
++    // A predicate that throws on one fixture does not end the run — one
++    // malformed message must not end the replay, the same way it does not
++    // end the live handler (`subscriber.ts`) — but it also does not read as
++    // an ordinary non-match. The live handler logs `'the predicate threw;
++    // message left unmatched for this rule'` naming the rule; this replay
++    // has no logger by design (`evaluate.ts`'s header), so `threw` and each
++    // fixture's `outcome: 'threw'` are the only record that anything went
++    // wrong, and abandoning after `MAX_THROWS_BEFORE_ABANDON` throws is what
++    // keeps a pathological rule from blocking this one process (ADR 0006)
++    // for the whole corpus (IMPORTANT-5).
++    if (outcome.kind === 'threw') {
++      threw += 1;
++      results.push({
++        fixtureId: fixture.fixtureId,
++        label: fixture.label,
++        matched: false,
++        match: undefined,
++        // Never 'agreed': a throw is not the rule behaving correctly, it is
++        // the rule not having run at all.
++        agreement: 'unlabelled',
++        outcome: 'threw',
++      });
++      if (threw >= MAX_THROWS_BEFORE_ABANDON) break;
++      continue;
++    }
++
+     const match = outcome.kind === 'match' ? outcome.match : undefined;
+     const matched = match !== undefined;
+     const agreement =
+@@ -113,7 +180,14 @@ export const runDryRun = (input: RunDryRunInput): DryRunReport => {
+           ? ('agreed' as const)
+           : ('disagreed' as const);
+ 
+-    results.push({ fixtureId: fixture.fixtureId, label: fixture.label, matched, match, agreement });
++    results.push({
++      fixtureId: fixture.fixtureId,
++      label: fixture.label,
++      matched,
++      match,
++      agreement,
++      outcome: 'ok',
++    });
+   }
+ 
+   return {
+@@ -121,6 +195,8 @@ export const runDryRun = (input: RunDryRunInput): DryRunReport => {
+     kind: input.rule.kind,
+     usable: failure === undefined,
+     failure,
++    threw,
++    corpusSize: ordered.length,
+     total: results.length,
+     matched: results.filter((r) => r.matched).length,
+     falsePositives: results.filter((r) => r.label === 'should_not_match' && r.matched).length,
+diff --git a/packages/core/src/automod/predicates/attachment-type.test.ts b/packages/core/src/automod/predicates/attachment-type.test.ts
+index eac93bf..719fa31 100644
+--- a/packages/core/src/automod/predicates/attachment-type.test.ts
++++ b/packages/core/src/automod/predicates/attachment-type.test.ts
+@@ -60,10 +60,12 @@ describe('the attachment_type predicate', () => {
+     expect(match?.trace.detail.matchedOn).toBe('contentType');
+   });
+ 
+-  it('names the offending file, not the first file', () => {
++  it('describes the offending file, not the first file', () => {
+     // The ambiguity: three attachments and only the third is blocked, so an
+     // implementation reporting attachments[0] goes red. A single-attachment
+-    // fixture could not tell the two apart.
++    // fixture could not tell the two apart. `sizeBytes` is the only field
++    // that distinguishes the three redacted snippets, since (a) and (b) are
++    // both innocent and never reach `redactedDescription`.
+     const match = compile(config).evaluate(
+       withAttachments([
+         { fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 },
+@@ -71,7 +73,24 @@ describe('the attachment_type predicate', () => {
+         { fileName: 'c.scr', contentType: 'text/plain', sizeBytes: 3 },
+       ]),
+     );
+-    expect(match?.snippet).toBe('c.scr');
++    expect(match?.snippet).toBe('*.scr (text/plain, 3 bytes)');
++  });
++
++  it('redacts the snippet to extension, content type and size — never the filename (IMPORTANT-4)', () => {
++    // A filename is not the decision basis this predicate matches on, and it
++    // lands in a permanent moderation record (`mod_case_events`) that
++    // `/forgetme` does not delete. The stem must not survive into either
++    // `snippet` or `trace.detail`, even though the extension (which is not
++    // personal information) legitimately does.
++    const match = compile(config).evaluate(
++      withAttachments([
++        { fileName: 'medical_letter.exe', contentType: 'text/plain', sizeBytes: 4_096 },
++      ]),
++    );
++    expect(match?.snippet).not.toContain('medical_letter');
++    expect(match?.snippet).toBe('*.exe (text/plain, 4096 bytes)');
++    expect(match?.trace.detail.fileName).toBeUndefined();
++    expect(JSON.stringify(match?.trace.detail)).not.toContain('medical_letter');
+   });
+ 
+   it('is case-insensitive about both the extension and the content type', () => {
+diff --git a/packages/core/src/automod/predicates/attachment-type.ts b/packages/core/src/automod/predicates/attachment-type.ts
+index a2ba583..482b28f 100644
+--- a/packages/core/src/automod/predicates/attachment-type.ts
++++ b/packages/core/src/automod/predicates/attachment-type.ts
+@@ -1,4 +1,5 @@
+ import { z } from 'zod';
++import { truncateDetailString } from '../trace.js';
+ import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
+ 
+ /**
+@@ -41,6 +42,23 @@ const extensionOf = (fileName: string): string => {
+ const bareContentType = (contentType: string | undefined): string =>
+   (contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
+ 
++/**
++ * A redacted description of the file that matched — extension, declared
++ * content type and size, never the name (IMPORTANT-4).
++ *
++ * This predicate matches on content type and extension, never on the
++ * filename itself, so the filename was never the decision basis and does not
++ * belong in the record of *why* the rule fired. That record —
++ * `mod_case_events`, via `PredicateMatch.snippet` and `.trace.detail` — is a
++ * moderation record `/forgetme` does not delete (`PRIVACY.md`), unlike the
++ * fixture corpus, whose retention row and `/forgetme` reach OD-3's filenames
++ * deliberately. Putting a filename here as well would be a widening the
++ * owner was never asked about.
++ */
++const redactedDescription = (extension: string, contentType: string, sizeBytes: number): string =>
++  `${extension === '' ? '(no extension)' : `*.${extension}`} ` +
++  `(${contentType === '' ? 'unknown type' : contentType}, ${String(sizeBytes)} bytes)`;
++
+ /**
+  * `attachment_type` — matches on the declared content type **and** the file
+  * extension, since either alone is trivially spoofed by the uploader (spec
+@@ -79,10 +97,13 @@ export const attachmentTypePredicate: Predicate<AttachmentTypeConfig> = {
+ 
+           return {
+             categoryId: 'attachment_type',
+-            // The filename, which is what a reviewer needs to see. The
+-            // owner was told filenames carry personal information when they
+-            // approved OD-3; this is the same fact appearing in a trace.
+-            snippet: attachment.fileName,
++            // Redacted (IMPORTANT-4): the extension, declared content type
++            // and size, never the filename itself — see
++            // `redactedDescription`'s comment for why. The full filename
++            // stays in the fixture corpus (`automod_fixtures` +
++            // `automod_fixture_attachments`), which OD-3's retention row and
++            // `/forgetme` already cover.
++            snippet: redactedDescription(extension, contentType, attachment.sizeBytes),
+             trace: {
+               kind: 'attachment_type',
+               matchedOn: byExtension ? extension : contentType,
+@@ -91,8 +112,12 @@ export const attachmentTypePredicate: Predicate<AttachmentTypeConfig> = {
+               normalisations: [],
+               detail: {
+                 matchedOn: byExtension ? 'extension' : 'contentType',
+-                fileName: attachment.fileName,
+-                declaredContentType: contentType,
++                // Member-controlled and unbounded in principle — Discord's
++                // declared content type is the uploader's own claim
++                // (`discord/events.ts`) — truncated defensively at the
++                // producer the same way `link-domain.ts`'s `host` is
++                // (IMPORTANT-3), even though it is short in practice.
++                declaredContentType: truncateDetailString(contentType),
+                 sizeBytes: attachment.sizeBytes,
+                 attachmentCount: input.attachments.length,
+               },
+diff --git a/packages/core/src/automod/predicates/caps.test.ts b/packages/core/src/automod/predicates/caps.test.ts
+index 3844193..9836844 100644
+--- a/packages/core/src/automod/predicates/caps.test.ts
++++ b/packages/core/src/automod/predicates/caps.test.ts
+@@ -70,6 +70,20 @@ describe('the caps predicate', () => {
+     expect(
+       compiled.evaluate(message('here you go ```SELECT * FROM MOD_RULES WHERE ENABLED = 1```')),
+     ).toBeUndefined();
++
++    // Decorative guard 3: the assertion above passes for two reasons at
++    // once — the code is stripped, *and* the surviving prose ('here you go')
++    // happens to have a 0.0 caps ratio, so it would pass even if stripping
++    // did nothing at all and the whole message (mixed-case prose plus
++    // upper-case SQL) were scored together. A shout *outside* the fence
++    // pins the actual intent: it must still fire after the fenced block is
++    // removed, which only holds if stripping — not a coincidentally low
++    // ratio — is what is under test.
++    const shoutOutsideFence = compiled.evaluate(
++      message('LOOK AT THIS RIGHT NOW ```select * from mod_rules where enabled = 1``` EVERYONE'),
++    );
++    expect(shoutOutsideFence).toBeDefined();
++    expect(shoutOutsideFence?.trace.detail.ratio).toBe(1);
+   });
+ 
+   it('does not divide by zero on a message with no letters', () => {
+diff --git a/packages/core/src/automod/predicates/link-domain.test.ts b/packages/core/src/automod/predicates/link-domain.test.ts
+index 9c1680e..094b2b5 100644
+--- a/packages/core/src/automod/predicates/link-domain.test.ts
++++ b/packages/core/src/automod/predicates/link-domain.test.ts
+@@ -1,5 +1,6 @@
+ import { describe, expect, it } from 'vitest';
+ import { compileRule } from './registry.js';
++import { linkDomainPredicate } from './link-domain.js';
+ import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
+ 
+ /**
+@@ -114,6 +115,67 @@ describe('the link_domain predicate', () => {
+     expect(content.slice(start, end)).toBe('https://example.com');
+   });
+ 
++  it('truncates a very long host in the trace detail rather than a value serialiseTrace would reject (IMPORTANT-3)', () => {
++    // In `allow` mode any host matches, so a member picks the value — and
++    // hostnames run to 253 characters against `detail`'s 120-character cap.
++    // Node's `URL` does not enforce DNS label lengths, so this is a value a
++    // real message can produce.
++    const host = `${'x'.repeat(200)}.com`;
++    const allowOnly: AutomodRule = {
++      ...rule([{ domain: 'club.org', listType: 'allow' }]),
++      config: '{"mode":"allow"}',
++    };
++    const match = compile(allowOnly).evaluate(message(`https://${host}/path`));
++    expect(match).toBeDefined();
++    const detailHost = match?.trace.detail.host;
++    expect(typeof detailHost).toBe('string');
++    expect((detailHost as string).length).toBeLessThanOrEqual(120);
++  });
++
++  it('refuses to compile a deny-mode rule with no deny rows, rather than a rule that silently never matches (CRITICAL-2)', () => {
++    const emptyDeny: AutomodRule = { ...rule([]), config: '{"mode":"deny"}' };
++    const result = compileRule(emptyDeny);
++    expect(result.ok).toBe(false);
++    if (result.ok) return;
++    expect(result.reason).toBe('no-terms');
++    expect(result.detail).toContain('deny');
++  });
++
++  it('refuses to compile an allow-mode rule with no allow rows, rather than a rule that matches every link (CRITICAL-2)', () => {
++    // The dangerous direction: "on neither list" is true of every link once
++    // the allow list is empty, so an unguarded compile would make this rule
++    // fire on everything rather than nothing.
++    const emptyAllow: AutomodRule = { ...rule([]), config: '{"mode":"allow"}' };
++    const result = compileRule(emptyAllow);
++    expect(result.ok).toBe(false);
++    if (result.ok) return;
++    expect(result.reason).toBe('no-terms');
++    expect(result.detail).toContain('allow');
++  });
++
++  it('a deny row on the other list does not satisfy the allow-mode guard', () => {
++    // Rows of the *other* listType exist in the table (Task 6's schema keeps
++    // both on one table) but are not what config.mode names as active, so
++    // they must not count toward "this rule has something on its list".
++    const mismatched: AutomodRule = {
++      ...rule([{ domain: 'example.com', listType: 'deny' }]),
++      config: '{"mode":"allow"}',
++    };
++    const result = compileRule(mismatched);
++    expect(result.ok).toBe(false);
++  });
++
++  it('the predicate itself would match everything if an allow-mode rule with no rows were ever compiled — documenting the hazard compileRule now refuses (CRITICAL-2)', () => {
++    // Bypasses compileRule's guard on purpose, calling the predicate's own
++    // `compile` directly, to keep the hazard visible in the suite rather
++    // than only in a comment: if this guard is ever removed or narrowed,
++    // this is what comes back.
++    const emptyAllowRule: AutomodRule = { ...rule([]), config: '{"mode":"allow"}' };
++    const compiled = linkDomainPredicate.compile(emptyAllowRule, { mode: 'allow' });
++    expect(compiled.evaluate(message('nothing link-shaped in sight'))).toBeUndefined();
++    expect(compiled.evaluate(message('see https://anything-at-all.example/x'))).toBeDefined();
++  });
++
+   it('finds the denied link when an allowed one comes first', () => {
+     // Two links, only the second denied: an implementation checking only the
+     // first link goes red.
+diff --git a/packages/core/src/automod/predicates/link-domain.ts b/packages/core/src/automod/predicates/link-domain.ts
+index 705b0af..b52ec3b 100644
+--- a/packages/core/src/automod/predicates/link-domain.ts
++++ b/packages/core/src/automod/predicates/link-domain.ts
+@@ -1,4 +1,5 @@
+ import { z } from 'zod';
++import { truncateDetailString } from '../trace.js';
+ import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
+ 
+ /**
+@@ -35,8 +36,15 @@ export const linkDomainConfig = z
+      * `deny` fires on a link whose host is on the deny list. `allow` fires on
+      * a link whose host is on neither list — a whitelist for a locked-down
+      * channel. Explicit rather than inferred from which rows exist, because
+-     * inferring it would make deleting the last allow row silently change
+-     * the rule from a whitelist into a no-op.
++     * inferring it from an empty list would be ambiguous about which
++     * direction "empty" means: deleting the last **deny** row would silently
++     * turn the rule into a no-op (never matches), but deleting the last
++     * **allow** row does the opposite — it makes the rule match every link,
++     * since "on neither list" is trivially true of everything once the allow
++     * list is empty. `compileRule` (`registry.ts`) closes both directions by
++     * refusing to compile a `link_domain` rule with no row on its configured
++     * `mode` at all (CRITICAL-2, review of Slices 3+5), rather than this
++     * predicate silently doing either thing.
+      */
+     mode: z.enum(['allow', 'deny']),
+   })
+@@ -113,7 +121,16 @@ export const linkDomainPredicate: Predicate<LinkDomainConfig> = {
+               matchedOn: host,
+               span: [found.index, found.index + text.length],
+               normalisations: ['zero-width stripped'],
+-              detail: { host, mode: config.mode, listSize: listed.length },
++              // `host` is member-controlled — in `allow` mode any host
++              // matches, so a member picks the value — and hostnames run to
++              // 253 characters against `detail`'s 120-character cap
++              // (IMPORTANT-3). Truncated here, deliberately, rather than
++              // relying on `serialiseTrace`'s truncation to salvage it.
++              detail: {
++                host: truncateDetailString(host),
++                mode: config.mode,
++                listSize: listed.length,
++              },
+             },
+           };
+         }
+diff --git a/packages/core/src/automod/predicates/registry.ts b/packages/core/src/automod/predicates/registry.ts
+index 0dbf673..831090f 100644
+--- a/packages/core/src/automod/predicates/registry.ts
++++ b/packages/core/src/automod/predicates/registry.ts
+@@ -3,7 +3,7 @@ import { capsPredicate } from './caps.js';
+ import { emojiPredicate } from './emoji.js';
+ import { invitePredicate } from './invite.js';
+ import { keywordFilterPredicate } from './keyword-filter.js';
+-import { linkDomainPredicate } from './link-domain.js';
++import { linkDomainPredicate, type LinkDomainConfig } from './link-domain.js';
+ import { regexPredicate } from './regex.js';
+ import {
+   isRuleKind,
+@@ -45,13 +45,19 @@ export type CompileFailure =
+   /** The predicate's own `compile` threw — an invalid regex, an unparseable term. */
+   | 'compile-failed'
+   /**
+-   * A `keyword_filter` rule whose word list has no enabled terms.
++   * A rule whose active list has nothing on it — a `keyword_filter` rule
++   * with no enabled terms, or a `link_domain` rule with no row on the list
++   * its own `config.mode` names.
+    *
+    * `buildMatcher([], [])` compiles cleanly — an empty blacklist is a valid
+    * `RegExpMatcher` — so this is not a `compile-failed`. It is the same shape
+    * of failure ADR 0039 spent a slice on: a rule that looks configured and
+-   * can never match. "Cannot be compiled" is a strict subset of "cannot ever
+-   * match"; this closes the gap between them (ADR 0040 §4, review IMPORTANT-2).
++   * can never match, or — for `link_domain` in `allow` mode specifically —
++   * one that matches everything, which is just as much "cannot be trusted to
++   * do what its configuration says" as never matching is. "Cannot be
++   * compiled" is a strict subset of "cannot be trusted to do what it says";
++   * this closes the gap between them (ADR 0040 §4, review IMPORTANT-2 and
++   * CRITICAL-2).
+    */
+   | 'no-terms';
+ 
+@@ -150,6 +156,47 @@ export const compileRule = (rule: AutomodRule): CompileResult => {
+     };
+   }
+ 
++  /**
++   * `link_domain` compiles from `rule.linkDomains.filter(entry =>
++   * entry.listType === config.mode)` (CRITICAL-2, review of Slices 3+5).
++   * When that filter is empty the failure is silent and, in `allow` mode,
++   * backwards from what an operator would expect:
++   *
++   * - `mode: 'deny'` with no deny rows: the rule can never fire. ADR 0039's
++   *   exact failure mode, for the one kind whose guard was never
++   *   generalised past `keyword_filter`.
++   * - `mode: 'allow'` with no allow rows: "on neither list" is true of every
++   *   link, so the rule matches **everything** — in `enforce` mode, every
++   *   message containing a link.
++   *
++   * Refusing to compile either state is deliberately louder than letting
++   * `allow` mode fire on everything: `doctor`'s `listUnusableAutomodRules`
++   * reports both, and a rule that cannot compile is a rule an operator is
++   * told to fix, not one quietly deleting every linked message.
++   *
++   * `invite` gets no equivalent guard, deliberately: an `invite` rule with
++   * an empty allowlist is correct and useful — it fires on every invite,
++   * which is the point of the predicate (there is only one list, not an
++   * allow/deny pair whose meaning flips on emptiness). The asymmetry is
++   * real, not an oversight — `link_domain`'s `allow` mode inverts its
++   * meaning when its list empties; `invite`'s single list does not invert
++   * anything by being empty.
++   */
++  if (rule.kind === 'link_domain') {
++    const mode = (config as LinkDomainConfig).mode;
++    const hasActiveRow = rule.linkDomains.some((entry) => entry.listType === mode);
++    if (!hasActiveRow) {
++      return {
++        ok: false,
++        reason: 'no-terms',
++        detail:
++          mode === 'allow'
++            ? 'this rule is a whitelist (mode allow) with no domains on its allow list; it would match every link, so it is treated as unusable rather than compiled'
++            : 'this rule is a blocklist (mode deny) with no domains on its deny list; it can never match a link',
++      };
++    }
++  }
++
+   try {
+     return { ok: true, compiled: predicate.compile(rule, config) };
+   } catch (err) {
+diff --git a/packages/core/src/automod/trace.test.ts b/packages/core/src/automod/trace.test.ts
+index 9ce941c..294243f 100644
+--- a/packages/core/src/automod/trace.test.ts
++++ b/packages/core/src/automod/trace.test.ts
+@@ -87,6 +87,43 @@ describe('serialiseTrace / parseMatchTrace', () => {
+     const broken = { ...TRACE, kind: 'telepathy' } as unknown as MatchTrace;
+     expect(() => serialiseTrace(broken)).toThrow();
+   });
++
++  it('truncates an over-long detail string instead of throwing, rather than producing a placeholder trace (IMPORTANT-3)', () => {
++    // A 200-character value is exactly what a predicate carrying a filename
++    // or a hostname can legitimately produce — filenames run to 255
++    // characters, hostnames to 253 — and before this fix it made
++    // `serialiseTrace` throw, which `traceJson`'s fallback then turned into a
++    // placeholder trace: `matchedOn` replaced by "(the predicate produced an
++    // invalid trace)" and the real `detail` lost entirely.
++    const longHost = 'x'.repeat(200);
++    const trace: MatchTrace = { ...TRACE, detail: { host: longHost } };
++
++    let json = '';
++    expect(() => {
++      json = serialiseTrace(trace);
++    }).not.toThrow();
++
++    const result = parseMatchTrace(json);
++    expect(result.ok).toBe(true);
++    if (!result.ok) return;
++    const stored = result.trace.detail.host;
++    expect(typeof stored).toBe('string');
++    expect((stored as string).length).toBeLessThanOrEqual(120);
++    // Not merely short — recognisably a truncation of the original value,
++    // not an unrelated placeholder.
++    expect(longHost.startsWith((stored as string).replace(/…$/, ''))).toBe(true);
++  });
++
++  it('still throws on a genuinely malformed detail value, truncation is a narrowing not a removal', () => {
++    // `truncateDetailString` only touches strings. A `detail` value that is
++    // not a scalar at all is exactly the kind of "bug in our own code" this
++    // function still refuses to write.
++    const broken = {
++      ...TRACE,
++      detail: { nested: { a: 1 } },
++    } as unknown as MatchTrace;
++    expect(() => serialiseTrace(broken)).toThrow();
++  });
+ });
+ 
+ describe('renderTrace', () => {
+diff --git a/packages/core/src/automod/trace.ts b/packages/core/src/automod/trace.ts
+index 5ef7246..e7bdbce 100644
+--- a/packages/core/src/automod/trace.ts
++++ b/packages/core/src/automod/trace.ts
+@@ -57,17 +57,48 @@ export const matchTraceSchema = z
+ 
+ export type StoredMatchTrace = z.infer<typeof matchTraceSchema>;
+ 
++/**
++ * `detail`'s per-value cap, exported so a predicate carrying member-controlled
++ * text (a filename, a hostname) can truncate deliberately at the point of
++ * construction, rather than relying on `serialiseTrace`'s truncation below to
++ * salvage it after the fact (IMPORTANT-3).
++ */
++export const MAX_DETAIL_STRING_LENGTH = 120;
++const DETAIL_ELLIPSIS = '…';
++
++/** Truncates a `detail` string to fit `matchTraceSchema`'s `.max(120)`, with a trailing ellipsis. */
++export const truncateDetailString = (value: string): string =>
++  value.length <= MAX_DETAIL_STRING_LENGTH
++    ? value
++    : value.slice(0, MAX_DETAIL_STRING_LENGTH - DETAIL_ELLIPSIS.length) + DETAIL_ELLIPSIS;
++
+ /**
+  * Validates on the way *in* as well as on the way out (ADR 0040 §2's
+  * pattern).
+  *
+- * Throws, unlike `parseMatchTrace` — the asymmetry is intentional. A trace
+- * that fails here was built by a predicate in this build, so it is a bug in
+- * our own code and should stop the write loudly. A trace that fails on read
+- * is a data problem and must not take the process down.
++ * Throws, unlike `parseMatchTrace` — the asymmetry is intentional, but
++ * narrower than it used to be (IMPORTANT-3). A trace built by a predicate in
++ * this build can still be malformed in a way that is genuinely a bug in our
++ * own code — an unknown `kind`, a `detail` value that is not a scalar — and
++ * that must still stop the write loudly. But `detail`'s length cap exists to
++ * keep whole-message content out of the trace, not to punish a predicate that
++ * legitimately carries member-controlled text: a 255-character filename or a
++ * 253-character hostname is not a bug, and throwing on it produced a
++ * placeholder trace — `matchedOn` replaced by
++ * `'(the predicate produced an invalid trace)'` — for every such match, on
++ * every predicate that carries member text, forever. So an over-long
++ * `detail` *string* is truncated here rather than rejected; every other
++ * violation still throws.
+  */
+-export const serialiseTrace = (trace: MatchTrace): string =>
+-  JSON.stringify(matchTraceSchema.parse(trace));
++export const serialiseTrace = (trace: MatchTrace): string => {
++  const detail = Object.fromEntries(
++    Object.entries(trace.detail).map(([key, value]) => [
++      key,
++      typeof value === 'string' ? truncateDetailString(value) : value,
++    ]),
++  );
++  return JSON.stringify(matchTraceSchema.parse({ ...trace, detail }));
++};
+ 
+ export type ParseTraceResult =
+   | { readonly ok: true; readonly trace: MatchTrace }
+diff --git a/packages/core/src/ops/commands/automod.test.ts b/packages/core/src/ops/commands/automod.test.ts
+index 469d0b9..62a7772 100644
+--- a/packages/core/src/ops/commands/automod.test.ts
++++ b/packages/core/src/ops/commands/automod.test.ts
+@@ -1,8 +1,12 @@
+-import { describe, expect, it } from 'vitest';
++import { describe, expect, it, vi } from 'vitest';
+ import { createDispatcher, type RegisteredCommand } from '../dispatch.js';
+ import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
+ import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
+ import { OPERATOR_COMMANDS } from '../registry.js';
++// Namespace import so `compileRule` can be spied on the same module object
++// `evaluate.ts` calls through — the same pattern `dry-run.test.ts` uses to
++// force a predicate throw without an actual multi-second ReDoS timeout.
++import * as automodRegistry from '../../automod/predicates/registry.js';
+ import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
+ import {
+   automodDomainAddCommand,
+@@ -279,6 +283,92 @@ describe('automod dryrun', () => {
+     if (!res.ok) return;
+     expect(res.text).toContain('corpus is empty');
+   });
++
++  it('reports a throw rather than a clean summary, and abandons after five throws (CRITICAL-1, IMPORTANT-5)', async () => {
++    // Forced through a `compileRule` spy rather than an actual
++    // catastrophic-backtracking `regex` pattern, to keep this test fast —
++    // `regex.test.ts`'s Obligation 1 gate already proves the real timeout
++    // takes multiple seconds. Before this fix, this exact scenario rendered
++    // as "0/20 matched · 0 false positive(s) of ... labelled · 0 missed" —
++    // indistinguishable from a rule that behaved perfectly.
++    const spy = vi.spyOn(automodRegistry, 'compileRule').mockReturnValue({
++      ok: true,
++      compiled: {
++        evaluate: () => {
++          throw new Error('boom');
++        },
++      },
++    });
++    try {
++      const res = await drive(
++        automodDryRunCommand,
++        {
++          findAutomodRule: () => ruleWith(['badword']),
++          listAutomodFixtures: () =>
++            Array.from({ length: 20 }, (_, i) =>
++              fixture({ fixtureId: `f${String(i)}`, content: `fixture ${String(i)}` }),
++            ),
++        },
++        { ruleId: 'r1' },
++      );
++      expect(res.ok).toBe(true);
++      if (!res.ok) return;
++      expect(res.text).toContain('5 of 5 evaluation(s) failed');
++      expect(res.text).toContain('abandoned');
++      expect(res.text).toContain('5 of 20 fixtures');
++      // The rendering rule that matters most: no match table, no per-fixture
++      // trace, once the predicate threw — a table under a report where most
++      // fixtures never actually ran is worse than useless.
++      expect(res.text).not.toContain('matched on');
++      expect(res.data).toMatchObject({ threw: 5, total: 5, corpusSize: 20 });
++    } finally {
++      spy.mockRestore();
++    }
++  });
++
++  it('says how many fixtures carry attachment metadata, for an attachment_type rule (IMPORTANT-6)', async () => {
++    // `attachment_type` can only ever match a fixture with attachment rows,
++    // and a fixture captured before migration 0013 has none. Over a corpus
++    // where most fixtures predate that migration, "0/3 matched" reads as
++    // "no bad files were posted" when it is actually "no fixture here
++    // records a file either way".
++    const res = await drive(
++      automodDryRunCommand,
++      {
++        findAutomodRule: () =>
++          ruleWith([], { kind: 'attachment_type', config: '{"blockedExtensions":["exe"]}' }),
++        listAutomodFixtures: () => [
++          fixture({ fixtureId: 'f1', content: 'no file here' }),
++          fixture({ fixtureId: 'f2', content: 'no file here either' }),
++          fixture({
++            fixtureId: 'f3',
++            content: 'has a file',
++            attachments: [{ fileName: 'x.txt', contentType: 'text/plain', sizeBytes: 1 }],
++          }),
++        ],
++      },
++      { ruleId: 'r1' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).toContain('1 of 3 fixtures carry attachment metadata');
++    expect(res.data).toMatchObject({ attachmentMetadata: { withMetadata: 1, total: 3 } });
++  });
++
++  it('does not mention attachment metadata for a rule kind that does not read attachments', async () => {
++    const res = await drive(
++      automodDryRunCommand,
++      {
++        findAutomodRule: () => ruleWith(['badword']),
++        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello badword' })],
++      },
++      { ruleId: 'r1' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).not.toContain('attachment metadata');
++    expect(res.data).toMatchObject({ attachmentMetadata: null });
++  });
+ });
+ 
+ describe('automod review', () => {
+@@ -588,6 +678,19 @@ describe('automod verdict', () => {
+   });
+ });
+ 
++/**
++ * These four suites drive `fakeOpsPorts` with canned outcomes and assert on
++ * rendered text — they test the renderer, not the repository, so they
++ * cannot by themselves catch IMPORTANT-1 (the wrong `listType` printed),
++ * IMPORTANT-2 (canonicalisation asymmetry between add and remove) or
++ * IMPORTANT-7 (no kind check) — the fake never disagrees with what the
++ * command asks it to say (decorative guard 1, review of Slices 3+5). Real
++ * round-trip coverage against a migrated database and the real repository
++ * lives in `packages/storage/src/repos/automod-rule-lists.test.ts`, which is
++ * the one place that can reach both (`core` may not import `@bananasaurs/
++ * storage`, ADR 0014).
++ */
++
+ describe('automod invite-allow', () => {
+   it('is registered as a write', () => {
+     const names = OPERATOR_COMMANDS.map((c) => c.name);
+@@ -665,6 +768,30 @@ describe('automod invite-allow', () => {
+     ]);
+   });
+ 
++  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodInviteAllowCommand,
++      {
++        addInviteAllowlistEntry: () => 'wrong-kind',
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'default-word-filter', code: 'clubhouse', label: 'our own server' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
++    expect(res.text).toContain('not an invite rule');
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.invite_allowlist_added',
++        after: expect.objectContaining({ outcome: 'wrong-kind' }),
++      }),
++    ]);
++  });
++
+   it('refuses without --confirm', async () => {
+     const res = await driveWrite(
+       automodInviteAllowCommand,
+@@ -736,6 +863,30 @@ describe('automod invite-deny', () => {
+       expect.objectContaining({ action: 'automod.invite_allowlist_removed' }),
+     ]);
+   });
++
++  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodInviteDenyCommand,
++      {
++        removeInviteAllowlistEntry: () => 'wrong-kind',
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'default-word-filter', code: 'clubhouse' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
++    expect(res.text).toContain('not an invite rule');
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.invite_allowlist_removed',
++        after: expect.objectContaining({ outcome: 'wrong-kind' }),
++      }),
++    ]);
++  });
+ });
+ 
+ describe('automod domain-add', () => {
+@@ -750,7 +901,7 @@ describe('automod domain-add', () => {
+     const res = await driveWrite(
+       automodDomainAddCommand,
+       {
+-        addLinkDomain: () => 'added',
++        addLinkDomain: () => ({ outcome: 'added', mode: 'deny' }),
+         listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
+         recordAudit: (input) => {
+           audit.push(input);
+@@ -770,10 +921,49 @@ describe('automod domain-add', () => {
+     ]);
+   });
+ 
++  it("names the domain's stored listType, not the operator's requested one, on a repeat add under the other list (IMPORTANT-1)", async () => {
++    // The primary key is (guild, rule, domain), so re-adding under the
++    // *other* listType is a no-op the port reports as `already-present`
++    // with the listType actually stored — here, `allow`, even though the
++    // operator asked for `deny`.
++    const res = await driveWrite(
++      automodDomainAddCommand,
++      {
++        addLinkDomain: () => ({ outcome: 'already-present', listType: 'allow', mode: 'allow' }),
++        listLinkDomains: () => [{ domain: 'example.com', listType: 'allow' }],
++        recordAudit: () => {},
++      },
++      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, alreadyPresent: true, listType: 'allow' });
++    expect(res.text).toContain("already on rule domain-rule's allow list");
++    expect(res.text).not.toContain("already on rule domain-rule's deny list");
++    expect(res.text).toContain('move it to deny');
++  });
++
++  it('warns when the add leaves the rule matching every link — an allow-mode rule with nothing on its allow list (CRITICAL-2)', async () => {
++    // Adding a deny-listType domain to an allow-mode rule does not touch the
++    // active (allow) list, so it can still be empty after the write.
++    const res = await driveWrite(
++      automodDomainAddCommand,
++      {
++        addLinkDomain: () => ({ outcome: 'added', mode: 'allow' }),
++        listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
++        recordAudit: () => {},
++      },
++      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).toContain('matches every link');
++  });
++
+   it('refuses a listType outside allow|deny at the validator', async () => {
+     const res = await driveWrite(
+       automodDomainAddCommand,
+-      { addLinkDomain: () => 'added', listLinkDomains: () => [] },
++      { addLinkDomain: () => ({ outcome: 'added', mode: 'allow' }), listLinkDomains: () => [] },
+       { ruleId: 'r1', domain: 'example.com', listType: 'block' },
+     );
+     expect(res.ok).toBe(false);
+@@ -784,7 +974,7 @@ describe('automod domain-add', () => {
+     const res = await driveWrite(
+       automodDomainAddCommand,
+       {
+-        addLinkDomain: () => 'no-such-rule',
++        addLinkDomain: () => ({ outcome: 'no-such-rule' }),
+         recordAudit: (input) => {
+           audit.push(input);
+         },
+@@ -796,6 +986,30 @@ describe('automod domain-add', () => {
+     expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+     expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_added' })]);
+   });
++
++  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodDomainAddCommand,
++      {
++        addLinkDomain: () => ({ outcome: 'wrong-kind' }),
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'default-word-filter', domain: 'example.com', listType: 'allow' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
++    expect(res.text).toContain('not a link_domain rule');
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.link_domain_added',
++        after: expect.objectContaining({ outcome: 'wrong-kind' }),
++      }),
++    ]);
++  });
+ });
+ 
+ describe('automod domain-rm', () => {
+@@ -809,8 +1023,8 @@ describe('automod domain-rm', () => {
+     const res = await driveWrite(
+       automodDomainRmCommand,
+       {
+-        removeLinkDomain: () => 'removed',
+-        listLinkDomains: () => [],
++        removeLinkDomain: () => ({ outcome: 'removed', mode: 'deny' }),
++        listLinkDomains: () => [{ domain: 'other.example', listType: 'deny' }],
+         recordAudit: () => {},
+       },
+       { ruleId: 'domain-rule', domain: 'example.com' },
+@@ -824,8 +1038,8 @@ describe('automod domain-rm', () => {
+     const res = await driveWrite(
+       automodDomainRmCommand,
+       {
+-        removeLinkDomain: () => 'not-present',
+-        listLinkDomains: () => [],
++        removeLinkDomain: () => ({ outcome: 'not-present', mode: 'deny' }),
++        listLinkDomains: () => [{ domain: 'other.example', listType: 'deny' }],
+         recordAudit: () => {},
+       },
+       { ruleId: 'domain-rule', domain: 'ghost.example' },
+@@ -835,12 +1049,45 @@ describe('automod domain-rm', () => {
+     expect(res.data).toMatchObject({ ok: true, removed: false });
+   });
+ 
++  it('warns that the rule is now inert when the last deny row is removed (CRITICAL-2)', async () => {
++    const res = await driveWrite(
++      automodDomainRmCommand,
++      {
++        removeLinkDomain: () => ({ outcome: 'removed', mode: 'deny' }),
++        listLinkDomains: () => [],
++        recordAudit: () => {},
++      },
++      { ruleId: 'domain-rule', domain: 'example.com' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).toContain('can never match');
++  });
++
++  it('warns that the rule now matches every link when the last allow row is removed (CRITICAL-2)', async () => {
++    // The dangerous direction, not just the inert one: "the domain lists are
++    // now empty" used to read as a tidy-up regardless of which one this is.
++    const res = await driveWrite(
++      automodDomainRmCommand,
++      {
++        removeLinkDomain: () => ({ outcome: 'removed', mode: 'allow' }),
++        listLinkDomains: () => [],
++        recordAudit: () => {},
++      },
++      { ruleId: 'domain-rule', domain: 'club.org' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.text).toContain('matches every link');
++    expect(res.text).toContain('add a domain or disable the rule');
++  });
++
+   it('refuses a rule that does not exist, but still audits it', async () => {
+     const audit: unknown[] = [];
+     const res = await driveWrite(
+       automodDomainRmCommand,
+       {
+-        removeLinkDomain: () => 'no-such-rule',
++        removeLinkDomain: () => ({ outcome: 'no-such-rule' }),
+         recordAudit: (input) => {
+           audit.push(input);
+         },
+@@ -852,4 +1099,28 @@ describe('automod domain-rm', () => {
+     expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+     expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_removed' })]);
+   });
++
++  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodDomainRmCommand,
++      {
++        removeLinkDomain: () => ({ outcome: 'wrong-kind' }),
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'default-word-filter', domain: 'example.com' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
++    expect(res.text).toContain('not a link_domain rule');
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.link_domain_removed',
++        after: expect.objectContaining({ outcome: 'wrong-kind' }),
++      }),
++    ]);
++  });
+ });
+diff --git a/packages/core/src/ops/commands/automod.ts b/packages/core/src/ops/commands/automod.ts
+index 89105c3..29ecc06 100644
+--- a/packages/core/src/ops/commands/automod.ts
++++ b/packages/core/src/ops/commands/automod.ts
+@@ -36,8 +36,17 @@ const automodDryRunArgs = z.object({
+ const unlabelledCount = (report: DryRunReport): number =>
+   report.results.filter((result) => result.label === 'unlabelled').length;
+ 
++/** How much of the corpus a rule reading attachments actually has to work with (IMPORTANT-6). */
++interface AttachmentAwareness {
++  readonly withMetadata: number;
++  readonly total: number;
++}
++
+ /** `DryRunReport`, projected to plain `JsonValue` — no readonly arrays, no `undefined`. */
+-const projectReport = (report: DryRunReport): JsonValue => ({
++const projectReport = (
++  report: DryRunReport,
++  attachmentAwareness: AttachmentAwareness | undefined,
++): JsonValue => ({
+   ruleId: report.ruleId,
+   kind: report.kind,
+   usable: report.usable,
+@@ -45,6 +54,11 @@ const projectReport = (report: DryRunReport): JsonValue => ({
+     report.failure === undefined
+       ? null
+       : { reason: report.failure.reason, detail: report.failure.detail },
++  // CRITICAL-1: a throw is not a plain non-match, and `data` must be able to
++  // say so on its own — a consumer reading only `matched`/`total` must not be
++  // able to reconstruct "clean" from a rule that mostly threw.
++  threw: report.threw,
++  corpusSize: report.corpusSize,
+   total: report.total,
+   matched: report.matched,
+   falsePositives: report.falsePositives,
+@@ -53,11 +67,19 @@ const projectReport = (report: DryRunReport): JsonValue => ({
+   // belongs beside them in `data`, not only worked out from `results` by
+   // whoever reads it — see the summary line below for the reasoning.
+   unlabelled: unlabelledCount(report),
++  // IMPORTANT-6: null for every kind but `attachment_type`, whose real
++  // denominator (fixtures that carry attachment metadata at all) is not the
++  // same number as `total` once the corpus predates OD-3's migration.
++  attachmentMetadata:
++    attachmentAwareness === undefined
++      ? null
++      : { withMetadata: attachmentAwareness.withMetadata, total: attachmentAwareness.total },
+   results: report.results.map((result) => ({
+     fixtureId: result.fixtureId,
+     label: result.label,
+     matched: result.matched,
+     agreement: result.agreement,
++    outcome: result.outcome,
+     match:
+       result.match === undefined
+         ? null
+@@ -106,7 +128,27 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
+       args.source === undefined ? {} : { source: args.source },
+     );
+     const report = runDryRun({ guildId: ctx.guildId, rule, fixtures });
+-    const data = projectReport(report);
++    const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
++
++    // IMPORTANT-6: `attachment_type` can only ever match a fixture that has
++    // attachment rows, and every fixture captured before migration 0013 has
++    // none (`types.ts`: "an empty list is the honest representation"). Over
++    // a corpus captured early in the observe window this rule's summary
++    // denominator is the fixture count, not the count that could possibly
++    // match — "0/300 matched" then reads as "no bad files were posted" when
++    // it is actually "no fixture in this corpus records a file either way".
++    // Computed for every branch below (not only the final summary) so it
++    // reaches `data` even when the run is abandoned or the corpus is empty.
++    const attachmentAwareness: AttachmentAwareness | undefined =
++      report.kind === 'attachment_type'
++        ? {
++            withMetadata: report.results.filter(
++              (result) => (byFixtureId.get(result.fixtureId)?.attachments.length ?? 0) > 0,
++            ).length,
++            total: report.total,
++          }
++        : undefined;
++    const data = projectReport(report, attachmentAwareness);
+ 
+     // Case 1: the rule cannot even compile. A match count under it is worse
+     // than useless — "0 matches" reads exactly like a rule behaving
+@@ -132,7 +174,26 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
+       };
+     }
+ 
+-    const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
++    // Case 3 (CRITICAL-1, IMPORTANT-5): the predicate threw on at least one
++    // fixture. Treated the way !usable is treated above: a match table under
++    // a report where some fixtures never actually ran the predicate is worse
++    // than useless, because "0/300 matched" is indistinguishable from a rule
++    // that behaved perfectly. `runDryRun` abandons the replay after five
++    // throws, so `report.total` (evaluated) can be well short of
++    // `report.corpusSize` (what exists) — said explicitly, because the run
++    // was abandoned, not completed.
++    if (report.threw > 0) {
++      const abandoned = report.total < report.corpusSize;
++      return {
++        text:
++          `${report.threw} of ${report.total} evaluation(s) failed (the predicate threw)` +
++          (abandoned
++            ? `; the run was abandoned after evaluating ${report.total} of ` +
++              `${report.corpusSize} fixtures in the corpus`
++            : ''),
++        data,
++      };
++    }
+ 
+     // CRITICAL-1: "41/300 matched · 0 false positive(s) · 0 missed" is true
+     // and unreadable — it is indistinguishable from a rule 296 humans
+@@ -153,6 +214,12 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
+           `positive(s) of ${labelled} labelled · ${report.falseNegatives} missed`;
+ 
+     const lines = [summary];
++    if (attachmentAwareness !== undefined) {
++      lines.push(
++        `${attachmentAwareness.withMetadata} of ${attachmentAwareness.total} fixtures carry ` +
++          `attachment metadata (the rest predate it and cannot match this rule)`,
++      );
++    }
+ 
+     for (const result of report.results) {
+       // Narrowed on `result.match` itself, not on `result.matched`: the two
+@@ -481,6 +548,40 @@ const projectLinkDomains = (
+   entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+ ): JsonValue => entries.map((entry) => ({ domain: entry.domain, listType: entry.listType }));
+ 
++/**
++ * Says what an empty *active* list means for this rule, or `undefined` when
++ * the active list — the one `config.mode` names — has at least one domain
++ * (CRITICAL-2, review of Slices 3+5).
++ *
++ * "The domain lists are now empty" used to read as a completed tidy-up
++ * regardless of which direction it failed in. It is either "this rule is now
++ * inert" (`deny` with nothing on the deny list — ADR 0039's silent
++ * non-matching) or "this rule now matches every link" (`allow` with nothing
++ * on the allow list — the dangerous direction, since in `enforce` mode that
++ * deletes every message containing a link). The command has the rule id and
++ * now the port hands back `config.mode`, so it can say which.
++ *
++ * `mode` is `undefined` only if the rule's stored config failed to parse as
++ * `{mode: 'allow' | 'deny'}` — a state `compileRule`/`doctor` already report
++ * on their own path; this degrades to silence rather than guessing.
++ */
++const linkDomainStatusLine = (
++  ruleId: string,
++  mode: 'allow' | 'deny' | undefined,
++  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
++): string | undefined => {
++  if (mode === undefined) return undefined;
++  const activeCount = entries.filter((entry) => entry.listType === mode).length;
++  if (activeCount > 0) return undefined;
++  return mode === 'allow'
++    ? `rule ${ruleId} is a whitelist (mode allow) and its allow list is empty, so it matches every link; add a domain or disable the rule`
++    : `rule ${ruleId} is a blocklist (mode deny) and its deny list is empty, so it can never match; add a domain or disable the rule`;
++};
++
++/** Appends a status line, when there is one, on its own line. */
++const withStatusLine = (text: string, statusLine: string | undefined): string =>
++  statusLine === undefined ? text : `${text}\n${statusLine}`;
++
+ const automodInviteAllowArgs = z
+   .object({
+     ruleId: z.string().min(1),
+@@ -529,6 +630,24 @@ export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInv
+       };
+     }
+ 
++    if (outcome === 'wrong-kind') {
++      // IMPORTANT-7: `ruleExists` alone cannot tell a real-but-wrong-kind
++      // rule id from the operator's intended one — without this, the write
++      // below would succeed against e.g. a `keyword_filter` rule, whose
++      // `compile` never reads `inviteAllowlist`. A usage answer, the same
++      // treatment as `no-such-rule`, and an audit row for the same reason.
++      return {
++        text: `rule ${args.ruleId} is not an invite rule; invite-allow only edits invite rules`,
++        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
++        audit: {
++          action: 'automod.invite_allowlist_added',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'wrong-kind', code: args.code },
++        },
++      };
++    }
++
+     const list = ctx.ports.listInviteAllowlist(args.ruleId);
+     const alreadyPresent = outcome === 'already-present';
+ 
+@@ -587,6 +706,19 @@ export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInvi
+       };
+     }
+ 
++    if (outcome === 'wrong-kind') {
++      return {
++        text: `rule ${args.ruleId} is not an invite rule; invite-deny only edits invite rules`,
++        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
++        audit: {
++          action: 'automod.invite_allowlist_removed',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'wrong-kind', code: args.code },
++        },
++      };
++    }
++
+     const list = ctx.ports.listInviteAllowlist(args.ruleId);
+     const removed = outcome === 'removed';
+ 
+@@ -633,7 +765,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
+       listType: args.listType,
+     });
+ 
+-    if (outcome === 'no-such-rule') {
++    if (outcome.outcome === 'no-such-rule') {
+       return {
+         text: `no rule ${args.ruleId} in this guild`,
+         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
+@@ -646,20 +778,46 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
+       };
+     }
+ 
++    if (outcome.outcome === 'wrong-kind') {
++      // IMPORTANT-7, same reasoning as invite-allow above: a rule id that
++      // exists but is not a `link_domain` rule would otherwise accept a
++      // write its own `compile` never reads.
++      return {
++        text: `rule ${args.ruleId} is not a link_domain rule; domain-add only edits link_domain rules`,
++        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
++        audit: {
++          action: 'automod.link_domain_added',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'wrong-kind', domain: args.domain },
++        },
++      };
++    }
++
+     const list = ctx.ports.listLinkDomains(args.ruleId);
+-    const alreadyPresent = outcome === 'already-present';
++    const alreadyPresent = outcome.outcome === 'already-present';
++    // IMPORTANT-1: the primary key is (guild, rule, domain), so re-adding a
++    // domain under the *other* listType is a no-op — the port reports the
++    // listType actually stored, which may differ from what the operator
++    // asked for. Naming the requested one here would assert a state that is
++    // false, with the real state printed right below it in `renderLinkDomains`.
++    const storedListType = alreadyPresent ? outcome.listType : args.listType;
++    const mainLine = alreadyPresent
++      ? `${args.domain} is already on rule ${args.ruleId}'s ${storedListType} list; nothing changed` +
++        (storedListType === args.listType
++          ? ''
++          : ` (remove it first to move it to ${args.listType})`)
++      : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`;
+ 
+     return {
+-      text:
+-        (alreadyPresent
+-          ? `${args.domain} was already on rule ${args.ruleId}'s ${args.listType} list`
+-          : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`) +
+-        '\n' +
+-        renderLinkDomains(args.ruleId, list),
++      text: withStatusLine(
++        `${mainLine}\n${renderLinkDomains(args.ruleId, list)}`,
++        linkDomainStatusLine(args.ruleId, outcome.mode, list),
++      ),
+       data: {
+         ok: true,
+         domain: args.domain,
+-        listType: args.listType,
++        listType: storedListType,
+         alreadyPresent,
+         domains: projectLinkDomains(list),
+       },
+@@ -667,7 +825,7 @@ export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomai
+         action: 'automod.link_domain_added',
+         subjectType: 'mod_rule',
+         subjectId: args.ruleId,
+-        after: { domain: args.domain, listType: args.listType, alreadyPresent },
++        after: { domain: args.domain, listType: storedListType, alreadyPresent },
+       },
+     };
+   },
+@@ -692,7 +850,7 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
+   run(ctx: OpsContext, args): OpsWriteResult {
+     const outcome = ctx.ports.removeLinkDomain({ ruleId: args.ruleId, domain: args.domain });
+ 
+-    if (outcome === 'no-such-rule') {
++    if (outcome.outcome === 'no-such-rule') {
+       return {
+         text: `no rule ${args.ruleId} in this guild`,
+         data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
+@@ -705,16 +863,33 @@ export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomain
+       };
+     }
+ 
++    if (outcome.outcome === 'wrong-kind') {
++      return {
++        text: `rule ${args.ruleId} is not a link_domain rule; domain-rm only edits link_domain rules`,
++        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
++        audit: {
++          action: 'automod.link_domain_removed',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'wrong-kind', domain: args.domain },
++        },
++      };
++    }
++
+     const list = ctx.ports.listLinkDomains(args.ruleId);
+-    const removed = outcome === 'removed';
++    const removed = outcome.outcome === 'removed';
++    // CRITICAL-2: "the domain lists are now empty" used to read as a
++    // completed tidy-up regardless of which direction it failed in.
++    // `linkDomainStatusLine` says which, using the rule's own `config.mode`.
++    const mainLine = removed
++      ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
++      : `${args.domain} was not on rule ${args.ruleId}'s domain lists`;
+ 
+     return {
+-      text:
+-        (removed
+-          ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
+-          : `${args.domain} was not on rule ${args.ruleId}'s domain lists`) +
+-        '\n' +
+-        renderLinkDomains(args.ruleId, list),
++      text: withStatusLine(
++        `${mainLine}\n${renderLinkDomains(args.ruleId, list)}`,
++        linkDomainStatusLine(args.ruleId, outcome.mode, list),
++      ),
+       data: { ok: true, domain: args.domain, removed, domains: projectLinkDomains(list) },
+       audit: {
+         action: 'automod.link_domain_removed',
+diff --git a/packages/core/src/ops/ports.ts b/packages/core/src/ops/ports.ts
+index 116b74b..e7b9b8a 100644
+--- a/packages/core/src/ops/ports.ts
++++ b/packages/core/src/ops/ports.ts
+@@ -313,7 +313,6 @@ export interface OpsPorts {
+      * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
+      */
+     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
+-  /** Points an event kind at a channel, creating or re-pointing the route. */
+   /**
+    * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
+    * PR-19). `'already-present'` is a real answer, not a refusal: the
+@@ -321,43 +320,76 @@ export interface OpsPorts {
+    * telling the operator "that code was already allowed" beats both silence
+    * and a fault. `'no-such-rule'` is a usage answer for an operator who
+    * mistyped a rule id — the composite foreign key would otherwise surface an
+-   * opaque `FOREIGN KEY constraint failed`.
++   * opaque `FOREIGN KEY constraint failed`. `'wrong-kind'` (IMPORTANT-7) is
++   * the same usage-answer treatment for a rule id that exists but is not an
++   * `invite` rule: `ruleExists` alone cannot tell a typo'd-but-real rule id
++   * from the operator's intended one, and writing the row anyway would be a
++   * write nothing will ever read.
+    */
+   addInviteAllowlistEntry(input: {
+     readonly ruleId: string;
+     readonly code: string;
+     readonly label: string;
+-  }): 'added' | 'already-present' | 'no-such-rule';
++  }): 'added' | 'already-present' | 'no-such-rule' | 'wrong-kind';
+   /** `ruleId`'s invite allowlist, ordered by code — for printing after a write. */
+   listInviteAllowlist(ruleId: string): readonly { readonly code: string; readonly label: string }[];
+   /**
+    * Removes one code from `ruleId`'s invite allowlist. `'not-present'` is a
+    * real answer, the same shape `unexcludeChannel`'s boolean already uses for
+-   * "nothing to remove is not a fault".
++   * "nothing to remove is not a fault". `'wrong-kind'` is the same guard
++   * `addInviteAllowlistEntry` carries, for the same reason.
+    */
+   removeInviteAllowlistEntry(input: {
+     readonly ruleId: string;
+     readonly code: string;
+-  }): 'removed' | 'not-present' | 'no-such-rule';
++  }): 'removed' | 'not-present' | 'no-such-rule' | 'wrong-kind';
+   /**
+    * Adds one domain to `ruleId`'s allow or deny list (ADR 0040 §3, plan
+-   * ruling PR-19). Same three-way answer as `addInviteAllowlistEntry`, for
+-   * the same two reasons.
++   * ruling PR-19).
++   *
++   * A discriminated union rather than a bare string, unlike
++   * `addInviteAllowlistEntry`: `already-present` on its own would repeat
++   * IMPORTANT-1 (review of Slices 3+5) — the primary key is `(guild, rule,
++   * domain)`, so re-adding a domain under the *other* `listType` is also a
++   * no-op, and a command that could only print the operator's requested
++   * `listType` would assert a state that is false. `listType` here is the
++   * **stored** one, always, so the message can name it truthfully.
++   * `mode` is the rule's own `config.mode`, so the command can say what an
++   * empty active list actually means (CRITICAL-2) without a second port
++   * call. `'wrong-kind'` is `addInviteAllowlistEntry`'s guard, mirrored for
++   * `link_domain` (IMPORTANT-7).
+    */
+   addLinkDomain(input: {
+     readonly ruleId: string;
+     readonly domain: string;
+     readonly listType: 'allow' | 'deny';
+-  }): 'added' | 'already-present' | 'no-such-rule';
++  }):
++    | { readonly outcome: 'added'; readonly mode: 'allow' | 'deny' | undefined }
++    | {
++        readonly outcome: 'already-present';
++        readonly listType: 'allow' | 'deny';
++        readonly mode: 'allow' | 'deny' | undefined;
++      }
++    | { readonly outcome: 'no-such-rule' }
++    | { readonly outcome: 'wrong-kind' };
+   /** `ruleId`'s allow and deny domain lists together, ordered by domain. */
+   listLinkDomains(
+     ruleId: string,
+   ): readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
+-  /** Removes one domain from either of `ruleId`'s lists. */
+-  removeLinkDomain(input: {
+-    readonly ruleId: string;
+-    readonly domain: string;
+-  }): 'removed' | 'not-present' | 'no-such-rule';
++  /**
++   * Removes one domain from either of `ruleId`'s lists.
++   *
++   * Same discriminated-union shape as `addLinkDomain` and for the same
++   * reason: `mode` lets the command say whether the removal just emptied the
++   * rule's active list (CRITICAL-2), which it cannot know from `'removed'`
++   * alone.
++   */
++  removeLinkDomain(input: { readonly ruleId: string; readonly domain: string }):
++    | { readonly outcome: 'removed'; readonly mode: 'allow' | 'deny' | undefined }
++    | { readonly outcome: 'not-present'; readonly mode: 'allow' | 'deny' | undefined }
++    | { readonly outcome: 'no-such-rule' }
++    | { readonly outcome: 'wrong-kind' };
++  /** Points an event kind at a channel, creating or re-pointing the route. */
+   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
+   /** Returns whether there was a route to change. False is a real answer. */
+   setRouteEnabled(eventKind: string, enabled: boolean): boolean;
+diff --git a/packages/storage/src/repos/automod-rule-lists.test.ts b/packages/storage/src/repos/automod-rule-lists.test.ts
+index 49e4b68..60417bb 100644
+--- a/packages/storage/src/repos/automod-rule-lists.test.ts
++++ b/packages/storage/src/repos/automod-rule-lists.test.ts
+@@ -12,14 +12,33 @@ import {
+ import { evaluateRule } from '@bananasaurs/core';
+ import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
+ import { upsertGuild } from './guilds.js';
+-import { createRule, listEnabledRules, ruleExists } from './automod-rules.js';
++import { createRule, findRuleKindAndConfig, listEnabledRules } from './automod-rules.js';
+ import {
+   addInviteAllowlistEntry,
++  addLinkDomain,
+   listInviteAllowlist,
++  listLinkDomains,
+   removeInviteAllowlistEntry,
++  removeLinkDomain,
+ } from './automod-rule-lists.js';
+ import type { GuildScope } from '../scope.js';
+ 
++/**
++ * A `link_domain` rule's configured `mode`, read the same tolerant way
++ * `apps/daemon/src/ops/wiring.ts`'s `linkDomainModeOf` does (duplicated
++ * rather than imported: that module lives in `apps/daemon`, which `storage`
++ * may not depend on, the same reason `portsFor` below reimplements the ports
++ * themselves instead of calling `opsPortsFor`).
++ */
++const linkDomainModeOf = (configJson: string): 'allow' | 'deny' | undefined => {
++  try {
++    const parsed = JSON.parse(configJson) as { mode?: unknown };
++    return parsed.mode === 'allow' || parsed.mode === 'deny' ? parsed.mode : undefined;
++  } catch {
++    return undefined;
++  }
++};
++
+ /**
+  * The end-to-end test the Task 9 brief names as the one that makes this task
+  * worth having: an added invite code stops the `invite` predicate firing on
+@@ -97,12 +116,16 @@ const portsFor = (s: GuildScope): OpsPorts => ({
+   listUnreviewedMatches: notNeeded('listUnreviewedMatches'),
+   applySetting: notNeeded('applySetting'),
+   recordMatchVerdict: notNeeded('recordMatchVerdict'),
+-  // The three ports this test exercises for real — the same logic
+-  // `apps/daemon/src/ops/wiring.ts` uses: a `ruleExists` guard ahead of the
+-  // insert, so a mistyped rule id is a usage answer rather than an opaque
+-  // `FOREIGN KEY constraint failed`.
++  // The ports this test exercises for real — the same logic
++  // `apps/daemon/src/ops/wiring.ts` uses: `findRuleKindAndConfig` guards both
++  // existence and kind ahead of the write (IMPORTANT-7), so a mistyped rule
++  // id is a usage answer rather than an opaque `FOREIGN KEY constraint
++  // failed`, and a rule of the wrong kind is refused rather than writing a
++  // row nothing will ever read.
+   addInviteAllowlistEntry: (input) => {
+-    if (!ruleExists(s, input.ruleId)) return 'no-such-rule';
++    const rule = findRuleKindAndConfig(s, input.ruleId);
++    if (rule === undefined) return 'no-such-rule';
++    if (rule.kind !== 'invite') return 'wrong-kind';
+     const before = listInviteAllowlist(s, input.ruleId).length;
+     addInviteAllowlistEntry(s, { ...input, now: NOW });
+     const after = listInviteAllowlist(s, input.ruleId).length;
+@@ -110,13 +133,37 @@ const portsFor = (s: GuildScope): OpsPorts => ({
+   },
+   listInviteAllowlist: (ruleId) => listInviteAllowlist(s, ruleId),
+   removeInviteAllowlistEntry: (input) => {
+-    if (!ruleExists(s, input.ruleId)) return 'no-such-rule';
++    const rule = findRuleKindAndConfig(s, input.ruleId);
++    if (rule === undefined) return 'no-such-rule';
++    if (rule.kind !== 'invite') return 'wrong-kind';
+     const removed = removeInviteAllowlistEntry(s, input.ruleId, input.code);
+     return removed ? 'removed' : 'not-present';
+   },
+-  addLinkDomain: notNeeded('addLinkDomain'),
+-  listLinkDomains: notNeeded('listLinkDomains'),
+-  removeLinkDomain: notNeeded('removeLinkDomain'),
++  // Mirrors `wiring.ts`'s `addLinkDomain`/`removeLinkDomain`: the repository
++  // reports the canonical domain and whether the insert actually happened
++  // (IMPORTANT-1), so the port names the *stored* listType on a no-op
++  // instead of the operator's requested one.
++  addLinkDomain: (input) => {
++    const rule = findRuleKindAndConfig(s, input.ruleId);
++    if (rule === undefined) return { outcome: 'no-such-rule' };
++    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
++    const mode = linkDomainModeOf(rule.config);
++    const result = addLinkDomain(s, { ...input, now: NOW });
++    if (result.inserted) return { outcome: 'added', mode };
++    const stored = listLinkDomains(s, input.ruleId).find(
++      (entry) => entry.domain === result.domain,
++    );
++    return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
++  },
++  listLinkDomains: (ruleId) => listLinkDomains(s, ruleId),
++  removeLinkDomain: (input) => {
++    const rule = findRuleKindAndConfig(s, input.ruleId);
++    if (rule === undefined) return { outcome: 'no-such-rule' };
++    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
++    const mode = linkDomainModeOf(rule.config);
++    const removed = removeLinkDomain(s, input.ruleId, input.domain);
++    return { outcome: removed ? 'removed' : 'not-present', mode };
++  },
+   setRoute: notNeeded('setRoute'),
+   setRouteEnabled: notNeeded('setRouteEnabled'),
+   excludeChannel: notNeeded('excludeChannel'),
+@@ -235,4 +282,143 @@ describe('the CLI write path for the invite allowlist (Task 9, plan ruling PR-19
+       data: { ok: false, reason: 'no-such-rule' },
+     });
+   });
++
++  it('refuses invite-allow against a rule that exists but is the wrong kind, rather than writing a row nothing will ever read (IMPORTANT-7)', () => {
++    // `keyword_filter`'s `compile` never reads `inviteAllowlist` — a write
++    // through this command against such a rule would be silently inert
++    // forever, which is exactly the failure `ruleExists` alone could not
++    // catch (it only answers "does this id name a rule at all").
++    createRule(scope, {
++      ruleId: 'word-filter-rule',
++      kind: 'keyword_filter',
++      name: 'words',
++      config: '{}',
++      now: NOW,
++    });
++
++    const command = OPERATOR_COMMANDS.find((c) => c.name === 'automod invite-allow');
++    if (command === undefined) throw new Error('automod invite-allow must be registered');
++    const ctx: OpsContext = {
++      guildId: GUILD,
++      now: () => NOW,
++      ports: portsFor(scope),
++      actor,
++      instance,
++    };
++
++    const parsed = command.runParsed(ctx, {
++      ruleId: 'word-filter-rule',
++      code: 'clubhouse',
++      label: 'our own server',
++    });
++    expect(parsed.ok).toBe(true);
++    if (!parsed.ok) return;
++    expect(parsed.result).toMatchObject({ data: { ok: false, reason: 'wrong-kind' } });
++
++    // Nothing was written: the rule's invite allowlist stays empty.
++    expect(listInviteAllowlist(scope, 'word-filter-rule')).toEqual([]);
++  });
++});
++
++describe('the CLI write path for the link_domain lists (Task 9, plan ruling PR-19)', () => {
++  it("names the domain's stored listType, not the operator's requested one, on a repeat add under the other list (IMPORTANT-1)", () => {
++    createRule(scope, {
++      ruleId: 'domain-rule',
++      kind: 'link_domain',
++      name: 'links',
++      config: '{"mode":"allow"}',
++      now: NOW,
++    });
++
++    const addCommand = OPERATOR_COMMANDS.find((c) => c.name === 'automod domain-add');
++    if (addCommand === undefined) throw new Error('automod domain-add must be registered');
++    const ctx: OpsContext = {
++      guildId: GUILD,
++      now: () => NOW,
++      ports: portsFor(scope),
++      actor,
++      instance,
++    };
++
++    const first = addCommand.runParsed(ctx, {
++      ruleId: 'domain-rule',
++      domain: 'example.com',
++      listType: 'deny',
++    });
++    expect(first.ok).toBe(true);
++    if (!first.ok) return;
++    const firstResult = first.result;
++    if (firstResult instanceof Promise) throw new Error('expected a synchronous result');
++    expect(firstResult.data).toMatchObject({ ok: true, listType: 'deny' });
++
++    // Same domain, the *other* listType: the primary key is (guild, rule,
++    // domain), so this is a no-op — and the message must name the listType
++    // actually stored (deny, from the first add), not the one just asked
++    // for (allow), or an operator reading it would believe a move happened
++    // that did not.
++    const second = addCommand.runParsed(ctx, {
++      ruleId: 'domain-rule',
++      domain: 'example.com',
++      listType: 'allow',
++    });
++    expect(second.ok).toBe(true);
++    if (!second.ok) return;
++    const secondResult = second.result;
++    if (secondResult instanceof Promise) throw new Error('expected a synchronous result');
++    expect(secondResult.data).toMatchObject({ ok: true, alreadyPresent: true, listType: 'deny' });
++    expect(secondResult.text).toContain("already on rule domain-rule's deny list");
++    expect(secondResult.text).not.toContain("already on rule domain-rule's allow list");
++
++    expect(listLinkDomains(scope, 'domain-rule')).toEqual([
++      { domain: 'example.com', listType: 'deny' },
++    ]);
++  });
++
++  it('removes a domain added in a different case, because removal canonicalises the same way add does (IMPORTANT-2)', () => {
++    createRule(scope, {
++      ruleId: 'domain-rule-2',
++      kind: 'link_domain',
++      name: 'links',
++      config: '{"mode":"deny"}',
++      now: NOW,
++    });
++
++    const addCommand = OPERATOR_COMMANDS.find((c) => c.name === 'automod domain-add');
++    const rmCommand = OPERATOR_COMMANDS.find((c) => c.name === 'automod domain-rm');
++    if (addCommand === undefined || rmCommand === undefined) {
++      throw new Error('automod domain-add / domain-rm must be registered');
++    }
++    const ctx: OpsContext = {
++      guildId: GUILD,
++      now: () => NOW,
++      ports: portsFor(scope),
++      actor,
++      instance,
++    };
++
++    addCommand.runParsed(ctx, {
++      ruleId: 'domain-rule-2',
++      domain: 'example.com',
++      listType: 'deny',
++    });
++    expect(listLinkDomains(scope, 'domain-rule-2')).toEqual([
++      { domain: 'example.com', listType: 'deny' },
++    ]);
++
++    // Removing 'WWW.Example.COM' must find the row stored as 'example.com':
++    // `addLinkDomain` canonicalises (lower-case, strip leading www.), and
++    // until IMPORTANT-2's fix `removeLinkDomain` compared verbatim, so this
++    // deleted nothing and the operator had to reverse-engineer the stored
++    // form from the printed list.
++    const removed = rmCommand.runParsed(ctx, {
++      ruleId: 'domain-rule-2',
++      domain: 'WWW.Example.COM',
++    });
++    expect(removed.ok).toBe(true);
++    if (!removed.ok) return;
++    const removedResult = removed.result;
++    if (removedResult instanceof Promise) throw new Error('expected a synchronous result');
++    expect(removedResult.data).toMatchObject({ ok: true, removed: true });
++    expect(listLinkDomains(scope, 'domain-rule-2')).toEqual([]);
++  });
+ });
+diff --git a/packages/storage/src/repos/automod-rule-lists.ts b/packages/storage/src/repos/automod-rule-lists.ts
+index 67a013a..51524f0 100644
+--- a/packages/storage/src/repos/automod-rule-lists.ts
++++ b/packages/storage/src/repos/automod-rule-lists.ts
+@@ -1,4 +1,4 @@
+-import { and, asc, eq } from 'drizzle-orm';
++import { and, asc, eq, sql } from 'drizzle-orm';
+ import type { GuildScope } from '../scope.js';
+ import { read, write } from '../write.js';
+ import { automodInviteAllowlist, automodLinkDomains } from '../schema.js';
+@@ -84,7 +84,19 @@ export const addInviteAllowlistEntry = (
+       .run();
+   });
+ 
+-/** Returns whether there was an entry to remove. False is a real answer. */
++/**
++ * Removes one code from `ruleId`'s invite allowlist. Returns whether there
++ * was an entry to remove — false is a real answer.
++ *
++ * Matched case-insensitively against the stored, case-preserving `code`
++ * (IMPORTANT-2, review of Slices 3+5): `addInviteAllowlistEntry` stores the
++ * operator's code verbatim — case-preserving, because the label is for a
++ * human reading the list later — and `invite.ts`'s predicate already
++ * matches codes case-insensitively (`code.toLowerCase()`), so removal must
++ * use the same rule or `automod invite-deny r1 CLUBHOUSE` silently fails to
++ * remove `clubhouse`. This is deliberate consistency with the predicate, not
++ * drift from the add path's case-preserving storage.
++ */
+ export const removeInviteAllowlistEntry = (
+   scope: GuildScope,
+   ruleId: string,
+@@ -96,7 +108,10 @@ export const removeInviteAllowlistEntry = (
+       .where(
+         scope.only(
+           automodInviteAllowlist,
+-          and(eq(automodInviteAllowlist.ruleId, ruleId), eq(automodInviteAllowlist.code, code)),
++          and(
++            eq(automodInviteAllowlist.ruleId, ruleId),
++            sql`lower(${automodInviteAllowlist.code}) = lower(${code})`,
++          ),
+         ),
+       )
+       .run();
+@@ -121,6 +136,18 @@ export const listLinkDomains = (scope: GuildScope, ruleId: string): readonly Lin
+       .map((row) => ({ domain: row.domain, listType: row.listType as 'allow' | 'deny' })),
+   );
+ 
++/**
++ * The one place that knows `link_domain`'s canonical domain form (IMPORTANT-2,
++ * review of Slices 3+5): lower-cased, with a leading `www.` stripped, so
++ * `www.example.com` and `example.com` cannot both be entered as if they were
++ * different rows — the primary key would not catch that on its own. Used by
++ * both `addLinkDomain` and `removeLinkDomain` so there is exactly one place
++ * to update if the rule ever changes, rather than two copies that can drift
++ * (which is exactly how `removeLinkDomain` used to compare verbatim while
++ * `addLinkDomain` canonicalised).
++ */
++const canonicalDomain = (domain: string): string => domain.toLowerCase().replace(/^www\./, '');
++
+ export interface AddLinkDomainInput {
+   readonly ruleId: string;
+   readonly domain: string;
+@@ -128,34 +155,59 @@ export interface AddLinkDomainInput {
+   readonly now: number;
+ }
+ 
++export interface AddLinkDomainResult {
++  /** The canonical form actually written or matched, for the caller to look up the stored row. */
++  readonly domain: string;
++  /** Whether the insert changed anything. False means the domain was already on one of the lists. */
++  readonly inserted: boolean;
++}
++
+ /**
+  * Adds one domain to `ruleId`'s allow or deny list, or does nothing if it is
+- * already on it.
++ * already on it — under either `listType`, since the primary key is
++ * `(guild, rule, domain)` (IMPORTANT-1, review of Slices 3+5).
+  *
+- * Lower-cases the domain and strips a leading `www.` before storing, so the
+- * list holds one canonical form and `www.example.com` and `example.com`
+- * cannot both be entered as if they were different rows — the primary key
+- * would not catch that on its own.
++ * Returns the canonical domain and whether the insert actually happened,
++ * rather than `void`, so the composition root can report the domain's real
++ * stored `listType` on a no-op without re-deriving the canonical form itself
++ * — that duplication is exactly what let `removeLinkDomain` drift in the
++ * first place.
+  */
+-export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): void => {
+-  const domain = input.domain.toLowerCase().replace(/^www\./, '');
+-  write(scope, ({ db }) => {
+-    db.insert(automodLinkDomains)
+-      .values({
+-        guildId: scope.guildId,
+-        ruleId: input.ruleId,
+-        domain,
+-        listType: input.listType,
+-        addedAt: input.now,
+-      })
+-      .onConflictDoNothing({
+-        target: [automodLinkDomains.guildId, automodLinkDomains.ruleId, automodLinkDomains.domain],
+-      })
+-      .run();
+-  });
++export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): AddLinkDomainResult => {
++  const domain = canonicalDomain(input.domain);
++  const changes = write(
++    scope,
++    ({ db }) =>
++      db
++        .insert(automodLinkDomains)
++        .values({
++          guildId: scope.guildId,
++          ruleId: input.ruleId,
++          domain,
++          listType: input.listType,
++          addedAt: input.now,
++        })
++        .onConflictDoNothing({
++          target: [
++            automodLinkDomains.guildId,
++            automodLinkDomains.ruleId,
++            automodLinkDomains.domain,
++          ],
++        })
++        .run().changes,
++  );
++  return { domain, inserted: changes > 0 };
+ };
+ 
+-/** Returns whether there was a domain to remove. False is a real answer. */
++/**
++ * Removes one domain from either of `ruleId`'s lists. Returns whether there
++ * was a domain to remove — false is a real answer.
++ *
++ * Canonicalises before comparing (IMPORTANT-2): `addLinkDomain` stores the
++ * canonical form, but until this fix `removeLinkDomain` compared the
++ * operator's string verbatim, so `automod domain-rm r1 WWW.Example.COM`
++ * deleted nothing for a domain added as `example.com`.
++ */
+ export const removeLinkDomain = (scope: GuildScope, ruleId: string, domain: string): boolean =>
+   write(scope, ({ db }) => {
+     const result = db
+@@ -163,7 +215,10 @@ export const removeLinkDomain = (scope: GuildScope, ruleId: string, domain: stri
+       .where(
+         scope.only(
+           automodLinkDomains,
+-          and(eq(automodLinkDomains.ruleId, ruleId), eq(automodLinkDomains.domain, domain)),
++          and(
++            eq(automodLinkDomains.ruleId, ruleId),
++            eq(automodLinkDomains.domain, canonicalDomain(domain)),
++          ),
+         ),
+       )
+       .run();
+diff --git a/packages/storage/src/repos/automod-rules.ts b/packages/storage/src/repos/automod-rules.ts
+index 0600911..5ef32e7 100644
+--- a/packages/storage/src/repos/automod-rules.ts
++++ b/packages/storage/src/repos/automod-rules.ts
+@@ -312,6 +312,40 @@ export const ruleExists = (scope: GuildScope, ruleId: string): boolean =>
+         .get() !== undefined,
+   );
+ 
++export interface RuleKindAndConfig {
++  readonly kind: RuleKind;
++  /** Raw JSON text, unparsed — same boundary reasoning as `StoredAutomodRule.config`. */
++  readonly config: string;
++}
++
++/**
++ * A rule's `kind` and raw `config`, or `undefined` if no rule with this id
++ * exists — enabled or disabled, mirroring `ruleExists` (IMPORTANT-7, review
++ * of Slices 3+5).
++ *
++ * `ruleExists` alone answers "does this id name a rule", which is not enough
++ * to guard `automod invite-allow` / `invite-deny` / `domain-add` / `domain-rm`:
++ * those four commands each require one specific `kind`, and a rule id that
++ * exists but is the wrong kind (a `keyword_filter` rule handed to
++ * `invite-allow`, say) writes a row nothing will ever read. The composition
++ * root uses `kind` for that check, and `config` for `link_domain`'s
++ * `config.mode` — needed to report what an empty active list means
++ * (CRITICAL-2) — without a second read for it.
++ */
++export const findRuleKindAndConfig = (
++  scope: GuildScope,
++  ruleId: string,
++): RuleKindAndConfig | undefined => {
++  const row = read(scope, (db) =>
++    db
++      .select({ kind: modRules.kind, config: modRules.config })
++      .from(modRules)
++      .where(scope.only(modRules, eq(modRules.ruleId, ruleId)))
++      .get(),
++  );
++  return row === undefined ? undefined : { kind: row.kind as RuleKind, config: row.config };
++};
++
+ export interface CreateRuleInput {
+   readonly ruleId: string;
+   readonly kind: RuleKind;

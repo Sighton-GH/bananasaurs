@@ -46,7 +46,7 @@ per-slice execution log, and the findings worth carrying forward.
 | --- | --- | --- | --- |
 | 1 — predicate abstraction + `mod_rules.config` | 0040 ✅ | [plan](superpowers/plans/2026-09-01-slice-1-predicate-abstraction-and-config-carrier.md) | **✅ complete** — 7 tasks, whole-branch reviewed, fix wave re-reviewed clean. 2026 tests (from 1953), typecheck + lint clean |
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
-| 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **in progress** — plan written (`dc69cf6`), plan review dispatched |
+| 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **✅ complete** — 9 tasks in 5 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES), two fix waves, re-review's two residuals fixed. 2267 tests (from 2148), typecheck + lint clean |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — | — | not started |
 | 6 — cutover tracking, observe gating, automod testing mode | 0042 | — | not started |
 
@@ -841,6 +841,99 @@ test count that went up by 15. **A plan's file list is a checklist the
 coordinator has to tick, not a prediction** — the same lesson as dispatch A's
 "file list is a lower bound", running the other way. Carried to the whole-branch
 review as a specific thing to look at.
+
+## Slices 3+5 closed (2026-09-03)
+
+**19 commits since Slice 2 closed. 2267 tests / 109 files**, from 2148 at the
+branch point — none deleted. Typecheck and lint clean. **Every gate run by the
+coordinator, and every obligation guard watched failing by the coordinator
+personally**, not taken on report.
+
+Whole-branch review (strongest model) returned **SHIP-WITH-FIXES**: 2 CRITICAL,
+8 IMPORTANT, 7 MINOR. All ten CRITICAL and IMPORTANT findings fixed across two
+sequential fix waves, three decorative guards closed, one MINOR fixed. The
+re-review returned **ADDRESSED-WITH-RESIDUAL** and found **two new defects in
+the fixes themselves**; both are fixed (`9c9a52b`).
+
+**Both CRITICALs were the coordinator's, and both were cross-task — invisible to
+any per-task review.**
+
+- **CRITICAL-1: ruling PR-12 collided with Slice 2's dry-run reporting.** PR-12
+  chose a *throw* over a silent non-match for a timed-out regex, arguing a throw
+  is better "because `evaluateRule`'s caller logs it". True of the subscriber.
+  **False of the dry run, which has no logger by design** — and `runDryRun`
+  folded `threw` into a plain non-match, leaving `usable: true`. So a
+  catastrophic pattern over 300 fixtures reported
+  `0/300 matched · 0 false positive(s) of 300 labelled · 0 missed` when *every
+  evaluation timed out*. **The fourth appearance of the ADR 0039 shape on this
+  project.** A ruling that is sound for one caller is not sound for all of them,
+  and PR-12 named the wrong reason for being right.
+- **CRITICAL-2: a comment in the plan asserted the wrong failure direction.**
+  `link_domain` had no empty-list guard, because `compileRule`'s `no-terms`
+  check was hard-scoped to `keyword_filter`. With `mode: 'allow'` and no allow
+  rows, **every link matched** — in `enforce`, every message containing a link
+  deleted. The plan's comment claimed inferring mode from rows "would silently
+  change the rule from a whitelist into a no-op". It does not become a no-op; it
+  becomes match-everything. Now guarded (inert and loud, reported by `doctor`),
+  with the `invite` asymmetry stated in a comment: an empty *invite* allowlist
+  is correct and useful, because its single list does not invert on emptiness.
+
+**The most instructive IMPORTANT: I verified a library fact in one direction
+only.** IMPORTANT-8 — the plan's own facts table records that
+`\p{Extended_Pictographic}` **under**-counts (misses flags, keycaps, `#️⃣`), and
+that was measured and fixed. Nobody checked the other direction: it is *also*
+true for `©`, `®`, `™`, `‼`, `↔`, `▪`, `☑`, `♀`. So a bulleted list written with
+`▪` counted as emoji against a threshold that can be 1 — a false-positive source
+inside a predicate, in the slice whose release gate **is** a false-positive rate.
+**"Verify, do not assert" has a corollary: verify both directions of a
+boundary.** A measurement that confirms what you expected is half a measurement.
+
+**A privacy ruling taken rather than escalated (IMPORTANT-4).**
+`attachment_type`'s snippet was the raw filename, so it reached
+`mod_case_events.matched_snippet` — a moderation record `/forgetme` does **not**
+delete and which OD-3's approval never covered (the owner was asked about the
+*corpus*). Rather than widen retention and need a fresh approval, the snippet is
+now redacted to extension, content type and size, and the filename stays in the
+corpus where `/forgetme` reaches it. **The decisive argument was not caution: the
+predicate matches on type and extension, never on the name, so the filename was
+never the decision basis and does not belong in the enforcement record.** The
+owner can reverse this with one word — see the handoff.
+
+**The re-review's two residuals, and one of them was wrong.**
+
+1. **Valid.** CRITICAL-1's fix hardened `agreement` for a thrown fixture and left
+   the sibling `falsePositives`/`falseNegatives` tallies keyed on `matched`, so a
+   `should_match` fixture that threw counted as a miss. Watched failing:
+   `falseNegatives` was **2** where it should be 0. **The CLI text was already
+   protected, which is precisely what would have let the wrong number survive in
+   `data.falseNegatives`** — the field Slice 6's gate reads as a machine. A
+   human-facing guard is not a machine-facing guard.
+2. **Premise false, and now pinned by a test.** It claimed a crafted filename
+   writes an unbounded string into `trace.matchedOn`. Matching is **set
+   membership against configured values**, so a value the operator did not
+   configure never matches and no trace is built; `matchedOn` is bounded by the
+   config schema (20 chars for an extension, 255 for a content type) and a member
+   cannot lengthen it. Truncating it would have been *harmful*, not merely
+   unnecessary — `matchedOn` is the configured thing that matched, which is what
+   Slice 9's one-click suppression acts on (ruling R-8 exists because that field
+   once carried the wrong thing). **A reviewer's recommendation is a hypothesis;
+   this one was checked and rejected with a test recording why.** Its valid half —
+   `trace.ts`'s comment crediting `detail`'s `.max(120)` with covering the whole
+   trace — is fixed.
+
+**Decorative guards found in this slice: four.** One by the plan review before
+any code (the regex span test, whose fixture made `indexOf` and the engine agree),
+three by the whole-branch review — the four CLI suites that could not fail for
+three of the findings they appeared to cover, `link-domain.test.ts` with no
+empty-list case in either mode, and `caps`' code-stripping test passing for two
+reasons at once. **Running total on this project: fourteen.**
+
+**Plan defects found by the people implementing it: five** — a cross-task
+sequencing error that broke `typecheck` at a boundary the plan itself named, an
+unused import, two test helpers called but never defined, an ordering
+self-contradiction (deliberate), and a file list that under-named nine call
+sites. The Slice 1–2 pattern held again: **the prose was reliable, the code and
+the cross-references were not.**
 
 ### A second worktree, and E-1 confirmed fixed by `npm ci`
 

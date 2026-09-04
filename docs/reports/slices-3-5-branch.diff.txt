@@ -1,0 +1,4081 @@
+diff --git a/.claude/settings.json b/.claude/settings.json
+index 00c508b..e8910d0 100644
+--- a/.claude/settings.json
++++ b/.claude/settings.json
+@@ -8,7 +8,8 @@
+       "Bash(git diff *)",
+       "Bash(git log *)",
+       "Bash(git add *)",
+-      "Bash(git commit *)"
++      "Bash(git commit *)",
++      "Bash(rg *)"
+     ],
+     "deny": [
+       "Bash(git push*)",
+diff --git a/PRIVACY.md b/PRIVACY.md
+index daa6cc4..9e41a97 100644
+--- a/PRIVACY.md
++++ b/PRIVACY.md
+@@ -32,7 +32,7 @@ Run `/privacy` in the server at any time to see this policy and the current sett
+ 
+ - Moderation records — warnings, notes, timeouts, kicks, bans — including who acted, on whom, why, and when
+ - Automod matches and the action taken
+-- Messages an automod rule matched while it was being tested, kept as examples so a human can check whether the rule was right
++- Messages an automod rule matched while it was being tested, kept as examples so a human can check whether the rule was right — including the name, type and size of any files attached to them
+ - Role changes made by the bot, such as reaction-role assignments
+ - Join and leave events
+ - Commands run against the bot, and the answers it gave
+diff --git a/apps/daemon/src/automod.integration.test.ts b/apps/daemon/src/automod.integration.test.ts
+index c6f33f9..6009844 100644
+--- a/apps/daemon/src/automod.integration.test.ts
++++ b/apps/daemon/src/automod.integration.test.ts
+@@ -359,15 +359,17 @@ describe('automod, end to end on the fake gateway', () => {
+    * `doctor`, end to end against the same real database and the real
+    * `apps/daemon/src/ops/wiring.ts#opsPortsFor` this daemon runs in
+    * production — not the fakes `packages/core/src/ops/commands/reads.test.ts`
+-   * uses for its own unit coverage. A `caps` rule is one of the nine kinds
+-   * `mod_rules_kind` permits with no predicate behind it until Slice 5
+-   * (ADR 0040 §4); it must never silently do nothing.
++   * uses for its own unit coverage. A `mention_spam` rule is one of the
++   * window-tier kinds `mod_rules_kind` permits with no predicate behind it
++   * until Slice 4; it must never silently do nothing. (Slices 3 and 5 shipped
++   * the other six of the nine — `caps` among them — which is why this test no
++   * longer uses `caps` as its example.)
+    */
+   it('a rule whose kind has no predicate yet is inert and shows up in doctor', async () => {
+     automodRuleRepo.createRule(scope, {
+-      ruleId: 'caps-rule',
+-      kind: 'caps',
+-      name: 'shouting check',
++      ruleId: 'mention-spam-rule',
++      kind: 'mention_spam',
++      name: 'mention spam check',
+       config: '{}',
+       now: discord.now(),
+     });
+@@ -415,12 +417,17 @@ describe('automod, end to end on the fake gateway', () => {
+     const res = await dispatcher.dispatch({ v: 1, command: 'doctor', args: {} });
+     expect(res.ok).toBe(true);
+     if (!res.ok) return;
+-    expect(res.text).toContain('caps-rule');
++    expect(res.text).toContain('mention-spam-rule');
+     expect(res.text).toContain('no-predicate');
+     expect(res.data).toMatchObject({
+       ok: false,
+       unusableAutomodRules: [
+-        { ruleId: 'caps-rule', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
++        {
++          ruleId: 'mention-spam-rule',
++          kind: 'mention_spam',
++          reason: 'no-predicate',
++          detail: 'mention_spam',
++        },
+       ],
+     });
+   });
+diff --git a/apps/daemon/src/automod/wiring.ts b/apps/daemon/src/automod/wiring.ts
+index 70990c0..bf4c2ab 100644
+--- a/apps/daemon/src/automod/wiring.ts
++++ b/apps/daemon/src/automod/wiring.ts
+@@ -297,6 +297,10 @@ export const automodPortsFor = (
+         content: input.content,
+         authorId: input.authorId,
+         createdAt: input.atMs,
++        // `MessageAttachment` (core) and `FixtureAttachment` (storage) are
++        // field-for-field identical, which is what lets this be a direct
++        // pass-through rather than a mapping someone forgot.
++        attachments: input.attachments,
+       }),
+     recordCaseEvent: (input) => {
+       // Computed once, not once per spread branch below: `serialiseTrace`
+diff --git a/apps/daemon/src/ops/ops.integration.test.ts b/apps/daemon/src/ops/ops.integration.test.ts
+index 0c209a1..2988ddf 100644
+--- a/apps/daemon/src/ops/ops.integration.test.ts
++++ b/apps/daemon/src/ops/ops.integration.test.ts
+@@ -1114,6 +1114,7 @@ describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
+       content: 'hello badword everyone',
+       authorId: MEMBER,
+       createdAt: discord.now(),
++      attachments: [],
+     });
+ 
+     const { caseId } = modCaseRepo.openOrResolveCase(scope(), {
+diff --git a/apps/daemon/src/ops/wiring.ts b/apps/daemon/src/ops/wiring.ts
+index c0c84ae..b58d4fa 100644
+--- a/apps/daemon/src/ops/wiring.ts
++++ b/apps/daemon/src/ops/wiring.ts
+@@ -13,6 +13,7 @@ import {
+ import {
+   accountRepo,
+   automodFixtureRepo,
++  automodRuleListsRepo,
+   automodRuleRepo,
+   effectRepo,
+   guildRepo,
+@@ -180,6 +181,48 @@ export const opsPortsFor = (
+     // way it does not get to choose its own audit attribution.
+     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
+ 
++  // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
++  // lists Task 6 built with no caller. `ruleExists` is checked first because
++  // the composite foreign key would otherwise surface an opaque
++  // `FOREIGN KEY constraint failed` to an operator who mistyped a rule id —
++  // `'no-such-rule'` is a usage answer, not a fault.
++  //
++  // "Already present" is read back from a before/after count rather than
++  // duplicated canonicalisation logic (`addLinkDomain` lower-cases and strips
++  // `www.` inside the repository): comparing the list's length before and
++  // after the write is correct regardless of what canonical form the
++  // repository settles on, and never drifts from it.
++  addInviteAllowlistEntry: (input) => {
++    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const before = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
++    automodRuleListsRepo.addInviteAllowlistEntry(scope, { ...input, now: now() });
++    const after = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
++    return after > before ? 'added' : 'already-present';
++  },
++  listInviteAllowlist: (ruleId) => automodRuleListsRepo.listInviteAllowlist(scope, ruleId),
++  removeInviteAllowlistEntry: (input) => {
++    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const removed = automodRuleListsRepo.removeInviteAllowlistEntry(
++      scope,
++      input.ruleId,
++      input.code,
++    );
++    return removed ? 'removed' : 'not-present';
++  },
++  addLinkDomain: (input) => {
++    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const before = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
++    automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
++    const after = automodRuleListsRepo.listLinkDomains(scope, input.ruleId).length;
++    return after > before ? 'added' : 'already-present';
++  },
++  listLinkDomains: (ruleId) => automodRuleListsRepo.listLinkDomains(scope, ruleId),
++  removeLinkDomain: (input) => {
++    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
++    const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
++    return removed ? 'removed' : 'not-present';
++  },
++
+   setRoute: (input) =>
+     loggingRepo.setRoute(scope, {
+       eventKind: input.eventKind,
+diff --git a/drizzle/0013_concerned_leo.sql b/drizzle/0013_concerned_leo.sql
+new file mode 100644
+index 0000000..3b7c296
+--- /dev/null
++++ b/drizzle/0013_concerned_leo.sql
+@@ -0,0 +1,13 @@
++CREATE TABLE `automod_fixture_attachments` (
++	`guild_id` text NOT NULL,
++	`fixture_id` text NOT NULL,
++	`ordinal` integer NOT NULL,
++	`file_name` text NOT NULL,
++	`content_type` text,
++	`size_bytes` integer NOT NULL,
++	PRIMARY KEY(`guild_id`, `fixture_id`, `ordinal`),
++	FOREIGN KEY (`guild_id`,`fixture_id`) REFERENCES `automod_fixtures`(`guild_id`,`fixture_id`) ON UPDATE no action ON DELETE cascade,
++	CONSTRAINT "automod_fixture_attachments_guild_id_snowflake" CHECK(("automod_fixture_attachments"."guild_id" NOT GLOB '*[^0-9]*' AND length("automod_fixture_attachments"."guild_id") BETWEEN 17 AND 20)),
++	CONSTRAINT "automod_fixture_attachments_ordinal_nonnegative" CHECK("automod_fixture_attachments"."ordinal" >= 0),
++	CONSTRAINT "automod_fixture_attachments_size_nonnegative" CHECK("automod_fixture_attachments"."size_bytes" >= 0)
++) STRICT;
+diff --git a/drizzle/0014_lethal_xorn.sql b/drizzle/0014_lethal_xorn.sql
+new file mode 100644
+index 0000000..6af8ee3
+--- /dev/null
++++ b/drizzle/0014_lethal_xorn.sql
+@@ -0,0 +1,22 @@
++CREATE TABLE `automod_invite_allowlist` (
++	`guild_id` text NOT NULL,
++	`rule_id` text NOT NULL,
++	`code` text NOT NULL,
++	`label` text NOT NULL,
++	`added_at` integer NOT NULL,
++	PRIMARY KEY(`guild_id`, `rule_id`, `code`),
++	FOREIGN KEY (`guild_id`,`rule_id`) REFERENCES `mod_rules`(`guild_id`,`rule_id`) ON UPDATE no action ON DELETE cascade,
++	CONSTRAINT "automod_invite_allowlist_guild_id_snowflake" CHECK(("automod_invite_allowlist"."guild_id" NOT GLOB '*[^0-9]*' AND length("automod_invite_allowlist"."guild_id") BETWEEN 17 AND 20))
++) STRICT;
++--> statement-breakpoint
++CREATE TABLE `automod_link_domains` (
++	`guild_id` text NOT NULL,
++	`rule_id` text NOT NULL,
++	`domain` text NOT NULL,
++	`list_type` text NOT NULL,
++	`added_at` integer NOT NULL,
++	PRIMARY KEY(`guild_id`, `rule_id`, `domain`),
++	FOREIGN KEY (`guild_id`,`rule_id`) REFERENCES `mod_rules`(`guild_id`,`rule_id`) ON UPDATE no action ON DELETE cascade,
++	CONSTRAINT "automod_link_domains_guild_id_snowflake" CHECK(("automod_link_domains"."guild_id" NOT GLOB '*[^0-9]*' AND length("automod_link_domains"."guild_id") BETWEEN 17 AND 20)),
++	CONSTRAINT "automod_link_domains_list_type" CHECK("automod_link_domains"."list_type" IN ('allow','deny'))
++) STRICT;
+diff --git a/packages/core/src/automod/dry-run.test.ts b/packages/core/src/automod/dry-run.test.ts
+index 7714acd..079995a 100644
+--- a/packages/core/src/automod/dry-run.test.ts
++++ b/packages/core/src/automod/dry-run.test.ts
+@@ -98,6 +98,8 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
+   config: '{}',
+   terms: terms.map((text) => ({ text, categoryId: 'cat-1' })),
+   allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
+ });
+ 
+ const fixture = (over: Partial<FixtureRecord> & { fixtureId: string }): FixtureRecord => ({
+@@ -106,6 +108,7 @@ const fixture = (over: Partial<FixtureRecord> & { fixtureId: string }): FixtureR
+   label: 'unlabelled',
+   source: 'observed',
+   createdAt: 1_000,
++  attachments: [],
+   ...over,
+ });
+ 
+@@ -167,6 +170,65 @@ describe('the one-code-path invariant', () => {
+           label: 'unlabelled',
+           source: 'observed',
+           createdAt: 1_000,
++          attachments: [],
++        },
++      ],
++    });
++
++    const replayed = report.results[0]?.match;
++    expect(replayed).toBeDefined();
++    expect(recorded.trace).toBeDefined();
++    expect(replayed?.trace).toEqual(recorded.trace);
++    expect(replayed?.categoryId).toEqual(recorded.categoryId);
++    expect(replayed?.snippet).toEqual(recorded.snippet);
++  });
++
++  it('the dry run and the live subscriber agree on a message with attachments', async () => {
++    // Obligation 3 of the slices 3-5 handoff. The gate above is a
++    // behavioural comparison, so it can only see a divergence in a field some
++    // shipped predicate reads — and keyword_filter reads only `content`. A
++    // hand-built PredicateInput that skipped attachment reconstruction was
++    // invisible to it. attachment_type is the first predicate to read a
++    // second field, so this reaches that field from both the live subscriber
++    // and the fixture replay.
++    const rule: AutomodRule = {
++      ruleId: 'attachments-rule',
++      kind: 'attachment_type',
++      mode: 'test',
++      config: '{"blockedExtensions":["exe"]}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const attachments = [{ fileName: 'setup.exe', contentType: 'text/plain', sizeBytes: 4096 }];
++
++    const recorded: { trace?: MatchTrace; categoryId?: string; snippet?: string } = {};
++    const subscriber = createAutomodSubscriber({
++      ...fakeDeps(),
++      listRules: () => [rule],
++      recordCaseEvent: (input) => {
++        recorded.trace = input.trace;
++        recorded.categoryId = input.matchedCategory;
++        recorded.snippet = input.matchedSnippet;
++      },
++    });
++    await subscriber.handle(
++      messageEvent({ content: 'have a look', attachments, receivedAtMs: 1_000 }),
++    );
++
++    const report = runDryRun({
++      guildId: GUILD_ID,
++      rule,
++      fixtures: [
++        {
++          fixtureId: '444444444444444444:abcdef0123456789',
++          content: 'have a look',
++          authorId: AUTHOR,
++          label: 'unlabelled',
++          source: 'observed',
++          createdAt: 1_000,
++          attachments,
+         },
+       ],
+     });
+@@ -177,6 +239,9 @@ describe('the one-code-path invariant', () => {
+     expect(replayed?.trace).toEqual(recorded.trace);
+     expect(replayed?.categoryId).toEqual(recorded.categoryId);
+     expect(replayed?.snippet).toEqual(recorded.snippet);
++    // And it is a real match on both sides, not two identical nothings — a
++    // comparison of two undefineds would pass under every implementation.
++    expect(replayed?.trace.kind).toBe('attachment_type');
+   });
+ });
+ 
+diff --git a/packages/core/src/automod/evaluate.test.ts b/packages/core/src/automod/evaluate.test.ts
+index 1c0defe..a7f7633 100644
+--- a/packages/core/src/automod/evaluate.test.ts
++++ b/packages/core/src/automod/evaluate.test.ts
+@@ -27,6 +27,8 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
+   config: '{}',
+   terms: terms.map((text) => ({ text, categoryId: 'profanity' })),
+   allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
+ });
+ 
+ const inputWith = (content: string): PredicateInput => ({
+@@ -176,7 +178,10 @@ describe('predicateInputFrom', () => {
+   it('reconstructs mentions from a fixture’s content', () => {
+     // Plan ruling PR-3: Discord mention syntax is literally present in the
+     // message text, so the window tier can replay honestly from a text-only
+-    // corpus. Attachments are not recoverable and stay empty.
++    // corpus. This fixture names no files, so attachments stay empty — that
++    // is a fact about the fixture, not about what the corpus can hold (OD-3
++    // superseded PR-3's note that attachments were unrecoverable; see the
++    // dedicated test below for a fixture that has some).
+     const fixture: FixtureRecord = {
+       fixtureId: '300000000000000001:abcdef0123456789',
+       content:
+@@ -185,6 +190,7 @@ describe('predicateInputFrom', () => {
+       label: 'unlabelled',
+       source: 'observed',
+       createdAt: 7_000,
++      attachments: [],
+     };
+     const input = predicateInputFrom({
+       from: 'fixture',
+@@ -198,6 +204,28 @@ describe('predicateInputFrom', () => {
+     expect(input?.attachments).toEqual([]);
+   });
+ 
++  it('reconstructs a fixture’s attachments onto the predicate input', () => {
++    const input = predicateInputFrom({
++      from: 'fixture',
++      guildId: '100000000000000001',
++      fixture: {
++        fixtureId: '900000000000000001:0123456789abcdef',
++        content: 'have a file',
++        authorId: '800000000000000001',
++        label: 'unlabelled',
++        source: 'observed',
++        createdAt: 5_000,
++        attachments: [
++          { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
++        ],
++      },
++    });
++
++    expect(input?.attachments).toEqual([
++      { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
++    ]);
++  });
++
+   it.each([
+     ['an email whose domain starts "here"', 'write to user@heretical.com for help'],
+     ['a longer word beginning "@here"', 'the @hereditary principle'],
+@@ -217,6 +245,7 @@ describe('predicateInputFrom', () => {
+         label: 'should_not_match',
+         source: 'handwritten',
+         createdAt: 1,
++        attachments: [],
+       },
+     });
+     expect(input?.mentionsEveryone).toBe(false);
+@@ -237,6 +266,7 @@ describe('predicateInputFrom', () => {
+         label: 'should_match',
+         source: 'handwritten',
+         createdAt: 1,
++        attachments: [],
+       },
+     });
+     expect(input?.mentionsEveryone).toBe(true);
+@@ -250,6 +280,7 @@ describe('predicateInputFrom', () => {
+       label: 'should_not_match',
+       source: 'handwritten',
+       createdAt: 7_000,
++      attachments: [],
+     };
+     const input = predicateInputFrom({
+       from: 'fixture',
+@@ -267,6 +298,7 @@ describe('predicateInputFrom', () => {
+       label: 'unlabelled',
+       source: 'observed',
+       createdAt: 1,
++      attachments: [],
+     };
+     const input = predicateInputFrom({
+       from: 'fixture',
+diff --git a/packages/core/src/automod/evaluate.ts b/packages/core/src/automod/evaluate.ts
+index 1e26408..7f68491 100644
+--- a/packages/core/src/automod/evaluate.ts
++++ b/packages/core/src/automod/evaluate.ts
+@@ -178,15 +178,17 @@ export type PredicateInputSource =
+  * deliver (an embed-only system message, a partial the adapter could not
+  * resolve). A fixture always produces an input.
+  *
+- * **What a fixture cannot reproduce**, and why that is recorded here rather
+- * than discovered later (plan ruling PR-3): `automod_fixtures` holds text,
+- * an author and a timestamp, because that is the shape the owner approved.
+- * Mentions come back by parsing the content, since Discord puts them there.
+- * Attachments do not — they are metadata the corpus does not hold — so
+- * `attachments` is empty for every fixture, and Slice 5's `attachment_type`
+- * predicate therefore cannot be dry-run against observed traffic. Its
+- * regression cases must be handwritten, and whether the corpus should carry
+- * attachment metadata is an owner question for that slice.
++ * **What a fixture can and cannot reproduce.** Mentions come back by parsing
++ * the content, since Discord puts them there. Attachments come from the
++ * corpus's own `automod_fixture_attachments` child table, added by OD-3 —
++ * which supersedes plan ruling PR-3's note that they were metadata the corpus
++ * did not hold. `attachment_type` can therefore be dry-run against observed
++ * traffic: a fixture's `attachments` is the same shape a live message's is,
++ * because `FixtureRecord.attachments` and `PredicateInput.attachments` are
++ * both `readonly MessageAttachment[]`. A fixture captured before that
++ * migration has none — an empty list is the honest representation of a real
++ * message whose attachments were never recorded, not a gap being papered
++ * over.
+  */
+ export const predicateInputFrom = (source: PredicateInputSource): PredicateInput | undefined => {
+   if (source.from === 'message') {
+@@ -246,7 +248,7 @@ export const predicateInputFrom = (source: PredicateInputSource): PredicateInput
+     mentionedUserIds: matchIds(fixture.content, USER_MENTION),
+     mentionedRoleIds: matchIds(fixture.content, ROLE_MENTION),
+     mentionsEveryone: EVERYONE_MENTION.test(fixture.content),
+-    attachments: [],
++    attachments: fixture.attachments,
+     atMs: fixture.createdAt,
+   };
+ };
+diff --git a/packages/core/src/automod/fingerprint.test.ts b/packages/core/src/automod/fingerprint.test.ts
+index 7ac0782..6cb165a 100644
+--- a/packages/core/src/automod/fingerprint.test.ts
++++ b/packages/core/src/automod/fingerprint.test.ts
+@@ -9,6 +9,8 @@ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
+   config: '{}',
+   terms: [{ text: 'badword', categoryId: 'slurs' }],
+   allowlist: ['fine phrase'],
++  inviteAllowlist: [],
++  linkDomains: [],
+   ...over,
+ });
+ 
+@@ -94,15 +96,22 @@ describe('ruleFingerprint', () => {
+   });
+ 
+   it('changes when a field is added to the rule that the digest does not name', () => {
+-    // The digest is built by iterating the rule's own keys, not by hand-listing
+-    // them, precisely so a field a later slice adds — ADR 0040 §3's relational
+-    // `invite`/`link_domain` allowlist — is hashed without anyone having to
+-    // remember to add it here. `AutomodRule`'s type does not have this field
+-    // yet, hence the cast: the point is what `ruleFingerprint` does at
+-    // runtime with a rule shape it has not been specifically taught about.
++    // The digest is built by iterating the rule's own keys, not by
++    // hand-listing them, precisely so a field a later slice adds is hashed
++    // without anyone having to remember to add it here.
++    //
++    // This test used to demonstrate that with `inviteAllowlist` as the
++    // example field, because at the time `AutomodRule` did not have it yet —
++    // ADR 0040 §3 had only committed a later slice to adding it. Task 6 has
++    // since landed `inviteAllowlist` and `linkDomains` on `AutomodRule` for
++    // real (see the "an invite allowlist edit changes the fingerprint" test
++    // above, which is the obligation this slice actually carries), so that
++    // field name no longer demonstrates "a field the digest was not taught
++    // about" — it demonstrates a field it now knows by name. A genuinely
++    // unnamed field is used here instead, hence the cast.
+     const withExtraField = {
+       ...rule(),
+-      inviteAllowlist: ['discord.gg/legit'],
++      aFieldNoVersionOfAutomodRuleHasEverNamed: ['discord.gg/legit'],
+     } as AutomodRule;
+     expect(ruleFingerprint(withExtraField)).not.toBe(ruleFingerprint(rule()));
+   });
+@@ -113,4 +122,61 @@ describe('ruleFingerprint', () => {
+     // pins it the same way the `mode` exclusion above is pinned.
+     expect(ruleFingerprint(rule({ ruleId: 'a-different-rule-id' }))).toBe(ruleFingerprint(rule()));
+   });
++
++  // ── Obligation 2 of the slices 3-5 handoff ──────────────────────────────
++  // The digest is exclusion-based, so this should hold without anyone
++  // editing fingerprint.ts — but "should" is what ADR 0039 was about. If this
++  // ever goes green with the field excluded, an operator adding a partner
++  // code sees the rule keep firing on it until the daemon restarts.
++
++  it('an invite allowlist edit changes the fingerprint', () => {
++    const base = rule({ inviteAllowlist: [{ code: 'clubhouse', label: 'our server' }] });
++    const edited = rule({
++      inviteAllowlist: [
++        { code: 'clubhouse', label: 'our server' },
++        { code: 'sisterclub', label: 'sister club, added 2026-09' },
++      ],
++    });
++    expect(ruleFingerprint(edited)).not.toBe(ruleFingerprint(base));
++  });
++
++  it('a label edit changes the fingerprint too', () => {
++    // The label does not change matching, so this over-invalidates by one
++    // recompile. That asymmetry is deliberate: over-invalidation costs a
++    // recompile and fails loudly, under-invalidation costs correctness and
++    // fails silently.
++    expect(ruleFingerprint(rule({ inviteAllowlist: [{ code: 'x', label: 'before' }] }))).not.toBe(
++      ruleFingerprint(rule({ inviteAllowlist: [{ code: 'x', label: 'after' }] })),
++    );
++  });
++
++  it('the order rows come back in does not change the fingerprint', () => {
++    // Row order is the query planner's business, not a rule change — the same
++    // reason `terms` and `allowlist` are sorted before hashing.
++    const a = rule({
++      linkDomains: [
++        { domain: 'example.com', listType: 'deny' },
++        { domain: 'club.org', listType: 'allow' },
++      ],
++    });
++    const b = rule({
++      linkDomains: [
++        { domain: 'club.org', listType: 'allow' },
++        { domain: 'example.com', listType: 'deny' },
++      ],
++    });
++    expect(ruleFingerprint(a)).toBe(ruleFingerprint(b));
++  });
++
++  it('a domain moving from allow to deny changes the fingerprint', () => {
++    // The ambiguity a sort-only test would miss: same domain, same position,
++    // opposite meaning. An implementation that canonicalised to the domain
++    // list alone and dropped listType would pass the previous test and fail
++    // this one.
++    expect(
++      ruleFingerprint(rule({ linkDomains: [{ domain: 'example.com', listType: 'allow' }] })),
++    ).not.toBe(
++      ruleFingerprint(rule({ linkDomains: [{ domain: 'example.com', listType: 'deny' }] })),
++    );
++  });
+ });
+diff --git a/packages/core/src/automod/fingerprint.ts b/packages/core/src/automod/fingerprint.ts
+index 4303ba4..e26efc3 100644
+--- a/packages/core/src/automod/fingerprint.ts
++++ b/packages/core/src/automod/fingerprint.ts
+@@ -23,9 +23,12 @@ const EXCLUDED_FIELDS: ReadonlySet<string> = new Set(['ruleId', 'mode']);
+  *
+  * `terms` and `allowlist` need sorting: `hydrate` queries terms per category,
+  * so their order tracks category order, which no caller controls, and an
+- * order change is not a rule change. Everything else is a scalar (`kind`,
+- * `config`, and any future field ADR 0040 §3 adds in the same shape) and
+- * needs no treatment beyond `JSON.stringify`'s own.
++ * order change is not a rule change. `inviteAllowlist` and `linkDomains` need
++ * the same treatment for the same reason — `hydrate` reads them with a query
++ * ordered by `code`/`domain`, which is belt and braces, not a substitute for
++ * this: the digest must not depend on the query plan either. Everything else
++ * is a scalar (`kind`, `config`) and needs no treatment beyond
++ * `JSON.stringify`'s own.
+  */
+ const canonicalise = (key: string, value: unknown): unknown => {
+   if (key === 'terms' && Array.isArray(value)) {
+@@ -36,6 +39,19 @@ const canonicalise = (key: string, value: unknown): unknown => {
+   if (key === 'allowlist' && Array.isArray(value)) {
+     return [...(value as readonly string[])].sort((a, b) => a.localeCompare(b));
+   }
++  if (key === 'inviteAllowlist' && Array.isArray(value)) {
++    return (value as readonly { code: string; label: string }[])
++      .map((entry) => [entry.code, entry.label] as const)
++      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
++  }
++  if (key === 'linkDomains' && Array.isArray(value)) {
++    // `listType` is part of the sort key, not just carried along: a domain
++    // moving from allow to deny at the same list position must produce a
++    // different canonical structure, not the same one in a different order.
++    return (value as readonly { domain: string; listType: 'allow' | 'deny' }[])
++      .map((entry) => [entry.domain, entry.listType] as const)
++      .sort((a, b) => (a[0] === b[0] ? a[1].localeCompare(b[1]) : a[0].localeCompare(b[0])));
++  }
+   return value;
+ };
+ 
+@@ -48,12 +64,16 @@ const canonicalise = (key: string, value: unknown): unknown => {
+  * carried since ADR 0035, which ADR 0039 made sharper by deriving the
+  * matcher's collapse thresholds from the word list too.
+  *
+- * **Exclusion-based, not enumerated.** ADR 0040 §3 already commits a later
+- * slice to a *relational* allowlist field for `invite` and `link_domain`; a
+- * digest that hand-lists `{kind, config, terms, allowlist}` would not hash
+- * that field, the compiled artifact would go stale, and the exact
+- * silent-non-matching bug this slice exists to kill would come back for those
+- * predicates. So this builds the hashed object by iterating `rule`'s own
++ * **Exclusion-based, not enumerated.** ADR 0040 §3 committed an earlier slice
++ * to *relational* allowlist fields for `invite` and `link_domain` —
++ * `inviteAllowlist` and `linkDomains`, added to `AutomodRule` in Task 6 — and
++ * this is exactly why the digest is built this way rather than hand-listing
++ * `{kind, config, terms, allowlist}`: that would not have hashed the two new
++ * fields, the compiled artifact would go stale, and the exact silent-
++ * non-matching bug this slice exists to kill would come back for those two
++ * predicates (obligation 2 of the slices 3-5 handoff, verified by a test that
++ * was watched failing with `inviteAllowlist` added to `EXCLUDED_FIELDS` and
++ * then restored). So this builds the hashed object by iterating `rule`'s own
+  * keys, sorted, and skipping only `EXCLUDED_FIELDS` — a field added to
+  * `AutomodRule` later is hashed by default, and *omitting* one is the
+  * deliberate act, made by adding it to `EXCLUDED_FIELDS` with a reason.
+diff --git a/packages/core/src/automod/predicates/attachment-type.test.ts b/packages/core/src/automod/predicates/attachment-type.test.ts
+new file mode 100644
+index 0000000..eac93bf
+--- /dev/null
++++ b/packages/core/src/automod/predicates/attachment-type.test.ts
+@@ -0,0 +1,121 @@
++import { describe, expect, it } from 'vitest';
++import type { MessageAttachment } from '../../discord/events.js';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++/**
++ * Compiles an `attachment_type` rule, failing the test loudly if it does not
++ * compile. A compile failure is never the thing under test in this file.
++ */
++const compile = (config: string): CompiledPredicate => {
++  const rule: AutomodRule = {
++    ruleId: 'r1',
++    kind: 'attachment_type',
++    mode: 'test',
++    config,
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  };
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const withAttachments = (attachments: readonly MessageAttachment[]): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content: 'have a look at this',
++  rawContent: 'have a look at this',
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments,
++  atMs: 1_000,
++});
++
++describe('the attachment_type predicate', () => {
++  const config =
++    '{"blockedExtensions":["exe","scr"],"blockedContentTypes":["application/x-msdownload"]}';
++
++  it('matches on the extension when the content type is innocent', () => {
++    // The spoof the spec names: a real executable declared as text/plain.
++    const match = compile(config).evaluate(
++      withAttachments([{ fileName: 'setup.exe', contentType: 'text/plain', sizeBytes: 10 }]),
++    );
++    expect(match?.trace.detail.matchedOn).toBe('extension');
++  });
++
++  it('matches on the content type when the extension is innocent', () => {
++    // The other half of the same spoof, and the reason the spec says "and".
++    const match = compile(config).evaluate(
++      withAttachments([
++        { fileName: 'holiday.jpg', contentType: 'application/x-msdownload', sizeBytes: 10 },
++      ]),
++    );
++    expect(match?.trace.detail.matchedOn).toBe('contentType');
++  });
++
++  it('names the offending file, not the first file', () => {
++    // The ambiguity: three attachments and only the third is blocked, so an
++    // implementation reporting attachments[0] goes red. A single-attachment
++    // fixture could not tell the two apart.
++    const match = compile(config).evaluate(
++      withAttachments([
++        { fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 },
++        { fileName: 'b.txt', contentType: 'text/plain', sizeBytes: 2 },
++        { fileName: 'c.scr', contentType: 'text/plain', sizeBytes: 3 },
++      ]),
++    );
++    expect(match?.snippet).toBe('c.scr');
++  });
++
++  it('is case-insensitive about both the extension and the content type', () => {
++    const match = compile(config).evaluate(
++      withAttachments([{ fileName: 'SETUP.EXE', contentType: 'TEXT/PLAIN', sizeBytes: 10 }]),
++    );
++    expect(match).toBeDefined();
++  });
++
++  it('ignores a content type parameter', () => {
++    // Discord can declare 'application/x-msdownload; charset=binary'.
++    const match = compile(config).evaluate(
++      withAttachments([
++        {
++          fileName: 'x.bin',
++          contentType: 'application/x-msdownload; charset=binary',
++          sizeBytes: 1,
++        },
++      ]),
++    );
++    expect(match).toBeDefined();
++  });
++
++  it('does not match a file whose name merely contains the extension', () => {
++    // 'exeter-notes.pdf' contains 'exe'. Matching on the final segment after
++    // the last dot is what stops that.
++    expect(
++      compile(config).evaluate(
++        withAttachments([
++          { fileName: 'exeter-notes.pdf', contentType: 'application/pdf', sizeBytes: 1 },
++        ]),
++      ),
++    ).toBeUndefined();
++  });
++
++  it('does not match a message with no attachments', () => {
++    expect(compile(config).evaluate(withAttachments([]))).toBeUndefined();
++  });
++
++  it('handles a file with no extension and no declared type', () => {
++    expect(
++      compile(config).evaluate(
++        withAttachments([{ fileName: 'README', contentType: undefined, sizeBytes: 1 }]),
++      ),
++    ).toBeUndefined();
++  });
++});
+diff --git a/packages/core/src/automod/predicates/attachment-type.ts b/packages/core/src/automod/predicates/attachment-type.ts
+new file mode 100644
+index 0000000..a2ba583
+--- /dev/null
++++ b/packages/core/src/automod/predicates/attachment-type.ts
+@@ -0,0 +1,106 @@
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++/**
++ * Both lists live in `mod_rules.config` rather than in tables (plan ruling
++ * PR-16). ADR 0040 section 3 names the relational cases explicitly —
++ * `invite`'s labelled allowlist and `link_domain`'s allow/deny lists — and
++ * does not name this one: an extension list has no per-item metadata and no
++ * per-item suppression target, which is what the relational shape exists for.
++ * Config also reaches the rule fingerprint for free, where a relational list
++ * has to be carried into it deliberately.
++ *
++ * Extensions are stored without a leading dot and matched case-insensitively.
++ */
++export const attachmentTypeConfig = z
++  .object({
++    blockedExtensions: z.array(z.string().min(1).max(20)).max(100).default([]),
++    blockedContentTypes: z.array(z.string().min(1).max(255)).max(100).default([]),
++  })
++  .strict()
++  .refine((value) => value.blockedExtensions.length > 0 || value.blockedContentTypes.length > 0, {
++    // A rule with both lists empty compiles cleanly and can never match —
++    // the ADR 0039 shape, and the same failure `no-terms` closes for
++    // `keyword_filter` (registry.ts). Refused at validation instead, so
++    // `doctor` reports it as an invalid config rather than a clean rule.
++    message: 'an attachment_type rule needs at least one blocked extension or content type',
++  });
++
++export type AttachmentTypeConfig = z.infer<typeof attachmentTypeConfig>;
++
++/** The final dot-separated segment, lower-cased. '' when there is no dot. */
++const extensionOf = (fileName: string): string => {
++  const dot = fileName.lastIndexOf('.');
++  // `dot <= 0` also rejects a dotfile like '.env', whose name is not an
++  // extension. Matching on the last segment rather than a substring is what
++  // stops 'exeter-notes.pdf' matching a blocked 'exe'.
++  return dot <= 0 ? '' : fileName.slice(dot + 1).toLowerCase();
++};
++
++/** 'application/pdf; charset=x' -> 'application/pdf'. Discord sends parameters. */
++const bareContentType = (contentType: string | undefined): string =>
++  (contentType ?? '').split(';')[0]?.trim().toLowerCase() ?? '';
++
++/**
++ * `attachment_type` — matches on the declared content type **and** the file
++ * extension, since either alone is trivially spoofed by the uploader (spec
++ * section 3, Slice 5). A hit on either list is enough; the two are belt and
++ * braces, not a conjunction.
++ *
++ * **This task carries obligation 3 of the slices 3-5 handoff.** The
++ * one-code-path gate (ADR 0041 section 3) is a *behavioural* comparison
++ * between the dry-run evaluator and the live subscriber, so it can only see a
++ * divergence in a field some shipped predicate actually reads.
++ * `keyword_filter` reads only `content`; this is the first predicate to read
++ * `PredicateInput.attachments`, so `dry-run.test.ts` now reaches that field
++ * from both sides instead of only from the type system.
++ */
++export const attachmentTypePredicate: Predicate<AttachmentTypeConfig> = {
++  kind: 'attachment_type',
++  config: attachmentTypeConfig,
++  compile(_rule: AutomodRule, config: AttachmentTypeConfig): CompiledPredicate {
++    const extensions = new Set(
++      config.blockedExtensions.map((e) => e.replace(/^\./, '').toLowerCase()),
++    );
++    const contentTypes = new Set(config.blockedContentTypes.map((t) => t.trim().toLowerCase()));
++
++    return {
++      evaluate(input) {
++        // Either list is enough. The spec's reasoning: a content type is
++        // declared by the uploader and an extension is chosen by the
++        // uploader, so each alone is trivially spoofed and the pair is
++        // checked rather than one being trusted.
++        for (const attachment of input.attachments) {
++          const extension = extensionOf(attachment.fileName);
++          const contentType = bareContentType(attachment.contentType);
++          const byExtension = extension !== '' && extensions.has(extension);
++          const byContentType = contentType !== '' && contentTypes.has(contentType);
++          if (!byExtension && !byContentType) continue;
++
++          return {
++            categoryId: 'attachment_type',
++            // The filename, which is what a reviewer needs to see. The
++            // owner was told filenames carry personal information when they
++            // approved OD-3; this is the same fact appearing in a trace.
++            snippet: attachment.fileName,
++            trace: {
++              kind: 'attachment_type',
++              matchedOn: byExtension ? extension : contentType,
++              // A property of a file on the message, not a span of its text.
++              span: undefined,
++              normalisations: [],
++              detail: {
++                matchedOn: byExtension ? 'extension' : 'contentType',
++                fileName: attachment.fileName,
++                declaredContentType: contentType,
++                sizeBytes: attachment.sizeBytes,
++                attachmentCount: input.attachments.length,
++              },
++            },
++          };
++        }
++        return undefined;
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/caps.test.ts b/packages/core/src/automod/predicates/caps.test.ts
+new file mode 100644
+index 0000000..3844193
+--- /dev/null
++++ b/packages/core/src/automod/predicates/caps.test.ts
+@@ -0,0 +1,79 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++/**
++ * Compiles a rule of this file's kind, failing the test loudly if it does not
++ * compile. Returning the artifact rather than the `CompileResult` keeps every
++ * test below one line, and a compile failure is never the thing under test in
++ * this file — it has its own tests.
++ */
++const compile = (config: string, kind = 'caps'): CompiledPredicate => {
++  const rule: AutomodRule = {
++    ruleId: 'r1',
++    kind,
++    mode: 'test',
++    config,
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  };
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++});
++
++describe('the caps predicate', () => {
++  it('does not fire below the minimum length', () => {
++    // The spec names short messages as one of this predicate's three
++    // false-positive sources, and requires a floor.
++    const compiled = compile('{"minLength":10,"maxRatio":0.7}');
++    expect(compiled.evaluate(message('OK FINE'))).toBeUndefined();
++  });
++
++  it('fires on a long shout', () => {
++    const compiled = compile('{"minLength":10,"maxRatio":0.7}');
++    const match = compiled.evaluate(message('EVERYONE COME AND LOOK AT THIS NOW'));
++    expect(match?.trace.detail.ratio).toBeGreaterThan(0.7);
++    expect(match?.trace.span).toBeUndefined();
++  });
++
++  it('measures capitals against letters, not against every character', () => {
++    // The ambiguity: punctuation would dilute the ratio under a
++    // count-everything implementation, so 'HELLO!!!!!!!!!!!!!!!' would score
++    // about 0.5 and pass a 0.7 threshold that plain 'HELLO' exceeds. Same
++    // letters, same shout, opposite verdict.
++    const compiled = compile('{"minLength":10,"maxRatio":0.7}');
++    expect(compiled.evaluate(message('HELLO!!!!!!!!!!!!!!!'))).toBeDefined();
++  });
++
++  it('ignores fenced and inline code', () => {
++    // The third false-positive source the spec names. A message that is a
++    // shouted SQL snippet is not shouting at anyone.
++    const compiled = compile('{"minLength":10,"maxRatio":0.7}');
++    expect(
++      compiled.evaluate(message('here you go ```SELECT * FROM MOD_RULES WHERE ENABLED = 1```')),
++    ).toBeUndefined();
++  });
++
++  it('does not divide by zero on a message with no letters', () => {
++    const compiled = compile('{"minLength":3,"maxRatio":0.7}');
++    expect(compiled.evaluate(message('12345 !!!! ????'))).toBeUndefined();
++  });
++});
+diff --git a/packages/core/src/automod/predicates/caps.ts b/packages/core/src/automod/predicates/caps.ts
+new file mode 100644
+index 0000000..9dc0df4
+--- /dev/null
++++ b/packages/core/src/automod/predicates/caps.ts
+@@ -0,0 +1,71 @@
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++/**
++ * Fenced blocks first, then inline spans (plan ruling PR-17).
++ *
++ * Order matters: an inline-span pattern run first would eat the ``` fences
++ * from the inside out and leave the block's contents behind, which is the
++ * opposite of the intent.
++ */
++const FENCED_CODE = /```[\s\S]*?```/g;
++const INLINE_CODE = /`[^`\n]*`/g;
++
++export const capsConfig = z
++  .object({
++    /**
++     * Below this many characters the rule does not fire at all. The spec
++     * requires a floor: 'OK' is 100% capitals and is not shouting.
++     */
++    minLength: z.number().int().min(1).max(4_000),
++    /** Fires when the ratio of upper-case letters to letters exceeds this. */
++    maxRatio: z.number().gt(0).lte(1),
++  })
++  .strict();
++
++export type CapsConfig = z.infer<typeof capsConfig>;
++
++export const capsPredicate: Predicate<CapsConfig> = {
++  kind: 'caps',
++  config: capsConfig,
++  compile(_rule: AutomodRule, config: CapsConfig): CompiledPredicate {
++    return {
++      evaluate(input) {
++        // Code is not shouting (plan ruling PR-17) — one of the three
++        // false-positive sources the spec names for this predicate.
++        const prose = input.content.replace(FENCED_CODE, ' ').replace(INLINE_CODE, ' ');
++        if (prose.length < config.minLength) return undefined;
++
++        // Measured against letters, not against every character: otherwise
++        // punctuation and digits dilute the ratio and a longer shout scores
++        // lower than a short one.
++        const letters = [...prose].filter((c) => /\p{L}/u.test(c));
++        if (letters.length === 0) return undefined;
++        const upper = letters.filter((c) => /\p{Lu}/u.test(c)).length;
++        const ratio = upper / letters.length;
++        if (ratio <= config.maxRatio) return undefined;
++
++        return {
++          categoryId: 'caps',
++          // The whole message is the evidence; there is no span to point at.
++          snippet: input.content.slice(0, 200),
++          trace: {
++            kind: 'caps',
++            matchedOn: `ratio > ${config.maxRatio}`,
++            // A property of the whole message, not a span of it — the case
++            // `MatchTrace.span` documents as `undefined`.
++            span: undefined,
++            normalisations: ['zero-width stripped', 'code spans removed'],
++            detail: {
++              ratio: Number(ratio.toFixed(3)),
++              letters: letters.length,
++              upper,
++              minLength: config.minLength,
++              maxRatio: config.maxRatio,
++            },
++          },
++        };
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/emoji.test.ts b/packages/core/src/automod/predicates/emoji.test.ts
+new file mode 100644
+index 0000000..f39566c
+--- /dev/null
++++ b/packages/core/src/automod/predicates/emoji.test.ts
+@@ -0,0 +1,82 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++/**
++ * Compiles a rule of this file's kind, failing the test loudly if it does not
++ * compile. Returning the artifact rather than the `CompileResult` keeps every
++ * test below one line, and a compile failure is never the thing under test in
++ * this file — it has its own tests.
++ */
++const compile = (config: string, kind = 'emoji'): CompiledPredicate => {
++  const rule: AutomodRule = {
++    ruleId: 'r1',
++    kind,
++    mode: 'test',
++    config,
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  };
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++});
++
++describe('the emoji predicate', () => {
++  it('counts a ZWJ sequence as one emoji', () => {
++    // Verified: Intl.Segmenter reports the family as 1 grapheme, while a
++    // code-point scan reports 4 (plus joiners). A code-point implementation
++    // fires here and this goes red.
++    const compiled = compile('{"maxCount":3}');
++    expect(compiled.evaluate(message('👨‍👩‍👧‍👦 👨‍👩‍👧‍👦 👨‍👩‍👧‍👦'))).toBeUndefined();
++  });
++
++  it('counts flags and keycaps, which are not Extended_Pictographic', () => {
++    // Verified: '🇬🇧' and '1️⃣' both score 0 under \p{Extended_Pictographic}
++    // while being one grapheme each. A pictographic-only implementation
++    // counts zero here and this goes red.
++    const compiled = compile('{"maxCount":3}');
++    expect(compiled.evaluate(message('🇬🇧 🇬🇧 1️⃣ 2️⃣'))).toBeDefined();
++  });
++
++  it('counts a Discord custom emoji once, not as its literal characters', () => {
++    // '<:party:123456789012345678>' is 26 characters of ordinary text. An
++    // implementation that counted the pattern AND left it in the string for
++    // grapheme counting would still report 1 here; one that forgot the
++    // pattern entirely reports 0. Four of them against a threshold of 3 is
++    // what separates the two.
++    const compiled = compile('{"maxCount":3}');
++    const custom = '<:party:123456789012345678>';
++    expect(compiled.evaluate(message(custom.repeat(4)))).toBeDefined();
++    expect(compiled.evaluate(message(custom.repeat(3)))).toBeUndefined();
++  });
++
++  it('counts an animated custom emoji too', () => {
++    const compiled = compile('{"maxCount":1}');
++    expect(
++      compiled.evaluate(message('<a:spin:123456789012345678><a:spin:123456789012345679>')),
++    ).toBeDefined();
++  });
++
++  it('leaves ordinary text alone', () => {
++    const compiled = compile('{"maxCount":3}');
++    expect(compiled.evaluate(message('good morning everyone, meeting at four'))).toBeUndefined();
++  });
++});
+diff --git a/packages/core/src/automod/predicates/emoji.ts b/packages/core/src/automod/predicates/emoji.ts
+new file mode 100644
+index 0000000..fda434b
+--- /dev/null
++++ b/packages/core/src/automod/predicates/emoji.ts
+@@ -0,0 +1,77 @@
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++/** `<:name:id>` and the animated `<a:name:id>`. Ordinary text to a grapheme counter. */
++const CUSTOM_EMOJI = /<a?:[A-Za-z0-9_]{2,32}:\d{17,20}>/g;
++
++/**
++ * What counts as one emoji, given a single grapheme.
++ *
++ * `\p{Extended_Pictographic}` alone is not enough, and this is measured, not
++ * cautious: on this Node a regional-indicator flag (`🇬🇧`), a keycap (`1️⃣`)
++ * and `#️⃣` are each exactly one grapheme and each score **zero**
++ * pictographic characters. A pictographic-only counter silently under-counts
++ * every flag and every keycap in the message.
++ */
++const PICTOGRAPHIC = /\p{Extended_Pictographic}/u;
++const REGIONAL_INDICATOR = /\p{Regional_Indicator}/u;
++const KEYCAP = /⃣/u;
++
++/**
++ * Created once at module load rather than per evaluation: constructing a
++ * segmenter is not free and it holds no per-call state.
++ */
++const GRAPHEMES = new Intl.Segmenter('en', { granularity: 'grapheme' });
++
++export const emojiConfig = z
++  .object({
++    /** Fires when the message carries more than this many emoji. */
++    maxCount: z.number().int().min(1).max(200),
++  })
++  .strict();
++
++export type EmojiConfig = z.infer<typeof emojiConfig>;
++
++export const emojiPredicate: Predicate<EmojiConfig> = {
++  kind: 'emoji',
++  config: emojiConfig,
++  compile(_rule: AutomodRule, config: EmojiConfig): CompiledPredicate {
++    return {
++      evaluate(input) {
++        // Counted by pattern and then *removed*, so the 26 ordinary
++        // characters of '<:party:123456789012345678>' are not also counted
++        // as themselves by the grapheme pass below.
++        const custom = input.content.match(CUSTOM_EMOJI)?.length ?? 0;
++        const withoutCustom = input.content.replace(CUSTOM_EMOJI, ' ');
++
++        // Graphemes, not code points: a ZWJ family is four code points and
++        // one emoji, and Intl.Segmenter is what knows the difference.
++        let unicode = 0;
++        for (const { segment } of GRAPHEMES.segment(withoutCustom)) {
++          if (
++            PICTOGRAPHIC.test(segment) ||
++            REGIONAL_INDICATOR.test(segment) ||
++            KEYCAP.test(segment)
++          ) {
++            unicode += 1;
++          }
++        }
++
++        const total = custom + unicode;
++        if (total <= config.maxCount) return undefined;
++
++        return {
++          categoryId: 'emoji',
++          snippet: input.content.slice(0, 200),
++          trace: {
++            kind: 'emoji',
++            matchedOn: `more than ${config.maxCount} emoji`,
++            span: undefined,
++            normalisations: ['zero-width stripped', 'grapheme segmented'],
++            detail: { total, custom, unicode, maxCount: config.maxCount },
++          },
++        };
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/invite.test.ts b/packages/core/src/automod/predicates/invite.test.ts
+new file mode 100644
+index 0000000..60271af
+--- /dev/null
++++ b/packages/core/src/automod/predicates/invite.test.ts
+@@ -0,0 +1,90 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++/**
++ * Compiles an `invite` rule, failing the test loudly if it does not compile.
++ * A compile failure is never the thing under test in this file.
++ */
++const compile = (rule: AutomodRule): CompiledPredicate => {
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++});
++
++describe('the invite predicate', () => {
++  const rule = (allowlist: { code: string; label: string }[] = []): AutomodRule => ({
++    ruleId: 'r1',
++    kind: 'invite',
++    mode: 'test' as const,
++    config: '{}',
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: allowlist,
++    linkDomains: [],
++  });
++
++  it.each([
++    ['discord.gg/abc123', 'abc123'],
++    ['https://discord.gg/abc123', 'abc123'],
++    ['http://www.discord.gg/abc123', 'abc123'],
++    ['https://discord.com/invite/abc123', 'abc123'],
++    ['https://discordapp.com/invite/abc123', 'abc123'],
++    ['https://discord.com/invite/a-vanity-name', 'a-vanity-name'],
++  ])('detects %s', (text, code) => {
++    const match = compile(rule()).evaluate(message(`join us at ${text} today`));
++    expect(match?.snippet).toContain(code);
++  });
++
++  it('does not fire on an allowlisted code', () => {
++    const match = compile(rule([{ code: 'clubhouse', label: 'our own server' }])).evaluate(
++      message('come to discord.gg/clubhouse'),
++    );
++    expect(match).toBeUndefined();
++  });
++
++  it('fires on the one code that is not allowlisted', () => {
++    // The ambiguity: two invites in one message, one allowlisted. An
++    // implementation that checked only the first invite, or that allowlisted
++    // the whole message when any code matched, goes red here. A
++    // single-invite fixture could not tell those apart.
++    const match = compile(rule([{ code: 'clubhouse', label: 'our own server' }])).evaluate(
++      message('ours is discord.gg/clubhouse but also try discord.gg/spamserver'),
++    );
++    expect(match?.trace.matchedOn).toBe('spamserver');
++  });
++
++  it('matches an allowlisted code case-insensitively', () => {
++    expect(
++      compile(rule([{ code: 'ClubHouse', label: 'ours' }])).evaluate(
++        message('discord.gg/clubhouse'),
++      ),
++    ).toBeUndefined();
++  });
++
++  it('does not fire on ordinary text mentioning discord', () => {
++    expect(compile(rule()).evaluate(message('we use discord for meetings'))).toBeUndefined();
++  });
++
++  it('reports how many codes were allowlisted, so a reviewer can see the list worked', () => {
++    const match = compile(rule([{ code: 'clubhouse', label: 'ours' }])).evaluate(
++      message('discord.gg/clubhouse and discord.gg/other'),
++    );
++    expect(match?.trace.detail.allowlistSize).toBe(1);
++  });
++});
+diff --git a/packages/core/src/automod/predicates/invite.ts b/packages/core/src/automod/predicates/invite.ts
+new file mode 100644
+index 0000000..03b6c1d
+--- /dev/null
++++ b/packages/core/src/automod/predicates/invite.ts
+@@ -0,0 +1,79 @@
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++/**
++ * Anything invite-shaped: `discord.gg/CODE`, `discord.com/invite/CODE`, and
++ * the legacy `discordapp.com` host, with or without a scheme or `www.`.
++ *
++ * Written to be linear — no nested quantifier, no alternation inside a
++ * repetition — because this runs on every message and, unlike the `regex`
++ * predicate, it is not behind the `node:vm` timeout. A catastrophic pattern
++ * here would be this project's own doing rather than an operator's.
++ *
++ * `[\w-]{2,64}` is deliberately loose about what a code looks like: Discord
++ * vanity URLs allow hyphens, and being generous here costs a false positive
++ * that the allowlist resolves in one click, where being strict costs a
++ * missed invite. That trade is the spec's, not this file's.
++ */
++const INVITE =
++  /(?:https?:\/\/)?(?:www\.)?(?:discord\.gg|discord(?:app)?\.com\/invite)\/([\w-]{2,64})/gi;
++
++export const inviteConfig = z.object({}).strict();
++export type InviteConfig = z.infer<typeof inviteConfig>;
++
++/**
++ * `invite` — pattern matching only, no resolution (spec section 3, Slice 3,
++ * and CLAUDE.md rule 8: resolving a code to a guild id is an outbound API
++ * call, and the owner chose not to authorise one).
++ *
++ * **The known failure mode, designed for rather than hoped away.** Pattern
++ * matching cannot tell which server a code points at, so when a partner
++ * rotates their invite their new code is not on the list and this fires on a
++ * legitimate message. It surfaces as exactly one false positive in the
++ * Slice 9 review queue, whose suppression for this predicate is "add this
++ * code to the allowlist" — one click, and the loop closes.
++ */
++export const invitePredicate: Predicate<InviteConfig> = {
++  kind: 'invite',
++  config: inviteConfig,
++  compile(rule: AutomodRule): CompiledPredicate {
++    // Lower-cased once at compile time, not per message: the allowlist is
++    // per-rule and the message is not.
++    const allowed = new Set(rule.inviteAllowlist.map((entry) => entry.code.toLowerCase()));
++
++    return {
++      evaluate(input) {
++        // `matchAll` rather than a shared `exec` loop: INVITE carries the `g`
++        // flag, and a module-level regex with `g` reused across calls keeps
++        // `lastIndex` between them — the hazard plan ruling PR-13 refuses in
++        // the `regex` predicate's own config. `matchAll` requires `g` and
++        // does not leak `lastIndex` back to the pattern, which is why it is
++        // safe here where a bare `.test()` would not be.
++        for (const found of input.content.matchAll(INVITE)) {
++          const code = found[1];
++          if (code === undefined) continue;
++          // Every invite in the message is checked, not just the first: a
++          // message pairing the club's own invite with a spam one is the
++          // case that matters, and stopping at the first would clear it.
++          if (allowed.has(code.toLowerCase())) continue;
++
++          return {
++            categoryId: 'invite',
++            snippet: found[0],
++            trace: {
++              kind: 'invite',
++              // The code, which is what Slice 9's one-click suppression adds
++              // to the allowlist (ruling R-8: matchedOn is the thing a
++              // reviewer acts on).
++              matchedOn: code,
++              span: [found.index, found.index + found[0].length],
++              normalisations: ['zero-width stripped'],
++              detail: { code, allowlistSize: rule.inviteAllowlist.length },
++            },
++          };
++        }
++        return undefined;
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/keyword-filter.test.ts b/packages/core/src/automod/predicates/keyword-filter.test.ts
+index 640f0ac..349dc52 100644
+--- a/packages/core/src/automod/predicates/keyword-filter.test.ts
++++ b/packages/core/src/automod/predicates/keyword-filter.test.ts
+@@ -9,6 +9,8 @@ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
+   config: '{}',
+   terms: [{ text: 'badword', categoryId: 'slurs' }],
+   allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
+   ...over,
+ });
+ 
+diff --git a/packages/core/src/automod/predicates/link-domain.test.ts b/packages/core/src/automod/predicates/link-domain.test.ts
+new file mode 100644
+index 0000000..9c1680e
+--- /dev/null
++++ b/packages/core/src/automod/predicates/link-domain.test.ts
+@@ -0,0 +1,126 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++/**
++ * Compiles a `link_domain` rule, failing the test loudly if it does not
++ * compile. A compile failure is never the thing under test in this file.
++ */
++const compile = (rule: AutomodRule): CompiledPredicate => {
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++});
++
++describe('the link_domain predicate', () => {
++  const rule = (domains: { domain: string; listType: 'allow' | 'deny' }[]): AutomodRule => ({
++    ruleId: 'r1',
++    kind: 'link_domain',
++    mode: 'test' as const,
++    config: '{"mode":"deny"}',
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: domains,
++  });
++
++  it('fires on a denied domain', () => {
++    const match = compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++      message('look at https://example.com/thing'),
++    );
++    expect(match?.trace.matchedOn).toBe('example.com');
++  });
++
++  it('fires on a subdomain of a denied domain', () => {
++    expect(
++      compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++        message('https://tracking.example.com/x'),
++      ),
++    ).toBeDefined();
++  });
++
++  it('does not fire on a domain that merely ends with the same letters', () => {
++    // The ambiguity plan ruling PR-15 turns on: 'notexample.com' ends with
++    // 'example.com' as a STRING. A suffix check on raw text passes the two
++    // tests above and fails this one, which is why all three are here.
++    expect(
++      compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++        message('https://notexample.com/x'),
++      ),
++    ).toBeUndefined();
++  });
++
++  it('ignores port, credentials and case', () => {
++    expect(
++      compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++        message('https://user:pw@EXAMPLE.com:8443/x'),
++      ),
++    ).toBeDefined();
++  });
++
++  it('in allow mode, fires on anything not on the list', () => {
++    const allowOnly: AutomodRule = {
++      ...rule([{ domain: 'club.org', listType: 'allow' }]),
++      config: '{"mode":"allow"}',
++    };
++    expect(compile(allowOnly).evaluate(message('https://club.org/notes'))).toBeUndefined();
++    expect(compile(allowOnly).evaluate(message('https://elsewhere.net/x'))).toBeDefined();
++  });
++
++  it('does not fire on a message with no links', () => {
++    expect(
++      compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++        message('no links here, just talk about example.com in passing'),
++      ),
++    ).toBeUndefined();
++  });
++
++  it('still matches when the URL ends a sentence', () => {
++    // Without trailing-punctuation stripping, `new URL` reports the hostname
++    // as 'example.com.' — which equals neither 'example.com' nor '.example.com'
++    // under hostMatches, so the deny list is bypassed by a full stop. A silent
++    // false negative: nothing in the output would say so.
++    expect(
++      compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++        message('blocked at https://example.com.'),
++      ),
++    ).toBeDefined();
++  });
++
++  it('excludes the trailing punctuation from the span', () => {
++    // The span is evidence a reviewer reads against the message text, so it
++    // must cover the URL and not the full stop after it.
++    const content = 'blocked at https://example.com.';
++    const match = compile(rule([{ domain: 'example.com', listType: 'deny' }])).evaluate(
++      message(content),
++    );
++    expect(match?.snippet).toBe('https://example.com');
++    const [start, end] = match?.trace.span ?? [0, 0];
++    expect(content.slice(start, end)).toBe('https://example.com');
++  });
++
++  it('finds the denied link when an allowed one comes first', () => {
++    // Two links, only the second denied: an implementation checking only the
++    // first link goes red.
++    expect(
++      compile(rule([{ domain: 'bad.example', listType: 'deny' }])).evaluate(
++        message('https://club.org/a and https://bad.example/b'),
++      ),
++    ).toBeDefined();
++  });
++});
+diff --git a/packages/core/src/automod/predicates/link-domain.ts b/packages/core/src/automod/predicates/link-domain.ts
+new file mode 100644
+index 0000000..705b0af
+--- /dev/null
++++ b/packages/core/src/automod/predicates/link-domain.ts
+@@ -0,0 +1,124 @@
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++/**
++ * URL-shaped text. Linear by construction — a character class with a single
++ * quantifier, no nesting — because this runs on every message outside the
++ * `regex` predicate's timeout.
++ *
++ * Scheme-ful URLs and bare `www.` hosts only. A bare `example.com` in prose
++ * is deliberately not a link: Discord does not linkify it either, and
++ * treating every dotted word as a URL is a false-positive machine in a
++ * predicate whose whole job is precision.
++ */
++const URL_LIKE = /\b(?:https?:\/\/|www\.)[^\s<>"'`]+/gi;
++
++/**
++ * Punctuation a sentence puts after a URL rather than inside it.
++ *
++ * Without this, `'blocked at https://example.com.'` extracts
++ * `https://example.com.` and `new URL` reports the hostname `example.com.`
++ * — which matches neither `example.com` (not equal) nor `.example.com` (wrong
++ * suffix), so a denied domain quoted at the end of a sentence slips through.
++ * A false negative rather than a false positive, and therefore the safe
++ * direction, but a silent one: nothing about the output would tell an
++ * operator their deny list had been bypassed by a full stop.
++ *
++ * Trailing `)` is included because a URL in parentheses is far more common in
++ * prose than a URL genuinely ending in one.
++ */
++const TRAILING_PUNCTUATION = /[.,;:!?)\]}'"]+$/;
++
++export const linkDomainConfig = z
++  .object({
++    /**
++     * `deny` fires on a link whose host is on the deny list. `allow` fires on
++     * a link whose host is on neither list — a whitelist for a locked-down
++     * channel. Explicit rather than inferred from which rows exist, because
++     * inferring it would make deleting the last allow row silently change
++     * the rule from a whitelist into a no-op.
++     */
++    mode: z.enum(['allow', 'deny']),
++  })
++  .strict();
++
++export type LinkDomainConfig = z.infer<typeof linkDomainConfig>;
++
++/**
++ * Label-wise suffix match (plan ruling PR-15): `example.com` matches
++ * `example.com` and `gist.example.com`, but not `notexample.com`.
++ *
++ * Comparing labels rather than raw strings is the whole point — a
++ * `host.endsWith(entry)` check says true for `notexample.com`, which is a
++ * domain someone else owns.
++ */
++const hostMatches = (host: string, entry: string): boolean => {
++  if (host === entry) return true;
++  return host.endsWith(`.${entry}`);
++};
++
++/**
++ * `link_domain` — matches a message's links against a per-rule allow or deny
++ * list, by label-wise domain suffix (spec section 3, Slice 3; plan ruling
++ * PR-15). No fetching, no DNS, no resolution: same reasoning as `invite`
++ * (CLAUDE.md rule 8) — this is local pattern matching against configured
++ * lists, nothing more.
++ */
++export const linkDomainPredicate: Predicate<LinkDomainConfig> = {
++  kind: 'link_domain',
++  config: linkDomainConfig,
++  compile(rule: AutomodRule, config: LinkDomainConfig): CompiledPredicate {
++    const listed = rule.linkDomains
++      .filter((entry) => entry.listType === config.mode)
++      .map((entry) => entry.domain.toLowerCase());
++
++    return {
++      evaluate(input) {
++        for (const found of input.content.matchAll(URL_LIKE)) {
++          // Trailing sentence punctuation is not part of the URL. Stripped
++          // before parsing, because `new URL` keeps it in the hostname and a
++          // trailing dot makes every list comparison below silently miss.
++          const text = found[0].replace(TRAILING_PUNCTUATION, '');
++          if (text === '') continue;
++          let host: string;
++          try {
++            // `new URL` does the normalisation this predicate would
++            // otherwise get wrong by hand: it lower-cases the host and
++            // strips the port and any userinfo. Verified on this Node:
++            // 'https://user:pw@example.com:8443/x' -> 'example.com'.
++            // The trailing dot is stripped a second time, on the host: a
++            // fully-qualified `https://example.com./x` is legal and `new URL`
++            // preserves the root label, which would defeat the comparison
++            // below just as sentence punctuation would.
++            host = new URL(text.startsWith('www.') ? `https://${text}` : text).hostname.replace(
++              /\.$/,
++              '',
++            );
++          } catch {
++            // Not a URL after all. A message is not malformed for containing
++            // 'https://' in prose, so this is a skip, not an error.
++            continue;
++          }
++          const onList = listed.some((entry) => hostMatches(host, entry));
++          // deny: fires when the host IS listed. allow: fires when it is not.
++          if (config.mode === 'deny' ? !onList : onList) continue;
++
++          return {
++            categoryId: 'link_domain',
++            snippet: text,
++            trace: {
++              kind: 'link_domain',
++              // The host, which is what an operator adds to a list — not the
++              // whole URL, which would never be a list entry (ruling R-8).
++              matchedOn: host,
++              span: [found.index, found.index + text.length],
++              normalisations: ['zero-width stripped'],
++              detail: { host, mode: config.mode, listSize: listed.length },
++            },
++          };
++        }
++        return undefined;
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/regex.test.ts b/packages/core/src/automod/predicates/regex.test.ts
+new file mode 100644
+index 0000000..f557179
+--- /dev/null
++++ b/packages/core/src/automod/predicates/regex.test.ts
+@@ -0,0 +1,134 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import { REGEX_TIMEOUT_MS } from './regex.js';
++import type { AutomodRule, PredicateInput } from './types.js';
++
++const rule = (config: string): AutomodRule => ({
++  ruleId: 'r1',
++  kind: 'regex',
++  mode: 'test',
++  config,
++  terms: [],
++  allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
++});
++
++const message = (content: string): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++});
++
++describe('the regex predicate', () => {
++  it('matches, and traces the configured pattern rather than the matched text', () => {
++    const compiled = compileRule(rule('{"pattern":"buy \\\\w+ now"}'));
++    expect(compiled.ok).toBe(true);
++    if (!compiled.ok) return;
++    const match = compiled.compiled.evaluate(message('please buy crypto now friends'));
++
++    expect(match?.snippet).toBe('buy crypto now');
++    // matchedOn is the CONFIGURED thing, not the matched text — ruling R-8:
++    // a field whose job is "which configured thing matched" that duplicates
++    // the snippet beside it carries no information, and Slice 9's
++    // suppression reads it.
++    expect(match?.trace.matchedOn).toBe('buy \\w+ now');
++    expect(match?.trace.matchedOn).not.toBe(match?.snippet);
++  });
++
++  it('points the span at the occurrence that actually matched', () => {
++    // The ambiguity ruling R-9 was written about, and the fixture matters
++    // more than the assertion. The matched text 'cat' occurs TWICE in this
++    // content: once embedded in 'concatenate' at index 3, and once as the
++    // real word at index 14. The word-boundary pattern matches only the
++    // second, so:
++    //
++    //   content.indexOf('cat')        === 3   (wrong: inside 'concatenate')
++    //   /\bcat\b/.exec(content).index === 14  (right: the real word)
++    //
++    // An implementation that computes the span with indexOf on the matched
++    // text therefore produces a different, wrong span and this goes red.
++    //
++    // The first draft of this test used /n[o0]w/ against 'now or n0w', where
++    // the two alternatives are different literals occurring once each — so
++    // indexOf and the engine agreed and the test could not fail for the bug
++    // it names. That is the decorative-guard shape docs/22 records: a fixture
++    // too simple to reach the branch the test is named after.
++    const compiled = compileRule(rule('{"pattern":"\\\\bcat\\\\b"}'));
++    if (!compiled.ok) throw new Error('should compile');
++    const content = 'concatenate a cat';
++    const match = compiled.compiled.evaluate(message(content));
++
++    expect(match?.snippet).toBe('cat');
++    expect(match?.trace.span).toEqual([14, 17]);
++    // Pins the fixture's own premise: if someone edits `content` and breaks
++    // the two-occurrence property, this fails loudly rather than quietly
++    // turning the test above decorative again.
++    expect(content.indexOf('cat')).toBe(3);
++  });
++
++  it('rejects a pattern that does not compile', () => {
++    const result = compileRule(rule('{"pattern":"([unclosed"}'));
++    expect(result.ok).toBe(false);
++    if (result.ok) return;
++    expect(result.reason).toBe('compile-failed');
++  });
++
++  it('rejects the g and y flags, which carry lastIndex across messages', () => {
++    // Verified behaviour, not a theory: /a/g answers true, true, then false
++    // for the same content on a reused regex. This predicate reuses one
++    // compiled regex for a rule's whole lifetime.
++    for (const flags of ['g', 'y', 'gi']) {
++      const result = compileRule(rule(JSON.stringify({ pattern: 'spam', flags })));
++      expect(result.ok, `flags ${flags} must be refused`).toBe(false);
++      if (!result.ok) expect(result.reason).toBe('invalid-config');
++    }
++  });
++
++  it('accepts the flags that are safe to reuse', () => {
++    const result = compileRule(rule('{"pattern":"SPAM","flags":"i"}'));
++    expect(result.ok).toBe(true);
++    if (!result.ok) return;
++    expect(result.compiled.evaluate(message('spam'))).toBeDefined();
++  });
++
++  it('caps the pattern length', () => {
++    const result = compileRule(rule(JSON.stringify({ pattern: 'a'.repeat(1_001) })));
++    expect(result.ok).toBe(false);
++  });
++
++  // ── The gate the spec names (section 4, Slice 3) ──────────────────────
++  it('survives a catastrophic-backtracking pattern within the timeout', () => {
++    // ^(a+)+$ against 'a'*26 + 'b' was measured at 3052 ms in this Node.
++    // 60 a's would not finish in the lifetime of this project. The
++    // assertion is that the predicate returns control, and does so within a
++    // small multiple of the budget rather than hanging the subscriber.
++    const compiled = compileRule(rule('{"pattern":"^(a+)+$"}'));
++    if (!compiled.ok) throw new Error('should compile: the pattern is valid, only slow');
++
++    const started = Date.now();
++    expect(() => compiled.compiled.evaluate(message('a'.repeat(60) + 'b'))).toThrow(/timed out/i);
++    const elapsed = Date.now() - started;
++
++    expect(elapsed).toBeLessThan(REGEX_TIMEOUT_MS * 8);
++  }, 20_000);
++
++  it('a rule whose pattern timed out still evaluates the next message', () => {
++    // The context is reused, so a timeout must not poison it. Verified
++    // behaviour, pinned here because it is the difference between one bad
++    // message and a rule that is dead until restart.
++    const compiled = compileRule(rule('{"pattern":"^(a+)+$"}'));
++    if (!compiled.ok) throw new Error('should compile');
++    expect(() => compiled.compiled.evaluate(message('a'.repeat(60) + 'b'))).toThrow();
++    expect(compiled.compiled.evaluate(message('aaa'))).toBeDefined();
++  }, 20_000);
++});
+diff --git a/packages/core/src/automod/predicates/regex.ts b/packages/core/src/automod/predicates/regex.ts
+new file mode 100644
+index 0000000..f73ca10
+--- /dev/null
++++ b/packages/core/src/automod/predicates/regex.ts
+@@ -0,0 +1,128 @@
++import { createContext, Script, type Context } from 'node:vm';
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++/**
++ * How long one pattern may run against one message before it is abandoned
++ * (plan ruling PR-11).
++ *
++ * A legitimate pattern completes in well under a microsecond — a direct
++ * `exec` was measured at 0.05 microseconds — so this is four orders of
++ * magnitude of headroom. Deliberately not operator-configurable: the only
++ * use for raising it is to make a hanging pattern hang for longer.
++ */
++export const REGEX_TIMEOUT_MS = 25;
++
++/** Flags that are safe on a regex reused for a rule's whole lifetime. */
++const ALLOWED_FLAGS = ['i', 'm', 's', 'u'] as const;
++
++/**
++ * `g` and `y` are refused, and this is measured behaviour rather than
++ * caution (plan ruling PR-13). Both keep `lastIndex` on the RegExp object
++ * between calls, and this predicate compiles one RegExp and reuses it for
++ * every message the rule ever sees. A probe on this Node: `/a/g` answered
++ * `test('banana')` true (lastIndex 2), then true (lastIndex 4), then
++ * `test('xyz')` false (lastIndex reset to 0). The same message would get
++ * different answers depending on what was posted before it, which is a
++ * moderation rule that is wrong roughly half the time and looks fine in
++ * every test that evaluates one message.
++ */
++export const regexConfig = z
++  .object({
++    pattern: z.string().min(1).max(1_000),
++    flags: z
++      .string()
++      .max(ALLOWED_FLAGS.length)
++      .refine(
++        (value) => [...value].every((flag) => (ALLOWED_FLAGS as readonly string[]).includes(flag)),
++        {
++          message:
++            'only the i, m, s and u flags are allowed; g and y carry lastIndex between messages',
++        },
++      )
++      .optional(),
++  })
++  .strict();
++
++export type RegexConfig = z.infer<typeof regexConfig>;
++
++/**
++ * The regex predicate, with a hard per-evaluation timeout (spec section 3,
++ * Slice 3; the gate is named in section 4).
++ *
++ * **Why `node:vm` is here, and what it is not doing.** It is an
++ * *interruptible execution wrapper*, not a security sandbox. V8 cannot
++ * abandon a runaway regex from ordinary JavaScript — there is no `RegExp`
++ * timeout — but `vm`'s watchdog terminates execution inside a context, and a
++ * probe on this Node confirmed it interrupts catastrophic backtracking that
++ * would otherwise never return (it threw at 204 ms on a 200 ms budget,
++ * against a pattern measured at 3052 ms for a 26-character input).
++ *
++ * The script inside the context is the fixed string below. The operator's
++ * pattern reaches it as a `RegExp` object built by `new RegExp` in the
++ * ordinary realm; `new RegExp` cannot execute arbitrary code, so no
++ * operator-supplied *code* is ever evaluated. A reader who sees `node:vm`
++ * will reasonably assume a sandbox, which is why this says otherwise.
++ *
++ * The alternative the spec also permits — a linear-time engine — means
++ * `re2`, a native module that must compile on the deployment host. The
++ * timeout costs no dependency (plan ruling PR-10).
++ */
++export const regexPredicate: Predicate<RegexConfig> = {
++  kind: 'regex',
++  config: regexConfig,
++  compile(_rule: AutomodRule, config: RegexConfig): CompiledPredicate {
++    // Throws on an invalid pattern, which `compileRule` turns into
++    // `compile-failed` — inert and loud (ADR 0040 section 4), never a crash.
++    const pattern = new RegExp(config.pattern, config.flags ?? '');
++
++    // Context and Script are built once, here, not per message: that is what
++    // keeps an evaluation at ~120 microseconds instead of paying for context
++    // creation every time. A probe confirmed the timeout still fires when
++    // both are reused, and that a context which has already timed out stays
++    // usable for later messages.
++    const context: Context = createContext({ pattern, input: '' });
++    const script = new Script('pattern.exec(input)');
++
++    return {
++      evaluate(messageInput) {
++        (context as { input: string }).input = messageInput.content;
++
++        // A timeout throws, and that is deliberate (plan ruling PR-12):
++        // `evaluateRule` catches it and the subscriber logs "the predicate
++        // threw", naming the rule. Returning "no match" would be silent,
++        // which is the ADR 0039 failure this project has walked into three
++        // times — a rule that looks configured and quietly does nothing.
++        const found = script.runInContext(context, {
++          timeout: REGEX_TIMEOUT_MS,
++        }) as RegExpExecArray | null;
++        if (found === null) return undefined;
++
++        const matched = found[0];
++        return {
++          // No categories on this predicate, so the kind is the category —
++          // the convention `PredicateMatch.categoryId` documents.
++          categoryId: 'regex',
++          snippet: matched,
++          trace: {
++            kind: 'regex',
++            // The configured pattern, not the text it matched (ruling R-8).
++            // Slice 9's suppression for this predicate is "narrow the
++            // pattern", and it needs to know which pattern.
++            matchedOn: config.pattern,
++            // The engine's own index, not indexOf on the matched text —
++            // ruling R-9 records a shipped bug from exactly that shortcut,
++            // where a repeated term produced a span over the wrong
++            // occurrence.
++            span: [found.index, found.index + matched.length],
++            normalisations: ['zero-width stripped'],
++            detail: {
++              flags: config.flags ?? '',
++              patternLength: config.pattern.length,
++            },
++          },
++        };
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/registry.test.ts b/packages/core/src/automod/predicates/registry.test.ts
+index 9fccce9..659a006 100644
+--- a/packages/core/src/automod/predicates/registry.test.ts
++++ b/packages/core/src/automod/predicates/registry.test.ts
+@@ -9,6 +9,8 @@ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
+   config: '{}',
+   terms: [{ text: 'badword', categoryId: 'slurs' }],
+   allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
+   ...over,
+ });
+ 
+@@ -18,9 +20,11 @@ describe('predicateFor', () => {
+   });
+ 
+   it('returns undefined for a kind whose predicate has not shipped yet', () => {
+-    // The `kind` CHECK permits ten values from Slice 1; nine of them have no
+-    // predicate until Slices 3-5. That gap is handled, not prevented.
+-    expect(predicateFor('caps')).toBeUndefined();
++    // The `kind` CHECK permits ten values from Slice 1. Slices 3 and 5 shipped
++    // seven of them; the window tier (mention_spam, rapid_spam,
++    // duplicate_message) is Slice 4 and still has no predicate. That gap is
++    // handled, not prevented.
++    expect(predicateFor('mention_spam')).toBeUndefined();
+   });
+ });
+ 
+@@ -36,7 +40,7 @@ describe('compileRule', () => {
+   });
+ 
+   it('reports a kind with no predicate registered yet', () => {
+-    const result = compileRule(rule({ kind: 'caps', terms: [], config: '{}' }));
++    const result = compileRule(rule({ kind: 'mention_spam', terms: [], config: '{}' }));
+     expect(result.ok).toBe(false);
+     if (!result.ok) expect(result.reason).toBe('no-predicate');
+   });
+@@ -105,8 +109,8 @@ describe('validateRuleConfig', () => {
+   });
+ 
+   it('reports a permitted kind with no predicate registered yet', () => {
+-    const result = validateRuleConfig('caps', '{}');
+-    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'caps' });
++    const result = validateRuleConfig('mention_spam', '{}');
++    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'mention_spam' });
+   });
+ 
+   it('reports malformed JSON rather than throwing', () => {
+diff --git a/packages/core/src/automod/predicates/registry.ts b/packages/core/src/automod/predicates/registry.ts
+index d6de056..0dbf673 100644
+--- a/packages/core/src/automod/predicates/registry.ts
++++ b/packages/core/src/automod/predicates/registry.ts
+@@ -1,4 +1,10 @@
++import { attachmentTypePredicate } from './attachment-type.js';
++import { capsPredicate } from './caps.js';
++import { emojiPredicate } from './emoji.js';
++import { invitePredicate } from './invite.js';
+ import { keywordFilterPredicate } from './keyword-filter.js';
++import { linkDomainPredicate } from './link-domain.js';
++import { regexPredicate } from './regex.js';
+ import {
+   isRuleKind,
+   type AnyPredicate,
+@@ -18,6 +24,12 @@ import {
+  */
+ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
+   keyword_filter: keywordFilterPredicate,
++  attachment_type: attachmentTypePredicate,
++  invite: invitePredicate,
++  link_domain: linkDomainPredicate,
++  regex: regexPredicate,
++  caps: capsPredicate,
++  emoji: emojiPredicate,
+ };
+ 
+ export const predicateFor = (kind: string): AnyPredicate | undefined =>
+diff --git a/packages/core/src/automod/predicates/types.ts b/packages/core/src/automod/predicates/types.ts
+index fb7b66c..a731007 100644
+--- a/packages/core/src/automod/predicates/types.ts
++++ b/packages/core/src/automod/predicates/types.ts
+@@ -33,6 +33,13 @@ export const isRuleKind = (value: string): value is RuleKind =>
+  * relational data in a type every predicate has to satisfy. `terms` and
+  * `allowlist` are empty for every other kind (ADR 0040's split: scalar config
+  * in JSON, list-shaped data in tables).
++ *
++ * `inviteAllowlist` and `linkDomains` are the same split applied to `invite`
++ * and `link_domain` (ADR 0040 §3): each a relational list rather than JSON in
++ * `config`, because the label/`listType` is per-item metadata and Slice 9's
++ * one-click suppression for both predicates is a row edit. Empty for every
++ * other kind. Mirrors storage's `StoredAutomodRule` field for field;
++ * re-declared here rather than imported, per ADR 0014.
+  */
+ export interface AutomodRule {
+   readonly ruleId: string;
+@@ -42,6 +49,8 @@ export interface AutomodRule {
+   readonly config: string;
+   readonly terms: readonly { text: string; categoryId: string }[];
+   readonly allowlist: readonly string[];
++  readonly inviteAllowlist: readonly { code: string; label: string }[];
++  readonly linkDomains: readonly { domain: string; listType: 'allow' | 'deny' }[];
+ }
+ 
+ /**
+@@ -147,6 +156,21 @@ export interface FixtureRecord {
+   readonly source: 'observed' | 'handwritten';
+   /** The replay clock. `PredicateInput.atMs` comes from here (ADR 0041 §6). */
+   readonly createdAt: number;
++  /**
++   * Filename, declared content type and size for each file on the message
++   * (OD-3).
++   *
++   * `MessageAttachment` is the same shape the live path carries, deliberately:
++   * `attachment_type` must not be able to tell a replayed fixture from a live
++   * message, because the one-code-path invariant (ADR 0041 section 3) is only
++   * worth something if the input it produces is the same on both sides.
++   *
++   * Empty for a handwritten fixture that names no files, and for every
++   * fixture captured before the OD-3 migration — those rows are real evidence
++   * about a message whose attachments were never recorded, and an empty list
++   * is the honest representation of that.
++   */
++  readonly attachments: readonly MessageAttachment[];
+ }
+ 
+ /** A rule compiled once, then evaluated against many messages. */
+diff --git a/packages/core/src/automod/subscriber.test.ts b/packages/core/src/automod/subscriber.test.ts
+index b32a91d..e7e2b54 100644
+--- a/packages/core/src/automod/subscriber.test.ts
++++ b/packages/core/src/automod/subscriber.test.ts
+@@ -4,7 +4,12 @@ import { pino } from 'pino';
+ import { authorize, type Authorized, type AuthzStore } from '../authz.js';
+ import { parseGuildId, parseSnowflakeId } from '../ids.js';
+ import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
+-import type { DomainEvent, MessageEvent, ReactionEvent } from '../discord/events.js';
++import type {
++  DomainEvent,
++  MessageAttachment,
++  MessageEvent,
++  ReactionEvent,
++} from '../discord/events.js';
+ import type {
+   ModerationIntent,
+   ModerationOutcome,
+@@ -84,6 +89,8 @@ const rule = (over: Partial<AutomodRule> & { ruleId: string }): AutomodRule => (
+   mode: 'enforce',
+   terms: [{ text: 'badword', categoryId: 'cat-1' }],
+   allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
+   ...over,
+ });
+ 
+@@ -127,7 +134,13 @@ interface Harness {
+     readSafetyState: number;
+     authorRoleIds: string[];
+     nextEscalationTier: number[];
+-    captureFixture: { messageId: string; content: string; authorId: string; atMs: number }[];
++    captureFixture: {
++      messageId: string;
++      content: string;
++      authorId: string;
++      atMs: number;
++      attachments: readonly MessageAttachment[];
++    }[];
+   };
+ }
+ 
+@@ -362,10 +375,33 @@ describe('automod subscriber', () => {
+           content: 'this message has badword in it',
+           authorId: AUTHOR,
+           atMs: NOW_MS,
++          attachments: [],
+         },
+       ]);
+     });
+ 
++    it('carries the message’s attachments into the corpus', async () => {
++      // The ambiguity that makes this non-decorative: the message has an
++      // attachment AND content, so an implementation that passed `[]`
++      // through would still capture the fixture and still pass every other
++      // assertion in this file. Only this expectation goes red.
++      const { deps, calls } = buildHarness({
++        rules: [rule({ ruleId: 'rule-capture-attachments', mode: 'test' })],
++        captureFixtureResult: 'fixture-1',
++      });
++      const subscriber = createAutomodSubscriber(deps);
++
++      await subscriber.handle(
++        messageCreate({
++          attachments: [{ fileName: 'a.exe', contentType: undefined, sizeBytes: 7 }],
++        }),
++      );
++
++      expect(calls.captureFixture[0]?.attachments).toEqual([
++        { fileName: 'a.exe', contentType: undefined, sizeBytes: 7 },
++      ]);
++    });
++
+     it('does not capture in enforce mode', async () => {
+       const { deps, calls } = buildHarness({
+         rules: [rule({ ruleId: 'rule-enforce-no-capture', mode: 'enforce' })],
+diff --git a/packages/core/src/automod/subscriber.ts b/packages/core/src/automod/subscriber.ts
+index d634109..86a9c65 100644
+--- a/packages/core/src/automod/subscriber.ts
++++ b/packages/core/src/automod/subscriber.ts
+@@ -8,6 +8,7 @@ import type {
+ } from '../effects/moderation-gateway.js';
+ import type { Authorized } from '../authz.js';
+ import { DiscordApiError } from '../discord/errors.js';
++import type { MessageAttachment } from '../discord/events.js';
+ import { parseSnowflakeId } from '../ids.js';
+ import {
+   createPredicateCache,
+@@ -119,6 +120,8 @@ export interface AutomodSubscriberDeps {
+     content: string;
+     authorId: string;
+     atMs: number;
++    /** Filename, declared content type and size for each file (OD-3). */
++    attachments: readonly MessageAttachment[];
+   }): string | undefined;
+   /**
+    * Resolves the member's case so an event can be attached to it, and — only
+@@ -322,6 +325,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
+               content: input.content,
+               authorId,
+               atMs: input.atMs,
++              attachments: input.attachments,
+             });
+           } catch (err) {
+             deps.logger.error(
+diff --git a/packages/core/src/ops/commands/automod.test.ts b/packages/core/src/ops/commands/automod.test.ts
+index 1847186..469d0b9 100644
+--- a/packages/core/src/ops/commands/automod.test.ts
++++ b/packages/core/src/ops/commands/automod.test.ts
+@@ -4,7 +4,15 @@ import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixture
+ import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
+ import { OPERATOR_COMMANDS } from '../registry.js';
+ import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
+-import { automodDryRunCommand, automodReviewCommand, automodVerdictCommand } from './automod.js';
++import {
++  automodDomainAddCommand,
++  automodDomainRmCommand,
++  automodDryRunCommand,
++  automodInviteAllowCommand,
++  automodInviteDenyCommand,
++  automodReviewCommand,
++  automodVerdictCommand,
++} from './automod.js';
+ 
+ const NOW = 1_700_000_000_000;
+ 
+@@ -79,6 +87,8 @@ const ruleWith = (words: readonly string[], over: Partial<AutomodRule> = {}): Au
+   config: '{}',
+   terms: words.map((text) => ({ text, categoryId: 'c1' })),
+   allowlist: [],
++  inviteAllowlist: [],
++  linkDomains: [],
+   ...over,
+ });
+ 
+@@ -89,6 +99,7 @@ const fixture = (
+   label: 'unlabelled',
+   source: 'observed',
+   createdAt: NOW,
++  attachments: [],
+   ...over,
+ });
+ 
+@@ -576,3 +587,269 @@ describe('automod verdict', () => {
+     expect(res.ok).toBe(false);
+   });
+ });
++
++describe('automod invite-allow', () => {
++  it('is registered as a write', () => {
++    const names = OPERATOR_COMMANDS.map((c) => c.name);
++    expect(names).toContain('automod invite-allow');
++    expect(automodInviteAllowCommand.write).toBe(true);
++  });
++
++  it('adds an invite allowlist entry and audits it', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodInviteAllowCommand,
++      {
++        addInviteAllowlistEntry: () => 'added',
++        listInviteAllowlist: () => [{ code: 'clubhouse', label: 'our own server' }],
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'invite-rule', code: 'clubhouse', label: 'our own server' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, code: 'clubhouse', alreadyPresent: false });
++    expect(res.text).toContain('added clubhouse');
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.invite_allowlist_added',
++        subjectType: 'mod_rule',
++        subjectId: 'invite-rule',
++      }),
++    ]);
++  });
++
++  it('says a code is already allowed rather than erroring on a repeat add', async () => {
++    const res = await driveWrite(
++      automodInviteAllowCommand,
++      {
++        addInviteAllowlistEntry: () => 'already-present',
++        listInviteAllowlist: () => [{ code: 'clubhouse', label: 'our own server' }],
++        recordAudit: () => {},
++      },
++      { ruleId: 'invite-rule', code: 'clubhouse', label: 'our own server' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, alreadyPresent: true });
++    expect(res.text).toContain('already on');
++  });
++
++  it('refuses to add an entry to a rule that does not exist, but still audits it', async () => {
++    // A usage answer, not a fault — the same treatment `automod verdict`
++    // gives a mistyped event id, and for the same reason: an operator at a
++    // terminal will mistype a rule id. An audit row is still owed.
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodInviteAllowCommand,
++      {
++        addInviteAllowlistEntry: () => 'no-such-rule',
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'no-such-rule', code: 'x', label: 'y' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.invite_allowlist_added',
++        subjectType: 'mod_rule',
++        subjectId: 'no-such-rule',
++        after: expect.objectContaining({ outcome: 'no-such-rule' }),
++      }),
++    ]);
++  });
++
++  it('refuses without --confirm', async () => {
++    const res = await driveWrite(
++      automodInviteAllowCommand,
++      { addInviteAllowlistEntry: () => 'added', listInviteAllowlist: () => [] },
++      { ruleId: 'r1', code: 'x', label: 'y' },
++      { confirm: false },
++    );
++    expect(res.ok).toBe(false);
++    if (res.ok) return;
++    expect(res.code).toBe('needs-confirm');
++  });
++});
++
++describe('automod invite-deny', () => {
++  it('is registered as a write', () => {
++    const names = OPERATOR_COMMANDS.map((c) => c.name);
++    expect(names).toContain('automod invite-deny');
++    expect(automodInviteDenyCommand.write).toBe(true);
++  });
++
++  it('removes an invite allowlist entry', async () => {
++    const res = await driveWrite(
++      automodInviteDenyCommand,
++      {
++        removeInviteAllowlistEntry: () => 'removed',
++        listInviteAllowlist: () => [],
++        recordAudit: () => {},
++      },
++      { ruleId: 'invite-rule', code: 'clubhouse' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, removed: true });
++    expect(res.text).toContain('removed clubhouse');
++  });
++
++  it('says a code was not on the list rather than erroring', async () => {
++    const res = await driveWrite(
++      automodInviteDenyCommand,
++      {
++        removeInviteAllowlistEntry: () => 'not-present',
++        listInviteAllowlist: () => [],
++        recordAudit: () => {},
++      },
++      { ruleId: 'invite-rule', code: 'ghost' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, removed: false });
++    expect(res.text).toContain('was not on');
++  });
++
++  it('refuses a rule that does not exist, but still audits it', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodInviteDenyCommand,
++      {
++        removeInviteAllowlistEntry: () => 'no-such-rule',
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'no-such-rule', code: 'x' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
++    expect(audit).toEqual([
++      expect.objectContaining({ action: 'automod.invite_allowlist_removed' }),
++    ]);
++  });
++});
++
++describe('automod domain-add', () => {
++  it('is registered as a write', () => {
++    const names = OPERATOR_COMMANDS.map((c) => c.name);
++    expect(names).toContain('automod domain-add');
++    expect(automodDomainAddCommand.write).toBe(true);
++  });
++
++  it('adds a domain and audits it', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodDomainAddCommand,
++      {
++        addLinkDomain: () => 'added',
++        listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, domain: 'example.com', listType: 'deny' });
++    expect(audit).toEqual([
++      expect.objectContaining({
++        action: 'automod.link_domain_added',
++        subjectType: 'mod_rule',
++        subjectId: 'domain-rule',
++      }),
++    ]);
++  });
++
++  it('refuses a listType outside allow|deny at the validator', async () => {
++    const res = await driveWrite(
++      automodDomainAddCommand,
++      { addLinkDomain: () => 'added', listLinkDomains: () => [] },
++      { ruleId: 'r1', domain: 'example.com', listType: 'block' },
++    );
++    expect(res.ok).toBe(false);
++  });
++
++  it('refuses a rule that does not exist, but still audits it', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodDomainAddCommand,
++      {
++        addLinkDomain: () => 'no-such-rule',
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'no-such-rule', domain: 'example.com', listType: 'allow' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
++    expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_added' })]);
++  });
++});
++
++describe('automod domain-rm', () => {
++  it('is registered as a write', () => {
++    const names = OPERATOR_COMMANDS.map((c) => c.name);
++    expect(names).toContain('automod domain-rm');
++    expect(automodDomainRmCommand.write).toBe(true);
++  });
++
++  it('removes a domain', async () => {
++    const res = await driveWrite(
++      automodDomainRmCommand,
++      {
++        removeLinkDomain: () => 'removed',
++        listLinkDomains: () => [],
++        recordAudit: () => {},
++      },
++      { ruleId: 'domain-rule', domain: 'example.com' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, removed: true });
++  });
++
++  it('says a domain was not on the list rather than erroring', async () => {
++    const res = await driveWrite(
++      automodDomainRmCommand,
++      {
++        removeLinkDomain: () => 'not-present',
++        listLinkDomains: () => [],
++        recordAudit: () => {},
++      },
++      { ruleId: 'domain-rule', domain: 'ghost.example' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: true, removed: false });
++  });
++
++  it('refuses a rule that does not exist, but still audits it', async () => {
++    const audit: unknown[] = [];
++    const res = await driveWrite(
++      automodDomainRmCommand,
++      {
++        removeLinkDomain: () => 'no-such-rule',
++        recordAudit: (input) => {
++          audit.push(input);
++        },
++      },
++      { ruleId: 'no-such-rule', domain: 'example.com' },
++    );
++    expect(res.ok).toBe(true);
++    if (!res.ok) return;
++    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
++    expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_removed' })]);
++  });
++});
+diff --git a/packages/core/src/ops/commands/automod.ts b/packages/core/src/ops/commands/automod.ts
+index e3401af..89105c3 100644
+--- a/packages/core/src/ops/commands/automod.ts
++++ b/packages/core/src/ops/commands/automod.ts
+@@ -429,3 +429,299 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
+     };
+   },
+ });
++
++/**
++ * `automod invite-allow` / `automod invite-deny` / `automod domain-add` /
++ * `automod domain-rm` (plan ruling PR-19, Task 9 of the slices 3-5 plan).
++ *
++ * Task 6 built `invite`'s labelled code allowlist and `link_domain`'s
++ * allow/deny lists in storage, and shipped no caller — nothing outside a test
++ * could add the club's own invite code to the allowlist. That is not merely
++ * untidy: `observe` mode never touches Discord, so an empty allowlist harms
++ * nobody during the observe window, but an `invite` rule with an empty
++ * allowlist fires on the club's own invite links every time a member posts
++ * one, and Slice 6's release gate demands zero false positives for a rule
++ * that feeds the escalation counter. That rule cannot pass its gate until an
++ * operator can populate the list, so this is in Release 2 even though the
++ * dashboard screen (Slice 8/9) is not.
++ *
++ * Four commands under the existing `automod` namespace (plan ruling PR-6
++ * named the precedent). Reads are not separate commands: this build has no
++ * `automod rules` command to list a rule's own configuration, so each write
++ * prints the resulting list itself — a list nobody can see is worse than one
++ * nobody can edit, and inventing a fifth command to do only that would be
++ * scope this task does not need.
++ */
++
++/** One line per invite allowlist entry, in the order the port already sorted them. */
++const renderInviteAllowlist = (
++  ruleId: string,
++  entries: readonly { readonly code: string; readonly label: string }[],
++): string =>
++  entries.length === 0
++    ? `rule ${ruleId}'s invite allowlist is now empty`
++    : `rule ${ruleId}'s invite allowlist:\n` +
++      entries.map((entry) => `  ${entry.code}  (${entry.label})`).join('\n');
++
++const projectInviteAllowlist = (
++  entries: readonly { readonly code: string; readonly label: string }[],
++): JsonValue => entries.map((entry) => ({ code: entry.code, label: entry.label }));
++
++/** One line per domain, in the order the port already sorted them. */
++const renderLinkDomains = (
++  ruleId: string,
++  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
++): string =>
++  entries.length === 0
++    ? `rule ${ruleId}'s domain lists are now empty`
++    : `rule ${ruleId}'s domain lists:\n` +
++      entries.map((entry) => `  ${entry.listType.padEnd(5)} ${entry.domain}`).join('\n');
++
++const projectLinkDomains = (
++  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
++): JsonValue => entries.map((entry) => ({ domain: entry.domain, listType: entry.listType }));
++
++const automodInviteAllowArgs = z
++  .object({
++    ruleId: z.string().min(1),
++    code: z.string().min(1).max(64),
++    label: z.string().min(1).max(200),
++  })
++  .strict();
++
++export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInviteAllowArgs>>({
++  name: 'automod invite-allow',
++  write: true,
++  summary: "add a code to a rule's invite allowlist",
++  positional: [
++    { name: 'ruleId', required: true, describe: 'the invite rule to edit' },
++    { name: 'code', required: true, describe: 'the invite code, e.g. clubhouse' },
++    {
++      name: 'label',
++      required: true,
++      describe: 'what this code is, for whoever reads the list later',
++    },
++  ],
++  args: automodInviteAllowArgs,
++  run(ctx: OpsContext, args): OpsWriteResult {
++    const outcome = ctx.ports.addInviteAllowlistEntry({
++      ruleId: args.ruleId,
++      code: args.code,
++      label: args.label,
++    });
++
++    if (outcome === 'no-such-rule') {
++      // A usage answer, not a fault: an operator at a terminal will mistype
++      // a rule id, and the composite foreign key would otherwise surface an
++      // opaque `FOREIGN KEY constraint failed`. An audit row is still owed —
++      // "an operator tried to edit a rule that does not exist" is a fact
++      // worth having, the same treatment `automod verdict` gives a mistyped
++      // event id.
++      return {
++        text: `no rule ${args.ruleId} in this guild`,
++        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
++        audit: {
++          action: 'automod.invite_allowlist_added',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'no-such-rule', code: args.code },
++        },
++      };
++    }
++
++    const list = ctx.ports.listInviteAllowlist(args.ruleId);
++    const alreadyPresent = outcome === 'already-present';
++
++    return {
++      text:
++        (alreadyPresent
++          ? `${args.code} was already on rule ${args.ruleId}'s invite allowlist`
++          : `added ${args.code} (${args.label}) to rule ${args.ruleId}'s invite allowlist`) +
++        '\n' +
++        renderInviteAllowlist(args.ruleId, list),
++      data: {
++        ok: true,
++        code: args.code,
++        alreadyPresent,
++        allowlist: projectInviteAllowlist(list),
++      },
++      audit: {
++        action: 'automod.invite_allowlist_added',
++        subjectType: 'mod_rule',
++        subjectId: args.ruleId,
++        after: { code: args.code, label: args.label, alreadyPresent },
++      },
++    };
++  },
++});
++
++const automodInviteDenyArgs = z
++  .object({
++    ruleId: z.string().min(1),
++    code: z.string().min(1),
++  })
++  .strict();
++
++export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInviteDenyArgs>>({
++  name: 'automod invite-deny',
++  write: true,
++  summary: "remove a code from a rule's invite allowlist",
++  positional: [
++    { name: 'ruleId', required: true, describe: 'the invite rule to edit' },
++    { name: 'code', required: true, describe: 'the invite code to remove' },
++  ],
++  args: automodInviteDenyArgs,
++  run(ctx: OpsContext, args): OpsWriteResult {
++    const outcome = ctx.ports.removeInviteAllowlistEntry({ ruleId: args.ruleId, code: args.code });
++
++    if (outcome === 'no-such-rule') {
++      return {
++        text: `no rule ${args.ruleId} in this guild`,
++        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
++        audit: {
++          action: 'automod.invite_allowlist_removed',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'no-such-rule', code: args.code },
++        },
++      };
++    }
++
++    const list = ctx.ports.listInviteAllowlist(args.ruleId);
++    const removed = outcome === 'removed';
++
++    return {
++      text:
++        (removed
++          ? `removed ${args.code} from rule ${args.ruleId}'s invite allowlist`
++          : `${args.code} was not on rule ${args.ruleId}'s invite allowlist`) +
++        '\n' +
++        renderInviteAllowlist(args.ruleId, list),
++      data: { ok: true, code: args.code, removed, allowlist: projectInviteAllowlist(list) },
++      audit: {
++        action: 'automod.invite_allowlist_removed',
++        subjectType: 'mod_rule',
++        subjectId: args.ruleId,
++        after: { code: args.code, removed },
++      },
++    };
++  },
++});
++
++const automodDomainAddArgs = z
++  .object({
++    ruleId: z.string().min(1),
++    domain: z.string().min(1),
++    listType: z.enum(['allow', 'deny']),
++  })
++  .strict();
++
++export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomainAddArgs>>({
++  name: 'automod domain-add',
++  write: true,
++  summary: "add a domain to a rule's allow or deny list",
++  positional: [
++    { name: 'ruleId', required: true, describe: 'the link_domain rule to edit' },
++    { name: 'domain', required: true, describe: 'the domain, e.g. example.com' },
++    { name: 'listType', required: true, describe: 'allow | deny' },
++  ],
++  args: automodDomainAddArgs,
++  run(ctx: OpsContext, args): OpsWriteResult {
++    const outcome = ctx.ports.addLinkDomain({
++      ruleId: args.ruleId,
++      domain: args.domain,
++      listType: args.listType,
++    });
++
++    if (outcome === 'no-such-rule') {
++      return {
++        text: `no rule ${args.ruleId} in this guild`,
++        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
++        audit: {
++          action: 'automod.link_domain_added',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'no-such-rule', domain: args.domain },
++        },
++      };
++    }
++
++    const list = ctx.ports.listLinkDomains(args.ruleId);
++    const alreadyPresent = outcome === 'already-present';
++
++    return {
++      text:
++        (alreadyPresent
++          ? `${args.domain} was already on rule ${args.ruleId}'s ${args.listType} list`
++          : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`) +
++        '\n' +
++        renderLinkDomains(args.ruleId, list),
++      data: {
++        ok: true,
++        domain: args.domain,
++        listType: args.listType,
++        alreadyPresent,
++        domains: projectLinkDomains(list),
++      },
++      audit: {
++        action: 'automod.link_domain_added',
++        subjectType: 'mod_rule',
++        subjectId: args.ruleId,
++        after: { domain: args.domain, listType: args.listType, alreadyPresent },
++      },
++    };
++  },
++});
++
++const automodDomainRmArgs = z
++  .object({
++    ruleId: z.string().min(1),
++    domain: z.string().min(1),
++  })
++  .strict();
++
++export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomainRmArgs>>({
++  name: 'automod domain-rm',
++  write: true,
++  summary: "remove a domain from a rule's allow or deny list",
++  positional: [
++    { name: 'ruleId', required: true, describe: 'the link_domain rule to edit' },
++    { name: 'domain', required: true, describe: 'the domain to remove' },
++  ],
++  args: automodDomainRmArgs,
++  run(ctx: OpsContext, args): OpsWriteResult {
++    const outcome = ctx.ports.removeLinkDomain({ ruleId: args.ruleId, domain: args.domain });
++
++    if (outcome === 'no-such-rule') {
++      return {
++        text: `no rule ${args.ruleId} in this guild`,
++        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
++        audit: {
++          action: 'automod.link_domain_removed',
++          subjectType: 'mod_rule',
++          subjectId: args.ruleId,
++          after: { outcome: 'no-such-rule', domain: args.domain },
++        },
++      };
++    }
++
++    const list = ctx.ports.listLinkDomains(args.ruleId);
++    const removed = outcome === 'removed';
++
++    return {
++      text:
++        (removed
++          ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
++          : `${args.domain} was not on rule ${args.ruleId}'s domain lists`) +
++        '\n' +
++        renderLinkDomains(args.ruleId, list),
++      data: { ok: true, domain: args.domain, removed, domains: projectLinkDomains(list) },
++      audit: {
++        action: 'automod.link_domain_removed',
++        subjectType: 'mod_rule',
++        subjectId: args.ruleId,
++        after: { domain: args.domain, removed },
++      },
++    };
++  },
++});
+diff --git a/packages/core/src/ops/commands/reads.test.ts b/packages/core/src/ops/commands/reads.test.ts
+index 46d1f8c..a5dfc7d 100644
+--- a/packages/core/src/ops/commands/reads.test.ts
++++ b/packages/core/src/ops/commands/reads.test.ts
+@@ -508,7 +508,12 @@ describe('bananasaurs doctor', () => {
+     const res = await drive(doctorCommand, {
+       ...healthy,
+       listUnusableAutomodRules: () => [
+-        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
++        {
++          ruleId: 'shouting',
++          kind: 'mention_spam',
++          reason: 'no-predicate',
++          detail: 'mention_spam',
++        },
+       ],
+     });
+     expect(res.ok).toBe(true);
+@@ -519,7 +524,12 @@ describe('bananasaurs doctor', () => {
+     expect(res.data).toMatchObject({
+       ok: false,
+       unusableAutomodRules: [
+-        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
++        {
++          ruleId: 'shouting',
++          kind: 'mention_spam',
++          reason: 'no-predicate',
++          detail: 'mention_spam',
++        },
+       ],
+     });
+   });
+diff --git a/packages/core/src/ops/ports.ts b/packages/core/src/ops/ports.ts
+index cf0a436..116b74b 100644
+--- a/packages/core/src/ops/ports.ts
++++ b/packages/core/src/ops/ports.ts
+@@ -314,6 +314,50 @@ export interface OpsPorts {
+      */
+     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
+   /** Points an event kind at a channel, creating or re-pointing the route. */
++  /**
++   * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
++   * PR-19). `'already-present'` is a real answer, not a refusal: the
++   * repository's `onConflictDoNothing` makes a repeated add a no-op, and
++   * telling the operator "that code was already allowed" beats both silence
++   * and a fault. `'no-such-rule'` is a usage answer for an operator who
++   * mistyped a rule id — the composite foreign key would otherwise surface an
++   * opaque `FOREIGN KEY constraint failed`.
++   */
++  addInviteAllowlistEntry(input: {
++    readonly ruleId: string;
++    readonly code: string;
++    readonly label: string;
++  }): 'added' | 'already-present' | 'no-such-rule';
++  /** `ruleId`'s invite allowlist, ordered by code — for printing after a write. */
++  listInviteAllowlist(ruleId: string): readonly { readonly code: string; readonly label: string }[];
++  /**
++   * Removes one code from `ruleId`'s invite allowlist. `'not-present'` is a
++   * real answer, the same shape `unexcludeChannel`'s boolean already uses for
++   * "nothing to remove is not a fault".
++   */
++  removeInviteAllowlistEntry(input: {
++    readonly ruleId: string;
++    readonly code: string;
++  }): 'removed' | 'not-present' | 'no-such-rule';
++  /**
++   * Adds one domain to `ruleId`'s allow or deny list (ADR 0040 §3, plan
++   * ruling PR-19). Same three-way answer as `addInviteAllowlistEntry`, for
++   * the same two reasons.
++   */
++  addLinkDomain(input: {
++    readonly ruleId: string;
++    readonly domain: string;
++    readonly listType: 'allow' | 'deny';
++  }): 'added' | 'already-present' | 'no-such-rule';
++  /** `ruleId`'s allow and deny domain lists together, ordered by domain. */
++  listLinkDomains(
++    ruleId: string,
++  ): readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
++  /** Removes one domain from either of `ruleId`'s lists. */
++  removeLinkDomain(input: {
++    readonly ruleId: string;
++    readonly domain: string;
++  }): 'removed' | 'not-present' | 'no-such-rule';
+   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
+   /** Returns whether there was a route to change. False is a real answer. */
+   setRouteEnabled(eventKind: string, enabled: boolean): boolean;
+diff --git a/packages/core/src/ops/registry.ts b/packages/core/src/ops/registry.ts
+index aa5b11f..8d4bf15 100644
+--- a/packages/core/src/ops/registry.ts
++++ b/packages/core/src/ops/registry.ts
+@@ -1,6 +1,10 @@
+ import type { RegisteredCommand } from './dispatch.js';
+ import {
++  automodDomainAddCommand,
++  automodDomainRmCommand,
+   automodDryRunCommand,
++  automodInviteAllowCommand,
++  automodInviteDenyCommand,
+   automodReviewCommand,
+   automodVerdictCommand,
+ } from './commands/automod.js';
+@@ -53,6 +57,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
+   // dispatcher enforces both, so the ordering here is for `--help` only.
+   configSetCommand,
+   automodVerdictCommand,
++  automodInviteAllowCommand,
++  automodInviteDenyCommand,
++  automodDomainAddCommand,
++  automodDomainRmCommand,
+   logRoutingSetCommand,
+   logRoutingOffCommand,
+   logRoutingExcludeCommand,
+diff --git a/packages/core/src/ops/test-fixtures.ts b/packages/core/src/ops/test-fixtures.ts
+index 12bc846..a4d19f3 100644
+--- a/packages/core/src/ops/test-fixtures.ts
++++ b/packages/core/src/ops/test-fixtures.ts
+@@ -45,6 +45,12 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
+   listUnreviewedMatches: unstubbed('listUnreviewedMatches'),
+   applySetting: unstubbed('applySetting'),
+   recordMatchVerdict: unstubbed('recordMatchVerdict'),
++  addInviteAllowlistEntry: unstubbed('addInviteAllowlistEntry'),
++  listInviteAllowlist: unstubbed('listInviteAllowlist'),
++  removeInviteAllowlistEntry: unstubbed('removeInviteAllowlistEntry'),
++  addLinkDomain: unstubbed('addLinkDomain'),
++  listLinkDomains: unstubbed('listLinkDomains'),
++  removeLinkDomain: unstubbed('removeLinkDomain'),
+   setRoute: unstubbed('setRoute'),
+   setRouteEnabled: unstubbed('setRouteEnabled'),
+   excludeChannel: unstubbed('excludeChannel'),
+diff --git a/packages/http/src/test-support.ts b/packages/http/src/test-support.ts
+index 266a13f..76100fa 100644
+--- a/packages/http/src/test-support.ts
++++ b/packages/http/src/test-support.ts
+@@ -160,6 +160,24 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts =>
+   recordMatchVerdict: () => {
+     throw new Error('not used by the dashboard routes under test');
+   },
++  addInviteAllowlistEntry: () => {
++    throw new Error('not used by the dashboard routes under test');
++  },
++  listInviteAllowlist: () => {
++    throw new Error('not used by the dashboard routes under test');
++  },
++  removeInviteAllowlistEntry: () => {
++    throw new Error('not used by the dashboard routes under test');
++  },
++  addLinkDomain: () => {
++    throw new Error('not used by the dashboard routes under test');
++  },
++  listLinkDomains: () => {
++    throw new Error('not used by the dashboard routes under test');
++  },
++  removeLinkDomain: () => {
++    throw new Error('not used by the dashboard routes under test');
++  },
+   setRoute: (input) =>
+     loggingRepo.setRoute(scope, {
+       eventKind: input.eventKind,
+diff --git a/packages/storage/src/index.ts b/packages/storage/src/index.ts
+index abac7de..f29acbe 100644
+--- a/packages/storage/src/index.ts
++++ b/packages/storage/src/index.ts
+@@ -39,6 +39,7 @@ export {
+ export * as accountRepo from './repos/accounts.js';
+ export * as automodRuleRepo from './repos/automod-rules.js';
+ export * as automodFixtureRepo from './repos/automod-fixtures.js';
++export * as automodRuleListsRepo from './repos/automod-rule-lists.js';
+ export * as modCaseRepo from './repos/mod-cases.js';
+ export * as modMatchReviewRepo from './repos/mod-match-reviews.js';
+ export * as modPendingRepo from './repos/mod-pending.js';
+diff --git a/packages/storage/src/repos/automod-fixtures.test.ts b/packages/storage/src/repos/automod-fixtures.test.ts
+index f1b5068..186d5ad 100644
+--- a/packages/storage/src/repos/automod-fixtures.test.ts
++++ b/packages/storage/src/repos/automod-fixtures.test.ts
+@@ -40,12 +40,14 @@ describe('captureObservedFixture', () => {
+       content: 'hello badword',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+     const second = captureObservedFixture(scope, {
+       messageId: '900000000000000001',
+       content: 'hello badword',
+       authorId: '800000000000000001',
+       createdAt: 2_000,
++      attachments: [],
+     });
+ 
+     expect(second).toBe(first);
+@@ -62,12 +64,14 @@ describe('captureObservedFixture', () => {
+       content: 'hello badword',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+     const after = captureObservedFixture(scope, {
+       messageId: '900000000000000001',
+       content: 'hello worseword',
+       authorId: '800000000000000001',
+       createdAt: 2_000,
++      attachments: [],
+     });
+ 
+     expect(after).not.toBe(before);
+@@ -80,6 +84,7 @@ describe('captureObservedFixture', () => {
+       content: 'guild A only',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+     expect(listFixtures(scopeB)).toEqual([]);
+   });
+@@ -139,12 +144,14 @@ describe('deleteObservedFixturesForMember', () => {
+       content: 'mine',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+     captureObservedFixture(scope, {
+       messageId: '900000000000000002',
+       content: 'someone else’s',
+       authorId: '800000000000000002',
+       createdAt: 2_000,
++      attachments: [],
+     });
+     addHandwrittenFixture(scope, {
+       fixtureId: 'adversarial-1',
+@@ -166,12 +173,14 @@ describe('deleteObservedFixturesForMember', () => {
+       content: 'guild A',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+     captureObservedFixture(scopeB, {
+       messageId: '900000000000000002',
+       content: 'guild B',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+ 
+     expect(deleteObservedFixturesForMember(scopeA, '800000000000000001')).toBe(1);
+@@ -207,6 +216,110 @@ describe('setFixtureLabel', () => {
+   });
+ });
+ 
++describe('attachments (OD-3)', () => {
++  it('round-trips an observed fixture with several attachments', () => {
++    captureObservedFixture(scope, {
++      messageId: '900000000000000001',
++      content: 'here you go',
++      authorId: '800000000000000001',
++      createdAt: 1_000,
++      attachments: [
++        { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
++        { fileName: 'notes.txt', contentType: undefined, sizeBytes: 12 },
++      ],
++    });
++
++    const [fixture] = listFixtures(scope);
++    // Two attachments, in a deterministic order, with `undefined` preserved
++    // rather than flattened to '' — MessageAttachment.contentType is
++    // `string | undefined` and "Discord declared none" is a real, different
++    // fact from "Discord declared the empty string".
++    expect(fixture?.attachments).toEqual([
++      { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
++      { fileName: 'notes.txt', contentType: undefined, sizeBytes: 12 },
++    ]);
++  });
++
++  it('keeps each fixture’s attachments to itself', () => {
++    // NOT decorative: two fixtures, each WITH attachments, so an
++    // implementation that joined without the fixture_id predicate would hand
++    // both lists to both rows and this goes red. One fixture with attachments
++    // and one without would pass under that bug.
++    captureObservedFixture(scope, {
++      messageId: '900000000000000001',
++      content: 'first',
++      authorId: '800000000000000001',
++      createdAt: 1_000,
++      attachments: [{ fileName: 'a.png', contentType: 'image/png', sizeBytes: 1 }],
++    });
++    captureObservedFixture(scope, {
++      messageId: '900000000000000002',
++      content: 'second',
++      authorId: '800000000000000002',
++      createdAt: 2_000,
++      attachments: [{ fileName: 'b.pdf', contentType: 'application/pdf', sizeBytes: 2 }],
++    });
++
++    const fixtures = listFixtures(scope);
++    expect(fixtures.map((f) => f.attachments.map((a) => a.fileName))).toEqual([
++      ['a.png'],
++      ['b.pdf'],
++    ]);
++  });
++
++  it('deleteObservedFixturesForMember removes the member’s attachments too', () => {
++    // OD-3 obligation 3, and the ledger says verify rather than assume: the
++    // whole point of shipping deleteObservedFixturesForMember two releases
++    // early was that the corpus stays un-makeable.
++    captureObservedFixture(scope, {
++      messageId: '900000000000000001',
++      content: 'mine',
++      authorId: '800000000000000001',
++      createdAt: 1_000,
++      attachments: [
++        { fileName: 'Bryan_resume_2026.pdf', contentType: 'application/pdf', sizeBytes: 9 },
++      ],
++    });
++
++    expect(deleteObservedFixturesForMember(scope, '800000000000000001')).toBe(1);
++
++    // Asserted against the raw table, not through listFixtures: the parent
++    // row is gone either way, so reading through the repository could not
++    // tell an orphaned child row from a deleted one. This is the assertion
++    // that fails if the cascade is missing.
++    const orphans = t.raw
++      .prepare('SELECT COUNT(*) AS n FROM automod_fixture_attachments')
++      .get() as { n: number };
++    expect(orphans.n).toBe(0);
++  });
++
++  it('another member’s attachments survive a deletion', () => {
++    // The ambiguity the previous test lacks: proves the cascade is scoped to
++    // the deleted rows rather than emptying the table.
++    captureObservedFixture(scope, {
++      messageId: '900000000000000001',
++      content: 'mine',
++      authorId: '800000000000000001',
++      createdAt: 1_000,
++      attachments: [{ fileName: 'mine.pdf', contentType: undefined, sizeBytes: 1 }],
++    });
++    captureObservedFixture(scope, {
++      messageId: '900000000000000002',
++      content: 'theirs',
++      authorId: '800000000000000002',
++      createdAt: 2_000,
++      attachments: [{ fileName: 'theirs.pdf', contentType: undefined, sizeBytes: 2 }],
++    });
++
++    deleteObservedFixturesForMember(scope, '800000000000000001');
++
++    const rows = t.raw.prepare('SELECT file_name FROM automod_fixture_attachments').all() as {
++      file_name: string;
++    }[];
++    expect(rows.map((r) => r.file_name)).toEqual(['theirs.pdf']);
++  });
++});
++
+ describe('listFixtures', () => {
+   it('returns rows oldest first, so a replay is deterministic', () => {
+     addHandwrittenFixture(scope, {
+@@ -246,6 +359,7 @@ describe('listFixtures', () => {
+       content: 'observed one',
+       authorId: '800000000000000001',
+       createdAt: 1_000,
++      attachments: [],
+     });
+     addHandwrittenFixture(scope, {
+       fixtureId: 'h1',
+diff --git a/packages/storage/src/repos/automod-fixtures.ts b/packages/storage/src/repos/automod-fixtures.ts
+index 8170513..fe9c508 100644
+--- a/packages/storage/src/repos/automod-fixtures.ts
++++ b/packages/storage/src/repos/automod-fixtures.ts
+@@ -1,8 +1,8 @@
+ import { createHash } from 'node:crypto';
+-import { asc, eq } from 'drizzle-orm';
++import { asc, eq, inArray } from 'drizzle-orm';
+ import type { GuildScope } from '../scope.js';
+ import { read, write } from '../write.js';
+-import { automodFixtures } from '../schema.js';
++import { automodFixtureAttachments, automodFixtures } from '../schema.js';
+ 
+ /**
+  * The automod review corpus (ADR 0041 §1).
+@@ -15,6 +15,14 @@ import { automodFixtures } from '../schema.js';
+ export type FixtureLabel = 'should_match' | 'should_not_match' | 'unlabelled';
+ export type FixtureSource = 'observed' | 'handwritten';
+ 
++/** One attachment on a corpus message: filename, declared content type, size (OD-3). */
++export interface FixtureAttachment {
++  readonly fileName: string;
++  /** `undefined` when Discord declared no content type. */
++  readonly contentType: string | undefined;
++  readonly sizeBytes: number;
++}
++
+ export interface AutomodFixture {
+   readonly fixtureId: string;
+   readonly content: string;
+@@ -24,6 +32,8 @@ export interface AutomodFixture {
+   readonly source: FixtureSource;
+   readonly note: string | undefined;
+   readonly createdAt: number;
++  /** Empty for a handwritten fixture that names no files (OD-3). */
++  readonly attachments: readonly FixtureAttachment[];
+ }
+ 
+ /**
+@@ -48,6 +58,8 @@ export interface CaptureObservedFixtureInput {
+   readonly content: string;
+   readonly authorId: string;
+   readonly createdAt: number;
++  /** Filename, declared content type and size for each file (OD-3). */
++  readonly attachments: readonly FixtureAttachment[];
+ }
+ 
+ /**
+@@ -90,6 +102,35 @@ export const captureObservedFixture = (
+         target: [automodFixtures.guildId, automodFixtures.fixtureId],
+       })
+       .run();
++
++    // Inserted inside the same write() as the parent so a capture is one
++    // transaction: a fixture row whose attachments failed to write would be
++    // evidence that lies by omission, and `attachment_type`'s dry run would
++    // read it as a message with no files.
++    //
++    // `onConflictDoNothing` on the parent means a replayed capture of the same
++    // message is a no-op (PR-1). The children use the same target so a replay
++    // does not duplicate them either; the first capture wins for both, which
++    // keeps parent and children consistent about which capture they describe.
++    input.attachments.forEach((attachment, ordinal) => {
++      db.insert(automodFixtureAttachments)
++        .values({
++          guildId: scope.guildId,
++          fixtureId,
++          ordinal,
++          fileName: attachment.fileName,
++          contentType: attachment.contentType ?? null,
++          sizeBytes: attachment.sizeBytes,
++        })
++        .onConflictDoNothing({
++          target: [
++            automodFixtureAttachments.guildId,
++            automodFixtureAttachments.fixtureId,
++            automodFixtureAttachments.ordinal,
++          ],
++        })
++        .run();
++    });
+   });
+   return fixtureId;
+ };
+@@ -100,6 +141,12 @@ export interface AddHandwrittenFixtureInput {
+   readonly label: FixtureLabel;
+   readonly note?: string;
+   readonly createdAt: number;
++  /**
++   * An adversarial case for `attachment_type` is exactly the thing this
++   * function exists for, so it can name files too. Defaults to `[]` — most
++   * handwritten fixtures are plain text.
++   */
++  readonly attachments?: readonly FixtureAttachment[];
+ }
+ 
+ /**
+@@ -127,6 +174,26 @@ export const addHandwrittenFixture = (scope: GuildScope, input: AddHandwrittenFi
+         target: [automodFixtures.guildId, automodFixtures.fixtureId],
+       })
+       .run();
++
++    (input.attachments ?? []).forEach((attachment, ordinal) => {
++      db.insert(automodFixtureAttachments)
++        .values({
++          guildId: scope.guildId,
++          fixtureId: input.fixtureId,
++          ordinal,
++          fileName: attachment.fileName,
++          contentType: attachment.contentType ?? null,
++          sizeBytes: attachment.sizeBytes,
++        })
++        .onConflictDoNothing({
++          target: [
++            automodFixtureAttachments.guildId,
++            automodFixtureAttachments.fixtureId,
++            automodFixtureAttachments.ordinal,
++          ],
++        })
++        .run();
++    });
+   });
+ 
+ export interface FixtureFilter {
+@@ -149,8 +216,8 @@ export const listFixtures = (
+   scope: GuildScope,
+   filter: FixtureFilter = {},
+ ): readonly AutomodFixture[] =>
+-  read(scope, (db) =>
+-    db
++  read(scope, (db) => {
++    const rows = db
+       .select()
+       .from(automodFixtures)
+       .where(
+@@ -161,17 +228,52 @@ export const listFixtures = (
+         ),
+       )
+       .orderBy(asc(automodFixtures.createdAt), asc(automodFixtures.fixtureId))
+-      .all()
+-      .map((row) => ({
+-        fixtureId: row.fixtureId,
+-        content: row.content,
+-        authorId: row.authorId ?? undefined,
+-        label: row.label as FixtureLabel,
+-        source: row.source as FixtureSource,
+-        note: row.note ?? undefined,
+-        createdAt: row.createdAt,
+-      })),
+-  );
++      .all();
++
++    if (rows.length === 0) return [];
++
++    // One query for every attachment in scope, grouped in code, rather than
++    // one query per fixture: `listFixtures` is what the dry run replays, and
++    // a per-row query would make a 300-fixture corpus 301 queries. Ordered by
++    // (fixture_id, ordinal) so a replay sees a message's files in the order
++    // they were posted, deterministically.
++    const attachmentRows = db
++      .select()
++      .from(automodFixtureAttachments)
++      .where(
++        scope.only(
++          automodFixtureAttachments,
++          inArray(
++            automodFixtureAttachments.fixtureId,
++            rows.map((row) => row.fixtureId),
++          ),
++        ),
++      )
++      .orderBy(asc(automodFixtureAttachments.fixtureId), asc(automodFixtureAttachments.ordinal))
++      .all();
++
++    const attachmentsByFixtureId = new Map<string, FixtureAttachment[]>();
++    for (const row of attachmentRows) {
++      const list = attachmentsByFixtureId.get(row.fixtureId) ?? [];
++      list.push({
++        fileName: row.fileName,
++        contentType: row.contentType ?? undefined,
++        sizeBytes: row.sizeBytes,
++      });
++      attachmentsByFixtureId.set(row.fixtureId, list);
++    }
++
++    return rows.map((row) => ({
++      fixtureId: row.fixtureId,
++      content: row.content,
++      authorId: row.authorId ?? undefined,
++      label: row.label as FixtureLabel,
++      source: row.source as FixtureSource,
++      note: row.note ?? undefined,
++      createdAt: row.createdAt,
++      attachments: attachmentsByFixtureId.get(row.fixtureId) ?? [],
++    }));
++  });
+ 
+ /** Returns whether there was a fixture to label. False is a real answer. */
+ export const setFixtureLabel = (
+diff --git a/packages/storage/src/repos/automod-rule-lists.test.ts b/packages/storage/src/repos/automod-rule-lists.test.ts
+new file mode 100644
+index 0000000..49e4b68
+--- /dev/null
++++ b/packages/storage/src/repos/automod-rule-lists.test.ts
+@@ -0,0 +1,238 @@
++import { beforeEach, describe, expect, it } from 'vitest';
++import {
++  createPredicateCache,
++  OPERATOR_COMMANDS,
++  parseGuildId,
++  type Actor,
++  type OpsContext,
++  type OpsInstance,
++  type OpsPorts,
++  type PredicateInput,
++} from '@bananasaurs/core';
++import { evaluateRule } from '@bananasaurs/core';
++import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
++import { upsertGuild } from './guilds.js';
++import { createRule, listEnabledRules, ruleExists } from './automod-rules.js';
++import {
++  addInviteAllowlistEntry,
++  listInviteAllowlist,
++  removeInviteAllowlistEntry,
++} from './automod-rule-lists.js';
++import type { GuildScope } from '../scope.js';
++
++/**
++ * The end-to-end test the Task 9 brief names as the one that makes this task
++ * worth having: an added invite code stops the `invite` predicate firing on
++ * it, all the way through command → storage → hydration → fingerprint →
++ * predicate.
++ *
++ * **Why this lives here, in `packages/storage`, rather than beside the
++ * command in `packages/core/src/ops/commands/automod.test.ts`.** `core` may
++ * not import `@bananasaurs/storage` (ADR 0014, enforced by
++ * `eslint.config.js`'s `no-restricted-imports`, not just by convention) — so
++ * a test that needs a *real* migrated database, not `fakeOpsPorts`, cannot
++ * live in `core` at all. `packages/storage` is the other direction: it
++ * already depends on `@bananasaurs/core` (`storage/package.json`), so it is
++ * the one place that can hold a real `GuildScope` in one hand and
++ * `evaluateRule`/`createPredicateCache`/`OPERATOR_COMMANDS` in the other. A
++ * new file rather than appending to `automod-rules.test.ts`: that file tests
++ * the repository in isolation (Task 6 already put `addInviteAllowlistEntry`'s
++ * own round-trip there), and this test is about the ops wiring layer stacked
++ * on top of it — a different concern that happens to need the same tables.
++ *
++ * The command itself is reached through `OPERATOR_COMMANDS` and
++ * `RegisteredCommand.runParsed` — the same public surface the operator
++ * socket calls — rather than importing the command object directly, because
++ * individual `automod` commands are not re-exported from `core`'s public
++ * `index.ts` (only `OPERATOR_COMMANDS` and the generic dispatch types are).
++ * Finding it by name also proves it is actually registered, not just defined.
++ */
++
++const GUILD = parseGuildId('444444444444444444');
++const NOW = 1_700_000_000_000;
++
++let t: MigratedTestDatabase;
++let scope: GuildScope;
++
++beforeEach(() => {
++  t = openMigratedTestDatabase();
++  scope = t.scopes.forGuild(GUILD);
++  upsertGuild(scope, { name: 'guild', now: NOW });
++});
++
++/**
++ * A minimal `OpsPorts`, wired to the *real* repository the way
++ * `apps/daemon/src/ops/wiring.ts`'s `opsPortsFor` is (this test cannot import
++ * that module — it lives in `apps/daemon`, not a package `storage` may
++ * depend on — so the three ports this test actually exercises are
++ * reimplemented against the same repository functions). Every other member
++ * throws if called: a test that reaches a port it did not mean to exercise
++ * should fail loudly at that line, not read a fake zero.
++ */
++const notNeeded = (name: string) => (): never => {
++  throw new Error(`OpsPorts.${name} was called but this test does not stub it`);
++};
++
++const portsFor = (s: GuildScope): OpsPorts => ({
++  guildName: notNeeded('guildName'),
++  safetyState: notNeeded('safetyState'),
++  jobCounts: notNeeded('jobCounts'),
++  oldestDueJobAtMs: notNeeded('oldestDueJobAtMs'),
++  recordAudit: () => undefined,
++  setKillswitch: notNeeded('setKillswitch'),
++  tailAudit: notNeeded('tailAudit'),
++  listJobs: notNeeded('listJobs'),
++  listPanels: notNeeded('listPanels'),
++  findPanel: notNeeded('findPanel'),
++  listUnassignableRoles: notNeeded('listUnassignableRoles'),
++  listKeywordFilterRulesMissingManageMessages: notNeeded(
++    'listKeywordFilterRulesMissingManageMessages',
++  ),
++  listUnusableAutomodRules: notNeeded('listUnusableAutomodRules'),
++  listRoutes: notNeeded('listRoutes'),
++  listExcludedChannels: notNeeded('listExcludedChannels'),
++  findJob: notNeeded('findJob'),
++  findAutomodRule: notNeeded('findAutomodRule'),
++  listAutomodFixtures: notNeeded('listAutomodFixtures'),
++  listUnreviewedMatches: notNeeded('listUnreviewedMatches'),
++  applySetting: notNeeded('applySetting'),
++  recordMatchVerdict: notNeeded('recordMatchVerdict'),
++  // The three ports this test exercises for real — the same logic
++  // `apps/daemon/src/ops/wiring.ts` uses: a `ruleExists` guard ahead of the
++  // insert, so a mistyped rule id is a usage answer rather than an opaque
++  // `FOREIGN KEY constraint failed`.
++  addInviteAllowlistEntry: (input) => {
++    if (!ruleExists(s, input.ruleId)) return 'no-such-rule';
++    const before = listInviteAllowlist(s, input.ruleId).length;
++    addInviteAllowlistEntry(s, { ...input, now: NOW });
++    const after = listInviteAllowlist(s, input.ruleId).length;
++    return after > before ? 'added' : 'already-present';
++  },
++  listInviteAllowlist: (ruleId) => listInviteAllowlist(s, ruleId),
++  removeInviteAllowlistEntry: (input) => {
++    if (!ruleExists(s, input.ruleId)) return 'no-such-rule';
++    const removed = removeInviteAllowlistEntry(s, input.ruleId, input.code);
++    return removed ? 'removed' : 'not-present';
++  },
++  addLinkDomain: notNeeded('addLinkDomain'),
++  listLinkDomains: notNeeded('listLinkDomains'),
++  removeLinkDomain: notNeeded('removeLinkDomain'),
++  setRoute: notNeeded('setRoute'),
++  setRouteEnabled: notNeeded('setRouteEnabled'),
++  excludeChannel: notNeeded('excludeChannel'),
++  unexcludeChannel: notNeeded('unexcludeChannel'),
++  retryJob: notNeeded('retryJob'),
++  publishPanel: notNeeded('publishPanel'),
++  enqueueReconcile: notNeeded('enqueueReconcile'),
++  findBatch: notNeeded('findBatch'),
++  countUndoable: notNeeded('countUndoable'),
++  enqueueUndo: notNeeded('enqueueUndo'),
++  grantAdoptionAllowance: notNeeded('grantAdoptionAllowance'),
++  adoptionAllowance: notNeeded('adoptionAllowance'),
++});
++
++const instance: OpsInstance = {
++  startedAtMs: NOW,
++  readonly: false,
++  env: 'test',
++  gateway: () => ({ connected: true, pingMs: undefined, guildCount: 1 }),
++  doctor: () => ({ ok: true, text: 'not used by this test', data: null }),
++  redactedConfig: () => ({}),
++  reissueBootstrapToken: () => ({ ok: false, reason: 'readonly' }),
++  backupNow: notNeeded('backupNow'),
++  backupList: notNeeded('backupList'),
++};
++
++const actor: Actor = { type: 'operator_cli', id: undefined, roleIds: [], unixUserClaimed: 'test' };
++
++const message = (content: string): PredicateInput => ({
++  guildId: GUILD,
++  channelId: '500000000000000001',
++  messageId: '600000000000000001',
++  authorId: '700000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: NOW,
++});
++
++describe('the CLI write path for the invite allowlist (Task 9, plan ruling PR-19)', () => {
++  it('an added code stops the invite predicate firing on it', () => {
++    createRule(scope, {
++      ruleId: 'invite-rule',
++      kind: 'invite',
++      name: 'invites',
++      config: '{}',
++      now: NOW,
++    });
++
++    const cache = createPredicateCache();
++    const content = 'come join us: discord.gg/clubhouse';
++
++    // Before: the rule's allowlist is empty, so the club's own invite fires.
++    const before = listEnabledRules(scope).find((r) => r.ruleId === 'invite-rule');
++    if (before === undefined) throw new Error('rule should exist');
++    const outcomeBefore = evaluateRule(cache, before, message(content));
++    expect(outcomeBefore.kind).toBe('match');
++
++    // The command: found the way the operator socket finds it, by name in
++    // the registered surface, and run the way the plan's own Step 1 example
++    // calls it — directly, not through the confirm/audit machinery, which
++    // has its own coverage in `packages/core/src/ops/commands/automod.test.ts`.
++    const command = OPERATOR_COMMANDS.find((c) => c.name === 'automod invite-allow');
++    if (command === undefined) throw new Error('automod invite-allow must be registered');
++
++    const ctx: OpsContext = {
++      guildId: GUILD,
++      now: () => NOW,
++      ports: portsFor(scope),
++      actor,
++      instance,
++    };
++    const parsed = command.runParsed(ctx, {
++      ruleId: 'invite-rule',
++      code: 'clubhouse',
++      label: 'our own server',
++    });
++    expect(parsed.ok).toBe(true);
++
++    // After: re-read through `listEnabledRules` — real hydration, not a
++    // cached reference to `before` — and evaluate again with the SAME cache.
++    // Reusing it is the point: it proves the rule's fingerprint changed and
++    // invalidated the stale compiled artifact, rather than the test working
++    // around a cache that was never populated in the first place. A fresh
++    // cache per evaluation would pass this test even if the fingerprint
++    // never hashed `inviteAllowlist` at all — obligation 2's exact failure
++    // mode, observed from the outside this time rather than at the unit
++    // level `fingerprint.test.ts` already covers.
++    const after = listEnabledRules(scope).find((r) => r.ruleId === 'invite-rule');
++    if (after === undefined) throw new Error('rule should still exist');
++    expect(after.inviteAllowlist).toEqual([{ code: 'clubhouse', label: 'our own server' }]);
++
++    const outcomeAfter = evaluateRule(cache, after, message(content));
++    expect(outcomeAfter.kind).toBe('no-match');
++  });
++
++  it('refuses to add an entry to a rule that does not exist', () => {
++    const command = OPERATOR_COMMANDS.find((c) => c.name === 'automod invite-allow');
++    if (command === undefined) throw new Error('automod invite-allow must be registered');
++    const ctx: OpsContext = {
++      guildId: GUILD,
++      now: () => NOW,
++      ports: portsFor(scope),
++      actor,
++      instance,
++    };
++
++    const parsed = command.runParsed(ctx, { ruleId: 'no-such-rule', code: 'x', label: 'y' });
++    expect(parsed.ok).toBe(true);
++    if (!parsed.ok) return;
++    expect(parsed.result).toMatchObject({
++      data: { ok: false, reason: 'no-such-rule' },
++    });
++  });
++});
+diff --git a/packages/storage/src/repos/automod-rule-lists.ts b/packages/storage/src/repos/automod-rule-lists.ts
+new file mode 100644
+index 0000000..67a013a
+--- /dev/null
++++ b/packages/storage/src/repos/automod-rule-lists.ts
+@@ -0,0 +1,171 @@
++import { and, asc, eq } from 'drizzle-orm';
++import type { GuildScope } from '../scope.js';
++import { read, write } from '../write.js';
++import { automodInviteAllowlist, automodLinkDomains } from '../schema.js';
++
++/**
++ * The two relational lists ADR 0040 §3 names: `invite`'s labelled code
++ * allowlist and `link_domain`'s allow/deny lists.
++ *
++ * Follows `automod-fixtures.ts`'s conventions: every function takes a
++ * `GuildScope` first, every query goes through `scope.only(...)`, and
++ * `onConflictDoNothing` is targeted at the primary key so a replayed add is a
++ * no-op rather than a thrown duplicate-key error.
++ *
++ * Both tables carry composite foreign keys back to `mod_rules(guild_id,
++ * rule_id)` with `ON DELETE CASCADE`, so a deleted rule cannot leave an
++ * orphaned list row behind.
++ */
++
++export interface InviteAllowlistEntry {
++  readonly code: string;
++  readonly label: string;
++}
++
++export interface LinkDomainEntry {
++  readonly domain: string;
++  readonly listType: 'allow' | 'deny';
++}
++
++/**
++ * `ruleId`'s invite allowlist, ordered by `code`.
++ *
++ * Deterministic order is not cosmetic: this feeds `hydrate`, which feeds
++ * `AutomodRule.inviteAllowlist`, which the rule fingerprint hashes after its
++ * own sort — so this ordering is belt and braces, not load-bearing on its
++ * own, but a digest that changed with the query plan would recompile every
++ * matcher in the guild at random, and there is no reason to depend on the
++ * fingerprint's sort alone when the query can be deterministic for free.
++ */
++export const listInviteAllowlist = (
++  scope: GuildScope,
++  ruleId: string,
++): readonly InviteAllowlistEntry[] =>
++  read(scope, (db) =>
++    db
++      .select({ code: automodInviteAllowlist.code, label: automodInviteAllowlist.label })
++      .from(automodInviteAllowlist)
++      .where(scope.only(automodInviteAllowlist, eq(automodInviteAllowlist.ruleId, ruleId)))
++      .orderBy(asc(automodInviteAllowlist.code))
++      .all(),
++  );
++
++export interface AddInviteAllowlistEntryInput {
++  readonly ruleId: string;
++  readonly code: string;
++  readonly label: string;
++  readonly now: number;
++}
++
++/**
++ * Adds one code to `ruleId`'s invite allowlist, or does nothing if the code
++ * is already on it (a re-run of the same add is not an error).
++ */
++export const addInviteAllowlistEntry = (
++  scope: GuildScope,
++  input: AddInviteAllowlistEntryInput,
++): void =>
++  write(scope, ({ db }) => {
++    db.insert(automodInviteAllowlist)
++      .values({
++        guildId: scope.guildId,
++        ruleId: input.ruleId,
++        code: input.code,
++        label: input.label,
++        addedAt: input.now,
++      })
++      .onConflictDoNothing({
++        target: [
++          automodInviteAllowlist.guildId,
++          automodInviteAllowlist.ruleId,
++          automodInviteAllowlist.code,
++        ],
++      })
++      .run();
++  });
++
++/** Returns whether there was an entry to remove. False is a real answer. */
++export const removeInviteAllowlistEntry = (
++  scope: GuildScope,
++  ruleId: string,
++  code: string,
++): boolean =>
++  write(scope, ({ db }) => {
++    const result = db
++      .delete(automodInviteAllowlist)
++      .where(
++        scope.only(
++          automodInviteAllowlist,
++          and(eq(automodInviteAllowlist.ruleId, ruleId), eq(automodInviteAllowlist.code, code)),
++        ),
++      )
++      .run();
++    return result.changes > 0;
++  });
++
++/**
++ * `ruleId`'s allow and deny domain lists together, ordered by `domain`.
++ *
++ * One query, one table, `listType` distinguishes the two lists — see the
++ * schema comment on `automodLinkDomains` for why this is one table rather
++ * than two.
++ */
++export const listLinkDomains = (scope: GuildScope, ruleId: string): readonly LinkDomainEntry[] =>
++  read(scope, (db) =>
++    db
++      .select({ domain: automodLinkDomains.domain, listType: automodLinkDomains.listType })
++      .from(automodLinkDomains)
++      .where(scope.only(automodLinkDomains, eq(automodLinkDomains.ruleId, ruleId)))
++      .orderBy(asc(automodLinkDomains.domain))
++      .all()
++      .map((row) => ({ domain: row.domain, listType: row.listType as 'allow' | 'deny' })),
++  );
++
++export interface AddLinkDomainInput {
++  readonly ruleId: string;
++  readonly domain: string;
++  readonly listType: 'allow' | 'deny';
++  readonly now: number;
++}
++
++/**
++ * Adds one domain to `ruleId`'s allow or deny list, or does nothing if it is
++ * already on it.
++ *
++ * Lower-cases the domain and strips a leading `www.` before storing, so the
++ * list holds one canonical form and `www.example.com` and `example.com`
++ * cannot both be entered as if they were different rows — the primary key
++ * would not catch that on its own.
++ */
++export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): void => {
++  const domain = input.domain.toLowerCase().replace(/^www\./, '');
++  write(scope, ({ db }) => {
++    db.insert(automodLinkDomains)
++      .values({
++        guildId: scope.guildId,
++        ruleId: input.ruleId,
++        domain,
++        listType: input.listType,
++        addedAt: input.now,
++      })
++      .onConflictDoNothing({
++        target: [automodLinkDomains.guildId, automodLinkDomains.ruleId, automodLinkDomains.domain],
++      })
++      .run();
++  });
++};
++
++/** Returns whether there was a domain to remove. False is a real answer. */
++export const removeLinkDomain = (scope: GuildScope, ruleId: string, domain: string): boolean =>
++  write(scope, ({ db }) => {
++    const result = db
++      .delete(automodLinkDomains)
++      .where(
++        scope.only(
++          automodLinkDomains,
++          and(eq(automodLinkDomains.ruleId, ruleId), eq(automodLinkDomains.domain, domain)),
++        ),
++      )
++      .run();
++    return result.changes > 0;
++  });
+diff --git a/packages/storage/src/repos/automod-rules.test.ts b/packages/storage/src/repos/automod-rules.test.ts
+index 80ad8ed..9c86aa8 100644
+--- a/packages/storage/src/repos/automod-rules.test.ts
++++ b/packages/storage/src/repos/automod-rules.test.ts
+@@ -18,6 +18,7 @@ import {
+   setRuleMode,
+   type RuleKind,
+ } from './automod-rules.js';
++import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
+ 
+ const GUILD = parseGuildId('111111111111111111');
+ const ROLE = parseSnowflakeId('222222222222222222');
+@@ -320,4 +321,38 @@ describe('mod_rules.config', () => {
+     expect(keywordRule.terms).toEqual([{ text: 'badword', categoryId: 'cat1' }]);
+     expect(keywordRule.allowlist).toEqual(['assassin']);
+   });
++
++  it("keeps each rule's invite allowlist and link domains to itself", () => {
++    // NOT decorative: two rules, each WITH entries in both new tables, so an
++    // implementation of `hydrate` that dropped the `rule_id` predicate on
++    // either query hands both lists to both rules and this goes red. One
++    // rule with entries and one without would pass under that exact bug —
++    // the shape `docs/22` records (Task 6, plan Step 8).
++    const scope = t.scopes.forGuild(GUILD);
++    createRule(scope, { ruleId: 'inv1', kind: 'invite', name: 'invites', config: '{}', now: 1 });
++    addInviteAllowlistEntry(scope, {
++      ruleId: 'inv1',
++      code: 'clubhouse',
++      label: 'our server',
++      now: 1,
++    });
++
++    createRule(scope, {
++      ruleId: 'link1',
++      kind: 'link_domain',
++      name: 'links',
++      config: '{}',
++      now: 1,
++    });
++    addLinkDomain(scope, { ruleId: 'link1', domain: 'example.com', listType: 'deny', now: 1 });
++
++    const rules = listEnabledRules(scope);
++    const inviteRule = rules.find((r) => r.ruleId === 'inv1')!;
++    const linkRule = rules.find((r) => r.ruleId === 'link1')!;
++
++    expect(inviteRule.inviteAllowlist).toEqual([{ code: 'clubhouse', label: 'our server' }]);
++    expect(inviteRule.linkDomains).toEqual([]);
++    expect(linkRule.inviteAllowlist).toEqual([]);
++    expect(linkRule.linkDomains).toEqual([{ domain: 'example.com', listType: 'deny' }]);
++  });
+ });
+diff --git a/packages/storage/src/repos/automod-rules.ts b/packages/storage/src/repos/automod-rules.ts
+index 9b89828..0600911 100644
+--- a/packages/storage/src/repos/automod-rules.ts
++++ b/packages/storage/src/repos/automod-rules.ts
+@@ -1,13 +1,16 @@
+-import { and, eq } from 'drizzle-orm';
++import { and, asc, eq } from 'drizzle-orm';
+ import type { GuildScope } from '../scope.js';
+ import { read, write } from '../write.js';
+ import {
++  automodInviteAllowlist,
++  automodLinkDomains,
+   modRuleExemptions,
+   modRules,
+   wordAllowlist,
+   wordCategories,
+   wordTerms,
+ } from '../schema.js';
++import type { InviteAllowlistEntry, LinkDomainEntry } from './automod-rule-lists.js';
+ 
+ /**
+  * Automod rules and the word list `keyword_filter` rules carry.
+@@ -56,8 +59,9 @@ export type RuleKind =
+  * import storage (ADR 0014), so the string is the boundary.
+  *
+  * `terms` and `allowlist` are empty for every kind but `keyword_filter`,
+- * whose data is relational by ADR 0040's split. A later predicate with
+- * list-shaped data adds its own field here the same way.
++ * whose data is relational by ADR 0040's split. `inviteAllowlist` and
++ * `linkDomains` are the same split applied to `invite` and `link_domain`
++ * (ADR 0040 §3): empty for every other kind.
+  */
+ export interface StoredAutomodRule {
+   readonly ruleId: string;
+@@ -66,6 +70,8 @@ export interface StoredAutomodRule {
+   readonly config: string;
+   readonly terms: readonly { text: string; categoryId: string }[];
+   readonly allowlist: readonly string[];
++  readonly inviteAllowlist: readonly InviteAllowlistEntry[];
++  readonly linkDomains: readonly LinkDomainEntry[];
+ }
+ 
+ type RuleRow = { ruleId: string; kind: string; mode: string; config: string };
+@@ -80,7 +86,11 @@ type RuleRow = { ruleId: string; kind: string; mode: string; config: string };
+  *
+  * Every kind but `keyword_filter` simply has no `word_categories` rows, so
+  * `terms`/`allowlist` come back `[]` naturally — no branch on `kind` needed
+- * here.
++ * here. The same is true of `inviteAllowlist` and `linkDomains` below: every
++ * kind but `invite`/`link_domain` has no rows in those tables either, so they
++ * are queried unconditionally too, with no branch on `kind` (Task 6, plan
++ * Step 6) — a `kind` branch here would be a second place that has to be
++ * updated when a kind is added.
+  */
+ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
+   read(scope, (db) => {
+@@ -115,6 +125,25 @@ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
+       .all()
+       .map((r) => r.phrase);
+ 
++    // Ordered by `code`/`domain`: this feeds the rule fingerprint, and a
++    // digest that changed with the query plan would recompile every matcher
++    // in the guild at random (the fingerprint also sorts, so this is belt and
++    // braces, matching `automod-rule-lists.ts`'s own repository functions).
++    const inviteAllowlist = db
++      .select({ code: automodInviteAllowlist.code, label: automodInviteAllowlist.label })
++      .from(automodInviteAllowlist)
++      .where(scope.only(automodInviteAllowlist, eq(automodInviteAllowlist.ruleId, row.ruleId)))
++      .orderBy(asc(automodInviteAllowlist.code))
++      .all();
++
++    const linkDomains = db
++      .select({ domain: automodLinkDomains.domain, listType: automodLinkDomains.listType })
++      .from(automodLinkDomains)
++      .where(scope.only(automodLinkDomains, eq(automodLinkDomains.ruleId, row.ruleId)))
++      .orderBy(asc(automodLinkDomains.domain))
++      .all()
++      .map((r) => ({ domain: r.domain, listType: r.listType as 'allow' | 'deny' }));
++
+     return {
+       ruleId: row.ruleId,
+       kind: row.kind as RuleKind,
+@@ -122,6 +151,8 @@ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
+       config: row.config,
+       terms,
+       allowlist,
++      inviteAllowlist,
++      linkDomains,
+     };
+   });
+ 
+diff --git a/packages/storage/src/repos/mod-cases.test.ts b/packages/storage/src/repos/mod-cases.test.ts
+index 19e23ce..7f749e3 100644
+--- a/packages/storage/src/repos/mod-cases.test.ts
++++ b/packages/storage/src/repos/mod-cases.test.ts
+@@ -644,6 +644,7 @@ describe('listUnreviewedMatches', () => {
+       content: 'the whole matched message',
+       authorId: MEMBER,
+       createdAt: 500,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
+ 
+@@ -659,6 +660,7 @@ describe('listUnreviewedMatches', () => {
+       content: 'a message someone later forgot',
+       authorId: MEMBER,
+       createdAt: 500,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
+     deleteObservedFixturesForMember(scope, MEMBER);
+diff --git a/packages/storage/src/repos/mod-match-reviews.test.ts b/packages/storage/src/repos/mod-match-reviews.test.ts
+index 07462dc..75bea64 100644
+--- a/packages/storage/src/repos/mod-match-reviews.test.ts
++++ b/packages/storage/src/repos/mod-match-reviews.test.ts
+@@ -71,6 +71,7 @@ describe('recordVerdict', () => {
+       content: 'perfectly ordinary sentence',
+       authorId: MEMBER,
+       createdAt: 1_000,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
+ 
+@@ -99,6 +100,7 @@ describe('recordVerdict', () => {
+       content: 'a genuinely bad message',
+       authorId: MEMBER,
+       createdAt: 1_000,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
+ 
+@@ -122,6 +124,7 @@ describe('recordVerdict', () => {
+       content: 'ambiguous message',
+       authorId: MEMBER,
+       createdAt: 1_000,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
+ 
+@@ -169,6 +172,7 @@ describe('recordVerdict', () => {
+       content: 'a message that will be forgotten',
+       authorId: MEMBER,
+       createdAt: 1_000,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{}' });
+     deleteObservedFixturesForMember(scope, MEMBER);
+@@ -197,6 +201,7 @@ describe('recordVerdict', () => {
+       content: 'a message two different rules both matched',
+       authorId: MEMBER,
+       createdAt: 1_000,
++      attachments: [],
+     });
+     seedMatchEvent(scope, {
+       eventId: 'e1',
+@@ -252,6 +257,7 @@ describe('recordVerdict', () => {
+       content: 'a message one rule matched, reviewed twice',
+       authorId: MEMBER,
+       createdAt: 1_000,
++      attachments: [],
+     });
+     seedMatchEvent(scope, { eventId: 'e1', fixtureId, ruleId: 'rule-a', trace: '{}' });
+ 
+diff --git a/packages/storage/src/schema.ts b/packages/storage/src/schema.ts
+index f064056..5ffba4e 100644
+--- a/packages/storage/src/schema.ts
++++ b/packages/storage/src/schema.ts
+@@ -742,6 +742,76 @@ export const wordAllowlist = sqliteTable(
+   ],
+ );
+ 
++/**
++ * `invite`'s allowlist: the club's own invite codes plus partner and
++ * sister-club codes, each with a human label (spec section 3, Slice 3).
++ *
++ * Relational rather than JSON in `mod_rules.config`, per ADR 0040 section 3:
++ * the label is per-item metadata, and Slice 9's one-click suppression for
++ * this predicate is "add this code to the allowlist", which is a row.
++ *
++ * **No `last_matched_at`, deliberately** (plan ruling PR-14). The spec asks
++ * for one so a stale partner code is visible, but writing it means either a
++ * database write on the hot path for every allowlisted invite in every
++ * message, or widening every predicate's return type so a non-match can
++ * carry observations. Carried to Slice 9, where the review surface can
++ * derive staleness from match history instead. The label is what keeps the
++ * list readable until then.
++ */
++export const automodInviteAllowlist = sqliteTable(
++  'automod_invite_allowlist',
++  {
++    guildId: snowflake('guild_id').notNull(),
++    ruleId: text('rule_id').notNull(),
++    /** The invite code as it appears after `discord.gg/`. Case-preserving; matched case-insensitively. */
++    code: text('code').notNull(),
++    /** Why this code is allowed, for the human reading the list a year from now. */
++    label: text('label').notNull(),
++    addedAt: integer('added_at').notNull(),
++  },
++  (t) => [
++    primaryKey({ columns: [t.guildId, t.ruleId, t.code] }),
++    foreignKey({
++      columns: [t.guildId, t.ruleId],
++      foreignColumns: [modRules.guildId, modRules.ruleId],
++    }).onDelete('cascade'),
++    check('automod_invite_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
++  ],
++);
++
++/**
++ * `link_domain`'s allow and deny lists (spec section 3, Slice 3).
++ *
++ * One table with a `list_type` rather than two tables: the two lists are the
++ * same shape and are always read together, and a domain that appears on both
++ * is a configuration error the primary key makes impossible to express.
++ *
++ * Matching is label-wise suffix, not registrable-domain (plan ruling PR-15):
++ * `example.com` matches `example.com` and `gist.example.com` but not
++ * `notexample.com`. No Public Suffix List, and therefore no dependency and no
++ * data file to go stale.
++ */
++export const automodLinkDomains = sqliteTable(
++  'automod_link_domains',
++  {
++    guildId: snowflake('guild_id').notNull(),
++    ruleId: text('rule_id').notNull(),
++    /** Stored lower-cased, without a scheme, port or path. */
++    domain: text('domain').notNull(),
++    listType: text('list_type').notNull(),
++    addedAt: integer('added_at').notNull(),
++  },
++  (t) => [
++    primaryKey({ columns: [t.guildId, t.ruleId, t.domain] }),
++    foreignKey({
++      columns: [t.guildId, t.ruleId],
++      foreignColumns: [modRules.guildId, modRules.ruleId],
++    }).onDelete('cascade'),
++    check('automod_link_domains_guild_id_snowflake', snowflakeCheck(t.guildId)),
++    check('automod_link_domains_list_type', sql`${t.listType} IN ('allow','deny')`),
++  ],
++);
++
+ /** Per-member violation history. What escalation reads to pick the next tier. */
+ export const modCases = sqliteTable(
+   'mod_cases',
+@@ -968,6 +1038,50 @@ export const automodFixtures = sqliteTable(
+   ],
+ );
+ 
++/**
++ * One attachment on a corpus message: filename, declared content type, size
++ * (OD-3).
++ *
++ * A child table rather than columns on `automod_fixtures` because a message
++ * carries up to ten attachments, and neither a JSON blob nor an arbitrary
++ * three-column cap is a schema.
++ *
++ * **This stores personal information and the owner was told so before
++ * approving it.** Filenames routinely carry it — `Bryan_resume_2026.pdf`,
++ * `medical_letter.docx` — and this keeps them for as long as the corpus keeps
++ * the message. `PRIVACY.md` names attachments in the same commit that created
++ * this table, and the `ON DELETE CASCADE` below is what makes `/forgetme`
++ * (R3-10) reach them through `deleteObservedFixturesForMember`. That cascade
++ * is tested, not assumed.
++ *
++ * No `attachment_id` from Discord: the corpus is evidence about a message,
++ * not a mirror of Discord's own ids, and the ordinal is enough to keep two
++ * identically-named files apart.
++ */
++export const automodFixtureAttachments = sqliteTable(
++  'automod_fixture_attachments',
++  {
++    guildId: snowflake('guild_id').notNull(),
++    fixtureId: text('fixture_id').notNull(),
++    /** Position on the message, 0-based. Part of the key: two attachments can share a name. */
++    ordinal: integer('ordinal').notNull(),
++    fileName: text('file_name').notNull(),
++    /** Null when Discord declared none. Never flattened to '' — that is a different fact. */
++    contentType: text('content_type'),
++    sizeBytes: integer('size_bytes').notNull(),
++  },
++  (t) => [
++    primaryKey({ columns: [t.guildId, t.fixtureId, t.ordinal] }),
++    foreignKey({
++      columns: [t.guildId, t.fixtureId],
++      foreignColumns: [automodFixtures.guildId, automodFixtures.fixtureId],
++    }).onDelete('cascade'),
++    check('automod_fixture_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
++    check('automod_fixture_attachments_ordinal_nonnegative', sql`${t.ordinal} >= 0`),
++    check('automod_fixture_attachments_size_nonnegative', sql`${t.sizeBytes} >= 0`),
++  ],
++);
++
+ /**
+  * A human's verdict on one recorded match (ADR 0041 §5).
+  *
