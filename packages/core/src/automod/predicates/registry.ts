@@ -1,5 +1,6 @@
 import { attachmentTypePredicate } from './attachment-type.js';
 import { capsPredicate } from './caps.js';
+import { duplicateMessagePredicate } from './duplicate-message.js';
 import { emojiPredicate } from './emoji.js';
 import { invitePredicate } from './invite.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
@@ -19,11 +20,13 @@ import {
  * kind → predicate. Slices 3-5 each add an entry and change nothing else —
  * which is what ADR 0035 promised and ADR 0040 actually delivers.
  *
- * One of the ten kinds `mod_rules_kind` permits (`duplicate_message`) is still
- * absent as of Slice 4's Task 3, until Task 4 ships it. A rule naming an
- * absent kind is inert, and `compileRule` reports `'no-predicate'` so `doctor`
- * can say so out loud rather than the rule quietly never firing (ADR 0040
- * §4 — the ADR 0039 failure mode).
+ * All ten kinds `mod_rules_kind` permits have a predicate as of Slice 4's
+ * Task 4. `no-predicate` (`CompileFailure` below) is therefore unreachable
+ * through any public entry point (`compileRule`, `validateRuleConfig`,
+ * `predicateFor`) against this map — `resolveConfigWith`'s doc comment
+ * records the seam (`compileRuleWith`, `validateRuleConfigWith`) that keeps it
+ * testable anyway, and the reasoning for keeping the branch at all rather than
+ * deleting it (an eleventh kind will arrive the way the tenth did).
  */
 const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   keyword_filter: keywordFilterPredicate,
@@ -35,6 +38,7 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   emoji: emojiPredicate,
   mention_spam: mentionSpamPredicate,
   rapid_spam: rapidSpamPredicate,
+  duplicate_message: duplicateMessagePredicate,
 };
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>
