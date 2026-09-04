@@ -449,6 +449,41 @@ describe('runDryRun', () => {
       }
     });
 
+    it('does not count a thrown fixture as a false negative or a false positive', () => {
+      // Re-review residual 1. CRITICAL-1's fix hardened `agreement` so a
+      // thrown fixture is never 'agreed'/'disagreed', and stopped there: the
+      // sibling `falsePositives`/`falseNegatives` tallies still keyed on
+      // `matched`, which is `false` for a throw. So a `should_match` fixture
+      // that *threw* was counted as a miss it never actually took.
+      //
+      // The human-facing CLI text is unaffected (`automod dryrun` returns on
+      // `threw > 0` before printing a summary), which is precisely why this
+      // needs a test: the wrong number survives in `data.falseNegatives`,
+      // and Slice 6's false-positive gate is a *machine* reader of exactly
+      // that field. A rate computed over fixtures the predicate never
+      // actually judged is the ADR 0039 shape wearing yet another coat.
+      const spy = vi.spyOn(registry, 'compileRule').mockImplementation(throwingCompile);
+      try {
+        const report = runDryRun({
+          guildId: GUILD_ID,
+          rule: ruleWith(['badword']),
+          fixtures: FIXTURES,
+        });
+
+        // FIXTURES carries both a should_match and a should_not_match
+        // fixture, which is the ambiguity this needs: with only one label
+        // present, one of the two tallies would read 0 under the bug too.
+        expect(FIXTURES.some((f) => f.label === 'should_match')).toBe(true);
+        expect(FIXTURES.some((f) => f.label === 'should_not_match')).toBe(true);
+
+        expect(report.threw).toBeGreaterThan(0);
+        expect(report.falseNegatives).toBe(0);
+        expect(report.falsePositives).toBe(0);
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
     it('abandons the replay after five throws rather than paying the whole corpus (IMPORTANT-5)', () => {
       const spy = vi.spyOn(registry, 'compileRule').mockImplementation(throwingCompile);
       try {

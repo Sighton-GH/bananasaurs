@@ -137,4 +137,50 @@ describe('the attachment_type predicate', () => {
       ),
     ).toBeUndefined();
   });
+
+  it('cannot be made to write a member-chosen string into matchedOn', () => {
+    // The re-review's residual 2 claimed a crafted filename with a very long
+    // fake extension "writes an unbounded string into
+    // mod_case_events.trace.matchedOn today", and recommended truncating
+    // `matchedOn` the way `detail.declaredContentType` is truncated.
+    //
+    // **That premise is false, and this test is why `matchedOn` is
+    // deliberately left alone.** Matching is *set membership against
+    // configured values* (`extensions.has(extension)`,
+    // `contentTypes.has(contentType)`), so a value the operator did not
+    // configure does not match at all and no trace is built. `matchedOn` can
+    // therefore only ever equal a configured entry, which
+    // `attachmentTypeConfig` already bounds at 20 characters for an extension
+    // and 255 for a content type. A member cannot lengthen it.
+    //
+    // Truncating it anyway would be actively harmful: `matchedOn` is the
+    // *configured thing that matched*, which is the value Slice 9's one-click
+    // suppression acts on (ruling R-8 exists because that field once carried
+    // the wrong thing). Silently shortening a 255-character content type an
+    // operator legitimately configured would hand a reviewer a value that no
+    // longer matches their own list.
+    const longType = 'application/' + 'x'.repeat(300);
+
+    // The config schema refuses the over-long entry outright — so the
+    // operator cannot even create the rule this finding assumed.
+    const overlongRule: AutomodRule = {
+      ruleId: 'r1',
+      kind: 'attachment_type',
+      mode: 'test',
+      config: JSON.stringify({ blockedExtensions: [], blockedContentTypes: [longType] }),
+      terms: [],
+      allowlist: [],
+      inviteAllowlist: [],
+      linkDomains: [],
+    };
+    expect(compileRule(overlongRule).ok).toBe(false);
+
+    // And a member sending that content type against a legitimate rule simply
+    // does not match, so nothing reaches the trace.
+    expect(
+      compile(config).evaluate(
+        withAttachments([{ fileName: 'payload.bin', contentType: longType, sizeBytes: 1 }]),
+      ),
+    ).toBeUndefined();
+  });
 });

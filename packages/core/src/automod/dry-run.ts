@@ -199,8 +199,20 @@ export const runDryRun = (input: RunDryRunInput): DryRunReport => {
     corpusSize: ordered.length,
     total: results.length,
     matched: results.filter((r) => r.matched).length,
-    falsePositives: results.filter((r) => r.label === 'should_not_match' && r.matched).length,
-    falseNegatives: results.filter((r) => r.label === 'should_match' && !r.matched).length,
+    // Both tallies exclude fixtures the predicate threw on, for the same
+    // reason `agreement` is `'unlabelled'` for them: a throw is not a verdict.
+    // `matched` is `false` for a throw, so without this a `should_match`
+    // fixture that threw would be counted as a miss it never actually took —
+    // and `falseNegatives` reaches `data`, which Slice 6's false-positive
+    // gate reads as a *machine*. The CLI text is already protected (it
+    // returns on `threw > 0` before printing a summary), which is exactly
+    // what would have let a wrong number survive here unnoticed.
+    falsePositives: results.filter(
+      (r) => r.outcome === 'ok' && r.label === 'should_not_match' && r.matched,
+    ).length,
+    falseNegatives: results.filter(
+      (r) => r.outcome === 'ok' && r.label === 'should_match' && !r.matched,
+    ).length,
     results,
   };
 };

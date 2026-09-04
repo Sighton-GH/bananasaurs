@@ -32,9 +32,27 @@ import { RULE_KINDS, type MatchTrace } from './predicates/types.js';
  *
  * ADR 0041 §4 says the trace never carries whole-message content — whole
  * messages live in `automod_fixtures` under the owner's explicit privacy
- * decision — and `detail`'s `.max(120)` is what actually makes that a rule
- * rather than a hope: 120 characters is more than any predicate-specific
+ * decision — and `detail`'s `.max(120)` is what makes that a rule rather than
+ * a hope **for `detail`**: 120 characters is more than any predicate-specific
  * scalar needs, and well short of a message.
+ *
+ * **`matchedOn` is deliberately unbounded, and that is a producer's
+ * responsibility rather than this schema's** (re-review of Slices 3+5, which
+ * found this comment claiming more coverage than it has). A blanket
+ * `.max()` here cannot work: `regex`'s `matchedOn` is the operator's
+ * configured pattern, which `regexConfig` permits up to 1000 characters, and
+ * truncating it would hand Slice 9's one-click suppression a pattern that is
+ * not the rule's.
+ *
+ * What keeps `matchedOn` honest is that every predicate puts *the configured
+ * thing that matched* there, never message text — a term, a pattern, a
+ * threshold, a domain, an extension — and for the two predicates whose value
+ * is derived from member input (`attachment_type`, `link_domain`) the derived
+ * value is only ever reached by **set membership against configured
+ * entries**, so it is bounded by whatever the config schema allows and a
+ * member cannot lengthen it. A predicate that wanted to put matched *text* in
+ * `matchedOn` would be violating ADR 0041 §4 directly, and no length cap
+ * would save it; `attachment-type.test.ts` pins that reasoning with a test.
  */
 export const matchTraceSchema = z
   .object({
