@@ -359,22 +359,34 @@ describe('automod, end to end on the fake gateway', () => {
    * `doctor`, end to end against the same real database and the real
    * `apps/daemon/src/ops/wiring.ts#opsPortsFor` this daemon runs in
    * production — not the fakes `packages/core/src/ops/commands/reads.test.ts`
-   * uses for its own unit coverage. A `rapid_spam` rule is one of the
-   * window-tier kinds `mod_rules_kind` permits with no predicate behind it
-   * until Slice 4 Task 3; it must never silently do nothing. (Slices 3 and 5
-   * shipped six of the nine, and Task 2 shipped the stateless `mention_spam` —
-   * repointed here from `mention_spam` to `rapid_spam`, still unregistered
-   * until Task 3, which is why this test no longer uses `mention_spam` as its
-   * example.)
+   * uses for its own unit coverage. An unusable rule must never silently do
+   * nothing.
+   *
+   * **Repointed from `no-predicate` to `no-terms` in Slice 4 Task 5a.** This
+   * test used to create a `rapid_spam` rule, relying on that kind being one of
+   * the `mod_rules_kind` values with no predicate registered yet — and was
+   * repointed three times as successive slices shipped the kind it borrowed
+   * ('caps', then 'mention_spam', then 'rapid_spam'). After Task 5a, all ten
+   * kinds have a predicate in production (`predicates/registry.ts`'s
+   * `PREDICATES`), so `no-predicate` is unreachable through this real,
+   * end-to-end stack — `predicates/registry.test.ts` covers it instead,
+   * against an explicitly empty registry (`compileRuleWith({}, rule)`), which
+   * is the only way left to construct that state. This test still needs
+   * end-to-end coverage that *an* unusable rule is inert and loud in `doctor`,
+   * so it uses `no-terms` instead: a `keyword_filter` rule with no enabled
+   * terms, which — unlike `no-predicate` — stays reachable forever, because an
+   * operator can always disable the last term of a real rule.
    */
-  it('a rule whose kind has no predicate yet is inert and shows up in doctor', async () => {
+  it('a rule that cannot be compiled is inert and shows up in doctor', async () => {
     automodRuleRepo.createRule(scope, {
-      ruleId: 'rapid-spam-rule',
-      kind: 'rapid_spam',
-      name: 'rapid spam check',
+      ruleId: 'no-terms-rule',
+      kind: 'keyword_filter',
+      name: 'a rule with nothing enabled',
       config: '{}',
       now: discord.now(),
     });
+    // Deliberately no `addCategory`/`addTerm` call: zero enabled terms is what
+    // makes `compileRule` report `no-terms` (registry.ts).
 
     // Never called by `doctor`: `opsPortsFor` only reaches `GuildOperations`
     // through `publishPanel`/the adoption allowance ports, none of which the
@@ -419,16 +431,15 @@ describe('automod, end to end on the fake gateway', () => {
     const res = await dispatcher.dispatch({ v: 1, command: 'doctor', args: {} });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('rapid-spam-rule');
-    expect(res.text).toContain('no-predicate');
+    expect(res.text).toContain('no-terms-rule');
+    expect(res.text).toContain('no-terms');
     expect(res.data).toMatchObject({
       ok: false,
       unusableAutomodRules: [
         {
-          ruleId: 'rapid-spam-rule',
-          kind: 'rapid_spam',
-          reason: 'no-predicate',
-          detail: 'rapid_spam',
+          ruleId: 'no-terms-rule',
+          kind: 'keyword_filter',
+          reason: 'no-terms',
         },
       ],
     });

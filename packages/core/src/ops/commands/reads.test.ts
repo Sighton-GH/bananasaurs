@@ -505,14 +505,24 @@ describe('bananasaurs doctor', () => {
   });
 
   it('reports a rule whose config cannot be compiled, and fails the check', async () => {
+    // This drives a fake `OpsPorts.listUnusableAutomodRules` directly (its
+    // `kind` field is a plain `string`, `ports.ts`'s
+    // `OpsUnusableAutomodRule`), so the value never reaches the real
+    // predicate registry — this test exercises `doctor`'s rendering of a
+    // `no-predicate` row, not the registry's own classification of one. The
+    // kind used to be a real-but-unshipped RuleKind ('caps', then
+    // 'mention_spam', then 'rapid_spam') and was repointed three times as each
+    // shipped, even though nothing here required a real kind at all.
+    // 'unshipped_example' is deliberately not a `RuleKind`, so it can never be
+    // invalidated by a future predicate shipping (obligation 3, Task 5a).
     const res = await drive(doctorCommand, {
       ...healthy,
       listUnusableAutomodRules: () => [
         {
           ruleId: 'shouting',
-          kind: 'rapid_spam',
+          kind: 'unshipped_example',
           reason: 'no-predicate',
-          detail: 'rapid_spam',
+          detail: 'unshipped_example',
         },
       ],
     });
@@ -526,9 +536,9 @@ describe('bananasaurs doctor', () => {
       unusableAutomodRules: [
         {
           ruleId: 'shouting',
-          kind: 'rapid_spam',
+          kind: 'unshipped_example',
           reason: 'no-predicate',
-          detail: 'rapid_spam',
+          detail: 'unshipped_example',
         },
       ],
     });

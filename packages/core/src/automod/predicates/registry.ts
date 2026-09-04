@@ -18,10 +18,11 @@ import {
  * kind → predicate. Slices 3-5 each add an entry and change nothing else —
  * which is what ADR 0035 promised and ADR 0040 actually delivers.
  *
- * Nine of the ten kinds `mod_rules_kind` permits are absent until their slice
- * ships. A rule naming one of them is inert, and `compileRule` reports
- * `'no-predicate'` so `doctor` can say so out loud rather than the rule
- * quietly never firing (ADR 0040 §4 — the ADR 0039 failure mode).
+ * Two of the ten kinds `mod_rules_kind` permits (`rapid_spam`,
+ * `duplicate_message`) are still absent as of Slice 4's Task 5a, until Tasks
+ * 3-4 ship them. A rule naming an absent kind is inert, and `compileRule`
+ * reports `'no-predicate'` so `doctor` can say so out loud rather than the
+ * rule quietly never firing (ADR 0040 §4 — the ADR 0039 failure mode).
  */
 const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   keyword_filter: keywordFilterPredicate,
@@ -36,6 +37,55 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>
   isRuleKind(kind) ? PREDICATES[kind] : undefined;
+
+/**
+ * `kind` → predicate, against an explicitly supplied registry.
+ *
+ * Exists so `no-predicate` stays testable after this slice, when every one of
+ * the ten kinds `mod_rules_kind` permits has an implementation and no real
+ * `RuleKind` value is left to stand for "not shipped yet". `resolveConfig`
+ * checks `isRuleKind` first, so a made-up string yields `unknown-kind` — a
+ * different failure, deliberately — and therefore no cast can reach the
+ * `no-predicate` branch through the public entry points (`compileRule`,
+ * `validateRuleConfig`, `predicateFor`) once `PREDICATES` is complete.
+ *
+ * The branch stays because an eleventh kind will arrive the way the tenth
+ * did: ruling R-2 widened the SQL CHECK to all ten kinds *ahead* of their
+ * predicates, precisely so a rule naming an unshipped kind was inert and loud
+ * rather than silently non-matching. This is the seam that keeps that promise
+ * under test instead of on trust — tests pass an empty (or partial) registry
+ * rather than waiting for the next predicate to ship and then borrowing its
+ * kind, which is what forced three repoints of the same four assertions
+ * before this seam existed (plan ruling, Slice 4 Task 5a).
+ */
+const resolveConfigWith = (
+  registry: Partial<Record<RuleKind, AnyPredicate>>,
+  kind: string,
+  configJson: string,
+): ResolvedConfig => {
+  if (!isRuleKind(kind)) {
+    return { ok: false, reason: 'unknown-kind', detail: kind };
+  }
+  const predicate = registry[kind];
+  if (predicate === undefined) {
+    return { ok: false, reason: 'no-predicate', detail: kind };
+  }
+
+  try {
+    // Parsed and validated on the way *out* of the database, not only on the
+    // way in (CLAUDE.md rule 3, ADR 0037's `jobs.payload` precedent): a row
+    // written by an older schema version, or by hand in `sqlite3`, is exactly
+    // what this catches.
+    const config: unknown = predicate.config.parse(JSON.parse(configJson));
+    return { ok: true, predicate, config };
+  } catch (err) {
+    return {
+      ok: false,
+      reason: 'invalid-config',
+      detail: err instanceof Error ? err.message : String(err),
+    };
+  }
+};
 
 export type CompileFailure =
   /** A `kind` the CHECK should have rejected — a hand-edited row, or a schema drift. */
@@ -79,39 +129,6 @@ type ResolvedConfig =
   | { readonly ok: false; readonly reason: ConfigValidationFailure; readonly detail: string };
 
 /**
- * Resolves `kind` to its predicate and parses+validates `configJson` against
- * that predicate's schema, or says exactly why it could not.
- *
- * The one place both `validateRuleConfig` (below) and `compileRule` do this —
- * so a rule's word list (which is not in `config`, ADR 0040 §3, and which
- * only `compileRule` has) cannot leak into what counts as a valid *config*.
- */
-const resolveConfig = (kind: string, configJson: string): ResolvedConfig => {
-  if (!isRuleKind(kind)) {
-    return { ok: false, reason: 'unknown-kind', detail: kind };
-  }
-  const predicate = PREDICATES[kind];
-  if (predicate === undefined) {
-    return { ok: false, reason: 'no-predicate', detail: kind };
-  }
-
-  try {
-    // Parsed and validated on the way *out* of the database, not only on the
-    // way in (CLAUDE.md rule 3, ADR 0037's `jobs.payload` precedent): a row
-    // written by an older schema version, or by hand in `sqlite3`, is exactly
-    // what this catches.
-    const config: unknown = predicate.config.parse(JSON.parse(configJson));
-    return { ok: true, predicate, config };
-  } catch (err) {
-    return {
-      ok: false,
-      reason: 'invalid-config',
-      detail: err instanceof Error ? err.message : String(err),
-    };
-  }
-};
-
-/**
  * Validates a rule's `config` column against its kind's schema, without
  * compiling it.
  *
@@ -124,11 +141,23 @@ const resolveConfig = (kind: string, configJson: string): ResolvedConfig => {
  * this first and refuse the write on `{ok: false}`. Mirrors `compileRule`'s
  * `{ok: true} | {ok: false, reason, detail}` shape deliberately, so a caller
  * that already knows one convention does not have to learn a second.
+ *
+ * `validateRuleConfigWith` is the injectable form, for the same reason
+ * `compileRuleWith` below is: it keeps `no-predicate` testable without a real
+ * unregistered `RuleKind` to borrow (see `resolveConfigWith`'s doc comment).
  */
-export const validateRuleConfig = (kind: string, configJson: string): ConfigValidationResult => {
-  const resolved = resolveConfig(kind, configJson);
+export const validateRuleConfigWith = (
+  registry: Partial<Record<RuleKind, AnyPredicate>>,
+  kind: string,
+  configJson: string,
+): ConfigValidationResult => {
+  const resolved = resolveConfigWith(registry, kind, configJson);
   return resolved.ok ? { ok: true } : resolved;
 };
+
+/** The production entry point: `validateRuleConfigWith` over the shipped registry. */
+export const validateRuleConfig = (kind: string, configJson: string): ConfigValidationResult =>
+  validateRuleConfigWith(PREDICATES, kind, configJson);
 
 /**
  * Validates a rule's config against its kind's schema and compiles it, or says
@@ -138,9 +167,16 @@ export const validateRuleConfig = (kind: string, configJson: string): ConfigVali
  * subscriber, because that would stop every *other* rule in the guild from
  * matching — but it must not be silent either. The caller logs it once per
  * fingerprint and `doctor` reports it (ADR 0040 §4).
+ *
+ * `compileRuleWith` is the injectable form — see `resolveConfigWith`'s doc
+ * comment for why it exists. `compileRule` below is the production entry
+ * point, over the shipped registry.
  */
-export const compileRule = (rule: AutomodRule): CompileResult => {
-  const resolved = resolveConfig(rule.kind, rule.config);
+export const compileRuleWith = (
+  registry: Partial<Record<RuleKind, AnyPredicate>>,
+  rule: AutomodRule,
+): CompileResult => {
+  const resolved = resolveConfigWith(registry, rule.kind, rule.config);
   if (!resolved.ok) return resolved;
   const { predicate, config } = resolved;
 
@@ -209,3 +245,6 @@ export const compileRule = (rule: AutomodRule): CompileResult => {
     };
   }
 };
+
+/** The production entry point: `compileRuleWith` over the shipped registry. */
+export const compileRule = (rule: AutomodRule): CompileResult => compileRuleWith(PREDICATES, rule);
