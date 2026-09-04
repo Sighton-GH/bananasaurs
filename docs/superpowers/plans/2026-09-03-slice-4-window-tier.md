@@ -105,6 +105,19 @@ no defined behaviour for it; and `obscenity` never exposes its transformer chain
 as a function over a string — `TransformerSet` is internal, so reusing the chain
 means a deep import into `dist/`.
 
+**The third option, examined and rejected** — recorded so nobody re-proposes it.
+`obscenity` *does* export the transformer factories themselves
+(`resolveConfusablesTransformer`, `resolveLeetSpeakTransformer`,
+`toAsciiLowerCaseTransformer`), so one could hand-roll the dispatch loop that
+runs them over a string. **The reason not to is not merely that it copies a deep
+import — it is that the copy would be fragile *and* still not faithful.** It
+would depend on an undocumented container discriminant (`'factory' in container`
+versus a plain `transform` property) with no compatibility guarantee, and it
+would *still* omit `collapseDuplicatesTransformer`, whose thresholds need a word
+list this predicate does not have. So the cost buys a partial, brittle subset of
+the matcher's behaviour — which is worse than an honest, simple normaliser that
+says what it does.
+
 So `duplicate_message` normalises with **`stripZeroWidth` (the shared function,
 imported, not reimplemented) plus lowercase plus whitespace collapse**, in a
 named exported function with a comment recording the above. *The spec's intent is
@@ -147,6 +160,34 @@ edits a message to add spam is not counted toward a rate. The content predicates
 still fire on that edit, so the message is not unmoderated — only un-*rated* —
 and the alternative (counting edits) makes an ordinary typo-fixer trip a spam
 rule, which is a false positive in the tier whose gate is a false-positive rate.
+
+**PR-25 — a differential gate detects only *asymmetric* divergence, so the
+"break it" target must sit on exactly one side of the comparison.** The
+one-code-path gate compares the live subscriber against the dry run. **A bug in
+the code they share cannot make them disagree** — it makes both wrong together,
+and the comparison stays green. That is not a weakness to fix; it is what the
+gate is, and `evaluate.ts`'s header already implies it: the gate proves the two
+callers are *the same code*, not that the code is *correct*.
+
+Two consequences, and the first draft of Task 5 got both wrong — the plan review
+caught them before any code was written:
+
+1. **Never corrupt `evaluateRule`, `compileRule` or `predicateInputFrom`'s
+   *shared* logic to test this gate.** Corrupting `evaluateRule`'s cache lookup
+   starves both sides of window state equally; both say "no match" and agree.
+   The corruption must be asymmetric: the *subscriber's* cache wiring (live only),
+   or `predicateInputFrom`'s *fixture branch* (replay only).
+2. **The fixture shape has to make the corrupted answer differ from the correct
+   one.** A "the fourth message is one too many" burst already has all four
+   timestamps clustered inside one window, so replacing the replay clock with
+   `Date.now()` — which also clusters them, inside microseconds — produces the
+   *same* verdict. The guard passes under the bug it is named after. Only a
+   sequence **spread beyond** the window distinguishes them: correct → no match,
+   clustered-by-corruption → a wrong match.
+
+*Costs if wrong:* Task 5 reports Obligation 1 discharged while never having
+exercised it — which is precisely the failure Obligation 1 exists to prevent, and
+would have shipped a gate that reads as proof and is not.
 
 **PR-24 — `mention_spam` is stateless and reads one message.** The spec groups
 it in the window tier, but nothing about counting mentions on a single message
@@ -219,7 +260,27 @@ export const createWindowStore = (options: {
   /** How many members to track before evicting the least recently active (PR-22). */
   readonly maxMembers: number;
 }) => WindowStore;
+
+/**
+ * How many members one windowed rule tracks at once, before the least recently
+ * active is evicted (PR-22).
+ *
+ * Exported as a constant, and imported by both windowed predicates, so the two
+ * cannot drift to different undocumented numbers — each builds its own store,
+ * because window state lives per compiled artifact (PR-21).
+ *
+ * 500 is deliberately modest: Bananasaurs serves **one** engineering-club guild
+ * (`CLAUDE.md`), so 500 simultaneously-active posters is far beyond a realistic
+ * burst, and the memory cost is one small ring buffer each. If a raid ever
+ * exceeds it, PR-22's eviction is the documented behaviour rather than a
+ * failure.
+ */
+export const DEFAULT_MAX_TRACKED_MEMBERS = 500;
 ```
+
+**Tasks 3 and 4 both import `DEFAULT_MAX_TRACKED_MEMBERS`** rather than each
+choosing a number. Only `maxEventsPerMember` is per-rule, sized from that rule's
+own config.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -542,9 +603,14 @@ anything from `obscenity/dist`.** Put PR-20's reasoning in the function's doc
 comment — a future reader comparing the code to the spec must find the answer
 there.
 
-Config: `{ maxRepeats: number, windowMs: number, minLength?: number }`. A
-minimum length matters: `"ok"` posted three times is not spam, and without a
-floor this predicate fires on ordinary short replies.
+Config: `{ maxRepeats: number, windowMs: number, minLength?: number }`, with
+**`minLength` defaulting to 0** — i.e. no floor unless the operator sets one, so
+the schema's default cannot silently suppress matches an operator expects. Say
+that in the schema's comment. A floor still matters and operators should use
+one: `"ok"` posted three times is not spam, and with `minLength: 0` this
+predicate does fire on ordinary short replies. The default is 0 because a
+non-zero default would be this plan quietly choosing a false-negative rate on
+the operator's behalf, in the tier whose gate is a false-positive rate.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -631,30 +697,53 @@ Slice 3+5 widened it to `attachments`. **Two blind spots remain and both go live
 in this slice:** a wrong `atMs`, and a bypassed predicate cache (no observable
 difference while every predicate was stateless).
 
-- [ ] **Step 1: Add a sequence case to `dry-run.test.ts`**
+**Read ruling PR-25 below before writing either case.** The first draft of this
+task specified two "break it" exercises and **neither could have gone red**; the
+plan review caught both. The principle they violated is the one thing to
+understand here.
+
+- [ ] **Step 1: Add *two* sequence cases to `dry-run.test.ts`**
 
 Follow the file's existing shape — it drives a real `createAutomodSubscriber`
 and compares against `runDryRun`, rather than calling `evaluateRule` directly.
-Use a `rapid_spam` rule and **four messages / four fixtures** at timestamps that
-make the fourth a match and the first three not. Assert the live path and the
-replay agree on *which* message matched, not merely that something did.
+Both cases use a `rapid_spam` rule with a 10 000 ms window and
+`maxMessages: 3`.
 
-- [ ] **Step 2: Prove it catches both blind spots**
+**Case A — a burst that matches on both paths.** Four messages/fixtures
+clustered inside the window (`1_000, 2_000, 3_000, 4_000`). Assert both paths
+match, and **assert which message matched**, not merely that something did — a
+comparison of two identical nothings passes under every implementation, which is
+the trap Slice 3+5's gate had to be rescued from.
 
-This is the whole point of the task; do all of it and report both halves.
+**Case B — a sequence spread beyond the window, matching on neither path.**
+`1_000, 20_000, 40_000, 60_000` against the 10 000 ms window: each message ages
+out before the next arrives, so the correct answer on both paths is **no match
+anywhere**. This is the case that makes the clock visible, and it is the *only*
+shape that can — see PR-25.
 
-1. **Wrong clock.** In `predicateInputFrom`'s fixture branch, replace
-   `atMs: fixture.createdAt` with `atMs: Date.now()`. The new sequence case must
-   go red. The pre-existing content-only gates must stay green — that contrast is
-   what shows the gate reached a field it previously could not see.
-2. **Bypassed cache.** Make `evaluateRule` compile a fresh artifact on every
-   call (ignore the cache lookup). The new case must go red, because the window
-   is on the artifact and a fresh one has no history. Again the content-only
-   gates stay green.
+- [ ] **Step 2: Prove the gate catches both blind spots**
 
-Restore both. **If either leaves the gate green, say so loudly** — the
-obligation is then unmet and the coordinator needs to know before the slice
-closes.
+This is the whole point of the task. Do both, and report both halves.
+
+1. **Wrong clock — corrupt the fixture branch only.** In
+   `predicateInputFrom`'s fixture branch, replace `atMs: fixture.createdAt`
+   with `atMs: Date.now()`. **Case B must go red.** `runDryRun` processes
+   fixtures in a tight synchronous loop, so four `Date.now()` calls land within
+   microseconds of each other — the replay's four events all cluster inside one
+   window and wrongly report a match at the fourth, while the live path
+   (untouched, using `event.receivedAtMs`) correctly reports none. Case A must
+   stay **green**, because clustered timestamps are what Case A already has.
+   The pre-existing content-only gates must also stay green.
+2. **Bypassed cache — corrupt the *subscriber*, never `evaluateRule`.** Wire the
+   test subscriber so each `handle()` call uses a throwaway
+   `createPredicateCache()` instead of the instance-held one. **Case A must go
+   red:** the live side never accumulates window state so it never reaches four,
+   while the replay's correctly-reused cache does. **Do not corrupt
+   `evaluateRule` or `compileRule`** — see PR-25.
+
+Restore both. **If either case stays green, say so loudly** — the obligation is
+then unmet, and the coordinator needs to know before the slice closes rather
+than after.
 
 #### Obligation 3 — `no-predicate` is now unreachable
 
