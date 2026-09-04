@@ -9,7 +9,9 @@
       "Bash(git log *)",
       "Bash(git add *)",
       "Bash(git commit *)",
-      "Bash(rg *)"
+      "Bash(rg *)",
+      "Bash(npx vitest run)",
+      "Bash(npx vitest run *)"
     ],
     "deny": [
       "Bash(git push*)",
