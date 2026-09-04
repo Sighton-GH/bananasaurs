@@ -122,19 +122,45 @@ const hashNormalised = (normalised: string): string =>
  * the matching count can ever exceed the threshold, at every configuration —
  * confirmed against the built code before this fix; the evasion was simply
  * typing something else between repeats, which is also the ordinary shape of
- * the spam this predicate exists to catch. `DEFAULT_MAX_EVENTS_PER_MEMBER`
- * (`window.ts`) decouples the buffer size from the threshold; see its own
- * doc comment for the residual evasion this leaves (more than that many
- * distinct messages between two repeats). The normalised text is not part of
- * the `WindowKey` either — that would turn the 500-member cap into a
- * 500-distinct-*text* cap and put member-authored content in a cache key.
+ * the spam this predicate exists to catch.
+ *
+ * So the capacity is `Math.max(DEFAULT_MAX_EVENTS_PER_MEMBER, maxRepeats + 1)`
+ * — a **floor** for interleaving headroom, never below what the threshold
+ * arithmetically needs. A flat floor *alone* was the first fix for CRITICAL-1
+ * and was also wrong: it made every `maxRepeats >= 50` unreachable, which the
+ * re-review caught by running 61 consecutive identical messages and watching
+ * nothing fire. Both terms are load-bearing.
+ *
+ * **The residual evasion, stated precisely because an earlier version of this
+ * comment overstated it.** A member evades by posting more than
+ * `capacity - (maxRepeats + 1)` *distinct* messages between two repeats —
+ * measured against the built code, not derived: at `maxRepeats: 1` with a
+ * floor of 50, 48 fillers still match and 49 do not. The earlier wording said
+ * "more than `DEFAULT_MAX_EVENTS_PER_MEMBER` distinct messages", which is
+ * wrong by `maxRepeats + 1` and flattering in the direction that matters.
+ *
+ * The normalised text is not part of the `WindowKey` either — that would turn
+ * the 500-member cap into a 500-distinct-*text* cap and put member-authored
+ * content in a cache key.
  */
 export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
   kind: 'duplicate_message',
   config: duplicateMessageConfig,
   compile(rule: AutomodRule, config: DuplicateMessageConfig): CompiledPredicate {
     const store = createWindowStore({
-      maxEventsPerMember: DEFAULT_MAX_EVENTS_PER_MEMBER,
+      // A floor, not a replacement for the threshold arithmetic — and the
+      // difference is a shipped bug, twice. `countMatching` can never return
+      // more than the buffer holds, so a buffer smaller than `maxRepeats + 1`
+      // makes `count > config.maxRepeats` unreachable and the rule dead code.
+      // The first fix for CRITICAL-1 replaced `maxRepeats + 1` with a flat
+      // `DEFAULT_MAX_EVENTS_PER_MEMBER`, which fixed the interleaving defeat
+      // and reintroduced the same total failure for every `maxRepeats >= 50` —
+      // about 95% of the range `duplicateMessageConfig` permits, silently,
+      // with no log line and no `doctor` entry. Both terms are needed: the
+      // floor buys headroom so an interleaved message cannot evict a repeat,
+      // and `maxRepeats + 1` keeps the threshold reachable at any
+      // configuration.
+      maxEventsPerMember: Math.max(DEFAULT_MAX_EVENTS_PER_MEMBER, config.maxRepeats + 1),
       maxMembers: DEFAULT_MAX_TRACKED_MEMBERS,
     });
 

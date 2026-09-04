@@ -208,6 +208,35 @@ describe('the duplicate_message predicate', () => {
     if (!result.ok) expect(result.reason).toBe('invalid-config');
   });
 
+  it('still fires at a maxRepeats above the buffer floor', () => {
+    // Re-review of the CRITICAL-1 fix. Fixing CRITICAL-1 replaced a
+    // threshold-scaled buffer with a *flat* DEFAULT_MAX_EVENTS_PER_MEMBER of
+    // 50 — which reintroduced the same failure at the other end:
+    // `countMatching` can never return more than the buffer holds, so for any
+    // `maxRepeats >= 50` the count can never exceed the threshold and the
+    // rule is dead code. The config schema permits maxRepeats up to 1000, so
+    // that was roughly 95% of the allowed configuration space, silently, with
+    // no log line and no `doctor` entry.
+    //
+    // This is the *easiest* case for the rule — 61 consecutive identical
+    // messages, zero interleaving — which is what makes it the right guard:
+    // if the rule cannot catch a pure flood it cannot catch anything.
+    //
+    // The lesson the fix missed: the buffer needs a FLOOR for interleaving
+    // headroom, not a replacement for the threshold arithmetic. It must be at
+    // least `maxRepeats + 1` and at least the floor.
+    const compiled = compile('{"maxRepeats":60,"windowMs":600000,"minLength":1}');
+    let fired = false;
+    for (let i = 0; i < 61; i++) {
+      if (
+        compiled.evaluate(message('same text', { atMs: 1_000 + i, messageId: `m${String(i)}` }))
+      ) {
+        fired = true;
+      }
+    }
+    expect(fired).toBe(true);
+  });
+
   it('rejects a windowMs outside the bounded range', () => {
     const rule: AutomodRule = {
       ruleId: 'r1',
