@@ -161,10 +161,9 @@ into the second is what makes the safe choice expensive, which is F3.
 - **Enforcement becomes unreachable by accident.** The only path to
   `mode = 'enforce'` runs through a check that reads real reviewed verdicts. A
   rule cannot be enforced because someone was confident.
-- **Four additive columns on `mod_rules` and one on `guilds`.** All
-  `ALTER TABLE … ADD COLUMN`; **no table rebuild**, which matters because
-  ruling R-5 records a reproduced data-loss bug in the rebuild path and
-  `mod_rules` owns cascading children.
+- **Eight additive columns on `mod_rules` and one on `guilds`**, and
+  **drizzle-kit will rebuild `mod_rules` to add them.** See the amendment below;
+  this is safe, and an earlier version of this ADR wrongly forbade it.
 - **`caps` becomes shippable**, and any future high-risk predicate with it, via
   `counts_as_violation = 0`.
 - **A rule that legitimately fires rarely can still be enforced**, through the
@@ -207,3 +206,45 @@ which is a property of the write path, not of a report.
 and it removes the reason an operator would reach for `dry_run` and disable the
 role panels during flip week — which is precisely the week they will be testing
 most.
+
+## Amendment 1 (2026-09-04) — a table rebuild is acceptable here, because R-5 already fixed the thing that made it dangerous
+
+**What this ADR got wrong.** Its Consequences section said the migration must
+involve **no table rebuild**, citing ruling R-5 (a reproduced data-loss bug in
+the rebuild path) and the fact that `mod_rules` owns four cascading children.
+The plan inherited that as a hard constraint, and Task 1's implementer hit it
+immediately: **drizzle-kit 0.31.10 rebuilds `mod_rules` for any new
+CHECK-constrained column**, not only for the CHECK *widening* case R-6
+documented. Five of the nine columns carry a CHECK, including `cutover_state`,
+which is the state machine's spine. The implementer stopped, reverted, and
+reported rather than working around an instruction — correct behaviour, and the
+report is what surfaced this.
+
+**Why the constraint was wrong.** R-5 is two things: a hazard and a fix, and
+this ADR cited the hazard while forgetting the fix shipped in Slice 1.
+`runMigrations` (`packages/storage/src/db.ts`) disables `foreign_keys` at the
+**connection** level for the duration of a migration run — outside the
+transaction, which is what makes it effective where the generated SQL's own
+pragma is a documented no-op — and then runs `PRAGMA foreign_key_check`,
+failing the run if the migration left anything referentially broken. With
+enforcement off, `DROP TABLE mod_rules` **cannot** fire the cascades that R-5
+reproduced.
+
+**And it is not merely argued, it is tested — on this exact table.**
+`schema-invariants.test.ts` migrates a database to 0009, inserts one rule with a
+category, a term, an allowlist phrase and a role exemption, applies the real
+shipped 0010/0011 rebuild migrations, and asserts every child row is still
+readable. Two further tests prove `foreign_key_check` catches a dangling
+reference and that enforcement is restored after a failed run.
+
+**So: a rebuild of `mod_rules` is permitted for this slice**, and the thing that
+makes it safe is `runMigrations`, not the absence of a rebuild. What the slice
+owes instead is the same proof for its own migration: **migrate to the previous
+migration, seed `mod_rules` with populated children, apply this slice's
+migration, and assert the children survive** — following the existing test
+rather than trusting that the existing test covers a migration written later.
+
+**The general lesson, recorded because it nearly cost the slice:** a ruling that
+names a hazard *and* its mitigation must be cited as both. Quoting only the
+hazard turns a solved problem into a blocker, and the constraint I wrote would
+have made five of nine columns unimplementable for no reason.

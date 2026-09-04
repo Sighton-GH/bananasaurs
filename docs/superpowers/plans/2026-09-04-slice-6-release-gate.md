@@ -36,12 +36,19 @@ on the strongest model, a fix wave, and a re-review — all of it.
    Undo a break-it experiment with `git restore <path>`, not a `cp` round-trip.
 2. **Guild scope is a mandatory partition key** (CLAUDE.md rule 2). Every new
    query takes a `GuildScope` first and goes through `scope.only(...)`.
-3. **Additive migrations only.** **Nine** `ALTER TABLE … ADD COLUMN` — eight on
-   `mod_rules`, one on `guilds`; count them against Task 1's table, which is the
-   authority. **No table rebuild** — ruling R-5 records a reproduced data-loss bug in the rebuild path,
-   and `mod_rules` owns cascading children. After `npm run db:generate`, read the
-   SQL and confirm no `__new_`, no `DROP TABLE`, no `RENAME`. If the generator
-   emits a rebuild, **stop and report it.**
+3. **Nine new columns — eight on `mod_rules`, one on `guilds`** (Task 1's table
+   is the authority). **drizzle-kit will rebuild `mod_rules` to add the
+   CHECK-constrained ones, and that is expected and safe** — see ADR 0042's
+   **Amendment 1**. An earlier version of this plan forbade a rebuild, citing
+   ruling R-5; that was wrong, because **R-5 is a hazard *and* its fix, and the
+   fix shipped in Slice 1.** `runMigrations` disables `foreign_keys` at the
+   *connection* level for the run and brackets it with `PRAGMA
+   foreign_key_check`, so the cascade R-5 reproduced cannot fire — and
+   `schema-invariants.test.ts` already proves that against `mod_rules` and all
+   four of its cascading children, using the real shipped rebuild migrations.
+   **What you owe instead of avoiding the rebuild is the same proof for this
+   slice's own migration** — Task 1, Step 4b. Do not assume a test written
+   earlier covers a migration written later.
 4. **`npm run db:generate` is the only way to produce a migration.** Never
    hand-write one.
 5. **Pino redaction is an allowlist** (rule 4). A new logged field name needs a
@@ -207,31 +214,47 @@ On `guilds`: `automod_testing_mode` INTEGER NOT NULL DEFAULT 0, `boolCheck`.
 - [ ] **Step 3: add the columns** to `schema.ts`, following the file's
   conventions exactly (`check` names prefixed with the table name, `boolCheck`
   for the two booleans).
-- [ ] **Step 4: `npm run db:generate`, then read the SQL.** Confirm **nine**
-  `ALTER TABLE … ADD COLUMN` statements — eight on `mod_rules`, one on `guilds`,
-  matching this task's table above — `STRICT` untouched, and **no `__new_`, no
-  `DROP`, no `RENAME`**. Say the count you actually saw in your report rather
-  than confirming this one; an earlier draft of this plan said "five" here while
-  the table listed nine, so if the number disagrees with the table, **trust the
-  table and say so**.
+- [ ] **Step 4a: `npm run db:generate`, then read the SQL.**
 
-  **Generate in two runs, not one, and check the SQL after each.** Ruling R-6
-  records drizzle-kit 0.31.10 emitting *invalid* SQL when a column add and a
-  table rebuild land in the same `generate` call — the rebuild's `INSERT … SELECT`
-  read a column the old table did not have yet. Nine columns, six of them
-  CHECK-constrained, is materially more likely to tip the generator into a
-  rebuild than the "five columns" this plan's first draft imagined. So:
+  **A rebuild of `mod_rules` is expected here.** drizzle-kit 0.31.10 rebuilds the
+  table for any new CHECK-constrained column — established by Task 1's first
+  attempt, which stopped and reported it. **Do not try to avoid it**, and do not
+  hand-edit the generated SQL. Read ADR 0042's **Amendment 1** for why it is
+  safe: `runMigrations` disables `foreign_keys` at the connection level and
+  brackets the run with `PRAGMA foreign_key_check`, so R-5's cascade cannot fire.
 
-  1. Add the three plain columns first (`observe_started_at`, `legacy_rule_ref`,
-     `enforce_signed_off_by`/`_at` — nullable, no CHECK), generate, read.
-  2. Then the CHECK-constrained ones (`cutover_state`, `counts_as_violation`,
-     `max_false_positive_rate`, `min_reviewed_matches`, and `guilds`'
-     `automod_testing_mode`), generate, read.
+  **Generate in two runs, not one** — the plain nullable columns
+  (`observe_started_at`, `legacy_rule_ref`, `enforce_signed_off_by`,
+  `enforce_signed_off_at`) first, then the CHECK-constrained ones. Ruling R-6
+  records drizzle-kit emitting *invalid* SQL when a column add and a rebuild land
+  in the same `generate` call: the rebuild's `INSERT … SELECT` read a column the
+  old table did not have yet. Two runs is exactly the shape R-6 prescribed for
+  Slice 1, and it is what keeps the rebuild's column list correct.
 
-  Two migration files, both pure drizzle-kit output, neither hand-written — the
-  same shape R-6 prescribed for Slice 1. **If either run emits a rebuild of any
-  table, stop and report it**; that is the R-5 data-loss path and working around
-  it is not this task's call.
+  Report the statements you actually saw — the count and whether each run
+  rebuilt — rather than confirming a number from this plan. An earlier draft said
+  "five" while the table listed nine.
+
+- [ ] **Step 4b: prove the children survive *this* migration.**
+
+  This is what the slice owes in place of avoiding the rebuild, and it is not
+  satisfied by the existing test. Follow
+  `schema-invariants.test.ts`'s pattern exactly: migrate to the **previous**
+  migration, insert one `mod_rules` row with a `word_categories` row, a
+  `word_terms` row, a `word_allowlist` phrase **and** a `mod_rule_exemptions`
+  row, then apply this slice's migration(s) and assert **every child row is
+  still readable** and the rule's own columns carry their new defaults.
+
+  `openMigratedTestDatabase()` will **not** do — it applies every migration to an
+  empty database, so the rebuild statements never run against data and the test
+  proves nothing. That trap is documented in the existing test's own comment;
+  read it before writing yours.
+
+  **Then watch it fail:** temporarily edit the generated migration to drop the
+  `PRAGMA foreign_keys=OFF` line (or point `runMigrations` at a copy with
+  enforcement left on), confirm the child rows vanish, and restore with
+  `git restore`. A rebuild-survival test that has never seen the rows disappear
+  is the decorative shape this project has found sixteen of.
 - [ ] **Step 5: widen the read shapes.** `StoredAutomodRule` gains the new
   fields; `hydrate` selects them. **Expect this to break every construction site
   in the test suite** — run `typecheck` early, and report how many you touched.
