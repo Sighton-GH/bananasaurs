@@ -15,6 +15,25 @@ import type { AutomodRule } from './predicates/types.js';
  * Everything else on `AutomodRule` is hashed, by construction (see below) —
  * this set is the only place a field can opt out, and opting out is meant to
  * read as a deliberate act.
+ *
+ * **A field that changes with traffic rather than with configuration MUST be
+ * added here** (whole-branch review, IMPORTANT-6). Before Release 2 Slice 4
+ * this digest recompiling on every write to `AutomodRule` was, at worst, a
+ * wasted CPU cycle — the exclusion-based design's stated safety property ("a
+ * field added later is hashed by default") held without qualification. Since
+ * Slice 4, `rapid_spam` and `duplicate_message` carry a sliding-window store
+ * in the closure of their compiled artifact (`window.ts`), and a recompile
+ * discards that store — a config edit resetting the window is correct
+ * (plan ruling PR-21), but a field that changes on every message the rule
+ * merely *observes* would recompile — and reset the window — on every
+ * message, so the rule can never accumulate enough events to fire. That is
+ * ADR 0039's silent-non-matching failure, reintroduced through the mechanism
+ * built to prevent it: no log line, no `doctor` entry, a rule that reads as
+ * enabled and configured. PR-14 (ledger, Slice 3) defers exactly such a
+ * field — `invite`'s per-rule `last_matched_at` — to Slice 9; when it lands
+ * on `AutomodRule` it belongs in this set, and needs a test asserting that a
+ * rule differing only in that field keeps its fingerprint (to be written
+ * when the field arrives, since it does not exist to test against yet).
  */
 const EXCLUDED_FIELDS: ReadonlySet<string> = new Set(['ruleId', 'mode']);
 
