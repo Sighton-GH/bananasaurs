@@ -21,10 +21,11 @@ describe('predicateFor', () => {
 
   it('returns undefined for a kind whose predicate has not shipped yet', () => {
     // The `kind` CHECK permits ten values from Slice 1. Slices 3 and 5 shipped
-    // seven of them; the window tier (mention_spam, rapid_spam,
-    // duplicate_message) is Slice 4 and still has no predicate. That gap is
-    // handled, not prevented.
-    expect(predicateFor('mention_spam')).toBeUndefined();
+    // seven of them, and Slice 4's Task 2 shipped mention_spam (stateless,
+    // PR-24) — repointed here from 'mention_spam' to 'rapid_spam', which is
+    // still unregistered until Task 3. rapid_spam and duplicate_message are
+    // the window tier's remaining two. That gap is handled, not prevented.
+    expect(predicateFor('rapid_spam')).toBeUndefined();
   });
 });
 
@@ -40,7 +41,7 @@ describe('compileRule', () => {
   });
 
   it('reports a kind with no predicate registered yet', () => {
-    const result = compileRule(rule({ kind: 'mention_spam', terms: [], config: '{}' }));
+    const result = compileRule(rule({ kind: 'rapid_spam', terms: [], config: '{}' }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('no-predicate');
   });
@@ -109,8 +110,8 @@ describe('validateRuleConfig', () => {
   });
 
   it('reports a permitted kind with no predicate registered yet', () => {
-    const result = validateRuleConfig('mention_spam', '{}');
-    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'mention_spam' });
+    const result = validateRuleConfig('rapid_spam', '{}');
+    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'rapid_spam' });
   });
 
   it('reports malformed JSON rather than throwing', () => {

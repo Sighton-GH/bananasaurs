@@ -4,6 +4,7 @@ import { emojiPredicate } from './emoji.js';
 import { invitePredicate } from './invite.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
 import { linkDomainPredicate, type LinkDomainConfig } from './link-domain.js';
+import { mentionSpamPredicate } from './mention-spam.js';
 import { regexPredicate } from './regex.js';
 import {
   isRuleKind,
@@ -30,6 +31,7 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   regex: regexPredicate,
   caps: capsPredicate,
   emoji: emojiPredicate,
+  mention_spam: mentionSpamPredicate,
 };
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>

@@ -510,9 +510,9 @@ describe('bananasaurs doctor', () => {
       listUnusableAutomodRules: () => [
         {
           ruleId: 'shouting',
-          kind: 'mention_spam',
+          kind: 'rapid_spam',
           reason: 'no-predicate',
-          detail: 'mention_spam',
+          detail: 'rapid_spam',
         },
       ],
     });
@@ -526,9 +526,9 @@ describe('bananasaurs doctor', () => {
       unusableAutomodRules: [
         {
           ruleId: 'shouting',
-          kind: 'mention_spam',
+          kind: 'rapid_spam',
           reason: 'no-predicate',
-          detail: 'mention_spam',
+          detail: 'rapid_spam',
         },
       ],
     });

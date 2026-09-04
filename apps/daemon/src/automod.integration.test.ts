@@ -359,17 +359,19 @@ describe('automod, end to end on the fake gateway', () => {
    * `doctor`, end to end against the same real database and the real
    * `apps/daemon/src/ops/wiring.ts#opsPortsFor` this daemon runs in
    * production — not the fakes `packages/core/src/ops/commands/reads.test.ts`
-   * uses for its own unit coverage. A `mention_spam` rule is one of the
+   * uses for its own unit coverage. A `rapid_spam` rule is one of the
    * window-tier kinds `mod_rules_kind` permits with no predicate behind it
-   * until Slice 4; it must never silently do nothing. (Slices 3 and 5 shipped
-   * the other six of the nine — `caps` among them — which is why this test no
-   * longer uses `caps` as its example.)
+   * until Slice 4 Task 3; it must never silently do nothing. (Slices 3 and 5
+   * shipped six of the nine, and Task 2 shipped the stateless `mention_spam` —
+   * repointed here from `mention_spam` to `rapid_spam`, still unregistered
+   * until Task 3, which is why this test no longer uses `mention_spam` as its
+   * example.)
    */
   it('a rule whose kind has no predicate yet is inert and shows up in doctor', async () => {
     automodRuleRepo.createRule(scope, {
-      ruleId: 'mention-spam-rule',
-      kind: 'mention_spam',
-      name: 'mention spam check',
+      ruleId: 'rapid-spam-rule',
+      kind: 'rapid_spam',
+      name: 'rapid spam check',
       config: '{}',
       now: discord.now(),
     });
@@ -417,16 +419,16 @@ describe('automod, end to end on the fake gateway', () => {
     const res = await dispatcher.dispatch({ v: 1, command: 'doctor', args: {} });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('mention-spam-rule');
+    expect(res.text).toContain('rapid-spam-rule');
     expect(res.text).toContain('no-predicate');
     expect(res.data).toMatchObject({
       ok: false,
       unusableAutomodRules: [
         {
-          ruleId: 'mention-spam-rule',
-          kind: 'mention_spam',
+          ruleId: 'rapid-spam-rule',
+          kind: 'rapid_spam',
           reason: 'no-predicate',
-          detail: 'mention_spam',
+          detail: 'rapid_spam',
         },
       ],
     });
