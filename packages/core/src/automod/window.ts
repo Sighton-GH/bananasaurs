@@ -33,7 +33,11 @@ export interface WindowKey {
 
 /** One member's recent events for one rule, oldest first. */
 export interface MemberWindow {
-  /** Records an event at `atMs` and prunes anything older than `windowMs`. */
+  /**
+   * Records an event at `atMs`, dropping the oldest if the per-member cap is
+   * already full. Does **not** drop events by age — the read methods filter by
+   * window, so an out-of-window event is never counted anyway.
+   */
   record(atMs: number, value?: string): void;
   /** How many events fall inside `[atMs - windowMs, atMs]`. */
   countWithin(atMs: number, windowMs: number): number;
@@ -55,15 +59,20 @@ interface Event {
 /**
  * A guild+member+rule's ring buffer.
  *
- * Pruning needs a `windowMs`, and this object is constructed before it knows
- * which window any given `countWithin`/`countMatching` call will ask about —
- * a windowed predicate's config is only visible to its own `compile`, not to
- * this module. So pruning is lazy: `record` prunes against the **largest
- * window it has ever been asked about** (`maxObservedWindowMs`, updated as
- * `countWithin`/`countMatching` are called). This is safe because a caller's
- * own config schema bounds `windowMs` (Tasks 3-4's `duplicate_message` and
- * `rapid_spam` both cap it), so this buffer never needs to hold events older
- * than the one window its own rule actually uses.
+ * **There is deliberately no age-based pruning, and the reason is worth
+ * stating because an earlier draft had some.** Correctness does not come from
+ * pruning: `countWithin` and `countMatching` filter by the window on *every*
+ * call, so an event outside the window is never counted whether it is still in
+ * the array or not. And memory is bounded by `maxEventsPerMember` alone, which
+ * is applied on every `record`, so the array is capped at all times.
+ *
+ * That left pruning with **no observable effect** — which is exactly how it was
+ * found: the plan required a "watch it fail" guard for it, and the implementer
+ * reported honestly that disabling pruning changed nothing any test could see.
+ * A mechanism whose guard cannot be written is a mechanism to justify or
+ * delete, and this one could not be justified: it bought a slightly smaller
+ * steady-state array inside an already-capped buffer, at the cost of tracking
+ * the largest window ever observed so `record` had something to prune against.
  *
  * `onRecord` is invoked from `record()` — not from the read methods — because
  * recording is this member's only observable "activity" for eviction
@@ -72,7 +81,6 @@ interface Event {
  */
 class RingMemberWindow implements MemberWindow {
   private events: Event[] = [];
-  private maxObservedWindowMs = 0;
 
   constructor(
     private readonly maxEventsPerMember: number,
@@ -83,34 +91,21 @@ class RingMemberWindow implements MemberWindow {
     this.onRecord();
     this.events.push({ atMs, value });
     // Bound 1 of 2 (PR-22): never more than maxEventsPerMember events, for
-    // this member, for this rule. Applied before the age-based prune below so
-    // a flood cannot grow the array past the cap even for an instant.
+    // this member, for this rule. This is the *only* thing bounding the array,
+    // and it runs on every record, so the array is capped at all times.
     if (this.events.length > this.maxEventsPerMember) {
       this.events = this.events.slice(this.events.length - this.maxEventsPerMember);
     }
-    this.pruneOlderThan(atMs, this.maxObservedWindowMs);
   }
 
   countWithin(atMs: number, windowMs: number): number {
-    this.noteWindow(windowMs);
     const floor = atMs - windowMs;
     return this.events.filter((e) => e.atMs >= floor && e.atMs <= atMs).length;
   }
 
   countMatching(atMs: number, windowMs: number, value: string): number {
-    this.noteWindow(windowMs);
     const floor = atMs - windowMs;
     return this.events.filter((e) => e.atMs >= floor && e.atMs <= atMs && e.value === value).length;
-  }
-
-  private noteWindow(windowMs: number): void {
-    if (windowMs > this.maxObservedWindowMs) this.maxObservedWindowMs = windowMs;
-  }
-
-  private pruneOlderThan(atMs: number, windowMs: number): void {
-    if (windowMs <= 0) return;
-    const floor = atMs - windowMs;
-    this.events = this.events.filter((e) => e.atMs >= floor);
   }
 }
 
