@@ -10,6 +10,7 @@ import {
 } from '../dispatch.js';
 import type { OpsReviewableMatch } from '../ports.js';
 import type { JsonValue } from '../protocol.js';
+import type { FixtureRecord } from '../../automod/predicates/types.js';
 
 /**
  * `automod dryrun <ruleId>` (ADR 0041 §7): replay one rule over the saved
@@ -42,10 +43,63 @@ interface AttachmentAwareness {
   readonly total: number;
 }
 
+/**
+ * Why a windowed rule's (`rapid_spam`, `duplicate_message`) replay count is
+ * not a rate over traffic in either direction (CRITICAL-3, whole-branch
+ * review) — the caveat this command owes an operator beside the summary,
+ * modelled on `AttachmentAwareness` above, which is a strictly weaker version
+ * of the same problem (`attachment_type`'s denominator including fixtures
+ * that could not possibly match).
+ *
+ * **Under-report.** `captureObservedFixture` records only a message that
+ * already matched, so the events that *built* a windowed rule's count —
+ * the messages before the "one too many" one — are absent from the corpus by
+ * construction. A rule that fired correctly on a burst captures only the
+ * message(s) that matched; replayed alone, they produce a lower count and
+ * `MISSED` for a rule that is working perfectly.
+ *
+ * **Over-report.** PR-1 gives every *edit* of a message its own corpus row
+ * (`<messageId>:<hash(content)>`), and `predicateInputFrom`'s fixture branch
+ * hard-codes `eventKind: 'messageCreate'` for every row it builds. For a rate
+ * predicate that is not conservative: one message edited three times, each
+ * edit captured, becomes four corpus rows and therefore four counted events
+ * in a replay, where the live rule counted one create and ignored the edits
+ * (PR-23). `editedMessageRows` makes that term visible: how many rows in this
+ * corpus share a message id with another row.
+ */
+interface WindowedCorpusCaveat {
+  readonly editedMessageRows: number;
+}
+
+/** An observed fixture's message id is the text before PR-1's `:<hash>` suffix. */
+const fixtureMessageId = (fixtureId: string): string => fixtureId.split(':')[0] ?? fixtureId;
+
+/**
+ * How many observed fixtures in `fixtures` share a message id with another
+ * row — the corpus rows a single edited message produced (CRITICAL-3's
+ * over-report term). Handwritten fixtures are excluded: they have no message
+ * behind them (`predicateInputFrom` uses the fixture id itself), so they
+ * cannot be an edit of anything.
+ */
+const countEditedMessageRows = (fixtures: readonly FixtureRecord[]): number => {
+  const observed = fixtures.filter((f) => f.source === 'observed');
+  const counts = new Map<string, number>();
+  for (const f of observed) {
+    const messageId = fixtureMessageId(f.fixtureId);
+    counts.set(messageId, (counts.get(messageId) ?? 0) + 1);
+  }
+  return observed.filter((f) => (counts.get(fixtureMessageId(f.fixtureId)) ?? 0) > 1).length;
+};
+
+/** The two kinds `window.ts`-backed predicates compile to (CRITICAL-3). */
+const isWindowedKind = (kind: string): boolean =>
+  kind === 'rapid_spam' || kind === 'duplicate_message';
+
 /** `DryRunReport`, projected to plain `JsonValue` — no readonly arrays, no `undefined`. */
 const projectReport = (
   report: DryRunReport,
   attachmentAwareness: AttachmentAwareness | undefined,
+  windowedCorpusCaveat: WindowedCorpusCaveat | undefined,
 ): JsonValue => ({
   ruleId: report.ruleId,
   kind: report.kind,
@@ -74,6 +128,13 @@ const projectReport = (
     attachmentAwareness === undefined
       ? null
       : { withMetadata: attachmentAwareness.withMetadata, total: attachmentAwareness.total },
+  // CRITICAL-3: null for every kind but the two windowed ones, whose replay
+  // count is not a rate over traffic in either direction — see
+  // `WindowedCorpusCaveat`'s doc comment.
+  windowedCorpusCaveat:
+    windowedCorpusCaveat === undefined
+      ? null
+      : { editedMessageRows: windowedCorpusCaveat.editedMessageRows },
   results: report.results.map((result) => ({
     fixtureId: result.fixtureId,
     label: result.label,
@@ -148,7 +209,16 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
             total: report.total,
           }
         : undefined;
-    const data = projectReport(report, attachmentAwareness);
+
+    // CRITICAL-3: the same "computed for every branch" treatment as
+    // attachmentAwareness above — a windowed rule's replay count is wrong in
+    // both directions regardless of which branch below ends up printing, so
+    // the caveat belongs in `data` even when the run is abandoned or the
+    // corpus is empty.
+    const windowedCorpusCaveat: WindowedCorpusCaveat | undefined = isWindowedKind(report.kind)
+      ? { editedMessageRows: countEditedMessageRows(fixtures) }
+      : undefined;
+    const data = projectReport(report, attachmentAwareness, windowedCorpusCaveat);
 
     // Case 1: the rule cannot even compile. A match count under it is worse
     // than useless — "0 matches" reads exactly like a rule behaving
@@ -218,6 +288,21 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
       lines.push(
         `${attachmentAwareness.withMetadata} of ${attachmentAwareness.total} fixtures carry ` +
           `attachment metadata (the rest predate it and cannot match this rule)`,
+      );
+    }
+    if (windowedCorpusCaveat !== undefined) {
+      // CRITICAL-3: said in both directions. The corpus holds only
+      // previously-matched messages, so this rule's count is not a rate over
+      // traffic — a MISSED result here is expected, not a defect — and the
+      // named rows are the over-report term: PR-1 gives every edit of a
+      // message its own row, which this replay counts once each where the
+      // live rule counts only the original create (PR-23).
+      lines.push(
+        `note: this corpus holds only previously-matched messages, so this rule's count is not ` +
+          `a rate over traffic — a MISSED result on a windowed rule is expected here, not a ` +
+          `defect; ${windowedCorpusCaveat.editedMessageRows} of ${report.total} row(s) in this ` +
+          `corpus are extra rows for an edited message, which this replay counts once each where ` +
+          `the live rule counts only the original create`,
       );
     }
 

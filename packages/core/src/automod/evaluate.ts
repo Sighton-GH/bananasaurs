@@ -237,8 +237,19 @@ export const predicateInputFrom = (source: PredicateInputSource): PredicateInput
     authorId: fixture.authorId ?? 'fixture',
     // A fixture is a message as first posted. Nothing in the corpus records
     // that a message was an edit, so replaying every fixture as a create is
-    // the only honest option — and it is the conservative one for Slice 4,
-    // where treating an edit as a create counts it once rather than not at all.
+    // the only honest option. **"Conservative" holds for content predicates
+    // only** (CRITICAL-3, whole-branch review) — an earlier version of this
+    // comment claimed it unconditionally, which is the load-bearing-comment
+    // failure this project keeps hitting. For `keyword_filter` and the other
+    // content predicates, treating an edit as a create counts it once rather
+    // than not at all — genuinely conservative. For the window tier
+    // (`rapid_spam`, `duplicate_message`), PR-1 gives every edit of the same
+    // message its own corpus row, so this line turns each of those rows into
+    // a separately counted event in a replay, where the live path (PR-23)
+    // counts one create and ignores every edit — an over-count, not a
+    // conservative under-count. `automod dryrun`'s `windowedCorpusCaveat`
+    // (`ops/commands/automod.ts`) says so to whoever reads a windowed rule's
+    // replay.
     eventKind: 'messageCreate',
     // Already zero-width stripped when captured; stripped again so a
     // handwritten fixture typed with a zero-width character behaves like a

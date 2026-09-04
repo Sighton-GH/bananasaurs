@@ -369,6 +369,51 @@ describe('automod dryrun', () => {
     expect(res.text).not.toContain('attachment metadata');
     expect(res.data).toMatchObject({ attachmentMetadata: null });
   });
+
+  it('caveats a windowed rule’s replay: the corpus under-counts and PR-1’s edit rows over-count (CRITICAL-3)', async () => {
+    // The corpus (`captureObservedFixture`) records only messages that
+    // already matched, so the events that *built* a window count are absent
+    // from it by construction — a genuinely working rule reports MISSED over
+    // this corpus. And PR-1 gives every edit of the same message its own
+    // fixture row, which the fixture replay treats as a separate
+    // `messageCreate` each — two rows here share the message id `abc`, which
+    // is the over-report term made visible. Without the caveat, both facts
+    // are invisible to whoever reads this command's output.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () =>
+          ruleWith([], { kind: 'rapid_spam', config: '{"maxMessages":100,"windowMs":10000}' }),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'abc:hash1', content: 'first version', label: 'should_match' }),
+          fixture({ fixtureId: 'abc:hash2', content: 'edited version', label: 'should_match' }),
+          fixture({ fixtureId: 'xyz:hash3', content: 'unrelated message' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('holds only previously-matched messages');
+    expect(res.text).toContain('not a rate over traffic');
+    expect(res.text).toContain('2 of 3');
+    expect(res.data).toMatchObject({ windowedCorpusCaveat: { editedMessageRows: 2 } });
+  });
+
+  it('does not caveat a non-windowed rule’s replay', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello badword' })],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('not a rate over traffic');
+    expect(res.data).toMatchObject({ windowedCorpusCaveat: null });
+  });
 });
 
 describe('automod review', () => {
