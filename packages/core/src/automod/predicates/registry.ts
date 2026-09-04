@@ -5,6 +5,7 @@ import { invitePredicate } from './invite.js';
 import { keywordFilterPredicate } from './keyword-filter.js';
 import { linkDomainPredicate, type LinkDomainConfig } from './link-domain.js';
 import { mentionSpamPredicate } from './mention-spam.js';
+import { rapidSpamPredicate } from './rapid-spam.js';
 import { regexPredicate } from './regex.js';
 import {
   isRuleKind,
@@ -18,11 +19,11 @@ import {
  * kind → predicate. Slices 3-5 each add an entry and change nothing else —
  * which is what ADR 0035 promised and ADR 0040 actually delivers.
  *
- * Two of the ten kinds `mod_rules_kind` permits (`rapid_spam`,
- * `duplicate_message`) are still absent as of Slice 4's Task 5a, until Tasks
- * 3-4 ship them. A rule naming an absent kind is inert, and `compileRule`
- * reports `'no-predicate'` so `doctor` can say so out loud rather than the
- * rule quietly never firing (ADR 0040 §4 — the ADR 0039 failure mode).
+ * One of the ten kinds `mod_rules_kind` permits (`duplicate_message`) is still
+ * absent as of Slice 4's Task 3, until Task 4 ships it. A rule naming an
+ * absent kind is inert, and `compileRule` reports `'no-predicate'` so `doctor`
+ * can say so out loud rather than the rule quietly never firing (ADR 0040
+ * §4 — the ADR 0039 failure mode).
  */
 const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   keyword_filter: keywordFilterPredicate,
@@ -33,6 +34,7 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
   caps: capsPredicate,
   emoji: emojiPredicate,
   mention_spam: mentionSpamPredicate,
+  rapid_spam: rapidSpamPredicate,
 };
 
 export const predicateFor = (kind: string): AnyPredicate | undefined =>
