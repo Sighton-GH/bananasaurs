@@ -219,9 +219,22 @@ costs.
 
 | Dispatch | Tasks | Why together |
 | --- | --- | --- |
-| A | 1, 2 | The window store, then the one predicate that does not use it. |
-| B | 3, 4 | Both consume Task 1's store. |
-| C | 5 | The gate and the registry seam — needs all three predicates registered. |
+| A | 1, 2 | The window store, then the one predicate that does not use it. **Done** — `7cec46c`, `6dd61da`. |
+| B | **5a**, 3, 4 | The registry seam **first** (see below), then both predicates that consume Task 1's store. |
+| C | 5b | The behavioural one-code-path gate — needs all three predicates registered. |
+
+**Task 5 is split, and 5a moved forward, because the alternative is a fourth
+round of churn.** Obligation 3's four placeholder tests have now been repointed
+**three times**: they used `'caps'`, moved to `'mention_spam'` when Slice 5
+shipped `caps`, and moved to `'rapid_spam'` when dispatch A shipped
+`mention_spam`. **Dispatch B ships `rapid_spam`**, so leaving the seam until
+Task 5 would break them a fourth time and then a fifth when `duplicate_message`
+lands.
+
+Doing 5a first means the last two predicates register against a registry that no
+longer needs a real-but-unshipped kind to stand for "unregistered". **This is the
+treadmill obligation 3 exists to end; ending it one dispatch early costs
+nothing.**
 
 ---
 
@@ -681,7 +694,83 @@ If the test and the code disagree, say which you changed.
 
 ---
 
-### Task 5: close the gate's two blind spots, and decide the registry seam
+### Task 5a: the registry seam (obligation 3) — runs FIRST in dispatch B
+
+**Files:** `predicates/registry.ts`, `predicates/registry.test.ts`,
+`packages/core/src/ops/commands/reads.test.ts`,
+`apps/daemon/src/automod.integration.test.ts`.
+
+`compileRule` reports `no-predicate` for a permitted kind whose predicate has not
+shipped. **After this slice all ten kinds have one**, and `resolveConfig` checks
+`isRuleKind` *first*, so a made-up string yields `unknown-kind`, never
+`no-predicate`. **No cast can reach that branch.**
+
+Four tests currently stand a real-but-unshipped kind in for "unregistered", and
+they have been repointed **three times** (`caps` → `mention_spam` →
+`rapid_spam`). Each repoint was correct in isolation and the churn is the
+problem: **a fixture whose validity expires on a schedule the test never
+mentions.**
+
+- [ ] **Step 1: Add the seam, keeping `no-predicate` genuinely tested**
+
+Preferred shape — smallest change that survives the tenth predicate:
+
+```ts
+/**
+ * `kind` → predicate, against an explicitly supplied registry.
+ *
+ * Exists so `no-predicate` stays testable after this slice, when every one of
+ * the ten kinds `mod_rules_kind` permits has an implementation and no real
+ * `RuleKind` value is left to stand for "not shipped yet". `resolveConfig`
+ * checks `isRuleKind` first, so a made-up string yields `unknown-kind` — a
+ * different failure, deliberately — and therefore no cast can reach the
+ * `no-predicate` branch through the public entry points.
+ *
+ * The branch stays because an eleventh kind will arrive the way the tenth did:
+ * ruling R-2 widened the SQL CHECK to all ten kinds *ahead* of their
+ * predicates, precisely so a rule naming an unshipped kind was inert and loud
+ * rather than silently non-matching. This is the seam that keeps that promise
+ * under test instead of on trust.
+ */
+export const compileRuleWith = (
+  registry: Partial<Record<RuleKind, AnyPredicate>>,
+  rule: AutomodRule,
+): CompileResult => { /* the current body of compileRule, reading `registry` */ };
+
+/** The production entry point: `compileRuleWith` over the shipped registry. */
+export const compileRule = (rule: AutomodRule): CompileResult =>
+  compileRuleWith(PREDICATES, rule);
+```
+
+Do the same for `validateRuleConfig` if `no-predicate` is reachable through it —
+check, do not assume.
+
+**If this cannot be done without changing `registry.ts`'s public shape in a way
+you would not want to live with, take the alternative instead:** delete the four
+assertions and add a comment at the `no-predicate` branch recording that it is
+unreachable until an eleventh kind exists, and why it stays. **Say which you
+chose and why.** What is *not* acceptable is leaving those four tests passing
+against a kind that is now registered — that is a decorative guard by
+construction, and it is the specific thing this obligation exists to prevent.
+
+- [ ] **Step 2: Repoint the four tests at the seam, not at another real kind**
+
+`registry.test.ts` ×3, `reads.test.ts`, `automod.integration.test.ts` — use
+`compileRuleWith({}, rule)` (an empty registry) so the test states its own
+premise instead of borrowing a kind that is about to ship. **After this, no test
+in the repository depends on any kind being unregistered.** Confirm that with
+`rg` over the test files and say so.
+
+- [ ] **Step 3: Watch it fail.** Make `resolveConfig` return `no-predicate`
+  before its `isRuleKind` check and confirm a test distinguishing
+  `unknown-kind` from `no-predicate` goes red — the two failures must stay
+  distinguishable, because `doctor` renders them differently. Restore.
+
+- [ ] **Step 4: Gates and commit.**
+
+---
+
+### Task 5b: close the gate's two blind spots
 
 **Files:** Modify `packages/core/src/automod/dry-run.test.ts`;
 `predicates/registry.test.ts`; `packages/core/src/ops/commands/reads.test.ts`.
@@ -745,34 +834,15 @@ Restore both. **If either case stays green, say so loudly** — the obligation i
 then unmet, and the coordinator needs to know before the slice closes rather
 than after.
 
-#### Obligation 3 — `no-predicate` is now unreachable
-
-All ten kinds are registered after this slice, and `resolveConfig` checks
-`isRuleKind` first, so a made-up string yields `unknown-kind`, never
-`no-predicate`. Four tests currently depend on `'mention_spam'` being
-unregistered (`registry.test.ts` ×3, `reads.test.ts`) — repointed there from
-`'caps'` when Slice 5 shipped, which is the **second** time.
-
-- [ ] **Step 3: Pick one and implement it**
-
-Either **(a)** give the registry a test seam so `no-predicate` stays genuinely
-tested — the smallest version is an exported function that resolves against an
-injected registry, with `predicateFor` delegating to it — or **(b)** delete
-those four assertions and add a comment at the `no-predicate` branch recording
-that it is unreachable until an eleventh kind exists, and why the branch stays
-(ruling R-2 widened the SQL CHECK ahead of the predicates precisely so an
-unshipped kind was inert and loud).
-
-**(a) is preferred** — it keeps a tested guard for the eleventh kind, which will
-arrive the same way the tenth did. Take (b) only if (a) requires changing
-`registry.ts`'s public shape in a way you would not want to live with, and say
-which you chose and why either way. **Do not leave the four tests silently
-passing against a kind that is now registered** — that is a decorative guard by
-construction, and it is the specific thing this obligation exists to prevent.
-
-- [ ] **Step 4: Gates and commit.** Confirm in your report that
+- [ ] **Step 3: Gates and commit.** Confirm in your report that
   `predicateFor` now returns a predicate for **all ten** kinds, read from
-  `PREDICATES` rather than assumed.
+  `PREDICATES` with `rg` rather than assumed — and that no test anywhere still
+  depends on a kind being unregistered (Task 5a should already have ended that).
+
+**Obligation 3 is Task 5a, not this task**, and it runs at the *start* of
+dispatch B. It was moved there because its four placeholder tests had already
+been repointed three times and `rapid_spam` — dispatch B's own predicate —
+would have forced a fourth.
 
 ---
 
@@ -788,8 +858,8 @@ construction, and it is the specific thing this obligation exists to prevent.
 | A restart resets the window, accepted and documented | 1, 3 (PR-21) |
 | The key is guild-scoped in its own right | 1 |
 | `duplicate_message` normalisation shared with the matcher | 4 — **not achievable as written; PR-20 records why and what ships instead** |
-| Obligation 1: the behavioural gate reaches `atMs` and the cache | 5 |
-| Obligation 3: the `no-predicate` seam | 5 |
+| Obligation 1: the behavioural gate reaches `atMs` and the cache | 5b |
+| Obligation 3: the `no-predicate` seam | **5a — moved to the start of dispatch B**, because its placeholder tests had been repointed three times and `rapid_spam` would have forced a fourth |
 | Obligation 4: break every guard | all |
 
 **Deliberate deviation:** PR-20. Nothing else in the spec's Slice 4 is
