@@ -5,9 +5,10 @@
 **Goal:** Turn "an acceptable false-positive rate before enforcement is even
 offerable" from a sentence in `REVIEW.md` into a refusal the code performs.
 
-**Architecture:** Four additive columns on `mod_rules`, one on `guilds`, and one
-eligibility function in `packages/storage` that `setRuleMode` consults before it
-will write `mode = 'enforce'`. `doctor` reports what already slipped through;
+**Architecture:** **Eight** additive columns on `mod_rules` and **one** on
+`guilds` — nine `ADD COLUMN` statements — plus one eligibility function in
+`packages/storage` that `setRuleMode` consults before it will write
+`mode = 'enforce'`. `doctor` reports what already slipped through;
 `setRuleMode` refuses what has not happened yet.
 
 **Tech Stack:** TypeScript (Node 22, strict) · Zod 3.25.76 · Drizzle 0.45.2 ·
@@ -35,8 +36,9 @@ on the strongest model, a fix wave, and a re-review — all of it.
    Undo a break-it experiment with `git restore <path>`, not a `cp` round-trip.
 2. **Guild scope is a mandatory partition key** (CLAUDE.md rule 2). Every new
    query takes a `GuildScope` first and goes through `scope.only(...)`.
-3. **Additive migrations only.** Five `ALTER TABLE … ADD COLUMN`. **No table
-   rebuild** — ruling R-5 records a reproduced data-loss bug in the rebuild path,
+3. **Additive migrations only.** **Nine** `ALTER TABLE … ADD COLUMN` — eight on
+   `mod_rules`, one on `guilds`; count them against Task 1's table, which is the
+   authority. **No table rebuild** — ruling R-5 records a reproduced data-loss bug in the rebuild path,
    and `mod_rules` owns cascading children. After `npm run db:generate`, read the
    SQL and confirm no `__new_`, no `DROP TABLE`, no `RENAME`. If the generator
    emits a rebuild, **stop and report it.**
@@ -81,22 +83,39 @@ were written first, and it is the only evidence available once the commit is
 green. *Costs if wrong:* nothing, provided the report carries the failures. If it
 does not, the requirement was not met and the coordinator cannot tell.
 
-**PR-27 — the state machine, and which states permit enforcement.**
-`cutover_state` moves `not_started → observing → ready → cutover`, with
-`rolled_back` reachable from `cutover`. **Only `ready` and `cutover` permit
-`mode = 'enforce'`.**
+**PR-27 — the state machine, with every transition named and a writer for each.**
+**Only `ready` and `cutover` permit `mode = 'enforce'`.**
 
-- `observing` does **not** permit it, even after two weeks: the clock elapsing is
-  not the same as a human having looked.
-- `ready` is set by an explicit human act — it means "I have reviewed this rule's
-  window and I believe it is ready". It is the human judgement the gate cannot
-  make.
-- `rolled_back` does **not** permit it. A rule that was enforced and pulled back
-  must return to `observing` deliberately, so a rollback cannot be undone by
-  retrying the same command.
-- A successful `setRuleMode('enforce')` advances `ready → cutover` in the same
-  write. *Costs if wrong:* an operator must set `ready` before enforcing, which
-  is one extra command and is the point.
+| From | To | Written by |
+| --- | --- | --- |
+| `not_started` | `observing` | `setRuleMode(mode: 'observe')` — also sets `observe_started_at = now` |
+| `observing` | `ready` | `automod ready` — **refused from any other state** |
+| `ready` | `cutover` | a successful `setRuleMode(mode: 'enforce')`, same write |
+| `cutover` | `rolled_back` | `setRuleMode` to any non-`enforce` mode while `cutover` |
+| `rolled_back` | `observing` | `setRuleMode(mode: 'observe')` — **resets `observe_started_at`** |
+
+- `observing` does **not** permit enforcement, even after two weeks: the clock
+  elapsing is not the same as a human having looked.
+- `ready` is an explicit human act — "I have reviewed this rule's window and
+  believe it is ready". It is the judgement the gate cannot make.
+- `rolled_back` does **not** permit enforcement, and **`automod ready` refuses
+  from it.** Both halves are needed: without the command's precondition, a
+  rollback could be undone by `ready` then `enforce`, never revisiting
+  `observing` — which is the exact scenario ADR 0042 exists to prevent. **The
+  first draft of this ruling asserted that property and specified neither the
+  precondition nor any writer for `rolled_back` or `observing`, so all three
+  states were unreachable and the property was false.** The plan review caught
+  it.
+- **Re-observing resets the clock**, and that is the point: a rule pulled back
+  from enforcement has to earn a fresh window, and its old
+  `observe_started_at` would let `doctor` think the floor had already elapsed.
+  This is the carried-forward obligation from this run's kickoff — "any rule
+  whose observe data predates ADR 0039 is worthless; restart those clocks" —
+  made mechanical.
+
+*Costs if wrong:* an operator must set `ready` before enforcing, which is one
+extra command and is the point; and a rolled-back rule must be re-observed
+before it can be enforced again, which is the property this ruling is about.
 
 **PR-28 — a "reviewed match" is a `mod_match_reviews` row whose `event_id` joins
 to a `mod_case_events` row for this rule.** Verdicts are keyed by event, and
@@ -177,13 +196,42 @@ On `guilds`: `automod_testing_mode` INTEGER NOT NULL DEFAULT 0, `boolCheck`.
   `cutover_state = 'banana'` throws; a raw insert with
   `max_false_positive_rate = 1.5` throws; a guild reads back
   `automodTestingMode: false`.
+
+  **Pin each CHECK at its own boundary, in both directions** — the same
+  discipline this plan applies to the gate's thresholds, and the plan review
+  noted its absence here. `max_false_positive_rate` must **accept** exactly `0`
+  and exactly `1` and reject `-0.1` and `1.5`; `min_reviewed_matches` must accept
+  exactly `0` and reject `-1`. A CHECK written with `>` where `>=` was meant
+  passes a test that only probes obviously-invalid values.
 - [ ] **Step 2: run them, watch them fail** (no such column).
 - [ ] **Step 3: add the columns** to `schema.ts`, following the file's
   conventions exactly (`check` names prefixed with the table name, `boolCheck`
   for the two booleans).
-- [ ] **Step 4: `npm run db:generate`, then read the SQL.** Confirm five
-  `ALTER TABLE … ADD COLUMN` statements, `STRICT` untouched, **no `__new_`, no
-  `DROP`, no `RENAME`**. Say so in your report. If a rebuild appears, stop.
+- [ ] **Step 4: `npm run db:generate`, then read the SQL.** Confirm **nine**
+  `ALTER TABLE … ADD COLUMN` statements — eight on `mod_rules`, one on `guilds`,
+  matching this task's table above — `STRICT` untouched, and **no `__new_`, no
+  `DROP`, no `RENAME`**. Say the count you actually saw in your report rather
+  than confirming this one; an earlier draft of this plan said "five" here while
+  the table listed nine, so if the number disagrees with the table, **trust the
+  table and say so**.
+
+  **Generate in two runs, not one, and check the SQL after each.** Ruling R-6
+  records drizzle-kit 0.31.10 emitting *invalid* SQL when a column add and a
+  table rebuild land in the same `generate` call — the rebuild's `INSERT … SELECT`
+  read a column the old table did not have yet. Nine columns, six of them
+  CHECK-constrained, is materially more likely to tip the generator into a
+  rebuild than the "five columns" this plan's first draft imagined. So:
+
+  1. Add the three plain columns first (`observe_started_at`, `legacy_rule_ref`,
+     `enforce_signed_off_by`/`_at` — nullable, no CHECK), generate, read.
+  2. Then the CHECK-constrained ones (`cutover_state`, `counts_as_violation`,
+     `max_false_positive_rate`, `min_reviewed_matches`, and `guilds`'
+     `automod_testing_mode`), generate, read.
+
+  Two migration files, both pure drizzle-kit output, neither hand-written — the
+  same shape R-6 prescribed for Slice 1. **If either run emits a rebuild of any
+  table, stop and report it**; that is the R-5 data-loss path and working around
+  it is not this task's call.
 - [ ] **Step 5: widen the read shapes.** `StoredAutomodRule` gains the new
   fields; `hydrate` selects them. **Expect this to break every construction site
   in the test suite** — run `typecheck` early, and report how many you touched.
@@ -271,6 +319,18 @@ it('falls to the low-volume path at 19 reviewed matches rather than passing on a
   // enforce_signed_off_by is set.
 });
 
+it('does NOT fall to the low-volume path at exactly 20 reviewed matches', () => {
+  // The other side of the same boundary, and the plan's first draft specified
+  // only the 19 case — the identical omission the 5% threshold got caught for
+  // two paragraphs below. `min_reviewed_matches` is 20 and the rule is
+  // "minimum 20 reviewed matches", so 20 is *enough*: an implementation using
+  // `<=` refuses a rule sitting exactly on its bar and passes the 19 test,
+  // so only this test distinguishes them.
+  //
+  // 20 reviewed, all true_positive, NO sign-off — must be allowed, because
+  // the sample is now sufficient on its own.
+});
+
 it('advances cutover_state from ready to cutover on a successful enforce', () => {
   // PR-27's transition, and the reason it is asserted: a gate that permits
   // enforcement but does not record that it happened leaves `doctor` unable
@@ -309,10 +369,16 @@ and an implementation using `>=` would pass both halves of that pair.
 - [ ] **Step 4: wire the refusal into `setRuleMode`**, advancing
   `ready → cutover` on success, in the same `write`.
 
-- [ ] **Step 5: watch three guards fail.** Reverse the check order so state is
+- [ ] **Step 5: watch four guards fail.** Reverse the check order so state is
   checked last (the `observing`-plus-bad-rate test must report the wrong
   reason); drop `unclear` from the false-positive count; change `>` to `>=` on
-  the rate comparison (the exactly-5% test must go red). Restore each.
+  the rate comparison (the exactly-5% test must go red); change `<` to `<=` on
+  the reviewed-count comparison (the exactly-20 test must go red). Restore each.
+
+  **The last two are the same mutation on the two different thresholds**, and
+  the plan's first draft asked for only one of them. Both boundaries need both
+  directions — Global Constraint 7, which this plan stated and then applied to
+  one threshold out of two.
 
 - [ ] **Step 6: gates by exit code, then commit** — one commit, with the failure
   output from Step 2 in the report.
@@ -379,7 +445,13 @@ refuses):
 
 **Two commands:**
 - `automod ready <ruleId>` — sets `cutover_state = 'ready'`, write + audit. The
-  explicit human act PR-27 requires.
+  explicit human act PR-27 requires. **It must refuse unless the rule is
+  currently `observing`**, and the refusal is a returned usage answer naming the
+  actual state, not a thrown error — the same shape `automod verdict` uses for a
+  mistyped event id. **The test that matters here is `rolled_back` → refused**,
+  because without it a rollback can be undone by `ready` then `enforce` without
+  ever revisiting `observing`, which is the scenario ADR 0042 exists to prevent.
+  Write that test and watch it fail against a version with no precondition.
 - `automod signoff <ruleId>` — records `enforce_signed_off_by` /
   `_at`. **Per PR-29 this command refuses unless a dry run over the corpus is
   clean** (`usable`, zero `threw`, zero `falsePositives`). It is the layer that
