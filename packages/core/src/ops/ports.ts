@@ -384,7 +384,10 @@ export interface OpsPorts {
    * rule's active list (CRITICAL-2), which it cannot know from `'removed'`
    * alone.
    */
-  removeLinkDomain(input: { readonly ruleId: string; readonly domain: string }):
+  removeLinkDomain(input: {
+    readonly ruleId: string;
+    readonly domain: string;
+  }):
     | { readonly outcome: 'removed'; readonly mode: 'allow' | 'deny' | undefined }
     | { readonly outcome: 'not-present'; readonly mode: 'allow' | 'deny' | undefined }
     | { readonly outcome: 'no-such-rule' }

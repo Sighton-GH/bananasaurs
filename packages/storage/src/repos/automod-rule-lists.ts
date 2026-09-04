@@ -173,7 +173,10 @@ export interface AddLinkDomainResult {
  * — that duplication is exactly what let `removeLinkDomain` drift in the
  * first place.
  */
-export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): AddLinkDomainResult => {
+export const addLinkDomain = (
+  scope: GuildScope,
+  input: AddLinkDomainInput,
+): AddLinkDomainResult => {
   const domain = canonicalDomain(input.domain);
   const changes = write(
     scope,

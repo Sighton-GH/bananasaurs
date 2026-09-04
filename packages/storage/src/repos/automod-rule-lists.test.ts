@@ -150,9 +150,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
     const mode = linkDomainModeOf(rule.config);
     const result = addLinkDomain(s, { ...input, now: NOW });
     if (result.inserted) return { outcome: 'added', mode };
-    const stored = listLinkDomains(s, input.ruleId).find(
-      (entry) => entry.domain === result.domain,
-    );
+    const stored = listLinkDomains(s, input.ruleId).find((entry) => entry.domain === result.domain);
     return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
   },
   listLinkDomains: (ruleId) => listLinkDomains(s, ruleId),
