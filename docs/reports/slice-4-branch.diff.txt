@@ -1,0 +1,1619 @@
+diff --git a/apps/daemon/src/automod.integration.test.ts b/apps/daemon/src/automod.integration.test.ts
+index 6009844..b385197 100644
+--- a/apps/daemon/src/automod.integration.test.ts
++++ b/apps/daemon/src/automod.integration.test.ts
+@@ -359,20 +359,34 @@ describe('automod, end to end on the fake gateway', () => {
+    * `doctor`, end to end against the same real database and the real
+    * `apps/daemon/src/ops/wiring.ts#opsPortsFor` this daemon runs in
+    * production — not the fakes `packages/core/src/ops/commands/reads.test.ts`
+-   * uses for its own unit coverage. A `mention_spam` rule is one of the
+-   * window-tier kinds `mod_rules_kind` permits with no predicate behind it
+-   * until Slice 4; it must never silently do nothing. (Slices 3 and 5 shipped
+-   * the other six of the nine — `caps` among them — which is why this test no
+-   * longer uses `caps` as its example.)
++   * uses for its own unit coverage. An unusable rule must never silently do
++   * nothing.
++   *
++   * **Repointed from `no-predicate` to `no-terms` in Slice 4 Task 5a.** This
++   * test used to create a `rapid_spam` rule, relying on that kind being one of
++   * the `mod_rules_kind` values with no predicate registered yet — and was
++   * repointed three times as successive slices shipped the kind it borrowed
++   * ('caps', then 'mention_spam', then 'rapid_spam'). After Task 5a, all ten
++   * kinds have a predicate in production (`predicates/registry.ts`'s
++   * `PREDICATES`), so `no-predicate` is unreachable through this real,
++   * end-to-end stack — `predicates/registry.test.ts` covers it instead,
++   * against an explicitly empty registry (`compileRuleWith({}, rule)`), which
++   * is the only way left to construct that state. This test still needs
++   * end-to-end coverage that *an* unusable rule is inert and loud in `doctor`,
++   * so it uses `no-terms` instead: a `keyword_filter` rule with no enabled
++   * terms, which — unlike `no-predicate` — stays reachable forever, because an
++   * operator can always disable the last term of a real rule.
+    */
+-  it('a rule whose kind has no predicate yet is inert and shows up in doctor', async () => {
++  it('a rule that cannot be compiled is inert and shows up in doctor', async () => {
+     automodRuleRepo.createRule(scope, {
+-      ruleId: 'mention-spam-rule',
+-      kind: 'mention_spam',
+-      name: 'mention spam check',
++      ruleId: 'no-terms-rule',
++      kind: 'keyword_filter',
++      name: 'a rule with nothing enabled',
+       config: '{}',
+       now: discord.now(),
+     });
++    // Deliberately no `addCategory`/`addTerm` call: zero enabled terms is what
++    // makes `compileRule` report `no-terms` (registry.ts).
+ 
+     // Never called by `doctor`: `opsPortsFor` only reaches `GuildOperations`
+     // through `publishPanel`/the adoption allowance ports, none of which the
+@@ -417,16 +431,15 @@ describe('automod, end to end on the fake gateway', () => {
+     const res = await dispatcher.dispatch({ v: 1, command: 'doctor', args: {} });
+     expect(res.ok).toBe(true);
+     if (!res.ok) return;
+-    expect(res.text).toContain('mention-spam-rule');
+-    expect(res.text).toContain('no-predicate');
++    expect(res.text).toContain('no-terms-rule');
++    expect(res.text).toContain('no-terms');
+     expect(res.data).toMatchObject({
+       ok: false,
+       unusableAutomodRules: [
+         {
+-          ruleId: 'mention-spam-rule',
+-          kind: 'mention_spam',
+-          reason: 'no-predicate',
+-          detail: 'mention_spam',
++          ruleId: 'no-terms-rule',
++          kind: 'keyword_filter',
++          reason: 'no-terms',
+         },
+       ],
+     });
+diff --git a/packages/core/src/automod/dry-run.test.ts b/packages/core/src/automod/dry-run.test.ts
+index 507f916..ab0bf70 100644
+--- a/packages/core/src/automod/dry-run.test.ts
++++ b/packages/core/src/automod/dry-run.test.ts
+@@ -243,6 +243,99 @@ describe('the one-code-path invariant', () => {
+     // comparison of two undefineds would pass under every implementation.
+     expect(replayed?.trace.kind).toBe('attachment_type');
+   });
++
++  /**
++   * Obligation 1 of the Slice 4 handoff: the gate above compares a single
++   * message, so it cannot see either of Slice 4's two blind spots — a wrong
++   * `atMs`, or a bypassed predicate cache — because nothing before this slice
++   * read the clock or carried state across messages. `rapid_spam` reads both.
++   *
++   * PR-25 governs the two cases below: a differential gate only detects
++   * *asymmetric* divergence, and only a sequence whose messages are spread
++   * beyond the window can distinguish a correct replay clock from a wrong
++   * one — a clustered burst produces the same verdict either way.
++   */
++  const rapidSpamRule = (ruleId: string): AutomodRule => ({
++    ruleId,
++    kind: 'rapid_spam',
++    mode: 'test',
++    config: '{"maxMessages":3,"windowMs":10000}',
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  });
++
++  it('Case A — a rapid_spam burst clustered inside the window matches on both paths, and at the same message', async () => {
++    const rule = rapidSpamRule('rapid-spam-case-a');
++    const TIMESTAMPS = [1_000, 2_000, 3_000, 4_000];
++
++    // Live path: one subscriber, four sequential handle() calls. The
++    // instance-held predicateCache (`createAutomodSubscriber`'s closure) is
++    // what lets the window's count carry across all four.
++    let currentMs = 0;
++    const liveMatchedAt: number[] = [];
++    const subscriber = createAutomodSubscriber({
++      ...fakeDeps(),
++      listRules: () => [rule],
++      recordCaseEvent: () => {
++        liveMatchedAt.push(currentMs);
++      },
++    });
++    for (const ms of TIMESTAMPS) {
++      currentMs = ms;
++      await subscriber.handle(
++        messageEvent({ content: 'hello', receivedAtMs: ms, messageId: `live-a-${String(ms)}` }),
++      );
++    }
++    // Not merely "something matched" — the fourth message specifically, the
++    // "one too many" one. Two identical nothings would pass under every
++    // implementation, including a broken cache.
++    expect(liveMatchedAt).toEqual([4_000]);
++
++    // Dry-run path: the same four timestamps as fixtures, replayed.
++    const fixtures = TIMESTAMPS.map((ms) =>
++      fixture({ fixtureId: `rapid-a:${String(ms)}`, content: 'hello', createdAt: ms }),
++    );
++    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
++
++    expect(report.results.map((r) => r.matched)).toEqual([false, false, false, true]);
++    expect(report.results[3]?.fixtureId).toBe('rapid-a:4000');
++    expect(report.matched).toBe(1);
++  });
++
++  it('Case B — a rapid_spam sequence spread beyond the window matches on neither path', async () => {
++    const rule = rapidSpamRule('rapid-spam-case-b');
++    // Each message ages out of the 10 000 ms window before the next one
++    // arrives, so the correct answer on both paths is no match anywhere.
++    // This is the shape PR-25 requires: a clustered `Date.now()` replay would
++    // wrongly agree with a clustered burst (Case A), so only a spread-out
++    // sequence like this one can catch a wrong clock.
++    const TIMESTAMPS = [1_000, 20_000, 40_000, 60_000];
++
++    const liveMatched: number[] = [];
++    const subscriber = createAutomodSubscriber({
++      ...fakeDeps(),
++      listRules: () => [rule],
++      recordCaseEvent: () => {
++        liveMatched.push(1);
++      },
++    });
++    for (const ms of TIMESTAMPS) {
++      await subscriber.handle(
++        messageEvent({ content: 'hello', receivedAtMs: ms, messageId: `live-b-${String(ms)}` }),
++      );
++    }
++    expect(liveMatched).toEqual([]);
++
++    const fixtures = TIMESTAMPS.map((ms) =>
++      fixture({ fixtureId: `rapid-b:${String(ms)}`, content: 'hello', createdAt: ms }),
++    );
++    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
++
++    expect(report.results.map((r) => r.matched)).toEqual([false, false, false, false]);
++    expect(report.matched).toBe(0);
++  });
+ });
+ 
+ describe('runDryRun', () => {
+diff --git a/packages/core/src/automod/predicates/duplicate-message.test.ts b/packages/core/src/automod/predicates/duplicate-message.test.ts
+new file mode 100644
+index 0000000..3569f45
+--- /dev/null
++++ b/packages/core/src/automod/predicates/duplicate-message.test.ts
+@@ -0,0 +1,193 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import { normaliseForDuplicateCheck } from './duplicate-message.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++const compile = (config: string, kind = 'duplicate_message'): CompiledPredicate => {
++  const rule: AutomodRule = {
++    ruleId: 'r1',
++    kind,
++    mode: 'test',
++    config,
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  };
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string, over: Partial<PredicateInput> = {}): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++  ...over,
++});
++
++describe('normaliseForDuplicateCheck', () => {
++  it('lowercases and collapses internal whitespace, not just trims', () => {
++    // Whitespace collapse must run before comparison, not only trimming —
++    // the plan's own note on this predicate's third test.
++    expect(normaliseForDuplicateCheck('BUY   Crypto  NOW')).toBe('buy crypto now');
++  });
++
++  it('strips zero-width characters', () => {
++    // A zero-width character (U+200B) inserted mid-word, the evasion class
++    // stripZeroWidth exists to close (PR-20). Between words rather than in
++    // place of the space itself: stripZeroWidth deletes the character rather
++    // than replacing it with a space, so a zero-width character standing in
++    // for a space would concatenate the two words instead of matching the
++    // space-separated original — a different, more severe evasion this
++    // predicate does not claim to close (see duplicate-message.test.ts's
++    // dedicated test below and its comment).
++    expect(normaliseForDuplicateCheck('buy cry​pto now')).toBe('buy crypto now');
++  });
++});
++
++describe('the duplicate_message predicate', () => {
++  it('fires on the same text repeated within the window', () => {
++    const compiled = compile('{"maxRepeats":2,"windowMs":30000,"minLength":5}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'buy crypto now')).toBeUndefined();
++    expect(say(2_000, 'buy crypto now')).toBeUndefined();
++    expect(say(3_000, 'buy crypto now')).toBeDefined();
++  });
++
++  it('does not count different messages toward the repeat', () => {
++    // The ambiguity: three messages, only two identical, so an implementation
++    // that counted every message (a rate rule by mistake) goes red.
++    const compiled = compile('{"maxRepeats":2,"windowMs":30000,"minLength":5}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'buy crypto now')).toBeUndefined();
++    expect(say(2_000, 'a totally different message')).toBeUndefined();
++    expect(say(3_000, 'buy crypto now')).toBeUndefined();
++  });
++
++  it('treats case and spacing differences as the same message', () => {
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'buy crypto now')).toBeUndefined();
++    expect(say(2_000, 'BUY   Crypto  NOW')).toBeDefined();
++  });
++
++  it('ignores a zero-width character inserted to evade it', () => {
++    // stripZeroWidth is the one normalisation shared with the matcher
++    // (PR-20), and this is what it buys.
++    //
++    // **Adapted from the plan's literal fixture.** The plan's text used a
++    // zero-width character (U+200B) *in place of* the space between words
++    // ("buy" + U+200B + "crypto" + U+200B + "now", no real spaces at all).
++    // stripZeroWidth
++    // (imported as-is, per PR-20 — not reimplemented) only deletes the
++    // character; it does not insert a space in its place. Deleting a
++    // word-separator zero-width character therefore concatenates the words
++    // ('buycryptonow'), which does not equal the space-separated original
++    // after whitespace collapse — so the plan's literal fixture cannot pass
++    // under the normaliser PR-20 mandates, for the same reason PR-20 rejects
++    // reusing the matcher's fuller transformer chain: doing better would cost
++    // more than this predicate's tier is worth. This test instead inserts the
++    // zero-width character *inside* a word, which is the evasion class
++    // stripZeroWidth actually defends against (breaking a keyword-style
++    // substring match) and the one this predicate can honestly claim to
++    // close.
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'buy crypto now')).toBeUndefined();
++    expect(say(2_000, 'buy cry​pto now')).toBeDefined();
++  });
++
++  it('does not fire below the minimum length', () => {
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":10}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'ok')).toBeUndefined();
++    expect(say(2_000, 'ok')).toBeUndefined();
++    expect(say(3_000, 'ok')).toBeUndefined();
++  });
++
++  it('defaults minLength to 0, so a short repeated message still fires', () => {
++    // Task 4: the schema's default must not silently suppress a match an
++    // operator's maxRepeats/windowMs configured. No minLength in the config.
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000}');
++    const say = (ms: number, text: string) =>
++      compiled.evaluate(message(text, { atMs: ms, messageId: `m${String(ms)}` }));
++    expect(say(1_000, 'ok')).toBeUndefined();
++    expect(say(2_000, 'ok')).toBeDefined();
++  });
++
++  it('does not count an edit as a new message (ruling PR-23)', () => {
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
++    expect(
++      compiled.evaluate(message('buy crypto now', { atMs: 1_000, messageId: 'm1' })),
++    ).toBeUndefined();
++    for (const ms of [1_100, 1_200, 1_300]) {
++      expect(
++        compiled.evaluate(
++          message('buy crypto now', { atMs: ms, messageId: 'm1', eventKind: 'messageUpdate' }),
++        ),
++      ).toBeUndefined();
++    }
++  });
++
++  it('is guild-scoped: two guilds do not share a member’s repeat count', () => {
++    // CLAUDE.md rule 2.
++    const compiled = compile('{"maxRepeats":1,"windowMs":30000,"minLength":5}');
++    expect(
++      compiled.evaluate(
++        message('buy crypto now', { guildId: 'guild-a', atMs: 1_000, messageId: 'm1' }),
++      ),
++    ).toBeUndefined();
++    expect(
++      compiled.evaluate(
++        message('buy crypto now', { guildId: 'guild-b', atMs: 1_000, messageId: 'm2' }),
++      ),
++    ).toBeUndefined();
++  });
++
++  it('rejects an unrecognised config key', () => {
++    const rule: AutomodRule = {
++      ruleId: 'r1',
++      kind: 'duplicate_message',
++      mode: 'test',
++      config: '{"maxRepeats":1,"windowMs":30000,"typo":true}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const result = compileRule(rule);
++    expect(result.ok).toBe(false);
++    if (!result.ok) expect(result.reason).toBe('invalid-config');
++  });
++
++  it('rejects a windowMs outside the bounded range', () => {
++    const rule: AutomodRule = {
++      ruleId: 'r1',
++      kind: 'duplicate_message',
++      mode: 'test',
++      config: '{"maxRepeats":1,"windowMs":1}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const result = compileRule(rule);
++    expect(result.ok).toBe(false);
++    if (!result.ok) expect(result.reason).toBe('invalid-config');
++  });
++});
+diff --git a/packages/core/src/automod/predicates/duplicate-message.ts b/packages/core/src/automod/predicates/duplicate-message.ts
+new file mode 100644
+index 0000000..e4c75d4
+--- /dev/null
++++ b/packages/core/src/automod/predicates/duplicate-message.ts
+@@ -0,0 +1,141 @@
++import { z } from 'zod';
++import { stripZeroWidth } from '../matcher.js';
++import { createWindowStore, DEFAULT_MAX_TRACKED_MEMBERS } from '../window.js';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++export const duplicateMessageConfig = z
++  .object({
++    /** Fires when the same normalised text is repeated more than this many times within `windowMs`. */
++    maxRepeats: z.number().int().min(1).max(1_000),
++    /** Bounded 1 s-10 min, the same reasoning as `rapid_spam`'s `windowMs`. */
++    windowMs: z.number().int().min(1_000).max(600_000),
++    /**
++     * Below this many normalised characters, the rule does not fire at all.
++     *
++     * **Defaults to 0 — no floor unless the operator sets one.** A non-zero
++     * default would be this plan quietly choosing a false-negative rate on the
++     * operator's behalf, in the tier whose gate is a false-positive rate (plan
++     * ruling, Task 4). With `minLength: 0`, `"ok"` posted three times *does*
++     * fire — a floor still matters for a real deployment, and an operator
++     * should set one, but the schema itself must not silently suppress a
++     * match an operator configured `maxRepeats`/`windowMs` to catch.
++     */
++    minLength: z.number().int().min(0).max(4_000).default(0),
++  })
++  .strict();
++
++export type DuplicateMessageConfig = z.infer<typeof duplicateMessageConfig>;
++
++/**
++ * `duplicate_message`'s own normalisation — **not** the keyword matcher's.
++ *
++ * The spec's instruction ("the normalisation is the same code the keyword
++ * matcher uses, not a second copy") is not achievable, for two verified
++ * reasons (plan ruling PR-20):
++ *
++ * 1. `matcher.ts`'s `collapseDuplicatesTransformer` stage takes its
++ *    thresholds from the *configured word list* (`collapseThresholdsFor`,
++ *    ADR 0039) — this predicate has no word list, so that stage has no
++ *    defined behaviour for it.
++ * 2. `obscenity` never exposes its transformer chain as a function over a
++ *    string: `TransformerSet` is internal to `dist/` and not part of the
++ *    package's public exports. Reusing the matcher's exact chain would mean a
++ *    deep import into `obscenity/dist`, which this project does not do.
++ *
++ * A third option was examined and rejected: `obscenity` *does* export the
++ * transformer factories themselves (`resolveConfusablesTransformer`,
++ * `resolveLeetSpeakTransformer`, `toAsciiLowerCaseTransformer`), so one could
++ * hand-roll the dispatch loop that runs them over a string. Rejected because
++ * the result would be fragile *and* still not faithful: it would depend on an
++ * undocumented container discriminant with no compatibility guarantee, and it
++ * would still omit `collapseDuplicatesTransformer` (reason 1 above) — a
++ * partial, brittle subset of the matcher's behaviour, worse than an honest,
++ * simple normaliser that says what it does.
++ *
++ * So this normalises with `stripZeroWidth` — the one function `matcher.ts`
++ * actually exports, imported rather than reimplemented, so the one evasion
++ * class this project's own code closes stays shared rather than copied —
++ * plus lowercasing and whitespace collapse. Whitespace collapse runs before
++ * comparison, not only trimming, so `'buy crypto now'` and
++ * `'BUY   Crypto  NOW'` normalise alike.
++ *
++ * *Cost if this is too narrow:* two members posting the same text with
++ * different leetspeak spellings ('n0w' vs 'now') are not treated as
++ * duplicates. That is the safe direction for a predicate in the tier the spec
++ * says needs the full two-week observation floor — widening it later is
++ * additive, narrowing a false-positive rate after the fact is not.
++ */
++export function normaliseForDuplicateCheck(text: string): string {
++  return stripZeroWidth(text).toLowerCase().replace(/\s+/g, ' ').trim();
++}
++
++/**
++ * `duplicate_message` — the same normalised text repeated within a window
++ * (Task 4). Consumes Task 1's `createWindowStore` via `countMatching`.
++ *
++ * The store lives in `compile`'s closure, not module scope (plan ruling
++ * PR-21, `window.ts`'s own doc comment): editing this rule's config changes
++ * its fingerprint and rebuilds the artifact — and this store — from nothing,
++ * resetting the window. That is correct: a repeat count accrued under an old
++ * threshold should not be judged against a new one.
++ *
++ * The ring buffer's capacity is `maxRepeats + 1`, for the same reason
++ * `rapid_spam`'s is `maxMessages + 1`: this predicate must be able to observe
++ * one repeat more than the threshold allows, and a buffer capped at exactly
++ * the threshold could never hold that many at once.
++ */
++export const duplicateMessagePredicate: Predicate<DuplicateMessageConfig> = {
++  kind: 'duplicate_message',
++  config: duplicateMessageConfig,
++  compile(rule: AutomodRule, config: DuplicateMessageConfig): CompiledPredicate {
++    const store = createWindowStore({
++      maxEventsPerMember: config.maxRepeats + 1,
++      maxMembers: DEFAULT_MAX_TRACKED_MEMBERS,
++    });
++
++    return {
++      evaluate(input) {
++        // Only messageCreate counts, the same reasoning rapid_spam's PR-23
++        // comment gives: an edited message is not a new post.
++        if (input.eventKind !== 'messageCreate') return undefined;
++
++        const normalised = normaliseForDuplicateCheck(input.content);
++        if (normalised.length < config.minLength) return undefined;
++
++        const window = store.for({
++          // CLAUDE.md rule 2: guildId is named explicitly even though the
++          // artifact this store lives inside is already per-guild.
++          guildId: input.guildId,
++          memberId: input.authorId,
++          ruleId: rule.ruleId,
++        });
++        window.record(input.atMs, normalised);
++        const count = window.countMatching(input.atMs, config.windowMs, normalised);
++        if (count <= config.maxRepeats) return undefined;
++
++        return {
++          categoryId: 'duplicate_message',
++          // The whole message is the evidence; there is no span to point at.
++          snippet: input.content.slice(0, 200),
++          trace: {
++            kind: 'duplicate_message',
++            // The configured threshold, never message text (ruling R-8).
++            matchedOn: `more than ${config.maxRepeats} repeats within ${config.windowMs}ms`,
++            span: undefined,
++            normalisations: ['zero-width stripped', 'lowercased', 'whitespace collapsed'],
++            detail: {
++              // The repeat count and the normalised length, never the
++              // normalised text itself (Task 4): the content is a
++              // member-controlled string, and ADR 0041 §4 keeps whole-message
++              // content out of the trace.
++              count,
++              maxRepeats: config.maxRepeats,
++              windowMs: config.windowMs,
++              normalisedLength: normalised.length,
++            },
++          },
++        };
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/mention-spam.test.ts b/packages/core/src/automod/predicates/mention-spam.test.ts
+new file mode 100644
+index 0000000..7211cdf
+--- /dev/null
++++ b/packages/core/src/automod/predicates/mention-spam.test.ts
+@@ -0,0 +1,111 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++/**
++ * Compiles a rule of this file's kind, failing the test loudly if it does not
++ * compile. Returning the artifact rather than the `CompileResult` keeps every
++ * test below one line, and a compile failure is never the thing under test in
++ * this file — it has its own tests.
++ */
++const compile = (config: string, kind = 'mention_spam'): CompiledPredicate => {
++  const rule: AutomodRule = {
++    ruleId: 'r1',
++    kind,
++    mode: 'test',
++    config,
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  };
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string, over: Partial<PredicateInput> = {}): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++  ...over,
++});
++
++describe('the mention_spam predicate', () => {
++  it('counts user and role mentions together', () => {
++    // The ambiguity: neither list alone reaches the threshold, so an
++    // implementation that counted only one of them goes red.
++    const compiled = compile('{"maxMentions":3}');
++    expect(
++      compiled.evaluate(
++        message('hi', {
++          mentionedUserIds: ['1', '2'],
++          mentionedRoleIds: ['3', '4'],
++        }),
++      ),
++    ).toBeDefined();
++  });
++
++  it('does not fire at the threshold, only above it', () => {
++    const compiled = compile('{"maxMentions":3}');
++    expect(compiled.evaluate(message('hi', { mentionedUserIds: ['1', '2', '3'] }))).toBeUndefined();
++  });
++
++  it('weights @everyone above a single mention', () => {
++    // One @everyone alone exceeds a threshold of 3 at the default weight of 5.
++    const compiled = compile('{"maxMentions":3}');
++    expect(compiled.evaluate(message('hi', { mentionsEveryone: true }))).toBeDefined();
++  });
++
++  it('reads Discord’s own everyone flag, not the message text', () => {
++    // A live message carries mentionsEveryone from the gateway; the text is not
++    // the authority. 'user@heretical.com' must not count.
++    const compiled = compile('{"maxMentions":1}');
++    expect(
++      compiled.evaluate(message('mail me at user@heretical.com', { mentionsEveryone: false })),
++    ).toBeUndefined();
++  });
++
++  it('has no span, because the count is a property of the whole message', () => {
++    const compiled = compile('{"maxMentions":1}');
++    expect(
++      compiled.evaluate(message('hi', { mentionedUserIds: ['1', '2'] }))?.trace.span,
++    ).toBeUndefined();
++  });
++
++  it('makes countEveryoneAs configurable rather than hard-coded', () => {
++    // With the weight turned down to 1, one @everyone plus one user mention is
++    // 2 total — at the threshold of 2, not above it, so it must not fire. An
++    // implementation that hard-coded the default weight of 5 would fire here.
++    const compiled = compile('{"maxMentions":2,"countEveryoneAs":1}');
++    expect(
++      compiled.evaluate(message('hi', { mentionedUserIds: ['1'], mentionsEveryone: true })),
++    ).toBeUndefined();
++  });
++
++  it('rejects an unrecognised config key', () => {
++    // ADR 0040 §2: config is a `.strict()` schema, validated on read.
++    const rule: AutomodRule = {
++      ruleId: 'r1',
++      kind: 'mention_spam',
++      mode: 'test',
++      config: '{"maxMentions":3,"typo":true}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const result = compileRule(rule);
++    expect(result.ok).toBe(false);
++    if (!result.ok) expect(result.reason).toBe('invalid-config');
++  });
++});
+diff --git a/packages/core/src/automod/predicates/mention-spam.ts b/packages/core/src/automod/predicates/mention-spam.ts
+new file mode 100644
+index 0000000..0a91a39
+--- /dev/null
++++ b/packages/core/src/automod/predicates/mention-spam.ts
+@@ -0,0 +1,77 @@
++import { z } from 'zod';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++export const mentionSpamConfig = z
++  .object({
++    /** Fires when the mention count (see below) exceeds this. */
++    maxMentions: z.number().int().min(0).max(1_000),
++    /**
++     * How many "mentions" one `@everyone`/`@here` counts as.
++     *
++     * They reach far more people than a single user or role mention, so they
++     * are worth more than one by default — but the weight is a config field,
++     * not a hard-coded constant, because an operator running a small guild
++     * where `@everyone` is used routinely may want it weighted differently.
++     */
++    countEveryoneAs: z.number().int().min(1).max(1_000).default(5),
++  })
++  .strict();
++
++export type MentionSpamConfig = z.infer<typeof mentionSpamConfig>;
++
++/**
++ * `mention_spam` — **stateless**, despite the spec grouping it with the
++ * window tier (plan ruling PR-24).
++ *
++ * `rapid_spam` and `duplicate_message` (Tasks 3-4) need `window.ts` because
++ * they judge a *rate* — something true only across several messages. This
++ * predicate judges a property of **one message**: how many people it
++ * mentions. Nothing about that needs memory of earlier messages, so this file
++ * does not import `window.ts`, and it should not gain that import later
++ * without a new requirement (a mentions-*per-minute* config field) driving it
++ * — see PR-24 for the reasoning recorded when this was decided.
++ */
++export const mentionSpamPredicate: Predicate<MentionSpamConfig> = {
++  kind: 'mention_spam',
++  config: mentionSpamConfig,
++  compile(_rule: AutomodRule, config: MentionSpamConfig): CompiledPredicate {
++    return {
++      evaluate(input) {
++        // User and role mentions count equally; @everyone/@here counts as
++        // `countEveryoneAs` (PR-3: `mentionsEveryone` is Discord's own gateway
++        // flag on a live message, not a text scan — `evaluate.ts`'s
++        // `EVERYONE_MENTION` reconstructs it only for a fixture replay).
++        const mentionCount = input.mentionedUserIds.length + input.mentionedRoleIds.length;
++        const everyoneCount = input.mentionsEveryone ? config.countEveryoneAs : 0;
++        const total = mentionCount + everyoneCount;
++
++        if (total <= config.maxMentions) return undefined;
++
++        return {
++          categoryId: 'mention_spam',
++          // The whole message is the evidence; there is no span to point at.
++          snippet: input.content.slice(0, 200),
++          trace: {
++            kind: 'mention_spam',
++            // The configured threshold, never message text (ruling R-8):
++            // `matchedOn` is unbounded by schema, so each producer is
++            // responsible for putting only configured values there
++            // (trace.ts's comment).
++            matchedOn: `more than ${config.maxMentions} mentions`,
++            // A property of the whole message, not a span of it.
++            span: undefined,
++            normalisations: [],
++            detail: {
++              userMentions: input.mentionedUserIds.length,
++              roleMentions: input.mentionedRoleIds.length,
++              mentionsEveryone: input.mentionsEveryone,
++              countEveryoneAs: config.countEveryoneAs,
++              total,
++              maxMentions: config.maxMentions,
++            },
++          },
++        };
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/rapid-spam.test.ts b/packages/core/src/automod/predicates/rapid-spam.test.ts
+new file mode 100644
+index 0000000..9673ac5
+--- /dev/null
++++ b/packages/core/src/automod/predicates/rapid-spam.test.ts
+@@ -0,0 +1,142 @@
++import { describe, expect, it } from 'vitest';
++import { compileRule } from './registry.js';
++import type { AutomodRule, CompiledPredicate, PredicateInput } from './types.js';
++
++const compile = (config: string, kind = 'rapid_spam'): CompiledPredicate => {
++  const rule: AutomodRule = {
++    ruleId: 'r1',
++    kind,
++    mode: 'test',
++    config,
++    terms: [],
++    allowlist: [],
++    inviteAllowlist: [],
++    linkDomains: [],
++  };
++  const result = compileRule(rule);
++  if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
++  return result.compiled;
++};
++
++const message = (content: string, over: Partial<PredicateInput> = {}): PredicateInput => ({
++  guildId: '100000000000000001',
++  channelId: '200000000000000001',
++  messageId: '300000000000000001',
++  authorId: '400000000000000001',
++  eventKind: 'messageCreate',
++  content,
++  rawContent: content,
++  mentionedUserIds: [],
++  mentionedRoleIds: [],
++  mentionsEveryone: false,
++  attachments: [],
++  atMs: 1_000,
++  ...over,
++});
++
++describe('the rapid_spam predicate', () => {
++  it('fires when a member exceeds the rate, and not before', () => {
++    const compiled = compile('{"maxMessages":3,"windowMs":10000}');
++    const at = (ms: number) => message('anything', { atMs: ms, messageId: `m${String(ms)}` });
++    expect(compiled.evaluate(at(1_000))).toBeUndefined();
++    expect(compiled.evaluate(at(2_000))).toBeUndefined();
++    expect(compiled.evaluate(at(3_000))).toBeUndefined();
++    // The fourth inside the window is one too many.
++    expect(compiled.evaluate(at(4_000))).toBeDefined();
++  });
++
++  it('forgets messages that fall out of the window', () => {
++    // The ambiguity a single burst cannot show: the same four messages spread
++    // beyond the window must NOT fire, so an implementation that never prunes
++    // goes red here while passing the test above.
++    const compiled = compile('{"maxMessages":3,"windowMs":10000}');
++    const at = (ms: number) => message('anything', { atMs: ms, messageId: `m${String(ms)}` });
++    expect(compiled.evaluate(at(1_000))).toBeUndefined();
++    expect(compiled.evaluate(at(20_000))).toBeUndefined();
++    expect(compiled.evaluate(at(40_000))).toBeUndefined();
++    expect(compiled.evaluate(at(60_000))).toBeUndefined();
++  });
++
++  it('counts each member separately', () => {
++    // Two members interleaved, neither exceeding the rate alone. An
++    // implementation keyed on the rule only fires and goes red.
++    const compiled = compile('{"maxMessages":3,"windowMs":10000}');
++    for (const ms of [1_000, 2_000, 3_000, 4_000]) {
++      expect(
++        compiled.evaluate(
++          message('x', {
++            atMs: ms,
++            authorId: ms % 2000 === 0 ? '111' : '222',
++            messageId: `a${String(ms)}`,
++          }),
++        ),
++      ).toBeUndefined();
++    }
++  });
++
++  it('does not count an edit as a new message (ruling PR-23)', () => {
++    // R-13 added eventKind a slice early for exactly this. A member fixing a
++    // typo three times must not trip a rate rule.
++    const compiled = compile('{"maxMessages":2,"windowMs":10000}');
++    expect(compiled.evaluate(message('x', { atMs: 1_000, messageId: 'm1' }))).toBeUndefined();
++    for (const ms of [1_100, 1_200, 1_300, 1_400]) {
++      expect(
++        compiled.evaluate(message('x', { atMs: ms, messageId: 'm1', eventKind: 'messageUpdate' })),
++      ).toBeUndefined();
++    }
++  });
++
++  it('does not fire at the threshold, only above it', () => {
++    const compiled = compile('{"maxMessages":3,"windowMs":10000}');
++    const at = (ms: number) => message('anything', { atMs: ms, messageId: `m${String(ms)}` });
++    expect(compiled.evaluate(at(1_000))).toBeUndefined();
++    expect(compiled.evaluate(at(2_000))).toBeUndefined();
++    // Exactly at the threshold (3 messages) must not fire.
++    expect(compiled.evaluate(at(3_000))).toBeUndefined();
++  });
++
++  it('is guild-scoped: two guilds do not share a member’s count', () => {
++    // CLAUDE.md rule 2. Both guilds record for the "same" authorId, so an
++    // implementation keyed on (memberId, ruleId) alone would combine them and
++    // fire on the second guild's second message.
++    const compiled = compile('{"maxMessages":1,"windowMs":10000}');
++    expect(
++      compiled.evaluate(message('x', { guildId: 'guild-a', atMs: 1_000, messageId: 'm1' })),
++    ).toBeUndefined();
++    expect(
++      compiled.evaluate(message('x', { guildId: 'guild-b', atMs: 1_000, messageId: 'm2' })),
++    ).toBeUndefined();
++  });
++
++  it('rejects an unrecognised config key', () => {
++    const rule: AutomodRule = {
++      ruleId: 'r1',
++      kind: 'rapid_spam',
++      mode: 'test',
++      config: '{"maxMessages":3,"windowMs":10000,"typo":true}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const result = compileRule(rule);
++    expect(result.ok).toBe(false);
++    if (!result.ok) expect(result.reason).toBe('invalid-config');
++  });
++
++  it('rejects a windowMs outside the bounded range', () => {
++    const rule: AutomodRule = {
++      ruleId: 'r1',
++      kind: 'rapid_spam',
++      mode: 'test',
++      config: '{"maxMessages":3,"windowMs":1}',
++      terms: [],
++      allowlist: [],
++      inviteAllowlist: [],
++      linkDomains: [],
++    };
++    const result = compileRule(rule);
++    expect(result.ok).toBe(false);
++    if (!result.ok) expect(result.reason).toBe('invalid-config');
++  });
++});
+diff --git a/packages/core/src/automod/predicates/rapid-spam.ts b/packages/core/src/automod/predicates/rapid-spam.ts
+new file mode 100644
+index 0000000..3ad7c92
+--- /dev/null
++++ b/packages/core/src/automod/predicates/rapid-spam.ts
+@@ -0,0 +1,88 @@
++import { z } from 'zod';
++import { createWindowStore, DEFAULT_MAX_TRACKED_MEMBERS } from '../window.js';
++import type { AutomodRule, CompiledPredicate, Predicate } from './types.js';
++
++export const rapidSpamConfig = z
++  .object({
++    /** Fires when a member's `messageCreate` count inside `windowMs` exceeds this. */
++    maxMessages: z.number().int().min(1).max(1_000),
++    /**
++     * How far back to count messages, in milliseconds. Bounded 1 s-10 min so
++     * a config cannot ask the window store to hold an unbounded span — the
++     * per-member ring buffer this predicate builds is sized from
++     * `maxMessages`, not from `windowMs`, but an unbounded window would still
++     * mean "everything this member has ever posted" is one config edit away.
++     */
++    windowMs: z.number().int().min(1_000).max(600_000),
++  })
++  .strict();
++
++export type RapidSpamConfig = z.infer<typeof rapidSpamConfig>;
++
++/**
++ * `rapid_spam` — messages per member per window (Task 3, plan ruling PR-22).
++ *
++ * The window store is built here, in `compile`, not at module scope: it lives
++ * in the closure of the returned `CompiledPredicate`, which is what gives it
++ * the right lifetime (plan ruling PR-21, `window.ts`'s own doc comment). **A
++ * config edit resets this rule's window** — editing `maxMessages` or
++ * `windowMs` changes the rule's content fingerprint, which rebuilds the
++ * artifact (and this store) from nothing. That is correct: a member's count
++ * accrued under an old threshold should not be judged against a new one. It
++ * reads as a bug only without this comment, which is why PR-21 insists on one.
++ *
++ * The ring buffer's capacity is `maxMessages + 1`, not `maxMessages`: this
++ * predicate must be able to *observe* one message more than the threshold
++ * allows (the "one too many" message is what fires it), and a buffer capped
++ * at exactly `maxMessages` could never hold that many at once — it would
++ * evict the oldest before the count ever read above the threshold.
++ */
++export const rapidSpamPredicate: Predicate<RapidSpamConfig> = {
++  kind: 'rapid_spam',
++  config: rapidSpamConfig,
++  compile(rule: AutomodRule, config: RapidSpamConfig): CompiledPredicate {
++    const store = createWindowStore({
++      maxEventsPerMember: config.maxMessages + 1,
++      maxMembers: DEFAULT_MAX_TRACKED_MEMBERS,
++    });
++
++    return {
++      evaluate(input) {
++        // PR-23: only `messageCreate` counts toward the rate. A member fixing
++        // a typo three times must not read as three messages — the content
++        // predicates still see the edit; this predicate alone must not.
++        if (input.eventKind !== 'messageCreate') return undefined;
++
++        const window = store.for({
++          // CLAUDE.md rule 2: guildId is named explicitly even though the
++          // artifact this store lives inside is already per-guild.
++          guildId: input.guildId,
++          memberId: input.authorId,
++          ruleId: rule.ruleId,
++        });
++        window.record(input.atMs);
++        const count = window.countWithin(input.atMs, config.windowMs);
++        if (count <= config.maxMessages) return undefined;
++
++        return {
++          categoryId: 'rapid_spam',
++          // The whole message is the evidence; there is no span to point at.
++          snippet: input.content.slice(0, 200),
++          trace: {
++            kind: 'rapid_spam',
++            // The configured threshold, never message text (ruling R-8).
++            matchedOn: `more than ${config.maxMessages} messages within ${config.windowMs}ms`,
++            // A property of a sequence of messages, not a span of this one.
++            span: undefined,
++            normalisations: [],
++            detail: {
++              count,
++              maxMessages: config.maxMessages,
++              windowMs: config.windowMs,
++            },
++          },
++        };
++      },
++    };
++  },
++};
+diff --git a/packages/core/src/automod/predicates/registry.test.ts b/packages/core/src/automod/predicates/registry.test.ts
+index 659a006..f21be34 100644
+--- a/packages/core/src/automod/predicates/registry.test.ts
++++ b/packages/core/src/automod/predicates/registry.test.ts
+@@ -1,5 +1,11 @@
+ import { describe, expect, it } from 'vitest';
+-import { compileRule, predicateFor, validateRuleConfig } from './registry.js';
++import {
++  compileRule,
++  compileRuleWith,
++  predicateFor,
++  validateRuleConfig,
++  validateRuleConfigWith,
++} from './registry.js';
+ import type { AutomodRule } from './types.js';
+ 
+ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
+@@ -19,12 +25,18 @@ describe('predicateFor', () => {
+     expect(predicateFor('keyword_filter')?.kind).toBe('keyword_filter');
+   });
+ 
+-  it('returns undefined for a kind whose predicate has not shipped yet', () => {
+-    // The `kind` CHECK permits ten values from Slice 1. Slices 3 and 5 shipped
+-    // seven of them; the window tier (mention_spam, rapid_spam,
+-    // duplicate_message) is Slice 4 and still has no predicate. That gap is
+-    // handled, not prevented.
+-    expect(predicateFor('mention_spam')).toBeUndefined();
++  it('returns undefined for a string that is not a real RuleKind at all', () => {
++    // After Slice 4, all ten kinds `mod_rules_kind` permits have a predicate
++    // in `PREDICATES` — there is no real, permitted `RuleKind` left to stand
++    // in for "not shipped yet" (obligation 3, Task 5a). This test used to
++    // borrow one (first 'caps', then 'mention_spam', then 'rapid_spam') and
++    // was repointed three times as each shipped. `predicateFor`'s only
++    // remaining `undefined` case is `isRuleKind` failing outright, which
++    // `compileRuleWith`/`validateRuleConfigWith` below cover for the
++    // "permitted but unregistered" case via an explicit empty registry —
++    // `predicateFor` itself has no injectable form, because nothing calls it
++    // needing one.
++    expect(predicateFor('telepathy')).toBeUndefined();
+   });
+ });
+ 
+@@ -40,7 +52,12 @@ describe('compileRule', () => {
+   });
+ 
+   it('reports a kind with no predicate registered yet', () => {
+-    const result = compileRule(rule({ kind: 'mention_spam', terms: [], config: '{}' }));
++    // Against an explicitly empty registry (Task 5a's seam), not a real kind
++    // that happens to be unshipped today — see `resolveConfigWith`'s doc
++    // comment in registry.ts for why: after this slice, no permitted kind is
++    // unregistered in production, so this test would otherwise have nothing
++    // left to borrow.
++    const result = compileRuleWith({}, rule({ kind: 'rapid_spam', terms: [], config: '{}' }));
+     expect(result.ok).toBe(false);
+     if (!result.ok) expect(result.reason).toBe('no-predicate');
+   });
+@@ -109,8 +126,9 @@ describe('validateRuleConfig', () => {
+   });
+ 
+   it('reports a permitted kind with no predicate registered yet', () => {
+-    const result = validateRuleConfig('mention_spam', '{}');
+-    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'mention_spam' });
++    // Same seam as the `compileRuleWith` test above, for the same reason.
++    const result = validateRuleConfigWith({}, 'rapid_spam', '{}');
++    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'rapid_spam' });
+   });
+ 
+   it('reports malformed JSON rather than throwing', () => {
+diff --git a/packages/core/src/automod/predicates/registry.ts b/packages/core/src/automod/predicates/registry.ts
+index 831090f..da59062 100644
+--- a/packages/core/src/automod/predicates/registry.ts
++++ b/packages/core/src/automod/predicates/registry.ts
+@@ -1,9 +1,12 @@
+ import { attachmentTypePredicate } from './attachment-type.js';
+ import { capsPredicate } from './caps.js';
++import { duplicateMessagePredicate } from './duplicate-message.js';
+ import { emojiPredicate } from './emoji.js';
+ import { invitePredicate } from './invite.js';
+ import { keywordFilterPredicate } from './keyword-filter.js';
+ import { linkDomainPredicate, type LinkDomainConfig } from './link-domain.js';
++import { mentionSpamPredicate } from './mention-spam.js';
++import { rapidSpamPredicate } from './rapid-spam.js';
+ import { regexPredicate } from './regex.js';
+ import {
+   isRuleKind,
+@@ -17,10 +20,13 @@ import {
+  * kind → predicate. Slices 3-5 each add an entry and change nothing else —
+  * which is what ADR 0035 promised and ADR 0040 actually delivers.
+  *
+- * Nine of the ten kinds `mod_rules_kind` permits are absent until their slice
+- * ships. A rule naming one of them is inert, and `compileRule` reports
+- * `'no-predicate'` so `doctor` can say so out loud rather than the rule
+- * quietly never firing (ADR 0040 §4 — the ADR 0039 failure mode).
++ * All ten kinds `mod_rules_kind` permits have a predicate as of Slice 4's
++ * Task 4. `no-predicate` (`CompileFailure` below) is therefore unreachable
++ * through any public entry point (`compileRule`, `validateRuleConfig`,
++ * `predicateFor`) against this map — `resolveConfigWith`'s doc comment
++ * records the seam (`compileRuleWith`, `validateRuleConfigWith`) that keeps it
++ * testable anyway, and the reasoning for keeping the branch at all rather than
++ * deleting it (an eleventh kind will arrive the way the tenth did).
+  */
+ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
+   keyword_filter: keywordFilterPredicate,
+@@ -30,11 +36,63 @@ const PREDICATES: Partial<Record<RuleKind, AnyPredicate>> = {
+   regex: regexPredicate,
+   caps: capsPredicate,
+   emoji: emojiPredicate,
++  mention_spam: mentionSpamPredicate,
++  rapid_spam: rapidSpamPredicate,
++  duplicate_message: duplicateMessagePredicate,
+ };
+ 
+ export const predicateFor = (kind: string): AnyPredicate | undefined =>
+   isRuleKind(kind) ? PREDICATES[kind] : undefined;
+ 
++/**
++ * `kind` → predicate, against an explicitly supplied registry.
++ *
++ * Exists so `no-predicate` stays testable after this slice, when every one of
++ * the ten kinds `mod_rules_kind` permits has an implementation and no real
++ * `RuleKind` value is left to stand for "not shipped yet". `resolveConfig`
++ * checks `isRuleKind` first, so a made-up string yields `unknown-kind` — a
++ * different failure, deliberately — and therefore no cast can reach the
++ * `no-predicate` branch through the public entry points (`compileRule`,
++ * `validateRuleConfig`, `predicateFor`) once `PREDICATES` is complete.
++ *
++ * The branch stays because an eleventh kind will arrive the way the tenth
++ * did: ruling R-2 widened the SQL CHECK to all ten kinds *ahead* of their
++ * predicates, precisely so a rule naming an unshipped kind was inert and loud
++ * rather than silently non-matching. This is the seam that keeps that promise
++ * under test instead of on trust — tests pass an empty (or partial) registry
++ * rather than waiting for the next predicate to ship and then borrowing its
++ * kind, which is what forced three repoints of the same four assertions
++ * before this seam existed (plan ruling, Slice 4 Task 5a).
++ */
++const resolveConfigWith = (
++  registry: Partial<Record<RuleKind, AnyPredicate>>,
++  kind: string,
++  configJson: string,
++): ResolvedConfig => {
++  if (!isRuleKind(kind)) {
++    return { ok: false, reason: 'unknown-kind', detail: kind };
++  }
++  const predicate = registry[kind];
++  if (predicate === undefined) {
++    return { ok: false, reason: 'no-predicate', detail: kind };
++  }
++
++  try {
++    // Parsed and validated on the way *out* of the database, not only on the
++    // way in (CLAUDE.md rule 3, ADR 0037's `jobs.payload` precedent): a row
++    // written by an older schema version, or by hand in `sqlite3`, is exactly
++    // what this catches.
++    const config: unknown = predicate.config.parse(JSON.parse(configJson));
++    return { ok: true, predicate, config };
++  } catch (err) {
++    return {
++      ok: false,
++      reason: 'invalid-config',
++      detail: err instanceof Error ? err.message : String(err),
++    };
++  }
++};
++
+ export type CompileFailure =
+   /** A `kind` the CHECK should have rejected — a hand-edited row, or a schema drift. */
+   | 'unknown-kind'
+@@ -76,39 +134,6 @@ type ResolvedConfig =
+   | { readonly ok: true; readonly predicate: AnyPredicate; readonly config: unknown }
+   | { readonly ok: false; readonly reason: ConfigValidationFailure; readonly detail: string };
+ 
+-/**
+- * Resolves `kind` to its predicate and parses+validates `configJson` against
+- * that predicate's schema, or says exactly why it could not.
+- *
+- * The one place both `validateRuleConfig` (below) and `compileRule` do this —
+- * so a rule's word list (which is not in `config`, ADR 0040 §3, and which
+- * only `compileRule` has) cannot leak into what counts as a valid *config*.
+- */
+-const resolveConfig = (kind: string, configJson: string): ResolvedConfig => {
+-  if (!isRuleKind(kind)) {
+-    return { ok: false, reason: 'unknown-kind', detail: kind };
+-  }
+-  const predicate = PREDICATES[kind];
+-  if (predicate === undefined) {
+-    return { ok: false, reason: 'no-predicate', detail: kind };
+-  }
+-
+-  try {
+-    // Parsed and validated on the way *out* of the database, not only on the
+-    // way in (CLAUDE.md rule 3, ADR 0037's `jobs.payload` precedent): a row
+-    // written by an older schema version, or by hand in `sqlite3`, is exactly
+-    // what this catches.
+-    const config: unknown = predicate.config.parse(JSON.parse(configJson));
+-    return { ok: true, predicate, config };
+-  } catch (err) {
+-    return {
+-      ok: false,
+-      reason: 'invalid-config',
+-      detail: err instanceof Error ? err.message : String(err),
+-    };
+-  }
+-};
+-
+ /**
+  * Validates a rule's `config` column against its kind's schema, without
+  * compiling it.
+@@ -122,12 +147,24 @@ const resolveConfig = (kind: string, configJson: string): ResolvedConfig => {
+  * this first and refuse the write on `{ok: false}`. Mirrors `compileRule`'s
+  * `{ok: true} | {ok: false, reason, detail}` shape deliberately, so a caller
+  * that already knows one convention does not have to learn a second.
++ *
++ * `validateRuleConfigWith` is the injectable form, for the same reason
++ * `compileRuleWith` below is: it keeps `no-predicate` testable without a real
++ * unregistered `RuleKind` to borrow (see `resolveConfigWith`'s doc comment).
+  */
+-export const validateRuleConfig = (kind: string, configJson: string): ConfigValidationResult => {
+-  const resolved = resolveConfig(kind, configJson);
++export const validateRuleConfigWith = (
++  registry: Partial<Record<RuleKind, AnyPredicate>>,
++  kind: string,
++  configJson: string,
++): ConfigValidationResult => {
++  const resolved = resolveConfigWith(registry, kind, configJson);
+   return resolved.ok ? { ok: true } : resolved;
+ };
+ 
++/** The production entry point: `validateRuleConfigWith` over the shipped registry. */
++export const validateRuleConfig = (kind: string, configJson: string): ConfigValidationResult =>
++  validateRuleConfigWith(PREDICATES, kind, configJson);
++
+ /**
+  * Validates a rule's config against its kind's schema and compiles it, or says
+  * exactly why it could not.
+@@ -136,9 +173,16 @@ export const validateRuleConfig = (kind: string, configJson: string): ConfigVali
+  * subscriber, because that would stop every *other* rule in the guild from
+  * matching — but it must not be silent either. The caller logs it once per
+  * fingerprint and `doctor` reports it (ADR 0040 §4).
++ *
++ * `compileRuleWith` is the injectable form — see `resolveConfigWith`'s doc
++ * comment for why it exists. `compileRule` below is the production entry
++ * point, over the shipped registry.
+  */
+-export const compileRule = (rule: AutomodRule): CompileResult => {
+-  const resolved = resolveConfig(rule.kind, rule.config);
++export const compileRuleWith = (
++  registry: Partial<Record<RuleKind, AnyPredicate>>,
++  rule: AutomodRule,
++): CompileResult => {
++  const resolved = resolveConfigWith(registry, rule.kind, rule.config);
+   if (!resolved.ok) return resolved;
+   const { predicate, config } = resolved;
+ 
+@@ -207,3 +251,6 @@ export const compileRule = (rule: AutomodRule): CompileResult => {
+     };
+   }
+ };
++
++/** The production entry point: `compileRuleWith` over the shipped registry. */
++export const compileRule = (rule: AutomodRule): CompileResult => compileRuleWith(PREDICATES, rule);
+diff --git a/packages/core/src/automod/window.test.ts b/packages/core/src/automod/window.test.ts
+new file mode 100644
+index 0000000..6d0e5f8
+--- /dev/null
++++ b/packages/core/src/automod/window.test.ts
+@@ -0,0 +1,93 @@
++import { describe, expect, it } from 'vitest';
++import { createWindowStore } from './window.js';
++
++const key = (memberId: string, guildId = '100000000000000001', ruleId = 'r1') => ({
++  guildId,
++  memberId,
++  ruleId,
++});
++
++describe('the window store', () => {
++  it('counts only events inside the window', () => {
++    const store = createWindowStore({ maxEventsPerMember: 10, maxMembers: 10 });
++    const w = store.for(key('m1'));
++    w.record(1_000);
++    w.record(2_000);
++    w.record(9_000);
++    // A 5-second window at t=9000 covers [4000, 9000]: only the last event.
++    expect(w.countWithin(9_000, 5_000)).toBe(1);
++    expect(w.countWithin(9_000, 10_000)).toBe(3);
++  });
++
++  it('keeps two members apart', () => {
++    // NOT decorative: BOTH members record events, so an implementation that
++    // ignored memberId would report 2 for each and this goes red. One member
++    // with events and one without would pass under that bug.
++    const store = createWindowStore({ maxEventsPerMember: 10, maxMembers: 10 });
++    store.for(key('m1')).record(1_000);
++    store.for(key('m2')).record(1_000);
++    expect(store.for(key('m1')).countWithin(1_000, 5_000)).toBe(1);
++    expect(store.for(key('m2')).countWithin(1_000, 5_000)).toBe(1);
++  });
++
++  it('keeps two guilds apart even for the same member and rule', () => {
++    // CLAUDE.md rule 2 names cache keys explicitly. Both sides record, so an
++    // implementation keyed on (memberId, ruleId) alone reports 2 and goes red.
++    const store = createWindowStore({ maxEventsPerMember: 10, maxMembers: 10 });
++    store.for(key('m1', '100000000000000001')).record(1_000);
++    store.for(key('m1', '200000000000000002')).record(1_000);
++    expect(store.for(key('m1', '100000000000000001')).countWithin(1_000, 5_000)).toBe(1);
++  });
++
++  it('keeps two rules apart for the same member', () => {
++    const store = createWindowStore({ maxEventsPerMember: 10, maxMembers: 10 });
++    store.for(key('m1', '100000000000000001', 'rule-a')).record(1_000);
++    store.for(key('m1', '100000000000000001', 'rule-b')).record(1_000);
++    expect(store.for(key('m1', '100000000000000001', 'rule-a')).countWithin(1_000, 5_000)).toBe(1);
++  });
++
++  it('does not grow past the per-member cap', () => {
++    const store = createWindowStore({ maxEventsPerMember: 3, maxMembers: 10 });
++    const w = store.for(key('m1'));
++    for (let i = 0; i < 50; i++) w.record(1_000 + i);
++    // A 100-second window covers every event ever recorded, so this can only
++    // be 3 if the buffer is genuinely bounded — the assertion would read 50
++    // under an unbounded implementation.
++    expect(w.countWithin(1_050, 100_000)).toBe(3);
++  });
++
++  it('evicts the least recently active member past the member cap', () => {
++    const store = createWindowStore({ maxEventsPerMember: 5, maxMembers: 2 });
++    store.for(key('m1')).record(1_000);
++    store.for(key('m2')).record(2_000);
++    store.for(key('m3')).record(3_000); // evicts m1, the least recently active
++    expect(store.size()).toBe(2);
++    // m1's window is forgotten — one extra message may get through, which
++    // PR-22 accepts deliberately over refusing to track under load.
++    expect(store.for(key('m1')).countWithin(3_000, 100_000)).toBe(0);
++    expect(store.for(key('m2')).countWithin(3_000, 100_000)).toBe(1);
++  });
++
++  it('counts repeats of one value without counting the others', () => {
++    // duplicate_message's need. Three events, two of them identical, so an
++    // implementation ignoring `value` reports 3 and goes red.
++    const store = createWindowStore({ maxEventsPerMember: 10, maxMembers: 10 });
++    const w = store.for(key('m1'));
++    w.record(1_000, 'buy crypto now');
++    w.record(2_000, 'something else');
++    w.record(3_000, 'buy crypto now');
++    expect(w.countMatching(3_000, 10_000, 'buy crypto now')).toBe(2);
++  });
++
++  it('takes its clock from the caller, never from Date.now()', () => {
++    // The dry run replays fixtures at their recorded createdAt (ADR 0041 §6).
++    // A store reading the wall clock would make a replay's result depend on
++    // when the replay ran. Events far in the past must count when the caller
++    // says the window is far in the past too.
++    const store = createWindowStore({ maxEventsPerMember: 10, maxMembers: 10 });
++    const w = store.for(key('m1'));
++    w.record(1_000);
++    w.record(2_000);
++    expect(w.countWithin(2_000, 5_000)).toBe(2);
++  });
++});
+diff --git a/packages/core/src/automod/window.ts b/packages/core/src/automod/window.ts
+new file mode 100644
+index 0000000..f7cea30
+--- /dev/null
++++ b/packages/core/src/automod/window.ts
+@@ -0,0 +1,202 @@
++/**
++ * A bounded, guild-scoped sliding-window store (Release 2 Slice 4).
++ *
++ * The first state any predicate on this project has carried. Everything
++ * before this slice was pure: compile a rule, evaluate a message, done. The
++ * window tier (`rapid_spam`, `duplicate_message`) needs to remember recent
++ * events per member, which is what this module holds — nothing else does or
++ * should (plan ruling PR-21).
++ *
++ * **No `Date.now()` anywhere in this module.** Every method takes `atMs` from
++ * its caller. `runDryRun` replays fixtures at their recorded timestamps
++ * (ADR 0041 §6); a store that read the wall clock would make a replay's
++ * result depend on when the replay ran, which breaks the determinism that
++ * guarantee exists to provide. This is checked by a dedicated test below and
++ * is not negotiable.
++ *
++ * **Lifetime:** this store is not module state. It is built inside a
++ * predicate's `compile` and lives in the closure of the returned
++ * `CompiledPredicate`, which the subscriber caches per `<guildId>:<ruleId>`
++ * fingerprint (`evaluate.ts`'s `PredicateCache`, ADR 0040 §5) and a dry run
++ * builds fresh per invocation (ADR 0041 §6). Editing a windowed rule's config
++ * therefore resets its window — the fingerprint changes and the artifact
++ * (this store included) is rebuilt from nothing. That is correct: a changed
++ * threshold should not be judged against counts accrued under the old one
++ * (plan ruling PR-21).
++ */
++
++export interface WindowKey {
++  readonly guildId: string;
++  readonly memberId: string;
++  readonly ruleId: string;
++}
++
++/** One member's recent events for one rule, oldest first. */
++export interface MemberWindow {
++  /**
++   * Records an event at `atMs`, dropping the oldest if the per-member cap is
++   * already full. Does **not** drop events by age — the read methods filter by
++   * window, so an out-of-window event is never counted anyway.
++   */
++  record(atMs: number, value?: string): void;
++  /** How many events fall inside `[atMs - windowMs, atMs]`. */
++  countWithin(atMs: number, windowMs: number): number;
++  /** How many recorded events inside the window carry exactly `value`. */
++  countMatching(atMs: number, windowMs: number, value: string): number;
++}
++
++export interface WindowStore {
++  for(key: WindowKey): MemberWindow;
++  /** Members currently tracked. Exposed for the eviction test, not for callers. */
++  size(): number;
++}
++
++interface Event {
++  readonly atMs: number;
++  readonly value: string | undefined;
++}
++
++/**
++ * A guild+member+rule's ring buffer.
++ *
++ * **There is deliberately no age-based pruning, and the reason is worth
++ * stating because an earlier draft had some.** Correctness does not come from
++ * pruning: `countWithin` and `countMatching` filter by the window on *every*
++ * call, so an event outside the window is never counted whether it is still in
++ * the array or not. And memory is bounded by `maxEventsPerMember` alone, which
++ * is applied on every `record`, so the array is capped at all times.
++ *
++ * That left pruning with **no observable effect** — which is exactly how it was
++ * found: the plan required a "watch it fail" guard for it, and the implementer
++ * reported honestly that disabling pruning changed nothing any test could see.
++ * A mechanism whose guard cannot be written is a mechanism to justify or
++ * delete, and this one could not be justified: it bought a slightly smaller
++ * steady-state array inside an already-capped buffer, at the cost of tracking
++ * the largest window ever observed so `record` had something to prune against.
++ *
++ * `onRecord` is invoked from `record()` — not from the read methods — because
++ * recording is this member's only observable "activity" for eviction
++ * purposes (see `createWindowStore`'s doc comment for why a read must not
++ * trigger registration or eviction).
++ */
++class RingMemberWindow implements MemberWindow {
++  private events: Event[] = [];
++
++  constructor(
++    private readonly maxEventsPerMember: number,
++    private readonly onRecord: () => void,
++  ) {}
++
++  record(atMs: number, value?: string): void {
++    this.onRecord();
++    this.events.push({ atMs, value });
++    // Bound 1 of 2 (PR-22): never more than maxEventsPerMember events, for
++    // this member, for this rule. This is the *only* thing bounding the array,
++    // and it runs on every record, so the array is capped at all times.
++    if (this.events.length > this.maxEventsPerMember) {
++      this.events = this.events.slice(this.events.length - this.maxEventsPerMember);
++    }
++  }
++
++  countWithin(atMs: number, windowMs: number): number {
++    const floor = atMs - windowMs;
++    return this.events.filter((e) => e.atMs >= floor && e.atMs <= atMs).length;
++  }
++
++  countMatching(atMs: number, windowMs: number, value: string): number {
++    const floor = atMs - windowMs;
++    return this.events.filter((e) => e.atMs >= floor && e.atMs <= atMs && e.value === value).length;
++  }
++}
++
++/**
++ * Builds a bounded, guild-scoped window store.
++ *
++ * Two independent caps (plan ruling PR-22): `maxEventsPerMember` bounds one
++ * member's own ring buffer, and `maxMembers` bounds how many members are
++ * tracked at once across the whole guild, evicting the least-recently-active
++ * past that cap. Both are needed — without the per-member cap a single
++ * member's flood grows one buffer without limit; without the member cap a
++ * guild-wide raid grows the map without limit.
++ *
++ * **Eviction, never refusal.** Dropping the oldest member's window means one
++ * spammer may get one extra message through where refusing to track would
++ * mean the rule silently stops working under exactly the load it exists for.
++ * That is the safe direction, and it is bounded and documented rather than
++ * silent.
++ *
++ * **`for()` never registers or evicts anything — only `record()` does.** A
++ * member who has never posted (or whose window was already evicted) must be
++ * queryable without side effects: `for(key)` on an absent key returns a
++ * fresh, empty `MemberWindow` that is not inserted into the tracked map until
++ * something is actually recorded on it. Registering on `for()` instead would
++ * mean a caller merely *reading* an evicted member's count (as `doctor` or a
++ * future admin surface might, and as this module's own eviction test does)
++ * would itself evict a different, currently-active member to make room for
++ * an empty placeholder — silently destroying live state to answer a read.
++ * Tying registration to `record()` means only genuine activity can cost
++ * another member their slot.
++ */
++export const createWindowStore = (options: {
++  /** Per-member ring buffer capacity (PR-22). */
++  readonly maxEventsPerMember: number;
++  /** How many members to track before evicting the least recently active (PR-22). */
++  readonly maxMembers: number;
++}): WindowStore => {
++  // Map iteration order is insertion order, and this store always re-inserts
++  // (delete then set) on every `record()`, which moves that key to the end —
++  // so "least recently active" is cheap to find: it's whichever key iterates
++  // first.
++  const members = new Map<string, RingMemberWindow>();
++
++  const keyFor = (key: WindowKey): string =>
++    // CLAUDE.md rule 2: guildId is named in the key even though the artifact
++    // this store lives inside is already per-guild — the same defence in
++    // depth `predicateCacheKey` (evaluate.ts) documents.
++    `${key.guildId}:${key.memberId}:${key.ruleId}`;
++
++  /** Registers (or re-touches) `k`, evicting the LRU member only if `k` is genuinely new. */
++  const touch = (k: string, win: RingMemberWindow): void => {
++    const wasTracked = members.delete(k);
++    if (!wasTracked && members.size >= options.maxMembers) {
++      const oldestKey = members.keys().next().value;
++      if (oldestKey !== undefined) members.delete(oldestKey);
++    }
++    members.set(k, win);
++  };
++
++  return {
++    for(key: WindowKey): MemberWindow {
++      const k = keyFor(key);
++      const existing = members.get(k);
++      if (existing !== undefined) return existing;
++
++      // `win` is referenced inside its own initialiser's closure, which is
++      // safe: the closure only runs when something later calls `.record()`,
++      // by which point this declaration has long since completed.
++      const win: RingMemberWindow = new RingMemberWindow(options.maxEventsPerMember, () =>
++        touch(k, win),
++      );
++      return win;
++    },
++    size(): number {
++      return members.size;
++    },
++  };
++};
++
++/**
++ * How many members one windowed rule tracks at once, before the least recently
++ * active is evicted (PR-22).
++ *
++ * Exported as a constant, and imported by both windowed predicates, so the two
++ * cannot drift to different undocumented numbers — each builds its own store,
++ * because window state lives per compiled artifact (PR-21).
++ *
++ * 500 is deliberately modest: Bananasaurs serves **one** engineering-club guild
++ * (`CLAUDE.md`), so 500 simultaneously-active posters is far beyond a realistic
++ * burst, and the memory cost is one small ring buffer each. If a raid ever
++ * exceeds it, PR-22's eviction is the documented behaviour rather than a
++ * failure.
++ */
++export const DEFAULT_MAX_TRACKED_MEMBERS = 500;
+diff --git a/packages/core/src/ops/commands/reads.test.ts b/packages/core/src/ops/commands/reads.test.ts
+index a5dfc7d..c1141c4 100644
+--- a/packages/core/src/ops/commands/reads.test.ts
++++ b/packages/core/src/ops/commands/reads.test.ts
+@@ -505,14 +505,24 @@ describe('bananasaurs doctor', () => {
+   });
+ 
+   it('reports a rule whose config cannot be compiled, and fails the check', async () => {
++    // This drives a fake `OpsPorts.listUnusableAutomodRules` directly (its
++    // `kind` field is a plain `string`, `ports.ts`'s
++    // `OpsUnusableAutomodRule`), so the value never reaches the real
++    // predicate registry — this test exercises `doctor`'s rendering of a
++    // `no-predicate` row, not the registry's own classification of one. The
++    // kind used to be a real-but-unshipped RuleKind ('caps', then
++    // 'mention_spam', then 'rapid_spam') and was repointed three times as each
++    // shipped, even though nothing here required a real kind at all.
++    // 'unshipped_example' is deliberately not a `RuleKind`, so it can never be
++    // invalidated by a future predicate shipping (obligation 3, Task 5a).
+     const res = await drive(doctorCommand, {
+       ...healthy,
+       listUnusableAutomodRules: () => [
+         {
+           ruleId: 'shouting',
+-          kind: 'mention_spam',
++          kind: 'unshipped_example',
+           reason: 'no-predicate',
+-          detail: 'mention_spam',
++          detail: 'unshipped_example',
+         },
+       ],
+     });
+@@ -526,9 +536,9 @@ describe('bananasaurs doctor', () => {
+       unusableAutomodRules: [
+         {
+           ruleId: 'shouting',
+-          kind: 'mention_spam',
++          kind: 'unshipped_example',
+           reason: 'no-predicate',
+-          detail: 'mention_spam',
++          detail: 'unshipped_example',
+         },
+       ],
+     });
+diff --git a/packages/core/src/ops/ports.ts b/packages/core/src/ops/ports.ts
+index e7b9b8a..47314b4 100644
+--- a/packages/core/src/ops/ports.ts
++++ b/packages/core/src/ops/ports.ts
+@@ -384,7 +384,10 @@ export interface OpsPorts {
+    * rule's active list (CRITICAL-2), which it cannot know from `'removed'`
+    * alone.
+    */
+-  removeLinkDomain(input: { readonly ruleId: string; readonly domain: string }):
++  removeLinkDomain(input: {
++    readonly ruleId: string;
++    readonly domain: string;
++  }):
+     | { readonly outcome: 'removed'; readonly mode: 'allow' | 'deny' | undefined }
+     | { readonly outcome: 'not-present'; readonly mode: 'allow' | 'deny' | undefined }
+     | { readonly outcome: 'no-such-rule' }
+diff --git a/packages/storage/src/repos/automod-rule-lists.test.ts b/packages/storage/src/repos/automod-rule-lists.test.ts
+index 60417bb..6d16737 100644
+--- a/packages/storage/src/repos/automod-rule-lists.test.ts
++++ b/packages/storage/src/repos/automod-rule-lists.test.ts
+@@ -150,9 +150,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
+     const mode = linkDomainModeOf(rule.config);
+     const result = addLinkDomain(s, { ...input, now: NOW });
+     if (result.inserted) return { outcome: 'added', mode };
+-    const stored = listLinkDomains(s, input.ruleId).find(
+-      (entry) => entry.domain === result.domain,
+-    );
++    const stored = listLinkDomains(s, input.ruleId).find((entry) => entry.domain === result.domain);
+     return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
+   },
+   listLinkDomains: (ruleId) => listLinkDomains(s, ruleId),
+diff --git a/packages/storage/src/repos/automod-rule-lists.ts b/packages/storage/src/repos/automod-rule-lists.ts
+index 51524f0..cfdbdc4 100644
+--- a/packages/storage/src/repos/automod-rule-lists.ts
++++ b/packages/storage/src/repos/automod-rule-lists.ts
+@@ -173,7 +173,10 @@ export interface AddLinkDomainResult {
+  * — that duplication is exactly what let `removeLinkDomain` drift in the
+  * first place.
+  */
+-export const addLinkDomain = (scope: GuildScope, input: AddLinkDomainInput): AddLinkDomainResult => {
++export const addLinkDomain = (
++  scope: GuildScope,
++  input: AddLinkDomainInput,
++): AddLinkDomainResult => {
+   const domain = canonicalDomain(input.domain);
+   const changes = write(
+     scope,
