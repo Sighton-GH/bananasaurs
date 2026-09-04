@@ -336,6 +336,135 @@ describe('the one-code-path invariant', () => {
     expect(report.results.map((r) => r.matched)).toEqual([false, false, false, false]);
     expect(report.matched).toBe(0);
   });
+
+  /**
+   * IMPORTANT-5 (whole-branch review): Case A and Case B close exactly the
+   * two blind spots the Slice 4 handoff enumerated (a wrong `atMs`, a
+   * bypassed predicate cache), but window state opens more than two, and
+   * neither case above ever constructs a `messageUpdate` on either side —
+   * the asymmetric, replay-only divergence that matters most, because it is
+   * also the mechanism of CRITICAL-3's over-report term. Case C closes that
+   * gap. Case D closes a separate one named in the same finding: the
+   * differential gate covered `rapid_spam` only, and never compared a trace
+   * for the window tier at all.
+   */
+
+  it('Case C — a messageUpdate in the live sequence never inflates rapid_spam’s count on either path, and the edited message appears once in the corpus (IMPORTANT-5)', async () => {
+    // PR-23: only messageCreate counts toward rapid_spam's rate; an edit is
+    // not a new post. `predicateInputFrom`'s fixture branch hard-codes
+    // `eventKind: 'messageCreate'` for every corpus row, so a live path that
+    // regressed into counting `messageUpdate` would diverge from the replay
+    // here — invisible to Case A/B, which never build one.
+    const rule: AutomodRule = {
+      ruleId: 'rapid-spam-case-c',
+      kind: 'rapid_spam',
+      mode: 'test',
+      config: '{"maxMessages":1,"windowMs":10000}',
+      terms: [],
+      allowlist: [],
+      inviteAllowlist: [],
+      linkDomains: [],
+    };
+
+    // Live path: a create, then an edit of that *same* message (content
+    // unchanged — Discord sends messageUpdate for edits that touch only
+    // metadata, e.g. an unfurled embed, not only for text changes), then a
+    // second, different message.
+    let currentMs = 0;
+    const liveMatchedAt: number[] = [];
+    const subscriber = createAutomodSubscriber({
+      ...fakeDeps(),
+      listRules: () => [rule],
+      recordCaseEvent: () => {
+        liveMatchedAt.push(currentMs);
+      },
+    });
+    currentMs = 1_000;
+    await subscriber.handle(
+      messageEvent({ content: 'hello', receivedAtMs: 1_000, messageId: 'live-c-a' }),
+    );
+    currentMs = 1_500;
+    await subscriber.handle(
+      messageEvent({
+        kind: 'messageUpdate',
+        content: 'hello',
+        receivedAtMs: 1_500,
+        messageId: 'live-c-a',
+      }),
+    );
+    currentMs = 2_000;
+    await subscriber.handle(
+      messageEvent({ content: 'hello', receivedAtMs: 2_000, messageId: 'live-c-b' }),
+    );
+    // Two messageCreate events with threshold 1 fires on the second — the
+    // update in between must not count as a third.
+    expect(liveMatchedAt).toEqual([2_000]);
+
+    // Dry-run path: because the edit's content is unchanged, PR-1's fixture
+    // id (`<messageId>:<hash(content)>`) is identical for the create and the
+    // edit, so the message appears once in the corpus, not twice — exactly
+    // what `captureObservedFixture`'s `onConflictDoNothing` would leave
+    // behind in practice.
+    const fixtures: FixtureRecord[] = [
+      fixture({ fixtureId: 'live-c-a:hash', content: 'hello', createdAt: 1_000 }),
+      fixture({ fixtureId: 'live-c-b:hash', content: 'hello', createdAt: 2_000 }),
+    ];
+    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
+
+    expect(report.results.map((r) => r.matched)).toEqual([false, true]);
+    expect(report.matched).toBe(1);
+  });
+
+  it('Case D — duplicate_message’s trace also matches across paths, closing the gate’s other blind spot (IMPORTANT-5)', async () => {
+    // The differential gate above (and Case A/B) exercises rapid_spam only.
+    // duplicate_message is the one predicate that exercises countMatching and
+    // the value half of the window store — genuinely new code the gate never
+    // reached — and unlike Case A/B, this also compares the trace, which
+    // neither Case A nor Case B does for the window tier.
+    const rule: AutomodRule = {
+      ruleId: 'duplicate-message-case-d',
+      kind: 'duplicate_message',
+      mode: 'test',
+      config: '{"maxRepeats":1,"windowMs":10000,"minLength":1}',
+      terms: [],
+      allowlist: [],
+      inviteAllowlist: [],
+      linkDomains: [],
+    };
+    const TIMESTAMPS = [1_000, 2_000];
+
+    const recorded: { trace?: MatchTrace; categoryId?: string; snippet?: string } = {};
+    const subscriber = createAutomodSubscriber({
+      ...fakeDeps(),
+      listRules: () => [rule],
+      recordCaseEvent: (input) => {
+        recorded.trace = input.trace;
+        recorded.categoryId = input.matchedCategory;
+        recorded.snippet = input.matchedSnippet;
+      },
+    });
+    for (const ms of TIMESTAMPS) {
+      await subscriber.handle(
+        messageEvent({
+          content: 'buy crypto now',
+          receivedAtMs: ms,
+          messageId: `live-d-${String(ms)}`,
+        }),
+      );
+    }
+    expect(recorded.trace).toBeDefined();
+
+    const fixtures = TIMESTAMPS.map((ms) =>
+      fixture({ fixtureId: `dup-d:${String(ms)}`, content: 'buy crypto now', createdAt: ms }),
+    );
+    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
+
+    const replayed = report.results[1]?.match;
+    expect(replayed).toBeDefined();
+    expect(replayed?.trace).toEqual(recorded.trace);
+    expect(replayed?.categoryId).toEqual(recorded.categoryId);
+    expect(replayed?.snippet).toEqual(recorded.snippet);
+  });
 });
 
 describe('runDryRun', () => {
