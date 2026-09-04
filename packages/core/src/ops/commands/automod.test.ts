@@ -400,6 +400,43 @@ describe('automod dryrun', () => {
     expect(res.data).toMatchObject({ windowedCorpusCaveat: { editedMessageRows: 2 } });
   });
 
+  it('warns that a handwritten replay cannot test whether a windowed rule keeps members apart', async () => {
+    // `predicateInputFrom` maps every handwritten fixture's null author to the
+    // same literal `'fixture'`, so a windowed rule replayed over handwritten
+    // fixtures sees ONE member's burst whatever the operator wrote. The
+    // scenario that makes this bite is the natural pre-flip check —
+    // "three different members each post this phrase once, which must not trip
+    // duplicate_message" — which collapses to one member repeating itself and
+    // matches, answering the opposite of the truth about the one property it
+    // was used to check.
+    //
+    // The ambiguity that makes this non-decorative: the corpus is ALL
+    // handwritten and the rule IS windowed, which is the only combination that
+    // warrants the warning. The two neighbouring tests cover a windowed rule
+    // over observed rows (no warning) and a non-windowed rule (no caveat at
+    // all), so a warning printed unconditionally would redden one of them.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () =>
+          ruleWith([], {
+            kind: 'duplicate_message',
+            config: '{"maxRepeats":1,"windowMs":30000,"minLength":1}',
+          }),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'hw-1', content: 'same phrase', source: 'handwritten' }),
+          fixture({ fixtureId: 'hw-2', content: 'same phrase', source: 'handwritten' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('same synthetic author');
+    expect(res.text).toContain('cannot test whether this rule keeps members apart');
+    expect(res.data).toMatchObject({ windowedCorpusCaveat: { handwrittenRows: 2 } });
+  });
+
   it('does not caveat a non-windowed rule’s replay', async () => {
     const res = await drive(
       automodDryRunCommand,

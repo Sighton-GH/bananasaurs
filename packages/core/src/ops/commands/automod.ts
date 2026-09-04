@@ -69,6 +69,33 @@ interface AttachmentAwareness {
  */
 interface WindowedCorpusCaveat {
   readonly editedMessageRows: number;
+  /**
+   * How many **handwritten** fixtures this replay included, all of which are
+   * attributed to the same synthetic author.
+   *
+   * `predicateInputFrom` maps every handwritten fixture's null `author_id` to
+   * the literal `'fixture'` (a handwritten fixture has no member behind it and
+   * the `automod_fixtures_observed_has_author` CHECK forbids giving it one). For
+   * a *content* predicate that is harmless — authorship changes nothing. For a
+   * **windowed** predicate it silently rewrites the scenario: any handwritten
+   * corpus is replayed as **one member's burst**, whatever the operator meant.
+   *
+   * That matters because `automod dryrun --source handwritten` is exactly the
+   * tool an operator would reach for before flipping a windowed rule to
+   * enforce, and the most natural thing to test with it is cross-member
+   * independence — "three different members each post this phrase once, which
+   * must **not** trip `duplicate_message`". Today that collapses to one member
+   * repeating itself three times and **matches**, so the tool answers the
+   * opposite of the truth about the one property it was used to check. It takes
+   * two rows to hit, not a raid.
+   *
+   * So the count is surfaced and the caveat is printed. **The real fix needs a
+   * way to express authorship on a handwritten fixture without storing member
+   * data** — a synthetic author label, which is a migration and belongs with
+   * Slice 9's review surface. Until then this says so out loud rather than
+   * letting a replay quietly answer a question it cannot answer.
+   */
+  readonly handwrittenRows: number;
 }
 
 /** An observed fixture's message id is the text before PR-1's `:<hash>` suffix. */
@@ -134,7 +161,10 @@ const projectReport = (
   windowedCorpusCaveat:
     windowedCorpusCaveat === undefined
       ? null
-      : { editedMessageRows: windowedCorpusCaveat.editedMessageRows },
+      : {
+          editedMessageRows: windowedCorpusCaveat.editedMessageRows,
+          handwrittenRows: windowedCorpusCaveat.handwrittenRows,
+        },
   results: report.results.map((result) => ({
     fixtureId: result.fixtureId,
     label: result.label,
@@ -216,7 +246,10 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
     // the caveat belongs in `data` even when the run is abandoned or the
     // corpus is empty.
     const windowedCorpusCaveat: WindowedCorpusCaveat | undefined = isWindowedKind(report.kind)
-      ? { editedMessageRows: countEditedMessageRows(fixtures) }
+      ? {
+          editedMessageRows: countEditedMessageRows(fixtures),
+          handwrittenRows: fixtures.filter((f) => f.source === 'handwritten').length,
+        }
       : undefined;
     const data = projectReport(report, attachmentAwareness, windowedCorpusCaveat);
 
@@ -304,6 +337,19 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
           `corpus are extra rows for an edited message, which this replay counts once each where ` +
           `the live rule counts only the original create`,
       );
+      // A separate line, and only when there is something to warn about,
+      // because it says something stronger than the caveat above: not "this
+      // number is imprecise" but "this replay cannot answer a question you may
+      // well be using it to ask". See `WindowedCorpusCaveat.handwrittenRows`.
+      if (windowedCorpusCaveat.handwrittenRows > 0) {
+        lines.push(
+          `warning: ${windowedCorpusCaveat.handwrittenRows} handwritten fixture(s) in this run ` +
+            `are all attributed to the same synthetic author, so a windowed rule sees them as ` +
+            `one member's burst regardless of the scenario you wrote. A handwritten replay ` +
+            `therefore cannot test whether this rule keeps members apart — if that is what you ` +
+            `are checking before enforcing, use observed fixtures from real traffic instead`,
+        );
+      }
     }
 
     for (const result of report.results) {
