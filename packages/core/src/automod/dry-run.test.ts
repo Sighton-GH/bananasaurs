@@ -243,6 +243,99 @@ describe('the one-code-path invariant', () => {
     // comparison of two undefineds would pass under every implementation.
     expect(replayed?.trace.kind).toBe('attachment_type');
   });
+
+  /**
+   * Obligation 1 of the Slice 4 handoff: the gate above compares a single
+   * message, so it cannot see either of Slice 4's two blind spots — a wrong
+   * `atMs`, or a bypassed predicate cache — because nothing before this slice
+   * read the clock or carried state across messages. `rapid_spam` reads both.
+   *
+   * PR-25 governs the two cases below: a differential gate only detects
+   * *asymmetric* divergence, and only a sequence whose messages are spread
+   * beyond the window can distinguish a correct replay clock from a wrong
+   * one — a clustered burst produces the same verdict either way.
+   */
+  const rapidSpamRule = (ruleId: string): AutomodRule => ({
+    ruleId,
+    kind: 'rapid_spam',
+    mode: 'test',
+    config: '{"maxMessages":3,"windowMs":10000}',
+    terms: [],
+    allowlist: [],
+    inviteAllowlist: [],
+    linkDomains: [],
+  });
+
+  it('Case A — a rapid_spam burst clustered inside the window matches on both paths, and at the same message', async () => {
+    const rule = rapidSpamRule('rapid-spam-case-a');
+    const TIMESTAMPS = [1_000, 2_000, 3_000, 4_000];
+
+    // Live path: one subscriber, four sequential handle() calls. The
+    // instance-held predicateCache (`createAutomodSubscriber`'s closure) is
+    // what lets the window's count carry across all four.
+    let currentMs = 0;
+    const liveMatchedAt: number[] = [];
+    const subscriber = createAutomodSubscriber({
+      ...fakeDeps(),
+      listRules: () => [rule],
+      recordCaseEvent: () => {
+        liveMatchedAt.push(currentMs);
+      },
+    });
+    for (const ms of TIMESTAMPS) {
+      currentMs = ms;
+      await subscriber.handle(
+        messageEvent({ content: 'hello', receivedAtMs: ms, messageId: `live-a-${String(ms)}` }),
+      );
+    }
+    // Not merely "something matched" — the fourth message specifically, the
+    // "one too many" one. Two identical nothings would pass under every
+    // implementation, including a broken cache.
+    expect(liveMatchedAt).toEqual([4_000]);
+
+    // Dry-run path: the same four timestamps as fixtures, replayed.
+    const fixtures = TIMESTAMPS.map((ms) =>
+      fixture({ fixtureId: `rapid-a:${String(ms)}`, content: 'hello', createdAt: ms }),
+    );
+    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
+
+    expect(report.results.map((r) => r.matched)).toEqual([false, false, false, true]);
+    expect(report.results[3]?.fixtureId).toBe('rapid-a:4000');
+    expect(report.matched).toBe(1);
+  });
+
+  it('Case B — a rapid_spam sequence spread beyond the window matches on neither path', async () => {
+    const rule = rapidSpamRule('rapid-spam-case-b');
+    // Each message ages out of the 10 000 ms window before the next one
+    // arrives, so the correct answer on both paths is no match anywhere.
+    // This is the shape PR-25 requires: a clustered `Date.now()` replay would
+    // wrongly agree with a clustered burst (Case A), so only a spread-out
+    // sequence like this one can catch a wrong clock.
+    const TIMESTAMPS = [1_000, 20_000, 40_000, 60_000];
+
+    const liveMatched: number[] = [];
+    const subscriber = createAutomodSubscriber({
+      ...fakeDeps(),
+      listRules: () => [rule],
+      recordCaseEvent: () => {
+        liveMatched.push(1);
+      },
+    });
+    for (const ms of TIMESTAMPS) {
+      await subscriber.handle(
+        messageEvent({ content: 'hello', receivedAtMs: ms, messageId: `live-b-${String(ms)}` }),
+      );
+    }
+    expect(liveMatched).toEqual([]);
+
+    const fixtures = TIMESTAMPS.map((ms) =>
+      fixture({ fixtureId: `rapid-b:${String(ms)}`, content: 'hello', createdAt: ms }),
+    );
+    const report = runDryRun({ guildId: GUILD_ID, rule, fixtures });
+
+    expect(report.results.map((r) => r.matched)).toEqual([false, false, false, false]);
+    expect(report.matched).toBe(0);
+  });
 });
 
 describe('runDryRun', () => {
