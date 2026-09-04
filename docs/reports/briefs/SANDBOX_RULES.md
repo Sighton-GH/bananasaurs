@@ -32,9 +32,31 @@ worst-case reading. Left column is what gets refused; right is what to write.
 | `python3 - <<'PY' … PY \|\| cmd` | One command per call; a heredoc followed by anything else is unverifiable |
 | `cd x && …` | Absolute paths — `cd` in a compound command cannot be verified as staying in the worktree |
 | `rm -rf <dir>` | Leave scratch files where they are |
+| `cp f /tmp/f.bak` … `cp /tmp/f.bak f` | `git restore f` — see below |
 
 `python3 -c` and `node -e` are arbitrary code execution and **will** prompt.
 That is correct; write a file and run it, and expect the prompt anyway.
+
+## Undo a "break it and watch it fail" experiment with `git restore`
+
+Every brief asks you to neutralise a line, watch a guard go red, and restore it.
+**Do not back the file up with `cp` first.** Commit your work, then:
+
+```
+# break it — use the Edit tool, or sed -i if you must
+npx vitest run packages/core/src/automod/window.test.ts   # watch it fail
+git restore packages/core/src/automod/window.ts           # undo, exactly
+```
+
+`git restore <path>` is permitted without a prompt, and it is *safer* than a
+`cp` round-trip rather than merely more convenient: it can only ever write
+content that is already committed in git, so it cannot create novel bytes and
+cannot write outside the repository. A `cp` can do both. It also removes the
+chance of restoring the wrong backup, which is a real hazard when several
+experiments run in one session.
+
+**It discards uncommitted changes to the paths you name**, so commit before you
+start breaking things — which you should be doing anyway.
 
 ## Check gates by exit code, never through a pipe
 
