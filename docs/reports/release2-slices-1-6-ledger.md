@@ -949,6 +949,111 @@ the new worktree is **2148 tests / 102 files, typecheck and lint clean** — whi
 matches this ledger's Slice 2 close-out exactly, and is what proves the gates
 are measuring this worktree rather than the main checkout's `dist`.
 
+## Slice 4 rulings (2026-09-03)
+
+Six decisions the spec does not name, taken at plan time. Full text with
+costs-if-wrong in
+[the plan](superpowers/plans/2026-09-03-slice-4-window-tier.md); this is the
+index. Numbering continues from PR-19.
+
+| # | Ruling | Cost if wrong |
+| --- | --- | --- |
+| PR-20 | `duplicate_message` gets its **own** documented normalisation — `stripZeroWidth` (imported, not copied) plus lowercase and whitespace collapse — because the spec's "same code the keyword matcher uses" is **not achievable**. | Two members posting the same text with different leetspeak are not treated as duplicates. The safe direction, and widening is additive. |
+| PR-21 | Window state lives on the **compiled artifact**, in `compile`'s closure, not module state. | A config edit resets that rule's window — correct, since a changed threshold should not be judged against counts accrued under the old one. Commented, or it reads as a bug. |
+| PR-22 | Two independent caps — a per-member ring buffer and a cap on members tracked — and exceeding the member cap **evicts** rather than refuses. | Under a raid larger than the cap, the earliest members' counts restart. Bounded and documented; refusing to track would make the rule stop working under exactly the load it exists for. |
+| PR-23 | The window tier counts `messageCreate` only and ignores `messageUpdate` (ruling R-13 exists for this). | A member who edits a message to add spam is not *rated*, though content predicates still fire on the edit. Counting edits would make an ordinary typo-fixer trip a spam rule. |
+| PR-24 | `mention_spam` is stateless and never touches the window store, despite the spec's tier grouping. | Nothing. Recorded so a reader comparing spec to code does not think a window was forgotten. |
+| PR-25 | **A differential gate detects only *asymmetric* divergence**, so a "break it" target must sit on exactly one side of the comparison. | Task 5b would report Obligation 1 discharged without having exercised it. |
+
+**PR-20's third option was examined and rejected**, and the reason is not the
+obvious one. `obscenity` *does* export the transformer factories, so the
+dispatch loop could be hand-rolled — but it would depend on an undocumented
+container discriminant with no compatibility guarantee **and still omit
+`collapseDuplicatesTransformer`**, whose thresholds need a word list this
+predicate does not have (ADR 0039). The cost buys a brittle, partial subset of
+the matcher's behaviour, which is worse than an honest simple normaliser. Two
+obstacles were verified in `node_modules`, not assumed: `TransformerSet` is
+absent from the package index, and `matcher.ts` exports no string→string
+normaliser.
+
+**PR-25 is the one to remember, and it came from the plan review catching two
+guards that could not have gone red.** The one-code-path gate compares the live
+subscriber against the dry run, so **a bug in the code they share cannot make
+them disagree** — it makes both wrong together and the comparison stays green.
+That is what the gate *is*, not a weakness in it: `evaluate.ts`'s own header
+already says it proves the two callers are the same code, not that the code is
+correct. Both of the first draft's exercises violated it — one corrupted
+`evaluateRule` (shared, so symmetric), and one used a clustered burst whose
+verdict is unchanged when the replay clock is replaced by `Date.now()` (which
+also clusters). **Only a sequence spread *beyond* the window distinguishes a
+wrong clock**, and only an asymmetric corruption distinguishes a bypassed cache.
+
+### Slice 4 execution log
+
+**Plan review (2026-09-03) — EXECUTE-WITH-FIXES**, 2 blocking, both in Task 5,
+both the coordinator's, both PR-25's mistake. Also three non-blocking fixes
+accepted: an exported `DEFAULT_MAX_TRACKED_MEMBERS` so the two windowed
+predicates cannot drift to different undocumented caps, `minLength` defaulting
+to 0 rather than the plan quietly choosing a false-negative rate on the
+operator's behalf, and PR-20's rejection reason corrected from "it's a deep
+import" to "it is fragile *and* still unfaithful". **No decorative guards found
+in Tasks 1–4.** Report: [`slice-4-plan-review.md`](slice-4-plan-review.md).
+
+**Dispatch A (Tasks 1–2) — complete.** `7cec46c` (window store), `6dd61da`
+(`mention_spam`). Four guards watched failing, including dropping `guildId` from
+the window key. The implementer caught and fixed a real eviction-design bug
+before it shipped.
+
+**Dispatch B (Tasks 5a, 3, 4) — complete.** `d906bcc` (the registry seam),
+`eaf638b` (`rapid_spam`), `3a43ee1` (`duplicate_message` — **the tenth and last
+predicate kind**). **2302 tests / 113 files.**
+
+**Task 5a was moved to the front of dispatch B by the coordinator**, and the
+reason is a churn pattern worth naming. Obligation 3's four placeholder tests
+stand a real-but-unshipped kind in for "unregistered", and they had been
+repointed **three times** — `caps`, then `mention_spam`, then `rapid_spam` — each
+repoint correct in isolation. Dispatch B ships `rapid_spam`, so leaving the seam
+until Task 5 would have forced a fourth and then a fifth. The seam is
+`compileRuleWith(registry, rule)` with `compileRule` delegating over the shipped
+registry, so those tests assert against an **empty** registry and state their own
+premise. **A fixture whose validity expires on a schedule the test never
+mentions is a decorative guard waiting to happen.**
+
+### E-5 — a gate piped through `tail` reports its own success
+
+**The lint gate was red from `7d560d9` until `c02ea83`, and the coordinator
+reported it green twice.** Three files were committed unformatted by fix wave B.
+
+*Cause, which is the method rather than the files.* Gates were being checked as
+`npm run typecheck 2>&1 | tail -2 && npm run lint 2>&1 | tail -2 && …`. Piping
+through `tail` makes the pipeline's exit status **`tail`'s**, which is 0
+whatever npm did, so `&&` chains onward past a failure — and a truncated tail
+was being read as a pass.
+
+*The fix, now standing practice:* run each gate separately and check `$?`, or
+`>/dev/null 2>&1; echo $?`. **Never chain gates through a pipe.** Carried into
+every brief from here on, and it is why dispatch B's brief said so explicitly.
+
+### A mechanism whose guard cannot be written
+
+Dispatch B reported, plainly rather than quietly reconciling it, that the plan's
+"never prune" guard **did not reproduce**: disabling the window's age-based
+pruning changed nothing any test could observe. That report was correct, and it
+condemned the mechanism rather than the test.
+
+`countWithin`/`countMatching` filter by the window on *every* call, so
+correctness never came from pruning; and `maxEventsPerMember` is applied on every
+`record`, so memory was already bounded. Pruning bought a slightly smaller
+steady-state array inside an already-capped buffer, and cost a
+`maxObservedWindowMs` field, a `noteWindow` call in both read methods, and a doc
+comment arguing that lazily pruning against the largest window ever observed was
+safe. **Deleted** (`6bbc60a`).
+
+**The rule this yields: a mechanism whose guard cannot be written is a mechanism
+to justify or delete.** "Break it and watch it fail" has been treated as a test
+quality check; here it worked as a *design* check, and that is the more valuable
+use.
+
 ## A pattern worth adding to `docs/22`
 
 **Four decorative guards in one slice.** `docs/22` already records one from
