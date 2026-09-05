@@ -10,15 +10,12 @@ import type {
   MessageEvent,
   ReactionEvent,
 } from '../discord/events.js';
-import type {
-  ModerationIntent,
-  ModerationOutcome,
-  ModerationSafetyState,
-} from '../effects/moderation-gateway.js';
+import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
 import type { AutomodRule } from './predicates/types.js';
 import * as registry from './predicates/registry.js';
 import {
   createAutomodSubscriber,
+  type AutomodSafetyState,
   type AutomodSubscriberDeps,
   type ModerationGatewayPort,
 } from './subscriber.js';
@@ -149,7 +146,12 @@ interface Harness {
 }
 
 /** Everything live: not read-only, not stopped, not dry-run. */
-const LIVE: ModerationSafetyState = { killswitch: false, breakerOpen: false, dryRun: false };
+const LIVE: AutomodSafetyState = {
+  killswitch: false,
+  breakerOpen: false,
+  dryRun: false,
+  automodTestingMode: false,
+};
 
 function buildHarness(
   opts: {
@@ -160,7 +162,7 @@ function buildHarness(
     applyActionResult?: ModerationOutcome;
     logger?: typeof silentLogger;
     /** `null` stands for "this guild is not in the database at all". */
-    safetyState?: ModerationSafetyState | null;
+    safetyState?: AutomodSafetyState | null;
     /** Which rules have a role-type exemption configured (a cheap local read). */
     roleExemptRuleIds?: ReadonlySet<string>;
     /** Thrown by `deleteMessage`, mimicking `DiscordPort`'s real failures. */
@@ -706,7 +708,7 @@ describe('automod subscriber', () => {
    * member's message.
    */
   describe('safety gates on the deletion path', () => {
-    const blocked: [string, ModerationSafetyState | null, string][] = [
+    const blocked: [string, AutomodSafetyState | null, string][] = [
       ['the kill switch is on', { ...LIVE, killswitch: true }, 'delete_blocked_killswitch'],
       ['the circuit breaker is open', { ...LIVE, breakerOpen: true }, 'delete_blocked_breaker'],
       ['the guild is in dry run', { ...LIVE, dryRun: true }, 'delete_blocked_dry_run'],
@@ -756,6 +758,34 @@ describe('automod subscriber', () => {
       await subscriber.handle(messageCreate());
 
       expect(calls.readSafetyState).toBe(0);
+    });
+  });
+
+  /**
+   * ADR 0042 §5's third lever: an operator watching a newly-flipped enforce
+   * rule should not have to disable role panels to do it (F3/F4). Distinct
+   * from the safety-gate tests above — those record a `delete_blocked_*`
+   * action because a layer *stopped* an attempted enforcement; testing mode
+   * is not "stopped", it is "record this exactly as `test` mode would",
+   * which is why the assertion below expects `would_delete`, matching the
+   * non-enforce recording verbatim rather than a new blocked value.
+   */
+  describe('automod_testing_mode (ADR 0042 §5)', () => {
+    it('does not delete or count a violation, but records the match exactly as test mode would', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-testing-mode', mode: 'enforce' })],
+        safetyState: { ...LIVE, automodTestingMode: true },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-testing-mode', actionTaken: 'would_delete' }),
+      ]);
     });
   });
 

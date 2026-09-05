@@ -196,6 +196,7 @@ export {
 } from './effects/moderation-gateway.js';
 export {
   createAutomodSubscriber,
+  type AutomodSafetyState,
   type AutomodSubscriberDeps,
   type ModerationGatewayPort,
 } from './automod/subscriber.js';

@@ -4,8 +4,12 @@ import { describe, expect, it, vi } from 'vitest';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId } from '../ids.js';
 import type { DomainEvent, MessageEvent } from '../discord/events.js';
-import type { ModerationOutcome, ModerationSafetyState } from '../effects/moderation-gateway.js';
-import { createAutomodSubscriber, type AutomodSubscriberDeps } from './subscriber.js';
+import type { ModerationOutcome } from '../effects/moderation-gateway.js';
+import {
+  createAutomodSubscriber,
+  type AutomodSafetyState,
+  type AutomodSubscriberDeps,
+} from './subscriber.js';
 import type { AutomodRule, FixtureRecord, MatchTrace } from './predicates/types.js';
 import { runDryRun } from './dry-run.js';
 // Namespace import, not a named one, because `compileRule` needs to be
@@ -52,7 +56,12 @@ const moderationAuth: Authorized<'moderation.act'> = (() => {
   return result.value;
 })();
 
-const LIVE: ModerationSafetyState = { killswitch: false, breakerOpen: false, dryRun: false };
+const LIVE: AutomodSafetyState = {
+  killswitch: false,
+  breakerOpen: false,
+  dryRun: false,
+  automodTestingMode: false,
+};
 
 /** A minimal, fully-wired `AutomodSubscriberDeps` fake. Every port is inert. */
 const fakeDeps = (): AutomodSubscriberDeps => ({

@@ -122,4 +122,21 @@ describe('automod_testing_mode (ADR 0042)', () => {
       t.raw.prepare(`UPDATE guilds SET automod_testing_mode = 2 WHERE guild_id = ?`).run(GUILD_A),
     ).toThrow(/CHECK constraint failed/);
   });
+
+  /**
+   * `readSafetyState` is where the subscriber's `AutomodSafetyState` port
+   * (`core`) actually gets this field — a boolean conversion of the same
+   * INTEGER column the two tests above exercise directly. No setter exists
+   * yet (nothing in this slice adds one), so the row is written directly,
+   * matching the pattern the CHECK test above already uses.
+   */
+  it('readSafetyState surfaces the column as a boolean', () => {
+    expect(readSafetyState(a)?.automodTestingMode).toBe(false);
+
+    t.raw.prepare(`UPDATE guilds SET automod_testing_mode = 1 WHERE guild_id = ?`).run(GUILD_A);
+
+    expect(readSafetyState(a)?.automodTestingMode).toBe(true);
+    // Guild-scoped like every other field on this row.
+    expect(readSafetyState(b)?.automodTestingMode).toBe(false);
+  });
 });
