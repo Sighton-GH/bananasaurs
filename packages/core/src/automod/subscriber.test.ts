@@ -787,6 +787,46 @@ describe('automod subscriber', () => {
         expect.objectContaining({ ruleId: 'rule-testing-mode', actionTaken: 'would_delete' }),
       ]);
     });
+
+    it('takes precedence over the killswitch in what gets recorded', async () => {
+      // The check sits *ahead* of the `if (blocked !== undefined)` block, and
+      // that order is a decision with an observable consequence, so it gets a
+      // guard: move the testing-mode branch below the block that *acts* on
+      // `blocked` and this test goes red while the one above stays green.
+      //
+      // Below the *computation* of `blocked` is not the same mutation and
+      // proves nothing — `blocked` is only assigned there, and the
+      // testing-mode branch still `continue`s before anything reads it. That
+      // was the first mutation tried here, it left all 47 green, and the
+      // conclusion to draw was "the mutation was too weak", not "the test is
+      // decorative". Worth writing down: a mutation that stays green means
+      // either an unfalsifiable test or a mutation that changed no behaviour,
+      // and telling those apart is the whole job.
+      //
+      // Why this way round. `delete_blocked_killswitch` means "automod tried to
+      // act and an emergency lever stopped it". Under testing mode automod
+      // never tried — an operator has said "observe only" for this subsystem.
+      // Recording a blocked value would misattribute a deliberate
+      // configuration choice to an emergency, and make the killswitch look
+      // load-bearing for a rule that was not going to act either way.
+      //
+      // What it costs, stated so nobody discovers it as a surprise: the event
+      // row does not show that the killswitch was also engaged. That is
+      // acceptable because the killswitch is guild-wide and `doctor` reports
+      // it — it was never per-event information.
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-both-levers', mode: 'enforce' })],
+        safetyState: { ...LIVE, automodTestingMode: true, killswitch: true },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-both-levers', actionTaken: 'would_delete' }),
+      ]);
+    });
   });
 
   /**
