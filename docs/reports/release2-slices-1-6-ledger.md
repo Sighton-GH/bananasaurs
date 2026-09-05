@@ -48,7 +48,7 @@ per-slice execution log, and the findings worth carrying forward.
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
 | 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **✅ complete** — 9 tasks in 5 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES), two fix waves, re-review's two residuals fixed. 2267 tests (from 2148), typecheck + lint clean |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — (spec §9 names none) | [plan](superpowers/plans/2026-09-03-slice-4-window-tier.md) | **✅ complete** — 5 tasks in 3 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES: 3 CRITICAL), fix wave, re-review found a new CRITICAL in the fix, fixed. 2312 tests (from 2267), all gates green by exit code |
-| 6 — cutover tracking, observe gating, automod testing mode | 0042 | — | not started |
+| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendment 1) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **in progress** — plan reviewed (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Task 1 done: nine columns in three migrations, rebuild-survival proof with a negative control that goes red. 2322 tests (from 2312), all gates green by exit code. Tasks 2-6 outstanding, then whole-branch review |
 
 ## Owner decisions taken during this run
 
@@ -1146,6 +1146,60 @@ one caught by the plan review before any code. **Running total: sixteen.**
 that could not have gone red (PR-25) and a zero-width test fixture whose literal
 form could not pass under the normaliser PR-20 mandates — reported plainly rather
 than reconciled, which is the instruction working.
+
+## Slice 6 rulings (2026-09-05, in progress)
+
+PR-26…PR-30 were taken at plan time; full text with costs-if-wrong in
+[the plan](superpowers/plans/2026-09-04-slice-6-release-gate.md). PR-31 and
+PR-32 were taken during execution and are recorded here first. Numbering
+continues from PR-30.
+
+| # | Ruling | Cost if wrong |
+| --- | --- | --- |
+| PR-31 | Test call sites that need enforce mode reach it **through** the gate, via one named `makeRuleEnforceableForTest` helper that writes `cutover_state = 'ready'` and a sign-off — never around it. | If they bypassed `setRuleMode`, the gate would have no exerciser outside its own unit test and a regression in it would surface in production. If instead every integration test seeded a real 20-match review corpus, a later change to the gate would break tests that are not about the gate. |
+| PR-32 | This slice's columns take **three** `db:generate` runs, not the two ruling R-6 prescribes: plain nullable columns, then defaulted columns, then the CHECKs alone. | Generating a column together with its CHECK emits a rebuild whose `INSERT … SELECT` reads a column the old table does not have yet — R-6's exact shape. Splitting the adds from the CHECKs is what keeps 0017's fifteen-column `SELECT` valid. |
+
+**PR-31 exists because of what `setRuleMode`'s gate does to three integration
+test files.** ADR 0042 is right that `setRuleMode` has no production caller —
+that is why widening its return type from `void` is cheap. But
+`apps/daemon/src/automod.integration.test.ts` (twice),
+`apps/daemon/src/native-automod.integration.test.ts` and several tests in
+`automod-rules.test.ts` do call it with `mode: 'enforce'`, and they assert real
+deletions and real case events. `cutover_state` defaults to `not_started`, so a
+gated `setRuleMode` refuses them, the rule stays in `test`, and the assertions
+fail **pointing at the subscriber** — while the real cause is an ungranted
+sign-off three files away. That is ADR 0039's failure shape (a rule that looks
+configured and silently does not fire) reproduced inside the test suite, and it
+is the fifth time this run has hit it.
+
+**PR-32 is R-6 confirmed on a second table, and the confirmation cost a
+blocked task first.** The Slice 6 plan initially forbade a `mod_rules` rebuild
+outright, citing R-5's cascade hazard — a coordinator error already recorded in
+ADR 0042's Amendment 1: R-5's *fix* shipped in Slice 1, and `runMigrations`
+disables `foreign_keys` at the connection level around the whole run. What
+survived the correction is the narrower mechanical point: SQLite cannot add a
+CHECK constraint to an existing table at all, so **every** new
+CHECK-constrained column forces a rebuild, and the rebuild is only valid if the
+columns it selects already exist. Hence three runs.
+
+**Amendment 1's safety claim is now watched, not recalled.**
+`schema-invariants.test.ts` gained a negative control: the same migrations
+against the same seed, run through `migrate()` directly without
+`runMigrations`'s connection-level `foreign_keys = OFF`, and all five child row
+sets come back empty. They do. That also settles a question about someone
+else's library rather than assuming it — 0017 carries an in-file `PRAGMA
+foreign_keys=ON` (drizzle-kit emits one per rebuilt table) which would re-arm
+the cascade for the `mod_rules` half if it took effect, and it does not,
+because `migrate()` wraps the file in a transaction where SQLite documents that
+pragma as a no-op. The plan asked for a revert-and-forget experiment; keeping it
+as a test means the survival proof above it can never quietly become vacuous.
+
+**A decorative guard caught in the recovered work, and it was mine to catch.**
+Task 1's first dispatch left a `mod_rules`-rebuild-survival test that passed —
+against migrations containing no rebuild. The CHECKs were declared in
+`schema.ts` and materialised in no migration, so the test asserted survival of
+an event that had not happened, and its comment stated as fact that 0015/0016
+rebuilt two tables. **Running total: seventeen.**
 
 ## A pattern worth adding to `docs/22`
 

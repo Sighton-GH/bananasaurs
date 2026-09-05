@@ -231,6 +231,16 @@ On `guilds`: `automod_testing_mode` INTEGER NOT NULL DEFAULT 0, `boolCheck`.
   old table did not have yet. Two runs is exactly the shape R-6 prescribed for
   Slice 1, and it is what keeps the rebuild's column list correct.
 
+  **What it actually took: three runs (ruling PR-32, recorded after the fact).**
+  0015 the four plain nullable columns, 0016 the four defaulted ones — both
+  plain `ALTER TABLE ADD COLUMN`, neither a rebuild — and **0017 the CHECKs
+  alone**, which is the rebuild, of `guilds` and `mod_rules` both. The two-run
+  shape above understated it because it treated "defaulted" and
+  "CHECK-constrained" as one group; they are not. Every new CHECK forces a
+  rebuild, because SQLite cannot add a CHECK to an existing table at all, and
+  the rebuild is valid only because 0015 and 0016 had already put all fifteen
+  columns on the old table for its `SELECT` to read.
+
   Report the statements you actually saw — the count and whether each run
   rebuilt — rather than confirming a number from this plan. An earlier draft said
   "five" while the table listed nine.
