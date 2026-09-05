@@ -12,6 +12,7 @@ const rule = (config: string): AutomodRule => ({
   allowlist: [],
   inviteAllowlist: [],
   linkDomains: [],
+  countsAsViolation: true,
 });
 
 const message = (content: string): PredicateInput => ({

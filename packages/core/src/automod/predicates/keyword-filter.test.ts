@@ -11,6 +11,7 @@ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
   allowlist: [],
   inviteAllowlist: [],
   linkDomains: [],
+  countsAsViolation: true,
   ...over,
 });
 

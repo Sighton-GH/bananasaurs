@@ -18,6 +18,7 @@ const compile = (config: string, kind = 'mention_spam'): CompiledPredicate => {
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: [],
+    countsAsViolation: true,
   };
   const result = compileRule(rule);
   if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
@@ -103,6 +104,7 @@ describe('the mention_spam predicate', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const result = compileRule(rule);
     expect(result.ok).toBe(false);

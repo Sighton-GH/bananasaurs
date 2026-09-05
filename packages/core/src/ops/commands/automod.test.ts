@@ -93,6 +93,7 @@ const ruleWith = (words: readonly string[], over: Partial<AutomodRule> = {}): Au
   allowlist: [],
   inviteAllowlist: [],
   linkDomains: [],
+  countsAsViolation: true,
   ...over,
 });
 

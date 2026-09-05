@@ -17,6 +17,7 @@ const compile = (config: string): CompiledPredicate => {
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: [],
+    countsAsViolation: true,
   };
   const result = compileRule(rule);
   if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
@@ -172,6 +173,7 @@ describe('the attachment_type predicate', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     expect(compileRule(overlongRule).ok).toBe(false);
 

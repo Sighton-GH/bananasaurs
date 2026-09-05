@@ -91,6 +91,10 @@ const rule = (over: Partial<AutomodRule> & { ruleId: string }): AutomodRule => (
   allowlist: [],
   inviteAllowlist: [],
   linkDomains: [],
+  // ADR 0042's default: a rule feeds the escalation counter unless it opts
+  // out, so a test that does not care about this field gets the stricter,
+  // pre-existing behaviour every other test in this file already asserts.
+  countsAsViolation: true,
   ...over,
 });
 
@@ -321,6 +325,36 @@ describe('automod subscriber', () => {
       },
     ]);
     expect(calls.applyAction).toHaveLength(0);
+  });
+
+  /**
+   * ADR 0042 §2: `caps` and any future high-risk predicate can ship
+   * delete-only, held to the 5% false-positive bar instead of the zero bar a
+   * counter-feeding rule must clear — but only if the subscriber actually
+   * reads the flag from the rule rather than hard-coding `true` on every
+   * enforce-mode match, which is what it did before this task.
+   *
+   * Asserts the deletion *and* the flag together (plan Task 4's own
+   * stated ambiguity): an implementation that skipped the action entirely
+   * — never calling `deleteMessage` or `openOrResolveCase` at all — would
+   * satisfy an assertion on the flag alone without actually enforcing
+   * anything.
+   */
+  it('honours countsAsViolation: false on the enforce path — deletes, but does not feed the counter', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-delete-only', mode: 'enforce', countsAsViolation: false })],
+    });
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate());
+
+    expect(calls.deleteMessage).toEqual([
+      { channelId: CHANNEL, messageId: MESSAGE, reason: 'automod: rule-delete-only' },
+    ]);
+    expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
+    expect(calls.recordCaseEvent).toEqual([
+      expect.objectContaining({ ruleId: 'rule-delete-only', actionTaken: 'deleted' }),
+    ]);
   });
 
   it('does not call Discord in test mode, but still records what would have happened', async () => {

@@ -51,6 +51,21 @@ export interface AutomodRule {
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly { code: string; label: string }[];
   readonly linkDomains: readonly { domain: string; listType: 'allow' | 'deny' }[];
+  /**
+   * ADR 0042 §2: a property of the rule, not an inference from `mode`. The
+   * subscriber passes this straight to `openOrResolveCase` on the enforce
+   * path instead of hard-coding `true` — a rule that only deletes (`caps`,
+   * held to the 5% false-positive bar rather than the zero bar a
+   * counter-feeding rule must clear) says so here. Mirrors storage's
+   * `StoredAutomodRule.countsAsViolation` field for field; re-declared here
+   * rather than imported, per ADR 0014 (storage/core boundary).
+   *
+   * Deliberately **not** in `fingerprint.ts`'s `EXCLUDED_FIELDS`: the digest
+   * is exclusion-based precisely so a field added later is hashed by
+   * default, and this one changes matcher recompilation cost (one spurious
+   * recompile) only, never correctness — the safe default is to hash it.
+   */
+  readonly countsAsViolation: boolean;
 }
 
 /**

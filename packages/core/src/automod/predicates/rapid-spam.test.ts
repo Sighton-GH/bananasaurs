@@ -12,6 +12,7 @@ const compile = (config: string, kind = 'rapid_spam'): CompiledPredicate => {
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: [],
+    countsAsViolation: true,
   };
   const result = compileRule(rule);
   if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
@@ -118,6 +119,7 @@ describe('the rapid_spam predicate', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const result = compileRule(rule);
     expect(result.ok).toBe(false);
@@ -134,6 +136,7 @@ describe('the rapid_spam predicate', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const result = compileRule(rule);
     expect(result.ok).toBe(false);

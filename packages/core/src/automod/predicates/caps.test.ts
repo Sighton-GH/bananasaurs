@@ -18,6 +18,7 @@ const compile = (config: string, kind = 'caps'): CompiledPredicate => {
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: [],
+    countsAsViolation: true,
   };
   const result = compileRule(rule);
   if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);

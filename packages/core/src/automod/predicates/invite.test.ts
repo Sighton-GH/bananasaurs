@@ -37,6 +37,7 @@ describe('the invite predicate', () => {
     allowlist: [],
     inviteAllowlist: allowlist,
     linkDomains: [],
+    countsAsViolation: true,
   });
 
   it.each([

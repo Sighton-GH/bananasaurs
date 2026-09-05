@@ -100,6 +100,7 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
   allowlist: [],
   inviteAllowlist: [],
   linkDomains: [],
+  countsAsViolation: true,
 });
 
 const fixture = (over: Partial<FixtureRecord> & { fixtureId: string }): FixtureRecord => ({
@@ -200,6 +201,7 @@ describe('the one-code-path invariant', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const attachments = [{ fileName: 'setup.exe', contentType: 'text/plain', sizeBytes: 4096 }];
 
@@ -264,6 +266,7 @@ describe('the one-code-path invariant', () => {
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: [],
+    countsAsViolation: true,
   });
 
   it('Case A — a rapid_spam burst clustered inside the window matches on both paths, and at the same message', async () => {
@@ -364,6 +367,7 @@ describe('the one-code-path invariant', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
 
     // Live path: a create, then an edit of that *same* message (content
@@ -430,6 +434,7 @@ describe('the one-code-path invariant', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const TIMESTAMPS = [1_000, 2_000];
 

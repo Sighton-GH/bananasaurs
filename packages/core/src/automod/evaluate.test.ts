@@ -29,6 +29,7 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
   allowlist: [],
   inviteAllowlist: [],
   linkDomains: [],
+  countsAsViolation: true,
 });
 
 const inputWith = (content: string): PredicateInput => ({

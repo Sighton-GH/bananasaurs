@@ -38,6 +38,7 @@ describe('the link_domain predicate', () => {
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: domains,
+    countsAsViolation: true,
   });
 
   it('fires on a denied domain', () => {

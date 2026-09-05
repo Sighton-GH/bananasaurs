@@ -13,6 +13,7 @@ const compile = (config: string, kind = 'duplicate_message'): CompiledPredicate 
     allowlist: [],
     inviteAllowlist: [],
     linkDomains: [],
+    countsAsViolation: true,
   };
   const result = compileRule(rule);
   if (!result.ok) throw new Error(`expected to compile, got ${result.reason}: ${result.detail}`);
@@ -202,6 +203,7 @@ describe('the duplicate_message predicate', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const result = compileRule(rule);
     expect(result.ok).toBe(false);
@@ -247,6 +249,7 @@ describe('the duplicate_message predicate', () => {
       allowlist: [],
       inviteAllowlist: [],
       linkDomains: [],
+      countsAsViolation: true,
     };
     const result = compileRule(rule);
     expect(result.ok).toBe(false);

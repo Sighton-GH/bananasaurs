@@ -445,7 +445,10 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         }
 
         const { caseId, violationCount } = deps.openOrResolveCase(authorId, {
-          countsAsViolation: true,
+          // ADR 0042 §2: a property of the rule, not a constant — a
+          // delete-only rule (`countsAsViolation: false`) still deletes the
+          // message but must not push the member up the escalation ladder.
+          countsAsViolation: rule.countsAsViolation,
         });
 
         // A deletion Discord actually refused. Recorded rather than thrown —
