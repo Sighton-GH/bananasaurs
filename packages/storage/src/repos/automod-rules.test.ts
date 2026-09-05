@@ -19,6 +19,7 @@ import {
   type RuleKind,
 } from './automod-rules.js';
 import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
+import { makeRuleEnforceableForTest } from './enforcement-gate.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const ROLE = parseSnowflakeId('222222222222222222');
@@ -140,6 +141,11 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
+      // PR-31 (plan ruling): `setRuleMode`'s enforce path now runs through
+      // the ADR 0042 gate, which this test is not about — it reaches
+      // `mode: 'enforce'` through the gate via the test-only helper rather
+      // than around it.
+      makeRuleEnforceableForTest(scope, 'disabled-enforce', 1000);
       setRuleMode(scope, {
         ruleId: 'disabled-enforce',
         mode: 'enforce',
@@ -159,6 +165,7 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
+      makeRuleEnforceableForTest(scope, 'r1', 1000); // PR-31: reach enforce through the gate.
       setRuleMode(scope, { ruleId: 'r1', mode: 'enforce', now: 1000 });
       addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
 
@@ -178,6 +185,7 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
+      makeRuleEnforceableForTest(t.scopes.forGuild(GUILD), 'r1', 1000); // PR-31: through the gate.
       setRuleMode(t.scopes.forGuild(GUILD), { ruleId: 'r1', mode: 'enforce', now: 1000 });
 
       expect(listEnforceModeKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);

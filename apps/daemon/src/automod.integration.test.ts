@@ -12,6 +12,7 @@ import {
 } from '@bananasaurs/core';
 import {
   automodRuleRepo,
+  enforcementGateRepo,
   guildRepo,
   modCaseRepo,
   pipelineRepo,
@@ -101,6 +102,14 @@ const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
   });
   automodRuleRepo.addTerm(scope, { termId: TERM_ID, categoryId: CATEGORY_ID, text: 'badword' });
   if (mode !== 'test') {
+    // PR-31 (plan ruling): `setRuleMode`'s enforce path now runs through the
+    // ADR 0042 release gate, which none of this file's tests are about — a
+    // real caller reaches `mode: 'enforce'` through 20 reviewed matches and
+    // a sign-off, and this test-only helper stands in for that so the
+    // subscriber tests below don't have to build one.
+    if (mode === 'enforce') {
+      enforcementGateRepo.makeRuleEnforceableForTest(scope, RULE_ID, discord.now());
+    }
     automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode, now: discord.now() });
   }
 };
@@ -283,6 +292,7 @@ describe('automod, end to end on the fake gateway', () => {
     expect(discord.restCalls('deleteMessage')).toHaveLength(0);
     expect(findCase(MEMBER)?.violationCount).toBe(0);
 
+    enforcementGateRepo.makeRuleEnforceableForTest(scope, RULE_ID, discord.now()); // PR-31.
     automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
     await sendMessage(MEMBER, 'badword here');
 

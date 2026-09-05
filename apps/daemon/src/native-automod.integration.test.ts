@@ -9,6 +9,7 @@ import {
 } from '@bananasaurs/core';
 import {
   automodRuleRepo,
+  enforcementGateRepo,
   guildRepo,
   pipelineRepo,
   read,
@@ -94,6 +95,11 @@ const seedEnforcingKeywordRule = (term: string): void => {
     defaultAction: 'delete_and_case',
   });
   automodRuleRepo.addTerm(scope, { termId: TERM_ID, categoryId: CATEGORY_ID, text: term });
+  // PR-31 (plan ruling): reach `mode: 'enforce'` through the ADR 0042 gate
+  // rather than around it — this file's tests are about native AutoMod
+  // observability, not the gate, so a test-only helper stands in for a real
+  // 20-match review corpus and sign-off.
+  enforcementGateRepo.makeRuleEnforceableForTest(scope, RULE_ID, discord.now());
   automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
 };
 

@@ -11,6 +11,7 @@ import {
   wordTerms,
 } from '../schema.js';
 import type { InviteAllowlistEntry, LinkDomainEntry } from './automod-rule-lists.js';
+import { enforcementEligibility, type EnforcementEligibility } from './enforcement-gate.js';
 
 /**
  * Automod rules and the word list `keyword_filter` rules carry.
@@ -582,15 +583,38 @@ export interface SetRuleModeInput {
  * Updates a rule's mode and/or enabled flag. Both are optional so a caller
  * flipping one does not have to first read the other back — an owner turning
  * a rule off is not making a statement about what mode it should resume in.
+ *
+ * **The only write path to `mode = 'enforce'` (ADR 0042 §3), and it is
+ * gated.** A request for `mode: 'enforce'` is checked against
+ * `enforcementEligibility` before anything is written; a refusal writes
+ * nothing at all — not the mode, not `enabled`, not `updatedAt` — so a
+ * refused request leaves the row exactly as it was. On success, the same
+ * write advances `cutover_state` from `ready` (or an already-`cutover` rule)
+ * to `cutover` (PR-27): a gate that permitted enforcement without recording
+ * that it happened would leave `doctor` unable to tell an enforced rule from
+ * one merely eligible.
+ *
+ * Every other `mode` (`'test'`, `'observe'`, or omitted) bypasses the gate
+ * entirely — it exists to guard the one transition ADR 0042 is about.
  */
-export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): void =>
+export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): EnforcementEligibility =>
   write(scope, ({ db }) => {
+    let cutoverState: CutoverState | undefined;
+    if (input.mode === 'enforce') {
+      const eligibility = enforcementEligibility(scope, input.ruleId);
+      if (!eligibility.ok) return eligibility;
+      cutoverState = 'cutover';
+    }
+
     db.update(modRules)
       .set({
         mode: input.mode,
         enabled: input.enabled === undefined ? undefined : input.enabled ? 1 : 0,
+        cutoverState,
         updatedAt: input.now,
       })
       .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
       .run();
+
+    return { ok: true };
   });
