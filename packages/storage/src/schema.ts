@@ -5,6 +5,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   unique,
@@ -46,6 +47,20 @@ export const guilds = sqliteTable(
     breakerTrippedAt: integer('breaker_tripped_at'),
     breakerReason: text('breaker_reason'),
 
+    // ADR 0042 §5 — a third lever, distinct from `killswitch` (emergency,
+    // everything) and `dryRun` (guild-wide, everything): automod takes no
+    // Discord action while every other subsystem, role panels above all,
+    // keeps working. Added here, its CHECK in a separate `db:generate` run:
+    // the CHECK forces a table rebuild (SQLite cannot `ALTER TABLE ADD
+    // COLUMN` a CHECK constraint at all), and drizzle-kit 0.31.10 generates
+    // an invalid rebuild — its `INSERT … SELECT` reads the new column from
+    // the *old*, pre-rebuild table — when the column and its CHECK are added
+    // in the same call. Adding the column first, unconstrained, means the
+    // later CHECK-only run's rebuild reads a column the old table already
+    // has, which is what the 0010/0011 precedent for `mod_rules_kind` does
+    // too (add `config` in 0010; widen `kind`'s existing CHECK in 0011).
+    automodTestingMode: integer('automod_testing_mode').notNull().default(0),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -60,6 +75,7 @@ export const guilds = sqliteTable(
       'guilds_positive_limits',
       sql`${t.roleRatePerMin} > 0 AND ${t.reconcileBudget} > 0 AND ${t.breakerThreshold} > 0`,
     ),
+    check('guilds_automod_testing_mode_bool', boolCheck(t.automodTestingMode)),
   ],
 );
 
@@ -629,6 +645,27 @@ export const modRules = sqliteTable(
     config: text('config').notNull().default('{}'),
     mode: text('mode').notNull().default('test'),
     enabled: integer('enabled').notNull().default(1),
+
+    // ADR 0042 — the cutover state machine's clock (PR-27) and provenance.
+    // Plain nullable columns, added in their own db:generate run: R-6 records
+    // drizzle-kit emitting invalid SQL when a column add and a rebuild land
+    // in one generate call, and the CHECK-constrained columns below force a
+    // rebuild on this table.
+    observeStartedAt: integer('observe_started_at'),
+    legacyRuleRef: text('legacy_rule_ref'),
+    enforceSignedOffBy: text('enforce_signed_off_by'),
+    enforceSignedOffAt: integer('enforce_signed_off_at'),
+
+    // ADR 0042 — added here unconstrained; their CHECKs land in a later,
+    // separate `db:generate` run. See the `automodTestingMode` comment above
+    // on `guilds` for why: adding a column and its CHECK together makes
+    // drizzle-kit 0.31.10 emit a rebuild whose `INSERT … SELECT` reads the
+    // new column from the old, pre-rebuild table, which does not have it.
+    cutoverState: text('cutover_state').notNull().default('not_started'),
+    countsAsViolation: integer('counts_as_violation').notNull().default(1),
+    maxFalsePositiveRate: real('max_false_positive_rate').notNull().default(0.05),
+    minReviewedMatches: integer('min_reviewed_matches').notNull().default(20),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -649,6 +686,19 @@ export const modRules = sqliteTable(
     ),
     check('mod_rules_mode', sql`${t.mode} IN ('test','observe','enforce')`),
     check('mod_rules_enabled_bool', boolCheck(t.enabled)),
+    // PR-27's five cutover states. Distinct from `mod_rules_mode` above.
+    check(
+      'mod_rules_cutover_state',
+      sql`${t.cutoverState} IN ('not_started','observing','ready','cutover','rolled_back')`,
+    ),
+    check('mod_rules_counts_as_violation_bool', boolCheck(t.countsAsViolation)),
+    // "At most 5%" (ADR 0042 §4) — inclusive at both ends: exactly 0 and
+    // exactly 1 are valid rates, only outside [0,1] is nonsensical.
+    check(
+      'mod_rules_max_false_positive_rate_range',
+      sql`${t.maxFalsePositiveRate} BETWEEN 0 AND 1`,
+    ),
+    check('mod_rules_min_reviewed_matches_range', sql`${t.minReviewedMatches} >= 0`),
   ],
 );
 

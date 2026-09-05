@@ -35,6 +35,17 @@ import type { InviteAllowlistEntry, LinkDomainEntry } from './automod-rule-lists
  */
 
 export type RuleMode = 'test' | 'observe' | 'enforce';
+
+/**
+ * ADR 0042's cutover state machine (PR-27) — where a rule is in the journey
+ * from "nobody has looked at it" to enforcing, and whether it has been pulled
+ * back. Deliberately **not** the same axis as `RuleMode`: `mode` says what the
+ * rule does to a message right now, `cutoverState` says how much evidence
+ * stands behind that. A rule can sit in `mode: 'observe'` forever without ever
+ * reaching `ready`, and `rolled_back` records a decision that outlives the
+ * `mode: 'test'` it is accompanied by.
+ */
+export type CutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
 export type WordAction = 'log_only' | 'delete' | 'delete_and_case';
 
 /** The ten predicate kinds `mod_rules_kind` permits (ADR 0040). */
@@ -72,9 +83,42 @@ export interface StoredAutomodRule {
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly InviteAllowlistEntry[];
   readonly linkDomains: readonly LinkDomainEntry[];
+
+  /**
+   * ADR 0042's cutover-gate columns. Read on every rule, of every kind: the
+   * gate is a property of a rule's evidence, not of its predicate, and a
+   * `kind` branch here would be a second place to update when a kind is added
+   * (the same reasoning the `hydrate` comment below gives for the lists).
+   *
+   * `countsAsViolation` is a boolean here and an INTEGER in SQLite;
+   * `maxFalsePositiveRate` and `minReviewedMatches` are this rule's own
+   * thresholds rather than constants, because ADR 0042 §4 lets a high-stakes
+   * rule demand a stricter rate than the 5% default.
+   */
+  readonly cutoverState: CutoverState;
+  readonly observeStartedAt: number | null;
+  readonly legacyRuleRef: string | null;
+  readonly countsAsViolation: boolean;
+  readonly maxFalsePositiveRate: number;
+  readonly minReviewedMatches: number;
+  readonly enforceSignedOffBy: string | null;
+  readonly enforceSignedOffAt: number | null;
 }
 
-type RuleRow = { ruleId: string; kind: string; mode: string; config: string };
+type RuleRow = {
+  ruleId: string;
+  kind: string;
+  mode: string;
+  config: string;
+  cutoverState: string;
+  observeStartedAt: number | null;
+  legacyRuleRef: string | null;
+  countsAsViolation: number;
+  maxFalsePositiveRate: number;
+  minReviewedMatches: number;
+  enforceSignedOffBy: string | null;
+  enforceSignedOffAt: number | null;
+};
 
 /**
  * Assembles one rule's word list from its three tables.
@@ -153,6 +197,14 @@ const hydrate = (scope: GuildScope, row: RuleRow): StoredAutomodRule =>
       allowlist,
       inviteAllowlist,
       linkDomains,
+      cutoverState: row.cutoverState as CutoverState,
+      observeStartedAt: row.observeStartedAt,
+      legacyRuleRef: row.legacyRuleRef,
+      countsAsViolation: row.countsAsViolation === 1,
+      maxFalsePositiveRate: row.maxFalsePositiveRate,
+      minReviewedMatches: row.minReviewedMatches,
+      enforceSignedOffBy: row.enforceSignedOffBy,
+      enforceSignedOffAt: row.enforceSignedOffAt,
     };
   });
 
@@ -173,6 +225,14 @@ export const listEnabledRules = (scope: GuildScope): readonly StoredAutomodRule[
         kind: modRules.kind,
         mode: modRules.mode,
         config: modRules.config,
+        cutoverState: modRules.cutoverState,
+        observeStartedAt: modRules.observeStartedAt,
+        legacyRuleRef: modRules.legacyRuleRef,
+        countsAsViolation: modRules.countsAsViolation,
+        maxFalsePositiveRate: modRules.maxFalsePositiveRate,
+        minReviewedMatches: modRules.minReviewedMatches,
+        enforceSignedOffBy: modRules.enforceSignedOffBy,
+        enforceSignedOffAt: modRules.enforceSignedOffAt,
       })
       .from(modRules)
       .where(scope.only(modRules, eq(modRules.enabled, 1)))

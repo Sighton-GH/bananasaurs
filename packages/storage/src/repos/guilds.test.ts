@@ -105,3 +105,21 @@ describe('the breaker, opened and closed', () => {
     expect(readSafetyState(b)?.breakerOpen).toBe(true);
   });
 });
+
+/**
+ * ADR 0042 §5: a third lever, distinct from `killswitch` and `dryRun`, so
+ * testing one automod rule does not have to disable the role panels too.
+ * Task 1 only adds the column and widens `GuildRow`; wiring it into the
+ * subscriber as an actual lever is Task 5.
+ */
+describe('automod_testing_mode (ADR 0042)', () => {
+  it('defaults off for a newly upserted guild', () => {
+    expect(findGuild(a)?.automodTestingMode).toBe(0);
+  });
+
+  it('rejects a value the boolCheck does not permit, even from a hand-written row', () => {
+    expect(() =>
+      t.raw.prepare(`UPDATE guilds SET automod_testing_mode = 2 WHERE guild_id = ?`).run(GUILD_A),
+    ).toThrow(/CHECK constraint failed/);
+  });
+});

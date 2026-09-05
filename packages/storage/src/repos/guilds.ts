@@ -25,6 +25,13 @@ export interface GuildRow {
   breakerState: string;
   breakerTrippedAt: number | null;
   breakerReason: string | null;
+  /**
+   * ADR 0042 §5's third lever: automod takes no Discord action while every
+   * other subsystem keeps working. An INTEGER here, like `enabled`,
+   * `killswitch` and `dryRun` above — this interface mirrors the row, and the
+   * booleans are converted at the point of use, not here.
+   */
+  automodTestingMode: number;
   createdAt: number;
   updatedAt: number;
 }
