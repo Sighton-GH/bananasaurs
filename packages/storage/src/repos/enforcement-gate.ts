@@ -104,8 +104,20 @@ export const enforcementEligibility = (scope: GuildScope, ruleId: string): Enfor
     // The sign-off's own precondition (a clean dry run against the fixture
     // corpus) is machine-checked where it is recorded, `automod signoff`
     // (Task 6), because storage may not import `core` to run one (ADR 0014).
-    if (reviewed < row.minReviewedMatches) {
-      if (row.enforceSignedOffBy !== null) return { ok: true };
+    //
+    // **A sign-off clears this floor and nothing else.** It falls *through* to
+    // the two checks below rather than returning `ok` — the four checks are an
+    // ordered list where each one refuses or defers, not a chain of exits. What
+    // the sign-off attests is that a dry run over the *fixture corpus* was
+    // clean. That is a different body of evidence from the `mod_match_reviews`
+    // rows tallied above, and the weaker one: a corpus is authored, while a
+    // verdict row is a judgement recorded against traffic the rule actually
+    // matched. Short-circuiting here admitted a rule carrying five verdict
+    // rows, every one of them `false_positive`, on the strength of a corpus
+    // that had never seen those matches — ADR 0039's shape, a number that
+    // reads reassuring when it is not. Both directions are pinned by test, at
+    // the zero bar and at the rate.
+    if (reviewed < row.minReviewedMatches && row.enforceSignedOffBy === null) {
       return {
         ok: false,
         refusal: { reason: 'low-volume-unsigned', reviewed, required: row.minReviewedMatches },
@@ -122,6 +134,15 @@ export const enforcementEligibility = (scope: GuildScope, ruleId: string): Enfor
     // 4. Delete-only rules are held to a rate instead, inclusive at the
     // boundary: "at most 5%" means exactly 5% passes and only strictly above
     // it refuses.
+    //
+    // `reviewed` can legitimately be 0 here — a rule signed off before any
+    // match was reviewed, or one whose `min_reviewed_matches` an operator set
+    // to 0. There is no rate to hold such a rule to, and `0 / 0` is `NaN`,
+    // whose every comparison is false; computing it and relying on that would
+    // be passing the gate by accident. Say so instead: check 3 above has
+    // already established there are no false positives to weigh.
+    if (reviewed === 0) return { ok: true };
+
     const rate = falsePositives / reviewed;
     if (rate > row.maxFalsePositiveRate) {
       return {

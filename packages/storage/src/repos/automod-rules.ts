@@ -594,16 +594,70 @@ export interface SetRuleModeInput {
  * that it happened would leave `doctor` unable to tell an enforced rule from
  * one merely eligible.
  *
- * Every other `mode` (`'test'`, `'observe'`, or omitted) bypasses the gate
- * entirely — it exists to guard the one transition ADR 0042 is about.
+ * Every other `mode` (`'test'`, `'observe'`, or omitted) bypasses the *gate*,
+ * which exists to guard the one transition ADR 0042 is about — but not the
+ * state machine. **This function owns three of PR-27's five arrows** besides
+ * `ready → cutover`, because `mode` is the only thing that moves them:
+ *
+ * | From | To | On |
+ * | --- | --- | --- |
+ * | `not_started` | `observing` | `mode: 'observe'` — stamps `observe_started_at` |
+ * | `cutover` | `rolled_back` | any non-`enforce` `mode` |
+ * | `rolled_back` | `observing` | `mode: 'observe'` — **resets** `observe_started_at` |
+ *
+ * Three properties in that table are load-bearing and each has its own test:
+ *
+ * - **A rule already `observing` does not restart its clock.** `doctor` reports
+ *   rules past their observe floor by comparing `observe_started_at` to now, so
+ *   a stamp refreshed on every call would hold every rule permanently
+ *   just-started and that check would never fire — ADR 0039's shape.
+ * - **`cutover` plus `mode: 'observe'` lands on `rolled_back`, not
+ *   `observing`.** One step to `observing` would skip the state that carries the
+ *   safety property: `automod ready` refuses from `rolled_back`, which is what
+ *   stops a rollback being undone by retrying. Returning to `observing` is a
+ *   deliberate second call, and *that* call resets the clock, because a rule
+ *   pulled back from enforcement has to earn a fresh window.
+ * - **A disable is not a rollback.** `setRuleMode({ enabled: false })` is the
+ *   daemon's panic path and requests no mode change; `cutover` means "this rule
+ *   has been enforced", which stays true across a pause, and the evidence
+ *   behind it does not expire.
  */
 export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): EnforcementEligibility =>
   write(scope, ({ db }) => {
     let cutoverState: CutoverState | undefined;
+    let observeStartedAt: number | undefined;
+
     if (input.mode === 'enforce') {
       const eligibility = enforcementEligibility(scope, input.ruleId);
       if (!eligibility.ok) return eligibility;
       cutoverState = 'cutover';
+    } else if (input.mode !== undefined) {
+      // A mode change was actually requested, so the state machine may move.
+      // Read the current state rather than inferring it: every arrow below
+      // depends on where the rule *is*, and this is the only place that knows.
+      const current = db
+        .select({ cutoverState: modRules.cutoverState })
+        .from(modRules)
+        .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
+        .get()?.cutoverState as CutoverState | undefined;
+
+      if (current === 'cutover') {
+        // Off enforce from `cutover` is a rollback, whatever mode it lands in.
+        cutoverState = 'rolled_back';
+      } else if (
+        input.mode === 'observe' &&
+        (current === 'not_started' || current === 'rolled_back')
+      ) {
+        // The two states that start a window, and both stamp the clock: a fresh
+        // rule has none yet, and a rolled-back one has to earn a new one.
+        //
+        // `observing` and `ready` are excluded deliberately, not by omission:
+        // re-observing an observing rule must not restart its clock, and a
+        // `ready` rule an owner sends back to `observe` keeps the window it has
+        // already served.
+        cutoverState = 'observing';
+        observeStartedAt = input.now;
+      }
     }
 
     db.update(modRules)
@@ -611,6 +665,7 @@ export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): Enforce
         mode: input.mode,
         enabled: input.enabled === undefined ? undefined : input.enabled ? 1 : 0,
         cutoverState,
+        observeStartedAt,
         updatedAt: input.now,
       })
       .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))

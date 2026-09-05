@@ -253,6 +253,57 @@ describe('enforcementEligibility', () => {
     expect(enforcementEligibility(scope, ruleId)).toEqual({ ok: true });
   });
 
+  it('does not let a sign-off excuse recorded false-positive verdicts', () => {
+    // The sign-off clears the low-volume *floor*, not the evidence. It attests
+    // that a dry run over the fixture corpus was clean (PR-29, machine-checked
+    // in `automod signoff`); it says nothing about the `mod_match_reviews` rows
+    // this gate tallies. A short-circuit to `ok` here let five verdict rows,
+    // every one of them `false_positive`, through the gate on the strength of a
+    // corpus that had never seen those matches — ADR 0039's shape exactly, a
+    // number that reads reassuring when it is not.
+    //
+    // The verdicts below are seeded fixtures, as every verdict in this file is;
+    // what is under test is how the gate weighs rows of this shape, not that
+    // anyone reviewed anything. In production `mod_match_reviews` has no writer
+    // but a review path — `automod review`, and Slice 9's dashboard — which is
+    // what makes the shape worth weighing at all.
+    //
+    // So: signed off, under the floor, and every verdict a false positive must
+    // still be refused, and refused for the *false positives* rather than for
+    // the volume, because that is the fact the operator has to act on.
+    const ruleId = 'signed-off-all-false-positive';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'ready');
+    seedReviewedMatches(ruleId, Array<MatchVerdict>(5).fill('false_positive'));
+    makeRuleEnforceableForTest(scope, ruleId, NOW);
+
+    const result = enforcementEligibility(scope, ruleId);
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.refusal).toEqual({ reason: 'false-positive', falsePositives: 5, reviewed: 5 });
+    }
+  });
+
+  it('holds a signed-off low-volume delete-only rule to its rate as well', () => {
+    // The same fall-through, one tier down. `counts_as_violation = 0` skips
+    // the zero bar above, so the rate check is what has to catch this: 1 of 4
+    // is 25%, far above the 5% default, and a sign-off does not buy an
+    // exemption from it either.
+    const ruleId = 'signed-off-delete-only-bad-rate';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'ready');
+    setCountsAsViolation(ruleId, false);
+    seedReviewedMatches(ruleId, [
+      'false_positive',
+      ...Array<MatchVerdict>(3).fill('true_positive'),
+    ]);
+    makeRuleEnforceableForTest(scope, ruleId, NOW);
+
+    const result = enforcementEligibility(scope, ruleId);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusal.reason).toBe('rate-too-high');
+  });
+
   it('does NOT fall to the low-volume path at exactly 20 reviewed matches', () => {
     // The other side of the same boundary: `min_reviewed_matches` is 20 and
     // the rule is "minimum 20 reviewed matches", so 20 is *enough* — an
@@ -302,5 +353,96 @@ describe('setRuleMode(mode: "enforce")', () => {
     // Neither the mode nor the state moved — a refusal is not a partial write.
     expect(row.mode).toBe('test');
     expect(row.cutover_state).toBe('not_started');
+  });
+});
+
+/**
+ * PR-27's other three transitions. The enforce-side gate above is only two of
+ * the five arrows in the ruling's table, and the other three all live in this
+ * same `setRuleMode` — a fact the Task 2+3 brief omitted, pointing at the
+ * plan's "Interfaces" block rather than at PR-27's table.
+ *
+ * Leaving them out is not a cosmetic gap. `automod ready` (Task 6) refuses
+ * unless the rule is currently `observing`, and nothing else writes
+ * `observing`, so without these the only command that can reach `ready` could
+ * never succeed and `rolled_back` would be unreachable — exactly the "all three
+ * states were unreachable and the property was false" defect the plan review
+ * already caught once in PR-27's own first draft.
+ */
+describe('setRuleMode: the rest of the PR-27 state machine', () => {
+  const stateOf = (ruleId: string): { cutover_state: string; observe_started_at: number | null } =>
+    t.raw
+      .prepare(
+        `SELECT cutover_state, observe_started_at FROM mod_rules WHERE guild_id = ? AND rule_id = ?`,
+      )
+      .get(GUILD, ruleId) as { cutover_state: string; observe_started_at: number | null };
+
+  it('starts the clock: not_started plus observe becomes observing and stamps observe_started_at', () => {
+    const ruleId = 'starts-clock';
+    createTestRule(ruleId);
+
+    expect(setRuleMode(scope, { ruleId, mode: 'observe', now: NOW })).toEqual({ ok: true });
+    expect(stateOf(ruleId)).toEqual({ cutover_state: 'observing', observe_started_at: NOW });
+  });
+
+  it('does not restart the clock when a rule already observing is set to observe again', () => {
+    // The failure this forbids is ADR 0039's shape: a window that silently
+    // never elapses. `doctor` reports rules in `observe` past their floor by
+    // comparing `observe_started_at` to now, so a stamp refreshed on every call
+    // would keep every rule permanently just-started, and that check would read
+    // as reassuring while never once firing.
+    const ruleId = 'no-clock-restart';
+    createTestRule(ruleId);
+    setRuleMode(scope, { ruleId, mode: 'observe', now: NOW });
+
+    setRuleMode(scope, { ruleId, mode: 'observe', now: NOW + 999_999 });
+    expect(stateOf(ruleId)).toEqual({ cutover_state: 'observing', observe_started_at: NOW });
+  });
+
+  it('records the rollback: a cutover rule moved off enforce becomes rolled_back, not observing', () => {
+    // Deliberately NOT straight to `observing`. Going there in one step would
+    // skip `rolled_back` entirely, and `rolled_back` is the state carrying the
+    // whole safety property — `automod ready` refuses from it, which is what
+    // stops a rollback being undone by retrying. Re-observing is a separate,
+    // deliberate second act, tested below.
+    const ruleId = 'records-rollback';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'cutover');
+
+    expect(setRuleMode(scope, { ruleId, mode: 'observe', now: NOW })).toEqual({ ok: true });
+    const state = stateOf(ruleId);
+    expect(state.cutover_state).toBe('rolled_back');
+    // The clock is not started here either: earning a fresh window is what the
+    // *next* call does.
+    expect(state.observe_started_at).toBeNull();
+  });
+
+  it('re-observing a rolled_back rule returns it to observing and resets the clock', () => {
+    // The carried-forward obligation from this run's kickoff: a rule pulled
+    // back from enforcement has to earn a fresh window, because its old
+    // `observe_started_at` would let `doctor` think the floor had elapsed.
+    const ruleId = 'reobserve-resets';
+    createTestRule(ruleId);
+    setRuleMode(scope, { ruleId, mode: 'observe', now: NOW });
+    setCutoverState(ruleId, 'cutover');
+    setRuleMode(scope, { ruleId, mode: 'observe', now: NOW + 1 });
+    expect(stateOf(ruleId).cutover_state).toBe('rolled_back');
+
+    const later = NOW + 500_000;
+    expect(setRuleMode(scope, { ruleId, mode: 'observe', now: later })).toEqual({ ok: true });
+    expect(stateOf(ruleId)).toEqual({ cutover_state: 'observing', observe_started_at: later });
+  });
+
+  it('disabling a cutover rule is not a rollback and leaves its state alone', () => {
+    // `setRuleMode({ enabled: false })` is the daemon's real panic path, and it
+    // requests no mode change at all. `cutover` means "this rule has been
+    // enforced", which stays true across a pause, and the evidence behind it
+    // does not expire — so a disable must not consume the rollback arrow.
+    const ruleId = 'disable-not-rollback';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'cutover');
+
+    expect(setRuleMode(scope, { ruleId, enabled: false, now: NOW })).toEqual({ ok: true });
+    expect(stateOf(ruleId).cutover_state).toBe('cutover');
   });
 });
