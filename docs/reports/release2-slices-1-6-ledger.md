@@ -48,7 +48,7 @@ per-slice execution log, and the findings worth carrying forward.
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
 | 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **✅ complete** — 9 tasks in 5 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES), two fix waves, re-review's two residuals fixed. 2267 tests (from 2148), typecheck + lint clean |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — (spec §9 names none) | [plan](superpowers/plans/2026-09-03-slice-4-window-tier.md) | **✅ complete** — 5 tasks in 3 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES: 3 CRITICAL), fix wave, re-review found a new CRITICAL in the fix, fixed. 2312 tests (from 2267), all gates green by exit code |
-| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendment 1) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **in progress** — plan reviewed (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Tasks 1-5 done: nine columns in three migrations with a rebuild-survival negative control that goes red; the enforcement gate, with a fix wave for a sign-off that cleared the evidence and three missing PR-27 transitions; `countsAsViolation` to the subscriber and `automod_testing_mode` as a third lever kept structurally out of the moderation path. 2345 tests (from 2312), all gates green by exit code. Task 6 outstanding, then whole-branch review |
+| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendment 1) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **in progress** — plan reviewed (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Tasks 1-5 done: nine columns in three migrations with a rebuild-survival negative control that goes red; the enforcement gate, with a fix wave for a sign-off that cleared the evidence and three missing PR-27 transitions; `countsAsViolation` to the subscriber and `automod_testing_mode` as a third lever kept structurally out of the moderation path. 2345 tests (from 2312), all gates green by exit code. All six tasks done: `doctor`'s two checks plus `automod ready`/`automod signoff`, with a follow-up for an observe-window check that reported disabled rules forever. 2380 tests (from 2312), all gates green by exit code. Whole-branch review in flight |
 
 ## Owner decisions taken during this run
 
@@ -1160,6 +1160,7 @@ continues from PR-30.
 | PR-32 | This slice's columns take **three** `db:generate` runs, not the two ruling R-6 prescribes: plain nullable columns, then defaulted columns, then the CHECKs alone. | Generating a column together with its CHECK emits a rebuild whose `INSERT … SELECT` reads a column the old table does not have yet — R-6's exact shape. Splitting the adds from the CHECKs is what keeps 0017's fifteen-column `SELECT` valid. |
 | PR-33 | `automodTestingMode` goes on **storage's** `SafetyState` and on an automod-specific core type, **not** on `ModerationSafetyState`, which stays at its three fields. | `purge.ts` passes that same state to `classifyRefusal`, so widening the shared type would let the automod lever gate moderation. A comment saying "only automod reads this" is caller discipline; CLAUDE.md rule 2's stance is that the constraint belongs in the signature. |
 | PR-34 | `automod_testing_mode` is checked **ahead** of the `delete_blocked_*` block, so with both levers set the event records `would_delete` rather than `delete_blocked_killswitch`. | `delete_blocked_killswitch` means "automod tried to act and an emergency lever stopped it"; under testing mode automod never tried. The wrong order misattributes a deliberate configuration choice to an emergency. The cost — the event row does not show the killswitch was also engaged — is acceptable because the killswitch is guild-wide and `doctor` reports it. |
+| PR-35 | `doctor`'s observe-window check keys on `cutover_state = 'observing'`, **not** `mode = 'observe'` as the plan and its brief both said — and filters `enabled = 1`, which the sibling enforce-state check deliberately does not. | Keying on `cutover_state` makes `doctor` report exactly the rules for which `automod ready` is available, and it is self-consistent: the gate refuses `enforce` from `observing`, so an `observing` rule is necessarily in a recording mode. Keying on `mode` would report a rule whose journey has not started. The `enabled` filter is the difference between a workflow prompt and a latent hazard — see below. |
 
 **PR-31 exists because of what `setRuleMode`'s gate does to three integration
 test files.** ADR 0042 is right that `setRuleMode` has no production caller —
@@ -1263,6 +1264,46 @@ That track record makes "green mutation ⇒ decorative test" a fast and usually
 correct inference, which is exactly what makes it dangerous — the one time the
 mutation is at fault, the same reflex deletes a working guard. Check that the
 mutation moved the behaviour before concluding anything about the test.
+
+**Task 6's two `doctor` checks differ on `enabled`, and the difference is the
+whole distinction between a hazard and a chore.**
+
+`listEnforceRulesWithBadCutoverState` ignores `enabled` on purpose. A disabled
+`mode = 'enforce'` row is a landmine: `setRuleMode({ enabled: true })` passes no
+mode, so it never consults the gate, and the rule resumes enforcing on a
+`cutover_state` no writer would have left it in. Reporting it while it sleeps is
+the point.
+
+`listObservingRulesPastWindowWithBacklog` shipped with the same omission and it
+was a defect there, fixed in a follow-up. That check is a workflow prompt —
+"your window is up, go review the backlog so you can decide about enforcement" —
+and for a rule an owner has turned off there is no decision waiting, the backlog
+has stopped growing, and the only thing that would clear the line is reviewing
+matches for a rule nobody uses. It would have sat in `doctor` on every run
+forever. **A check that cries wolf is worse than no check**: `doctor` is what an
+operator runs to find out whether anything needs them, and a permanent line
+nothing can clear teaches them to skim past the ones that fire for a real
+reason. That is ADR 0039's reasoning about reassuring numbers, pointed the other
+way, and it is the first time this run has hit that direction of it.
+
+**A dispatch reported one of its own code lines decorative, unprompted, and was
+right.** The brief asked for the `observe_started_at IS NOT NULL` filter to be
+pinned in both directions. The behavioural test passes and matters; the *line*
+turned out to be redundant, because SQLite's `NULL <= x` evaluates to NULL and a
+`WHERE` treats that as false, so removing it changed no result. It was kept
+anyway, with a comment saying exactly that, on the ground that relying on the
+NULL-comparison rule implicitly is more fragile than stating the intent. Both
+halves of that are the right call, and volunteering the negative result is the
+behaviour the "verify, do not assert" rule is trying to buy.
+
+**PR-35 is a case of an implementer improving on the plan.** Both the plan and
+the brief written from it said the observe-window check looks for rules in
+`mode = 'observe'`. Keying on `cutover_state = 'observing'` instead is better on
+two counts: it makes `doctor` report exactly the rules for which `automod ready`
+is available, and it cannot go stale, because the gate refuses `enforce` from
+`observing`, so an `observing` rule is necessarily in a mode that records
+matches rather than acting on them. Accepted as written and recorded here
+because it contradicts a document a later reader will find.
 
 **A decorative guard caught in the recovered work, and it was mine to catch.**
 Task 1's first dispatch left a `mod_rules`-rebuild-survival test that passed —
