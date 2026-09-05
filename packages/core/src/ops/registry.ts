@@ -5,7 +5,9 @@ import {
   automodDryRunCommand,
   automodInviteAllowCommand,
   automodInviteDenyCommand,
+  automodReadyCommand,
   automodReviewCommand,
+  automodSignoffCommand,
   automodVerdictCommand,
 } from './commands/automod.js';
 import { backupListCommand, backupNowCommand } from './commands/backup.js';
@@ -57,6 +59,8 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   // dispatcher enforces both, so the ordering here is for `--help` only.
   configSetCommand,
   automodVerdictCommand,
+  automodReadyCommand,
+  automodSignoffCommand,
   automodInviteAllowCommand,
   automodInviteDenyCommand,
   automodDomainAddCommand,

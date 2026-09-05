@@ -629,6 +629,159 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
 });
 
 /**
+ * `automod ready` (ADR 0042 §3/PR-27, Task 6): the explicit human act that
+ * ends a rule's observe window, so it can go on to `automod signoff` (below)
+ * or straight to `setRuleMode(mode: 'enforce')`.
+ *
+ * **Refused unless the rule is currently `observing`**, and the refusal names
+ * the actual state — the same "return a usage answer, not a throw" shape
+ * `automod verdict`'s `'no-such-event'` uses above, since an operator naming a
+ * rule in the wrong state is a usage mistake, not a fault. The refusal that
+ * matters most is from `rolled_back`: without this precondition, a rollback
+ * could be undone by `ready` then a successful `enforce` without ever
+ * revisiting `observing` — the exact scenario ADR 0042 exists to prevent
+ * (PR-27).
+ */
+const automodReadyArgs = z.object({ ruleId: z.string().min(1) }).strict();
+
+export const automodReadyCommand = defineCommand<z.infer<typeof automodReadyArgs>>({
+  name: 'automod ready',
+  write: true,
+  summary: 'mark an observing rule ready for enforcement (ADR 0042, PR-27)',
+  positional: [{ name: 'ruleId', required: true, describe: 'the rule to mark ready' }],
+  args: automodReadyArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.setAutomodRuleReady(args.ruleId);
+
+    if (!outcome.ok) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be marked ready from cutover_state ${outcome.state}; ` +
+          `it must be observing (ADR 0042 — ready is the explicit human act that ends the ` +
+          `observe window)`,
+        data: { ok: false, reason: 'not-observing', ruleId: args.ruleId, state: outcome.state },
+        audit: {
+          action: 'automod.cutover_ready',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'not-observing', state: outcome.state },
+        },
+      };
+    }
+
+    return {
+      text: `rule ${args.ruleId} is now ready for enforcement`,
+      data: { ok: true, ruleId: args.ruleId },
+      audit: {
+        action: 'automod.cutover_ready',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { outcome: 'ready' },
+      },
+    };
+  },
+});
+
+/**
+ * `automod signoff` (ADR 0042 §4/PR-29, Task 6): the low-volume path's
+ * machine-checked half. The spec gates a rule with fewer than
+ * `min_reviewed_matches` reviewed matches on "a clean pass against the
+ * fixture corpus plus an explicit owner sign-off". `enforcementEligibility`
+ * (`packages/storage`) checks only that a sign-off is *present* — it cannot
+ * run a dry run itself, because storage may not import core (ADR 0014). This
+ * command is the layer that can see both the rule and the corpus, so it is
+ * where the clean-corpus half of PR-29 is actually enforced: **refuses unless
+ * `runDryRun` over the fixture corpus reports `usable: true`, `threw: 0` and
+ * `falsePositives: 0`.** Each of the three is checked independently — a rule
+ * that merely fails to compile, or one that throws without ever recording a
+ * false positive, must refuse just as surely as one with an outright false
+ * positive.
+ *
+ * Reuses `automod dryrun`'s corpus path (`ctx.ports.findAutomodRule` +
+ * `ctx.ports.listAutomodFixtures` + `runDryRun`) rather than writing a second
+ * one, the same reuse the brief calls out.
+ */
+const automodSignoffArgs = z.object({ ruleId: z.string().min(1) }).strict();
+
+export const automodSignoffCommand = defineCommand<z.infer<typeof automodSignoffArgs>>({
+  name: 'automod signoff',
+  write: true,
+  summary: 'record an owner sign-off for the low-volume enforcement path (ADR 0042 §4, PR-29)',
+  positional: [{ name: 'ruleId', required: true, describe: 'the rule to sign off' }],
+  args: automodSignoffArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const rule = ctx.ports.findAutomodRule(args.ruleId);
+
+    if (rule === undefined) {
+      // Mirrors `automod dryrun`'s own "no *enabled* rule" usage answer: the
+      // port is enabled-only, so a disabled rule lands here too.
+      return {
+        text: `there is no enabled rule ${args.ruleId} in this guild (a disabled rule cannot be signed off)`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule' },
+        },
+      };
+    }
+
+    const fixtures = ctx.ports.listAutomodFixtures({});
+    const report = runDryRun({ guildId: ctx.guildId, rule, fixtures });
+    // PR-29's three conditions, checked independently (the brief's own
+    // warning: a single "not clean" test passes an implementation checking
+    // only one of them).
+    const clean = report.usable && report.threw === 0 && report.falsePositives === 0;
+
+    if (!clean) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be signed off: the dry run over the fixture corpus is not ` +
+          `clean (usable=${String(report.usable)}, threw=${String(report.threw)}, ` +
+          `falsePositives=${String(report.falsePositives)}) — PR-29 requires a clean corpus pass ` +
+          `before a sign-off is recorded`,
+        data: {
+          ok: false,
+          reason: 'dry-run-not-clean',
+          ruleId: args.ruleId,
+          usable: report.usable,
+          threw: report.threw,
+          falsePositives: report.falsePositives,
+        },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: {
+            outcome: 'dry-run-not-clean',
+            usable: report.usable,
+            threw: report.threw,
+            falsePositives: report.falsePositives,
+          },
+        },
+      };
+    }
+
+    // Same shape `automod verdict` uses at line 568: a claim, never a
+    // verified identity (ADR 0024 amendment 2).
+    const signedOffBy = `cli:${ctx.actor.unixUserClaimed ?? 'unknown'}`;
+    ctx.ports.recordAutomodSignOff({ ruleId: args.ruleId, signedOffBy });
+
+    return {
+      text: `rule ${args.ruleId} signed off by ${signedOffBy} (dry run over the fixture corpus was clean)`,
+      data: { ok: true, ruleId: args.ruleId, signedOffBy },
+      audit: {
+        action: 'automod.enforce_signed_off',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { outcome: 'recorded', signedOffBy },
+      },
+    };
+  },
+});
+
+/**
  * `automod invite-allow` / `automod invite-deny` / `automod domain-add` /
  * `automod domain-rm` (plan ruling PR-19, Task 9 of the slices 3-5 plan).
  *

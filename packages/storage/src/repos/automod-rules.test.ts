@@ -14,8 +14,10 @@ import {
   listEnabledRules,
   listEnforceModeKeywordFilterRules,
   ruleExists,
+  setEnforceSignOff,
   setRuleConfig,
   setRuleMode,
+  setRuleReady,
   type RuleKind,
 } from './automod-rules.js';
 import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
@@ -445,5 +447,119 @@ describe('mod_rules cutover-gate columns (ADR 0042)', () => {
     expect(() => insertRawRule('reviewed-neg', 'min_reviewed_matches', -1)).toThrow(
       /CHECK constraint failed/,
     );
+  });
+});
+
+/**
+ * `automod ready` (Task 6, ADR 0042 §3/PR-27): the production writer for
+ * `observing -> ready`, refused from every other state. Deliberately **not**
+ * driven through `makeRuleEnforceableForTest` — that helper writes `ready`
+ * with no precondition at all, and a test reaching `ready` through it would
+ * prove nothing about `setRuleReady`'s own refusal. States are planted with
+ * raw SQL or the real `setRuleMode`, the same choice `enforcement-gate.test.ts`
+ * makes for the same reason.
+ */
+describe('setRuleReady', () => {
+  const setCutoverStateRaw = (ruleId: string, state: string): void => {
+    t.raw
+      .prepare(`UPDATE mod_rules SET cutover_state = ? WHERE guild_id = ? AND rule_id = ?`)
+      .run(state, GUILD, ruleId);
+  };
+
+  const cutoverStateOf = (ruleId: string): string =>
+    (
+      t.raw
+        .prepare(`SELECT cutover_state FROM mod_rules WHERE guild_id = ? AND rule_id = ?`)
+        .get(GUILD, ruleId) as { cutover_state: string }
+    ).cutover_state;
+
+  it('succeeds from observing, moving cutover_state to ready', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setRuleMode(scope, { ruleId: 'r1', mode: 'observe', now: 1000 });
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({ ok: true });
+    expect(cutoverStateOf('r1')).toBe('ready');
+  });
+
+  it('refuses from rolled_back — without this, a rollback could be undone by ready then enforce, never revisiting observing', () => {
+    // This is the test the brief names as the one that matters: ADR 0042
+    // exists to prevent exactly this shortcut.
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setCutoverStateRaw('r1', 'rolled_back');
+
+    const result = setRuleReady(scope, { ruleId: 'r1', now: 2000 });
+    expect(result).toEqual({ ok: false, reason: 'not-observing', state: 'rolled_back' });
+    // Refused, so nothing moved.
+    expect(cutoverStateOf('r1')).toBe('rolled_back');
+  });
+
+  it('refuses from not_started — the operator has not started a window', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    // cutover_state stays at its default, 'not_started'.
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'not_started',
+    });
+  });
+
+  it('refuses from cutover — already enforcing is not the same as ready to enforce', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setCutoverStateRaw('r1', 'cutover');
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'cutover',
+    });
+  });
+
+  it('refuses from ready itself — ready is not idempotent past the first call', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setCutoverStateRaw('r1', 'ready');
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'ready',
+    });
+  });
+
+  it('refuses for a rule id that does not exist, reporting not_started', () => {
+    // Mirrors `enforcementEligibility`'s own treatment of a stale id: no row
+    // means no evidence and no state, which is the same refusal a real
+    // `not_started` row gets, rather than a distinct not-found branch.
+    const scope = t.scopes.forGuild(GUILD);
+    expect(setRuleReady(scope, { ruleId: 'does-not-exist', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'not_started',
+    });
+  });
+});
+
+/**
+ * `automod signoff` (Task 6, ADR 0042 §4/PR-29): the plain write. The corpus
+ * dry-run precondition is the command's job (`packages/core`, which storage
+ * may not import per ADR 0014) — this repository function is deliberately
+ * unconditional, the same way `setRuleConfig` is a plain `UPDATE` that trusts
+ * its caller to have already validated the config.
+ */
+describe('setEnforceSignOff', () => {
+  it('records enforce_signed_off_by and enforce_signed_off_at', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+
+    setEnforceSignOff(scope, { ruleId: 'r1', signedOffBy: 'cli:bryan', now: 5000 });
+
+    const rule = listEnabledRules(scope)[0]!;
+    expect(rule.enforceSignedOffBy).toBe('cli:bryan');
+    expect(rule.enforceSignedOffAt).toBe(5000);
   });
 });

@@ -51,6 +51,8 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   listUnreviewedMatches: unstubbed('listUnreviewedMatches'),
   applySetting: unstubbed('applySetting'),
   recordMatchVerdict: unstubbed('recordMatchVerdict'),
+  setAutomodRuleReady: unstubbed('setAutomodRuleReady'),
+  recordAutomodSignOff: unstubbed('recordAutomodSignOff'),
   addInviteAllowlistEntry: unstubbed('addInviteAllowlistEntry'),
   listInviteAllowlist: unstubbed('listInviteAllowlist'),
   removeInviteAllowlistEntry: unstubbed('removeInviteAllowlistEntry'),

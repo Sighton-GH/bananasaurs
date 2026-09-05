@@ -673,3 +673,82 @@ export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): Enforce
 
     return { ok: true };
   });
+
+export interface SetRuleReadyInput {
+  readonly ruleId: string;
+  readonly now: number;
+}
+
+/** The outcome of `automod ready` (Task 6): success, or the actual state that refused it. */
+export type SetRuleReadyOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'not-observing'; readonly state: CutoverState };
+
+/**
+ * `automod ready` (ADR 0042 §3/PR-27, Task 6): the fourth of PR-27's five
+ * arrows, `observing -> ready` — the explicit human act ADR 0042 exists to
+ * require, since a clock elapsing is not the same as a human having looked.
+ *
+ * **Refused from every state but `observing`, including `ready` itself.**
+ * The refusal matters most from `rolled_back`: without this precondition, a
+ * rollback could be undone by `ready` then a successful
+ * `setRuleMode(mode: 'enforce')` without ever revisiting `observing` — the
+ * exact scenario ADR 0042 exists to prevent (PR-27).
+ *
+ * A rule id with no row reads back as `not_started`, mirroring
+ * `enforcementEligibility`'s own treatment of a stale id: no row means no
+ * evidence and no state, which is the same refusal a real `not_started` row
+ * gets, rather than a distinct "no such rule" branch this function would
+ * otherwise have to invent.
+ */
+export const setRuleReady = (scope: GuildScope, input: SetRuleReadyInput): SetRuleReadyOutcome =>
+  write(scope, ({ db }) => {
+    const current = db
+      .select({ cutoverState: modRules.cutoverState })
+      .from(modRules)
+      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
+      .get()?.cutoverState as CutoverState | undefined;
+
+    const state = current ?? 'not_started';
+    if (state !== 'observing') {
+      return { ok: false, reason: 'not-observing', state };
+    }
+
+    db.update(modRules)
+      .set({ cutoverState: 'ready', updatedAt: input.now })
+      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
+      .run();
+
+    return { ok: true };
+  });
+
+export interface SetEnforceSignOffInput {
+  readonly ruleId: string;
+  readonly signedOffBy: string;
+  readonly now: number;
+}
+
+/**
+ * `automod signoff` (ADR 0042 §4/PR-29, Task 6): records
+ * `enforce_signed_off_by`/`_at` on a rule.
+ *
+ * **Deliberately unconditional**, the same way `setRuleConfig` is a plain
+ * `UPDATE` that trusts its caller to have already validated the config: the
+ * precondition PR-29 actually requires — a clean dry run against the fixture
+ * corpus — needs `runDryRun` from `packages/core`, which `packages/storage`
+ * may not import (ADR 0014). The command that calls this port (`packages/core`,
+ * which can reach both the rule and the corpus) runs that check and refuses
+ * before ever calling this function; duplicating a weaker version of the same
+ * check here would only be a second place for the two to drift.
+ */
+export const setEnforceSignOff = (scope: GuildScope, input: SetEnforceSignOffInput): void =>
+  write(scope, ({ db }) => {
+    db.update(modRules)
+      .set({
+        enforceSignedOffBy: input.signedOffBy,
+        enforceSignedOffAt: input.now,
+        updatedAt: input.now,
+      })
+      .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
+      .run();
+  });

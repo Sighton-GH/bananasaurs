@@ -182,6 +182,14 @@ export interface OpsAutomodObserveWindowBacklog {
 }
 
 /**
+ * The outcome of `automod ready` (ADR 0042 §3/PR-27, Task 6): the write
+ * succeeded, or `cutover_state` was not `observing` and the refusal names it.
+ */
+export type OpsSetAutomodRuleReadyOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'not-observing'; readonly state: string };
+
+/**
  * One row of the review queue (ADR 0041 §5, §7): a recorded match nobody has
  * ruled on yet, with the evidence `automod review` renders.
  *
@@ -348,6 +356,23 @@ export interface OpsPorts {
      * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
      */
     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
+  /**
+   * `automod ready` (ADR 0042 section 3 / PR-27, Task 6): the explicit human
+   * act that ends a rule's observe window. Refused from every `cutover_state`
+   * but `observing` -- `'not-observing'` names the actual state, the same
+   * "return a usage answer, not a throw" treatment `recordMatchVerdict`'s
+   * `'no-such-event'` gets above, since an operator naming a rule in the wrong
+   * state (or one that does not exist at all) is a usage mistake, not a fault.
+   */
+  setAutomodRuleReady(ruleId: string): OpsSetAutomodRuleReadyOutcome;
+  /**
+   * `automod signoff` (ADR 0042 section 4 / PR-29, Task 6): records
+   * `enforce_signed_off_by`/`_at` on a rule. The command calling this port has
+   * already run the corpus dry run and confirmed it is clean -- this port is
+   * the plain write, with no precondition of its own to duplicate the one the
+   * command just checked.
+   */
+  recordAutomodSignOff(input: { readonly ruleId: string; readonly signedOffBy: string }): void;
   /**
    * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
    * PR-19). `'already-present'` is a real answer, not a refusal: the

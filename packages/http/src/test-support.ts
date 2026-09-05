@@ -168,6 +168,12 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   recordMatchVerdict: () => {
     throw new Error('not used by the dashboard routes under test');
   },
+  setAutomodRuleReady: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  recordAutomodSignOff: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
   addInviteAllowlistEntry: () => {
     throw new Error('not used by the dashboard routes under test');
   },

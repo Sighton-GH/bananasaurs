@@ -122,6 +122,8 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   listUnreviewedMatches: notNeeded('listUnreviewedMatches'),
   applySetting: notNeeded('applySetting'),
   recordMatchVerdict: notNeeded('recordMatchVerdict'),
+  setAutomodRuleReady: notNeeded('setAutomodRuleReady'),
+  recordAutomodSignOff: notNeeded('recordAutomodSignOff'),
   // The ports this test exercises for real — the same logic
   // `apps/daemon/src/ops/wiring.ts` uses: `findRuleKindAndConfig` guards both
   // existence and kind ahead of the write (IMPORTANT-7), so a mistyped rule

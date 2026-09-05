@@ -197,6 +197,13 @@ export const opsPortsFor = (
     // way it does not get to choose its own audit attribution.
     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
 
+  // `automod ready` / `automod signoff` (ADR 0042 §3/§4, Task 6). The clock is
+  // this composition root's, not the command's, the same reasoning
+  // `recordMatchVerdict` above gives.
+  setAutomodRuleReady: (ruleId) => automodRuleRepo.setRuleReady(scope, { ruleId, now: now() }),
+  recordAutomodSignOff: (input) =>
+    automodRuleRepo.setEnforceSignOff(scope, { ...input, now: now() }),
+
   // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
   // lists Task 6 built with no caller. `findRuleKindAndConfig` replaces a
   // bare `ruleExists` check (IMPORTANT-7, review of Slices 3+5):

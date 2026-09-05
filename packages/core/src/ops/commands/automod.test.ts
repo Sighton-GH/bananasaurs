@@ -14,7 +14,9 @@ import {
   automodDryRunCommand,
   automodInviteAllowCommand,
   automodInviteDenyCommand,
+  automodReadyCommand,
   automodReviewCommand,
+  automodSignoffCommand,
   automodVerdictCommand,
 } from './automod.js';
 
@@ -758,6 +760,248 @@ describe('automod verdict', () => {
       { eventId: 'e1', verdict: 'maybe' },
     );
     expect(res.ok).toBe(false);
+  });
+});
+
+describe('automod ready', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod ready');
+    expect(automodReadyCommand.write).toBe(true);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodReadyCommand,
+      { setAutomodRuleReady: () => ({ ok: true }) },
+      { ruleId: 'r1' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+
+  it('marks the rule ready and writes an audit row', async () => {
+    const audit: unknown[] = [];
+    let seenRuleId: string | undefined;
+    const res = await driveWrite(
+      automodReadyCommand,
+      {
+        setAutomodRuleReady: (ruleId) => {
+          seenRuleId = ruleId;
+          return { ok: true };
+        },
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(seenRuleId).toBe('r1');
+    expect(res.text).toContain('r1');
+    expect(res.text).toContain('ready for enforcement');
+    expect(res.data).toMatchObject({ ok: true, ruleId: 'r1' });
+    expect(audit).toEqual([
+      expect.objectContaining({ action: 'automod.cutover_ready', subjectId: 'r1' }),
+    ]);
+  });
+
+  it('refuses from rolled_back, naming the state — the test that matters (ADR 0042, PR-27)', async () => {
+    // Without this precondition surfacing correctly, a rollback could be
+    // undone by `ready` then `enforce` without ever revisiting `observing`.
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodReadyCommand,
+      {
+        setAutomodRuleReady: () => ({ ok: false, reason: 'not-observing', state: 'rolled_back' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('rolled_back');
+    expect(res.text).toContain('must be observing');
+    expect(res.data).toMatchObject({ ok: false, reason: 'not-observing', state: 'rolled_back' });
+    // A refusal is still a fact worth having in the audit trail (the same
+    // treatment `automod verdict`'s `'no-such-event'` gets).
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.cutover_ready',
+        after: expect.objectContaining({ state: 'rolled_back' }),
+      }),
+    ]);
+  });
+
+  it.each(['not_started', 'cutover'] as const)(
+    'refuses from %s, naming the state',
+    async (state) => {
+      const res = await driveWrite(
+        automodReadyCommand,
+        {
+          setAutomodRuleReady: () => ({ ok: false, reason: 'not-observing', state }),
+          recordAudit: () => {},
+        },
+        { ruleId: 'r1' },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.text).toContain(state);
+      expect(res.data).toMatchObject({ ok: false, state });
+    },
+  );
+});
+
+describe('automod signoff', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod signoff');
+    expect(automodSignoffCommand.write).toBe(true);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      { findAutomodRule: () => ruleWith(['badword']), listAutomodFixtures: () => [] },
+      { ruleId: 'r1' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+
+  it('refuses a rule id that is not there, but still writes an audit row', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => undefined,
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'nope' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('no enabled rule');
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([
+      expect.objectContaining({ after: expect.objectContaining({ outcome: 'no-such-rule' }) }),
+    ]);
+  });
+
+  /**
+   * PR-29's three conditions, each its own test — the brief's own warning: a
+   * single "not clean" test would pass an implementation that checks only
+   * one of the three fields.
+   */
+  it('refuses when the rule cannot be compiled (usable: false)', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith([]), // no terms: keyword_filter cannot compile
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'anything' })],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.text).toContain('usable=false');
+    expect(res.data).toMatchObject({ ok: false, reason: 'dry-run-not-clean', usable: false });
+  });
+
+  it('refuses when the predicate threw (threw > 0), even with usable: true and no false positives', async () => {
+    const spy = vi.spyOn(automodRegistry, 'compileRule').mockReturnValue({
+      ok: true,
+      compiled: {
+        evaluate: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    try {
+      const res = await driveWrite(
+        automodSignoffCommand,
+        {
+          findAutomodRule: () => ruleWith(['badword']),
+          listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello' })],
+          recordAudit: () => {},
+        },
+        { ruleId: 'r1' },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.text).toContain('cannot be signed off');
+      expect(res.text).toContain('threw=1');
+      expect(res.data).toMatchObject({ ok: false, reason: 'dry-run-not-clean', threw: 1 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refuses when there is a false positive (falsePositives > 0), even with usable: true and threw: 0', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'badword here', label: 'should_not_match' }),
+        ],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.text).toContain('falsePositives=1');
+    expect(res.data).toMatchObject({
+      ok: false,
+      reason: 'dry-run-not-clean',
+      falsePositives: 1,
+    });
+  });
+
+  it('records the sign-off and writes an audit row once the dry run is clean', async () => {
+    const audit: unknown[] = [];
+    let seen: { ruleId: string; signedOffBy: string } | undefined;
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+        ],
+        recordAutomodSignOff: (input) => {
+          seen = input;
+        },
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'r1' },
+      { unixUserClaimed: 'bryan' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('signed off by cli:bryan');
+    expect(res.data).toMatchObject({ ok: true, ruleId: 'r1', signedOffBy: 'cli:bryan' });
+    expect(seen).toEqual({ ruleId: 'r1', signedOffBy: 'cli:bryan' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.enforce_signed_off',
+        after: expect.objectContaining({ outcome: 'recorded', signedOffBy: 'cli:bryan' }),
+      }),
+    ]);
   });
 });
 
