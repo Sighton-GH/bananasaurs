@@ -48,7 +48,7 @@ per-slice execution log, and the findings worth carrying forward.
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
 | 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **✅ complete** — 9 tasks in 5 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES), two fix waves, re-review's two residuals fixed. 2267 tests (from 2148), typecheck + lint clean |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — (spec §9 names none) | [plan](superpowers/plans/2026-09-03-slice-4-window-tier.md) | **✅ complete** — 5 tasks in 3 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES: 3 CRITICAL), fix wave, re-review found a new CRITICAL in the fix, fixed. 2312 tests (from 2267), all gates green by exit code |
-| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendment 1) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **in progress** — plan reviewed (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Task 1 done: nine columns in three migrations, rebuild-survival proof with a negative control that goes red. 2322 tests (from 2312), all gates green by exit code. Tasks 2-6 outstanding, then whole-branch review |
+| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendment 1) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **in progress** — plan reviewed (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Tasks 1-5 done: nine columns in three migrations with a rebuild-survival negative control that goes red; the enforcement gate, with a fix wave for a sign-off that cleared the evidence and three missing PR-27 transitions; `countsAsViolation` to the subscriber and `automod_testing_mode` as a third lever kept structurally out of the moderation path. 2345 tests (from 2312), all gates green by exit code. Task 6 outstanding, then whole-branch review |
 
 ## Owner decisions taken during this run
 
@@ -1158,6 +1158,8 @@ continues from PR-30.
 | --- | --- | --- |
 | PR-31 | Test call sites that need enforce mode reach it **through** the gate, via one named `makeRuleEnforceableForTest` helper that writes `cutover_state = 'ready'` and a sign-off — never around it. | If they bypassed `setRuleMode`, the gate would have no exerciser outside its own unit test and a regression in it would surface in production. If instead every integration test seeded a real 20-match review corpus, a later change to the gate would break tests that are not about the gate. |
 | PR-32 | This slice's columns take **three** `db:generate` runs, not the two ruling R-6 prescribes: plain nullable columns, then defaulted columns, then the CHECKs alone. | Generating a column together with its CHECK emits a rebuild whose `INSERT … SELECT` reads a column the old table does not have yet — R-6's exact shape. Splitting the adds from the CHECKs is what keeps 0017's fifteen-column `SELECT` valid. |
+| PR-33 | `automodTestingMode` goes on **storage's** `SafetyState` and on an automod-specific core type, **not** on `ModerationSafetyState`, which stays at its three fields. | `purge.ts` passes that same state to `classifyRefusal`, so widening the shared type would let the automod lever gate moderation. A comment saying "only automod reads this" is caller discipline; CLAUDE.md rule 2's stance is that the constraint belongs in the signature. |
+| PR-34 | `automod_testing_mode` is checked **ahead** of the `delete_blocked_*` block, so with both levers set the event records `would_delete` rather than `delete_blocked_killswitch`. | `delete_blocked_killswitch` means "automod tried to act and an emergency lever stopped it"; under testing mode automod never tried. The wrong order misattributes a deliberate configuration choice to an emergency. The cost — the event row does not show the killswitch was also engaged — is acceptable because the killswitch is guild-wide and `doctor` reports it. |
 
 **PR-31 exists because of what `setRuleMode`'s gate does to three integration
 test files.** ADR 0042 is right that `setRuleMode` has no production caller —
@@ -1193,6 +1195,74 @@ the cascade for the `mod_rules` half if it took effect, and it does not,
 because `migrate()` wraps the file in a transaction where SQLite documents that
 pragma as a no-op. The plan asked for a revert-and-forget experiment; keeping it
 as a test means the survival proof above it can never quietly become vacuous.
+
+**Tasks 2+3 shipped two defects, both caught in coordinator verification rather
+than by the dispatch's own gates, and both of a kind the gates cannot catch.**
+
+The first: `enforcementEligibility`'s low-volume check returned `ok` outright
+when a rule was under `min_reviewed_matches` and carried a sign-off, skipping
+the zero bar and the rate entirely. A rule with five `mod_match_reviews` rows,
+every one `false_positive`, plus a sign-off, was eligible to enforce. The
+reasoning that fixes it is worth keeping: a sign-off attests a clean dry run
+over the **fixture corpus** (PR-29), and a corpus is *authored*, while a verdict
+row is a judgement recorded against traffic the rule actually matched. The
+weaker evidence may not excuse the stronger. So the sign-off clears the volume
+floor and nothing else. Fixing it also made `reviewed === 0` reachable at the
+rate check, where `0 / 0` is `NaN` and every comparison against it is false —
+passing the gate by accident rather than by decision.
+
+The second: `setRuleMode` owns four of PR-27's five arrows and the dispatch
+implemented one. **The brief caused it**, by pointing at the plan's
+"Interfaces" block instead of PR-27's table, where `not_started → observing`,
+`cutover → rolled_back` and `rolled_back → observing` are all assigned to that
+same function. Left alone, nothing in the codebase would ever have written
+`observing`, so Task 6's `automod ready` — which refuses unless the rule *is*
+`observing` — could never have succeeded, and `rolled_back` would have been
+unreachable. **That is the identical defect the plan review already caught in
+PR-27's own first draft:** the states unreachable and the safety property false.
+Catching the same defect twice in one slice, once in the plan and once in the
+brief written from it, says the failure is in how the state machine is
+handed over, not in either author.
+
+Three properties of that machine are load-bearing and each now has its own
+test. A rule already `observing` does not restart its clock, or `doctor`'s
+observe-floor check would read as reassuring while never firing. `cutover` plus
+`mode: 'observe'` lands on `rolled_back`, not `observing` — one step to
+`observing` would skip the state `automod ready` refuses from, which is the
+whole of what stops a rollback being undone by retrying. And a disable is not a
+rollback: it requests no mode change, and `cutover` stays true across a pause.
+
+**One of those five tests passed on arrival**, which makes it a regression fence
+and not evidence of test-first work. Recorded as such rather than counted as a
+guard: a mutation letting a disable enter the state machine turns it red, which
+is the only reason it is worth keeping. The distinction matters because sixteen
+of this project's decorative guards were tests that passed and were assumed to
+mean something.
+
+**A green mutation means one of two things, and this run confused them once.**
+
+Tasks 4+5 came back clean, and the one thing worth a guard was an ordering the
+dispatch had chosen well but left untested: `automod_testing_mode` is checked
+ahead of the `delete_blocked_*` block, so with both levers set the recorded
+action is `would_delete` (PR-34). Nothing would have gone red if a later reader
+tidied that branch downwards, so a test went in to pin it.
+
+The first mutation written to check that test moved the branch below the
+**computation** of `blocked`, and all 47 tests stayed green. The tempting
+reading — the eighteenth decorative guard — was wrong. `blocked` is only
+*assigned* at that point; the testing-mode branch still `continue`s before
+anything reads it, so the mutation changed no behaviour at all. Moving the
+branch below the block that **uses** `blocked` turns exactly the new test red
+and leaves the other 46 green.
+
+So the rule to carry forward: **a mutation that stays green means either an
+unfalsifiable test or a mutation that changed nothing, and the two demand
+opposite responses.** Sixteen decorative guards on this project were found by
+mutating and watching nothing happen; the seventeenth was found the same way.
+That track record makes "green mutation ⇒ decorative test" a fast and usually
+correct inference, which is exactly what makes it dangerous — the one time the
+mutation is at fault, the same reflex deletes a working guard. Check that the
+mutation moved the behaviour before concluding anything about the test.
 
 **A decorative guard caught in the recovered work, and it was mine to catch.**
 Task 1's first dispatch left a `mod_rules`-rebuild-survival test that passed —
