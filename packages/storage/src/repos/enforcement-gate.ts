@@ -236,6 +236,17 @@ export const listObservingRulesPastWindowWithBacklog = (
           modRules,
           and(
             eq(modRules.cutoverState, 'observing'),
+            // Enabled only. Deliberately unlike `listEnforceRulesWithBadCutoverState`
+            // above, which ignores `enabled` because a disabled `mode = 'enforce'`
+            // row is a latent hazard — `setRuleMode({ enabled: true })` passes no
+            // mode, so it never consults the gate and the rule resumes enforcing
+            // on a state no writer would have left it in. This check is instead a
+            // workflow prompt: "your window is up, go review the backlog". A rule
+            // an owner turned off has no decision waiting and a backlog that has
+            // stopped growing, so it would sit in `doctor` forever with nothing
+            // able to clear it — and a line nothing can clear teaches an operator
+            // to skim past the ones that matter.
+            eq(modRules.enabled, 1),
             // Explicit, even though SQLite's own `NULL <= x` already evaluates
             // to NULL (falsy in a WHERE) and would exclude these rows anyway —
             // watched by removing this line, which changed no test's result.

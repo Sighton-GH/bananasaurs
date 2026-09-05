@@ -584,6 +584,44 @@ describe('listObservingRulesPastWindowWithBacklog', () => {
     expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([]);
   });
 
+  it('does not report a disabled rule, however old its clock and however deep its backlog', () => {
+    // Unlike `listEnforceRulesWithBadCutoverState`, which deliberately ignores
+    // `enabled` because a disabled `mode = 'enforce'` row is a latent hazard —
+    // `setRuleMode({ enabled: true })` passes no mode, so it never consults the
+    // gate and the rule resumes enforcing on a state no writer would have left
+    // it in — this check is a *workflow prompt*: "your window is up, go review
+    // the backlog so you can decide about enforcement". For a rule an owner has
+    // turned off there is no decision waiting, the backlog stops growing, and
+    // the only thing that clears the line is reviewing matches for a rule
+    // nobody uses. It would therefore sit in `doctor` forever.
+    //
+    // That matters more than the tidiness: `doctor` is what an operator runs to
+    // find out whether anything needs them. A permanent line nothing can clear
+    // teaches them to skim past it, and then the check that fires for a real
+    // reason is skimmed past too. A check that cries wolf is worse than no
+    // check, which is the same reasoning ADR 0039 applies to reassuring
+    // numbers, pointed the other way.
+    const ruleId = 'disabled-with-backlog';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'observing');
+    setObserveStartedAt(ruleId, NOW - OBSERVE_WINDOW_FLOOR_MS - 1);
+    setRuleMode(scope, { ruleId, enabled: false, now: NOW });
+
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: NOW });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+
+    expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([]);
+  });
+
   it('does not report a rule whose window has not yet reached the two-week floor', () => {
     const ruleId = 'still-within-window';
     createTestRule(ruleId);
