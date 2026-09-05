@@ -359,6 +359,53 @@ describe('automod subscriber', () => {
     ]);
   });
 
+  /**
+   * The test above passes without reaching the escalation branch at all: the
+   * harness defaults to `tier: { action: undefined }`, so the "has this member
+   * crossed a tier" path is never entered and nothing about escalation is
+   * asserted. That is the decorative shape `docs/22` catalogues, and this is
+   * the case it was hiding.
+   *
+   * Not feeding the counter is not the same as not reading it.
+   * `openOrResolveCase` returns the member's *existing* count — earned by other
+   * rules — and the subscriber passed that straight to `nextEscalationTier`,
+   * which compares with `>=`. So a delete-only rule matching a member who is
+   * already sitting on a tier timed out or kicked them, and did it again on
+   * every subsequent match, because the dedupe key includes `messageId`.
+   *
+   * Why that is a correctness bug and not a policy choice: ADR 0042 §4 holds a
+   * delete-only rule to a 5% false-positive rate instead of zero **because its
+   * only consequence is removing the message**. A rule that can also time out a
+   * member has not earned that tolerance — the looser tier was granted against
+   * a promise the code did not keep. One in twenty of its matches being wrong
+   * is acceptable for a deletion and plainly not acceptable for a timeout.
+   */
+  it('a delete-only rule does not escalate, even for a member already on a tier', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [
+        rule({ ruleId: 'rule-delete-only-tiered', mode: 'enforce', countsAsViolation: false }),
+      ],
+      // The member is already deep enough that the ladder would fire — earned
+      // by *other* rules, since this one never incremented anything.
+      violationCount: 6,
+      tier: { action: 'timeout', timeoutMs: 600_000 },
+    });
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate());
+
+    // The deletion is the rule's whole job and still happens.
+    expect(calls.deleteMessage).toEqual([
+      { channelId: CHANNEL, messageId: MESSAGE, reason: 'automod: rule-delete-only-tiered' },
+    ]);
+    // Nothing was sent to Discord's moderation surface.
+    expect(calls.applyAction).toHaveLength(0);
+    // And the record says "deleted", not "deleted_and_escalated".
+    expect(calls.recordCaseEvent).toEqual([
+      expect.objectContaining({ ruleId: 'rule-delete-only-tiered', actionTaken: 'deleted' }),
+    ]);
+  });
+
   it('does not call Discord in test mode, but still records what would have happened', async () => {
     const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-3', mode: 'test' })] });
     const subscriber = createAutomodSubscriber(deps);

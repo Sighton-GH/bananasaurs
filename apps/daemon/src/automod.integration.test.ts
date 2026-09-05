@@ -12,7 +12,6 @@ import {
 } from '@bananasaurs/core';
 import {
   automodRuleRepo,
-  enforcementGateRepo,
   guildRepo,
   modCaseRepo,
   pipelineRepo,
@@ -21,7 +20,10 @@ import {
   write,
   type GuildScope,
 } from '@bananasaurs/storage';
-import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import {
+  makeRuleEnforceableForTest,
+  openMigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import { buildClientOptions } from '@bananasaurs/discord';
 import { BOT_USER_ID, FakeDiscord } from '@bananasaurs/testkit';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
@@ -108,7 +110,7 @@ const seedRule = (mode: 'test' | 'observe' | 'enforce' = 'enforce'): void => {
     // a sign-off, and this test-only helper stands in for that so the
     // subscriber tests below don't have to build one.
     if (mode === 'enforce') {
-      enforcementGateRepo.makeRuleEnforceableForTest(scope, RULE_ID, discord.now());
+      makeRuleEnforceableForTest(scope, RULE_ID, discord.now());
     }
     automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode, now: discord.now() });
   }
@@ -292,7 +294,7 @@ describe('automod, end to end on the fake gateway', () => {
     expect(discord.restCalls('deleteMessage')).toHaveLength(0);
     expect(findCase(MEMBER)?.violationCount).toBe(0);
 
-    enforcementGateRepo.makeRuleEnforceableForTest(scope, RULE_ID, discord.now()); // PR-31.
+    makeRuleEnforceableForTest(scope, RULE_ID, discord.now()); // PR-31.
     automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
     await sendMessage(MEMBER, 'badword here');
 

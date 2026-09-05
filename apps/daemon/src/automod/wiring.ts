@@ -7,6 +7,7 @@ import {
   safeLogFields,
   serialiseTrace,
   type Actor,
+  type AutomodRule,
   type AutomodSubscriberDeps,
   type Authorized,
   type DiscordPort,
@@ -23,6 +24,7 @@ import {
   modCaseRepo,
   pipelineRepo,
   type GuildScope,
+  type StoredAutomodRule,
 } from '@bananasaurs/storage';
 
 /**
@@ -167,6 +169,38 @@ const LAST_RESORT_TRACE_JSON = serialiseTrace({
  * through a full pipeline integration test standing up a predicate that
  * deliberately misbehaves.
  */
+/**
+ * Narrows a stored rule to exactly the fields a predicate may see.
+ *
+ * **Not a pass-through, deliberately, even though `StoredAutomodRule` is
+ * structurally assignable to `AutomodRule` and the compiler is happy either
+ * way.** `ruleFingerprint` hashes the rule object's *own runtime keys* — that
+ * is its design (a field added to `AutomodRule` is hashed by default, and
+ * omitting one is the deliberate act via `EXCLUDED_FIELDS`). Handing it the
+ * repository row therefore hashes everything ADR 0042 added too:
+ * `cutoverState`, `observeStartedAt`, `enforceSignedOffBy`/`_at`,
+ * `minReviewedMatches`, `maxFalsePositiveRate`. None of those changes how a
+ * message is matched, so every one of them was a spurious full recompile of
+ * every matcher in the guild — including on flip day itself, when a successful
+ * enforce moves `cutover_state` from `ready` to `cutover`.
+ *
+ * It also made the type boundary accidental: structural assignability, not an
+ * explicit choice about what a predicate is allowed to know. A future column
+ * that churned per message would have silently thrashed the cache with no
+ * change to `AutomodRule` at all.
+ */
+export const toAutomodRule = (stored: StoredAutomodRule): AutomodRule => ({
+  ruleId: stored.ruleId,
+  kind: stored.kind,
+  mode: stored.mode,
+  config: stored.config,
+  terms: stored.terms,
+  allowlist: stored.allowlist,
+  inviteAllowlist: stored.inviteAllowlist,
+  linkDomains: stored.linkDomains,
+  countsAsViolation: stored.countsAsViolation,
+});
+
 export const traceJson = (scope: GuildScope, logger: Logger, trace: MatchTrace): string => {
   try {
     return serialiseTrace(trace);
@@ -275,7 +309,7 @@ export const automodPortsFor = (
   return {
     logger,
     moderationAuth: auth,
-    listRules: () => automodRuleRepo.listEnabledRules(scope),
+    listRules: () => automodRuleRepo.listEnabledRules(scope).map(toAutomodRule),
     hasRoleExemption: (ruleId) => automodRuleRepo.hasRoleExemption(scope, ruleId),
     isExempt: (ruleId, input) => automodRuleRepo.isExempt(scope, ruleId, input),
     // Narrower than `DiscordPort.deleteMessage(guildId, ref, reason)` — the

@@ -502,6 +502,24 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
           continue;
         }
 
+        // A delete-only rule stops here, whatever the member's counter says.
+        //
+        // Not feeding the counter (`countsAsViolation: false`, above) is not the
+        // same as not *reading* it: `openOrResolveCase` returns the member's
+        // existing count, earned by other rules, and escalating on that would
+        // time out or kick a member this rule never advanced — again on every
+        // subsequent match, since the dedupe key includes `messageId`.
+        //
+        // ADR 0042 §4 holds a delete-only rule to a 5% false-positive rate
+        // rather than zero **because removing the message is its only
+        // consequence**. One wrong match in twenty is a tolerable price for a
+        // deletion and not for a timeout, so a rule that could escalate has not
+        // earned the looser tier it was admitted under.
+        if (!rule.countsAsViolation) {
+          record(caseId, 'deleted');
+          continue;
+        }
+
         const tier = deps.nextEscalationTier(violationCount);
 
         // Enforce mode, but the violation count has not crossed a tier: the

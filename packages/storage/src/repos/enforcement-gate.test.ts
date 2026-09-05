@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
+import {
+  makeRuleEnforceableForTest,
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '../test-support.js';
 import { parseGuildId } from '@bananasaurs/core';
 import type { GuildScope } from '../scope.js';
 import { upsertGuild } from './guilds.js';
@@ -10,7 +14,6 @@ import {
   enforcementEligibility,
   listEnforceRulesWithBadCutoverState,
   listObservingRulesPastWindowWithBacklog,
-  makeRuleEnforceableForTest,
   OBSERVE_WINDOW_FLOOR_MS,
 } from './enforcement-gate.js';
 
@@ -441,6 +444,52 @@ describe('setRuleMode: the rest of the PR-27 state machine', () => {
     // The clock is not started here either: earning a fresh window is what the
     // *next* call does.
     expect(state.observe_started_at).toBeNull();
+  });
+
+  it('a rollback withdraws the sign-off, closing the low-volume hatch behind it', () => {
+    // Without this, `rolled_back` only blocks the *direct* route back. The
+    // indirect one stayed open: rolled_back -> observing -> ready -> enforce,
+    // and because a sign-off is the one thing that clears the low-volume floor,
+    // a stale one from before the rollback let the rule re-enforce on **fewer
+    // than `min_reviewed_matches`** — the fresh window it was made to serve
+    // counting for nothing.
+    //
+    // A sign-off attests "I replayed this rule against the corpus and it was
+    // clean". Pulling the rule out of enforcement is a statement that it was
+    // not, in fact, safe, so the attestation that supported it cannot survive.
+    // The owner signs off again, against the evidence the new window produced.
+    const ruleId = 'rollback-withdraws-signoff';
+    createTestRule(ruleId);
+    makeRuleEnforceableForTest(scope, ruleId, NOW);
+    setCutoverState(ruleId, 'cutover');
+
+    setRuleMode(scope, { ruleId, mode: 'observe', now: NOW });
+
+    const row = t.raw
+      .prepare(
+        `SELECT cutover_state, enforce_signed_off_by, enforce_signed_off_at
+         FROM mod_rules WHERE guild_id = ? AND rule_id = ?`,
+      )
+      .get(GUILD, ruleId) as {
+      cutover_state: string;
+      enforce_signed_off_by: string | null;
+      enforce_signed_off_at: number | null;
+    };
+    expect(row).toEqual({
+      cutover_state: 'rolled_back',
+      enforce_signed_off_by: null,
+      enforce_signed_off_at: null,
+    });
+
+    // And the hatch is really shut: back to observing, on to ready, and the
+    // gate still refuses because the evidence is thin and unsigned.
+    setRuleMode(scope, { ruleId, mode: 'observe', now: NOW + 1 });
+    setCutoverState(ruleId, 'ready');
+    seedReviewedMatches(ruleId, Array<MatchVerdict>(3).fill('true_positive'));
+
+    const result = enforcementEligibility(scope, ruleId);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusal.reason).toBe('low-volume-unsigned');
   });
 
   it('re-observing a rolled_back rule returns it to observing and resets the clock', () => {

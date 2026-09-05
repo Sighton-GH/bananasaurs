@@ -971,6 +971,61 @@ describe('automod signoff', () => {
     });
   });
 
+  /**
+   * The three conditions above are all *absences* — nothing failed to compile,
+   * nothing threw, nothing was a false positive — and an empty corpus satisfies
+   * every one of them vacuously. That makes the sign-off, which is the only
+   * thing that clears the low-volume floor, grantable on no evidence at all:
+   * observe → ready → signoff → enforce with zero reviewed matches and zero
+   * labelled fixtures, and the operator is told the corpus pass was clean.
+   *
+   * `DryRunFixtureResult.agreement`'s own comment already names this failure:
+   * "counting an unlabelled non-match as a success would make every rule look
+   * perfect on the day it shipped." `automod dryrun` refuses to print a rate
+   * for an unlabelled corpus for exactly that reason — the human-facing guard
+   * existed and the machine-facing one did not.
+   *
+   * A clean pass presupposes something was judged, so the check now also
+   * requires at least one fixture the rule actually agreed with.
+   */
+  it('refuses on an empty corpus rather than calling nothing a clean pass', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-corpus-evidence', agreed: 0 });
+  });
+
+  it('refuses a corpus the rule matches but nobody has labelled', async () => {
+    // Deliberately a corpus the rule *does* match: `matched > 0` while
+    // `agreed === 0`, so an implementation that mistook "the rule fired" for
+    // "the rule was judged correct" would pass this and still be wrong.
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword' }),
+          fixture({ fixtureId: 'f2', content: 'badword again' }),
+        ],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-corpus-evidence', agreed: 0 });
+  });
+
   it('records the sign-off and writes an audit row once the dry run is clean', async () => {
     const audit: unknown[] = [];
     let seen: { ruleId: string; signedOffBy: string } | undefined;

@@ -734,6 +734,49 @@ export const automodSignoffCommand = defineCommand<z.infer<typeof automodSignoff
     // only one of them).
     const clean = report.usable && report.threw === 0 && report.falsePositives === 0;
 
+    // Every one of those three conditions is an *absence*, so an empty or
+    // wholly-unlabelled corpus satisfies all three vacuously — and this
+    // sign-off is the only thing that clears the low-volume floor, so granting
+    // it on no evidence lets a rule go observe -> ready -> signoff -> enforce
+    // having never been judged against anything. `DryRunFixtureResult`'s
+    // `agreement` comment names this exactly: counting an unlabelled non-match
+    // as a success makes every rule look perfect on the day it shipped, which
+    // is why `automod dryrun` already refuses to print a rate for an unlabelled
+    // corpus. That guard was human-facing only; this is its machine half
+    // (PR-29).
+    //
+    // The bar is deliberately the weakest non-vacuous one — at least one
+    // fixture the rule agreed with — because *how much* evidence a sign-off
+    // should require is a policy question the spec does not answer, and
+    // inventing a threshold here would be worse than requiring that the
+    // question was asked at all. The count is in the refusal text and in
+    // `data` so an operator can see how thin the corpus is.
+    const agreed = report.results.filter((r) => r.agreement === 'agreed').length;
+
+    if (clean && agreed === 0) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be signed off: the dry run raised nothing, but nothing in ` +
+          `the fixture corpus is labelled either (${String(report.corpusSize)} fixture(s), ` +
+          `${String(agreed)} the rule agreed with) — a clean pass over unjudged fixtures is not ` +
+          `evidence, so PR-29's corpus requirement is not met. Label some fixtures with ` +
+          `\`automod verdict\` first.`,
+        data: {
+          ok: false,
+          reason: 'no-corpus-evidence',
+          ruleId: args.ruleId,
+          corpusSize: report.corpusSize,
+          agreed,
+        },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-corpus-evidence', corpusSize: report.corpusSize, agreed },
+        },
+      };
+    }
+
     if (!clean) {
       return {
         text:

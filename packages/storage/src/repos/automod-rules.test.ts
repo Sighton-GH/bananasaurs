@@ -21,7 +21,7 @@ import {
   type RuleKind,
 } from './automod-rules.js';
 import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
-import { makeRuleEnforceableForTest } from './enforcement-gate.js';
+import { makeRuleEnforceableForTest } from '../test-support.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const ROLE = parseSnowflakeId('222222222222222222');

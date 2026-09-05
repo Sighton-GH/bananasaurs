@@ -626,6 +626,9 @@ export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): Enforce
   write(scope, ({ db }) => {
     let cutoverState: CutoverState | undefined;
     let observeStartedAt: number | undefined;
+    // `null` writes the column back to NULL; `undefined` leaves it alone.
+    let signedOffBy: string | null | undefined;
+    let signedOffAt: number | null | undefined;
 
     if (input.mode === 'enforce') {
       const eligibility = enforcementEligibility(scope, input.ruleId);
@@ -644,6 +647,19 @@ export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): Enforce
       if (current === 'cutover') {
         // Off enforce from `cutover` is a rollback, whatever mode it lands in.
         cutoverState = 'rolled_back';
+        // And the rollback withdraws the sign-off. `rolled_back` alone only
+        // blocks the direct route back to enforcement; the indirect one —
+        // rolled_back -> observing -> ready -> enforce — stayed open, and since
+        // a sign-off is the one thing that clears the low-volume floor, a stale
+        // one let the rule re-enforce on fewer than `min_reviewed_matches`,
+        // making the fresh window it was sent to serve count for nothing.
+        //
+        // A sign-off attests "I replayed this rule against the corpus and it was
+        // clean". Pulling it out of enforcement says it was not in fact safe, so
+        // the attestation behind that decision cannot outlive it. The owner signs
+        // off again, against whatever the new window produces.
+        signedOffBy = null;
+        signedOffAt = null;
       } else if (
         input.mode === 'observe' &&
         (current === 'not_started' || current === 'rolled_back')
@@ -666,6 +682,8 @@ export const setRuleMode = (scope: GuildScope, input: SetRuleModeInput): Enforce
         enabled: input.enabled === undefined ? undefined : input.enabled ? 1 : 0,
         cutoverState,
         observeStartedAt,
+        enforceSignedOffBy: signedOffBy,
+        enforceSignedOffAt: signedOffAt,
         updatedAt: input.now,
       })
       .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))

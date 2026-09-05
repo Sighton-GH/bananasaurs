@@ -3,7 +3,9 @@ import { drizzle } from 'drizzle-orm/better-sqlite3';
 import { fileURLToPath } from 'node:url';
 import * as schema from './schema.js';
 import { runMigrations, type Db } from './db.js';
-import { createScopeFactory, type ScopeFactory } from './scope.js';
+import { createScopeFactory, type ScopeFactory, type GuildScope } from './scope.js';
+import { eq } from 'drizzle-orm';
+import { write } from './write.js';
 
 /** Repo-root `drizzle/`. Tests run against the real migrations, never a copy. */
 export const MIGRATIONS_FOLDER = fileURLToPath(new URL('../../../drizzle', import.meta.url));
@@ -45,3 +47,43 @@ export function openMigratedTestDatabase(): MigratedTestDatabase {
     close: () => raw.close(),
   };
 }
+
+/**
+ * Puts a rule in a state `setRuleMode(mode: 'enforce')` will accept, so a test
+ * whose subject is something *downstream* of enforcement — the subscriber, the
+ * mode-flip mechanics, `listEnforceModeKeywordFilterRules` — can get there
+ * without first building a twenty-match review corpus it has nothing to do
+ * with (plan ruling PR-31).
+ *
+ * **It lives here, not in `repos/enforcement-gate.ts`, and that move is the
+ * point.** It writes both of the facts the gate reads — `cutover_state` and a
+ * sign-off — with no precondition whatsoever, which is defensible only for a
+ * caller that is a test harness. Exported from the production module it was
+ * reachable as `enforcementGateRepo.makeRuleEnforceableForTest` by anything
+ * that can import `@bananasaurs/storage`, including `packages/http`, which no
+ * boundary rule forbids from doing so. `@bananasaurs/storage/test-support` is a
+ * separate entry point that ships only to tests, so the shortcut is now
+ * physically out of production's reach rather than merely named as if it were.
+ *
+ * `automod ready` (refused outside `observing`) and `automod signoff` (refused
+ * without a clean, non-vacuous corpus pass) are the production writers for
+ * these two facts, and each carries its own precondition. Never reach for this
+ * in a test *about* those preconditions — the end state proves nothing about
+ * the path to it.
+ */
+export const makeRuleEnforceableForTest = (
+  scope: GuildScope,
+  ruleId: string,
+  now: number,
+): void => {
+  write(scope, ({ db }) => {
+    db.update(schema.modRules)
+      .set({
+        cutoverState: 'ready',
+        enforceSignedOffBy: 'test-harness',
+        enforceSignedOffAt: now,
+      })
+      .where(scope.only(schema.modRules, eq(schema.modRules.ruleId, ruleId)))
+      .run();
+  });
+};

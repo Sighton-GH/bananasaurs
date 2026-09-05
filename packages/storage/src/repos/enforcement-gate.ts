@@ -1,6 +1,6 @@
 import { and, eq, sql } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
-import { read, write } from '../write.js';
+import { read } from '../write.js';
 import { modCaseEvents, modMatchReviews, modRules } from '../schema.js';
 import type { CutoverState } from './automod-rules.js';
 
@@ -292,32 +292,3 @@ export const listObservingRulesPastWindowWithBacklog = (
     })
     .filter((row) => row.unreviewedCount > 0);
 };
-
-/**
- * Test-only shortcut for PR-31 (plan ruling): moves a rule straight to
- * `cutover_state = 'ready'` with a canned sign-off, so a test whose subject
- * is something *downstream* of enforcement — the subscriber, the mode-flip
- * mechanics, `listEnforceModeKeywordFilterRules` — can reach
- * `setRuleMode(mode: 'enforce')` without first building a 20-match review
- * corpus that test has nothing to do with.
- *
- * **Not a production path, and not a second way to reach `mode = 'enforce'`.**
- * It writes eligibility facts, not the mode itself; `setRuleMode` still runs
- * the real gate afterwards. `automod ready` (Task 6, refused outside
- * `observing`) and `automod signoff` (Task 6, refused unless a dry run over
- * the fixture corpus is clean, PR-29) are the production writers for these
- * two facts, and each carries its own precondition. This writes both at once
- * with no precondition at all, which is only defensible because its only
- * caller is a test harness that already trusts its own fixture setup.
- */
-export const makeRuleEnforceableForTest = (scope: GuildScope, ruleId: string, now: number): void =>
-  write(scope, ({ db }) => {
-    db.update(modRules)
-      .set({
-        cutoverState: 'ready',
-        enforceSignedOffBy: 'test-harness',
-        enforceSignedOffAt: now,
-      })
-      .where(scope.only(modRules, eq(modRules.ruleId, ruleId)))
-      .run();
-  });

@@ -41,6 +41,10 @@ export * as automodRuleRepo from './repos/automod-rules.js';
 export * as automodFixtureRepo from './repos/automod-fixtures.js';
 export * as automodRuleListsRepo from './repos/automod-rule-lists.js';
 export * as enforcementGateRepo from './repos/enforcement-gate.js';
+// The shape the automod subscriber's wiring narrows to `core`'s `AutomodRule`.
+// Public so that narrowing can be written as an explicit mapping rather than
+// relying on structural assignability (see `automod/wiring.ts`'s `toAutomodRule`).
+export type { StoredAutomodRule } from './repos/automod-rules.js';
 export * as modCaseRepo from './repos/mod-cases.js';
 export * as modMatchReviewRepo from './repos/mod-match-reviews.js';
 export * as modPendingRepo from './repos/mod-pending.js';
