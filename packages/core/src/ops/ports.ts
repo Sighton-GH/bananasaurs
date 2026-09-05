@@ -161,6 +161,27 @@ export interface OpsUnusableAutomodRule {
 }
 
 /**
+ * A rule already in `mode = 'enforce'` whose `cutover_state` does not permit
+ * it (ADR 0042 §3, Task 6) — rows that predate this slice or were hand-edited,
+ * since `setRuleMode` can no longer *create* this combination.
+ */
+export interface OpsAutomodEnforceModeBadCutoverState {
+  readonly ruleId: string;
+  /** `CutoverState` widened to a string, the same reasoning `OpsUnusableAutomodRule.reason` gives. */
+  readonly cutoverState: string;
+}
+
+/**
+ * A rule sitting in `observe` past `docs/08`'s floor with matches nobody has
+ * reviewed yet (ADR 0042 §3, Task 6).
+ */
+export interface OpsAutomodObserveWindowBacklog {
+  readonly ruleId: string;
+  readonly observeStartedAt: number;
+  readonly unreviewedCount: number;
+}
+
+/**
  * One row of the review queue (ADR 0041 §5, §7): a recorded match nobody has
  * ruled on yet, with the evidence `automod review` renders.
  *
@@ -241,6 +262,20 @@ export interface OpsPorts {
   listKeywordFilterRulesMissingManageMessages(): readonly OpsKeywordFilterChannelMissingManageMessages[];
   /** Every enabled rule `compileRule` cannot compile, and why. */
   listUnusableAutomodRules(): readonly OpsUnusableAutomodRule[];
+  /**
+   * `doctor`'s first ADR 0042 §3 check (Task 6): rules already enforcing whose
+   * `cutover_state` does not permit it.
+   */
+  listAutomodRulesEnforcingWithBadCutoverState(): readonly OpsAutomodEnforceModeBadCutoverState[];
+  /**
+   * `doctor`'s second ADR 0042 §3 check (Task 6): rules in `observe` past
+   * `docs/08`'s floor with an unreviewed match backlog. Takes `nowMs`
+   * explicitly, the same reasoning `oldestDueJobAtMs` gives — the clock is the
+   * caller's, not a fresh read of the wall.
+   */
+  listAutomodRulesObservingPastWindowWithBacklog(
+    nowMs: number,
+  ): readonly OpsAutomodObserveWindowBacklog[];
   listRoutes(): readonly OpsLogRoute[];
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */

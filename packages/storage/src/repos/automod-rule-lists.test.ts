@@ -108,6 +108,12 @@ const portsFor = (s: GuildScope): OpsPorts => ({
     'listKeywordFilterRulesMissingManageMessages',
   ),
   listUnusableAutomodRules: notNeeded('listUnusableAutomodRules'),
+  listAutomodRulesEnforcingWithBadCutoverState: notNeeded(
+    'listAutomodRulesEnforcingWithBadCutoverState',
+  ),
+  listAutomodRulesObservingPastWindowWithBacklog: notNeeded(
+    'listAutomodRulesObservingPastWindowWithBacklog',
+  ),
   listRoutes: notNeeded('listRoutes'),
   listExcludedChannels: notNeeded('listExcludedChannels'),
   findJob: notNeeded('findJob'),

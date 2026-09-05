@@ -16,6 +16,7 @@ import {
   automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
+  enforcementGateRepo,
   guildRepo,
   jobRepo,
   listBackups,
@@ -148,6 +149,21 @@ export const opsPortsFor = (
         reason: result.ok ? '' : result.reason,
         detail: result.ok ? '' : result.detail,
       })),
+
+  // ADR 0042 §3's two `doctor` checks (Task 6): the storage layer already
+  // does the guild-scoped join work (`enforcementGateRepo`), so this is a
+  // plain pass-through, the same shape `listUnassignableRoles` above uses.
+  listAutomodRulesEnforcingWithBadCutoverState: () =>
+    enforcementGateRepo.listEnforceRulesWithBadCutoverState(scope).map((row) => ({
+      ruleId: row.ruleId,
+      cutoverState: row.cutoverState,
+    })),
+  listAutomodRulesObservingPastWindowWithBacklog: (nowMs) =>
+    enforcementGateRepo.listObservingRulesPastWindowWithBacklog(scope, nowMs).map((row) => ({
+      ruleId: row.ruleId,
+      observeStartedAt: row.observeStartedAt,
+      unreviewedCount: row.unreviewedCount,
+    })),
 
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({

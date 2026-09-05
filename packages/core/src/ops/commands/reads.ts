@@ -46,6 +46,8 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     const unassignable = ctx.ports.listUnassignableRoles();
     const missingManageMessages = ctx.ports.listKeywordFilterRulesMissingManageMessages();
     const unusable = ctx.ports.listUnusableAutomodRules();
+    const badCutoverState = ctx.ports.listAutomodRulesEnforcingWithBadCutoverState();
+    const observePastWindow = ctx.ports.listAutomodRulesObservingPastWindowWithBacklog(ctx.now());
 
     const lines = [report.text, ''];
     lines.push(
@@ -78,8 +80,36 @@ export const doctorCommand = defineCommand<Record<string, never>>({
               .map((r) => `            ${r.ruleId}  (${r.kind})  ${r.reason}: ${r.detail}`)
               .join('\n'),
     );
+    lines.push(
+      // ADR 0042 §3's first check: rows `setRuleMode` can no longer create —
+      // it refuses `mode: 'enforce'` outside `ready`/`cutover` — so a hit here
+      // predates this slice or was hand-edited straight into the database.
+      badCutoverState.length === 0
+        ? 'automod    every enforcing rule is in a cutover_state that permits it'
+        : `automod    ${String(badCutoverState.length)} rule(s) enforcing with a cutover_state that ` +
+            `does not permit it:\n` +
+            badCutoverState
+              .map((r) => `            ${r.ruleId}  cutover_state=${r.cutoverState}`)
+              .join('\n'),
+    );
+    lines.push(
+      // ADR 0042 §3's second check: an observe window that ran past docs/08's
+      // floor with matches nobody has reviewed. `doctor` reports it; nothing
+      // at the write path refuses on its account (there is nothing to write).
+      observePastWindow.length === 0
+        ? 'automod    no observing rule is both past its window and carrying an unreviewed backlog'
+        : `automod    ${String(observePastWindow.length)} rule(s) observing past their window with ` +
+            `an unreviewed backlog:\n` +
+            observePastWindow
+              .map(
+                (r) =>
+                  `            ${r.ruleId}  observing since ${iso(r.observeStartedAt)}, ` +
+                  `${String(r.unreviewedCount)} unreviewed match(es)`,
+              )
+              .join('\n'),
+    );
 
-    // The gateway half already decides `ok`; the four guild-scoped findings
+    // The gateway half already decides `ok`; the six guild-scoped findings
     // here are just as capable of making a panel, an enforce-mode rule, or an
     // automod rule that never gets as far as matching — silently do nothing,
     // so they count the same way rather than being printed as decoration
@@ -89,7 +119,9 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       stale.length === 0 &&
       unassignable.length === 0 &&
       missingManageMessages.length === 0 &&
-      unusable.length === 0;
+      unusable.length === 0 &&
+      badCutoverState.length === 0 &&
+      observePastWindow.length === 0;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
     return {
@@ -111,6 +143,15 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           kind: r.kind,
           reason: r.reason,
           detail: r.detail,
+        })),
+        automodEnforceModeBadCutoverState: badCutoverState.map((r) => ({
+          ruleId: r.ruleId,
+          cutoverState: r.cutoverState,
+        })),
+        automodObservePastWindowWithBacklog: observePastWindow.map((r) => ({
+          ruleId: r.ruleId,
+          observeStartedAt: r.observeStartedAt,
+          unreviewedCount: r.unreviewedCount,
         })),
       },
     };

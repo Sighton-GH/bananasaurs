@@ -119,6 +119,14 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     throw new Error('not used by the dashboard routes under test');
   },
 
+  listAutomodRulesEnforcingWithBadCutoverState: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+
+  listAutomodRulesObservingPastWindowWithBacklog: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       eventKind: route.eventKind,

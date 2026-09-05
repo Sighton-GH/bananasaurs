@@ -6,7 +6,13 @@ import { upsertGuild } from './guilds.js';
 import { createRule, setRuleMode, type CutoverState } from './automod-rules.js';
 import { openOrResolveCase, recordCaseEvent } from './mod-cases.js';
 import { recordVerdict, type MatchVerdict } from './mod-match-reviews.js';
-import { enforcementEligibility, makeRuleEnforceableForTest } from './enforcement-gate.js';
+import {
+  enforcementEligibility,
+  listEnforceRulesWithBadCutoverState,
+  listObservingRulesPastWindowWithBacklog,
+  makeRuleEnforceableForTest,
+  OBSERVE_WINDOW_FLOOR_MS,
+} from './enforcement-gate.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const MEMBER = '800000000000000001';
@@ -55,6 +61,26 @@ const setCountsAsViolation = (ruleId: string, counts: boolean): void => {
 
 const createTestRule = (ruleId: string): void => {
   createRule(scope, { ruleId, kind: 'caps', name: ruleId, config: '{}', now: NOW });
+};
+
+/**
+ * Sets `mod_rules.mode` directly. `setRuleMode` refuses `'enforce'` unless the
+ * gate already permits it (that is the whole point of Tasks 2+3), so the only
+ * way to plant the "hand-edited or pre-slice" row `listEnforceRulesWithBadCutoverState`
+ * exists to catch — `mode = 'enforce'` paired with a `cutover_state` no writer
+ * would leave it in — is a raw write, same reasoning as `setCutoverState` above.
+ */
+const setMode = (ruleId: string, mode: 'test' | 'observe' | 'enforce'): void => {
+  t.raw
+    .prepare(`UPDATE mod_rules SET mode = ? WHERE guild_id = ? AND rule_id = ?`)
+    .run(mode, GUILD, ruleId);
+};
+
+/** Sets `mod_rules.observe_started_at` directly, including back to NULL. */
+const setObserveStartedAt = (ruleId: string, at: number | null): void => {
+  t.raw
+    .prepare(`UPDATE mod_rules SET observe_started_at = ? WHERE guild_id = ? AND rule_id = ?`)
+    .run(at, GUILD, ruleId);
 };
 
 /**
@@ -444,5 +470,198 @@ describe('setRuleMode: the rest of the PR-27 state machine', () => {
 
     expect(setRuleMode(scope, { ruleId, enabled: false, now: NOW })).toEqual({ ok: true });
     expect(stateOf(ruleId).cutover_state).toBe('cutover');
+  });
+});
+
+/**
+ * `doctor`'s first ADR 0042 §3 check (Task 6): a rule already enforcing whose
+ * `cutover_state` is not one that permits it.
+ */
+describe('listEnforceRulesWithBadCutoverState', () => {
+  it('reports a rule in mode enforce whose cutover_state does not permit it', () => {
+    // `setRuleMode` cannot produce this combination itself — that is the
+    // point — so the only way to plant it is the raw write a hand edit or a
+    // pre-slice row would also produce.
+    const ruleId = 'hand-edited-enforce';
+    createTestRule(ruleId);
+    setMode(ruleId, 'enforce');
+    setCutoverState(ruleId, 'observing');
+
+    expect(listEnforceRulesWithBadCutoverState(scope)).toEqual([
+      { ruleId, cutoverState: 'observing' },
+    ]);
+  });
+
+  it('does not report an enforce-mode rule whose cutover_state is ready or cutover', () => {
+    // Reached through the real production path, unlike the case above:
+    // `makeRuleEnforceableForTest` plus a legitimate `setRuleMode(mode:
+    // 'enforce')` is exactly what a rule that followed the rules looks like.
+    const ruleId = 'legitimately-enforcing';
+    createTestRule(ruleId);
+    makeRuleEnforceableForTest(scope, ruleId, NOW);
+    expect(setRuleMode(scope, { ruleId, mode: 'enforce', now: NOW })).toEqual({ ok: true });
+
+    expect(listEnforceRulesWithBadCutoverState(scope)).toEqual([]);
+  });
+
+  it('does not report a rule in mode observe, whatever its cutover_state', () => {
+    // The check is about `mode = 'enforce'` specifically — a rule merely
+    // observing is not enforcing anything yet, whatever its state says.
+    const ruleId = 'not-enforcing';
+    createTestRule(ruleId);
+    setMode(ruleId, 'observe');
+    setCutoverState(ruleId, 'not_started');
+
+    expect(listEnforceRulesWithBadCutoverState(scope)).toEqual([]);
+  });
+});
+
+/**
+ * `doctor`'s second ADR 0042 §3 check (Task 6): a rule sitting in `observing`
+ * past `docs/08`'s two-week floor with an unreviewed match backlog.
+ */
+describe('listObservingRulesPastWindowWithBacklog', () => {
+  it('reports an observing rule past its window with unreviewed matches', () => {
+    const ruleId = 'overdue-with-backlog';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'observing');
+    setObserveStartedAt(ruleId, NOW - OBSERVE_WINDOW_FLOOR_MS - 1);
+    seedReviewedMatches(ruleId, ['true_positive']); // one reviewed
+    // Two genuinely unreviewed events on top of the one reviewed one.
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: NOW });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed-1`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed-2`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+
+    const result = listObservingRulesPastWindowWithBacklog(scope, NOW);
+    expect(result).toEqual([
+      {
+        ruleId,
+        observeStartedAt: NOW - OBSERVE_WINDOW_FLOOR_MS - 1,
+        unreviewedCount: 2,
+      },
+    ]);
+  });
+
+  it('does not report a rule whose observe_started_at is null — a window that has not started is not overdue', () => {
+    // The trap the brief names explicitly: without this, every fresh rule
+    // (which has never started its clock) would be reported forever.
+    const ruleId = 'never-started';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'observing');
+    setObserveStartedAt(ruleId, null);
+    seedReviewedMatch(ruleId, 'true_positive');
+    // Even an unreviewed event should not surface a null-clock rule.
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: NOW });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+
+    expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([]);
+  });
+
+  it('does not report a rule whose window has not yet reached the two-week floor', () => {
+    const ruleId = 'still-within-window';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'observing');
+    // One millisecond short of the floor.
+    setObserveStartedAt(ruleId, NOW - OBSERVE_WINDOW_FLOOR_MS + 1);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: NOW });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+
+    expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([]);
+  });
+
+  it('reports a rule sitting exactly at the two-week floor', () => {
+    // Global Constraint 7, the other direction: exactly at the boundary counts
+    // as overdue, not just strictly past it.
+    const ruleId = 'exactly-at-floor';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'observing');
+    setObserveStartedAt(ruleId, NOW - OBSERVE_WINDOW_FLOOR_MS);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: NOW });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+
+    expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([
+      {
+        ruleId,
+        observeStartedAt: NOW - OBSERVE_WINDOW_FLOOR_MS,
+        unreviewedCount: 1,
+      },
+    ]);
+  });
+
+  it('does not report a rule past its window with zero unreviewed backlog', () => {
+    // Overdue and fully reviewed is not a problem `doctor` needs to raise —
+    // "backlog" is the operative word, not merely "old".
+    const ruleId = 'overdue-clean';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'observing');
+    setObserveStartedAt(ruleId, NOW - OBSERVE_WINDOW_FLOOR_MS - 1);
+    seedReviewedMatches(ruleId, ['true_positive', 'true_positive']);
+
+    expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([]);
+  });
+
+  it('does not report a rule not in cutover_state observing', () => {
+    const ruleId = 'wrong-state';
+    createTestRule(ruleId);
+    setCutoverState(ruleId, 'ready');
+    setObserveStartedAt(ruleId, NOW - OBSERVE_WINDOW_FLOOR_MS - 1);
+    const { caseId } = openOrResolveCase(scope, { memberId: MEMBER, now: NOW });
+    recordCaseEvent(scope, {
+      eventId: `${ruleId}-unreviewed`,
+      caseId,
+      ruleId,
+      memberId: MEMBER,
+      at: NOW,
+      matchedCategory: 'x',
+      matchedSnippet: 'x',
+      actionTaken: 'would_delete',
+    });
+
+    expect(listObservingRulesPastWindowWithBacklog(scope, NOW)).toEqual([]);
   });
 });

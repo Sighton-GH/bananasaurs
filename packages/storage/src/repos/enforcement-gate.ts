@@ -154,6 +154,134 @@ export const enforcementEligibility = (scope: GuildScope, ruleId: string): Enfor
     return { ok: true };
   });
 
+/** One `mod_rules` row already in `mode = 'enforce'` whose `cutover_state` does not permit it. */
+export interface EnforceModeBadCutoverStateRow {
+  readonly ruleId: string;
+  readonly cutoverState: string;
+}
+
+/**
+ * `doctor`'s first ADR 0042 §3 check (Task 6): rules already enforcing whose
+ * `cutover_state` is not `ready` or `cutover`.
+ *
+ * `setRuleMode` (this file) can no longer *create* such a row — the eligibility
+ * gate above refuses `mode: 'enforce'` outside those two states, and every other
+ * `mode` write leaves `cutover_state` alone or moves it off `cutover`/`ready`
+ * deliberately. So a row here is either older than this slice (`mode` reached
+ * `'enforce'` before ADR 0042 existed) or was hand-edited straight into the
+ * database — `doctor` reports it because nothing at the write path can.
+ */
+export const listEnforceRulesWithBadCutoverState = (
+  scope: GuildScope,
+): readonly EnforceModeBadCutoverStateRow[] =>
+  read(scope, (db) =>
+    db
+      .select({ ruleId: modRules.ruleId, cutoverState: modRules.cutoverState })
+      .from(modRules)
+      .where(
+        scope.only(
+          modRules,
+          and(
+            eq(modRules.mode, 'enforce'),
+            sql`${modRules.cutoverState} NOT IN ('ready','cutover')`,
+          ),
+        ),
+      )
+      .all(),
+  );
+
+/**
+ * `docs/08`'s floor: an observe window has to run at least this long before
+ * `doctor` will call it overdue. **Not** `BULK_DELETE_CEILING_MS`
+ * (`packages/core/src/mod/purge.ts`) — that constant is the same fourteen days
+ * for a wholly different reason (Discord's bulk-delete API limit) and importing
+ * it here would tie two unrelated facts together by coincidence of value.
+ */
+export const OBSERVE_WINDOW_FLOOR_MS = 14 * 24 * 60 * 60 * 1000;
+
+/** One `observing` rule past its window, with how many of its matches nobody has reviewed. */
+export interface ObservingPastWindowBacklogRow {
+  readonly ruleId: string;
+  readonly observeStartedAt: number;
+  readonly unreviewedCount: number;
+}
+
+/**
+ * `doctor`'s second ADR 0042 §3 check (Task 6): rules sitting in
+ * `cutover_state = 'observing'` whose window started at least
+ * `OBSERVE_WINDOW_FLOOR_MS` ago and still carry an unreviewed match backlog.
+ *
+ * `observe_started_at IS NULL` is excluded, not defaulted to "overdue": a rule
+ * that has not started its window is not late for one, and a rule with every
+ * match reviewed is not backlogged even if the calendar says it could enforce —
+ * both are the ordinary, unremarkable case `doctor` must stay silent about.
+ *
+ * The backlog count is the same LEFT JOIN `enforcementEligibility` runs
+ * (PR-28), just without the `rule_id` filter baked into a single query: a
+ * `mod_case_events` row for this rule with no matching `mod_match_reviews` row.
+ * Guild-scoped on both the rule lookup and the join, as `enforcementEligibility`
+ * is.
+ */
+export const listObservingRulesPastWindowWithBacklog = (
+  scope: GuildScope,
+  nowMs: number,
+): readonly ObservingPastWindowBacklogRow[] => {
+  const cutoffMs = nowMs - OBSERVE_WINDOW_FLOOR_MS;
+  const candidates = read(scope, (db) =>
+    db
+      .select({ ruleId: modRules.ruleId, observeStartedAt: modRules.observeStartedAt })
+      .from(modRules)
+      .where(
+        scope.only(
+          modRules,
+          and(
+            eq(modRules.cutoverState, 'observing'),
+            // Explicit, even though SQLite's own `NULL <= x` already evaluates
+            // to NULL (falsy in a WHERE) and would exclude these rows anyway —
+            // watched by removing this line, which changed no test's result.
+            // Kept as documentation of intent rather than relying on that NULL
+            // comparison behaviour silently doing the right thing.
+            sql`${modRules.observeStartedAt} IS NOT NULL`,
+            sql`${modRules.observeStartedAt} <= ${cutoffMs}`,
+          ),
+        ),
+      )
+      .all(),
+  );
+
+  return candidates
+    .map((rule) => {
+      const backlog = read(
+        scope,
+        (db) =>
+          db
+            .select({ unreviewed: sql<number>`count(*)` })
+            .from(modCaseEvents)
+            .leftJoin(
+              modMatchReviews,
+              and(
+                eq(modCaseEvents.guildId, modMatchReviews.guildId),
+                eq(modCaseEvents.eventId, modMatchReviews.eventId),
+              ),
+            )
+            .where(
+              scope.only(
+                modCaseEvents,
+                and(eq(modCaseEvents.ruleId, rule.ruleId), sql`${modMatchReviews.eventId} IS NULL`),
+              ),
+            )
+            .get() ?? { unreviewed: 0 },
+      );
+      return {
+        ruleId: rule.ruleId,
+        // Non-null: the query above filtered on `IS NOT NULL`.
+        observeStartedAt: rule.observeStartedAt as number,
+        unreviewedCount: Number(backlog.unreviewed),
+      };
+    })
+    .filter((row) => row.unreviewedCount > 0);
+};
+
 /**
  * Test-only shortcut for PR-31 (plan ruling): moves a rule straight to
  * `cutover_state = 'ready'` with a canned sign-off, so a test whose subject
