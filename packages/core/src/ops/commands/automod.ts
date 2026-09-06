@@ -749,30 +749,78 @@ export const automodSignoffCommand = defineCommand<z.infer<typeof automodSignoff
     // fixture the rule agreed with — because *how much* evidence a sign-off
     // should require is a policy question the spec does not answer, and
     // inventing a threshold here would be worse than requiring that the
-    // question was asked at all. The count is in the refusal text and in
-    // `data` so an operator can see how thin the corpus is.
+    // question was asked at all. Precisely because the bar is that low, the
+    // counts travel into the success text, `data` and the audit row too: a
+    // sign-off resting on one label and one resting on five hundred fixtures
+    // must not read identically to whoever audits this later.
+    //
+    // `agreed === 0` has two causes and they need different answers. Nothing
+    // labelled at all means "go label some fixtures". A corpus that *is*
+    // labelled and which the rule disagrees with everywhere means the opposite
+    // — the work is done and the rule failed it — and `clean` can still be true
+    // while that holds, because a missed `should_match` fixture is a
+    // `falseNegative`, not a false positive.
     const agreed = report.results.filter((r) => r.agreement === 'agreed').length;
 
-    if (clean && agreed === 0) {
+    const labelled = report.results.filter((r) => r.agreement !== 'unlabelled').length;
+
+    if (clean && agreed === 0 && labelled === 0) {
       return {
         text:
           `rule ${args.ruleId} cannot be signed off: the dry run raised nothing, but nothing in ` +
-          `the fixture corpus is labelled either (${String(report.corpusSize)} fixture(s), ` +
-          `${String(agreed)} the rule agreed with) — a clean pass over unjudged fixtures is not ` +
-          `evidence, so PR-29's corpus requirement is not met. Label some fixtures with ` +
-          `\`automod verdict\` first.`,
+          `the fixture corpus is labelled either (${String(report.corpusSize)} fixture(s), none ` +
+          `judged) — a clean pass over unjudged fixtures is not evidence, so PR-29's corpus ` +
+          `requirement is not met. Label some fixtures with \`automod verdict\` first.`,
         data: {
           ok: false,
           reason: 'no-corpus-evidence',
           ruleId: args.ruleId,
           corpusSize: report.corpusSize,
           agreed,
+          labelled,
         },
         audit: {
           action: 'automod.enforce_signed_off',
           subjectType: 'mod_rule',
           subjectId: args.ruleId,
-          after: { outcome: 'no-corpus-evidence', corpusSize: report.corpusSize, agreed },
+          after: {
+            outcome: 'no-corpus-evidence',
+            corpusSize: report.corpusSize,
+            agreed,
+            labelled,
+          },
+        },
+      };
+    }
+
+    if (clean && agreed === 0) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be signed off: it agreed with none of the ` +
+          `${String(labelled)} labelled fixture(s) in the corpus — it raised no false positives, ` +
+          `but it missed ${String(report.falseNegatives)} fixture(s) a reviewer marked as ` +
+          `something it should match. The labelling is not the problem; the rule is. Narrow or ` +
+          `widen it and replay with \`automod dryrun\`.`,
+        data: {
+          ok: false,
+          reason: 'corpus-all-disagreed',
+          ruleId: args.ruleId,
+          corpusSize: report.corpusSize,
+          agreed,
+          labelled,
+          falseNegatives: report.falseNegatives,
+        },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: {
+            outcome: 'corpus-all-disagreed',
+            corpusSize: report.corpusSize,
+            agreed,
+            labelled,
+            falseNegatives: report.falseNegatives,
+          },
         },
       };
     }
@@ -812,13 +860,31 @@ export const automodSignoffCommand = defineCommand<z.infer<typeof automodSignoff
     ctx.ports.recordAutomodSignOff({ ruleId: args.ruleId, signedOffBy });
 
     return {
-      text: `rule ${args.ruleId} signed off by ${signedOffBy} (dry run over the fixture corpus was clean)`,
-      data: { ok: true, ruleId: args.ruleId, signedOffBy },
+      text:
+        `rule ${args.ruleId} signed off by ${signedOffBy} (dry run clean; the rule agreed with ` +
+        `${String(agreed)} of ${String(report.corpusSize)} fixture(s) in the corpus)`,
+      data: {
+        ok: true,
+        ruleId: args.ruleId,
+        signedOffBy,
+        agreed,
+        labelled,
+        corpusSize: report.corpusSize,
+      },
       audit: {
         action: 'automod.enforce_signed_off',
         subjectType: 'mod_rule',
         subjectId: args.ruleId,
-        after: { outcome: 'recorded', signedOffBy },
+        // How thin the evidence was, recorded permanently. The bar this cleared
+        // is one agreeing fixture, so "a sign-off exists" says much less than a
+        // later reader will assume unless the number is here beside it.
+        after: {
+          outcome: 'recorded',
+          signedOffBy,
+          agreed,
+          labelled,
+          corpusSize: report.corpusSize,
+        },
       },
     };
   },

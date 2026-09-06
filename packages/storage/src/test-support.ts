@@ -61,9 +61,15 @@ export function openMigratedTestDatabase(): MigratedTestDatabase {
  * caller that is a test harness. Exported from the production module it was
  * reachable as `enforcementGateRepo.makeRuleEnforceableForTest` by anything
  * that can import `@bananasaurs/storage`, including `packages/http`, which no
- * boundary rule forbids from doing so. `@bananasaurs/storage/test-support` is a
- * separate entry point that ships only to tests, so the shortcut is now
- * physically out of production's reach rather than merely named as if it were.
+ * boundary rule forbids from doing so.
+ *
+ * **The move alone did not make it unreachable, and an earlier version of this
+ * comment wrongly claimed it did.** This subpath is published in
+ * `package.json` and compiles to `dist/`, so production could still have
+ * imported it — one import line different from the original hole. What actually
+ * closes it is the `no-restricted-imports` pattern in `eslint.config.js`, which
+ * bans every `test-support` path outside `*.test.ts`; that rule was watched
+ * firing on a real production file before this sentence was written.
  *
  * `automod ready` (refused outside `observing`) and `automod signoff` (refused
  * without a clean, non-vacuous corpus pass) are the production writers for

@@ -29,6 +29,7 @@ import {
   type InstanceScope,
 } from '@bananasaurs/storage';
 import { generateToken, hashToken, POLICY } from '@bananasaurs/http';
+import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
@@ -184,8 +185,18 @@ export const opsPortsFor = (
   // dry-run, since a disabled rule is not going to match anything in
   // production either. Replaying a disabled rule is a repo function this
   // task does not add.
+  //
+  // Narrowed through `toAutomodRule`, not passed through: `runDryRun` builds a
+  // predicate from this, and `ruleFingerprint` hashes the rule object's own
+  // runtime keys. Handing it the repository row hashes ADR 0042's eight
+  // gate columns too, which is harmless here only because a dry run uses a
+  // fresh cache — the same widening the subscriber's wiring already closed, and
+  // not worth leaving open in a second place for a reader to have to re-derive.
   findAutomodRule: (ruleId) =>
-    automodRuleRepo.listEnabledRules(scope).find((r) => r.ruleId === ruleId),
+    automodRuleRepo
+      .listEnabledRules(scope)
+      .map(toAutomodRule)
+      .find((r) => r.ruleId === ruleId),
   listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
   listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
 

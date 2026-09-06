@@ -7,7 +7,7 @@ import {
 import { parseGuildId } from '@bananasaurs/core';
 import type { GuildScope } from '../scope.js';
 import { upsertGuild } from './guilds.js';
-import { createRule, setRuleMode, type CutoverState } from './automod-rules.js';
+import { createRule, setRuleConfig, setRuleMode, type CutoverState } from './automod-rules.js';
 import { openOrResolveCase, recordCaseEvent } from './mod-cases.js';
 import { recordVerdict, type MatchVerdict } from './mod-match-reviews.js';
 import {
@@ -487,6 +487,45 @@ describe('setRuleMode: the rest of the PR-27 state machine', () => {
     setCutoverState(ruleId, 'ready');
     seedReviewedMatches(ruleId, Array<MatchVerdict>(3).fill('true_positive'));
 
+    const result = enforcementEligibility(scope, ruleId);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.refusal.reason).toBe('low-volume-unsigned');
+  });
+
+  it('changing a rule config withdraws the sign-off too — it attested to the old config', () => {
+    // The last route by which a stale attestation reached enforcement. A
+    // sign-off says "I replayed *this rule* against the corpus and it was
+    // clean"; `setRuleConfig` replaces the rule's config wholesale, so what was
+    // replayed no longer exists. Leaving the sign-off standing let an owner
+    // sign off a narrow pattern, widen it to something that matches half the
+    // guild, and enforce on fewer than `min_reviewed_matches` — with the
+    // machine-checked corpus pass PR-29 requires having been performed against
+    // a different rule.
+    //
+    // Same reasoning as the rollback above, different trigger, so it is worth
+    // its own test: a reader who sees only one of the two would reasonably
+    // assume the other case was considered and rejected.
+    const ruleId = 'config-change-withdraws-signoff';
+    createRule(scope, { ruleId, kind: 'regex', name: ruleId, config: '{"pattern":"a"}', now: NOW });
+    makeRuleEnforceableForTest(scope, ruleId, NOW);
+
+    setRuleConfig(scope, { ruleId, config: '{"pattern":"b"}', now: NOW + 1 });
+
+    const row = t.raw
+      .prepare(
+        `SELECT enforce_signed_off_by, enforce_signed_off_at
+         FROM mod_rules WHERE guild_id = ? AND rule_id = ?`,
+      )
+      .get(GUILD, ruleId) as {
+      enforce_signed_off_by: string | null;
+      enforce_signed_off_at: number | null;
+    };
+    expect(row).toEqual({ enforce_signed_off_by: null, enforce_signed_off_at: null });
+
+    // `cutover_state` is deliberately NOT reset: a config edit is not a
+    // rollback, and the rule has still served whatever window it served. Only
+    // the attestation about the config is void.
+    setCutoverState(ruleId, 'ready');
     const result = enforcementEligibility(scope, ruleId);
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.refusal.reason).toBe('low-volume-unsigned');

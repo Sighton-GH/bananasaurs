@@ -248,3 +248,47 @@ rather than trusting that the existing test covers a migration written later.
 names a hazard *and* its mitigation must be cited as both. Quoting only the
 hazard turns a solved problem into a blocker, and the constraint I wrote would
 have made five of nine columns unimplementable for no reason.
+
+## Amendment 2 (2026-09-06) — a sign-off is withdrawn by a rollback and by a config edit
+
+The original decision said what a sign-off *is* and what it unlocks, and said
+nothing about when it stops being true. Both answers turned out to be
+load-bearing, and both were found by review rather than by design — so they are
+recorded here rather than living only in the comments on the two writers.
+
+A sign-off attests one specific thing: **"I replayed this rule against the
+fixture corpus and it was clean."** It is the only thing that clears the
+low-volume floor, so anything that falsifies that sentence has to void it.
+
+**A rollback withdraws it.** `cutover_state = 'rolled_back'` on its own blocked
+only the direct route back to enforcement. The indirect one stayed open —
+`rolled_back` → `observing` → `ready` → `enforce` — and a surviving sign-off let
+the rule re-enforce on fewer than `min_reviewed_matches`, which made the fresh
+observe window it had been sent to serve count for nothing. Pulling a rule out
+of enforcement is a statement that it was not in fact safe; the attestation
+that supported the decision cannot outlive the decision.
+
+**A config edit withdraws it too.** `setRuleConfig` replaces a rule's config
+wholesale, so the rule that was replayed no longer exists. Left standing, a
+sign-off let an owner sign off a narrow pattern, widen it to something matching
+half the guild, and enforce — with PR-29's machine-checked corpus pass having
+been performed against a different rule.
+
+**`cutover_state` is deliberately not reset by a config edit.** A config change
+is not a rollback, and the rule has still served whatever observe window it
+served; only the claim about the config is void. That asymmetry is the whole
+content of this amendment: the two columns record different facts, and they
+expire for different reasons.
+
+### What this does not fix
+
+The sign-off's bar is one agreeing fixture — deliberately the weakest
+non-vacuous bar, because how *much* evidence a sign-off should require is a
+policy question this ADR does not answer and a threshold invented in code would
+be worse than requiring that the question was asked. Because the bar is that
+low, `agreed`, `labelled` and `corpusSize` are recorded in the command's output
+and in its `audit_events` row: "a sign-off exists" says much less than a later
+reader will assume unless the numbers sit beside it.
+
+Setting a real minimum is left to whoever has watched a real observe window,
+which is a decision for the owner and not for this slice.

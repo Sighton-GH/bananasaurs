@@ -475,7 +475,24 @@ export interface SetRuleConfigInput {
 export const setRuleConfig = (scope: GuildScope, input: SetRuleConfigInput): void =>
   write(scope, ({ db }) => {
     db.update(modRules)
-      .set({ config: input.config, updatedAt: input.now })
+      .set({
+        config: input.config,
+        // The config edit voids any sign-off (ADR 0042 Amendment 2). A sign-off
+        // attests "I replayed *this rule* against the fixture corpus and it was
+        // clean", and this replaces the rule's config wholesale, so the thing
+        // that was replayed no longer exists. Left standing, it let an owner
+        // sign off a narrow pattern, widen it to something matching half the
+        // guild, and enforce on fewer than `min_reviewed_matches` — with
+        // PR-29's machine-checked corpus pass having been run against a
+        // different rule.
+        //
+        // `cutover_state` is deliberately *not* reset here: a config edit is not
+        // a rollback, and the rule has still served whatever observe window it
+        // served. Only the attestation about the config is void.
+        enforceSignedOffBy: null,
+        enforceSignedOffAt: null,
+        updatedAt: input.now,
+      })
       .where(scope.only(modRules, eq(modRules.ruleId, input.ruleId)))
       .run();
   });

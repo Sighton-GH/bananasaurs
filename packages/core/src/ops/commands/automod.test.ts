@@ -1026,6 +1026,78 @@ describe('automod signoff', () => {
     expect(res.data).toMatchObject({ ok: false, reason: 'no-corpus-evidence', agreed: 0 });
   });
 
+  /**
+   * `agreed === 0` has two causes and they need different answers. The first
+   * fix wave conflated them: a corpus that *is* labelled but which the rule
+   * disagrees with everywhere was told "nothing in the fixture corpus is
+   * labelled either — label some fixtures first", which is false twice over and
+   * sends the operator to do work that is already done.
+   *
+   * The distinguishing case is a `should_match` fixture the rule misses:
+   * `falsePositives` stays 0, so `clean` is still true and the run does not look
+   * dirty, but `falseNegatives` is 1 and `agreed` is 0. That is the shape a
+   * real corpus takes on flip day — fixtures labelled during one rule's window
+   * are replayed against the next rule, which legitimately does not match them.
+   */
+  it('tells a rule that disagrees with every label that it disagrees, not that nothing is labelled', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          // Labelled `should_match`, and this rule does not match it.
+          fixture({ fixtureId: 'f1', content: 'nothing to see', label: 'should_match' }),
+        ],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.text).not.toContain('nothing in the fixture corpus is labelled');
+    expect(res.data).toMatchObject({
+      ok: false,
+      reason: 'corpus-all-disagreed',
+      agreed: 0,
+      falseNegatives: 1,
+    });
+  });
+
+  /**
+   * The sign-off is what clears the low-volume floor, and the bar it clears is
+   * deliberately the weakest non-vacuous one — a single agreeing fixture. That
+   * makes *how much* evidence stood behind it the thing a later reader most
+   * needs, and it was recorded nowhere: a sign-off backed by one label and one
+   * backed by five hundred fixtures produced identical text, identical `data`
+   * and an identical audit row.
+   */
+  it('records how much evidence the sign-off rests on, in the text, the data and the audit row', async () => {
+    const audit: { after?: Record<string, unknown> }[] = [];
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+          fixture({ fixtureId: 'f2', content: 'hello badword too', label: 'should_match' }),
+          fixture({ fixtureId: 'f3', content: 'nothing here' }),
+        ],
+        recordAutomodSignOff: () => {},
+        recordAudit: (input) => {
+          audit.push(input as { after?: Record<string, unknown> });
+        },
+      },
+      { ruleId: 'r1' },
+      { unixUserClaimed: 'bryan' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('2 of 3');
+    expect(res.data).toMatchObject({ ok: true, agreed: 2, corpusSize: 3 });
+    expect(audit[0]?.after).toMatchObject({ outcome: 'recorded', agreed: 2, corpusSize: 3 });
+  });
+
   it('records the sign-off and writes an audit row once the dry run is clean', async () => {
     const audit: unknown[] = [];
     let seen: { ruleId: string; signedOffBy: string } | undefined;
