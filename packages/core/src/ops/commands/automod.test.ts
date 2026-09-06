@@ -1,10 +1,24 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { createDispatcher, type RegisteredCommand } from '../dispatch.js';
 import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixtures.js';
 import type { OpsPorts, OpsReviewableMatch } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
+// Namespace import so `compileRule` can be spied on the same module object
+// `evaluate.ts` calls through — the same pattern `dry-run.test.ts` uses to
+// force a predicate throw without an actual multi-second ReDoS timeout.
+import * as automodRegistry from '../../automod/predicates/registry.js';
 import type { AutomodRule, FixtureRecord } from '../../automod/predicates/types.js';
-import { automodDryRunCommand, automodReviewCommand, automodVerdictCommand } from './automod.js';
+import {
+  automodDomainAddCommand,
+  automodDomainRmCommand,
+  automodDryRunCommand,
+  automodInviteAllowCommand,
+  automodInviteDenyCommand,
+  automodReadyCommand,
+  automodReviewCommand,
+  automodSignoffCommand,
+  automodVerdictCommand,
+} from './automod.js';
 
 const NOW = 1_700_000_000_000;
 
@@ -79,6 +93,9 @@ const ruleWith = (words: readonly string[], over: Partial<AutomodRule> = {}): Au
   config: '{}',
   terms: words.map((text) => ({ text, categoryId: 'c1' })),
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
+  countsAsViolation: true,
   ...over,
 });
 
@@ -89,6 +106,7 @@ const fixture = (
   label: 'unlabelled',
   source: 'observed',
   createdAt: NOW,
+  attachments: [],
   ...over,
 });
 
@@ -267,6 +285,174 @@ describe('automod dryrun', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('corpus is empty');
+  });
+
+  it('reports a throw rather than a clean summary, and abandons after five throws (CRITICAL-1, IMPORTANT-5)', async () => {
+    // Forced through a `compileRule` spy rather than an actual
+    // catastrophic-backtracking `regex` pattern, to keep this test fast —
+    // `regex.test.ts`'s Obligation 1 gate already proves the real timeout
+    // takes multiple seconds. Before this fix, this exact scenario rendered
+    // as "0/20 matched · 0 false positive(s) of ... labelled · 0 missed" —
+    // indistinguishable from a rule that behaved perfectly.
+    const spy = vi.spyOn(automodRegistry, 'compileRule').mockReturnValue({
+      ok: true,
+      compiled: {
+        evaluate: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    try {
+      const res = await drive(
+        automodDryRunCommand,
+        {
+          findAutomodRule: () => ruleWith(['badword']),
+          listAutomodFixtures: () =>
+            Array.from({ length: 20 }, (_, i) =>
+              fixture({ fixtureId: `f${String(i)}`, content: `fixture ${String(i)}` }),
+            ),
+        },
+        { ruleId: 'r1' },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.text).toContain('5 of 5 evaluation(s) failed');
+      expect(res.text).toContain('abandoned');
+      expect(res.text).toContain('5 of 20 fixtures');
+      // The rendering rule that matters most: no match table, no per-fixture
+      // trace, once the predicate threw — a table under a report where most
+      // fixtures never actually ran is worse than useless.
+      expect(res.text).not.toContain('matched on');
+      expect(res.data).toMatchObject({ threw: 5, total: 5, corpusSize: 20 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('says how many fixtures carry attachment metadata, for an attachment_type rule (IMPORTANT-6)', async () => {
+    // `attachment_type` can only ever match a fixture with attachment rows,
+    // and a fixture captured before migration 0013 has none. Over a corpus
+    // where most fixtures predate that migration, "0/3 matched" reads as
+    // "no bad files were posted" when it is actually "no fixture here
+    // records a file either way".
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () =>
+          ruleWith([], { kind: 'attachment_type', config: '{"blockedExtensions":["exe"]}' }),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'no file here' }),
+          fixture({ fixtureId: 'f2', content: 'no file here either' }),
+          fixture({
+            fixtureId: 'f3',
+            content: 'has a file',
+            attachments: [{ fileName: 'x.txt', contentType: 'text/plain', sizeBytes: 1 }],
+          }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('1 of 3 fixtures carry attachment metadata');
+    expect(res.data).toMatchObject({ attachmentMetadata: { withMetadata: 1, total: 3 } });
+  });
+
+  it('does not mention attachment metadata for a rule kind that does not read attachments', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello badword' })],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('attachment metadata');
+    expect(res.data).toMatchObject({ attachmentMetadata: null });
+  });
+
+  it('caveats a windowed rule’s replay: the corpus under-counts and PR-1’s edit rows over-count (CRITICAL-3)', async () => {
+    // The corpus (`captureObservedFixture`) records only messages that
+    // already matched, so the events that *built* a window count are absent
+    // from it by construction — a genuinely working rule reports MISSED over
+    // this corpus. And PR-1 gives every edit of the same message its own
+    // fixture row, which the fixture replay treats as a separate
+    // `messageCreate` each — two rows here share the message id `abc`, which
+    // is the over-report term made visible. Without the caveat, both facts
+    // are invisible to whoever reads this command's output.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () =>
+          ruleWith([], { kind: 'rapid_spam', config: '{"maxMessages":100,"windowMs":10000}' }),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'abc:hash1', content: 'first version', label: 'should_match' }),
+          fixture({ fixtureId: 'abc:hash2', content: 'edited version', label: 'should_match' }),
+          fixture({ fixtureId: 'xyz:hash3', content: 'unrelated message' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('holds only previously-matched messages');
+    expect(res.text).toContain('not a rate over traffic');
+    expect(res.text).toContain('2 of 3');
+    expect(res.data).toMatchObject({ windowedCorpusCaveat: { editedMessageRows: 2 } });
+  });
+
+  it('warns that a handwritten replay cannot test whether a windowed rule keeps members apart', async () => {
+    // `predicateInputFrom` maps every handwritten fixture's null author to the
+    // same literal `'fixture'`, so a windowed rule replayed over handwritten
+    // fixtures sees ONE member's burst whatever the operator wrote. The
+    // scenario that makes this bite is the natural pre-flip check —
+    // "three different members each post this phrase once, which must not trip
+    // duplicate_message" — which collapses to one member repeating itself and
+    // matches, answering the opposite of the truth about the one property it
+    // was used to check.
+    //
+    // The ambiguity that makes this non-decorative: the corpus is ALL
+    // handwritten and the rule IS windowed, which is the only combination that
+    // warrants the warning. The two neighbouring tests cover a windowed rule
+    // over observed rows (no warning) and a non-windowed rule (no caveat at
+    // all), so a warning printed unconditionally would redden one of them.
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () =>
+          ruleWith([], {
+            kind: 'duplicate_message',
+            config: '{"maxRepeats":1,"windowMs":30000,"minLength":1}',
+          }),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'hw-1', content: 'same phrase', source: 'handwritten' }),
+          fixture({ fixtureId: 'hw-2', content: 'same phrase', source: 'handwritten' }),
+        ],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('same synthetic author');
+    expect(res.text).toContain('cannot test whether this rule keeps members apart');
+    expect(res.data).toMatchObject({ windowedCorpusCaveat: { handwrittenRows: 2 } });
+  });
+
+  it('does not caveat a non-windowed rule’s replay', async () => {
+    const res = await drive(
+      automodDryRunCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello badword' })],
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('not a rate over traffic');
+    expect(res.data).toMatchObject({ windowedCorpusCaveat: null });
   });
 });
 
@@ -574,5 +760,821 @@ describe('automod verdict', () => {
       { eventId: 'e1', verdict: 'maybe' },
     );
     expect(res.ok).toBe(false);
+  });
+});
+
+describe('automod ready', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod ready');
+    expect(automodReadyCommand.write).toBe(true);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodReadyCommand,
+      { setAutomodRuleReady: () => ({ ok: true }) },
+      { ruleId: 'r1' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+
+  it('marks the rule ready and writes an audit row', async () => {
+    const audit: unknown[] = [];
+    let seenRuleId: string | undefined;
+    const res = await driveWrite(
+      automodReadyCommand,
+      {
+        setAutomodRuleReady: (ruleId) => {
+          seenRuleId = ruleId;
+          return { ok: true };
+        },
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(seenRuleId).toBe('r1');
+    expect(res.text).toContain('r1');
+    expect(res.text).toContain('ready for enforcement');
+    expect(res.data).toMatchObject({ ok: true, ruleId: 'r1' });
+    expect(audit).toEqual([
+      expect.objectContaining({ action: 'automod.cutover_ready', subjectId: 'r1' }),
+    ]);
+  });
+
+  it('refuses from rolled_back, naming the state — the test that matters (ADR 0042, PR-27)', async () => {
+    // Without this precondition surfacing correctly, a rollback could be
+    // undone by `ready` then `enforce` without ever revisiting `observing`.
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodReadyCommand,
+      {
+        setAutomodRuleReady: () => ({ ok: false, reason: 'not-observing', state: 'rolled_back' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('rolled_back');
+    expect(res.text).toContain('must be observing');
+    expect(res.data).toMatchObject({ ok: false, reason: 'not-observing', state: 'rolled_back' });
+    // A refusal is still a fact worth having in the audit trail (the same
+    // treatment `automod verdict`'s `'no-such-event'` gets).
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.cutover_ready',
+        after: expect.objectContaining({ state: 'rolled_back' }),
+      }),
+    ]);
+  });
+
+  it.each(['not_started', 'cutover'] as const)(
+    'refuses from %s, naming the state',
+    async (state) => {
+      const res = await driveWrite(
+        automodReadyCommand,
+        {
+          setAutomodRuleReady: () => ({ ok: false, reason: 'not-observing', state }),
+          recordAudit: () => {},
+        },
+        { ruleId: 'r1' },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.text).toContain(state);
+      expect(res.data).toMatchObject({ ok: false, state });
+    },
+  );
+});
+
+describe('automod signoff', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod signoff');
+    expect(automodSignoffCommand.write).toBe(true);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      { findAutomodRule: () => ruleWith(['badword']), listAutomodFixtures: () => [] },
+      { ruleId: 'r1' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+
+  it('refuses a rule id that is not there, but still writes an audit row', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => undefined,
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'nope' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('no enabled rule');
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([
+      expect.objectContaining({ after: expect.objectContaining({ outcome: 'no-such-rule' }) }),
+    ]);
+  });
+
+  /**
+   * PR-29's three conditions, each its own test — the brief's own warning: a
+   * single "not clean" test would pass an implementation that checks only
+   * one of the three fields.
+   */
+  it('refuses when the rule cannot be compiled (usable: false)', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith([]), // no terms: keyword_filter cannot compile
+        listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'anything' })],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.text).toContain('usable=false');
+    expect(res.data).toMatchObject({ ok: false, reason: 'dry-run-not-clean', usable: false });
+  });
+
+  it('refuses when the predicate threw (threw > 0), even with usable: true and no false positives', async () => {
+    const spy = vi.spyOn(automodRegistry, 'compileRule').mockReturnValue({
+      ok: true,
+      compiled: {
+        evaluate: () => {
+          throw new Error('boom');
+        },
+      },
+    });
+    try {
+      const res = await driveWrite(
+        automodSignoffCommand,
+        {
+          findAutomodRule: () => ruleWith(['badword']),
+          listAutomodFixtures: () => [fixture({ fixtureId: 'f1', content: 'hello' })],
+          recordAudit: () => {},
+        },
+        { ruleId: 'r1' },
+      );
+      expect(res.ok).toBe(true);
+      if (!res.ok) return;
+      expect(res.text).toContain('cannot be signed off');
+      expect(res.text).toContain('threw=1');
+      expect(res.data).toMatchObject({ ok: false, reason: 'dry-run-not-clean', threw: 1 });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('refuses when there is a false positive (falsePositives > 0), even with usable: true and threw: 0', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'badword here', label: 'should_not_match' }),
+        ],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.text).toContain('falsePositives=1');
+    expect(res.data).toMatchObject({
+      ok: false,
+      reason: 'dry-run-not-clean',
+      falsePositives: 1,
+    });
+  });
+
+  /**
+   * The three conditions above are all *absences* — nothing failed to compile,
+   * nothing threw, nothing was a false positive — and an empty corpus satisfies
+   * every one of them vacuously. That makes the sign-off, which is the only
+   * thing that clears the low-volume floor, grantable on no evidence at all:
+   * observe → ready → signoff → enforce with zero reviewed matches and zero
+   * labelled fixtures, and the operator is told the corpus pass was clean.
+   *
+   * `DryRunFixtureResult.agreement`'s own comment already names this failure:
+   * "counting an unlabelled non-match as a success would make every rule look
+   * perfect on the day it shipped." `automod dryrun` refuses to print a rate
+   * for an unlabelled corpus for exactly that reason — the human-facing guard
+   * existed and the machine-facing one did not.
+   *
+   * A clean pass presupposes something was judged, so the check now also
+   * requires at least one fixture the rule actually agreed with.
+   */
+  it('refuses on an empty corpus rather than calling nothing a clean pass', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-corpus-evidence', agreed: 0 });
+  });
+
+  it('refuses a corpus the rule matches but nobody has labelled', async () => {
+    // Deliberately a corpus the rule *does* match: `matched > 0` while
+    // `agreed === 0`, so an implementation that mistook "the rule fired" for
+    // "the rule was judged correct" would pass this and still be wrong.
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword' }),
+          fixture({ fixtureId: 'f2', content: 'badword again' }),
+        ],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-corpus-evidence', agreed: 0 });
+  });
+
+  /**
+   * `agreed === 0` has two causes and they need different answers. The first
+   * fix wave conflated them: a corpus that *is* labelled but which the rule
+   * disagrees with everywhere was told "nothing in the fixture corpus is
+   * labelled either — label some fixtures first", which is false twice over and
+   * sends the operator to do work that is already done.
+   *
+   * The distinguishing case is a `should_match` fixture the rule misses:
+   * `falsePositives` stays 0, so `clean` is still true and the run does not look
+   * dirty, but `falseNegatives` is 1 and `agreed` is 0. That is the shape a
+   * real corpus takes on flip day — fixtures labelled during one rule's window
+   * are replayed against the next rule, which legitimately does not match them.
+   */
+  it('tells a rule that disagrees with every label that it disagrees, not that nothing is labelled', async () => {
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          // Labelled `should_match`, and this rule does not match it.
+          fixture({ fixtureId: 'f1', content: 'nothing to see', label: 'should_match' }),
+        ],
+        recordAudit: () => {},
+      },
+      { ruleId: 'r1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('cannot be signed off');
+    expect(res.text).not.toContain('nothing in the fixture corpus is labelled');
+    expect(res.data).toMatchObject({
+      ok: false,
+      reason: 'corpus-all-disagreed',
+      agreed: 0,
+      falseNegatives: 1,
+    });
+  });
+
+  /**
+   * The sign-off is what clears the low-volume floor, and the bar it clears is
+   * deliberately the weakest non-vacuous one — a single agreeing fixture. That
+   * makes *how much* evidence stood behind it the thing a later reader most
+   * needs, and it was recorded nowhere: a sign-off backed by one label and one
+   * backed by five hundred fixtures produced identical text, identical `data`
+   * and an identical audit row.
+   */
+  it('records how much evidence the sign-off rests on, in the text, the data and the audit row', async () => {
+    const audit: { after?: Record<string, unknown> }[] = [];
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+          fixture({ fixtureId: 'f2', content: 'hello badword too', label: 'should_match' }),
+          fixture({ fixtureId: 'f3', content: 'nothing here' }),
+        ],
+        recordAutomodSignOff: () => {},
+        recordAudit: (input) => {
+          audit.push(input as { after?: Record<string, unknown> });
+        },
+      },
+      { ruleId: 'r1' },
+      { unixUserClaimed: 'bryan' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('2 of 3');
+    expect(res.data).toMatchObject({ ok: true, agreed: 2, corpusSize: 3 });
+    expect(audit[0]?.after).toMatchObject({ outcome: 'recorded', agreed: 2, corpusSize: 3 });
+  });
+
+  it('records the sign-off and writes an audit row once the dry run is clean', async () => {
+    const audit: unknown[] = [];
+    let seen: { ruleId: string; signedOffBy: string } | undefined;
+    const res = await driveWrite(
+      automodSignoffCommand,
+      {
+        findAutomodRule: () => ruleWith(['badword']),
+        listAutomodFixtures: () => [
+          fixture({ fixtureId: 'f1', content: 'hello badword', label: 'should_match' }),
+        ],
+        recordAutomodSignOff: (input) => {
+          seen = input;
+        },
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'r1' },
+      { unixUserClaimed: 'bryan' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('signed off by cli:bryan');
+    expect(res.data).toMatchObject({ ok: true, ruleId: 'r1', signedOffBy: 'cli:bryan' });
+    expect(seen).toEqual({ ruleId: 'r1', signedOffBy: 'cli:bryan' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.enforce_signed_off',
+        after: expect.objectContaining({ outcome: 'recorded', signedOffBy: 'cli:bryan' }),
+      }),
+    ]);
+  });
+});
+
+/**
+ * These four suites drive `fakeOpsPorts` with canned outcomes and assert on
+ * rendered text — they test the renderer, not the repository, so they
+ * cannot by themselves catch IMPORTANT-1 (the wrong `listType` printed),
+ * IMPORTANT-2 (canonicalisation asymmetry between add and remove) or
+ * IMPORTANT-7 (no kind check) — the fake never disagrees with what the
+ * command asks it to say (decorative guard 1, review of Slices 3+5). Real
+ * round-trip coverage against a migrated database and the real repository
+ * lives in `packages/storage/src/repos/automod-rule-lists.test.ts`, which is
+ * the one place that can reach both (`core` may not import `@bananasaurs/
+ * storage`, ADR 0014).
+ */
+
+describe('automod invite-allow', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod invite-allow');
+    expect(automodInviteAllowCommand.write).toBe(true);
+  });
+
+  it('adds an invite allowlist entry and audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'added',
+        listInviteAllowlist: () => [{ code: 'clubhouse', label: 'our own server' }],
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'invite-rule', code: 'clubhouse', label: 'our own server' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, code: 'clubhouse', alreadyPresent: false });
+    expect(res.text).toContain('added clubhouse');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_added',
+        subjectType: 'mod_rule',
+        subjectId: 'invite-rule',
+      }),
+    ]);
+  });
+
+  it('says a code is already allowed rather than erroring on a repeat add', async () => {
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'already-present',
+        listInviteAllowlist: () => [{ code: 'clubhouse', label: 'our own server' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'invite-rule', code: 'clubhouse', label: 'our own server' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, alreadyPresent: true });
+    expect(res.text).toContain('already on');
+  });
+
+  it('refuses to add an entry to a rule that does not exist, but still audits it', async () => {
+    // A usage answer, not a fault — the same treatment `automod verdict`
+    // gives a mistyped event id, and for the same reason: an operator at a
+    // terminal will mistype a rule id. An audit row is still owed.
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'no-such-rule',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', code: 'x', label: 'y' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_added',
+        subjectType: 'mod_rule',
+        subjectId: 'no-such-rule',
+        after: expect.objectContaining({ outcome: 'no-such-rule' }),
+      }),
+    ]);
+  });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      {
+        addInviteAllowlistEntry: () => 'wrong-kind',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', code: 'clubhouse', label: 'our own server' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not an invite rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_added',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
+  });
+
+  it('refuses without --confirm', async () => {
+    const res = await driveWrite(
+      automodInviteAllowCommand,
+      { addInviteAllowlistEntry: () => 'added', listInviteAllowlist: () => [] },
+      { ruleId: 'r1', code: 'x', label: 'y' },
+      { confirm: false },
+    );
+    expect(res.ok).toBe(false);
+    if (res.ok) return;
+    expect(res.code).toBe('needs-confirm');
+  });
+});
+
+describe('automod invite-deny', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod invite-deny');
+    expect(automodInviteDenyCommand.write).toBe(true);
+  });
+
+  it('removes an invite allowlist entry', async () => {
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'removed',
+        listInviteAllowlist: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'invite-rule', code: 'clubhouse' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: true });
+    expect(res.text).toContain('removed clubhouse');
+  });
+
+  it('says a code was not on the list rather than erroring', async () => {
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'not-present',
+        listInviteAllowlist: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'invite-rule', code: 'ghost' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: false });
+    expect(res.text).toContain('was not on');
+  });
+
+  it('refuses a rule that does not exist, but still audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'no-such-rule',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', code: 'x' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([
+      expect.objectContaining({ action: 'automod.invite_allowlist_removed' }),
+    ]);
+  });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodInviteDenyCommand,
+      {
+        removeInviteAllowlistEntry: () => 'wrong-kind',
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', code: 'clubhouse' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not an invite rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.invite_allowlist_removed',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
+  });
+});
+
+describe('automod domain-add', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod domain-add');
+    expect(automodDomainAddCommand.write).toBe(true);
+  });
+
+  it('adds a domain and audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'added', mode: 'deny' }),
+        listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, domain: 'example.com', listType: 'deny' });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.link_domain_added',
+        subjectType: 'mod_rule',
+        subjectId: 'domain-rule',
+      }),
+    ]);
+  });
+
+  it("names the domain's stored listType, not the operator's requested one, on a repeat add under the other list (IMPORTANT-1)", async () => {
+    // The primary key is (guild, rule, domain), so re-adding under the
+    // *other* listType is a no-op the port reports as `already-present`
+    // with the listType actually stored — here, `allow`, even though the
+    // operator asked for `deny`.
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'already-present', listType: 'allow', mode: 'allow' }),
+        listLinkDomains: () => [{ domain: 'example.com', listType: 'allow' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, alreadyPresent: true, listType: 'allow' });
+    expect(res.text).toContain("already on rule domain-rule's allow list");
+    expect(res.text).not.toContain("already on rule domain-rule's deny list");
+    expect(res.text).toContain('move it to deny');
+  });
+
+  it('warns when the add leaves the rule matching every link — an allow-mode rule with nothing on its allow list (CRITICAL-2)', async () => {
+    // Adding a deny-listType domain to an allow-mode rule does not touch the
+    // active (allow) list, so it can still be empty after the write.
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'added', mode: 'allow' }),
+        listLinkDomains: () => [{ domain: 'example.com', listType: 'deny' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com', listType: 'deny' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('matches every link');
+  });
+
+  it('refuses a listType outside allow|deny at the validator', async () => {
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      { addLinkDomain: () => ({ outcome: 'added', mode: 'allow' }), listLinkDomains: () => [] },
+      { ruleId: 'r1', domain: 'example.com', listType: 'block' },
+    );
+    expect(res.ok).toBe(false);
+  });
+
+  it('refuses a rule that does not exist, but still audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'no-such-rule' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', domain: 'example.com', listType: 'allow' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_added' })]);
+  });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainAddCommand,
+      {
+        addLinkDomain: () => ({ outcome: 'wrong-kind' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', domain: 'example.com', listType: 'allow' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not a link_domain rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.link_domain_added',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
+  });
+});
+
+describe('automod domain-rm', () => {
+  it('is registered as a write', () => {
+    const names = OPERATOR_COMMANDS.map((c) => c.name);
+    expect(names).toContain('automod domain-rm');
+    expect(automodDomainRmCommand.write).toBe(true);
+  });
+
+  it('removes a domain', async () => {
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'removed', mode: 'deny' }),
+        listLinkDomains: () => [{ domain: 'other.example', listType: 'deny' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: true });
+  });
+
+  it('says a domain was not on the list rather than erroring', async () => {
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'not-present', mode: 'deny' }),
+        listLinkDomains: () => [{ domain: 'other.example', listType: 'deny' }],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'ghost.example' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: true, removed: false });
+  });
+
+  it('warns that the rule is now inert when the last deny row is removed (CRITICAL-2)', async () => {
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'removed', mode: 'deny' }),
+        listLinkDomains: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('can never match');
+  });
+
+  it('warns that the rule now matches every link when the last allow row is removed (CRITICAL-2)', async () => {
+    // The dangerous direction, not just the inert one: "the domain lists are
+    // now empty" used to read as a tidy-up regardless of which one this is.
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'removed', mode: 'allow' }),
+        listLinkDomains: () => [],
+        recordAudit: () => {},
+      },
+      { ruleId: 'domain-rule', domain: 'club.org' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('matches every link');
+    expect(res.text).toContain('add a domain or disable the rule');
+  });
+
+  it('refuses a rule that does not exist, but still audits it', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'no-such-rule' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'no-such-rule', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'no-such-rule' });
+    expect(audit).toEqual([expect.objectContaining({ action: 'automod.link_domain_removed' })]);
+  });
+
+  it('refuses a rule id that names a rule of the wrong kind, but still audits it (IMPORTANT-7)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      automodDomainRmCommand,
+      {
+        removeLinkDomain: () => ({ outcome: 'wrong-kind' }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { ruleId: 'default-word-filter', domain: 'example.com' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason: 'wrong-kind' });
+    expect(res.text).toContain('not a link_domain rule');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'automod.link_domain_removed',
+        after: expect.objectContaining({ outcome: 'wrong-kind' }),
+      }),
+    ]);
   });
 });

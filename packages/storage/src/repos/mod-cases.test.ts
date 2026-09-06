@@ -644,6 +644,7 @@ describe('listUnreviewedMatches', () => {
       content: 'the whole matched message',
       authorId: MEMBER,
       createdAt: 500,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
 
@@ -659,6 +660,7 @@ describe('listUnreviewedMatches', () => {
       content: 'a message someone later forgot',
       authorId: MEMBER,
       createdAt: 500,
+      attachments: [],
     });
     seedMatchEvent(scope, { eventId: 'e1', fixtureId, trace: '{"kind":"keyword_filter"}' });
     deleteObservedFixturesForMember(scope, MEMBER);

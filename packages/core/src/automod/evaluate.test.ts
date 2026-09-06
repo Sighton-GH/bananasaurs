@@ -27,6 +27,9 @@ const ruleWith = (terms: readonly string[]): AutomodRule => ({
   config: '{}',
   terms: terms.map((text) => ({ text, categoryId: 'profanity' })),
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
+  countsAsViolation: true,
 });
 
 const inputWith = (content: string): PredicateInput => ({
@@ -176,7 +179,10 @@ describe('predicateInputFrom', () => {
   it('reconstructs mentions from a fixture’s content', () => {
     // Plan ruling PR-3: Discord mention syntax is literally present in the
     // message text, so the window tier can replay honestly from a text-only
-    // corpus. Attachments are not recoverable and stay empty.
+    // corpus. This fixture names no files, so attachments stay empty — that
+    // is a fact about the fixture, not about what the corpus can hold (OD-3
+    // superseded PR-3's note that attachments were unrecoverable; see the
+    // dedicated test below for a fixture that has some).
     const fixture: FixtureRecord = {
       fixtureId: '300000000000000001:abcdef0123456789',
       content:
@@ -185,6 +191,7 @@ describe('predicateInputFrom', () => {
       label: 'unlabelled',
       source: 'observed',
       createdAt: 7_000,
+      attachments: [],
     };
     const input = predicateInputFrom({
       from: 'fixture',
@@ -196,6 +203,28 @@ describe('predicateInputFrom', () => {
     expect(input?.mentionedRoleIds).toEqual(['500000000000000001']);
     expect(input?.mentionsEveryone).toBe(true);
     expect(input?.attachments).toEqual([]);
+  });
+
+  it('reconstructs a fixture’s attachments onto the predicate input', () => {
+    const input = predicateInputFrom({
+      from: 'fixture',
+      guildId: '100000000000000001',
+      fixture: {
+        fixtureId: '900000000000000001:0123456789abcdef',
+        content: 'have a file',
+        authorId: '800000000000000001',
+        label: 'unlabelled',
+        source: 'observed',
+        createdAt: 5_000,
+        attachments: [
+          { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
+        ],
+      },
+    });
+
+    expect(input?.attachments).toEqual([
+      { fileName: 'payload.exe', contentType: 'application/x-msdownload', sizeBytes: 4096 },
+    ]);
   });
 
   it.each([
@@ -217,6 +246,7 @@ describe('predicateInputFrom', () => {
         label: 'should_not_match',
         source: 'handwritten',
         createdAt: 1,
+        attachments: [],
       },
     });
     expect(input?.mentionsEveryone).toBe(false);
@@ -237,6 +267,7 @@ describe('predicateInputFrom', () => {
         label: 'should_match',
         source: 'handwritten',
         createdAt: 1,
+        attachments: [],
       },
     });
     expect(input?.mentionsEveryone).toBe(true);
@@ -250,6 +281,7 @@ describe('predicateInputFrom', () => {
       label: 'should_not_match',
       source: 'handwritten',
       createdAt: 7_000,
+      attachments: [],
     };
     const input = predicateInputFrom({
       from: 'fixture',
@@ -267,6 +299,7 @@ describe('predicateInputFrom', () => {
       label: 'unlabelled',
       source: 'observed',
       createdAt: 1,
+      attachments: [],
     };
     const input = predicateInputFrom({
       from: 'fixture',

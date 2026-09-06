@@ -1,8 +1,8 @@
 import { createHash } from 'node:crypto';
-import { asc, eq } from 'drizzle-orm';
+import { asc, eq, inArray } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import { automodFixtures } from '../schema.js';
+import { automodFixtureAttachments, automodFixtures } from '../schema.js';
 
 /**
  * The automod review corpus (ADR 0041 §1).
@@ -15,6 +15,14 @@ import { automodFixtures } from '../schema.js';
 export type FixtureLabel = 'should_match' | 'should_not_match' | 'unlabelled';
 export type FixtureSource = 'observed' | 'handwritten';
 
+/** One attachment on a corpus message: filename, declared content type, size (OD-3). */
+export interface FixtureAttachment {
+  readonly fileName: string;
+  /** `undefined` when Discord declared no content type. */
+  readonly contentType: string | undefined;
+  readonly sizeBytes: number;
+}
+
 export interface AutomodFixture {
   readonly fixtureId: string;
   readonly content: string;
@@ -24,6 +32,8 @@ export interface AutomodFixture {
   readonly source: FixtureSource;
   readonly note: string | undefined;
   readonly createdAt: number;
+  /** Empty for a handwritten fixture that names no files (OD-3). */
+  readonly attachments: readonly FixtureAttachment[];
 }
 
 /**
@@ -48,6 +58,8 @@ export interface CaptureObservedFixtureInput {
   readonly content: string;
   readonly authorId: string;
   readonly createdAt: number;
+  /** Filename, declared content type and size for each file (OD-3). */
+  readonly attachments: readonly FixtureAttachment[];
 }
 
 /**
@@ -90,6 +102,35 @@ export const captureObservedFixture = (
         target: [automodFixtures.guildId, automodFixtures.fixtureId],
       })
       .run();
+
+    // Inserted inside the same write() as the parent so a capture is one
+    // transaction: a fixture row whose attachments failed to write would be
+    // evidence that lies by omission, and `attachment_type`'s dry run would
+    // read it as a message with no files.
+    //
+    // `onConflictDoNothing` on the parent means a replayed capture of the same
+    // message is a no-op (PR-1). The children use the same target so a replay
+    // does not duplicate them either; the first capture wins for both, which
+    // keeps parent and children consistent about which capture they describe.
+    input.attachments.forEach((attachment, ordinal) => {
+      db.insert(automodFixtureAttachments)
+        .values({
+          guildId: scope.guildId,
+          fixtureId,
+          ordinal,
+          fileName: attachment.fileName,
+          contentType: attachment.contentType ?? null,
+          sizeBytes: attachment.sizeBytes,
+        })
+        .onConflictDoNothing({
+          target: [
+            automodFixtureAttachments.guildId,
+            automodFixtureAttachments.fixtureId,
+            automodFixtureAttachments.ordinal,
+          ],
+        })
+        .run();
+    });
   });
   return fixtureId;
 };
@@ -100,6 +141,12 @@ export interface AddHandwrittenFixtureInput {
   readonly label: FixtureLabel;
   readonly note?: string;
   readonly createdAt: number;
+  /**
+   * An adversarial case for `attachment_type` is exactly the thing this
+   * function exists for, so it can name files too. Defaults to `[]` — most
+   * handwritten fixtures are plain text.
+   */
+  readonly attachments?: readonly FixtureAttachment[];
 }
 
 /**
@@ -127,6 +174,26 @@ export const addHandwrittenFixture = (scope: GuildScope, input: AddHandwrittenFi
         target: [automodFixtures.guildId, automodFixtures.fixtureId],
       })
       .run();
+
+    (input.attachments ?? []).forEach((attachment, ordinal) => {
+      db.insert(automodFixtureAttachments)
+        .values({
+          guildId: scope.guildId,
+          fixtureId: input.fixtureId,
+          ordinal,
+          fileName: attachment.fileName,
+          contentType: attachment.contentType ?? null,
+          sizeBytes: attachment.sizeBytes,
+        })
+        .onConflictDoNothing({
+          target: [
+            automodFixtureAttachments.guildId,
+            automodFixtureAttachments.fixtureId,
+            automodFixtureAttachments.ordinal,
+          ],
+        })
+        .run();
+    });
   });
 
 export interface FixtureFilter {
@@ -149,8 +216,8 @@ export const listFixtures = (
   scope: GuildScope,
   filter: FixtureFilter = {},
 ): readonly AutomodFixture[] =>
-  read(scope, (db) =>
-    db
+  read(scope, (db) => {
+    const rows = db
       .select()
       .from(automodFixtures)
       .where(
@@ -161,17 +228,52 @@ export const listFixtures = (
         ),
       )
       .orderBy(asc(automodFixtures.createdAt), asc(automodFixtures.fixtureId))
-      .all()
-      .map((row) => ({
-        fixtureId: row.fixtureId,
-        content: row.content,
-        authorId: row.authorId ?? undefined,
-        label: row.label as FixtureLabel,
-        source: row.source as FixtureSource,
-        note: row.note ?? undefined,
-        createdAt: row.createdAt,
-      })),
-  );
+      .all();
+
+    if (rows.length === 0) return [];
+
+    // One query for every attachment in scope, grouped in code, rather than
+    // one query per fixture: `listFixtures` is what the dry run replays, and
+    // a per-row query would make a 300-fixture corpus 301 queries. Ordered by
+    // (fixture_id, ordinal) so a replay sees a message's files in the order
+    // they were posted, deterministically.
+    const attachmentRows = db
+      .select()
+      .from(automodFixtureAttachments)
+      .where(
+        scope.only(
+          automodFixtureAttachments,
+          inArray(
+            automodFixtureAttachments.fixtureId,
+            rows.map((row) => row.fixtureId),
+          ),
+        ),
+      )
+      .orderBy(asc(automodFixtureAttachments.fixtureId), asc(automodFixtureAttachments.ordinal))
+      .all();
+
+    const attachmentsByFixtureId = new Map<string, FixtureAttachment[]>();
+    for (const row of attachmentRows) {
+      const list = attachmentsByFixtureId.get(row.fixtureId) ?? [];
+      list.push({
+        fileName: row.fileName,
+        contentType: row.contentType ?? undefined,
+        sizeBytes: row.sizeBytes,
+      });
+      attachmentsByFixtureId.set(row.fixtureId, list);
+    }
+
+    return rows.map((row) => ({
+      fixtureId: row.fixtureId,
+      content: row.content,
+      authorId: row.authorId ?? undefined,
+      label: row.label as FixtureLabel,
+      source: row.source as FixtureSource,
+      note: row.note ?? undefined,
+      createdAt: row.createdAt,
+      attachments: attachmentsByFixtureId.get(row.fixtureId) ?? [],
+    }));
+  });
 
 /** Returns whether there was a fixture to label. False is a real answer. */
 export const setFixtureLabel = (

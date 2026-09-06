@@ -5,6 +5,7 @@ import {
   index,
   integer,
   primaryKey,
+  real,
   sqliteTable,
   text,
   unique,
@@ -46,6 +47,20 @@ export const guilds = sqliteTable(
     breakerTrippedAt: integer('breaker_tripped_at'),
     breakerReason: text('breaker_reason'),
 
+    // ADR 0042 §5 — a third lever, distinct from `killswitch` (emergency,
+    // everything) and `dryRun` (guild-wide, everything): automod takes no
+    // Discord action while every other subsystem, role panels above all,
+    // keeps working. Added here, its CHECK in a separate `db:generate` run:
+    // the CHECK forces a table rebuild (SQLite cannot `ALTER TABLE ADD
+    // COLUMN` a CHECK constraint at all), and drizzle-kit 0.31.10 generates
+    // an invalid rebuild — its `INSERT … SELECT` reads the new column from
+    // the *old*, pre-rebuild table — when the column and its CHECK are added
+    // in the same call. Adding the column first, unconstrained, means the
+    // later CHECK-only run's rebuild reads a column the old table already
+    // has, which is what the 0010/0011 precedent for `mod_rules_kind` does
+    // too (add `config` in 0010; widen `kind`'s existing CHECK in 0011).
+    automodTestingMode: integer('automod_testing_mode').notNull().default(0),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -60,6 +75,7 @@ export const guilds = sqliteTable(
       'guilds_positive_limits',
       sql`${t.roleRatePerMin} > 0 AND ${t.reconcileBudget} > 0 AND ${t.breakerThreshold} > 0`,
     ),
+    check('guilds_automod_testing_mode_bool', boolCheck(t.automodTestingMode)),
   ],
 );
 
@@ -629,6 +645,27 @@ export const modRules = sqliteTable(
     config: text('config').notNull().default('{}'),
     mode: text('mode').notNull().default('test'),
     enabled: integer('enabled').notNull().default(1),
+
+    // ADR 0042 — the cutover state machine's clock (PR-27) and provenance.
+    // Plain nullable columns, added in their own db:generate run: R-6 records
+    // drizzle-kit emitting invalid SQL when a column add and a rebuild land
+    // in one generate call, and the CHECK-constrained columns below force a
+    // rebuild on this table.
+    observeStartedAt: integer('observe_started_at'),
+    legacyRuleRef: text('legacy_rule_ref'),
+    enforceSignedOffBy: text('enforce_signed_off_by'),
+    enforceSignedOffAt: integer('enforce_signed_off_at'),
+
+    // ADR 0042 — added here unconstrained; their CHECKs land in a later,
+    // separate `db:generate` run. See the `automodTestingMode` comment above
+    // on `guilds` for why: adding a column and its CHECK together makes
+    // drizzle-kit 0.31.10 emit a rebuild whose `INSERT … SELECT` reads the
+    // new column from the old, pre-rebuild table, which does not have it.
+    cutoverState: text('cutover_state').notNull().default('not_started'),
+    countsAsViolation: integer('counts_as_violation').notNull().default(1),
+    maxFalsePositiveRate: real('max_false_positive_rate').notNull().default(0.05),
+    minReviewedMatches: integer('min_reviewed_matches').notNull().default(20),
+
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -649,6 +686,19 @@ export const modRules = sqliteTable(
     ),
     check('mod_rules_mode', sql`${t.mode} IN ('test','observe','enforce')`),
     check('mod_rules_enabled_bool', boolCheck(t.enabled)),
+    // PR-27's five cutover states. Distinct from `mod_rules_mode` above.
+    check(
+      'mod_rules_cutover_state',
+      sql`${t.cutoverState} IN ('not_started','observing','ready','cutover','rolled_back')`,
+    ),
+    check('mod_rules_counts_as_violation_bool', boolCheck(t.countsAsViolation)),
+    // "At most 5%" (ADR 0042 §4) — inclusive at both ends: exactly 0 and
+    // exactly 1 are valid rates, only outside [0,1] is nonsensical.
+    check(
+      'mod_rules_max_false_positive_rate_range',
+      sql`${t.maxFalsePositiveRate} BETWEEN 0 AND 1`,
+    ),
+    check('mod_rules_min_reviewed_matches_range', sql`${t.minReviewedMatches} >= 0`),
   ],
 );
 
@@ -739,6 +789,76 @@ export const wordAllowlist = sqliteTable(
       foreignColumns: [modRules.guildId, modRules.ruleId],
     }).onDelete('cascade'),
     check('word_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/**
+ * `invite`'s allowlist: the club's own invite codes plus partner and
+ * sister-club codes, each with a human label (spec section 3, Slice 3).
+ *
+ * Relational rather than JSON in `mod_rules.config`, per ADR 0040 section 3:
+ * the label is per-item metadata, and Slice 9's one-click suppression for
+ * this predicate is "add this code to the allowlist", which is a row.
+ *
+ * **No `last_matched_at`, deliberately** (plan ruling PR-14). The spec asks
+ * for one so a stale partner code is visible, but writing it means either a
+ * database write on the hot path for every allowlisted invite in every
+ * message, or widening every predicate's return type so a non-match can
+ * carry observations. Carried to Slice 9, where the review surface can
+ * derive staleness from match history instead. The label is what keeps the
+ * list readable until then.
+ */
+export const automodInviteAllowlist = sqliteTable(
+  'automod_invite_allowlist',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    /** The invite code as it appears after `discord.gg/`. Case-preserving; matched case-insensitively. */
+    code: text('code').notNull(),
+    /** Why this code is allowed, for the human reading the list a year from now. */
+    label: text('label').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId, t.code] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('automod_invite_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+/**
+ * `link_domain`'s allow and deny lists (spec section 3, Slice 3).
+ *
+ * One table with a `list_type` rather than two tables: the two lists are the
+ * same shape and are always read together, and a domain that appears on both
+ * is a configuration error the primary key makes impossible to express.
+ *
+ * Matching is label-wise suffix, not registrable-domain (plan ruling PR-15):
+ * `example.com` matches `example.com` and `gist.example.com` but not
+ * `notexample.com`. No Public Suffix List, and therefore no dependency and no
+ * data file to go stale.
+ */
+export const automodLinkDomains = sqliteTable(
+  'automod_link_domains',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ruleId: text('rule_id').notNull(),
+    /** Stored lower-cased, without a scheme, port or path. */
+    domain: text('domain').notNull(),
+    listType: text('list_type').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ruleId, t.domain] }),
+    foreignKey({
+      columns: [t.guildId, t.ruleId],
+      foreignColumns: [modRules.guildId, modRules.ruleId],
+    }).onDelete('cascade'),
+    check('automod_link_domains_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('automod_link_domains_list_type', sql`${t.listType} IN ('allow','deny')`),
   ],
 );
 
@@ -965,6 +1085,50 @@ export const automodFixtures = sqliteTable(
     index('automod_fixtures_replay').on(t.guildId, t.createdAt),
     /** `deleteObservedFixturesForMember`'s lookup. */
     index('automod_fixtures_by_author').on(t.guildId, t.authorId),
+  ],
+);
+
+/**
+ * One attachment on a corpus message: filename, declared content type, size
+ * (OD-3).
+ *
+ * A child table rather than columns on `automod_fixtures` because a message
+ * carries up to ten attachments, and neither a JSON blob nor an arbitrary
+ * three-column cap is a schema.
+ *
+ * **This stores personal information and the owner was told so before
+ * approving it.** Filenames routinely carry it — `Bryan_resume_2026.pdf`,
+ * `medical_letter.docx` — and this keeps them for as long as the corpus keeps
+ * the message. `PRIVACY.md` names attachments in the same commit that created
+ * this table, and the `ON DELETE CASCADE` below is what makes `/forgetme`
+ * (R3-10) reach them through `deleteObservedFixturesForMember`. That cascade
+ * is tested, not assumed.
+ *
+ * No `attachment_id` from Discord: the corpus is evidence about a message,
+ * not a mirror of Discord's own ids, and the ordinal is enough to keep two
+ * identically-named files apart.
+ */
+export const automodFixtureAttachments = sqliteTable(
+  'automod_fixture_attachments',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    fixtureId: text('fixture_id').notNull(),
+    /** Position on the message, 0-based. Part of the key: two attachments can share a name. */
+    ordinal: integer('ordinal').notNull(),
+    fileName: text('file_name').notNull(),
+    /** Null when Discord declared none. Never flattened to '' — that is a different fact. */
+    contentType: text('content_type'),
+    sizeBytes: integer('size_bytes').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.fixtureId, t.ordinal] }),
+    foreignKey({
+      columns: [t.guildId, t.fixtureId],
+      foreignColumns: [automodFixtures.guildId, automodFixtures.fixtureId],
+    }).onDelete('cascade'),
+    check('automod_fixture_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('automod_fixture_attachments_ordinal_nonnegative', sql`${t.ordinal} >= 0`),
+    check('automod_fixture_attachments_size_nonnegative', sql`${t.sizeBytes} >= 0`),
   ],
 );
 

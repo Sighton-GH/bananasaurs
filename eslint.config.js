@@ -169,6 +169,21 @@ export default tseslint.config(
                 'ADR 0013: application code never spawns processes. If you need the claude binary, you are in the wrong design.',
             },
           ],
+          patterns: [
+            {
+              // `makeRuleEnforceableForTest` lives here and writes both facts
+              // ADR 0042's gate reads — `cutover_state` and a sign-off — with no
+              // precondition at all. That is defensible for a test harness and
+              // for nothing else. The subpath is published and builds to
+              // `dist/`, so moving the helper out of the repository module made
+              // the shortcut inconvenient to reach from production, not
+              // impossible; this is what makes it impossible. Turned off for
+              // `*.test.ts` below.
+              group: ['**/test-support', '**/test-support.js', '@bananasaurs/*/test-support'],
+              message:
+                'test-support is for tests only. It exports helpers that bypass preconditions on purpose (e.g. makeRuleEnforceableForTest, ADR 0042 / PR-31); production code reaching one would skip a gate.',
+            },
+          ],
         },
       ],
 
@@ -201,6 +216,8 @@ export default tseslint.config(
   {
     files: ['**/*.test.ts', 'packages/testkit/**/*.ts'],
     rules: {
+      // Tests are exactly who `test-support` is for (see the pattern above).
+      'no-restricted-imports': 'off',
       '@typescript-eslint/no-unsafe-assignment': 'off',
       // A fake implementing an async port is synchronous underneath. The async
       // signature is required by the interface, so there is nothing to await

@@ -8,6 +8,7 @@ import type {
 } from '../effects/moderation-gateway.js';
 import type { Authorized } from '../authz.js';
 import { DiscordApiError } from '../discord/errors.js';
+import type { MessageAttachment } from '../discord/events.js';
 import { parseSnowflakeId } from '../ids.js';
 import {
   createPredicateCache,
@@ -77,6 +78,28 @@ export type AutomodActionTaken =
   | 'native_timeout'
   | 'native_blocked_interaction';
 
+/**
+ * Everything the automod subscriber needs from the guild's safety row —
+ * `ModerationSafetyState`'s three fields, plus ADR 0042 §5's third lever.
+ *
+ * A distinct interface that *extends* `ModerationSafetyState` rather than a
+ * field added to `ModerationSafetyState` itself (ruling PR-33, coordinator
+ * decision — the plan's own Task 5 wording said "add it to the state
+ * `readSafetyState` returns", which read literally would mean widening
+ * `ModerationSafetyState`). `ModerationGatewayDeps.state.read()` and
+ * `purge.ts`'s `classifyRefusal` both take a bare `ModerationSafetyState`,
+ * and both must never be gated by whether one automod rule is under test —
+ * widening the shared type would hand them a field only this module may
+ * read, and a comment saying "don't read this" is caller discipline, which
+ * CLAUDE.md rule 2 treats as the bug, not the guard. Storage's `SafetyState`
+ * (`guilds.ts`) already carries `automodTestingMode` and is structurally
+ * assignable to this interface without a second read — `automod/wiring.ts`
+ * passes the same `guildRepo.readSafetyState(scope)` call through unchanged.
+ */
+export interface AutomodSafetyState extends ModerationSafetyState {
+  readonly automodTestingMode: boolean;
+}
+
 export interface AutomodSubscriberDeps {
   readonly logger: Logger;
   /** Re-verified inside the gateway on every call; held here only to pass through. */
@@ -119,6 +142,8 @@ export interface AutomodSubscriberDeps {
     content: string;
     authorId: string;
     atMs: number;
+    /** Filename, declared content type and size for each file (OD-3). */
+    attachments: readonly MessageAttachment[];
   }): string | undefined;
   /**
    * Resolves the member's case so an event can be attached to it, and — only
@@ -166,7 +191,7 @@ export interface AutomodSubscriberDeps {
    * defaults to dry run (docs/18 Layer 4) and would still have had real
    * members' messages really deleted.
    */
-  readSafetyState(): ModerationSafetyState | undefined;
+  readSafetyState(): AutomodSafetyState | undefined;
   nextEscalationTier(violationCount: number): {
     action: 'timeout' | 'kick' | undefined;
     timeoutMs: number | undefined;
@@ -322,6 +347,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
               content: input.content,
               authorId,
               atMs: input.atMs,
+              attachments: input.attachments,
             });
           } catch (err) {
             deps.logger.error(
@@ -373,6 +399,25 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // than only inside `ModerationActionGateway` because the deletion does
         // not go through that gateway — it is a direct `DiscordPort` call.
         const state = deps.readSafetyState();
+
+        // ADR 0042 §5's third lever: unlike killswitch/breaker/dry-run below,
+        // this is not "a safety layer stopped an action that was attempted" —
+        // it is "record this exactly as `test` mode would", so it reuses that
+        // recording verbatim rather than one of the `delete_blocked_*` values.
+        // Every *other* subsystem stays live (spec F3): this branch is
+        // reached only for automod's own enforce-mode deletion, and nothing
+        // else in the process reads `automodTestingMode` (`AutomodSafetyState`
+        // is a distinct type from `ModerationSafetyState`, ruling PR-33) — a
+        // role-panel effect or a manual `/mod` action cannot be gated by it
+        // even by accident.
+        if (state !== undefined && state.automodTestingMode) {
+          record(
+            deps.openOrResolveCase(authorId, { countsAsViolation: false }).caseId,
+            'would_delete',
+          );
+          continue;
+        }
+
         const blocked: AutomodActionTaken | undefined =
           state === undefined
             ? 'delete_blocked_guild_unknown'
@@ -441,7 +486,10 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         }
 
         const { caseId, violationCount } = deps.openOrResolveCase(authorId, {
-          countsAsViolation: true,
+          // ADR 0042 §2: a property of the rule, not a constant — a
+          // delete-only rule (`countsAsViolation: false`) still deletes the
+          // message but must not push the member up the escalation ladder.
+          countsAsViolation: rule.countsAsViolation,
         });
 
         // A deletion Discord actually refused. Recorded rather than thrown —
@@ -451,6 +499,24 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
         // wrong half of the action to have succeeded.
         if (!deleted) {
           record(caseId, 'delete_failed');
+          continue;
+        }
+
+        // A delete-only rule stops here, whatever the member's counter says.
+        //
+        // Not feeding the counter (`countsAsViolation: false`, above) is not the
+        // same as not *reading* it: `openOrResolveCase` returns the member's
+        // existing count, earned by other rules, and escalating on that would
+        // time out or kick a member this rule never advanced — again on every
+        // subsequent match, since the dedupe key includes `messageId`.
+        //
+        // ADR 0042 §4 holds a delete-only rule to a 5% false-positive rate
+        // rather than zero **because removing the message is its only
+        // consequence**. One wrong match in twenty is a tolerable price for a
+        // deletion and not for a timeout, so a rule that could escalate has not
+        // earned the looser tier it was admitted under.
+        if (!rule.countsAsViolation) {
+          record(caseId, 'deleted');
           continue;
         }
 

@@ -14,10 +14,14 @@ import {
   listEnabledRules,
   listEnforceModeKeywordFilterRules,
   ruleExists,
+  setEnforceSignOff,
   setRuleConfig,
   setRuleMode,
+  setRuleReady,
   type RuleKind,
 } from './automod-rules.js';
+import { addInviteAllowlistEntry, addLinkDomain } from './automod-rule-lists.js';
+import { makeRuleEnforceableForTest } from '../test-support.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const ROLE = parseSnowflakeId('222222222222222222');
@@ -139,6 +143,11 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
+      // PR-31 (plan ruling): `setRuleMode`'s enforce path now runs through
+      // the ADR 0042 gate, which this test is not about — it reaches
+      // `mode: 'enforce'` through the gate via the test-only helper rather
+      // than around it.
+      makeRuleEnforceableForTest(scope, 'disabled-enforce', 1000);
       setRuleMode(scope, {
         ruleId: 'disabled-enforce',
         mode: 'enforce',
@@ -158,6 +167,7 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
+      makeRuleEnforceableForTest(scope, 'r1', 1000); // PR-31: reach enforce through the gate.
       setRuleMode(scope, { ruleId: 'r1', mode: 'enforce', now: 1000 });
       addChannelExemption(scope, { ruleId: 'r1', channelId: CHANNEL });
 
@@ -177,6 +187,7 @@ describe('automod rules repo', () => {
         config: '{}',
         now: 1000,
       });
+      makeRuleEnforceableForTest(t.scopes.forGuild(GUILD), 'r1', 1000); // PR-31: through the gate.
       setRuleMode(t.scopes.forGuild(GUILD), { ruleId: 'r1', mode: 'enforce', now: 1000 });
 
       expect(listEnforceModeKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);
@@ -319,5 +330,236 @@ describe('mod_rules.config', () => {
     expect(capsRule.allowlist).toEqual([]);
     expect(keywordRule.terms).toEqual([{ text: 'badword', categoryId: 'cat1' }]);
     expect(keywordRule.allowlist).toEqual(['assassin']);
+  });
+
+  it("keeps each rule's invite allowlist and link domains to itself", () => {
+    // NOT decorative: two rules, each WITH entries in both new tables, so an
+    // implementation of `hydrate` that dropped the `rule_id` predicate on
+    // either query hands both lists to both rules and this goes red. One
+    // rule with entries and one without would pass under that exact bug —
+    // the shape `docs/22` records (Task 6, plan Step 8).
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'inv1', kind: 'invite', name: 'invites', config: '{}', now: 1 });
+    addInviteAllowlistEntry(scope, {
+      ruleId: 'inv1',
+      code: 'clubhouse',
+      label: 'our server',
+      now: 1,
+    });
+
+    createRule(scope, {
+      ruleId: 'link1',
+      kind: 'link_domain',
+      name: 'links',
+      config: '{}',
+      now: 1,
+    });
+    addLinkDomain(scope, { ruleId: 'link1', domain: 'example.com', listType: 'deny', now: 1 });
+
+    const rules = listEnabledRules(scope);
+    const inviteRule = rules.find((r) => r.ruleId === 'inv1')!;
+    const linkRule = rules.find((r) => r.ruleId === 'link1')!;
+
+    expect(inviteRule.inviteAllowlist).toEqual([{ code: 'clubhouse', label: 'our server' }]);
+    expect(inviteRule.linkDomains).toEqual([]);
+    expect(linkRule.inviteAllowlist).toEqual([]);
+    expect(linkRule.linkDomains).toEqual([{ domain: 'example.com', listType: 'deny' }]);
+  });
+});
+
+/**
+ * ADR 0042's eight new `mod_rules` columns — the cutover state machine
+ * (PR-27), the two-tier false-positive gate's thresholds (PR-30), and the
+ * low-volume sign-off (PR-29). Task 1 only adds the columns and widens the
+ * read shape; `enforcementEligibility` and its writers arrive in Task 2/3.
+ */
+describe('mod_rules cutover-gate columns (ADR 0042)', () => {
+  it('gives a freshly created rule the documented defaults', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'shouting', config: '{}', now: 1000 });
+
+    const rule = listEnabledRules(scope)[0]!;
+    expect(rule).toMatchObject({
+      cutoverState: 'not_started',
+      observeStartedAt: null,
+      legacyRuleRef: null,
+      countsAsViolation: true,
+      maxFalsePositiveRate: 0.05,
+      minReviewedMatches: 20,
+      enforceSignedOffBy: null,
+      enforceSignedOffAt: null,
+    });
+  });
+
+  /**
+   * Raw inserts, deliberately bypassing `createRule`: these columns have no
+   * writer yet (Task 2/3/6), so the only way to probe the CHECK today is a
+   * hand-written row — exactly the "hand-edited row" scenario ADR 0042 §3
+   * says the database-level CHECK must survive regardless.
+   */
+  const insertRawRule = (ruleId: string, column: string, value: unknown): void => {
+    t.raw
+      .prepare(
+        `INSERT INTO mod_rules (guild_id, rule_id, kind, name, created_at, updated_at, ${column})
+         VALUES (?, ?, 'caps', 'x', 0, 0, ?)`,
+      )
+      .run(GUILD, ruleId, value);
+  };
+
+  it('rejects a cutover_state the CHECK does not name', () => {
+    expect(() => insertRawRule('bad-cutover', 'cutover_state', 'banana')).toThrow(
+      /CHECK constraint failed/,
+    );
+  });
+
+  it('accepts every cutover_state the state machine names (PR-27)', () => {
+    for (const [i, state] of [
+      'not_started',
+      'observing',
+      'ready',
+      'cutover',
+      'rolled_back',
+    ].entries()) {
+      expect(() => insertRawRule(`cutover-ok-${String(i)}`, 'cutover_state', state)).not.toThrow();
+    }
+  });
+
+  /**
+   * Both directions of the boundary (Global Constraint 7): a `>`/`<` typo in
+   * either CHECK would pass a test that only probes obviously-invalid values.
+   */
+  it('max_false_positive_rate accepts exactly 0 and exactly 1', () => {
+    expect(() => insertRawRule('rate-zero', 'max_false_positive_rate', 0)).not.toThrow();
+    expect(() => insertRawRule('rate-one', 'max_false_positive_rate', 1)).not.toThrow();
+  });
+
+  it('max_false_positive_rate rejects just outside 0 and 1', () => {
+    expect(() => insertRawRule('rate-neg', 'max_false_positive_rate', -0.1)).toThrow(
+      /CHECK constraint failed/,
+    );
+    expect(() => insertRawRule('rate-over', 'max_false_positive_rate', 1.5)).toThrow(
+      /CHECK constraint failed/,
+    );
+  });
+
+  it('min_reviewed_matches accepts exactly 0 and rejects -1', () => {
+    expect(() => insertRawRule('reviewed-zero', 'min_reviewed_matches', 0)).not.toThrow();
+    expect(() => insertRawRule('reviewed-neg', 'min_reviewed_matches', -1)).toThrow(
+      /CHECK constraint failed/,
+    );
+  });
+});
+
+/**
+ * `automod ready` (Task 6, ADR 0042 §3/PR-27): the production writer for
+ * `observing -> ready`, refused from every other state. Deliberately **not**
+ * driven through `makeRuleEnforceableForTest` — that helper writes `ready`
+ * with no precondition at all, and a test reaching `ready` through it would
+ * prove nothing about `setRuleReady`'s own refusal. States are planted with
+ * raw SQL or the real `setRuleMode`, the same choice `enforcement-gate.test.ts`
+ * makes for the same reason.
+ */
+describe('setRuleReady', () => {
+  const setCutoverStateRaw = (ruleId: string, state: string): void => {
+    t.raw
+      .prepare(`UPDATE mod_rules SET cutover_state = ? WHERE guild_id = ? AND rule_id = ?`)
+      .run(state, GUILD, ruleId);
+  };
+
+  const cutoverStateOf = (ruleId: string): string =>
+    (
+      t.raw
+        .prepare(`SELECT cutover_state FROM mod_rules WHERE guild_id = ? AND rule_id = ?`)
+        .get(GUILD, ruleId) as { cutover_state: string }
+    ).cutover_state;
+
+  it('succeeds from observing, moving cutover_state to ready', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setRuleMode(scope, { ruleId: 'r1', mode: 'observe', now: 1000 });
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({ ok: true });
+    expect(cutoverStateOf('r1')).toBe('ready');
+  });
+
+  it('refuses from rolled_back — without this, a rollback could be undone by ready then enforce, never revisiting observing', () => {
+    // This is the test the brief names as the one that matters: ADR 0042
+    // exists to prevent exactly this shortcut.
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setCutoverStateRaw('r1', 'rolled_back');
+
+    const result = setRuleReady(scope, { ruleId: 'r1', now: 2000 });
+    expect(result).toEqual({ ok: false, reason: 'not-observing', state: 'rolled_back' });
+    // Refused, so nothing moved.
+    expect(cutoverStateOf('r1')).toBe('rolled_back');
+  });
+
+  it('refuses from not_started — the operator has not started a window', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    // cutover_state stays at its default, 'not_started'.
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'not_started',
+    });
+  });
+
+  it('refuses from cutover — already enforcing is not the same as ready to enforce', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setCutoverStateRaw('r1', 'cutover');
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'cutover',
+    });
+  });
+
+  it('refuses from ready itself — ready is not idempotent past the first call', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+    setCutoverStateRaw('r1', 'ready');
+
+    expect(setRuleReady(scope, { ruleId: 'r1', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'ready',
+    });
+  });
+
+  it('refuses for a rule id that does not exist, reporting not_started', () => {
+    // Mirrors `enforcementEligibility`'s own treatment of a stale id: no row
+    // means no evidence and no state, which is the same refusal a real
+    // `not_started` row gets, rather than a distinct not-found branch.
+    const scope = t.scopes.forGuild(GUILD);
+    expect(setRuleReady(scope, { ruleId: 'does-not-exist', now: 2000 })).toEqual({
+      ok: false,
+      reason: 'not-observing',
+      state: 'not_started',
+    });
+  });
+});
+
+/**
+ * `automod signoff` (Task 6, ADR 0042 §4/PR-29): the plain write. The corpus
+ * dry-run precondition is the command's job (`packages/core`, which storage
+ * may not import per ADR 0014) — this repository function is deliberately
+ * unconditional, the same way `setRuleConfig` is a plain `UPDATE` that trusts
+ * its caller to have already validated the config.
+ */
+describe('setEnforceSignOff', () => {
+  it('records enforce_signed_off_by and enforce_signed_off_at', () => {
+    const scope = t.scopes.forGuild(GUILD);
+    createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 0 });
+
+    setEnforceSignOff(scope, { ruleId: 'r1', signedOffBy: 'cli:bryan', now: 5000 });
+
+    const rule = listEnabledRules(scope)[0]!;
+    expect(rule.enforceSignedOffBy).toBe('cli:bryan');
+    expect(rule.enforceSignedOffAt).toBe(5000);
   });
 });

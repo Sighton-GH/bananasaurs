@@ -9,6 +9,9 @@ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
   config: '{}',
   terms: [{ text: 'badword', categoryId: 'slurs' }],
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
+  countsAsViolation: true,
   ...over,
 });
 

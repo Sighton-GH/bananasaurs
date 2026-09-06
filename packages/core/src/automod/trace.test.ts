@@ -87,6 +87,43 @@ describe('serialiseTrace / parseMatchTrace', () => {
     const broken = { ...TRACE, kind: 'telepathy' } as unknown as MatchTrace;
     expect(() => serialiseTrace(broken)).toThrow();
   });
+
+  it('truncates an over-long detail string instead of throwing, rather than producing a placeholder trace (IMPORTANT-3)', () => {
+    // A 200-character value is exactly what a predicate carrying a filename
+    // or a hostname can legitimately produce — filenames run to 255
+    // characters, hostnames to 253 — and before this fix it made
+    // `serialiseTrace` throw, which `traceJson`'s fallback then turned into a
+    // placeholder trace: `matchedOn` replaced by "(the predicate produced an
+    // invalid trace)" and the real `detail` lost entirely.
+    const longHost = 'x'.repeat(200);
+    const trace: MatchTrace = { ...TRACE, detail: { host: longHost } };
+
+    let json = '';
+    expect(() => {
+      json = serialiseTrace(trace);
+    }).not.toThrow();
+
+    const result = parseMatchTrace(json);
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    const stored = result.trace.detail.host;
+    expect(typeof stored).toBe('string');
+    expect((stored as string).length).toBeLessThanOrEqual(120);
+    // Not merely short — recognisably a truncation of the original value,
+    // not an unrelated placeholder.
+    expect(longHost.startsWith((stored as string).replace(/…$/, ''))).toBe(true);
+  });
+
+  it('still throws on a genuinely malformed detail value, truncation is a narrowing not a removal', () => {
+    // `truncateDetailString` only touches strings. A `detail` value that is
+    // not a scalar at all is exactly the kind of "bug in our own code" this
+    // function still refuses to write.
+    const broken = {
+      ...TRACE,
+      detail: { nested: { a: 1 } },
+    } as unknown as MatchTrace;
+    expect(() => serialiseTrace(broken)).toThrow();
+  });
 });
 
 describe('renderTrace', () => {

@@ -16,7 +16,10 @@ import {
   write,
   type GuildScope,
 } from '@bananasaurs/storage';
-import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import {
+  makeRuleEnforceableForTest,
+  openMigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
 import { nativeAutomodPortsFor } from './automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from './automod/wiring.js';
@@ -94,6 +97,11 @@ const seedEnforcingKeywordRule = (term: string): void => {
     defaultAction: 'delete_and_case',
   });
   automodRuleRepo.addTerm(scope, { termId: TERM_ID, categoryId: CATEGORY_ID, text: term });
+  // PR-31 (plan ruling): reach `mode: 'enforce'` through the ADR 0042 gate
+  // rather than around it — this file's tests are about native AutoMod
+  // observability, not the gate, so a test-only helper stands in for a real
+  // 20-match review corpus and sign-off.
+  makeRuleEnforceableForTest(scope, RULE_ID, discord.now());
   automodRuleRepo.setRuleMode(scope, { ruleId: RULE_ID, mode: 'enforce', now: discord.now() });
 };
 

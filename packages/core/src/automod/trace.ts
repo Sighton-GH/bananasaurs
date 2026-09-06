@@ -32,9 +32,27 @@ import { RULE_KINDS, type MatchTrace } from './predicates/types.js';
  *
  * ADR 0041 §4 says the trace never carries whole-message content — whole
  * messages live in `automod_fixtures` under the owner's explicit privacy
- * decision — and `detail`'s `.max(120)` is what actually makes that a rule
- * rather than a hope: 120 characters is more than any predicate-specific
+ * decision — and `detail`'s `.max(120)` is what makes that a rule rather than
+ * a hope **for `detail`**: 120 characters is more than any predicate-specific
  * scalar needs, and well short of a message.
+ *
+ * **`matchedOn` is deliberately unbounded, and that is a producer's
+ * responsibility rather than this schema's** (re-review of Slices 3+5, which
+ * found this comment claiming more coverage than it has). A blanket
+ * `.max()` here cannot work: `regex`'s `matchedOn` is the operator's
+ * configured pattern, which `regexConfig` permits up to 1000 characters, and
+ * truncating it would hand Slice 9's one-click suppression a pattern that is
+ * not the rule's.
+ *
+ * What keeps `matchedOn` honest is that every predicate puts *the configured
+ * thing that matched* there, never message text — a term, a pattern, a
+ * threshold, a domain, an extension — and for the two predicates whose value
+ * is derived from member input (`attachment_type`, `link_domain`) the derived
+ * value is only ever reached by **set membership against configured
+ * entries**, so it is bounded by whatever the config schema allows and a
+ * member cannot lengthen it. A predicate that wanted to put matched *text* in
+ * `matchedOn` would be violating ADR 0041 §4 directly, and no length cap
+ * would save it; `attachment-type.test.ts` pins that reasoning with a test.
  */
 export const matchTraceSchema = z
   .object({
@@ -58,16 +76,47 @@ export const matchTraceSchema = z
 export type StoredMatchTrace = z.infer<typeof matchTraceSchema>;
 
 /**
+ * `detail`'s per-value cap, exported so a predicate carrying member-controlled
+ * text (a filename, a hostname) can truncate deliberately at the point of
+ * construction, rather than relying on `serialiseTrace`'s truncation below to
+ * salvage it after the fact (IMPORTANT-3).
+ */
+export const MAX_DETAIL_STRING_LENGTH = 120;
+const DETAIL_ELLIPSIS = '…';
+
+/** Truncates a `detail` string to fit `matchTraceSchema`'s `.max(120)`, with a trailing ellipsis. */
+export const truncateDetailString = (value: string): string =>
+  value.length <= MAX_DETAIL_STRING_LENGTH
+    ? value
+    : value.slice(0, MAX_DETAIL_STRING_LENGTH - DETAIL_ELLIPSIS.length) + DETAIL_ELLIPSIS;
+
+/**
  * Validates on the way *in* as well as on the way out (ADR 0040 §2's
  * pattern).
  *
- * Throws, unlike `parseMatchTrace` — the asymmetry is intentional. A trace
- * that fails here was built by a predicate in this build, so it is a bug in
- * our own code and should stop the write loudly. A trace that fails on read
- * is a data problem and must not take the process down.
+ * Throws, unlike `parseMatchTrace` — the asymmetry is intentional, but
+ * narrower than it used to be (IMPORTANT-3). A trace built by a predicate in
+ * this build can still be malformed in a way that is genuinely a bug in our
+ * own code — an unknown `kind`, a `detail` value that is not a scalar — and
+ * that must still stop the write loudly. But `detail`'s length cap exists to
+ * keep whole-message content out of the trace, not to punish a predicate that
+ * legitimately carries member-controlled text: a 255-character filename or a
+ * 253-character hostname is not a bug, and throwing on it produced a
+ * placeholder trace — `matchedOn` replaced by
+ * `'(the predicate produced an invalid trace)'` — for every such match, on
+ * every predicate that carries member text, forever. So an over-long
+ * `detail` *string* is truncated here rather than rejected; every other
+ * violation still throws.
  */
-export const serialiseTrace = (trace: MatchTrace): string =>
-  JSON.stringify(matchTraceSchema.parse(trace));
+export const serialiseTrace = (trace: MatchTrace): string => {
+  const detail = Object.fromEntries(
+    Object.entries(trace.detail).map(([key, value]) => [
+      key,
+      typeof value === 'string' ? truncateDetailString(value) : value,
+    ]),
+  );
+  return JSON.stringify(matchTraceSchema.parse({ ...trace, detail }));
+};
 
 export type ParseTraceResult =
   | { readonly ok: true; readonly trace: MatchTrace }

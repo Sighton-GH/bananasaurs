@@ -4,16 +4,18 @@ import { pino } from 'pino';
 import { authorize, type Authorized, type AuthzStore } from '../authz.js';
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
-import type { DomainEvent, MessageEvent, ReactionEvent } from '../discord/events.js';
 import type {
-  ModerationIntent,
-  ModerationOutcome,
-  ModerationSafetyState,
-} from '../effects/moderation-gateway.js';
+  DomainEvent,
+  MessageAttachment,
+  MessageEvent,
+  ReactionEvent,
+} from '../discord/events.js';
+import type { ModerationIntent, ModerationOutcome } from '../effects/moderation-gateway.js';
 import type { AutomodRule } from './predicates/types.js';
 import * as registry from './predicates/registry.js';
 import {
   createAutomodSubscriber,
+  type AutomodSafetyState,
   type AutomodSubscriberDeps,
   type ModerationGatewayPort,
 } from './subscriber.js';
@@ -84,6 +86,12 @@ const rule = (over: Partial<AutomodRule> & { ruleId: string }): AutomodRule => (
   mode: 'enforce',
   terms: [{ text: 'badword', categoryId: 'cat-1' }],
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
+  // ADR 0042's default: a rule feeds the escalation counter unless it opts
+  // out, so a test that does not care about this field gets the stricter,
+  // pre-existing behaviour every other test in this file already asserts.
+  countsAsViolation: true,
   ...over,
 });
 
@@ -127,12 +135,23 @@ interface Harness {
     readSafetyState: number;
     authorRoleIds: string[];
     nextEscalationTier: number[];
-    captureFixture: { messageId: string; content: string; authorId: string; atMs: number }[];
+    captureFixture: {
+      messageId: string;
+      content: string;
+      authorId: string;
+      atMs: number;
+      attachments: readonly MessageAttachment[];
+    }[];
   };
 }
 
 /** Everything live: not read-only, not stopped, not dry-run. */
-const LIVE: ModerationSafetyState = { killswitch: false, breakerOpen: false, dryRun: false };
+const LIVE: AutomodSafetyState = {
+  killswitch: false,
+  breakerOpen: false,
+  dryRun: false,
+  automodTestingMode: false,
+};
 
 function buildHarness(
   opts: {
@@ -143,7 +162,7 @@ function buildHarness(
     applyActionResult?: ModerationOutcome;
     logger?: typeof silentLogger;
     /** `null` stands for "this guild is not in the database at all". */
-    safetyState?: ModerationSafetyState | null;
+    safetyState?: AutomodSafetyState | null;
     /** Which rules have a role-type exemption configured (a cheap local read). */
     roleExemptRuleIds?: ReadonlySet<string>;
     /** Thrown by `deleteMessage`, mimicking `DiscordPort`'s real failures. */
@@ -310,6 +329,83 @@ describe('automod subscriber', () => {
     expect(calls.applyAction).toHaveLength(0);
   });
 
+  /**
+   * ADR 0042 §2: `caps` and any future high-risk predicate can ship
+   * delete-only, held to the 5% false-positive bar instead of the zero bar a
+   * counter-feeding rule must clear — but only if the subscriber actually
+   * reads the flag from the rule rather than hard-coding `true` on every
+   * enforce-mode match, which is what it did before this task.
+   *
+   * Asserts the deletion *and* the flag together (plan Task 4's own
+   * stated ambiguity): an implementation that skipped the action entirely
+   * — never calling `deleteMessage` or `openOrResolveCase` at all — would
+   * satisfy an assertion on the flag alone without actually enforcing
+   * anything.
+   */
+  it('honours countsAsViolation: false on the enforce path — deletes, but does not feed the counter', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-delete-only', mode: 'enforce', countsAsViolation: false })],
+    });
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate());
+
+    expect(calls.deleteMessage).toEqual([
+      { channelId: CHANNEL, messageId: MESSAGE, reason: 'automod: rule-delete-only' },
+    ]);
+    expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
+    expect(calls.recordCaseEvent).toEqual([
+      expect.objectContaining({ ruleId: 'rule-delete-only', actionTaken: 'deleted' }),
+    ]);
+  });
+
+  /**
+   * The test above passes without reaching the escalation branch at all: the
+   * harness defaults to `tier: { action: undefined }`, so the "has this member
+   * crossed a tier" path is never entered and nothing about escalation is
+   * asserted. That is the decorative shape `docs/22` catalogues, and this is
+   * the case it was hiding.
+   *
+   * Not feeding the counter is not the same as not reading it.
+   * `openOrResolveCase` returns the member's *existing* count — earned by other
+   * rules — and the subscriber passed that straight to `nextEscalationTier`,
+   * which compares with `>=`. So a delete-only rule matching a member who is
+   * already sitting on a tier timed out or kicked them, and did it again on
+   * every subsequent match, because the dedupe key includes `messageId`.
+   *
+   * Why that is a correctness bug and not a policy choice: ADR 0042 §4 holds a
+   * delete-only rule to a 5% false-positive rate instead of zero **because its
+   * only consequence is removing the message**. A rule that can also time out a
+   * member has not earned that tolerance — the looser tier was granted against
+   * a promise the code did not keep. One in twenty of its matches being wrong
+   * is acceptable for a deletion and plainly not acceptable for a timeout.
+   */
+  it('a delete-only rule does not escalate, even for a member already on a tier', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [
+        rule({ ruleId: 'rule-delete-only-tiered', mode: 'enforce', countsAsViolation: false }),
+      ],
+      // The member is already deep enough that the ladder would fire — earned
+      // by *other* rules, since this one never incremented anything.
+      violationCount: 6,
+      tier: { action: 'timeout', timeoutMs: 600_000 },
+    });
+    const subscriber = createAutomodSubscriber(deps);
+
+    await subscriber.handle(messageCreate());
+
+    // The deletion is the rule's whole job and still happens.
+    expect(calls.deleteMessage).toEqual([
+      { channelId: CHANNEL, messageId: MESSAGE, reason: 'automod: rule-delete-only-tiered' },
+    ]);
+    // Nothing was sent to Discord's moderation surface.
+    expect(calls.applyAction).toHaveLength(0);
+    // And the record says "deleted", not "deleted_and_escalated".
+    expect(calls.recordCaseEvent).toEqual([
+      expect.objectContaining({ ruleId: 'rule-delete-only-tiered', actionTaken: 'deleted' }),
+    ]);
+  });
+
   it('does not call Discord in test mode, but still records what would have happened', async () => {
     const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-3', mode: 'test' })] });
     const subscriber = createAutomodSubscriber(deps);
@@ -362,7 +458,30 @@ describe('automod subscriber', () => {
           content: 'this message has badword in it',
           authorId: AUTHOR,
           atMs: NOW_MS,
+          attachments: [],
         },
+      ]);
+    });
+
+    it('carries the message’s attachments into the corpus', async () => {
+      // The ambiguity that makes this non-decorative: the message has an
+      // attachment AND content, so an implementation that passed `[]`
+      // through would still capture the fixture and still pass every other
+      // assertion in this file. Only this expectation goes red.
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-capture-attachments', mode: 'test' })],
+        captureFixtureResult: 'fixture-1',
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(
+        messageCreate({
+          attachments: [{ fileName: 'a.exe', contentType: undefined, sizeBytes: 7 }],
+        }),
+      );
+
+      expect(calls.captureFixture[0]?.attachments).toEqual([
+        { fileName: 'a.exe', contentType: undefined, sizeBytes: 7 },
       ]);
     });
 
@@ -636,7 +755,7 @@ describe('automod subscriber', () => {
    * member's message.
    */
   describe('safety gates on the deletion path', () => {
-    const blocked: [string, ModerationSafetyState | null, string][] = [
+    const blocked: [string, AutomodSafetyState | null, string][] = [
       ['the kill switch is on', { ...LIVE, killswitch: true }, 'delete_blocked_killswitch'],
       ['the circuit breaker is open', { ...LIVE, breakerOpen: true }, 'delete_blocked_breaker'],
       ['the guild is in dry run', { ...LIVE, dryRun: true }, 'delete_blocked_dry_run'],
@@ -686,6 +805,74 @@ describe('automod subscriber', () => {
       await subscriber.handle(messageCreate());
 
       expect(calls.readSafetyState).toBe(0);
+    });
+  });
+
+  /**
+   * ADR 0042 §5's third lever: an operator watching a newly-flipped enforce
+   * rule should not have to disable role panels to do it (F3/F4). Distinct
+   * from the safety-gate tests above — those record a `delete_blocked_*`
+   * action because a layer *stopped* an attempted enforcement; testing mode
+   * is not "stopped", it is "record this exactly as `test` mode would",
+   * which is why the assertion below expects `would_delete`, matching the
+   * non-enforce recording verbatim rather than a new blocked value.
+   */
+  describe('automod_testing_mode (ADR 0042 §5)', () => {
+    it('does not delete or count a violation, but records the match exactly as test mode would', async () => {
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-testing-mode', mode: 'enforce' })],
+        safetyState: { ...LIVE, automodTestingMode: true },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.applyAction).toHaveLength(0);
+      expect(calls.openOrResolveCase).toEqual([{ memberId: AUTHOR, countsAsViolation: false }]);
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-testing-mode', actionTaken: 'would_delete' }),
+      ]);
+    });
+
+    it('takes precedence over the killswitch in what gets recorded', async () => {
+      // The check sits *ahead* of the `if (blocked !== undefined)` block, and
+      // that order is a decision with an observable consequence, so it gets a
+      // guard: move the testing-mode branch below the block that *acts* on
+      // `blocked` and this test goes red while the one above stays green.
+      //
+      // Below the *computation* of `blocked` is not the same mutation and
+      // proves nothing — `blocked` is only assigned there, and the
+      // testing-mode branch still `continue`s before anything reads it. That
+      // was the first mutation tried here, it left all 47 green, and the
+      // conclusion to draw was "the mutation was too weak", not "the test is
+      // decorative". Worth writing down: a mutation that stays green means
+      // either an unfalsifiable test or a mutation that changed no behaviour,
+      // and telling those apart is the whole job.
+      //
+      // Why this way round. `delete_blocked_killswitch` means "automod tried to
+      // act and an emergency lever stopped it". Under testing mode automod
+      // never tried — an operator has said "observe only" for this subsystem.
+      // Recording a blocked value would misattribute a deliberate
+      // configuration choice to an emergency, and make the killswitch look
+      // load-bearing for a rule that was not going to act either way.
+      //
+      // What it costs, stated so nobody discovers it as a surprise: the event
+      // row does not show that the killswitch was also engaged. That is
+      // acceptable because the killswitch is guild-wide and `doctor` reports
+      // it — it was never per-event information.
+      const { deps, calls } = buildHarness({
+        rules: [rule({ ruleId: 'rule-both-levers', mode: 'enforce' })],
+        safetyState: { ...LIVE, automodTestingMode: true, killswitch: true },
+      });
+      const subscriber = createAutomodSubscriber(deps);
+
+      await subscriber.handle(messageCreate());
+
+      expect(calls.deleteMessage).toHaveLength(0);
+      expect(calls.recordCaseEvent).toEqual([
+        expect.objectContaining({ ruleId: 'rule-both-levers', actionTaken: 'would_delete' }),
+      ]);
     });
   });
 

@@ -2,7 +2,8 @@ import { pino } from 'pino';
 import { describe, expect, it } from 'vitest';
 import { parseGuildId, parseMatchTrace, type MatchTrace } from '@bananasaurs/core';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
-import { traceJson } from './wiring.js';
+import { automodRuleRepo, guildRepo } from '@bananasaurs/storage';
+import { toAutomodRule, traceJson } from './wiring.js';
 
 /**
  * `traceJson` (IMPORTANT-3, coordinator ruling).
@@ -40,19 +41,25 @@ describe('traceJson', () => {
   });
 
   it('writes a valid placeholder trace, never undefined, when the predicate’s own trace fails validation', () => {
-    // A `detail` string past `trace.ts`'s 120-character bound (IMPORTANT-2)
-    // is exactly the shape of bug this guards against: type-correct as a
-    // `MatchTrace`, but rejected by `matchTraceSchema` at the point
-    // `serialiseTrace` tries to write it.
+    // A `detail` value that is not a scalar at all is the shape of bug this
+    // guards against: type-correct as a `MatchTrace` from a predicate's
+    // point of view (it built the object, TypeScript did not stop it), but
+    // rejected by `matchTraceSchema` at the point `serialiseTrace` tries to
+    // write it. An over-long `detail` *string* used to be this file's
+    // example, but `trace.ts`'s IMPORTANT-3 fix (whole-branch review,
+    // Slices 3-5) narrowed `serialiseTrace` to truncate an over-long string
+    // rather than throw on it — a filename or a hostname is not a bug — so
+    // that shape no longer reaches this fallback at all, and a genuinely
+    // malformed value is needed to exercise it.
     const t = openMigratedTestDatabase();
     const scope = t.scopes.forGuild(GUILD);
-    const invalid: MatchTrace = {
+    const invalid = {
       kind: 'keyword_filter',
       matchedOn: 'badword',
       span: undefined,
       normalisations: [],
-      detail: { message: 'x'.repeat(200) },
-    };
+      detail: { nested: { a: 1 } },
+    } as unknown as MatchTrace;
 
     const json = traceJson(scope, logger, invalid);
 
@@ -136,6 +143,63 @@ describe('traceJson', () => {
     const json = traceJson(scope, logger, invalid);
 
     expect(json).not.toContain(secret);
+    t.close();
+  });
+});
+
+/**
+ * `toAutomodRule` (whole-branch review, IMPORTANT-5).
+ *
+ * `ruleFingerprint` hashes the rule object's own *runtime* keys — by design, so
+ * a field added to `AutomodRule` is covered by default. That makes handing it a
+ * repository row a silent bug rather than a harmless widening: every column ADR
+ * 0042 added would be hashed, and flipping `cutover_state` from `ready` to
+ * `cutover` on a successful enforce — flip day itself — would recompile every
+ * matcher in the guild for a change that cannot affect what any of them match.
+ *
+ * TypeScript could not catch it. `StoredAutomodRule` is structurally assignable
+ * to `AutomodRule`, so the pass-through compiled cleanly and the boundary was an
+ * accident of shape rather than a decision. This asserts the key set exactly,
+ * which is the only form that fails when a future column is added to the row and
+ * quietly starts being hashed.
+ */
+describe('toAutomodRule', () => {
+  it('narrows a stored rule to exactly the fields a predicate may see', () => {
+    const t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'g', now: 0 });
+    automodRuleRepo.createRule(scope, {
+      ruleId: 'r1',
+      kind: 'caps',
+      name: 'shouting',
+      config: '{}',
+      now: 0,
+    });
+
+    const stored = automodRuleRepo.listEnabledRules(scope)[0]!;
+    const narrowed = toAutomodRule(stored);
+
+    // Sorted, so the assertion reads as a set rather than depending on the
+    // order an object literal happens to be written in.
+    expect(Object.keys(narrowed).sort()).toEqual([
+      'allowlist',
+      'config',
+      'countsAsViolation',
+      'inviteAllowlist',
+      'kind',
+      'linkDomains',
+      'mode',
+      'ruleId',
+      'terms',
+    ]);
+
+    // The gate's own columns are present on the row and absent from the narrowed
+    // rule — the specific leak this exists to prevent.
+    expect('cutoverState' in stored).toBe(true);
+    expect('cutoverState' in narrowed).toBe(false);
+    expect('enforceSignedOffBy' in narrowed).toBe(false);
+    expect('observeStartedAt' in narrowed).toBe(false);
+
     t.close();
   });
 });

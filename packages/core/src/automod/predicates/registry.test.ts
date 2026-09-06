@@ -1,5 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { compileRule, predicateFor, validateRuleConfig } from './registry.js';
+import {
+  compileRule,
+  compileRuleWith,
+  predicateFor,
+  validateRuleConfig,
+  validateRuleConfigWith,
+} from './registry.js';
 import type { AutomodRule } from './types.js';
 
 const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
@@ -9,6 +15,9 @@ const rule = (over: Partial<AutomodRule> = {}): AutomodRule => ({
   config: '{}',
   terms: [{ text: 'badword', categoryId: 'slurs' }],
   allowlist: [],
+  inviteAllowlist: [],
+  linkDomains: [],
+  countsAsViolation: true,
   ...over,
 });
 
@@ -17,10 +26,18 @@ describe('predicateFor', () => {
     expect(predicateFor('keyword_filter')?.kind).toBe('keyword_filter');
   });
 
-  it('returns undefined for a kind whose predicate has not shipped yet', () => {
-    // The `kind` CHECK permits ten values from Slice 1; nine of them have no
-    // predicate until Slices 3-5. That gap is handled, not prevented.
-    expect(predicateFor('caps')).toBeUndefined();
+  it('returns undefined for a string that is not a real RuleKind at all', () => {
+    // After Slice 4, all ten kinds `mod_rules_kind` permits have a predicate
+    // in `PREDICATES` — there is no real, permitted `RuleKind` left to stand
+    // in for "not shipped yet" (obligation 3, Task 5a). This test used to
+    // borrow one (first 'caps', then 'mention_spam', then 'rapid_spam') and
+    // was repointed three times as each shipped. `predicateFor`'s only
+    // remaining `undefined` case is `isRuleKind` failing outright, which
+    // `compileRuleWith`/`validateRuleConfigWith` below cover for the
+    // "permitted but unregistered" case via an explicit empty registry —
+    // `predicateFor` itself has no injectable form, because nothing calls it
+    // needing one.
+    expect(predicateFor('telepathy')).toBeUndefined();
   });
 });
 
@@ -36,7 +53,12 @@ describe('compileRule', () => {
   });
 
   it('reports a kind with no predicate registered yet', () => {
-    const result = compileRule(rule({ kind: 'caps', terms: [], config: '{}' }));
+    // Against an explicitly empty registry (Task 5a's seam), not a real kind
+    // that happens to be unshipped today — see `resolveConfigWith`'s doc
+    // comment in registry.ts for why: after this slice, no permitted kind is
+    // unregistered in production, so this test would otherwise have nothing
+    // left to borrow.
+    const result = compileRuleWith({}, rule({ kind: 'rapid_spam', terms: [], config: '{}' }));
     expect(result.ok).toBe(false);
     if (!result.ok) expect(result.reason).toBe('no-predicate');
   });
@@ -105,8 +127,9 @@ describe('validateRuleConfig', () => {
   });
 
   it('reports a permitted kind with no predicate registered yet', () => {
-    const result = validateRuleConfig('caps', '{}');
-    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'caps' });
+    // Same seam as the `compileRuleWith` test above, for the same reason.
+    const result = validateRuleConfigWith({}, 'rapid_spam', '{}');
+    expect(result).toEqual({ ok: false, reason: 'no-predicate', detail: 'rapid_spam' });
   });
 
   it('reports malformed JSON rather than throwing', () => {

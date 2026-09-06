@@ -161,6 +161,35 @@ export interface OpsUnusableAutomodRule {
 }
 
 /**
+ * A rule already in `mode = 'enforce'` whose `cutover_state` does not permit
+ * it (ADR 0042 §3, Task 6) — rows that predate this slice or were hand-edited,
+ * since `setRuleMode` can no longer *create* this combination.
+ */
+export interface OpsAutomodEnforceModeBadCutoverState {
+  readonly ruleId: string;
+  /** `CutoverState` widened to a string, the same reasoning `OpsUnusableAutomodRule.reason` gives. */
+  readonly cutoverState: string;
+}
+
+/**
+ * A rule sitting in `observe` past `docs/08`'s floor with matches nobody has
+ * reviewed yet (ADR 0042 §3, Task 6).
+ */
+export interface OpsAutomodObserveWindowBacklog {
+  readonly ruleId: string;
+  readonly observeStartedAt: number;
+  readonly unreviewedCount: number;
+}
+
+/**
+ * The outcome of `automod ready` (ADR 0042 §3/PR-27, Task 6): the write
+ * succeeded, or `cutover_state` was not `observing` and the refusal names it.
+ */
+export type OpsSetAutomodRuleReadyOutcome =
+  | { readonly ok: true }
+  | { readonly ok: false; readonly reason: 'not-observing'; readonly state: string };
+
+/**
  * One row of the review queue (ADR 0041 §5, §7): a recorded match nobody has
  * ruled on yet, with the evidence `automod review` renders.
  *
@@ -241,6 +270,20 @@ export interface OpsPorts {
   listKeywordFilterRulesMissingManageMessages(): readonly OpsKeywordFilterChannelMissingManageMessages[];
   /** Every enabled rule `compileRule` cannot compile, and why. */
   listUnusableAutomodRules(): readonly OpsUnusableAutomodRule[];
+  /**
+   * `doctor`'s first ADR 0042 §3 check (Task 6): rules already enforcing whose
+   * `cutover_state` does not permit it.
+   */
+  listAutomodRulesEnforcingWithBadCutoverState(): readonly OpsAutomodEnforceModeBadCutoverState[];
+  /**
+   * `doctor`'s second ADR 0042 §3 check (Task 6): rules in `observe` past
+   * `docs/08`'s floor with an unreviewed match backlog. Takes `nowMs`
+   * explicitly, the same reasoning `oldestDueJobAtMs` gives — the clock is the
+   * caller's, not a fresh read of the wall.
+   */
+  listAutomodRulesObservingPastWindowWithBacklog(
+    nowMs: number,
+  ): readonly OpsAutomodObserveWindowBacklog[];
   listRoutes(): readonly OpsLogRoute[];
   listExcludedChannels(): readonly string[];
   /** One job by id, for the `before` half of `jobs retry`'s audit row. */
@@ -313,6 +356,102 @@ export interface OpsPorts {
      * `packages/storage/src/repos/mod-match-reviews.ts` for the full reasoning.
      */
     'recorded' | 'recorded-with-label-conflict' | 'no-such-event';
+  /**
+   * `automod ready` (ADR 0042 section 3 / PR-27, Task 6): the explicit human
+   * act that ends a rule's observe window. Refused from every `cutover_state`
+   * but `observing` -- `'not-observing'` names the actual state, the same
+   * "return a usage answer, not a throw" treatment `recordMatchVerdict`'s
+   * `'no-such-event'` gets above, since an operator naming a rule in the wrong
+   * state (or one that does not exist at all) is a usage mistake, not a fault.
+   */
+  setAutomodRuleReady(ruleId: string): OpsSetAutomodRuleReadyOutcome;
+  /**
+   * `automod signoff` (ADR 0042 section 4 / PR-29, Task 6): records
+   * `enforce_signed_off_by`/`_at` on a rule. The command calling this port has
+   * already run the corpus dry run and confirmed it is clean -- this port is
+   * the plain write, with no precondition of its own to duplicate the one the
+   * command just checked.
+   */
+  recordAutomodSignOff(input: { readonly ruleId: string; readonly signedOffBy: string }): void;
+  /**
+   * Adds one code to `ruleId`'s invite allowlist (ADR 0040 §3, plan ruling
+   * PR-19). `'already-present'` is a real answer, not a refusal: the
+   * repository's `onConflictDoNothing` makes a repeated add a no-op, and
+   * telling the operator "that code was already allowed" beats both silence
+   * and a fault. `'no-such-rule'` is a usage answer for an operator who
+   * mistyped a rule id — the composite foreign key would otherwise surface an
+   * opaque `FOREIGN KEY constraint failed`. `'wrong-kind'` (IMPORTANT-7) is
+   * the same usage-answer treatment for a rule id that exists but is not an
+   * `invite` rule: `ruleExists` alone cannot tell a typo'd-but-real rule id
+   * from the operator's intended one, and writing the row anyway would be a
+   * write nothing will ever read.
+   */
+  addInviteAllowlistEntry(input: {
+    readonly ruleId: string;
+    readonly code: string;
+    readonly label: string;
+  }): 'added' | 'already-present' | 'no-such-rule' | 'wrong-kind';
+  /** `ruleId`'s invite allowlist, ordered by code — for printing after a write. */
+  listInviteAllowlist(ruleId: string): readonly { readonly code: string; readonly label: string }[];
+  /**
+   * Removes one code from `ruleId`'s invite allowlist. `'not-present'` is a
+   * real answer, the same shape `unexcludeChannel`'s boolean already uses for
+   * "nothing to remove is not a fault". `'wrong-kind'` is the same guard
+   * `addInviteAllowlistEntry` carries, for the same reason.
+   */
+  removeInviteAllowlistEntry(input: {
+    readonly ruleId: string;
+    readonly code: string;
+  }): 'removed' | 'not-present' | 'no-such-rule' | 'wrong-kind';
+  /**
+   * Adds one domain to `ruleId`'s allow or deny list (ADR 0040 §3, plan
+   * ruling PR-19).
+   *
+   * A discriminated union rather than a bare string, unlike
+   * `addInviteAllowlistEntry`: `already-present` on its own would repeat
+   * IMPORTANT-1 (review of Slices 3+5) — the primary key is `(guild, rule,
+   * domain)`, so re-adding a domain under the *other* `listType` is also a
+   * no-op, and a command that could only print the operator's requested
+   * `listType` would assert a state that is false. `listType` here is the
+   * **stored** one, always, so the message can name it truthfully.
+   * `mode` is the rule's own `config.mode`, so the command can say what an
+   * empty active list actually means (CRITICAL-2) without a second port
+   * call. `'wrong-kind'` is `addInviteAllowlistEntry`'s guard, mirrored for
+   * `link_domain` (IMPORTANT-7).
+   */
+  addLinkDomain(input: {
+    readonly ruleId: string;
+    readonly domain: string;
+    readonly listType: 'allow' | 'deny';
+  }):
+    | { readonly outcome: 'added'; readonly mode: 'allow' | 'deny' | undefined }
+    | {
+        readonly outcome: 'already-present';
+        readonly listType: 'allow' | 'deny';
+        readonly mode: 'allow' | 'deny' | undefined;
+      }
+    | { readonly outcome: 'no-such-rule' }
+    | { readonly outcome: 'wrong-kind' };
+  /** `ruleId`'s allow and deny domain lists together, ordered by domain. */
+  listLinkDomains(
+    ruleId: string,
+  ): readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
+  /**
+   * Removes one domain from either of `ruleId`'s lists.
+   *
+   * Same discriminated-union shape as `addLinkDomain` and for the same
+   * reason: `mode` lets the command say whether the removal just emptied the
+   * rule's active list (CRITICAL-2), which it cannot know from `'removed'`
+   * alone.
+   */
+  removeLinkDomain(input: {
+    readonly ruleId: string;
+    readonly domain: string;
+  }):
+    | { readonly outcome: 'removed'; readonly mode: 'allow' | 'deny' | undefined }
+    | { readonly outcome: 'not-present'; readonly mode: 'allow' | 'deny' | undefined }
+    | { readonly outcome: 'no-such-rule' }
+    | { readonly outcome: 'wrong-kind' };
   /** Points an event kind at a channel, creating or re-pointing the route. */
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */

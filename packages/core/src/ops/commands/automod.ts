@@ -10,6 +10,7 @@ import {
 } from '../dispatch.js';
 import type { OpsReviewableMatch } from '../ports.js';
 import type { JsonValue } from '../protocol.js';
+import type { FixtureRecord } from '../../automod/predicates/types.js';
 
 /**
  * `automod dryrun <ruleId>` (ADR 0041 §7): replay one rule over the saved
@@ -36,8 +37,97 @@ const automodDryRunArgs = z.object({
 const unlabelledCount = (report: DryRunReport): number =>
   report.results.filter((result) => result.label === 'unlabelled').length;
 
+/** How much of the corpus a rule reading attachments actually has to work with (IMPORTANT-6). */
+interface AttachmentAwareness {
+  readonly withMetadata: number;
+  readonly total: number;
+}
+
+/**
+ * Why a windowed rule's (`rapid_spam`, `duplicate_message`) replay count is
+ * not a rate over traffic in either direction (CRITICAL-3, whole-branch
+ * review) — the caveat this command owes an operator beside the summary,
+ * modelled on `AttachmentAwareness` above, which is a strictly weaker version
+ * of the same problem (`attachment_type`'s denominator including fixtures
+ * that could not possibly match).
+ *
+ * **Under-report.** `captureObservedFixture` records only a message that
+ * already matched, so the events that *built* a windowed rule's count —
+ * the messages before the "one too many" one — are absent from the corpus by
+ * construction. A rule that fired correctly on a burst captures only the
+ * message(s) that matched; replayed alone, they produce a lower count and
+ * `MISSED` for a rule that is working perfectly.
+ *
+ * **Over-report.** PR-1 gives every *edit* of a message its own corpus row
+ * (`<messageId>:<hash(content)>`), and `predicateInputFrom`'s fixture branch
+ * hard-codes `eventKind: 'messageCreate'` for every row it builds. For a rate
+ * predicate that is not conservative: one message edited three times, each
+ * edit captured, becomes four corpus rows and therefore four counted events
+ * in a replay, where the live rule counted one create and ignored the edits
+ * (PR-23). `editedMessageRows` makes that term visible: how many rows in this
+ * corpus share a message id with another row.
+ */
+interface WindowedCorpusCaveat {
+  readonly editedMessageRows: number;
+  /**
+   * How many **handwritten** fixtures this replay included, all of which are
+   * attributed to the same synthetic author.
+   *
+   * `predicateInputFrom` maps every handwritten fixture's null `author_id` to
+   * the literal `'fixture'` (a handwritten fixture has no member behind it and
+   * the `automod_fixtures_observed_has_author` CHECK forbids giving it one). For
+   * a *content* predicate that is harmless — authorship changes nothing. For a
+   * **windowed** predicate it silently rewrites the scenario: any handwritten
+   * corpus is replayed as **one member's burst**, whatever the operator meant.
+   *
+   * That matters because `automod dryrun --source handwritten` is exactly the
+   * tool an operator would reach for before flipping a windowed rule to
+   * enforce, and the most natural thing to test with it is cross-member
+   * independence — "three different members each post this phrase once, which
+   * must **not** trip `duplicate_message`". Today that collapses to one member
+   * repeating itself three times and **matches**, so the tool answers the
+   * opposite of the truth about the one property it was used to check. It takes
+   * two rows to hit, not a raid.
+   *
+   * So the count is surfaced and the caveat is printed. **The real fix needs a
+   * way to express authorship on a handwritten fixture without storing member
+   * data** — a synthetic author label, which is a migration and belongs with
+   * Slice 9's review surface. Until then this says so out loud rather than
+   * letting a replay quietly answer a question it cannot answer.
+   */
+  readonly handwrittenRows: number;
+}
+
+/** An observed fixture's message id is the text before PR-1's `:<hash>` suffix. */
+const fixtureMessageId = (fixtureId: string): string => fixtureId.split(':')[0] ?? fixtureId;
+
+/**
+ * How many observed fixtures in `fixtures` share a message id with another
+ * row — the corpus rows a single edited message produced (CRITICAL-3's
+ * over-report term). Handwritten fixtures are excluded: they have no message
+ * behind them (`predicateInputFrom` uses the fixture id itself), so they
+ * cannot be an edit of anything.
+ */
+const countEditedMessageRows = (fixtures: readonly FixtureRecord[]): number => {
+  const observed = fixtures.filter((f) => f.source === 'observed');
+  const counts = new Map<string, number>();
+  for (const f of observed) {
+    const messageId = fixtureMessageId(f.fixtureId);
+    counts.set(messageId, (counts.get(messageId) ?? 0) + 1);
+  }
+  return observed.filter((f) => (counts.get(fixtureMessageId(f.fixtureId)) ?? 0) > 1).length;
+};
+
+/** The two kinds `window.ts`-backed predicates compile to (CRITICAL-3). */
+const isWindowedKind = (kind: string): boolean =>
+  kind === 'rapid_spam' || kind === 'duplicate_message';
+
 /** `DryRunReport`, projected to plain `JsonValue` — no readonly arrays, no `undefined`. */
-const projectReport = (report: DryRunReport): JsonValue => ({
+const projectReport = (
+  report: DryRunReport,
+  attachmentAwareness: AttachmentAwareness | undefined,
+  windowedCorpusCaveat: WindowedCorpusCaveat | undefined,
+): JsonValue => ({
   ruleId: report.ruleId,
   kind: report.kind,
   usable: report.usable,
@@ -45,6 +135,11 @@ const projectReport = (report: DryRunReport): JsonValue => ({
     report.failure === undefined
       ? null
       : { reason: report.failure.reason, detail: report.failure.detail },
+  // CRITICAL-1: a throw is not a plain non-match, and `data` must be able to
+  // say so on its own — a consumer reading only `matched`/`total` must not be
+  // able to reconstruct "clean" from a rule that mostly threw.
+  threw: report.threw,
+  corpusSize: report.corpusSize,
   total: report.total,
   matched: report.matched,
   falsePositives: report.falsePositives,
@@ -53,11 +148,29 @@ const projectReport = (report: DryRunReport): JsonValue => ({
   // belongs beside them in `data`, not only worked out from `results` by
   // whoever reads it — see the summary line below for the reasoning.
   unlabelled: unlabelledCount(report),
+  // IMPORTANT-6: null for every kind but `attachment_type`, whose real
+  // denominator (fixtures that carry attachment metadata at all) is not the
+  // same number as `total` once the corpus predates OD-3's migration.
+  attachmentMetadata:
+    attachmentAwareness === undefined
+      ? null
+      : { withMetadata: attachmentAwareness.withMetadata, total: attachmentAwareness.total },
+  // CRITICAL-3: null for every kind but the two windowed ones, whose replay
+  // count is not a rate over traffic in either direction — see
+  // `WindowedCorpusCaveat`'s doc comment.
+  windowedCorpusCaveat:
+    windowedCorpusCaveat === undefined
+      ? null
+      : {
+          editedMessageRows: windowedCorpusCaveat.editedMessageRows,
+          handwrittenRows: windowedCorpusCaveat.handwrittenRows,
+        },
   results: report.results.map((result) => ({
     fixtureId: result.fixtureId,
     label: result.label,
     matched: result.matched,
     agreement: result.agreement,
+    outcome: result.outcome,
     match:
       result.match === undefined
         ? null
@@ -106,7 +219,39 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
       args.source === undefined ? {} : { source: args.source },
     );
     const report = runDryRun({ guildId: ctx.guildId, rule, fixtures });
-    const data = projectReport(report);
+    const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
+
+    // IMPORTANT-6: `attachment_type` can only ever match a fixture that has
+    // attachment rows, and every fixture captured before migration 0013 has
+    // none (`types.ts`: "an empty list is the honest representation"). Over
+    // a corpus captured early in the observe window this rule's summary
+    // denominator is the fixture count, not the count that could possibly
+    // match — "0/300 matched" then reads as "no bad files were posted" when
+    // it is actually "no fixture in this corpus records a file either way".
+    // Computed for every branch below (not only the final summary) so it
+    // reaches `data` even when the run is abandoned or the corpus is empty.
+    const attachmentAwareness: AttachmentAwareness | undefined =
+      report.kind === 'attachment_type'
+        ? {
+            withMetadata: report.results.filter(
+              (result) => (byFixtureId.get(result.fixtureId)?.attachments.length ?? 0) > 0,
+            ).length,
+            total: report.total,
+          }
+        : undefined;
+
+    // CRITICAL-3: the same "computed for every branch" treatment as
+    // attachmentAwareness above — a windowed rule's replay count is wrong in
+    // both directions regardless of which branch below ends up printing, so
+    // the caveat belongs in `data` even when the run is abandoned or the
+    // corpus is empty.
+    const windowedCorpusCaveat: WindowedCorpusCaveat | undefined = isWindowedKind(report.kind)
+      ? {
+          editedMessageRows: countEditedMessageRows(fixtures),
+          handwrittenRows: fixtures.filter((f) => f.source === 'handwritten').length,
+        }
+      : undefined;
+    const data = projectReport(report, attachmentAwareness, windowedCorpusCaveat);
 
     // Case 1: the rule cannot even compile. A match count under it is worse
     // than useless — "0 matches" reads exactly like a rule behaving
@@ -132,7 +277,26 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
       };
     }
 
-    const byFixtureId = new Map(fixtures.map((fixture) => [fixture.fixtureId, fixture]));
+    // Case 3 (CRITICAL-1, IMPORTANT-5): the predicate threw on at least one
+    // fixture. Treated the way !usable is treated above: a match table under
+    // a report where some fixtures never actually ran the predicate is worse
+    // than useless, because "0/300 matched" is indistinguishable from a rule
+    // that behaved perfectly. `runDryRun` abandons the replay after five
+    // throws, so `report.total` (evaluated) can be well short of
+    // `report.corpusSize` (what exists) — said explicitly, because the run
+    // was abandoned, not completed.
+    if (report.threw > 0) {
+      const abandoned = report.total < report.corpusSize;
+      return {
+        text:
+          `${report.threw} of ${report.total} evaluation(s) failed (the predicate threw)` +
+          (abandoned
+            ? `; the run was abandoned after evaluating ${report.total} of ` +
+              `${report.corpusSize} fixtures in the corpus`
+            : ''),
+        data,
+      };
+    }
 
     // CRITICAL-1: "41/300 matched · 0 false positive(s) · 0 missed" is true
     // and unreadable — it is indistinguishable from a rule 296 humans
@@ -153,6 +317,40 @@ export const automodDryRunCommand = defineCommand<z.infer<typeof automodDryRunAr
           `positive(s) of ${labelled} labelled · ${report.falseNegatives} missed`;
 
     const lines = [summary];
+    if (attachmentAwareness !== undefined) {
+      lines.push(
+        `${attachmentAwareness.withMetadata} of ${attachmentAwareness.total} fixtures carry ` +
+          `attachment metadata (the rest predate it and cannot match this rule)`,
+      );
+    }
+    if (windowedCorpusCaveat !== undefined) {
+      // CRITICAL-3: said in both directions. The corpus holds only
+      // previously-matched messages, so this rule's count is not a rate over
+      // traffic — a MISSED result here is expected, not a defect — and the
+      // named rows are the over-report term: PR-1 gives every edit of a
+      // message its own row, which this replay counts once each where the
+      // live rule counts only the original create (PR-23).
+      lines.push(
+        `note: this corpus holds only previously-matched messages, so this rule's count is not ` +
+          `a rate over traffic — a MISSED result on a windowed rule is expected here, not a ` +
+          `defect; ${windowedCorpusCaveat.editedMessageRows} of ${report.total} row(s) in this ` +
+          `corpus are extra rows for an edited message, which this replay counts once each where ` +
+          `the live rule counts only the original create`,
+      );
+      // A separate line, and only when there is something to warn about,
+      // because it says something stronger than the caveat above: not "this
+      // number is imprecise" but "this replay cannot answer a question you may
+      // well be using it to ask". See `WindowedCorpusCaveat.handwrittenRows`.
+      if (windowedCorpusCaveat.handwrittenRows > 0) {
+        lines.push(
+          `warning: ${windowedCorpusCaveat.handwrittenRows} handwritten fixture(s) in this run ` +
+            `are all attributed to the same synthetic author, so a windowed rule sees them as ` +
+            `one member's burst regardless of the scenario you wrote. A handwritten replay ` +
+            `therefore cannot test whether this rule keeps members apart — if that is what you ` +
+            `are checking before enforcing, use observed fixtures from real traffic instead`,
+        );
+      }
+    }
 
     for (const result of report.results) {
       // Narrowed on `result.match` itself, not on `result.matched`: the two
@@ -425,6 +623,672 @@ export const automodVerdictCommand = defineCommand<z.infer<typeof automodVerdict
         // and an audit trail that recorded only the verdict would not show
         // where the label went.
         after: { verdict: args.verdict, fixtureLabelConflict: conflicted },
+      },
+    };
+  },
+});
+
+/**
+ * `automod ready` (ADR 0042 §3/PR-27, Task 6): the explicit human act that
+ * ends a rule's observe window, so it can go on to `automod signoff` (below)
+ * or straight to `setRuleMode(mode: 'enforce')`.
+ *
+ * **Refused unless the rule is currently `observing`**, and the refusal names
+ * the actual state — the same "return a usage answer, not a throw" shape
+ * `automod verdict`'s `'no-such-event'` uses above, since an operator naming a
+ * rule in the wrong state is a usage mistake, not a fault. The refusal that
+ * matters most is from `rolled_back`: without this precondition, a rollback
+ * could be undone by `ready` then a successful `enforce` without ever
+ * revisiting `observing` — the exact scenario ADR 0042 exists to prevent
+ * (PR-27).
+ */
+const automodReadyArgs = z.object({ ruleId: z.string().min(1) }).strict();
+
+export const automodReadyCommand = defineCommand<z.infer<typeof automodReadyArgs>>({
+  name: 'automod ready',
+  write: true,
+  summary: 'mark an observing rule ready for enforcement (ADR 0042, PR-27)',
+  positional: [{ name: 'ruleId', required: true, describe: 'the rule to mark ready' }],
+  args: automodReadyArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.setAutomodRuleReady(args.ruleId);
+
+    if (!outcome.ok) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be marked ready from cutover_state ${outcome.state}; ` +
+          `it must be observing (ADR 0042 — ready is the explicit human act that ends the ` +
+          `observe window)`,
+        data: { ok: false, reason: 'not-observing', ruleId: args.ruleId, state: outcome.state },
+        audit: {
+          action: 'automod.cutover_ready',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'not-observing', state: outcome.state },
+        },
+      };
+    }
+
+    return {
+      text: `rule ${args.ruleId} is now ready for enforcement`,
+      data: { ok: true, ruleId: args.ruleId },
+      audit: {
+        action: 'automod.cutover_ready',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { outcome: 'ready' },
+      },
+    };
+  },
+});
+
+/**
+ * `automod signoff` (ADR 0042 §4/PR-29, Task 6): the low-volume path's
+ * machine-checked half. The spec gates a rule with fewer than
+ * `min_reviewed_matches` reviewed matches on "a clean pass against the
+ * fixture corpus plus an explicit owner sign-off". `enforcementEligibility`
+ * (`packages/storage`) checks only that a sign-off is *present* — it cannot
+ * run a dry run itself, because storage may not import core (ADR 0014). This
+ * command is the layer that can see both the rule and the corpus, so it is
+ * where the clean-corpus half of PR-29 is actually enforced: **refuses unless
+ * `runDryRun` over the fixture corpus reports `usable: true`, `threw: 0` and
+ * `falsePositives: 0`.** Each of the three is checked independently — a rule
+ * that merely fails to compile, or one that throws without ever recording a
+ * false positive, must refuse just as surely as one with an outright false
+ * positive.
+ *
+ * Reuses `automod dryrun`'s corpus path (`ctx.ports.findAutomodRule` +
+ * `ctx.ports.listAutomodFixtures` + `runDryRun`) rather than writing a second
+ * one, the same reuse the brief calls out.
+ */
+const automodSignoffArgs = z.object({ ruleId: z.string().min(1) }).strict();
+
+export const automodSignoffCommand = defineCommand<z.infer<typeof automodSignoffArgs>>({
+  name: 'automod signoff',
+  write: true,
+  summary: 'record an owner sign-off for the low-volume enforcement path (ADR 0042 §4, PR-29)',
+  positional: [{ name: 'ruleId', required: true, describe: 'the rule to sign off' }],
+  args: automodSignoffArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const rule = ctx.ports.findAutomodRule(args.ruleId);
+
+    if (rule === undefined) {
+      // Mirrors `automod dryrun`'s own "no *enabled* rule" usage answer: the
+      // port is enabled-only, so a disabled rule lands here too.
+      return {
+        text: `there is no enabled rule ${args.ruleId} in this guild (a disabled rule cannot be signed off)`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule' },
+        },
+      };
+    }
+
+    const fixtures = ctx.ports.listAutomodFixtures({});
+    const report = runDryRun({ guildId: ctx.guildId, rule, fixtures });
+    // PR-29's three conditions, checked independently (the brief's own
+    // warning: a single "not clean" test passes an implementation checking
+    // only one of them).
+    const clean = report.usable && report.threw === 0 && report.falsePositives === 0;
+
+    // Every one of those three conditions is an *absence*, so an empty or
+    // wholly-unlabelled corpus satisfies all three vacuously — and this
+    // sign-off is the only thing that clears the low-volume floor, so granting
+    // it on no evidence lets a rule go observe -> ready -> signoff -> enforce
+    // having never been judged against anything. `DryRunFixtureResult`'s
+    // `agreement` comment names this exactly: counting an unlabelled non-match
+    // as a success makes every rule look perfect on the day it shipped, which
+    // is why `automod dryrun` already refuses to print a rate for an unlabelled
+    // corpus. That guard was human-facing only; this is its machine half
+    // (PR-29).
+    //
+    // The bar is deliberately the weakest non-vacuous one — at least one
+    // fixture the rule agreed with — because *how much* evidence a sign-off
+    // should require is a policy question the spec does not answer, and
+    // inventing a threshold here would be worse than requiring that the
+    // question was asked at all. Precisely because the bar is that low, the
+    // counts travel into the success text, `data` and the audit row too: a
+    // sign-off resting on one label and one resting on five hundred fixtures
+    // must not read identically to whoever audits this later.
+    //
+    // `agreed === 0` has two causes and they need different answers. Nothing
+    // labelled at all means "go label some fixtures". A corpus that *is*
+    // labelled and which the rule disagrees with everywhere means the opposite
+    // — the work is done and the rule failed it — and `clean` can still be true
+    // while that holds, because a missed `should_match` fixture is a
+    // `falseNegative`, not a false positive.
+    const agreed = report.results.filter((r) => r.agreement === 'agreed').length;
+
+    const labelled = report.results.filter((r) => r.agreement !== 'unlabelled').length;
+
+    if (clean && agreed === 0 && labelled === 0) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be signed off: the dry run raised nothing, but nothing in ` +
+          `the fixture corpus is labelled either (${String(report.corpusSize)} fixture(s), none ` +
+          `judged) — a clean pass over unjudged fixtures is not evidence, so PR-29's corpus ` +
+          `requirement is not met. Label some fixtures with \`automod verdict\` first.`,
+        data: {
+          ok: false,
+          reason: 'no-corpus-evidence',
+          ruleId: args.ruleId,
+          corpusSize: report.corpusSize,
+          agreed,
+          labelled,
+        },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: {
+            outcome: 'no-corpus-evidence',
+            corpusSize: report.corpusSize,
+            agreed,
+            labelled,
+          },
+        },
+      };
+    }
+
+    if (clean && agreed === 0) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be signed off: it agreed with none of the ` +
+          `${String(labelled)} labelled fixture(s) in the corpus — it raised no false positives, ` +
+          `but it missed ${String(report.falseNegatives)} fixture(s) a reviewer marked as ` +
+          `something it should match. The labelling is not the problem; the rule is. Narrow or ` +
+          `widen it and replay with \`automod dryrun\`.`,
+        data: {
+          ok: false,
+          reason: 'corpus-all-disagreed',
+          ruleId: args.ruleId,
+          corpusSize: report.corpusSize,
+          agreed,
+          labelled,
+          falseNegatives: report.falseNegatives,
+        },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: {
+            outcome: 'corpus-all-disagreed',
+            corpusSize: report.corpusSize,
+            agreed,
+            labelled,
+            falseNegatives: report.falseNegatives,
+          },
+        },
+      };
+    }
+
+    if (!clean) {
+      return {
+        text:
+          `rule ${args.ruleId} cannot be signed off: the dry run over the fixture corpus is not ` +
+          `clean (usable=${String(report.usable)}, threw=${String(report.threw)}, ` +
+          `falsePositives=${String(report.falsePositives)}) — PR-29 requires a clean corpus pass ` +
+          `before a sign-off is recorded`,
+        data: {
+          ok: false,
+          reason: 'dry-run-not-clean',
+          ruleId: args.ruleId,
+          usable: report.usable,
+          threw: report.threw,
+          falsePositives: report.falsePositives,
+        },
+        audit: {
+          action: 'automod.enforce_signed_off',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: {
+            outcome: 'dry-run-not-clean',
+            usable: report.usable,
+            threw: report.threw,
+            falsePositives: report.falsePositives,
+          },
+        },
+      };
+    }
+
+    // Same shape `automod verdict` uses at line 568: a claim, never a
+    // verified identity (ADR 0024 amendment 2).
+    const signedOffBy = `cli:${ctx.actor.unixUserClaimed ?? 'unknown'}`;
+    ctx.ports.recordAutomodSignOff({ ruleId: args.ruleId, signedOffBy });
+
+    return {
+      text:
+        `rule ${args.ruleId} signed off by ${signedOffBy} (dry run clean; the rule agreed with ` +
+        `${String(agreed)} of ${String(report.corpusSize)} fixture(s) in the corpus)`,
+      data: {
+        ok: true,
+        ruleId: args.ruleId,
+        signedOffBy,
+        agreed,
+        labelled,
+        corpusSize: report.corpusSize,
+      },
+      audit: {
+        action: 'automod.enforce_signed_off',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        // How thin the evidence was, recorded permanently. The bar this cleared
+        // is one agreeing fixture, so "a sign-off exists" says much less than a
+        // later reader will assume unless the number is here beside it.
+        after: {
+          outcome: 'recorded',
+          signedOffBy,
+          agreed,
+          labelled,
+          corpusSize: report.corpusSize,
+        },
+      },
+    };
+  },
+});
+
+/**
+ * `automod invite-allow` / `automod invite-deny` / `automod domain-add` /
+ * `automod domain-rm` (plan ruling PR-19, Task 9 of the slices 3-5 plan).
+ *
+ * Task 6 built `invite`'s labelled code allowlist and `link_domain`'s
+ * allow/deny lists in storage, and shipped no caller — nothing outside a test
+ * could add the club's own invite code to the allowlist. That is not merely
+ * untidy: `observe` mode never touches Discord, so an empty allowlist harms
+ * nobody during the observe window, but an `invite` rule with an empty
+ * allowlist fires on the club's own invite links every time a member posts
+ * one, and Slice 6's release gate demands zero false positives for a rule
+ * that feeds the escalation counter. That rule cannot pass its gate until an
+ * operator can populate the list, so this is in Release 2 even though the
+ * dashboard screen (Slice 8/9) is not.
+ *
+ * Four commands under the existing `automod` namespace (plan ruling PR-6
+ * named the precedent). Reads are not separate commands: this build has no
+ * `automod rules` command to list a rule's own configuration, so each write
+ * prints the resulting list itself — a list nobody can see is worse than one
+ * nobody can edit, and inventing a fifth command to do only that would be
+ * scope this task does not need.
+ */
+
+/** One line per invite allowlist entry, in the order the port already sorted them. */
+const renderInviteAllowlist = (
+  ruleId: string,
+  entries: readonly { readonly code: string; readonly label: string }[],
+): string =>
+  entries.length === 0
+    ? `rule ${ruleId}'s invite allowlist is now empty`
+    : `rule ${ruleId}'s invite allowlist:\n` +
+      entries.map((entry) => `  ${entry.code}  (${entry.label})`).join('\n');
+
+const projectInviteAllowlist = (
+  entries: readonly { readonly code: string; readonly label: string }[],
+): JsonValue => entries.map((entry) => ({ code: entry.code, label: entry.label }));
+
+/** One line per domain, in the order the port already sorted them. */
+const renderLinkDomains = (
+  ruleId: string,
+  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+): string =>
+  entries.length === 0
+    ? `rule ${ruleId}'s domain lists are now empty`
+    : `rule ${ruleId}'s domain lists:\n` +
+      entries.map((entry) => `  ${entry.listType.padEnd(5)} ${entry.domain}`).join('\n');
+
+const projectLinkDomains = (
+  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+): JsonValue => entries.map((entry) => ({ domain: entry.domain, listType: entry.listType }));
+
+/**
+ * Says what an empty *active* list means for this rule, or `undefined` when
+ * the active list — the one `config.mode` names — has at least one domain
+ * (CRITICAL-2, review of Slices 3+5).
+ *
+ * "The domain lists are now empty" used to read as a completed tidy-up
+ * regardless of which direction it failed in. It is either "this rule is now
+ * inert" (`deny` with nothing on the deny list — ADR 0039's silent
+ * non-matching) or "this rule now matches every link" (`allow` with nothing
+ * on the allow list — the dangerous direction, since in `enforce` mode that
+ * deletes every message containing a link). The command has the rule id and
+ * now the port hands back `config.mode`, so it can say which.
+ *
+ * `mode` is `undefined` only if the rule's stored config failed to parse as
+ * `{mode: 'allow' | 'deny'}` — a state `compileRule`/`doctor` already report
+ * on their own path; this degrades to silence rather than guessing.
+ */
+const linkDomainStatusLine = (
+  ruleId: string,
+  mode: 'allow' | 'deny' | undefined,
+  entries: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[],
+): string | undefined => {
+  if (mode === undefined) return undefined;
+  const activeCount = entries.filter((entry) => entry.listType === mode).length;
+  if (activeCount > 0) return undefined;
+  return mode === 'allow'
+    ? `rule ${ruleId} is a whitelist (mode allow) and its allow list is empty, so it matches every link; add a domain or disable the rule`
+    : `rule ${ruleId} is a blocklist (mode deny) and its deny list is empty, so it can never match; add a domain or disable the rule`;
+};
+
+/** Appends a status line, when there is one, on its own line. */
+const withStatusLine = (text: string, statusLine: string | undefined): string =>
+  statusLine === undefined ? text : `${text}\n${statusLine}`;
+
+const automodInviteAllowArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    code: z.string().min(1).max(64),
+    label: z.string().min(1).max(200),
+  })
+  .strict();
+
+export const automodInviteAllowCommand = defineCommand<z.infer<typeof automodInviteAllowArgs>>({
+  name: 'automod invite-allow',
+  write: true,
+  summary: "add a code to a rule's invite allowlist",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the invite rule to edit' },
+    { name: 'code', required: true, describe: 'the invite code, e.g. clubhouse' },
+    {
+      name: 'label',
+      required: true,
+      describe: 'what this code is, for whoever reads the list later',
+    },
+  ],
+  args: automodInviteAllowArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.addInviteAllowlistEntry({
+      ruleId: args.ruleId,
+      code: args.code,
+      label: args.label,
+    });
+
+    if (outcome === 'no-such-rule') {
+      // A usage answer, not a fault: an operator at a terminal will mistype
+      // a rule id, and the composite foreign key would otherwise surface an
+      // opaque `FOREIGN KEY constraint failed`. An audit row is still owed —
+      // "an operator tried to edit a rule that does not exist" is a fact
+      // worth having, the same treatment `automod verdict` gives a mistyped
+      // event id.
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', code: args.code },
+        },
+      };
+    }
+
+    if (outcome === 'wrong-kind') {
+      // IMPORTANT-7: `ruleExists` alone cannot tell a real-but-wrong-kind
+      // rule id from the operator's intended one — without this, the write
+      // below would succeed against e.g. a `keyword_filter` rule, whose
+      // `compile` never reads `inviteAllowlist`. A usage answer, the same
+      // treatment as `no-such-rule`, and an audit row for the same reason.
+      return {
+        text: `rule ${args.ruleId} is not an invite rule; invite-allow only edits invite rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', code: args.code },
+        },
+      };
+    }
+
+    const list = ctx.ports.listInviteAllowlist(args.ruleId);
+    const alreadyPresent = outcome === 'already-present';
+
+    return {
+      text:
+        (alreadyPresent
+          ? `${args.code} was already on rule ${args.ruleId}'s invite allowlist`
+          : `added ${args.code} (${args.label}) to rule ${args.ruleId}'s invite allowlist`) +
+        '\n' +
+        renderInviteAllowlist(args.ruleId, list),
+      data: {
+        ok: true,
+        code: args.code,
+        alreadyPresent,
+        allowlist: projectInviteAllowlist(list),
+      },
+      audit: {
+        action: 'automod.invite_allowlist_added',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { code: args.code, label: args.label, alreadyPresent },
+      },
+    };
+  },
+});
+
+const automodInviteDenyArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    code: z.string().min(1),
+  })
+  .strict();
+
+export const automodInviteDenyCommand = defineCommand<z.infer<typeof automodInviteDenyArgs>>({
+  name: 'automod invite-deny',
+  write: true,
+  summary: "remove a code from a rule's invite allowlist",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the invite rule to edit' },
+    { name: 'code', required: true, describe: 'the invite code to remove' },
+  ],
+  args: automodInviteDenyArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.removeInviteAllowlistEntry({ ruleId: args.ruleId, code: args.code });
+
+    if (outcome === 'no-such-rule') {
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', code: args.code },
+        },
+      };
+    }
+
+    if (outcome === 'wrong-kind') {
+      return {
+        text: `rule ${args.ruleId} is not an invite rule; invite-deny only edits invite rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, code: args.code },
+        audit: {
+          action: 'automod.invite_allowlist_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', code: args.code },
+        },
+      };
+    }
+
+    const list = ctx.ports.listInviteAllowlist(args.ruleId);
+    const removed = outcome === 'removed';
+
+    return {
+      text:
+        (removed
+          ? `removed ${args.code} from rule ${args.ruleId}'s invite allowlist`
+          : `${args.code} was not on rule ${args.ruleId}'s invite allowlist`) +
+        '\n' +
+        renderInviteAllowlist(args.ruleId, list),
+      data: { ok: true, code: args.code, removed, allowlist: projectInviteAllowlist(list) },
+      audit: {
+        action: 'automod.invite_allowlist_removed',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { code: args.code, removed },
+      },
+    };
+  },
+});
+
+const automodDomainAddArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    domain: z.string().min(1),
+    listType: z.enum(['allow', 'deny']),
+  })
+  .strict();
+
+export const automodDomainAddCommand = defineCommand<z.infer<typeof automodDomainAddArgs>>({
+  name: 'automod domain-add',
+  write: true,
+  summary: "add a domain to a rule's allow or deny list",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the link_domain rule to edit' },
+    { name: 'domain', required: true, describe: 'the domain, e.g. example.com' },
+    { name: 'listType', required: true, describe: 'allow | deny' },
+  ],
+  args: automodDomainAddArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.addLinkDomain({
+      ruleId: args.ruleId,
+      domain: args.domain,
+      listType: args.listType,
+    });
+
+    if (outcome.outcome === 'no-such-rule') {
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', domain: args.domain },
+        },
+      };
+    }
+
+    if (outcome.outcome === 'wrong-kind') {
+      // IMPORTANT-7, same reasoning as invite-allow above: a rule id that
+      // exists but is not a `link_domain` rule would otherwise accept a
+      // write its own `compile` never reads.
+      return {
+        text: `rule ${args.ruleId} is not a link_domain rule; domain-add only edits link_domain rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_added',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', domain: args.domain },
+        },
+      };
+    }
+
+    const list = ctx.ports.listLinkDomains(args.ruleId);
+    const alreadyPresent = outcome.outcome === 'already-present';
+    // IMPORTANT-1: the primary key is (guild, rule, domain), so re-adding a
+    // domain under the *other* listType is a no-op — the port reports the
+    // listType actually stored, which may differ from what the operator
+    // asked for. Naming the requested one here would assert a state that is
+    // false, with the real state printed right below it in `renderLinkDomains`.
+    const storedListType = alreadyPresent ? outcome.listType : args.listType;
+    const mainLine = alreadyPresent
+      ? `${args.domain} is already on rule ${args.ruleId}'s ${storedListType} list; nothing changed` +
+        (storedListType === args.listType
+          ? ''
+          : ` (remove it first to move it to ${args.listType})`)
+      : `added ${args.domain} to rule ${args.ruleId}'s ${args.listType} list`;
+
+    return {
+      text: withStatusLine(
+        `${mainLine}\n${renderLinkDomains(args.ruleId, list)}`,
+        linkDomainStatusLine(args.ruleId, outcome.mode, list),
+      ),
+      data: {
+        ok: true,
+        domain: args.domain,
+        listType: storedListType,
+        alreadyPresent,
+        domains: projectLinkDomains(list),
+      },
+      audit: {
+        action: 'automod.link_domain_added',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { domain: args.domain, listType: storedListType, alreadyPresent },
+      },
+    };
+  },
+});
+
+const automodDomainRmArgs = z
+  .object({
+    ruleId: z.string().min(1),
+    domain: z.string().min(1),
+  })
+  .strict();
+
+export const automodDomainRmCommand = defineCommand<z.infer<typeof automodDomainRmArgs>>({
+  name: 'automod domain-rm',
+  write: true,
+  summary: "remove a domain from a rule's allow or deny list",
+  positional: [
+    { name: 'ruleId', required: true, describe: 'the link_domain rule to edit' },
+    { name: 'domain', required: true, describe: 'the domain to remove' },
+  ],
+  args: automodDomainRmArgs,
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.ports.removeLinkDomain({ ruleId: args.ruleId, domain: args.domain });
+
+    if (outcome.outcome === 'no-such-rule') {
+      return {
+        text: `no rule ${args.ruleId} in this guild`,
+        data: { ok: false, reason: 'no-such-rule', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'no-such-rule', domain: args.domain },
+        },
+      };
+    }
+
+    if (outcome.outcome === 'wrong-kind') {
+      return {
+        text: `rule ${args.ruleId} is not a link_domain rule; domain-rm only edits link_domain rules`,
+        data: { ok: false, reason: 'wrong-kind', ruleId: args.ruleId, domain: args.domain },
+        audit: {
+          action: 'automod.link_domain_removed',
+          subjectType: 'mod_rule',
+          subjectId: args.ruleId,
+          after: { outcome: 'wrong-kind', domain: args.domain },
+        },
+      };
+    }
+
+    const list = ctx.ports.listLinkDomains(args.ruleId);
+    const removed = outcome.outcome === 'removed';
+    // CRITICAL-2: "the domain lists are now empty" used to read as a
+    // completed tidy-up regardless of which direction it failed in.
+    // `linkDomainStatusLine` says which, using the rule's own `config.mode`.
+    const mainLine = removed
+      ? `removed ${args.domain} from rule ${args.ruleId}'s domain lists`
+      : `${args.domain} was not on rule ${args.ruleId}'s domain lists`;
+
+    return {
+      text: withStatusLine(
+        `${mainLine}\n${renderLinkDomains(args.ruleId, list)}`,
+        linkDomainStatusLine(args.ruleId, outcome.mode, list),
+      ),
+      data: { ok: true, domain: args.domain, removed, domains: projectLinkDomains(list) },
+      audit: {
+        action: 'automod.link_domain_removed',
+        subjectType: 'mod_rule',
+        subjectId: args.ruleId,
+        after: { domain: args.domain, removed },
       },
     };
   },

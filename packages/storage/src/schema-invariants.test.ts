@@ -1,6 +1,7 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import Database from 'better-sqlite3';
-import { drizzle } from 'drizzle-orm/better-sqlite3';
+import { drizzle, type BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
+import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -309,41 +310,45 @@ describe("mod_rules_kind's CHECK matches core's RULE_KINDS exactly", () => {
  * remaining (real, shipped) migration files and reads the rows back with raw
  * SQL, independent of the repo layer this same task rewrites.
  */
+/**
+ * A migrations folder containing only the journal entries and `.sql` files
+ * for migrations up to and including `tag`, so `migrate()` can be run
+ * against a snapshot of the schema older than what ships. `readMigrationFiles`
+ * (`drizzle-orm/migrator.js`) needs only `meta/_journal.json` and the `.sql`
+ * files it names — not the `meta/*_snapshot.json` files, which are
+ * drizzle-kit's own bookkeeping for the *next* `generate`, never read by
+ * `migrate()`.
+ *
+ * Module scope, not local to one describe block: both the 0010/0011 rebuild
+ * proof below and ADR 0042's own rebuild proof (0015-0017) need it, and it
+ * would drift if each grew its own copy.
+ */
+const migrationsFolderUpTo = (lastIdx: number): string => {
+  const journal = JSON.parse(
+    fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+  ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mod-rules-migration-'));
+  fs.mkdirSync(path.join(dir, 'meta'));
+  const entries = journal.entries.filter((e) => e.idx <= lastIdx);
+  fs.writeFileSync(
+    path.join(dir, 'meta', '_journal.json'),
+    JSON.stringify({ ...journal, entries }),
+  );
+  for (const entry of entries) {
+    fs.copyFileSync(
+      path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+      path.join(dir, `${entry.tag}.sql`),
+    );
+  }
+  return dir;
+};
+
 describe('mod_rules.config migration (0010/0011) carries child-table rows through the rebuild', () => {
   const GUILD_ID = '111111111111111111';
   const RULE_ID = 'rule-pre-existing';
   const CATEGORY_ID = 'cat-1';
   const TERM_ID = 'term-1';
   const ROLE_ID = '222222222222222222';
-
-  /**
-   * A migrations folder containing only the journal entries and `.sql` files
-   * for migrations up to and including `tag`, so `migrate()` can be run
-   * against a snapshot of the schema older than what ships. `readMigrationFiles`
-   * (`drizzle-orm/migrator.js`) needs only `meta/_journal.json` and the `.sql`
-   * files it names — not the `meta/*_snapshot.json` files, which are
-   * drizzle-kit's own bookkeeping for the *next* `generate`, never read by
-   * `migrate()`.
-   */
-  const migrationsFolderUpTo = (lastIdx: number): string => {
-    const journal = JSON.parse(
-      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
-    ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
-    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mod-rules-migration-'));
-    fs.mkdirSync(path.join(dir, 'meta'));
-    const entries = journal.entries.filter((e) => e.idx <= lastIdx);
-    fs.writeFileSync(
-      path.join(dir, 'meta', '_journal.json'),
-      JSON.stringify({ ...journal, entries }),
-    );
-    for (const entry of entries) {
-      fs.copyFileSync(
-        path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
-        path.join(dir, `${entry.tag}.sql`),
-      );
-    }
-    return dir;
-  };
 
   it('keeps the rule, its word list and its exemption readable after the rebuild', () => {
     const raw = new Database(':memory:');
@@ -418,6 +423,217 @@ describe('mod_rules.config migration (0010/0011) carries child-table rows throug
       )
       .get(GUILD_ID, RULE_ID) as { exempt_type: string; exempt_id: string } | undefined;
     expect(exemption).toEqual({ exempt_type: 'role', exempt_id: ROLE_ID });
+
+    raw.close();
+  });
+});
+
+/**
+ * ADR 0042's own rebuild (0015-0017, Slice 6 Task 1), proved the same way and
+ * for the same reason: "an earlier test covers the rebuild" is exactly the
+ * assumption Amendment 1 warns against — `openMigratedTestDatabase()` builds
+ * `mod_rules` once, already in its final shape, so this slice's own rebuild
+ * statements never run against data there. This migrates to 0014 (the last
+ * migration before this slice), seeds one rule with all four child rows
+ * `word_categories`, `word_terms`, `word_allowlist`, and
+ * `mod_rule_exemptions` — the same shape as the 0010/0011 proof above — then
+ * applies the slice's migrations and reads every child row back, plus asserts
+ * the rule's own new columns landed with their documented defaults.
+ *
+ * Which of the three migrations actually rebuilds, and why it took three
+ * `db:generate` runs rather than the two ruling R-6 prescribed: 0015 adds the
+ * four plain nullable columns and 0016 the four defaulted ones, both as plain
+ * `ALTER TABLE … ADD COLUMN`, no rebuild. **0017 is the rebuild** — SQLite
+ * cannot add a CHECK constraint to an existing table at all, so every new
+ * CHECK forces one. Splitting the column adds from their CHECKs is what keeps
+ * that rebuild valid: its `INSERT … SELECT` names all fifteen columns, and
+ * every one of them already exists on the old table because 0015 and 0016 put
+ * them there. Generating a column and its CHECK together is the R-6 shape that
+ * emits a `SELECT` reading a column the old table does not have yet.
+ *
+ * 0017 rebuilds *two* tables, `guilds` and `mod_rules`. `mod_rules` carries a
+ * real `ON DELETE cascade` foreign key onto `guilds`, and `word_categories`,
+ * `word_allowlist` and `mod_rule_exemptions` carry one onto `mod_rules`, so
+ * this proves two things at once: a `guilds` rebuild does not cascade away the
+ * rules referencing it, and a `mod_rules` rebuild does not cascade away its own
+ * children. 0017 also contains a mid-file `PRAGMA foreign_keys=ON` (drizzle-kit
+ * emits one per rebuilt table) which would re-arm the cascade for the
+ * `mod_rules` half if it took effect; it does not, because `migrate()` runs the
+ * file inside a transaction and SQLite documents this pragma as a no-op there.
+ * That is a claim about someone else's library, so it is not taken on trust:
+ * the sibling test below drops `runMigrations`'s connection-level
+ * `foreign_keys = OFF` and watches these same rows disappear.
+ */
+describe('the cutover-gate migration (0015-0017, ADR 0042) carries child-table rows through its own rebuild', () => {
+  const GUILD_ID = '111111111111111111';
+  const RULE_ID = 'rule-pre-existing';
+  const CATEGORY_ID = 'cat-1';
+  const TERM_ID = 'term-1';
+  const ROLE_ID = '222222222222222222';
+
+  /**
+   * A database migrated to 0014 and seeded with one rule and all four of its
+   * child rows: the state this slice's migrations have to carry through a
+   * two-table rebuild. Shared by the survival proof and its negative control
+   * so the two cannot drift into testing different data.
+   */
+  const seedAt0014 = (): {
+    raw: Database.Database;
+    db: BetterSQLite3Database<typeof schema>;
+  } => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // The last migration before this slice: `mod_rules` has none of the
+    // eight new columns yet, and `guilds` has no `automod_testing_mode`.
+    runMigrations(raw, db, migrationsFolderUpTo(14));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_rules (guild_id, rule_id, kind, name, mode, enabled, created_at, updated_at)
+         VALUES (?, ?, 'keyword_filter', 'pre-existing', 'test', 1, 0, 0)`,
+      )
+      .run(GUILD_ID, RULE_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_categories (guild_id, category_id, rule_id, name, default_action, enabled)
+         VALUES (?, ?, ?, 'profanity', 'delete', 1)`,
+      )
+      .run(GUILD_ID, CATEGORY_ID, RULE_ID);
+    raw
+      .prepare(
+        `INSERT INTO word_terms (guild_id, term_id, category_id, text, enabled)
+         VALUES (?, ?, ?, 'badword', 1)`,
+      )
+      .run(GUILD_ID, TERM_ID, CATEGORY_ID);
+    raw
+      .prepare(`INSERT INTO word_allowlist (guild_id, rule_id, phrase) VALUES (?, ?, 'assassin')`)
+      .run(GUILD_ID, RULE_ID);
+    raw
+      .prepare(
+        `INSERT INTO mod_rule_exemptions (guild_id, rule_id, exempt_type, exempt_id)
+         VALUES (?, ?, 'role', ?)`,
+      )
+      .run(GUILD_ID, RULE_ID, ROLE_ID);
+
+    return { raw, db };
+  };
+
+  it('keeps the rule, its word list and its exemption readable, and the rule gets the new defaults', () => {
+    const { raw, db } = seedAt0014();
+
+    // Applies exactly 0015, 0016 and 0017 against the data just inserted —
+    // migrations 0-14 are already recorded as applied. Through
+    // `runMigrations`, not `migrate()` directly, which is the exact call
+    // this guard exists to prove is safe here (ADR 0042 Amendment 1, R-5).
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const rule = raw
+      .prepare(
+        `SELECT kind, name, cutover_state, observe_started_at, legacy_rule_ref,
+                counts_as_violation, max_false_positive_rate, min_reviewed_matches,
+                enforce_signed_off_by, enforce_signed_off_at
+         FROM mod_rules WHERE guild_id = ? AND rule_id = ?`,
+      )
+      .get(GUILD_ID, RULE_ID) as
+      | {
+          kind: string;
+          name: string;
+          cutover_state: string;
+          observe_started_at: number | null;
+          legacy_rule_ref: string | null;
+          counts_as_violation: number;
+          max_false_positive_rate: number;
+          min_reviewed_matches: number;
+          enforce_signed_off_by: string | null;
+          enforce_signed_off_at: number | null;
+        }
+      | undefined;
+    expect(rule).toEqual({
+      kind: 'keyword_filter',
+      name: 'pre-existing',
+      cutover_state: 'not_started',
+      observe_started_at: null,
+      legacy_rule_ref: null,
+      counts_as_violation: 1,
+      max_false_positive_rate: 0.05,
+      min_reviewed_matches: 20,
+      enforce_signed_off_by: null,
+      enforce_signed_off_at: null,
+    });
+
+    const category = raw
+      .prepare(`SELECT name FROM word_categories WHERE guild_id = ? AND category_id = ?`)
+      .get(GUILD_ID, CATEGORY_ID) as { name: string } | undefined;
+    expect(category?.name).toBe('profanity');
+
+    const term = raw
+      .prepare(`SELECT text FROM word_terms WHERE guild_id = ? AND term_id = ?`)
+      .get(GUILD_ID, TERM_ID) as { text: string } | undefined;
+    expect(term?.text).toBe('badword');
+
+    const allowlist = raw
+      .prepare(`SELECT phrase FROM word_allowlist WHERE guild_id = ? AND rule_id = ?`)
+      .all(GUILD_ID, RULE_ID) as { phrase: string }[];
+    expect(allowlist.map((r) => r.phrase)).toEqual(['assassin']);
+
+    const exemption = raw
+      .prepare(
+        `SELECT exempt_type, exempt_id FROM mod_rule_exemptions WHERE guild_id = ? AND rule_id = ?`,
+      )
+      .get(GUILD_ID, RULE_ID) as { exempt_type: string; exempt_id: string } | undefined;
+    expect(exemption).toEqual({ exempt_type: 'role', exempt_id: ROLE_ID });
+
+    const guild = raw
+      .prepare(`SELECT automod_testing_mode FROM guilds WHERE guild_id = ?`)
+      .get(GUILD_ID) as { automod_testing_mode: number } | undefined;
+    expect(guild?.automod_testing_mode).toBe(0);
+
+    raw.close();
+  });
+
+  /**
+   * The negative control for the test above, and the reason it is not
+   * decorative: run the *same* migrations against the *same* seed with
+   * `runMigrations`'s one safety measure removed — `migrate()` called
+   * directly, so `foreign_keys` is never turned off at the connection level —
+   * and watch the child rows go.
+   *
+   * A revert-and-forget experiment would have proved this once, on one
+   * afternoon. Keeping it means the survival proof above can never quietly
+   * become vacuous: if a future drizzle-kit stopped rebuilding, or emitted a
+   * rebuild that did not drop the parent tables, that test would pass for the
+   * wrong reason and this one would fail, pointing at the mechanism rather
+   * than leaving the slice with a guard nobody has watched go red.
+   */
+  it('loses those same rows if the connection-level foreign_keys=OFF is removed', () => {
+    const { raw, db } = seedAt0014();
+
+    // Deliberately NOT `runMigrations` — that is the whole point. FKs are ON
+    // from `seedAt0014`, and 0017's own in-file `PRAGMA foreign_keys=OFF` is a
+    // no-op because `migrate()` wraps the file in a transaction.
+    migrate(db, { migrationsFolder: MIGRATIONS_FOLDER });
+
+    const count = (table: string): number =>
+      (raw.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
+
+    expect({
+      rules: count('mod_rules'),
+      categories: count('word_categories'),
+      terms: count('word_terms'),
+      allowlist: count('word_allowlist'),
+      exemptions: count('mod_rule_exemptions'),
+    }).toEqual({
+      rules: 0,
+      categories: 0,
+      terms: 0,
+      allowlist: 0,
+      exemptions: 0,
+    });
 
     raw.close();
   });

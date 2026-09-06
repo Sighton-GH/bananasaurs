@@ -13,8 +13,10 @@ import {
 import {
   accountRepo,
   automodFixtureRepo,
+  automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
+  enforcementGateRepo,
   guildRepo,
   jobRepo,
   listBackups,
@@ -27,6 +29,7 @@ import {
   type InstanceScope,
 } from '@bananasaurs/storage';
 import { generateToken, hashToken, POLICY } from '@bananasaurs/http';
+import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
@@ -148,6 +151,21 @@ export const opsPortsFor = (
         detail: result.ok ? '' : result.detail,
       })),
 
+  // ADR 0042 §3's two `doctor` checks (Task 6): the storage layer already
+  // does the guild-scoped join work (`enforcementGateRepo`), so this is a
+  // plain pass-through, the same shape `listUnassignableRoles` above uses.
+  listAutomodRulesEnforcingWithBadCutoverState: () =>
+    enforcementGateRepo.listEnforceRulesWithBadCutoverState(scope).map((row) => ({
+      ruleId: row.ruleId,
+      cutoverState: row.cutoverState,
+    })),
+  listAutomodRulesObservingPastWindowWithBacklog: (nowMs) =>
+    enforcementGateRepo.listObservingRulesPastWindowWithBacklog(scope, nowMs).map((row) => ({
+      ruleId: row.ruleId,
+      observeStartedAt: row.observeStartedAt,
+      unreviewedCount: row.unreviewedCount,
+    })),
+
   listRoutes: () =>
     loggingRepo.listRoutes(scope).map((route) => ({
       eventKind: route.eventKind,
@@ -167,8 +185,18 @@ export const opsPortsFor = (
   // dry-run, since a disabled rule is not going to match anything in
   // production either. Replaying a disabled rule is a repo function this
   // task does not add.
+  //
+  // Narrowed through `toAutomodRule`, not passed through: `runDryRun` builds a
+  // predicate from this, and `ruleFingerprint` hashes the rule object's own
+  // runtime keys. Handing it the repository row hashes ADR 0042's eight
+  // gate columns too, which is harmless here only because a dry run uses a
+  // fresh cache — the same widening the subscriber's wiring already closed, and
+  // not worth leaving open in a second place for a reader to have to re-derive.
   findAutomodRule: (ruleId) =>
-    automodRuleRepo.listEnabledRules(scope).find((r) => r.ruleId === ruleId),
+    automodRuleRepo
+      .listEnabledRules(scope)
+      .map(toAutomodRule)
+      .find((r) => r.ruleId === ruleId),
   listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
   listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
 
@@ -179,6 +207,78 @@ export const opsPortsFor = (
     // command: a command does not get to choose when it happened, the same
     // way it does not get to choose its own audit attribution.
     modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
+
+  // `automod ready` / `automod signoff` (ADR 0042 §3/§4, Task 6). The clock is
+  // this composition root's, not the command's, the same reasoning
+  // `recordMatchVerdict` above gives.
+  setAutomodRuleReady: (ruleId) => automodRuleRepo.setRuleReady(scope, { ruleId, now: now() }),
+  recordAutomodSignOff: (input) =>
+    automodRuleRepo.setEnforceSignOff(scope, { ...input, now: now() }),
+
+  // Plan ruling PR-19 (Task 9): a CLI write path for the two relational
+  // lists Task 6 built with no caller. `findRuleKindAndConfig` replaces a
+  // bare `ruleExists` check (IMPORTANT-7, review of Slices 3+5):
+  // `ruleExists` answers only "does this id name a rule", so a rule id that
+  // exists but is the wrong kind — a `keyword_filter` rule handed to
+  // `invite-allow` — used to write a row nothing will ever read.
+  // `'no-such-rule'` and `'wrong-kind'` are both usage answers, not faults —
+  // the composite foreign key would otherwise surface an opaque `FOREIGN KEY
+  // constraint failed` for the first, and the second is caught here because
+  // nothing else in the write path knows to.
+  addInviteAllowlistEntry: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
+    const before = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+    automodRuleListsRepo.addInviteAllowlistEntry(scope, { ...input, now: now() });
+    const after = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+    return after > before ? 'added' : 'already-present';
+  },
+  listInviteAllowlist: (ruleId) => automodRuleListsRepo.listInviteAllowlist(scope, ruleId),
+  removeInviteAllowlistEntry: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
+    const removed = automodRuleListsRepo.removeInviteAllowlistEntry(
+      scope,
+      input.ruleId,
+      input.code,
+    );
+    return removed ? 'removed' : 'not-present';
+  },
+  // `addLinkDomain`/`removeLinkDomain` return the repository's own
+  // `inserted`/`changes` result rather than a before/after count
+  // (IMPORTANT-1): re-adding a domain under the *other* `listType` is also a
+  // no-op on the same primary key, and only the repository — which just
+  // canonicalised the domain to do the write — can say which `listType` is
+  // actually stored without duplicating that canonicalisation here (the same
+  // drift that let `removeLinkDomain` compare verbatim while `addLinkDomain`
+  // canonicalised, IMPORTANT-2, is what this avoids re-introducing).
+  addLinkDomain: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const result = automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
+    if (result.inserted) return { outcome: 'added', mode };
+    const stored = automodRuleListsRepo
+      .listLinkDomains(scope, input.ruleId)
+      .find((entry) => entry.domain === result.domain);
+    // `stored` is always found in practice — the row that blocked the insert
+    // is the row `listLinkDomains` just re-read — but a fallback to the
+    // operator's requested `listType` keeps this total rather than throwing
+    // on a data race this port cannot otherwise observe.
+    return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
+  },
+  listLinkDomains: (ruleId) => automodRuleListsRepo.listLinkDomains(scope, ruleId),
+  removeLinkDomain: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
+    return { outcome: removed ? 'removed' : 'not-present', mode };
+  },
 
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {
@@ -245,6 +345,30 @@ const enqueued = (result: ReturnType<typeof jobRepo.enqueue>) => ({
   enqueued: result.enqueued,
   jobId: result.jobId,
 });
+
+/**
+ * A `link_domain` rule's configured `mode`, read from its raw `config` JSON
+ * for display only (CRITICAL-2, review of Slices 3+5) — `domain-add` and
+ * `domain-rm` need it to say what an empty active list means, and they have
+ * only the rule id.
+ *
+ * Deliberately tolerant rather than a Zod parse: `ports.ts` may not import
+ * `@bananasaurs/core`'s predicate registry here just to read one field for a
+ * status line (ADR 0014 is about the storage package, not this composition
+ * root, but there is still no reason to couple a display string to the full
+ * schema), and a rule whose config fails real validation already gets its
+ * own report from `compileRule`/`doctor` — this returns `undefined` rather
+ * than throwing, so a malformed config degrades the message instead of the
+ * command.
+ */
+const linkDomainModeOf = (configJson: string): 'allow' | 'deny' | undefined => {
+  try {
+    const parsed = JSON.parse(configJson) as { mode?: unknown };
+    return parsed.mode === 'allow' || parsed.mode === 'deny' ? parsed.mode : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 /**
  * One validated setting change, applied to the column that holds it.

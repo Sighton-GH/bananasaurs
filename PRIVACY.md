@@ -32,7 +32,7 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 
 - Moderation records — warnings, notes, timeouts, kicks, bans — including who acted, on whom, why, and when
 - Automod matches and the action taken
-- Messages an automod rule matched while it was being tested, kept as examples so a human can check whether the rule was right
+- Messages an automod rule matched while it was being tested, kept as examples so a human can check whether the rule was right — including the name, type and size of any files attached to them
 - Role changes made by the bot, such as reaction-role assignments
 - Join and leave events
 - Commands run against the bot, and the answers it gave

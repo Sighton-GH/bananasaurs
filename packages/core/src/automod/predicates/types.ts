@@ -33,6 +33,13 @@ export const isRuleKind = (value: string): value is RuleKind =>
  * relational data in a type every predicate has to satisfy. `terms` and
  * `allowlist` are empty for every other kind (ADR 0040's split: scalar config
  * in JSON, list-shaped data in tables).
+ *
+ * `inviteAllowlist` and `linkDomains` are the same split applied to `invite`
+ * and `link_domain` (ADR 0040 §3): each a relational list rather than JSON in
+ * `config`, because the label/`listType` is per-item metadata and Slice 9's
+ * one-click suppression for both predicates is a row edit. Empty for every
+ * other kind. Mirrors storage's `StoredAutomodRule` field for field;
+ * re-declared here rather than imported, per ADR 0014.
  */
 export interface AutomodRule {
   readonly ruleId: string;
@@ -42,6 +49,23 @@ export interface AutomodRule {
   readonly config: string;
   readonly terms: readonly { text: string; categoryId: string }[];
   readonly allowlist: readonly string[];
+  readonly inviteAllowlist: readonly { code: string; label: string }[];
+  readonly linkDomains: readonly { domain: string; listType: 'allow' | 'deny' }[];
+  /**
+   * ADR 0042 §2: a property of the rule, not an inference from `mode`. The
+   * subscriber passes this straight to `openOrResolveCase` on the enforce
+   * path instead of hard-coding `true` — a rule that only deletes (`caps`,
+   * held to the 5% false-positive bar rather than the zero bar a
+   * counter-feeding rule must clear) says so here. Mirrors storage's
+   * `StoredAutomodRule.countsAsViolation` field for field; re-declared here
+   * rather than imported, per ADR 0014 (storage/core boundary).
+   *
+   * Deliberately **not** in `fingerprint.ts`'s `EXCLUDED_FIELDS`: the digest
+   * is exclusion-based precisely so a field added later is hashed by
+   * default, and this one changes matcher recompilation cost (one spurious
+   * recompile) only, never correctness — the safe default is to hash it.
+   */
+  readonly countsAsViolation: boolean;
 }
 
 /**
@@ -147,6 +171,21 @@ export interface FixtureRecord {
   readonly source: 'observed' | 'handwritten';
   /** The replay clock. `PredicateInput.atMs` comes from here (ADR 0041 §6). */
   readonly createdAt: number;
+  /**
+   * Filename, declared content type and size for each file on the message
+   * (OD-3).
+   *
+   * `MessageAttachment` is the same shape the live path carries, deliberately:
+   * `attachment_type` must not be able to tell a replayed fixture from a live
+   * message, because the one-code-path invariant (ADR 0041 section 3) is only
+   * worth something if the input it produces is the same on both sides.
+   *
+   * Empty for a handwritten fixture that names no files, and for every
+   * fixture captured before the OD-3 migration — those rows are real evidence
+   * about a message whose attachments were never recorded, and an empty list
+   * is the honest representation of that.
+   */
+  readonly attachments: readonly MessageAttachment[];
 }
 
 /** A rule compiled once, then evaluated against many messages. */

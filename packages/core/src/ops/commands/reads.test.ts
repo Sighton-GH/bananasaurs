@@ -419,6 +419,8 @@ describe('bananasaurs doctor', () => {
     listUnassignableRoles: () => [],
     listKeywordFilterRulesMissingManageMessages: () => [],
     listUnusableAutomodRules: () => [],
+    listAutomodRulesEnforcingWithBadCutoverState: () => [],
+    listAutomodRulesObservingPastWindowWithBacklog: () => [],
   };
 
   it('reports ok when the gateway half is ok and nothing is stale', async () => {
@@ -505,10 +507,25 @@ describe('bananasaurs doctor', () => {
   });
 
   it('reports a rule whose config cannot be compiled, and fails the check', async () => {
+    // This drives a fake `OpsPorts.listUnusableAutomodRules` directly (its
+    // `kind` field is a plain `string`, `ports.ts`'s
+    // `OpsUnusableAutomodRule`), so the value never reaches the real
+    // predicate registry — this test exercises `doctor`'s rendering of a
+    // `no-predicate` row, not the registry's own classification of one. The
+    // kind used to be a real-but-unshipped RuleKind ('caps', then
+    // 'mention_spam', then 'rapid_spam') and was repointed three times as each
+    // shipped, even though nothing here required a real kind at all.
+    // 'unshipped_example' is deliberately not a `RuleKind`, so it can never be
+    // invalidated by a future predicate shipping (obligation 3, Task 5a).
     const res = await drive(doctorCommand, {
       ...healthy,
       listUnusableAutomodRules: () => [
-        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+        {
+          ruleId: 'shouting',
+          kind: 'unshipped_example',
+          reason: 'no-predicate',
+          detail: 'unshipped_example',
+        },
       ],
     });
     expect(res.ok).toBe(true);
@@ -519,7 +536,12 @@ describe('bananasaurs doctor', () => {
     expect(res.data).toMatchObject({
       ok: false,
       unusableAutomodRules: [
-        { ruleId: 'shouting', kind: 'caps', reason: 'no-predicate', detail: 'caps' },
+        {
+          ruleId: 'shouting',
+          kind: 'unshipped_example',
+          reason: 'no-predicate',
+          detail: 'unshipped_example',
+        },
       ],
     });
   });
@@ -532,6 +554,80 @@ describe('bananasaurs doctor', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('every enabled automod rule compiles');
+  });
+
+  it('flags a rule enforcing with a cutover_state that does not permit it', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listAutomodRulesEnforcingWithBadCutoverState: () => [
+        { ruleId: 'hand-edited', cutoverState: 'observing' },
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('hand-edited');
+    expect(res.text).toContain('cutover_state=observing');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({
+      ok: false,
+      automodEnforceModeBadCutoverState: [{ ruleId: 'hand-edited', cutoverState: 'observing' }],
+    });
+  });
+
+  it('reports clean when every enforcing rule is in a cutover_state that permits it', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listAutomodRulesEnforcingWithBadCutoverState: () => [],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('every enforcing rule is in a cutover_state that permits it');
+  });
+
+  it('flags an observing rule past its window with an unreviewed backlog', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listAutomodRulesObservingPastWindowWithBacklog: () => [
+        {
+          ruleId: 'overdue-rule',
+          observeStartedAt: NOW - 20 * 24 * 60 * 60 * 1000,
+          unreviewedCount: 3,
+        },
+      ],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('overdue-rule');
+    expect(res.text).toContain('3 unreviewed match(es)');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({
+      ok: false,
+      automodObservePastWindowWithBacklog: [{ ruleId: 'overdue-rule', unreviewedCount: 3 }],
+    });
+  });
+
+  it('passes ctx.now() through to the observe-window-backlog port', async () => {
+    const seen: unknown[] = [];
+    await drive(doctorCommand, {
+      ...healthy,
+      listAutomodRulesObservingPastWindowWithBacklog: (nowMs) => {
+        seen.push(nowMs);
+        return [];
+      },
+    });
+    expect(seen).toEqual([NOW]);
+  });
+
+  it('reports clean when no observing rule is both overdue and backlogged', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listAutomodRulesObservingPastWindowWithBacklog: () => [],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain(
+      'no observing rule is both past its window and carrying an unreviewed backlog',
+    );
   });
 
   it('survives a doctor report that could not be built', async () => {
