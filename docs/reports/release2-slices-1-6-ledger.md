@@ -48,7 +48,7 @@ per-slice execution log, and the findings worth carrying forward.
 | 2 — fixtures, dry-run evaluator, traces, CLI review | 0041 ✅ | [plan](superpowers/plans/2026-09-02-slice-2-fixtures-dry-run-and-traces.md) | **✅ complete** — 9 tasks, whole-branch reviewed (SHIP-WITH-FIXES), fix wave re-reviewed, residual re-review finding fixed. 2148 tests (from 2026), typecheck + lint clean |
 | 3 + 5 — the six stateless predicates, executed as one unit | — (spec §9 names none) | [plan](superpowers/plans/2026-09-02-slices-3-5-stateless-predicates.md) | **✅ complete** — 9 tasks in 5 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES), two fix waves, re-review's two residuals fixed. 2267 tests (from 2148), typecheck + lint clean |
 | 4 — window tier (`mention_spam`, `rapid_spam`, `duplicate_message`) | — (spec §9 names none) | [plan](superpowers/plans/2026-09-03-slice-4-window-tier.md) | **✅ complete** — 5 tasks in 3 dispatches, plan reviewed before any code, whole-branch reviewed (SHIP-WITH-FIXES: 3 CRITICAL), fix wave, re-review found a new CRITICAL in the fix, fixed. 2312 tests (from 2267), all gates green by exit code |
-| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendment 1) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **in progress** — plan reviewed (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Tasks 1-5 done: nine columns in three migrations with a rebuild-survival negative control that goes red; the enforcement gate, with a fix wave for a sign-off that cleared the evidence and three missing PR-27 transitions; `countsAsViolation` to the subscriber and `automod_testing_mode` as a third lever kept structurally out of the moderation path. 2345 tests (from 2312), all gates green by exit code. All six tasks done: `doctor`'s two checks plus `automod ready`/`automod signoff`, with a follow-up for an observe-window check that reported disabled rules forever. 2380 tests (from 2312), all gates green by exit code. Whole-branch review in flight |
+| 6 — cutover tracking, observe gating, automod testing mode | 0042 ✅ (+ Amendments 1, 2) | [plan](superpowers/plans/2026-09-04-slice-6-release-gate.md) | **✅ complete** — 6 tasks in 4 dispatches, plan reviewed before any code (EXECUTE-WITH-FIXES, 3 blocking, all fixed). Whole-branch reviewed, not lean (SHIP-WITH-FIXES: 2 CRITICAL, 5 IMPORTANT), one fix wave, re-review returned SHIP and raised four more — three of them defects in the fix wave itself — all fixed. 2388 tests (from 2312), all gates green by exit code |
 
 ## Owner decisions taken during this run
 
@@ -1311,6 +1311,129 @@ against migrations containing no rebuild. The CHECKs were declared in
 `schema.ts` and materialised in no migration, so the test asserted survival of
 an event that had not happened, and its comment stated as fact that 0015/0016
 rebuilt two tables. **Running total: seventeen.**
+
+## Slice 6 closed (2026-09-06)
+
+Six tasks in four dispatches, plan reviewed before any code was written, whole
+branch reviewed **not lean** (this slice decides when the bot may start deleting
+real people's messages), one fix wave, then a re-review that returned SHIP and
+found four more things — three of them defects in the fix wave itself.
+
+**2388 tests across 114 files**, up from 2312 at slice start. typecheck, lint
+and test each run alone and read by exit code, on a clean tree, at every commit.
+
+### What the whole-branch review caught that the gates could not
+
+**A delete-only rule could time out or kick a member.** `countsAsViolation:
+false` stopped the member's counter advancing, but the subscriber still *read*
+that counter and escalated on it — so a rule matching someone already on a tier
+earned by *other* rules timed them out, and again on every subsequent match,
+because the dedupe key includes `messageId`. The reason this is a correctness bug
+and not a policy choice: ADR 0042 §4 holds a delete-only rule to a 5%
+false-positive rate instead of zero **because removing the message is its only
+consequence**. One wrong match in twenty is a tolerable price for a deletion and
+plainly not for a timeout, so the looser tier had been granted against a promise
+the code did not keep.
+
+The existing test missed it by leaving the harness at `tier: { action: undefined
+}` — never entering the escalation branch the test was named after. **Decorative
+guards found in Slice 6: two** (this, and Task 1's recovered rebuild-survival
+test). **Running total: eighteen.**
+
+**`automod signoff` called an empty corpus a clean pass.** Its three conditions
+are all *absences* — nothing failed to compile, nothing threw, nothing was a
+false positive — and an empty or wholly-unlabelled corpus satisfies every one
+vacuously. Since the sign-off is the only thing that clears the low-volume floor,
+a rule could go `observing` → `ready` → signoff → `enforce` having been judged
+against nothing at all, and be told the corpus pass was clean.
+
+`DryRunFixtureResult.agreement`'s own comment had already named this failure —
+"counting an unlabelled non-match as a success would make every rule look
+perfect on the day it shipped" — and `automod dryrun` refuses to print a rate for
+an unlabelled corpus for exactly that reason. **The human-facing guard existed
+and the machine-facing one did not**, which is the sharpest instance of ADR
+0039's shape this run has produced: the knowledge was in the codebase, in
+writing, next to the code that needed it.
+
+### What the re-review caught, and why it matters more than its severity
+
+Three of its four findings were defects in the fix wave — my own work, one
+review round old. Worth stating plainly, because the lesson is about the shape of
+fixes rather than about any one bug:
+
+- **`agreed === 0` had two causes and the refusal reported only one.** A corpus
+  that *is* labelled but which the rule disagrees with everywhere got told
+  "nothing is labelled either — label some fixtures first". False twice, and it
+  sends an operator to redo work already done. `clean` stays true while that
+  holds, because a missed `should_match` fixture is a false negative, not a false
+  positive.
+- **The sign-off recorded no measure of the evidence behind it.** The bar it
+  clears is one agreeing fixture, deliberately — so *how much* evidence stood
+  behind it is the thing a later reader most needs, and one backed by a single
+  label was indistinguishable from one backed by five hundred fixtures.
+- **A comment claimed more than the code did.** Moving
+  `makeRuleEnforceableForTest` into `test-support` was described as putting it
+  "physically out of production's reach". It was not: the subpath is published
+  and compiles to `dist/`, so production could still import it — one line
+  different from the original hole. The claim is now *true* rather than softened,
+  via a `no-restricted-imports` pattern banning every `test-support` path outside
+  `*.test.ts`, watched firing on a real production file before the comment was
+  rewritten to cite it.
+
+**A fix is a change, and gets the same scrutiny as the code it replaces.** Two
+of the three above are a fix that overstated its own reach, and the third is a
+refusal message that misdirects — none of them the sort of thing a test suite
+notices. This is the second slice in a row where the re-review earned its place;
+Slice 4's found a new CRITICAL inside a fix.
+
+### One thing the re-review verified rather than assumed, and it mattered
+
+The rollback fix writes `null` to clear a sign-off and leaves `undefined` for
+"don't touch". Had drizzle treated `undefined` as "write NULL", the fix would
+have silently cleared sign-offs on **every** unrelated mode change — worse than
+the bug it fixed. Verified three ways against `node_modules`: `drizzle-orm`
+0.45.2's `mapUpdateSet` (`utils.js`) drops `undefined` entries, `buildUpdateSet`
+(`sqlite-core/dialect.js`) emits only defined columns, and `sql.js` binds a
+`null`-valued `Param` as SQL NULL — then probed on a real migrated database, and
+confirmed by mutating `null` back to `undefined` and watching the new test fail.
+**That is what a brief asking for a specific verification buys**, and it is worth
+repeating on the next fix that turns on a library's treatment of absence.
+
+### The reachability question, and the correction to how it was first framed
+
+Nothing in Release 2 writes `cutover_state = 'observing'` or
+`automod_testing_mode`. `setRuleMode` still has no production caller and there is
+no `automod mode` command, so `automod ready` cannot succeed and `doctor`'s
+observe-window check cannot fire from the CLI today.
+
+**This was initially recorded as an open question for the owner. That was
+wrong — the spec already assigns it.** Slice 11 ("cutover, one rule at a time,
+atomic") says `cutover_state` moves `observing` → `ready` → `cutover` "under
+owner decision, not a timer", and Slice 8's cutover board displays those states.
+So the state machine being undriveable today is by design, and Slice 11 is where
+it becomes driveable. Adding a command now would be building ahead of the
+current release (CLAUDE.md, "Current release scope").
+
+The re-review's judgement on shipping this way is worth keeping: with no
+production caller for `setRuleMode`, **nothing can reach `mode = 'enforce'` at
+all this release**, which is the safest state available — provided the handoff
+says plainly that a cutover cannot be *completed* from the CLI. It does.
+
+### Deferred, with reasons
+
+- **No `doctor` check for hand-edited thresholds.** `min_reviewed_matches = 0`
+  bypasses the evidence requirement entirely, through the deliberate
+  `reviewed === 0` early return. `doctor` reports a hand-edited `cutover_state`
+  but not a hand-edited threshold. Low stakes while the CLI has no writer for
+  either; worth a check when Slice 8 gives the dashboard one.
+- **No two-guild test on the gate.** Guild scope was verified by reading every
+  new query, and the schema-level invariant test covers the partition key, but
+  the gate has no test that seeds two guilds and proves one cannot see the
+  other's evidence. Every other repository in this project has one.
+- **No minimum on how much evidence a sign-off requires.** The bar is one
+  agreeing fixture — the weakest non-vacuous bar. Setting a real number is a
+  policy decision for whoever has watched a real observe window (ADR 0042
+  Amendment 2 records this explicitly).
 
 ## A pattern worth adding to `docs/22`
 
