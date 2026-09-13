@@ -3,7 +3,13 @@ import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Route, Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
-import { modeScopeSentence, type DryRunReport, type RuleDetail } from '../api/automod.js';
+import {
+  modeScopeSentence,
+  type CutoverState,
+  type DryRunReport,
+  type ModeRequest,
+  type RuleDetail,
+} from '../api/automod.js';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { AutomodRulePage } from './automod-rule.js';
 
@@ -315,7 +321,7 @@ describe('AutomodRulePage', () => {
     ['observing', { mode: 'observe' }, 'stays observing'],
     ['observing', { enabled: false }, 'Disables the rule'],
     ['observing', { enabled: true }, 'Enables the rule in its current mode'],
-  ])(
+  ] as Array<[CutoverState, ModeRequest, string]>)(
     'modeScopeSentence for %s with %j mentions "%s"',
     (cutoverState, request, substring) => {
       const sentence = modeScopeSentence(
@@ -323,7 +329,7 @@ describe('AutomodRulePage', () => {
         request,
         NOW,
       );
-      expect(sentence).toContain(substring as string);
+      expect(sentence).toContain(substring);
     },
   );
 
@@ -341,17 +347,19 @@ describe('AutomodRulePage', () => {
     stubFetch([
       {
         url: '/api/automod/rules/kw-one',
-        body: detail({ eligibility: { ok: false, refusal: { reason: 'cutover-state', state: 'observing' } } }),
+        body: detail({
+          eligibility: { ok: false, refusal: { reason: 'cutover-state', state: 'observing' } },
+        }),
       },
     ]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    expect((screen.getByLabelText('enforce') as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByLabelText('enforce')).toHaveProperty('disabled', true);
     cleanup();
     vi.unstubAllGlobals();
     stubFetch([{ url: '/api/automod/rules/kw-one', body: detail({ eligibility: { ok: true } }) }]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    expect((screen.getByLabelText('enforce') as HTMLInputElement).disabled).toBe(false);
+    expect(screen.getByLabelText('enforce')).toHaveProperty('disabled', false);
   });
 });

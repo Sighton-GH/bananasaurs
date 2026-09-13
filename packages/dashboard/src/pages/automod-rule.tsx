@@ -133,7 +133,11 @@ function RuleDetailView({
     const config = JSON.parse(configText) as unknown;
     setConfigBusy(true);
     try {
-      const result = await session.writeOrThrow<{ ok: boolean }>(`${ruleUrl}/config`, { config }, 'PUT');
+      const result = await session.writeOrThrow<{ ok: boolean }>(
+        `${ruleUrl}/config`,
+        { config },
+        'PUT',
+      );
       if (result === undefined) return;
       toast({ tone: 'ok', title: 'Configuration saved' });
       setConfigOpen(false);

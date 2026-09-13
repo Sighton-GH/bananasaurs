@@ -87,11 +87,7 @@ function SessionInner({
         toast({ tone: 'hold', title: 'This instance is read-only', message: err.message });
         return true;
       }
-      if (
-        err instanceof ApiError &&
-        err.status === 401 &&
-        err.body.error === 'reauth-required'
-      ) {
+      if (err instanceof ApiError && err.status === 401 && err.body.error === 'reauth-required') {
         toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
         return true;
       }
@@ -107,11 +103,7 @@ function SessionInner({
         });
         return true;
       }
-      if (
-        err instanceof ApiError &&
-        err.status === 401 &&
-        err.body.error === 'unauthenticated'
-      ) {
+      if (err instanceof ApiError && err.status === 401 && err.body.error === 'unauthenticated') {
         toast({
           tone: 'danger',
           title: 'Signed out',

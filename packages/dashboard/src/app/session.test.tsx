@@ -240,9 +240,7 @@ describe('SessionProvider', () => {
   });
 
   it('writeOrThrow rethrows a 409 so the caller can render it', async () => {
-    stubFetch([
-      { method: 'POST', url: '/api/killswitch', status: 409, body: { error: 'exists' } },
-    ]);
+    stubFetch([{ method: 'POST', url: '/api/killswitch', status: 409, body: { error: 'exists' } }]);
     const onSettled = vi.fn();
     renderWithSession(<ThrowProbe onSettled={onSettled} />);
     await act(async () => {

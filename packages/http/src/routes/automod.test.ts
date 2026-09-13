@@ -4,7 +4,13 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, automodAdminRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  authzRepo,
+  automodAdminRepo,
+  effectRepo,
+  guildRepo,
+} from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';

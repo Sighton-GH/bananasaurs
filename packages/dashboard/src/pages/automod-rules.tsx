@@ -76,11 +76,7 @@ export function AutomodRulesPage() {
       setConfigText('{}');
       rules.reload();
     } catch (err) {
-      if (
-        err instanceof ApiError &&
-        err.status === 400 &&
-        err.body.error === 'invalid-config'
-      ) {
+      if (err instanceof ApiError && err.status === 400 && err.body.error === 'invalid-config') {
         const detail = (err.body as { detail?: unknown }).detail;
         setConfigError(
           typeof detail === 'string' ? detail : 'The configuration is invalid for this kind.',

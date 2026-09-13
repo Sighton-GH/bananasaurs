@@ -123,7 +123,11 @@ export interface ModeRequest {
  * never moves it. When both are requested, a second sentence covers `enabled`.
  */
 export const modeScopeSentence = (
-  current: { readonly cutoverState: CutoverState; readonly mode: RuleMode; readonly enabled: boolean },
+  current: {
+    readonly cutoverState: CutoverState;
+    readonly mode: RuleMode;
+    readonly enabled: boolean;
+  },
   request: ModeRequest,
   now: number,
 ): string => {
