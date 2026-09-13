@@ -10,5 +10,10 @@
     "types": []
   },
   "include": ["src/**/*.ts", "src/**/*.tsx"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test.tsx"]
+  // Only `*.test.ts` is excluded: `tsconfig.all.json` covers it (node
+  // program). `*.test.tsx` needs this project's DOM lib and `jsx` to
+  // type-check, and eslint's `parserOptions.project` resolves each file
+  // against whichever project includes it — excluded-from-both meant the
+  // component tests failed lint with a project-resolution parse error.
+  "exclude": ["src/**/*.test.ts"]
 }
