@@ -209,8 +209,29 @@ describe('automod admin repo', () => {
     });
 
     // rule-b has an event but no verdict, so it has no key at all.
+    // The other guild reuses eventId e1: the join is on (guildId, eventId),
+    // so its verdict must attribute to its own rule, not leak into this guild.
+    const scopeB = t.scopes.forGuild(GUILD_B);
+    const { caseId: caseB } = openOrResolveCase(scopeB, { memberId: MEMBER_1, now: 1000 });
+    recordCaseEvent(scopeB, {
+      eventId: 'e1',
+      caseId: caseB,
+      ruleId: 'rule-b-other',
+      memberId: MEMBER_1,
+      at: 1000,
+      matchedCategory: 'c',
+      matchedSnippet: 's',
+      actionTaken: 'would_delete',
+    });
+    recordVerdict(scopeB, {
+      eventId: 'e1',
+      verdict: 'true_positive',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 2000,
+    });
+
     expect(countReviewedByRule(scopeA)).toEqual({ 'rule-a': 2 });
-    expect(countReviewedByRule(t.scopes.forGuild(GUILD_B))).toEqual({});
+    expect(countReviewedByRule(scopeB)).toEqual({ 'rule-b-other': 1 });
   });
 
   it('listRecentCases orders newest openedAt first and honours limit; findCase is guild-scoped', () => {
