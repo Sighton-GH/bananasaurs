@@ -43,6 +43,9 @@ describe('Shell', () => {
     ['/logging', 'Logging'],
     ['/panels', 'Role panels'],
     ['/audit', 'Audit'],
+    ['/automod', 'Automod'],
+    ['/cases', 'Cases'],
+    ['/cutover', 'Cutover'],
   ])('renders the %s page titled %s and marks its rail entry current', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
