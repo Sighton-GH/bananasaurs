@@ -298,3 +298,29 @@ validation all traced clean. What the seven task reviews missed:
   (the PR-47 proof the route test cannot give, because test-support's twin is
   canned); the 409 test compares whole rows; the audit tests parse
   `before`/`after`.
+
+### Fix wave and close-out
+
+Fix wave 1 (muse-spark-1.3, 10m11s, eight commits `6b30310..a6d1ec1`, 199
+tests in the covering files); the coordinator watched the I-1 guard fail
+(one line of the `enabled`-with-`observe` sentence removed → the `it.each`
+row went red) and restored it. Scoped re-review: ALL ADDRESSED, and both
+deliberate checks answered with quoted branch order — `writeOrThrow` rethrows
+only 400/409, `ReadonlyError` (a 503 `ApiError` subclass) lands in the shared
+handler, and the dialogs left open after a handled failure are not a strand
+(`busy` resets in `finally`; the expired-session path unmounts the shell).
+
+Merged `7877ada` into `worktree-release2-slices-7-12`. **Gates on `7877ada`,
+each run alone, read by exit code: typecheck 0, lint 0, test 0 — 2,548 tests
+across 134 files** (2,439 → 2,548). Built and screenshotted the rule detail
+page and the cutover board with stubbed data.
+
+**Carried forward to Slice 9:** the Lists section's note reads "Slice 9's
+review screen adds allowlist terms" — a plan reference in product copy, the
+coordinator's own wording in the plan; reword when the screen exists. Task
+7's four Minors (a duplicate `wouter` import, `statusBadge` duplicated
+between `cases.tsx` and `member.tsx`, an unused `ModCase` re-export, an
+unrendered `fixtureId`) and Task 3's extra `OpsSafetyState` export are
+cosmetic and can ride along with Slice 9's first dashboard task. Path-param
+validation runs before the auth guard on the new routes; the review judged
+it leaks only the caller's own input shape — left as is.
