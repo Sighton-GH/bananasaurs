@@ -110,6 +110,58 @@ export const OBSERVE_FLOOR_DAYS = 14;
 
 const DAY_MS = 86_400_000;
 
+export interface ModeRequest {
+  readonly mode?: RuleMode;
+  readonly enabled?: boolean;
+}
+
+/**
+ * The `ConfirmDialog` scope for a mode change, computed client-side from the
+ * current cutover state and the request (PR-48). The sentence is chosen by
+ * `mode` when one is requested, and by `enabled` only when no `mode` is —
+ * the server's precedence: `mode` drives the state machine, `enabled` alone
+ * never moves it. When both are requested, a second sentence covers `enabled`.
+ */
+export const modeScopeSentence = (
+  current: { readonly cutoverState: CutoverState; readonly mode: RuleMode; readonly enabled: boolean },
+  request: ModeRequest,
+  now: number,
+): string => {
+  let base: string;
+  if (request.mode === 'enforce') {
+    base =
+      'Enforces this rule for real. Its cutover state becomes cutover and the bot starts acting on matches.';
+  } else if (
+    request.mode === 'observe' &&
+    (current.cutoverState === 'not_started' || current.cutoverState === 'rolled_back')
+  ) {
+    const elapses = new Date(now + OBSERVE_FLOOR_DAYS * DAY_MS).toLocaleDateString();
+    base = `Starts this rule's observe window now. The two-week floor elapses on ${elapses}.`;
+  } else if (request.mode === 'test' && current.cutoverState === 'observing') {
+    base =
+      'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its cutover state stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.';
+  } else if (request.mode !== undefined && current.cutoverState === 'cutover') {
+    base =
+      'Rolls this rule back from enforcement and withdraws its sign-off; it must observe again before it can enforce.';
+  } else if (request.mode !== undefined) {
+    base = `Changes mode from ${current.mode} to ${request.mode}; cutover state stays ${current.cutoverState}.`;
+  } else if (request.enabled === false) {
+    return 'Disables the rule. Its cutover state and clock are unchanged.';
+  } else {
+    return `Enables the rule in its current mode, ${current.mode}.`;
+  }
+  if (request.enabled === false) {
+    if (request.mode === 'observe') {
+      return `${base} It also disables the rule, so the observe window will run with the rule matching nothing — the window's evidence will be empty.`;
+    }
+    return `${base} It also disables the rule, so nothing will match while it is disabled.`;
+  }
+  if (request.enabled === true) {
+    return `${base} It also enables the rule.`;
+  }
+  return base;
+};
+
 /** Whole days since the observe clock started, or `null` when it never did. */
 export const daysObserved = (observeStartedAt: number | null, now: number): number | null =>
   observeStartedAt === null ? null : Math.floor((now - observeStartedAt) / DAY_MS);

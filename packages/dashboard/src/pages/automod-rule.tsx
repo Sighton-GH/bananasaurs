@@ -2,10 +2,10 @@ import { useCallback, useState } from 'react';
 import { useParams } from 'wouter';
 import { ApiError } from '../api.js';
 import {
-  OBSERVE_FLOOR_DAYS,
   daysObserved,
-  type CutoverState,
+  modeScopeSentence,
   type DryRunReport,
+  type ModeRequest,
   type RuleDetail,
   type RuleMode,
 } from '../api/automod.js';
@@ -18,8 +18,6 @@ import { DataTable } from '../ui/DataTable.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
-
-const DAY_MS = 86_400_000;
 
 type Refusal = { readonly reason: string; readonly [k: string]: unknown };
 
@@ -40,45 +38,6 @@ const refusalSentence = (refusal: Refusal): string => {
 
 const eligibilitySentence = (eligibility: RuleDetail['eligibility']): string =>
   eligibility.ok ? 'Enforcement is offerable.' : refusalSentence(eligibility.refusal);
-
-/**
- * The `ConfirmDialog` scope for a mode change, computed client-side from the
- * current cutover state and the request (PR-48). The sentence is chosen by
- * `mode` when one is requested, and by `enabled` only when no `mode` is —
- * the server's precedence: `mode` drives the state machine, `enabled` alone
- * never moves it.
- */
-const modeScopeSentence = (input: {
-  readonly currentMode: RuleMode;
-  readonly cutoverState: CutoverState;
-  readonly requestedMode: RuleMode | undefined;
-  readonly requestedEnabled: boolean | undefined;
-  readonly now: number;
-}): string => {
-  if (input.requestedMode === 'enforce') {
-    return 'Enforces this rule for real. Its cutover state becomes cutover and the bot starts acting on matches.';
-  }
-  if (
-    input.requestedMode === 'observe' &&
-    (input.cutoverState === 'not_started' || input.cutoverState === 'rolled_back')
-  ) {
-    const elapses = new Date(input.now + OBSERVE_FLOOR_DAYS * DAY_MS).toLocaleDateString();
-    return `Starts this rule's observe window now. The two-week floor elapses on ${elapses}.`;
-  }
-  if (input.requestedMode === 'test' && input.cutoverState === 'observing') {
-    return 'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its cutover state stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.';
-  }
-  if (input.requestedMode !== undefined && input.cutoverState === 'cutover') {
-    return 'Rolls this rule back from enforcement and withdraws its sign-off; it must observe again before it can enforce.';
-  }
-  if (input.requestedMode !== undefined) {
-    return `Changes mode from ${input.currentMode} to ${input.requestedMode}; cutover state stays ${input.cutoverState}.`;
-  }
-  if (input.requestedEnabled === false) {
-    return 'Disables the rule. Its cutover state and clock are unchanged.';
-  }
-  return `Enables the rule in its current mode, ${input.currentMode}.`;
-};
 
 const signoffText = (detail: RuleDetail): string =>
   detail.enforceSignedOffBy !== null && detail.enforceSignedOffAt !== null
@@ -118,13 +77,11 @@ function RuleDetailView({
   const [modeBusy, setModeBusy] = useState(false);
   const modeChanged = modeSel !== detail.mode;
   const enabledChanged = enabledSel !== detail.enabled;
-  const scopeSentence = modeScopeSentence({
-    currentMode: detail.mode,
-    cutoverState: detail.cutoverState,
-    requestedMode: modeChanged ? modeSel : undefined,
-    requestedEnabled: enabledChanged ? enabledSel : undefined,
-    now: Date.now(),
-  });
+  const request: ModeRequest = {
+    ...(modeChanged ? { mode: modeSel } : {}),
+    ...(enabledChanged ? { enabled: enabledSel } : {}),
+  };
+  const scopeSentence = modeScopeSentence(detail, request, Date.now());
 
   const applyMode = async () => {
     const body: { mode?: RuleMode; enabled?: boolean } = {
