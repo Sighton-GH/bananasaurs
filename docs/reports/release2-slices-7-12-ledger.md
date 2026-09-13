@@ -168,3 +168,50 @@ describes.
 second concurrent write); a first producer for `DataState`'s `degraded`
 state; the `NavEntry.area` grouping once two entries share a `docs/06` area
 (PR-39).
+
+---
+
+## Slice 8 — the Release 2 pages
+
+No ADR named (spec §9). Plan
+`docs/superpowers/plans/2026-09-12-slice-8-release-2-pages.md`. The design
+choices the spec leaves open, recorded before the first dispatch:
+
+- **PR-44 — no new capability.** Rule reads use `config.read`, rule writes
+  `config.write`, case reads `audit.read`. A new capability name would not
+  reach the existing owner account without a migration (bootstrap granted the
+  list as it stood on 2026-08-30), and a dashboard whose owner cannot open its
+  new pages is worse than a coarser capability. Cost if wrong: a later
+  migration to split `automod.manage` out of `config.write`.
+- **PR-45 — re-auth on rule creation and mode changes only.** Both change
+  what the bot does to real messages; a config edit or an exemption does not
+  start or stop anything. Cost if wrong: a fresh-password prompt added to two
+  more routes.
+- **PR-46 — the admin queries live in a new module,
+  `automod-admin.ts`**, not in `automod-rules.ts`, which owns the state
+  machine and the subscriber's hot path while the observe window runs. The
+  one exception is `findRuleIncludingDisabled`, added beside
+  `listEnabledRules` because it needs that module's private `hydrate`.
+  Cost if wrong: one file to fold back.
+- **PR-47 — the dashboard may dry-run a disabled rule.** The edit → dry-run →
+  enable workflow needs it; the CLI's enabled-only `findAutomodRule` and its
+  reasoning are unchanged. Cost if wrong: none — a dry run writes nothing.
+- **PR-48 — the mode dialog states the state machine's consequence, and
+  restricts nothing the server permits.** `enforce` is disabled client-side
+  only when `enforcementEligibility` says so, mirroring the server; every
+  other transition is allowed with its effect named in full sentences before
+  confirmation, including the one that leaves an observe clock running on a
+  rule that has stopped observing. The server is the gate; the dialog is the
+  scope statement `docs/06` requires. Cost if wrong: an operator who reads
+  the sentence and clicks anyway — which is the owner's call.
+- **PR-49 — a native `<select>` for the rule kind.** Eleven options on a
+  create form one person uses; the Radix Select is reserved for Slice 9's
+  per-row verdict control where keyboard operation inside a table matters.
+- **PR-50 — rule configuration is edited as JSON, validated server-side by
+  the kind's Zod schema.** Ten per-kind forms is a slice on its own; a
+  textarea with the schema's issues rendered under it is honest for "one
+  technically capable owner" (`docs/06`) and keeps one validator (rule 3).
+  Cost if wrong: per-kind forms later, over the same route.
+- **Rule creation is in scope**, per `STATE.md` ("the creation surface
+  arrives with the dashboard (Slice 8)") — the nine kinds from Slices 1–5
+  have no production caller until it exists.
