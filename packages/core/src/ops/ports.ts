@@ -808,11 +808,23 @@ export interface OpsPorts {
   archiveStatus(): readonly OpsArchiveChannelStatus[];
   /** Marks one archived message preserved (the indefinite retention tier). */
   archivePreserve(messageId: string): 'preserved' | 'no-such-message' | 'already-preserved';
-  /** Links one archived message to an open moderation case (the `case` tier). */
+  /**
+   * Links one archived message to an open moderation case (the `case` tier).
+   *
+   * `'preserved'` is its own arm, not folded into `'already-linked'`: a
+   * preserved message is linked to no case at all, and the audit trail must
+   * say so rather than claim a link that does not exist.
+   */
   archiveLinkCase(input: {
     readonly messageId: string;
     readonly caseId: string;
-  }): 'linked' | 'no-such-message' | 'no-such-case' | 'case-closed' | 'already-linked';
+  }):
+    | 'linked'
+    | 'no-such-message'
+    | 'no-such-case'
+    | 'case-closed'
+    | 'already-linked'
+    | 'preserved';
   /** Queues one `archive_backfill` job for the channel (dedupe-collapsed). */
   enqueueArchiveBackfill(channelId: string): void;
   /**

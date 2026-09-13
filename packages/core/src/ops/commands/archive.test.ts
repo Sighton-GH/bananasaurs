@@ -338,20 +338,44 @@ describe('archive link-case', () => {
     ]);
   });
 
-  it.each([['no-such-message'], ['no-such-case'], ['case-closed'], ['already-linked']] as const)(
-    'reports %s as a usage answer',
-    async (reason) => {
-      const res = await driveWrite(
-        archiveLinkCaseCommand,
-        {
-          archiveLinkCase: () => reason,
-          recordAudit: () => {},
+  it.each(
+    [['no-such-message'], ['no-such-case'], ['case-closed'], ['already-linked'], ['preserved']] as const,
+  )('reports %s as a usage answer', async (reason) => {
+    const res = await driveWrite(
+      archiveLinkCaseCommand,
+      {
+        archiveLinkCase: () => reason,
+        recordAudit: () => {},
+      },
+      { messageId: MESSAGE, caseId: 'case-1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.data).toMatchObject({ ok: false, reason });
+  });
+
+  it('tells a preserved message apart from an already-linked one, in text and audit', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      archiveLinkCaseCommand,
+      {
+        archiveLinkCase: () => 'preserved',
+        recordAudit: (input) => {
+          audit.push(input);
         },
-        { messageId: MESSAGE, caseId: 'case-1' },
-      );
-      expect(res.ok).toBe(true);
-      if (!res.ok) return;
-      expect(res.data).toMatchObject({ ok: false, reason });
-    },
-  );
+      },
+      { messageId: MESSAGE, caseId: 'case-1' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('is preserved; its retention is already indefinite');
+    expect(res.text).not.toContain('already linked');
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'archive.message_linked_to_case',
+        subjectId: MESSAGE,
+        after: { outcome: 'preserved', messageId: MESSAGE, caseId: 'case-1' },
+      }),
+    ]);
+  });
 });

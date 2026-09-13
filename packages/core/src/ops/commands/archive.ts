@@ -267,7 +267,9 @@ export const archiveLinkCaseCommand = defineCommand<z.infer<typeof archiveLinkCa
             ? `no case ${args.caseId} in this guild`
             : outcome === 'case-closed'
               ? `case ${args.caseId} is closed; only open cases hold archive rows`
-              : `message ${args.messageId} is already linked (a preserved message outranks any case link)`;
+              : outcome === 'preserved'
+                ? `message ${args.messageId} is preserved; its retention is already indefinite`
+                : `message ${args.messageId} is already linked to case ${args.caseId}`;
       return {
         text,
         data: { ok: false, reason: outcome, messageId: args.messageId, caseId: args.caseId },

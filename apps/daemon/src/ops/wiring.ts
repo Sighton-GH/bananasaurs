@@ -489,14 +489,10 @@ export const opsPortsFor = (
       messageCount: archiveRepo.countMessages(scope, channel.channelId),
     })),
   archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
-  archiveLinkCase: (input) => {
-    const outcome = archiveRepo.linkToCase(scope, input);
-    // `preserve` outranks any case link, so there is nothing to link — and
-    // the port's union (the plan's exact surface) has no `preserved` arm.
-    // `already-linked` is the honest neighbour: the message already carries a
-    // retention class stronger than the one asked for.
-    return outcome === 'preserved' ? 'already-linked' : outcome;
-  },
+  // `preserve` outranks any case link, and the port names it as its own
+  // `'preserved'` arm rather than folding it into `'already-linked'` — a
+  // preserved message is linked to no case, and the audit row must say so.
+  archiveLinkCase: (input) => archiveRepo.linkToCase(scope, input),
   enqueueArchiveBackfill: (channelId) => {
     jobRepo.enqueue(scope, {
       kind: JOB_KINDS.archiveBackfill,

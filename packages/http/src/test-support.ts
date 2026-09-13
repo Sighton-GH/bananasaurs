@@ -436,10 +436,10 @@ export const testPortsFor = (
       messageCount: archiveRepo.countMessages(scope, channel.channelId),
     })),
   archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
-  archiveLinkCase: (input) => {
-    const outcome = archiveRepo.linkToCase(scope, input);
-    return outcome === 'preserved' ? 'already-linked' : outcome;
-  },
+  // `preserved` passes through as its own arm, the same as
+  // `apps/daemon/src/ops/wiring.ts` — a preserved message is linked to no
+  // case, and the audit row must say so.
+  archiveLinkCase: (input) => archiveRepo.linkToCase(scope, input),
   enqueueArchiveBackfill: (channelId) => {
     jobRepo.enqueue(scope, {
       kind: JOB_KINDS.archiveBackfill,
