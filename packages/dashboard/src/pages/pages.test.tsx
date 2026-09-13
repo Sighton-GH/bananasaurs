@@ -75,7 +75,7 @@ describe('SafetyPage', () => {
     expect(mock.mock.calls.filter((c) => (c[0] as string) === '/api/health')).toHaveLength(2);
   });
 
-  it('turning off posts { on: false } with no confirmation dialog', async () => {
+  it("turning off posts { on: false } with no confirmation dialog (re-auth is apiFetch's, covered in session.test.tsx)", async () => {
     const mock = stubFetch([
       { url: '/api/health', body: HEALTH },
       { method: 'POST', url: '/api/killswitch', body: { ok: true, killswitch: false } },

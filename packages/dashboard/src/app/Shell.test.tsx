@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, screen } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
@@ -17,18 +17,20 @@ const HEALTH = {
 };
 
 function renderAt(path: string) {
-  stubFetch([
+  const mock = stubFetch([
     { url: '/api/health', body: HEALTH },
     { url: '/api/log-routes', body: { routes: [] } },
     { url: '/api/panels', body: [] },
     { url: '/api/audit?limit=50', body: [] },
+    { method: 'POST', url: '/api/logout', body: {} },
   ]);
   const { hook } = memoryLocation({ path });
-  return renderWithSession(
+  renderWithSession(
     <Router hook={hook}>
       <Shell />
     </Router>,
   );
+  return mock;
 }
 
 afterEach(cleanup);
@@ -59,11 +61,18 @@ describe('Shell', () => {
     const nav = screen.getByRole('navigation', { name: 'Areas' });
     const labels = Array.from(nav.querySelectorAll('a')).map((a) => a.textContent);
     expect(labels).toEqual(NAV.filter((n) => n.status === 'built').map((n) => n.label));
-    expect(await screen.findAllByText('Bananasaurs dev')).not.toHaveLength(0);
+    const aside = screen.getByRole('complementary');
+    expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();
   });
 
-  it('exposes Sign out', async () => {
-    renderAt('/');
-    expect(screen.getByRole('button', { name: 'Sign out' })).toBeTruthy();
+  it('Sign out posts /api/logout', async () => {
+    const mock = renderAt('/');
+    await screen.findByRole('button', { name: 'Sign out' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Sign out' }));
+    });
+    const call = mock.mock.calls.find((c) => (c[0] as string) === '/api/logout');
+    expect(call).toBeTruthy();
+    expect((call![1] as RequestInit).method).toBe('POST');
   });
 });
