@@ -86,14 +86,14 @@ const seedMessage = (
 /** Seed a `mod_cases` row (and optionally one event) through raw inserts, never a mod writer. */
 const seedCase = (
   scope: GuildScope,
-  input: { caseId: string; status: 'open' | 'closed'; eventAt?: number },
+  input: { caseId: string; status: 'open' | 'closed'; eventAt?: number; memberId?: string },
 ) => {
   t.db
     .insert(modCases)
     .values({
       guildId: scope.guildId,
       caseId: input.caseId,
-      memberId: MEMBER,
+      memberId: input.memberId ?? MEMBER,
       openedAt: 1000,
       status: input.status,
     })
@@ -300,7 +300,7 @@ describe('preserve and case link', () => {
 
   it('linkToCase validates the message, the case and the current class', () => {
     const messageId = seedMessage(a);
-    seedCase(a, { caseId: 'case-open', status: 'open' });
+    seedCase(a, { caseId: 'case-open', status: 'open', memberId: '600000000000000001' });
     seedCase(a, { caseId: 'case-closed', status: 'closed', eventAt: 1000 });
 
     expect(linkToCase(a, { messageId: '999999999999999999', caseId: 'case-open' })).toBe(
@@ -313,7 +313,7 @@ describe('preserve and case link', () => {
     expect(linkToCase(a, { messageId, caseId: 'case-open' })).toBe('already-linked');
 
     const preserved = seedMessage(a, { messageId: '777777777777777777' });
-    seedCase(a, { caseId: 'case-other', status: 'open' });
+    seedCase(a, { caseId: 'case-other', status: 'open', memberId: '600000000000000002' });
     expect(markPreserve(a, preserved)).toBe('preserved');
     expect(linkToCase(a, { messageId: preserved, caseId: 'case-other' })).toBe('preserved');
     expect(readMessage(a, preserved)?.retentionClass).toBe('preserve');
