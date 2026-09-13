@@ -676,6 +676,7 @@ git commit -m "feat(dashboard): automod rules list, cutover board, re-auth queue
 **Files:**
 - Create: `packages/dashboard/src/pages/automod-rule.tsx` (replaces Task 5's placeholder)
 - Create: `packages/dashboard/src/pages/automod-rule.test.tsx`
+- Modify: `packages/dashboard/src/app/Shell.tsx` (import the real page, delete the placeholder)
 
 Route `/automod/:ruleId` (`useParams<{ ruleId: string }>()` from `wouter`).
 Loads `GET /api/automod/rules/:ruleId` through `useResource`; 404 renders the
@@ -761,8 +762,9 @@ git commit -m "feat(dashboard): automod rule detail — status, mode, config, ex
 ### Task 7: Dashboard — cases, case detail, member history
 
 **Files:**
-- Create: `packages/dashboard/src/pages/cases.tsx`, `case.tsx`, `member.tsx` (replace Task 5 placeholders)
+- Create: `packages/dashboard/src/pages/cases.tsx`, `packages/dashboard/src/pages/case.tsx`, `packages/dashboard/src/pages/member.tsx` (replace Task 5 placeholders)
 - Create: `packages/dashboard/src/pages/cases.test.tsx`
+- Modify: `packages/dashboard/src/app/Shell.tsx` (import the real pages, delete the placeholders)
 
 - `/cases`: purpose "Open and recent moderation cases, newest first."; table:
   Case (link `/cases/:caseId`), Member (link `/members/:memberId`), Opened,
