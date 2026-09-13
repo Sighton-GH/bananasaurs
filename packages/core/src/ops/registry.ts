@@ -1,5 +1,12 @@
 import type { RegisteredCommand } from './dispatch.js';
 import {
+  archiveDisableChannelCommand,
+  archiveEnableChannelCommand,
+  archiveLinkCaseCommand,
+  archivePreserveCommand,
+  archiveStatusCommand,
+} from './commands/archive.js';
+import {
   automodDomainAddCommand,
   automodDomainRmCommand,
   automodDryRunCommand,
@@ -54,6 +61,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   backupListCommand,
   automodDryRunCommand,
   automodReviewCommand,
+  archiveStatusCommand,
 
   // Writes. Each needs `--confirm` and each records an audit row; the
   // dispatcher enforces both, so the ordering here is for `--help` only.
@@ -71,6 +79,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   logRoutingUnexcludeCommand,
   jobsRetryCommand,
   backupNowCommand,
+  archiveEnableChannelCommand,
+  archiveDisableChannelCommand,
+  archivePreserveCommand,
+  archiveLinkCaseCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).
