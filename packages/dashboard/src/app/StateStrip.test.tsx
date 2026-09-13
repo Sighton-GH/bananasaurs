@@ -1,8 +1,8 @@
 // @vitest-environment jsdom
-import { cleanup, screen, waitFor } from '@testing-library/react';
+import { cleanup, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
-import { HealthProvider } from './health.js';
+import { HealthProvider, useHealth } from './health.js';
 import { StateStrip } from './StateStrip.js';
 
 const base = {
@@ -17,6 +17,10 @@ afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('StateStrip', () => {
+  function HealthProbe() {
+    return <p>health:{useHealth().resource.state}</p>;
+  }
+
   it('renders nothing when nothing is held', async () => {
     stubFetch([
       {
@@ -27,10 +31,22 @@ describe('StateStrip', () => {
     renderWithSession(
       <HealthProvider>
         <StateStrip />
+        <HealthProbe />
       </HealthProvider>,
     );
-    await waitFor(() => expect(globalThis.fetch).toHaveBeenCalled());
+    await screen.findByText('health:ready');
     expect(screen.queryByTestId('state-strip')).toBeNull();
+  });
+
+  it('names the unknown state when health fails', async () => {
+    stubFetch([{ url: '/api/health', status: 500, body: { error: 'boom' } }]);
+    renderWithSession(
+      <HealthProvider>
+        <StateStrip />
+      </HealthProvider>,
+    );
+    const strip = await screen.findByTestId('state-strip');
+    expect(strip.textContent).toContain('Health unknown');
   });
 
   it('names every active hold', async () => {

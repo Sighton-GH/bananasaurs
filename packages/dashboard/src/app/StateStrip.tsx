@@ -12,6 +12,10 @@ export function StateStrip() {
 
   const holds: string[] = [];
   if (session.info.readonly) holds.push('Read-only instance: writes are refused');
+  if (health.resource.state === 'error')
+    holds.push(
+      'Health unknown: the health summary could not be loaded, so dry run, kill switch and breaker state cannot be shown',
+    );
   if (health.resource.state === 'ready') {
     const safety = health.resource.data.safety;
     if (safety?.dryRun === true)
@@ -24,8 +28,8 @@ export function StateStrip() {
 
   if (holds.length === 0) return null;
   return (
-    <div
-      role="status"
+    <section
+      aria-label="Active holds"
       data-testid="state-strip"
       className="border-b border-hold bg-hold px-4 py-1.5 text-sm text-hold-ink"
     >
@@ -34,6 +38,6 @@ export function StateStrip() {
           <li key={h}>{h}</li>
         ))}
       </ul>
-    </div>
+    </section>
   );
 }
