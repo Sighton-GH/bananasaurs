@@ -114,7 +114,7 @@ describe('SessionProvider', () => {
         return new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 });
       }
       if (url === '/api/reauth') {
-        return new Response(JSON.stringify({ error: 'wrong-password' }), { status: 401 });
+        return new Response(JSON.stringify({ error: 'invalid-credentials' }), { status: 401 });
       }
       return new Response('{}', { status: 404 });
     });
@@ -132,6 +132,20 @@ describe('SessionProvider', () => {
     });
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch', '/api/reauth']);
     expect(screen.getByRole('status').textContent).toContain('Password not accepted');
+  });
+
+  it("an expired session on a write shows 'Signed out' and calls onLoggedOut", async () => {
+    const mock = stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 401, body: { error: 'unauthenticated' } },
+    ]);
+    const onLoggedOut = vi.fn();
+    renderWithSession(<Probe />, { onLoggedOut });
+    await act(async () => {
+      fireEvent.click(screen.getByText('write'));
+    });
+    expect(screen.getByRole('status').textContent).toContain('Signed out');
+    expect(onLoggedOut).toHaveBeenCalledTimes(1);
+    expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch']);
   });
 
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {
