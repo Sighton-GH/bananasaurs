@@ -90,6 +90,74 @@ expected, what was done instead, whether it cost a re-dispatch.
   not yet written down, which is an argument for putting rulings into the
   review brief when they pre-date it.
 
+### D4/D5 — Slice 7 Task 2 implement + review (muse-spark-1.3) — 5m05s + 1m15s, no re-dispatch
+
+- **What happened:** eight files, one commit, `DONE`, 19 tests. Four
+  lint-forced edits to the plan's verbatim code (`no-base-to-string`,
+  `require-await`), each behaviour-identical and each named in the report.
+  Review PASS/APPROVED with no findings.
+- **Expected:** parity with sonnet; the sonnet baseline for a task this
+  size was 4–8 minutes.
+- **Done instead:** nothing.
+- **Cost:** 6m20s total, no re-dispatch. Within the sonnet band.
+- **Observation:** it committed once rather than per step. The brief's
+  verbatim "commit after each numbered step" instruction was followed in
+  Task 1 and not here — a mild instruction-following wobble that cost
+  nothing this time because the run did not die mid-way.
+
+### D6–D9 — Slice 7 Tasks 3 and 4, implement + review (muse-spark-1.3)
+
+- **Task 3** (five pages + health provider, 7 files): 5m10s, `DONE`, 28
+  tests; review 44s PASS/APPROVED, no findings. Deviations were lint-forced
+  only (`no-base-to-string`, `no-unnecessary-type-assertion`).
+- **Task 4** (routes, shell, state strip, App rewrite, 9 files): 5m17s,
+  `DONE`, 41 tests, full suite 2,429, Vite build produced `index.html` plus
+  an 11.5 KB CSS asset with the tokens in it (coordinator checked the asset,
+  not just the exit code). Eight commits, one per step. Review 40s
+  PASS/APPROVED, one Minor deferred to the whole-branch review.
+- **What the model caught that the plan got wrong:** two defects in the
+  coordinator's own plan — a test asserting `findByText('Bananasaurs dev')`
+  that could never pass because the name legitimately renders twice (rail
+  and Overview), and `error={error}` on `Field` failing
+  `exactOptionalPropertyTypes`. It diagnosed both correctly, fixed them
+  minimally, and named them. A sonnet implementer would have done the same;
+  a weaker model would have deleted the assertion.
+- **Reviewer behaviour:** in Task 4's review it did a focused outside-diff
+  check unprompted (stale importers of the moved `LoginForm`), which is the
+  exact shape the reviewer brief asks for. In Tasks 2 and 3 it checked
+  nothing outside the diff. Inconsistent, not wrong.
+- **Cost, four tasks:** implement 14m44 + 5m05 + 5m10 + 5m17 = 30m16s; task
+  reviews 1m33 + 1m15 + 0m44 + 0m40 = 4m12s; plan review 2m30s. Zero
+  re-dispatches, zero fix rounds. The sonnet baseline for a four-task slice
+  of this shape (Slices 3–6) was 25–40 minutes of implementation and one to
+  two fix rounds. **Time is at parity; fix-round count is better; dollar cost
+  is zero versus a sonnet bill.** The quality difference will be settled by
+  the whole-branch review — if Opus finds what four clean task reviews
+  missed, that is the number that matters.
+
+### D10 — Slice 7 whole-branch review (Opus via Agent tool, not opencode)
+
+- **What happened:** SHIP-WITH-FIXES with 3 Important, 5 Minor, 4
+  decorative tests, 3 missing tests — all on a branch whose four task
+  reviews (muse-spark-1.3) had returned PASS/APPROVED with one Minor
+  between them. The three Importants (password retained in dialog state
+  after cancel; cancel surfaced as a sticky danger toast reading the raw
+  server code; state strip silent on health failure) are each a real
+  user-visible defect and each is the kind of cross-file reasoning a
+  task-scoped diff review structurally cannot do. Opus also ran the suite,
+  read Radix's source for the focus-trap claim, and checked
+  `tsconfig.all.json` and the boundary test — the "verify, do not assert"
+  posture the muse-spark reviewers mostly listed under "Cannot verify".
+- **What this says about the plugin:** the task-level reviews were not
+  wrong on their own terms — every finding was within a diff. But three
+  of the four wrote "Checked outside the diff: nothing", and two of the
+  three Importants would have been visible from one focused check the
+  reviewer brief invites (trace the cancel path; ask what the strip does
+  when health is not ready). **The task reviews are cheap and they are
+  shallow; the whole-branch review on a strong model is not optional with
+  this plugin, and its cost is unchanged from the sonnet flow.**
+- **Cost:** ~11 minutes for Opus. Same as Slices 3–6.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created

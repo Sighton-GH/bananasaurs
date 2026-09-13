@@ -84,3 +84,54 @@ worktree: 8/8, typecheck 0, lint 0.
   `DataState.test.tsx` fails on duplicate `role=status`). All four carried into
   the plan's Global Constraints for Tasks 2–4. Cost if wrong: two one-line
   config edits to revert.
+
+**Task 2 — session provider, toasts, dialogs** (5m05s, `3ce65c7`, 19 tests).
+Review PASS/APPROVED, no findings. **Task 3 — the five pages and the health
+provider** (5m10s, `9b8622e`, 28 tests). Review PASS/APPROVED, no findings.
+**Task 4 — routes, shell, state strip, `App.tsx` rewrite** (5m17s,
+`2ad5b31..690e244`, 41 tests; full suite 2,429; Vite build emits
+`index.html` and an 11.5 KB CSS asset carrying the tokens). Review
+PASS/APPROVED, one Minor deferred. The implementer corrected two defects in
+the plan itself: a `findByText` that could never pass because the guild name
+legitimately renders twice, and `error={error}` under
+`exactOptionalPropertyTypes`.
+
+### Whole-branch review (Opus, `docs/reports/slice-7-whole-branch-review.md`)
+
+**SHIP-WITH-FIXES: 3 Important, 5 Minor, 4 decorative tests, 3 missing
+tests.** All four task reviews had passed; none saw any of the three.
+
+- **I-1 — the re-auth dialog kept the typed password in state after cancel.**
+  `ReauthDialog` never unmounts (only `open` toggles), so the next prompt
+  opened pre-filled and the password sat in memory for the session. Real;
+  fixed in the wave.
+- **I-2 — cancelling re-auth raised a sticky danger toast reading the raw
+  server code `reauth-required`.** New behaviour (the old page let the
+  rejection go unhandled), contradicting D4's copy rule, and
+  `session.test.tsx` locked it in. Real; fixed: a neutral "Cancelled —
+  nothing was changed", and a rejected password maps to "Password not
+  accepted".
+- **I-3 — the state strip was silent when `/api/health` failed**, so on four
+  of five pages a kill switch that was on would read as "nothing held". Real;
+  fixed: an explicit "Health unknown" hold, and the strip becomes a labelled
+  `<section>` rather than a live region.
+- **PR-42 — the focus ring is ink, not amber.** The plan put `--color-hold` on
+  `:focus-visible`; ADR 0043 D4 says the hold colour is never on a button.
+  The ADR stands; the CSS changes. Likewise the danger button's hover is a
+  15% tint, not a fill, and overlays use `bg-canvas/70` so no colour is named
+  outside the token set. Cost if wrong: a less conspicuous focus ring, still
+  4.5:1 in both themes.
+- **PR-43 — `ConfirmDialog` gains `busy`** so a double-click cannot send two
+  `POST /api/killswitch` and write two audit rows. Cost if wrong: none.
+- **Parked, real-and-deferred to Slice 8:** the single re-auth resolver can
+  be overwritten by two concurrent writes (inherited verbatim from the old
+  `Dashboard`; unreachable today because every writer is `busy`-gated and one
+  page mounts at a time — Slice 8's first page with two writers must queue or
+  refuse); and `DataState`'s `degraded` state has no producer yet — Slice 8's
+  pages are where a stale-but-served state first exists.
+- **Decorative tests made real:** "exposes Sign out" now asserts the
+  `POST /api/logout`; the guild-name check is scoped to the rail; the
+  "nothing held" strip test waits for the resource to be *ready* rather than
+  for `fetch` to have been called. Added: `ReauthDialog` submit/cancel/Escape,
+  `ConfirmDialog` busy, and `Field`'s `aria-describedby`/`aria-invalid` wiring
+  (the thing PR-37 restructured it for, previously untested).
