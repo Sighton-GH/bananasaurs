@@ -203,7 +203,12 @@ export const registerAutomodRoutes = (
       action: 'automod_rule.mode_set',
       subjectType: 'automod_rule',
       subjectId: request.params.ruleId,
-      before: { mode: before.mode, enabled: before.enabled },
+      before: {
+        mode: before.mode,
+        enabled: before.enabled,
+        cutoverState: before.cutoverState,
+        observeStartedAt: before.observeStartedAt,
+      },
       after: {
         ...(parsed.data.mode !== undefined && { mode: parsed.data.mode }),
         ...(parsed.data.enabled !== undefined && { enabled: parsed.data.enabled }),

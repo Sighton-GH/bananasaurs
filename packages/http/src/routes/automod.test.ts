@@ -475,6 +475,12 @@ describe('POST /api/automod/rules/:ruleId/mode', () => {
     const row = rows.find((r) => r.action === 'automod_rule.mode_set');
     expect(row?.subjectType).toBe('automod_rule');
     expect(row?.subjectId).toBe('kw-one');
+    expect(JSON.parse(row?.before ?? 'null')).toEqual({
+      mode: 'test',
+      enabled: true,
+      cutoverState: 'not_started',
+      observeStartedAt: null,
+    });
   });
 
   it('answers 404 for an unknown rule and records no audit row', async () => {
