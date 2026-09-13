@@ -1170,6 +1170,47 @@ describe('automod dryrun / review / verdict, end to end (IMPORTANT-4)', () => {
     const reviewAgain = await cli('automod review');
     expect(reviewAgain.out).not.toContain('e1');
   });
+
+  it('replays a disabled rule through the production ports (the edit, dry-run, enable workflow)', async () => {
+    // PR-47: an operator edits a disabled rule, dry-runs it, then enables
+    // it. `daemon.portsFor` is the production `opsPortsFor` binding — the
+    // same ports the dashboard dry-run route reads — so this proves the
+    // production path replays the rule rather than answering 'no-such-rule'.
+    startDaemon();
+    guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
+
+    automodRuleRepo.createRule(scope(), {
+      ruleId: 'disabled-one',
+      kind: 'keyword_filter',
+      name: 'disabled word filter',
+      config: '{}',
+      now: discord.now(),
+    });
+    automodRuleRepo.addCategory(scope(), {
+      categoryId: 'c1',
+      ruleId: 'disabled-one',
+      name: 'profanity',
+      defaultAction: 'log_only',
+    });
+    automodRuleRepo.addTerm(scope(), { termId: 't1', categoryId: 'c1', text: 'badword' });
+    automodRuleRepo.setRuleMode(scope(), {
+      ruleId: 'disabled-one',
+      enabled: false,
+      now: discord.now(),
+    });
+
+    automodFixtureRepo.captureObservedFixture(scope(), {
+      messageId: '900000000000000002',
+      content: 'hello badword everyone',
+      authorId: MEMBER,
+      createdAt: discord.now(),
+      attachments: [],
+    });
+
+    const report = daemon.portsFor(scope()).runAutomodDryRun('disabled-one');
+    expect(report).not.toBe('no-such-rule');
+    expect(report).toMatchObject({ usable: true, matched: 1 });
+  });
 });
 
 describe('the dashboard recovery path, end to end (ADR 0012)', () => {
