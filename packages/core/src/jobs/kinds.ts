@@ -23,6 +23,10 @@ export const JOB_KINDS = {
   undoBatch: 'undo_batch',
   /** One tick of a bounded `/mod purge` (ADR 0037). */
   modPurge: 'mod_purge',
+  /** One resumable 100-message backfill page per run (ADR 0046 D4). */
+  archiveBackfill: 'archive_backfill',
+  /** The daily three-tier archive content expiry (ADR 0046 D3, PR-70). */
+  archiveExpiry: 'archive_expiry',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -201,3 +205,33 @@ export const purgeDedupeKey = (guildId: string, intentId: string, afterJobId?: n
   afterJobId === undefined
     ? `mod:${guildId}:purge:${intentId}`
     : `mod:${guildId}:purge:${intentId}:after:${afterJobId}`;
+
+export const archiveBackfillPayload = z.object({
+  channelId: snowflakeIdSchema,
+});
+export type ArchiveBackfillPayload = z.infer<typeof archiveBackfillPayload>;
+
+/**
+ * One pending backfill per channel (ADR 0046 D4, ADR 0016).
+ *
+ * The guild is redundant under the `(guild_id, dedupe_key)` partial unique
+ * index but matches `purgeDedupeKey`'s shape: a key that names everything it
+ * scopes reads correctly in `jobs list` without a join.
+ */
+export const archiveBackfillDedupeKey = (guildId: string, channelId: string): string =>
+  `${JOB_KINDS.archiveBackfill}:${guildId}:${channelId}`;
+
+export const archiveExpiryPayload = z.object({
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+export type ArchiveExpiryPayload = z.infer<typeof archiveExpiryPayload>;
+
+/**
+ * One pending expiry per UTC day, across the process (PR-70).
+ *
+ * Deliberately guild-free: the timer enqueues one job per guild per day under
+ * the same key, and the `(guild_id, dedupe_key)` index collapses per guild —
+ * a second `runOnce` on the same day enqueues nothing anywhere.
+ */
+export const archiveExpiryDedupeKey = (day: string): string =>
+  `${JOB_KINDS.archiveExpiry}:${day}`;
