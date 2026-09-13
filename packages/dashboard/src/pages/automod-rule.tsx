@@ -90,19 +90,13 @@ function RuleDetailView({
     };
     setModeBusy(true);
     try {
-      await session.writeOrThrow<{ ok: boolean }>(`${ruleUrl}/mode`, body);
+      const result = await session.writeOrThrow<{ ok: boolean }>(`${ruleUrl}/mode`, body);
+      if (result === undefined) return;
       toast({ tone: 'ok', title: 'Mode applied' });
       setModeOpen(false);
       reload();
     } catch (err) {
-      if (
-        err instanceof ApiError &&
-        err.status === 401 &&
-        (err.body as { error?: string }).error === 'reauth-required'
-      ) {
-        toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
-        setModeOpen(false);
-      } else if (err instanceof ApiError && err.status === 409) {
+      if (err instanceof ApiError && err.status === 409) {
         const refusal = (err.body as { refusal?: Refusal }).refusal;
         const sentence = refusal !== undefined ? refusalSentence(refusal) : err.message;
         setModeRefusal(sentence);
@@ -139,7 +133,8 @@ function RuleDetailView({
     const config = JSON.parse(configText) as unknown;
     setConfigBusy(true);
     try {
-      await session.writeOrThrow<{ ok: boolean }>(`${ruleUrl}/config`, { config }, 'PUT');
+      const result = await session.writeOrThrow<{ ok: boolean }>(`${ruleUrl}/config`, { config }, 'PUT');
+      if (result === undefined) return;
       toast({ tone: 'ok', title: 'Configuration saved' });
       setConfigOpen(false);
       reload();

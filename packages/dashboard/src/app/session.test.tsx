@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../api.js';
 import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { useSession } from './session.js';
 
@@ -13,6 +14,27 @@ function Probe() {
       <button onClick={() => void session.write('/api/killswitch', { on: true })}>write</button>
       <button onClick={() => void session.logout()}>logout</button>
     </>
+  );
+}
+
+interface Settled {
+  readonly value: unknown;
+  readonly error: unknown;
+}
+
+function ThrowProbe({ onSettled }: { readonly onSettled: (settled: Settled) => void }) {
+  const session = useSession();
+  return (
+    <button
+      onClick={() =>
+        void session.writeOrThrow('/api/killswitch', { on: true }).then(
+          (value) => onSettled({ value, error: undefined }),
+          (error: unknown) => onSettled({ value: undefined, error }),
+        )
+      }
+    >
+      write-or-throw
+    </button>
   );
 }
 
@@ -199,6 +221,58 @@ describe('SessionProvider', () => {
     });
     expect(attempts).toEqual({ '/api/a': 2, '/api/b': 2 });
     expect(mock.mock.calls.filter((c) => c[0] === '/api/reauth')).toHaveLength(2);
+  });
+
+  it('writeOrThrow on an expired session shows Signed out, calls onLoggedOut, and resolves undefined', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 401, body: { error: 'unauthenticated' } },
+    ]);
+    const onSettled = vi.fn();
+    const onLoggedOut = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />, { onLoggedOut });
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
+    expect(screen.getByRole('status').textContent).toContain('Signed out');
+    expect(onLoggedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('writeOrThrow rethrows a 409 so the caller can render it', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 409, body: { error: 'exists' } },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    const settled = onSettled.mock.calls[0]![0] as Settled;
+    expect(settled.value).toBeUndefined();
+    expect(settled.error).toBeInstanceOf(ApiError);
+    expect((settled.error as ApiError).status).toBe(409);
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('writeOrThrow on a read-only 503 shows the hold toast and resolves undefined', async () => {
+    stubFetch([
+      {
+        method: 'POST',
+        url: '/api/killswitch',
+        status: 503,
+        body: { error: 'read-only', message: 'BANANASAURS_READONLY is set' },
+      },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
+    expect(screen.getByRole('status').textContent).toContain('BANANASAURS_READONLY is set');
   });
 
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {

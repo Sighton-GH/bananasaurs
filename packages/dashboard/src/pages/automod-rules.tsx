@@ -62,12 +62,13 @@ export function AutomodRulesPage() {
     }
     setBusy(true);
     try {
-      await session.writeOrThrow<{ ok: boolean }>('/api/automod/rules', {
+      const result = await session.writeOrThrow<{ ok: boolean }>('/api/automod/rules', {
         ruleId,
         kind,
         name,
         config,
       });
+      if (result === undefined) return;
       toast({ tone: 'ok', title: 'Rule created' });
       setRuleId('');
       setName('');
@@ -75,9 +76,7 @@ export function AutomodRulesPage() {
       setConfigText('{}');
       rules.reload();
     } catch (err) {
-      if (err instanceof ApiError && err.status === 401 && err.body.error === 'reauth-required') {
-        toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
-      } else if (
+      if (
         err instanceof ApiError &&
         err.status === 400 &&
         err.body.error === 'invalid-config'

@@ -23,12 +23,18 @@ export interface Session {
    */
   write<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T | undefined>;
   /**
-   * The same write, but `ApiError` and `ReadonlyError` propagate to the
-   * caller instead of becoming a toast. Forms that render the server's
-   * answer inline (the new-rule form's `invalid-config` detail, the mode
-   * dialog's `not-eligible` refusal) use this; everything else uses `write`.
+   * The same write, but status 400 and 409 propagate to the caller instead
+   * of becoming a toast. Forms that render the server's answer inline (the
+   * new-rule form's `invalid-config` detail, the mode dialog's
+   * `not-eligible` refusal) use this; everything else uses `write`. Any
+   * other failure is handled itself (toast shown; `onLoggedOut()` called
+   * for an expired session) and resolves `undefined`.
    */
-  writeOrThrow<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T>;
+  writeOrThrow<T>(
+    url: string,
+    body: unknown,
+    method?: 'POST' | 'PUT' | 'DELETE',
+  ): Promise<T | undefined>;
   logout(): Promise<void>;
 }
 
@@ -76,15 +82,69 @@ function SessionInner({
   }, []);
 
   const value = useMemo<Session>(() => {
-    const writeOrThrow = <T,>(
+    const handleWriteError = (err: unknown): boolean => {
+      if (err instanceof ReadonlyError) {
+        toast({ tone: 'hold', title: 'This instance is read-only', message: err.message });
+        return true;
+      }
+      if (
+        err instanceof ApiError &&
+        err.status === 401 &&
+        err.body.error === 'reauth-required'
+      ) {
+        toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
+        return true;
+      }
+      if (
+        err instanceof ApiError &&
+        err.status === 401 &&
+        err.body.error === 'invalid-credentials'
+      ) {
+        toast({
+          tone: 'danger',
+          title: 'Password not accepted',
+          message: 'Nothing was changed. Try again.',
+        });
+        return true;
+      }
+      if (
+        err instanceof ApiError &&
+        err.status === 401 &&
+        err.body.error === 'unauthenticated'
+      ) {
+        toast({
+          tone: 'danger',
+          title: 'Signed out',
+          message: 'Your session has expired. Sign in again.',
+        });
+        onLoggedOut();
+        return true;
+      }
+      if (err instanceof ApiError) {
+        toast({ tone: 'danger', title: 'The request failed', message: err.message });
+        return true;
+      }
+      return false;
+    };
+    const writeOrThrow = async <T,>(
       url: string,
       body: unknown,
       method: 'POST' | 'PUT' | 'DELETE' = 'POST',
-    ): Promise<T> =>
-      apiFetch<T>(url, session.csrfToken, requireReauth, {
-        method,
-        body: JSON.stringify(body),
-      });
+    ): Promise<T | undefined> => {
+      try {
+        return await apiFetch<T>(url, session.csrfToken, requireReauth, {
+          method,
+          body: JSON.stringify(body),
+        });
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 400 || err.status === 409)) throw err;
+        if (err instanceof ApiError) {
+          handleWriteError(err);
+          return undefined;
+        }
+        throw err;
+      }
+    };
     return {
       info: session,
       read: <T,>(url: string) => apiFetch<T>(url, session.csrfToken, requireReauth),
@@ -93,36 +153,7 @@ function SessionInner({
         try {
           return await writeOrThrow<T>(url, body, method);
         } catch (err) {
-          if (err instanceof ReadonlyError) {
-            toast({ tone: 'hold', title: 'This instance is read-only', message: err.message });
-            return undefined;
-          }
-          if (
-            err instanceof ApiError &&
-            err.status === 401 &&
-            err.body.error === 'reauth-required'
-          ) {
-            toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
-            return undefined;
-          }
-          if (err instanceof ApiError && err.body.error === 'invalid-credentials') {
-            toast({
-              tone: 'danger',
-              title: 'Password not accepted',
-              message: 'Nothing was changed. Try again.',
-            });
-            return undefined;
-          }
-          if (err instanceof ApiError && err.body.error === 'unauthenticated') {
-            toast({
-              tone: 'danger',
-              title: 'Signed out',
-              message: 'Your session has expired. Sign in again.',
-            });
-            onLoggedOut();
-            return undefined;
-          }
-          if (err instanceof ApiError) {
+          if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
             toast({ tone: 'danger', title: 'The request failed', message: err.message });
             return undefined;
           }
