@@ -120,7 +120,9 @@ const readMessage = (scope: GuildScope, messageId: string) =>
   t.db
     .select()
     .from(archiveMessages)
-    .where(and(eq(archiveMessages.guildId, scope.guildId), eq(archiveMessages.messageId, messageId)))
+    .where(
+      and(eq(archiveMessages.guildId, scope.guildId), eq(archiveMessages.messageId, messageId)),
+    )
     .get();
 
 const readEdits = (scope: GuildScope, messageId: string) =>

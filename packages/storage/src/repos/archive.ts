@@ -314,7 +314,13 @@ export const markPreserve = (
 export const linkToCase = (
   scope: GuildScope,
   input: { messageId: string; caseId: string },
-): 'linked' | 'no-such-message' | 'no-such-case' | 'case-closed' | 'already-linked' | 'preserved' => {
+):
+  | 'linked'
+  | 'no-such-message'
+  | 'no-such-case'
+  | 'case-closed'
+  | 'already-linked'
+  | 'preserved' => {
   const current = read(scope, (db) =>
     db
       .select({
