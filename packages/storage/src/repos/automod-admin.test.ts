@@ -429,7 +429,12 @@ describe('countNativeBlocked', () => {
     const { caseId } = openOrResolveCase(scopeA, { memberId: MEMBER_1, now: 1000 });
     const seed = (
       eventId: string,
-      actionTaken: 'native_blocked' | 'native_timeout' | 'native_alerted' | 'would_delete',
+      actionTaken:
+        | 'native_blocked'
+        | 'native_timeout'
+        | 'native_alerted'
+        | 'native_blocked_interaction'
+        | 'would_delete',
     ): void => {
       recordCaseEvent(scopeA, {
         eventId,
@@ -446,6 +451,7 @@ describe('countNativeBlocked', () => {
     seed('n2', 'native_blocked');
     seed('n3', 'native_timeout');
     seed('n4', 'native_alerted');
+    seed('n5', 'native_blocked_interaction');
     seed('b1', 'would_delete');
 
     const scopeB = t.scopes.forGuild(GUILD_B);
@@ -462,7 +468,7 @@ describe('countNativeBlocked', () => {
       actionTaken: 'native_blocked',
     });
 
-    expect(countNativeBlocked(scopeA)).toBe(3);
+    expect(countNativeBlocked(scopeA)).toBe(4);
     expect(countNativeBlocked(scopeB)).toBe(1);
   });
 });
