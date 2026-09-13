@@ -146,7 +146,7 @@ export function ReviewPage() {
     setSuppressBusy(true);
     try {
       const result = await session.writeOrThrow<{ ok: boolean; outcome: string }>(
-        `/api/automod/rules/${ruleId}/suppress`,
+        `/api/automod/rules/${encodeURIComponent(ruleId)}/suppress`,
         { kind, value },
       );
       if (result === undefined) return;
@@ -188,7 +188,7 @@ export function ReviewPage() {
       setBusyIds((s) => new Set(s).add(eventId));
       try {
         const result = await session.write<{ ok: boolean; outcome: string }>(
-          `/api/automod/review/${eventId}/verdict`,
+          `/api/automod/review/${encodeURIComponent(eventId)}/verdict`,
           { verdict },
         );
         if (result === undefined) return;
@@ -279,7 +279,9 @@ export function ReviewPage() {
                     {
                       key: 'rule',
                       header: 'Rule',
-                      cell: ([ruleId]) => <Link href={`/automod/${ruleId}`}>{ruleId}</Link>,
+                      cell: ([ruleId]) => (
+                        <Link href={`/automod/${encodeURIComponent(ruleId)}`}>{ruleId}</Link>
+                      ),
                     },
                     {
                       key: 'falsePositive',
@@ -337,12 +339,18 @@ export function ReviewPage() {
                       {
                         key: 'rule',
                         header: 'Rule',
-                        cell: (m) => <Link href={`/automod/${m.ruleId}`}>{m.ruleId}</Link>,
+                        cell: (m) => (
+                          <Link href={`/automod/${encodeURIComponent(m.ruleId)}`}>{m.ruleId}</Link>
+                        ),
                       },
                       {
                         key: 'member',
                         header: 'Member',
-                        cell: (m) => <Link href={`/members/${m.memberId}`}>{m.memberId}</Link>,
+                        cell: (m) => (
+                          <Link href={`/members/${encodeURIComponent(m.memberId)}`}>
+                            {m.memberId}
+                          </Link>
+                        ),
                       },
                       { key: 'category', header: 'Category', cell: (m) => m.matchedCategory },
                       {
@@ -383,7 +391,11 @@ export function ReviewPage() {
                           if (kind === undefined) return null;
                           const action = suppressionFor(kind);
                           if (action === undefined) {
-                            return <Link href={`/automod/${m.ruleId}`}>Narrow the pattern</Link>;
+                            return (
+                              <Link href={`/automod/${encodeURIComponent(m.ruleId)}`}>
+                                Narrow the pattern
+                              </Link>
+                            );
                           }
                           return (
                             <Button onClick={() => openSuppress(m, action)}>{action.label}</Button>
@@ -423,7 +435,11 @@ export function ReviewPage() {
                         {
                           key: 'member',
                           header: 'Member',
-                          cell: (h) => <Link href={`/members/${h.memberId}`}>{h.memberId}</Link>,
+                          cell: (h) => (
+                            <Link href={`/members/${encodeURIComponent(h.memberId)}`}>
+                              {h.memberId}
+                            </Link>
+                          ),
                         },
                         { key: 'category', header: 'Category', cell: (h) => h.matchedCategory },
                         {
