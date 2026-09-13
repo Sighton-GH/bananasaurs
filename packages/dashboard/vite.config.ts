@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
 
 /**
  * Bound to the same loopback origin the daemon serves from — `server.ts`
@@ -9,7 +10,7 @@ import react from '@vitejs/plugin-react';
  * dashboard the daemon actually serves.
  */
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), tailwindcss()],
   build: {
     outDir: 'dist',
     emptyOutDir: true,
