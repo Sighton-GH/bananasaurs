@@ -25,7 +25,7 @@ export function ReauthDialog({
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && close()}>
       <Dialog.Portal>
-        <Dialog.Overlay className="fixed inset-0 bg-black/60" />
+        <Dialog.Overlay className="fixed inset-0 bg-canvas/70" />
         <Dialog.Content className="fixed top-1/2 left-1/2 w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-md border border-line bg-panel p-4 text-ink">
           <form
             onSubmit={(e) => {

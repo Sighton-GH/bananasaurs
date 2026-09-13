@@ -11,7 +11,7 @@ export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {
 const VARIANT: Record<ButtonVariant, string> = {
   default: 'border-line bg-panel text-ink hover:border-ink-muted',
   primary: 'border-ink bg-ink text-canvas hover:opacity-90',
-  danger: 'border-danger bg-transparent text-danger hover:bg-danger hover:text-white',
+  danger: 'border-danger bg-transparent text-danger hover:bg-danger/15',
 };
 
 /**
