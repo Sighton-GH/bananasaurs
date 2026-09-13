@@ -4,7 +4,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, authzRepo, automodAdminRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
@@ -375,6 +375,8 @@ describe('PUT /api/automod/rules/:ruleId/config', () => {
     const row = rows.find((r) => r.action === 'automod_rule.config_set');
     expect(row?.subjectType).toBe('automod_rule');
     expect(row?.subjectId).toBe('caps-one');
+    expect(JSON.parse(row?.before ?? 'null')).toBe('{"minLength":10,"maxRatio":0.7}');
+    expect(JSON.parse(row?.after ?? 'null')).toBe('{"minLength":20,"maxRatio":0.5}');
   });
 
   it('answers 404 for an unknown rule and records no audit row', async () => {
@@ -481,6 +483,7 @@ describe('POST /api/automod/rules/:ruleId/mode', () => {
       cutoverState: 'not_started',
       observeStartedAt: null,
     });
+    expect(JSON.parse(row?.after ?? 'null')).toEqual({ enabled: false });
   });
 
   it('answers 404 for an unknown rule and records no audit row', async () => {
@@ -499,6 +502,7 @@ describe('POST /api/automod/rules/:ruleId/mode', () => {
   it('answers 409 not-eligible for enforce on a not_started rule and leaves the row alone', async () => {
     grant(['config.write']);
     createRule();
+    const before = automodAdminRepo.findRule(t.scopes.forGuild(GUILD), 'kw-one');
     const { cookie, csrf } = await signIn();
     const response = await app.inject({
       method: 'POST',
@@ -514,10 +518,8 @@ describe('POST /api/automod/rules/:ruleId/mode', () => {
     expect(body.error).toBe('not-eligible');
     expect(body.refusal.reason).toBe('cutover-state');
 
-    const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
-      'kw-one',
-    );
-    expect(detail?.mode).toBe('test');
+    const after = automodAdminRepo.findRule(t.scopes.forGuild(GUILD), 'kw-one');
+    expect(after).toEqual(before);
     expect(auditActions()).not.toContain('automod_rule.mode_set');
   });
 
