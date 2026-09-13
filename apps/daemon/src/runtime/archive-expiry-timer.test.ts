@@ -76,7 +76,18 @@ afterEach(() => {
 });
 
 describe('archive expiry timer', () => {
+  const enableChannels = (...scopes: GuildScope[]): void => {
+    for (const scope of scopes) {
+      archiveRepo.enableChannel(scope, {
+        channelId: CHANNEL,
+        attachmentPolicy: 'none',
+        now: nowMs,
+      });
+    }
+  };
+
   it('runOnce enqueues one job per guild carrying the UTC day', () => {
+    enableChannels(a, b);
     createArchiveExpiryTimer(depsFor()).runOnce();
 
     for (const scope of [a, b]) {
@@ -88,7 +99,18 @@ describe('archive expiry timer', () => {
     }
   });
 
+  it('a guild with no enabled archive channel gets no job', () => {
+    // Only `a` enables a channel; the timer reads the real repo through its
+    // default `hasArchiveChannels`, the same path production uses.
+    enableChannels(a);
+    createArchiveExpiryTimer(depsFor()).runOnce();
+
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(jobsFor(b)).toHaveLength(0);
+  });
+
   it('a second runOnce on the same day enqueues nothing; the next day enqueues again', () => {
+    enableChannels(a, b);
     const timer = createArchiveExpiryTimer(depsFor());
 
     timer.runOnce();
@@ -112,6 +134,7 @@ describe('archive expiry timer', () => {
 
   it('start() runs once immediately then every 24h; stop() cancels the interval', () => {
     vi.useFakeTimers();
+    enableChannels(a, b);
     const timer = createArchiveExpiryTimer(depsFor());
 
     timer.start();

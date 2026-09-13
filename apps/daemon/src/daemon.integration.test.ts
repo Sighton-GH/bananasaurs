@@ -475,8 +475,9 @@ describe('reconnecting', () => {
 
     const scope = t.scopes.forGuild(GUILD);
     expect(pipelineRepo.unreconciledGaps(scope)).toHaveLength(1);
-    // The startup also enqueues the day's archive_expiry job (M1 task 5), so
-    // the count is two — what this proves is the one reconciliation.
+    // The startup enqueues no archive_expiry job here (no archive channel is
+    // enabled, so the timer skips the guild) — what this proves is the one
+    // reconciliation.
     const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(1);
   });
@@ -490,9 +491,10 @@ describe('reconnecting', () => {
 
     const scope = t.scopes.forGuild(GUILD);
     expect(pipelineRepo.unreconciledGaps(scope)).toHaveLength(1);
-    // No reconciliation is enqueued for a resumed session. The day's
-    // archive_expiry job (M1 task 5) is still queued from startup, so this
-    // names the kind rather than counting the queue.
+    // No reconciliation is enqueued for a resumed session — and no
+    // archive_expiry job either (no archive channel is enabled, so the
+    // timer skips the guild). This names the kind rather than counting the
+    // queue.
     const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
     expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(0);
   });
@@ -652,8 +654,10 @@ describe('/status, end to end', () => {
     expect(discord.wasEphemeral(INTERACTION)).toBe(true);
     expect(statusReply()).toContain('**Not connected**');
     expect(statusReply()).toContain('Role changes are **enabled**');
-    // One queued: the day's archive_expiry job, enqueued at startup (M1 task 5).
-    expect(statusReply()).toContain('1 queued, 0 running, 0 failed');
+    // None queued: no archive channel is enabled, so the startup timer
+    // enqueues no archive_expiry job — the "0 queued" signal reads
+    // meaningfully again.
+    expect(statusReply()).toContain('0 queued, 0 running, 0 failed');
   });
 
   /**

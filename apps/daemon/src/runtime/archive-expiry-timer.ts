@@ -1,5 +1,5 @@
 import { archiveExpiryDedupeKey, JOB_KINDS, safeLogFields, type Logger } from '@bananasaurs/core';
-import { type GuildScope, type jobRepo } from '@bananasaurs/storage';
+import { archiveRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage';
 
 /**
  * The daily archive-expiry timer (ADR 0046 PR-70, Slice M1 Task 5, Step 2).
@@ -28,6 +28,15 @@ export interface ArchiveExpiryTimer {
 export interface ArchiveExpiryTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
   readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
+  /**
+   * Whether the guild has any enabled archive channel. A guild with none
+   * gets no `archive_expiry` job — an empty guild's daily row would only
+   * noise up `/status`'s "queued" count. Optional with a default that reads
+   * `archiveRepo` through the entry's scope, so `daemon.ts` (which builds
+   * the entries and is outside this slice's Files list) needs no change and
+   * production still skips; tests inject a stub or seed the repo.
+   */
+  readonly hasArchiveChannels?: (scope: GuildScope) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
 }
@@ -40,7 +49,10 @@ export function createArchiveExpiryTimer(deps: ArchiveExpiryTimerDeps): ArchiveE
   const runOnce = (): void => {
     const now = deps.now();
     const day = utcDay(now);
+    const hasArchiveChannels =
+      deps.hasArchiveChannels ?? ((scope) => archiveRepo.listChannels(scope).length > 0);
     for (const { scope } of deps.guilds()) {
+      if (!hasArchiveChannels(scope)) continue;
       deps.enqueue(scope, {
         kind: JOB_KINDS.archiveExpiry,
         payload: JSON.stringify({ day }),
