@@ -71,6 +71,8 @@ What follows is the full engine, for the rules that survive that filter.
 
 Now there is a spine, real moderation records, and a server worth searching.
 
+*(2026-09-12: the first two bullets — archive ingestion and FTS5 search, minus the member-facing `/find` — are pulled forward into Release 2's observe window as Phase 4b, together with an owner-only MCP server over a Cloudflare Tunnel so the owner's own Claude clients can read the archive and the server's state. See `docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md`. Nothing else in this list moves.)*
+
 - Archive ingestion for owner-enabled channels and forums only (ADR 0009). Resumable single-worker backfill with a persisted per-channel cursor.
 - Attachment handling per channel: `none`, `metadata`, or `bytes`. Bytes are downloaded at ingest because Discord CDN URLs expire in roughly 24 hours (`REVIEW.md` §C1). Content-hash deduplication.
 - Tiered retention and deletion tombstones per ADR 0009, with the scheduled expiry job.

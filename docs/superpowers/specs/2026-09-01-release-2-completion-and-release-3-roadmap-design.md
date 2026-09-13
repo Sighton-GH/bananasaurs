@@ -371,6 +371,43 @@ page rather than triggering a rebuild. Each stub states plainly that the
 feature does not exist yet; `docs/06`'s own UX requirement is that the UI never
 pretends an unbuilt module is available.
 
+**Amended 2026-09-12:** the Archive and Search stubs stay stubs even though
+Phase 4b builds the archive and search underneath them. The CLI is the
+management surface for those in Release 2; the pages arrive with Release 3.
+
+### Phase 4b — the MCP operator server (added 2026-09-12, built during the observe window)
+
+**Owner decision, 2026-09-12.** Two Release 3 items — R3-1 archive ingestion
+and R3-2 FTS5 search — are pulled forward into the observe window, together
+with a new operator surface: an MCP server inside the daemon, reached over a
+Cloudflare Tunnel with OAuth 2.1, so the owner's own Claude clients can read
+the archive, the server's structure, and the bot's records, and post to
+owner-allowlisted channels. Read-mostly; one write tool; no moderation tools.
+
+Design: `docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md`.
+Slice plan: `docs/superpowers/plans/2026-09-12-mcp-operator-server-plan.md`.
+
+Six slices, **after Slices 7–9** so the false-positive review screen — the
+one Release 2's gate depends on — is not delayed, and **before Slices 10–12**:
+
+| Slice | Subject | ADR |
+| --- | --- | --- |
+| M1 | Archive schema, live ingestion, resumable backfill, three-tier retention | 0046 |
+| M2 | FTS5 search with permission-filtered citations | — |
+| M3 | OAuth 2.1 authorization server on Fastify, tokens bound to dashboard accounts | 0045 |
+| M4 | The MCP server and the read tools | 0044 |
+| M5 | `send_message`, the channel allowlist, `mcp_operator` audit actor | (0044) |
+| M6 | `cloudflared`, Cloudflare Access on the consent page, live end-to-end | — |
+
+M1→M2 and M3 are independent tracks. Nothing in Phase 4b touches `mod_rules`,
+`setRuleMode`, or the moderation paths of the effect gateway — the observe
+clock is running and a change there restarts it.
+
+**What this costs, stated once.** Six slices in a window that also holds
+Slices 7–10. Some of M-work will run past the window's end; that is accepted
+because nothing in it blocks Slice 11 or 12, so the Release 2 gate can sign
+off before M6 lands.
+
 ### Phase 5 — close-out
 
 #### Slice 11 — cutover, one rule at a time, atomic
@@ -399,13 +436,23 @@ Slice 1 (abstraction)  ───┼─→ Slice 2 (fixtures / evaluator / traces
                                                       │
                                                  [FLIP DAY]
                                                       │
-                                    Slice 7 → Slice 8 → Slice 9 → Slice 10
+                                    Slice 7 → Slice 8 → Slice 9
+                                                      │
+                                         ┌────────────┴────────────┐
+                                         │                         │
+                                    M1 → M2                       M3        (Phase 4b, 2026-09-12)
+                                         │                         │
+                                         └────────────┬────────────┘
+                                                      │
+                                                M4 → M5 → M6
+                                                      │
+                                                  Slice 10
                                                       │
                                             Slice 11 → Slice 12
 ```
 
 Slices 3, 4 and 5 are independent of one another once Slice 2 lands, and may be
-built in any order.
+built in any order. M1→M2 and M3 are likewise independent of each other.
 
 ---
 
@@ -544,6 +591,10 @@ because they can be built and fully tested with no model at all.
 
 ### R3-1 — archive ingestion
 
+**Pulled forward into Release 2 Phase 4b as Slice M1 (2026-09-12).** The
+description below still governs; the MCP design spec §7 records the two calls
+made when it moved (attachment default `none`; retention from day one).
+
 Default-deny channel scope (ADR 0009). A resumable **single** throttled worker
 with a persisted per-channel cursor (§C10) — not parallel fetches. Attachments
 downloaded at ingest where policy says `bytes`, because Discord CDN URLs expire
@@ -551,6 +602,10 @@ in roughly 24 hours (§C1), with content-hash deduplication. Tiered retention,
 deletion tombstones, and the scheduled expiry job.
 
 ### R3-2 — search
+
+**Pulled forward into Release 2 Phase 4b as Slice M2 (2026-09-12)** — the
+repository and the permission-filtered citation logic. `/find` itself, the
+member-facing command, stays in Release 3.
 
 SQLite FTS5. `/find` with **permission-filtered citations** — the citation list
 is filtered, not merely the content, or a citation reveals that a message exists
@@ -788,8 +843,15 @@ so the table below shifts by one from what earlier drafts of this plan named:
 | 0041 | Fixtures, the dry-run evaluator, and the one-code-path invariant | Slice 2 |
 | 0042 | Cutover state and the tiered false-positive gate together decide when enforcement is offerable; `counts_as_violation` becomes a rule property; automod testing mode is a third lever | Slice 6 |
 | 0043 | The dashboard's stack, design system, and information architecture | Slice 7 |
-| 0044 | AI proposes, deterministic code disposes: the tool registry and the proposed-action pipeline | R3-4 |
-| 0045 | Resource and document ingestion, and the outbound destinations it authorises | R3-3 |
+| 0044 | The MCP operator server is an operator surface; amends ADR 0013's contradictory bullet; the one write tool | M4 (Phase 4b) |
+| 0045 | OAuth 2.1 is the authorization boundary for remote operator access, and why it is not ADR 0024's socket | M3 (Phase 4b) |
+| 0046 | Archive ingestion and search pulled forward; attachment default `none`; three-tier retention from day one; real-guild preconditions | M1 (Phase 4b) |
+| 0047 | AI proposes, deterministic code disposes: the tool registry and the proposed-action pipeline | R3-4 |
+| 0048 | Resource and document ingestion, and the outbound destinations it authorises | R3-3 |
+
+**Renumbered 2026-09-12:** 0044 and 0045 were reserved for R3-4 and R3-3;
+Phase 4b's three ADRs are written first because they precede code that is
+built first. R3-4 and R3-3 move to 0047 and 0048.
 
 ---
 
