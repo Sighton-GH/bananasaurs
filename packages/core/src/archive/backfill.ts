@@ -139,6 +139,7 @@ export const archiveBackfillHandler = (
       state: done ? 'done' : 'running',
     });
     if (!done) {
+      // Immediate `runAfter`: the job-poll interval is the throttle (ADR 0046 D4).
       ports.enqueueContinuation({ channelId, jobId, runAfter: ports.now() });
     }
 

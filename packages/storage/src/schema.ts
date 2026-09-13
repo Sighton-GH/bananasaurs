@@ -912,6 +912,11 @@ export const archiveMessages = sqliteTable(
     authorId: text('author_id'),
     /** NULL after purge, or never known. */
     content: text('content'),
+    /**
+     * Live ingestion stores `receivedAtMs`, the backfill stores the
+     * snowflake-derived `createdAtMs`, so the two populations differ by the
+     * gateway delivery delay — M2's search ordering must not assume otherwise.
+     */
     createdAt: integer('created_at').notNull(),
     editedAt: integer('edited_at'),
     deletedAt: integer('deleted_at'),
