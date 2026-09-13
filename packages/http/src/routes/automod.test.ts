@@ -8,6 +8,7 @@ import {
   accountRepo,
   authzRepo,
   automodAdminRepo,
+  automodRuleRepo,
   effectRepo,
   guildRepo,
   modCaseRepo,
@@ -1314,5 +1315,103 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
     });
     expect(response.statusCode).toBe(404);
     expect(auditActions()).not.toContain('automod_rule.suppression_added');
+  });
+
+  it('leaves the sign-off columns alone when suppressing with an allowlist phrase (PR-59)', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    const scope = t.scopes.forGuild(GUILD);
+    automodRuleRepo.setEnforceSignOff(scope, { ruleId: 'kw-one', signedOffBy: 'owner', now: clock });
+    const ports = testPortsFor(scope, () => clock);
+    const before = ports.findAutomodRuleDetail('kw-one');
+    expect(before?.enforceSignedOffBy).toBe('owner');
+    expect(before?.enforceSignedOffAt).toBe(clock);
+
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'hello world' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const after = ports.findAutomodRuleDetail('kw-one');
+    expect(after?.enforceSignedOffBy).toBe(before?.enforceSignedOffBy);
+    expect(after?.enforceSignedOffAt).toBe(before?.enforceSignedOffAt);
+  });
+
+  it('leaves the sign-off columns alone when suppressing with an invite code (PR-59)', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'inv-one', 'invite');
+    const scope = t.scopes.forGuild(GUILD);
+    automodRuleRepo.setEnforceSignOff(scope, { ruleId: 'inv-one', signedOffBy: 'owner', now: clock });
+    const ports = testPortsFor(scope, () => clock);
+    const before = ports.findAutomodRuleDetail('inv-one');
+
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/inv-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'invite_code', value: 'clubhouse' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const after = ports.findAutomodRuleDetail('inv-one');
+    expect(after?.enforceSignedOffBy).toBe(before?.enforceSignedOffBy);
+    expect(after?.enforceSignedOffAt).toBe(before?.enforceSignedOffAt);
+  });
+
+  it('leaves the sign-off columns alone when suppressing with a link domain (PR-59)', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'link-one', 'link_domain');
+    const scope = t.scopes.forGuild(GUILD);
+    automodRuleRepo.setEnforceSignOff(scope, {
+      ruleId: 'link-one',
+      signedOffBy: 'owner',
+      now: clock,
+    });
+    const ports = testPortsFor(scope, () => clock);
+    const before = ports.findAutomodRuleDetail('link-one');
+
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/link-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'link_domain', value: 'example.com' },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const after = ports.findAutomodRuleDetail('link-one');
+    expect(after?.enforceSignedOffBy).toBe(before?.enforceSignedOffBy);
+    expect(after?.enforceSignedOffAt).toBe(before?.enforceSignedOffAt);
+  });
+
+  it('leaves the sign-off columns alone when suppressing with a channel exemption (PR-59)', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'caps-one', 'caps');
+    const scope = t.scopes.forGuild(GUILD);
+    automodRuleRepo.setEnforceSignOff(scope, {
+      ruleId: 'caps-one',
+      signedOffBy: 'owner',
+      now: clock,
+    });
+    const ports = testPortsFor(scope, () => clock);
+    const before = ports.findAutomodRuleDetail('caps-one');
+
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/caps-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'channel_exemption', value: CHANNEL },
+    });
+    expect(response.statusCode).toBe(200);
+
+    const after = ports.findAutomodRuleDetail('caps-one');
+    expect(after?.enforceSignedOffBy).toBe(before?.enforceSignedOffBy);
+    expect(after?.enforceSignedOffAt).toBe(before?.enforceSignedOffAt);
   });
 });
