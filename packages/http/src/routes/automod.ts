@@ -1,10 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import {
-  RULE_KINDS,
-  snowflakeIdSchema,
-  validateRuleConfig,
-} from '@bananasaurs/core';
+import { RULE_KINDS, snowflakeIdSchema, validateRuleConfig } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
