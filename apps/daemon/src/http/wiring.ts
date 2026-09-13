@@ -13,6 +13,7 @@ import {
   createServer,
   issueBootstrapTokenIfNeeded,
   registerAutomodRoutes,
+  registerCaseRoutes,
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
@@ -127,6 +128,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
       registerReadRoutes(instance, guard, routeDeps);
       registerWriteRoutes(instance, guard, routeDeps);
       registerAutomodRoutes(instance, guard, routeDeps);
+      registerCaseRoutes(instance, guard, routeDeps);
     },
   });
   registerStaticAssets(app, DASHBOARD_DIST);
