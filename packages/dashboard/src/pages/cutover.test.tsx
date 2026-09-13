@@ -30,7 +30,7 @@ function rule(overrides: Partial<RuleSummary> = {}): RuleSummary {
     updatedAt: NOW - 3 * DAY_MS,
     matchCount: 12,
     reviewedCount: 5,
-    verdicts: { falsePositive: 0, truePositive: 0, unclear: 0 },
+    verdicts: { falsePositive: 2, truePositive: 4, unclear: 1 },
     ...overrides,
   };
 }
@@ -47,7 +47,7 @@ describe('CutoverPage', () => {
     vi.unstubAllGlobals();
   });
 
-  it('reports each rule: state, days observed, counts, legacy ref and sign-off', async () => {
+  it('reports each rule: state, days observed, matches, the verdict split, legacy ref and sign-off', async () => {
     stubFetch([
       {
         url: '/api/automod/rules',
@@ -65,6 +65,7 @@ describe('CutoverPage', () => {
               enforceSignedOffAt: NOW - DAY_MS,
               matchCount: 30,
               reviewedCount: 25,
+              verdicts: { falsePositive: 0, truePositive: 9, unclear: 0 },
             }),
           ],
         },
@@ -85,10 +86,19 @@ describe('CutoverPage', () => {
     expect(screen.getAllByText(/of 14/)).toHaveLength(1);
     expect(within(table).getByText('observing')).toBeTruthy();
     expect(within(table).getByText('carl-bot:spam')).toBeTruthy();
+    // Matches stay; the old Reviewed total is replaced by the verdict split.
     expect(within(table).getByText('12')).toBeTruthy();
-    expect(within(table).getByText('5')).toBeTruthy();
     expect(within(table).getByText('30')).toBeTruthy();
-    expect(within(table).getByText('25')).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: 'False positive' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: 'True positive' })).toBeTruthy();
+    expect(within(table).getByRole('columnheader', { name: 'Unclear' })).toBeTruthy();
+    expect(within(table).queryByRole('columnheader', { name: 'Reviewed' })).toBeNull();
+    const firstRow = within(table).getByText('No invites').closest('tr')!;
+    expect(within(firstRow).getByText('2')).toBeTruthy();
+    expect(within(firstRow).getByText('4')).toBeTruthy();
+    expect(within(firstRow).getByText('1')).toBeTruthy();
+    expect(within(table).queryByText('5')).toBeNull();
+    expect(within(table).queryByText('25')).toBeNull();
     expect(
       within(table).getByText(`owner at ${new Date(NOW - DAY_MS).toLocaleString()}`),
     ).toBeTruthy();
