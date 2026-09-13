@@ -157,12 +157,19 @@ export function ReviewPage() {
         review.reload();
       }
     } catch (err) {
-      if (
-        err instanceof ApiError &&
-        err.status === 409 &&
-        (err.body as { error?: unknown }).error === 'wrong-kind'
-      ) {
+      const bodyError =
+        err instanceof ApiError && err.status === 409
+          ? (err.body as { error?: unknown }).error
+          : undefined;
+      if (bodyError === 'wrong-kind') {
         toast({ tone: 'danger', title: "That suppression does not apply to this rule's kind" });
+        setSuppressTarget(null);
+      } else if (bodyError === 'not-denied') {
+        toast({
+          tone: 'danger',
+          title:
+            "That domain is not on the rule's deny list — a parent domain may be. Narrow it in the configuration.",
+        });
         setSuppressTarget(null);
       } else if (err instanceof Error) {
         toast({ tone: 'danger', title: 'The request failed', message: err.message });

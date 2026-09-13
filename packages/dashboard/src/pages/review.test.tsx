@@ -414,6 +414,34 @@ describe('ReviewPage', () => {
     await screen.findByText("That suppression does not apply to this rule's kind");
   });
 
+  it('shows the not-denied toast when the domain is not on the deny list', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: { matches: [match()], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule()] } },
+      {
+        method: 'POST',
+        url: '/api/automod/rules/kw-one/suppress',
+        status: 409,
+        body: { error: 'not-denied' },
+      },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow this phrase' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Allow this phrase?' });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Allow this phrase' }));
+    });
+    await screen.findByText(
+      "That domain is not on the rule's deny list — a parent domain may be. Narrow it in the configuration.",
+    );
+  });
+
   it('shows "Already allowed" when the value is already present', async () => {
     stubFetch([
       {

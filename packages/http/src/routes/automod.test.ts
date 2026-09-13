@@ -113,12 +113,13 @@ const createKindRule = (
   guild: GuildId,
   ruleId: string,
   kind: 'keyword_filter' | 'invite' | 'link_domain' | 'caps',
+  config = '{}',
 ): void => {
   testPortsFor(t.scopes.forGuild(guild), () => clock).createAutomodRule({
     ruleId,
     kind,
     name: ruleId,
-    config: '{}',
+    config,
   });
 };
 
@@ -1111,6 +1112,64 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
       'link-one',
     );
     expect(detail?.linkDomains).toContainEqual({ domain: 'example.com', listType: 'allow' });
+  });
+
+  it('suppresses a deny-mode rule by removing the domain from its deny list', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'link-deny', 'link_domain', JSON.stringify({ mode: 'deny' }));
+    const ports = testPortsFor(t.scopes.forGuild(GUILD), () => clock);
+    expect(
+      ports.addLinkDomain({ ruleId: 'link-deny', domain: 'example.com', listType: 'deny' }),
+    ).toMatchObject({ outcome: 'added' });
+
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/link-deny/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'link_domain', value: 'Example.COM' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'added' });
+
+    expect(ports.listLinkDomains('link-deny')).toEqual([]);
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
+      limit: 10,
+      sinceMs: undefined,
+    });
+    const row = rows.find((r) => r.action === 'automod_rule.suppression_added');
+    expect(row?.subjectId).toBe('link-deny');
+    expect(JSON.parse(row?.after ?? 'null')).toEqual({
+      kind: 'link_domain',
+      value: 'Example.COM',
+      listType: 'deny',
+      removed: true,
+    });
+  });
+
+  it('answers 409 not-denied when the domain is not on the deny list', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'link-deny', 'link_domain', JSON.stringify({ mode: 'deny' }));
+    const ports = testPortsFor(t.scopes.forGuild(GUILD), () => clock);
+    expect(
+      ports.addLinkDomain({ ruleId: 'link-deny', domain: 'other.example', listType: 'deny' }),
+    ).toMatchObject({ outcome: 'added' });
+
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/link-deny/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'link_domain', value: 'example.com' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'not-denied' });
+
+    expect(ports.listLinkDomains('link-deny')).toEqual([
+      { domain: 'other.example', listType: 'deny' },
+    ]);
+    expect(auditActions()).not.toContain('automod_rule.suppression_added');
   });
 
   it('suppresses with a channel exemption', async () => {

@@ -433,6 +433,9 @@ export const registerAutomodRoutes = (
 
       const ports = deps.portsFor(session.scope);
       let outcome: string;
+      // The audit row says what actually happened, which differs on the deny
+      // path below (a removal, not an insertion).
+      let auditAfter: { readonly [key: string]: string | boolean } = { kind, value };
       if (kind === 'allowlist_phrase') {
         const result = ports.addAutomodAllowlistPhrase({
           ruleId: request.params.ruleId,
@@ -451,15 +454,44 @@ export const registerAutomodRoutes = (
         if (result === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
         outcome = result;
       } else if (kind === 'link_domain') {
-        const result = ports.addLinkDomain({
-          ruleId: request.params.ruleId,
-          domain: value,
-          listType: 'allow',
-        });
-        if (result.outcome === 'no-such-rule')
-          return reply.status(404).send({ error: 'not-found' });
-        if (result.outcome === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
-        outcome = result.outcome;
+        // A deny-mode rule ignores allow rows — the predicate reads only the
+        // list named by `config.mode` — so suppressing there means removing
+        // the domain from the deny list instead, still strictly narrowing
+        // (PR-59). A domain that matched via a parent entry is not itself on
+        // the list, and only the configuration editor can narrow that.
+        const detail = ports.findAutomodRuleDetail(request.params.ruleId);
+        if (detail === undefined) return reply.status(404).send({ error: 'not-found' });
+        let denyMode = false;
+        try {
+          denyMode = (JSON.parse(detail.config) as { mode?: unknown }).mode === 'deny';
+        } catch {
+          denyMode = false;
+        }
+        if (denyMode) {
+          const result = ports.removeLinkDomain({
+            ruleId: request.params.ruleId,
+            domain: value.toLowerCase(),
+          });
+          if (result.outcome === 'no-such-rule')
+            return reply.status(404).send({ error: 'not-found' });
+          if (result.outcome === 'wrong-kind')
+            return reply.status(409).send({ error: 'wrong-kind' });
+          if (result.outcome === 'not-present')
+            return reply.status(409).send({ error: 'not-denied' });
+          outcome = 'added';
+          auditAfter = { kind, value, listType: 'deny', removed: true };
+        } else {
+          const result = ports.addLinkDomain({
+            ruleId: request.params.ruleId,
+            domain: value,
+            listType: 'allow',
+          });
+          if (result.outcome === 'no-such-rule')
+            return reply.status(404).send({ error: 'not-found' });
+          if (result.outcome === 'wrong-kind')
+            return reply.status(409).send({ error: 'wrong-kind' });
+          outcome = result.outcome;
+        }
       } else {
         const result = ports.addAutomodExemption({
           ruleId: request.params.ruleId,
@@ -476,7 +508,7 @@ export const registerAutomodRoutes = (
         subjectType: 'automod_rule',
         subjectId: request.params.ruleId,
         before: undefined,
-        after: { kind, value },
+        after: auditAfter,
       });
 
       return reply.status(200).send({ ok: true, outcome });
