@@ -338,9 +338,13 @@ describe('archive link-case', () => {
     ]);
   });
 
-  it.each(
-    [['no-such-message'], ['no-such-case'], ['case-closed'], ['already-linked'], ['preserved']] as const,
-  )('reports %s as a usage answer', async (reason) => {
+  it.each([
+    ['no-such-message'],
+    ['no-such-case'],
+    ['case-closed'],
+    ['already-linked'],
+    ['preserved'],
+  ] as const)('reports %s as a usage answer', async (reason) => {
     const res = await driveWrite(
       archiveLinkCaseCommand,
       {

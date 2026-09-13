@@ -819,12 +819,7 @@ export interface OpsPorts {
     readonly messageId: string;
     readonly caseId: string;
   }):
-    | 'linked'
-    | 'no-such-message'
-    | 'no-such-case'
-    | 'case-closed'
-    | 'already-linked'
-    | 'preserved';
+    'linked' | 'no-such-message' | 'no-such-case' | 'case-closed' | 'already-linked' | 'preserved';
   /** Queues one `archive_backfill` job for the channel (dedupe-collapsed). */
   enqueueArchiveBackfill(channelId: string): void;
   /**

@@ -108,7 +108,13 @@ beforeEach(() => {
     ],
     roles: [
       { id: GUILD, name: '@everyone', position: 0, permissions: '0', managed: false },
-      { id: BOT_ROLE, name: 'bananasaurs', position: 7, permissions: rolePermissions, managed: true },
+      {
+        id: BOT_ROLE,
+        name: 'bananasaurs',
+        position: 7,
+        permissions: rolePermissions,
+        managed: true,
+      },
     ],
     members: [
       { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },

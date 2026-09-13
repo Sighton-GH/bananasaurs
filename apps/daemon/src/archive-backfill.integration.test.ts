@@ -63,16 +63,14 @@ class FakeMessageSource {
       .filter((m) => before === undefined || BigInt(m.messageId) < BigInt(before))
       .sort((a, b) => (BigInt(b.messageId) > BigInt(a.messageId) ? 1 : -1))
       .slice(0, limit)
-      .map(
-        (m): FetchedMessage => ({
-          messageId: m.messageId,
-          authorId: '222222222222222222',
-          createdAtMs: NOW - 1000,
-          content: `message ${m.messageId}`,
-          editedTimestampMs: undefined,
-          attachments: [],
-        }),
-      );
+      .map((m): FetchedMessage => ({
+        messageId: m.messageId,
+        authorId: '222222222222222222',
+        createdAtMs: NOW - 1000,
+        content: `message ${m.messageId}`,
+        editedTimestampMs: undefined,
+        attachments: [],
+      }));
     const last = all.length > 0 ? all[all.length - 1] : undefined;
     return {
       messages: all,
@@ -151,9 +149,7 @@ describe('archive backfill continuation through the real queue', () => {
     const second = jobs.find((job) => job.state === 'queued');
     expect(second).toBeDefined();
     expect(second?.kind).toBe(JOB_KINDS.archiveBackfill);
-    expect(second?.dedupeKey).toBe(
-      archiveBackfillDedupeKey(GUILD, CHANNEL, firstJobId as number),
-    );
+    expect(second?.dedupeKey).toBe(archiveBackfillDedupeKey(GUILD, CHANNEL, firstJobId as number));
     expect(second?.dedupeKey).not.toBe(archiveBackfillDedupeKey(GUILD, CHANNEL));
 
     // Tick 2 lands page 2 and queues a third row keyed off its own id.
