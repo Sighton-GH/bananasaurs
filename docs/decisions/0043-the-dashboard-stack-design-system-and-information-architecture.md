@@ -89,7 +89,7 @@ not assert: layout, colour, or pixels.
 top-level session state machine's concern, exactly as today, because they
 render *instead of* the shell rather than inside it.
 
-Navigation is data, not JSX: an array of `{ path, label, area, status }` where
+Navigation is data, not JSX: an array of `{ path, label, status }` where
 `status` is `'built'` today and Slice 10 adds `'stub'`. Slices 8 and 10 add
 rows; they do not restructure the rail. Unbuilt areas are absent in Slice 7
 and visibly stubbed from Slice 10 — never hidden after that, never faked.

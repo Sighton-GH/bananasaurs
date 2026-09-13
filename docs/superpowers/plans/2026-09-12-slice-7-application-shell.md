@@ -67,7 +67,8 @@ Radix Dialog, vitest 2 with `jsdom` per-file, `@testing-library/react`.
 - **Tests:** dashboard tests are `*.test.tsx` under `packages/dashboard/src/`
   and begin with `// @vitest-environment jsdom` on line 1. They stub
   `globalThis.fetch` with `vi.stubGlobal` and assert URLs and bodies; they
-  never assert class names, colours or layout. Commit after each task step.
+  never assert class names, colours or layout. Commit at every step the
+  brief marks as a commit point.
 - **Every gate run alone, read by exit code:** `npm run typecheck`,
   `npm run lint`, `npm run test`.
 
@@ -129,7 +130,8 @@ packages/dashboard/src/
 - Test: `packages/dashboard/src/hooks/useResource.test.tsx`
 - Test: `packages/dashboard/src/vitest-environment.test.ts`
 
-**Interfaces:**
+**Interfaces** (`ReactElement` is documentation for the return type — leave
+return types inferred in code; `JSX` is not a global under `@types/react` 19):
 - Produces:
   ```ts
   // ui/Button.tsx
@@ -138,30 +140,30 @@ packages/dashboard/src/
     readonly variant?: ButtonVariant;
     readonly busy?: boolean;
   }
-  export function Button(props: ButtonProps): JSX.Element;
+  export function Button(props: ButtonProps): ReactElement;
 
   // ui/Badge.tsx
   export type BadgeTone = 'neutral' | 'hold' | 'danger' | 'ok';
-  export function Badge(props: { readonly tone?: BadgeTone; readonly children: ReactNode }): JSX.Element;
+  export function Badge(props: { readonly tone?: BadgeTone; readonly children: ReactNode }): ReactElement;
 
   // ui/Field.tsx
-  export function Field(props: { readonly label: string; readonly hint?: string; readonly error?: string; readonly children: ReactNode }): JSX.Element;
-  export function Input(props: InputHTMLAttributes<HTMLInputElement>): JSX.Element;
-  export function Checkbox(props: InputHTMLAttributes<HTMLInputElement> & { readonly label: string }): JSX.Element;
+  export function Field(props: { readonly label: string; readonly hint?: string; readonly error?: string; readonly children: ReactElement }): ReactElement;
+  export function Input(props: InputHTMLAttributes<HTMLInputElement>): ReactElement;
+  export function Checkbox(props: InputHTMLAttributes<HTMLInputElement> & { readonly label: string }): ReactElement;
 
   // ui/DataTable.tsx
   export interface Column<T> { readonly key: string; readonly header: ReactNode; readonly cell: (row: T) => ReactNode; readonly numeric?: boolean }
-  export function DataTable<T>(props: { readonly columns: readonly Column<T>[]; readonly rows: readonly T[]; readonly rowKey: (row: T) => string; readonly caption: string }): JSX.Element;
+  export function DataTable<T>(props: { readonly columns: readonly Column<T>[]; readonly rows: readonly T[]; readonly rowKey: (row: T) => string; readonly caption: string }): ReactElement;
 
   // ui/PageHeader.tsx
-  export function PageHeader(props: { readonly title: string; readonly purpose: string; readonly actions?: ReactNode }): JSX.Element;
+  export function PageHeader(props: { readonly title: string; readonly purpose: string; readonly actions?: ReactNode }): ReactElement;
 
   // ui/DataState.tsx
   export type Resource<T> =
     | { readonly state: 'loading' }
     | { readonly state: 'error'; readonly request: string; readonly message: string; readonly retry: () => void }
     | { readonly state: 'ready'; readonly data: T; readonly degraded?: string };
-  export function DataState<T>(props: { readonly resource: Resource<T>; readonly isEmpty?: (data: T) => boolean; readonly empty?: ReactNode; readonly children: (data: T) => ReactNode }): JSX.Element;
+  export function DataState<T>(props: { readonly resource: Resource<T>; readonly isEmpty?: (data: T) => boolean; readonly empty?: ReactNode; readonly children: (data: T) => ReactNode }): ReactElement;
 
   // hooks/useResource.ts
   export interface UseResource<T> { readonly resource: Resource<T>; readonly reload: () => void }
@@ -360,12 +362,14 @@ export function Badge({ tone = 'neutral', children }: { readonly tone?: BadgeTon
 `ui/Field.tsx`:
 
 ```tsx
-import { useId, type InputHTMLAttributes, type ReactNode } from 'react';
+import { cloneElement, isValidElement, useId, type InputHTMLAttributes, type ReactElement } from 'react';
 
 /**
- * A labelled form control. The label wraps the control so clicking it focuses
- * the input without an `htmlFor` to keep in sync; the hint and error are
- * announced through `aria-describedby` on the wrapping element.
+ * A labelled form control. The label wraps only its text and the control, so
+ * the control's accessible name is exactly the label text; the hint and the
+ * error sit outside the label with their own ids and are attached to the
+ * control through `aria-describedby` (the child must be a single element —
+ * an `<Input>` — for that to work).
  */
 export function Field({
   label,
@@ -376,24 +380,37 @@ export function Field({
   readonly label: string;
   readonly hint?: string;
   readonly error?: string;
-  readonly children: ReactNode;
+  readonly children: ReactElement<{ 'aria-describedby'?: string; 'aria-invalid'?: boolean }>;
 }) {
   const id = useId();
+  const hintId = `${id}-hint`;
+  const errorId = `${id}-error`;
+  const describedBy = [hint !== undefined ? hintId : undefined, error !== undefined ? errorId : undefined]
+    .filter((x): x is string => x !== undefined)
+    .join(' ');
+  const control = isValidElement(children)
+    ? cloneElement(children, {
+        'aria-describedby': describedBy === '' ? undefined : describedBy,
+        'aria-invalid': error !== undefined ? true : undefined,
+      })
+    : children;
   return (
-    <label className="block text-sm" aria-describedby={hint !== undefined || error !== undefined ? id : undefined}>
-      <span className="mb-1 block text-ink-muted">{label}</span>
-      {children}
+    <div className="text-sm">
+      <label className="block">
+        <span className="mb-1 block text-ink-muted">{label}</span>
+        {control}
+      </label>
       {hint !== undefined && (
-        <span id={id} className="mt-1 block text-xs text-ink-muted">
+        <span id={hintId} className="mt-1 block text-xs text-ink-muted">
           {hint}
         </span>
       )}
       {error !== undefined && (
-        <span id={id} role="alert" className="mt-1 block text-xs text-danger">
+        <span id={errorId} role="alert" className="mt-1 block text-xs text-danger">
           {error}
         </span>
       )}
-    </label>
+    </div>
   );
 }
 
@@ -771,7 +788,7 @@ git commit -m "feat(dashboard): design tokens and shared primitives (Slice 7 tas
   // ui/Toast.tsx
   export type ToastTone = 'neutral' | 'hold' | 'danger' | 'ok';
   export interface ToastInput { readonly tone: ToastTone; readonly title: string; readonly message?: string }
-  export function ToastProvider(props: { readonly children: ReactNode }): JSX.Element;
+  export function ToastProvider(props: { readonly children: ReactNode }): ReactElement;
   export function useToast(): (toast: ToastInput) => void;
 
   // ui/ConfirmDialog.tsx
@@ -783,10 +800,10 @@ git commit -m "feat(dashboard): design tokens and shared primitives (Slice 7 tas
     readonly danger?: boolean;
     readonly onConfirm: () => void;
     readonly onCancel: () => void;
-  }): JSX.Element;
+  }): ReactElement;
 
   // ui/ReauthDialog.tsx
-  export function ReauthDialog(props: { readonly open: boolean; readonly onSubmit: (password: string) => void; readonly onCancel: () => void }): JSX.Element;
+  export function ReauthDialog(props: { readonly open: boolean; readonly onSubmit: (password: string) => void; readonly onCancel: () => void }): ReactElement;
 
   // app/session.tsx
   export interface Session {
@@ -797,7 +814,7 @@ git commit -m "feat(dashboard): design tokens and shared primitives (Slice 7 tas
     write<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T | undefined>;
     logout(): Promise<void>;
   }
-  export function SessionProvider(props: { readonly session: SessionInfo; readonly onLoggedOut: () => void; readonly children: ReactNode }): JSX.Element;
+  export function SessionProvider(props: { readonly session: SessionInfo; readonly onLoggedOut: () => void; readonly children: ReactNode }): ReactElement;
   export function useSession(): Session;
 
   // test-support.tsx
@@ -1424,15 +1441,15 @@ git commit -m "feat(dashboard): session provider, toasts, confirm and re-auth di
     jobCounts: Record<string, number>;
     oldestDueJobAtMs: number | undefined;
   }
-  export function HealthProvider(props: { readonly children: ReactNode }): JSX.Element;
+  export function HealthProvider(props: { readonly children: ReactNode }): ReactElement;
   export function useHealth(): UseResource<HealthInfo>;
 
   // pages/*.tsx — each a default-less named export taking no props:
-  export function OverviewPage(): JSX.Element;
-  export function SafetyPage(): JSX.Element;
-  export function LoggingPage(): JSX.Element;
-  export function PanelsPage(): JSX.Element;
-  export function AuditPage(): JSX.Element;
+  export function OverviewPage(): ReactElement;
+  export function SafetyPage(): ReactElement;
+  export function LoggingPage(): ReactElement;
+  export function PanelsPage(): ReactElement;
+  export function AuditPage(): ReactElement;
   ```
 
 - [ ] **Step 1: Health provider**
@@ -1834,9 +1851,26 @@ describe('OverviewPage', () => {
       </HealthProvider>,
     );
     expect(await screen.findByText(/Bananasaurs dev/)).toBeTruthy();
+    expect(screen.getByText('(1540816150026518620)')).toBeTruthy();
     expect(screen.getByText('connected')).toBeTruthy();
+    expect(screen.getByText('42 ms')).toBeTruthy();
+    // Dry run is on → a hold badge; kill switch and breaker are off → plain text.
+    expect(screen.getByText('on')).toBeTruthy();
+    expect(screen.getAllByText('off')).toHaveLength(1);
+    expect(screen.getByText('closed')).toBeTruthy();
     expect(screen.getByText('pending=2')).toBeTruthy();
+    expect(screen.queryByText(/Scheduler lag/)).toBeNull();
     expect(mock.mock.calls.map((c) => String(c[0]))).toEqual(['/api/health']);
+  });
+
+  it('renders the scheduler lag row only when a due job is waiting', async () => {
+    stubFetch([{ url: '/api/health', body: { ...HEALTH, oldestDueJobAtMs: 0 } }]);
+    renderWithSession(
+      <HealthProvider>
+        <OverviewPage />
+      </HealthProvider>,
+    );
+    expect(await screen.findByText('Scheduler lag')).toBeTruthy();
   });
 });
 
@@ -1920,6 +1954,8 @@ describe('PanelsPage', () => {
     renderWithSession(<PanelsPage />);
     expect(await screen.findByText('p1')).toBeTruthy();
     expect(screen.getByText('roles/select/toggle')).toBeTruthy();
+    expect(screen.getByText('posted')).toBeTruthy();
+    expect(screen.getByText('3')).toBeTruthy();
   });
 });
 
@@ -1996,17 +2032,17 @@ git commit -m "feat(dashboard): the five pages and the health provider (Slice 7 
   export const NAV: readonly NavEntry[];   // '/', '/safety', '/logging', '/panels', '/audit' — all 'built'
 
   // app/Shell.tsx
-  export function Shell(): JSX.Element;    // rail + header + StateStrip + Switch; must be inside SessionProvider and a wouter Router
+  export function Shell(): ReactElement;    // rail + header + StateStrip + Switch; must be inside SessionProvider and a wouter Router
 
   // app/StateStrip.tsx
-  export function StateStrip(): JSX.Element | null;
+  export function StateStrip(): ReactElement | null;
 
   // pages/login.tsx
-  export function LoginForm(props: { readonly onSignedIn: () => void }): JSX.Element;
-  export function BootstrapForm(props: { readonly token: string; readonly onSignedIn: () => void }): JSX.Element;
+  export function LoginForm(props: { readonly onSignedIn: () => void }): ReactElement;
+  export function BootstrapForm(props: { readonly token: string; readonly onSignedIn: () => void }): ReactElement;
 
   // pages/not-found.tsx
-  export function NotFoundPage(): JSX.Element;
+  export function NotFoundPage(): ReactElement;
   ```
 
 - [ ] **Step 1: Routes as data**
