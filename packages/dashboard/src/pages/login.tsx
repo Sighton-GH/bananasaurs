@@ -49,10 +49,20 @@ export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
     <Card title="Bananasaurs">
       <form onSubmit={(e) => void submit(e)} className="mt-4 grid gap-3">
         <Field label="Username">
-          <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
+          <Input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            autoComplete="username"
+          />
         </Field>
         <Field label="Password" {...(error !== undefined ? { error } : {})}>
-          <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="current-password"
+          />
         </Field>
         <div>
           <Button type="submit" variant="primary" busy={busy}>
@@ -64,7 +74,13 @@ export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
   );
 }
 
-export function BootstrapForm({ token, onSignedIn }: { readonly token: string; readonly onSignedIn: () => void }) {
+export function BootstrapForm({
+  token,
+  onSignedIn,
+}: {
+  readonly token: string;
+  readonly onSignedIn: () => void;
+}) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | undefined>(undefined);
@@ -97,10 +113,24 @@ export function BootstrapForm({ token, onSignedIn }: { readonly token: string; r
       <p className="mt-1 text-sm text-ink-muted">Create the owner account. This link works once.</p>
       <form onSubmit={(e) => void submit(e)} className="mt-4 grid gap-3">
         <Field label="Username">
-          <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
+          <Input
+            value={username}
+            onChange={(e) => setUsername(e.target.value)}
+            autoFocus
+            autoComplete="username"
+          />
         </Field>
-        <Field label="Password" hint="At least 12 characters" {...(error !== undefined ? { error } : {})}>
-          <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
+        <Field
+          label="Password"
+          hint="At least 12 characters"
+          {...(error !== undefined ? { error } : {})}
+        >
+          <Input
+            type="password"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            autoComplete="new-password"
+          />
         </Field>
         <div>
           <Button type="submit" variant="primary" busy={busy}>

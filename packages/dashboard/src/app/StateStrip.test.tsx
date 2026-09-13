@@ -18,7 +18,12 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('StateStrip', () => {
   it('renders nothing when nothing is held', async () => {
-    stubFetch([{ url: '/api/health', body: { ...base, safety: { killswitch: false, dryRun: false, breakerOpen: false } } }]);
+    stubFetch([
+      {
+        url: '/api/health',
+        body: { ...base, safety: { killswitch: false, dryRun: false, breakerOpen: false } },
+      },
+    ]);
     renderWithSession(
       <HealthProvider>
         <StateStrip />
@@ -29,7 +34,16 @@ describe('StateStrip', () => {
   });
 
   it('names every active hold', async () => {
-    stubFetch([{ url: '/api/health', body: { ...base, gateway: { ...base.gateway, connected: false }, safety: { killswitch: true, dryRun: true, breakerOpen: true } } }]);
+    stubFetch([
+      {
+        url: '/api/health',
+        body: {
+          ...base,
+          gateway: { ...base.gateway, connected: false },
+          safety: { killswitch: true, dryRun: true, breakerOpen: true },
+        },
+      },
+    ]);
     renderWithSession(
       <HealthProvider>
         <StateStrip />
@@ -37,7 +51,13 @@ describe('StateStrip', () => {
       { session: { ...TEST_SESSION, readonly: true } },
     );
     const strip = await screen.findByTestId('state-strip');
-    for (const text of ['Read-only instance', 'Dry run', 'Kill switch on', 'Circuit breaker open', 'Gateway disconnected']) {
+    for (const text of [
+      'Read-only instance',
+      'Dry run',
+      'Kill switch on',
+      'Circuit breaker open',
+      'Gateway disconnected',
+    ]) {
       expect(strip.textContent).toContain(text);
     }
   });

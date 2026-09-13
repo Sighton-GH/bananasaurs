@@ -13,11 +13,16 @@ describe('LoginForm', () => {
     const onSignedIn = vi.fn();
     render(<LoginForm onSignedIn={onSignedIn} />);
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'correct horse battery' } });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery' },
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     });
-    expect(bodyOf(mock.mock.calls[0]!)).toEqual({ username: 'owner', password: 'correct horse battery' });
+    expect(bodyOf(mock.mock.calls[0]!)).toEqual({
+      username: 'owner',
+      password: 'correct horse battery',
+    });
     expect(onSignedIn).toHaveBeenCalledTimes(1);
   });
 
@@ -33,14 +38,25 @@ describe('LoginForm', () => {
 
 describe('BootstrapForm', () => {
   it('posts { token, username, password } to /api/bootstrap and joins issues on failure', async () => {
-    const mock = stubFetch([{ method: 'POST', url: '/api/bootstrap', status: 400, body: { error: 'bad-request', issues: ['too short', 'too common'] } }]);
+    const mock = stubFetch([
+      {
+        method: 'POST',
+        url: '/api/bootstrap',
+        status: 400,
+        body: { error: 'bad-request', issues: ['too short', 'too common'] },
+      },
+    ]);
     render(<BootstrapForm token="tok" onSignedIn={() => undefined} />);
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'short' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create owner account' }));
     });
-    expect(bodyOf(mock.mock.calls[0]!)).toEqual({ token: 'tok', username: 'owner', password: 'short' });
+    expect(bodyOf(mock.mock.calls[0]!)).toEqual({
+      token: 'tok',
+      username: 'owner',
+      password: 'short',
+    });
     expect(screen.getByRole('alert').textContent).toBe('too short; too common');
   });
 });
