@@ -22,6 +22,13 @@ export interface Session {
    * refresh only on success. The re-auth round trip is `apiFetch`'s.
    */
   write<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T | undefined>;
+  /**
+   * The same write, but `ApiError` and `ReadonlyError` propagate to the
+   * caller instead of becoming a toast. Forms that render the server's
+   * answer inline (the new-rule form's `invalid-config` detail, the mode
+   * dialog's `not-eligible` refusal) use this; everything else uses `write`.
+   */
+  writeOrThrow<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T>;
   logout(): Promise<void>;
 }
 
@@ -71,16 +78,23 @@ function SessionInner({
     [],
   );
 
-  const value = useMemo<Session>(
-    () => ({
+  const value = useMemo<Session>(() => {
+    const writeOrThrow = <T,>(
+      url: string,
+      body: unknown,
+      method: 'POST' | 'PUT' | 'DELETE' = 'POST',
+    ): Promise<T> =>
+      apiFetch<T>(url, session.csrfToken, requireReauth, {
+        method,
+        body: JSON.stringify(body),
+      });
+    return {
       info: session,
       read: <T,>(url: string) => apiFetch<T>(url, session.csrfToken, requireReauth),
+      writeOrThrow,
       write: async <T,>(url: string, body: unknown, method: 'POST' | 'PUT' | 'DELETE' = 'POST') => {
         try {
-          return await apiFetch<T>(url, session.csrfToken, requireReauth, {
-            method,
-            body: JSON.stringify(body),
-          });
+          return await writeOrThrow<T>(url, body, method);
         } catch (err) {
           if (err instanceof ReadonlyError) {
             toast({ tone: 'hold', title: 'This instance is read-only', message: err.message });
@@ -126,9 +140,8 @@ function SessionInner({
         });
         onLoggedOut();
       },
-    }),
-    [session, requireReauth, toast, onLoggedOut],
-  );
+    };
+  }, [session, requireReauth, toast, onLoggedOut]);
 
   return (
     <SessionContext.Provider value={value}>
