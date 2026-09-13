@@ -26,7 +26,10 @@ interface ReviewData {
 const ZERO_COUNTS: VerdictCounts = { falsePositive: 0, truePositive: 0, unclear: 0 };
 
 /** Evidence: the fixture's whole message when one was captured, else the snippet with a note that it is not the whole message. */
-function EvidenceCell({ fixtureContent, matchedSnippet }: {
+function EvidenceCell({
+  fixtureContent,
+  matchedSnippet,
+}: {
   readonly fixtureContent: string | undefined;
   readonly matchedSnippet: string;
 }) {
@@ -37,8 +40,8 @@ function EvidenceCell({ fixtureContent, matchedSnippet }: {
     <>
       <p className="max-w-md text-sm break-words whitespace-pre-wrap">{matchedSnippet}</p>
       <p className="mt-1 text-xs text-ink-muted">
-        (snippet only — the message is not held: it was deleted in enforce mode, or removed at
-        the member&apos;s request)
+        (snippet only — the message is not held: it was deleted in enforce mode, or removed at the
+        member&apos;s request)
       </p>
     </>
   );
@@ -155,8 +158,8 @@ export function ReviewPage() {
               <h2 className="mt-2 text-lg">Reviewed matches per rule</h2>
               <p className="mt-1 text-sm text-ink-muted">
                 Release 2&apos;s gate is measured from these numbers (ADR 0042 §4): zero
-                false-positive or unclear verdicts for a rule that feeds the escalation counter;
-                at most 5% for a delete-only rule; at least 20 reviewed or a sign-off.
+                false-positive or unclear verdicts for a rule that feeds the escalation counter; at
+                most 5% for a delete-only rule; at least 20 reviewed or a sign-off.
               </p>
               <div className="mt-3">
                 <DataTable
@@ -198,10 +201,7 @@ export function ReviewPage() {
                 />
               </div>
               {showNativeWarning && (
-                <p
-                  role="note"
-                  className="mt-4 rounded-sm border border-hold px-3 py-2 text-sm"
-                >
+                <p role="note" className="mt-4 rounded-sm border border-hold px-3 py-2 text-sm">
                   Native AutoMod has blocked {queue.nativeBlocked} messages before any rule here
                   could see them. For keyword, mention, rapid-message and duplicate rules the
                   false-positive rate is measured on what native let through, not on real traffic.
@@ -280,8 +280,8 @@ export function ReviewPage() {
                 <>
                   <h2 className="mt-6 text-lg">Native AutoMod hits</h2>
                   <p className="mt-1 text-sm text-ink-muted">
-                    Discord blocked these before any rule here saw them; a verdict records
-                    whether native was right.
+                    Discord blocked these before any rule here saw them; a verdict records whether
+                    native was right.
                   </p>
                   <div className="mt-3">
                     <DataTable
@@ -309,7 +309,10 @@ export function ReviewPage() {
                           key: 'evidence',
                           header: 'Evidence',
                           cell: (h) => (
-                            <EvidenceCell fixtureContent={undefined} matchedSnippet={h.matchedSnippet} />
+                            <EvidenceCell
+                              fixtureContent={undefined}
+                              matchedSnippet={h.matchedSnippet}
+                            />
                           ),
                         },
                         {

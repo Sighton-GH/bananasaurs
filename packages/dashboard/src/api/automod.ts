@@ -234,7 +234,8 @@ export const NATIVE_OVERLAP_KINDS: readonly RuleKind[] = [
 ];
 
 /** What a one-click suppression narrows, as `POST /api/automod/rules/:ruleId/suppress` takes it. */
-export type SuppressionKind = 'allowlist_phrase' | 'invite_code' | 'link_domain' | 'channel_exemption';
+export type SuppressionKind =
+  'allowlist_phrase' | 'invite_code' | 'link_domain' | 'channel_exemption';
 
 /**
  * The one-click suppression appropriate to a predicate kind (spec Slice 9),
@@ -244,7 +245,9 @@ export type SuppressionKind = 'allowlist_phrase' | 'invite_code' | 'link_domain'
  */
 export const suppressionFor = (
   kind: RuleKind,
-): { readonly kind: SuppressionKind; readonly label: string; readonly prefillFromSnippet: boolean } | undefined => {
+):
+  | { readonly kind: SuppressionKind; readonly label: string; readonly prefillFromSnippet: boolean }
+  | undefined => {
   switch (kind) {
     case 'keyword_filter':
       return { kind: 'allowlist_phrase', label: 'Allow this phrase', prefillFromSnippet: true };
