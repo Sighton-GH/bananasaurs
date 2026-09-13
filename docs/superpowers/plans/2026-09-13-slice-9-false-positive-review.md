@@ -45,6 +45,12 @@ in `docs/reports/release2-slices-7-12-ledger.md`.
   verdicts and suppressions need `config.write`. No new capability.
 - **Re-auth:** none of Slice 9's writes need `requireFresh` — a verdict is
   evidence, and a suppression narrows a rule (PR-54).
+- **Sign-off (PR-59):** a suppression does **not** void
+  `enforce_signed_off_by/at`. Every suppression strictly narrows the rule
+  (an allowed phrase, code or domain, or an exempt channel), and narrowing
+  cannot create the false positives a sign-off attests against; ADR 0042
+  Amendment 2 voids the sign-off on configuration *replacement* because that
+  can widen. The routes therefore write nothing to `mod_rules`.
 - **Validation (rule 3):** every body and param passes Zod; `eventId` is
   `z.string().min(1).max(64)` (event ids are opaque strings, see
   `mod_case_events`); `verdict` is `z.enum(['false_positive','true_positive','unclear'])`;
@@ -124,7 +130,7 @@ export interface VerdictCounts { readonly falsePositive: number; readonly truePo
 /** Verdicts per rule, attributed through the event each verdict names — the numerator Release 2's gate is written against. Rules with no verdicts are absent. */
 export const countVerdictsByRule = (scope: GuildScope): Readonly<Record<string, VerdictCounts>>;
 
-/** How many native AutoMod *block* decisions this guild has recorded — nonzero means the observe window measures a stream native already filtered (spec F3.2). */
+/** How many native AutoMod decisions that stopped a message this guild has recorded — `native_blocked`, `native_timeout` and `native_blocked_interaction`; `native_alerted` lets the message through and is excluded. Nonzero means the observe window measures a stream native already filtered (spec F3.2). */
 export const countNativeBlocked = (scope: GuildScope): number;
 ```
 
@@ -135,24 +141,30 @@ export const countNativeBlocked = (scope: GuildScope): number;
      with `native:` and which have no `mod_match_reviews` row, oldest first,
      honouring `limit`; a Bananasaurs event (with a trace) is excluded; a
      native event with a verdict is excluded; guild B's native event with the
-     same `eventId` does not appear for guild A. Seed native events with
-     `modCaseRepo.recordCaseEvent` using `ruleId: 'native:123'` and
-     `actionTaken: 'native_blocked'`; look at `native-subscriber.test.ts` for
-     the exact shape `recordCaseEvent` needs for a native event.
+     same `eventId` does not appear for guild A. Seed events with the storage-level `modCaseRepo.openOrResolveCase` (for
+     a `caseId`) then `modCaseRepo.recordCaseEvent(scope, { eventId, caseId,
+     at, memberId, ruleId, matchedCategory, matchedSnippet, actionTaken,
+     trace? })` — copy `seedMatchEvent` from
+     `packages/storage/src/repos/mod-cases.test.ts` (around line 597) and
+     omit `trace` for native events (`ruleId: 'native:123'`,
+     `actionTaken: 'native_blocked'`). Do not copy the port-level shape in
+     `native-subscriber.test.ts`; it has no `eventId` or `at`.
   2. `countVerdictsByRule`: seed rule A with two `false_positive`, one
      `true_positive`, one `unclear`; rule B with none; assert
      `{ A: { falsePositive: 2, truePositive: 1, unclear: 1 } }` and no key
      for B; guild B seeded with a colliding `eventId` and a verdict does not
      change A's counts.
-  3. `countNativeBlocked`: two `native_blocked`, one `native_alerted` → 2;
-     guild B's `native_blocked` not counted.
+  3. `countNativeBlocked`: two `native_blocked`, one `native_timeout`, one
+     `native_alerted` → 3; guild B's `native_blocked` not counted.
 - [ ] **Step 2: Implement.** `listUnreviewedNativeHits`: `from(modCaseEvents)`
   `leftJoin(modMatchReviews, and(eq(guildId), eq(eventId)))`
   `where(scope.only(modCaseEvents, like(modCaseEvents.ruleId, 'native:%'), isNull(modMatchReviews.eventId)))`
   `orderBy(asc(modCaseEvents.at), sql\`mod_case_events.rowid\`)` `.limit(...)`.
   `countVerdictsByRule`: `from(modMatchReviews).innerJoin(modCaseEvents, …)`
   grouped by `(ruleId, verdict)`, folded into the record.
-  `countNativeBlocked`: `count(*)` where `actionTaken = 'native_blocked'`.
+  `countNativeBlocked`: `count(*)` where `actionTaken` is one of
+  `'native_blocked' | 'native_timeout' | 'native_blocked_interaction'`
+  (`inArray`).
   Import `like` from `drizzle-orm`.
 - [ ] **Step 3: Run tests, gates, commit** —
   `git commit -m "feat(storage): native hits, verdict counts, native-blocked count (Slice 9 task 1)"`.
@@ -183,9 +195,9 @@ Routes added to `registerAutomodRoutes`:
 
 | Method | Path | Guard | Capability | Body | 200 |
 | --- | --- | --- | --- | --- | --- |
-| GET | `/api/automod/review` | require | config.read | query `ruleId?` (rule-id regex), `limit?` (1..200, default 50) | `{ matches: OpsReviewableMatch[], nativeHits: OpsNativeHit[], nativeBlocked: number, verdicts: Record<ruleId, OpsVerdictCounts> }` — `matches` from `listUnreviewedMatches({ ruleId, limit })`, `nativeHits` from `listUnreviewedNativeHits({ limit })` (ignores `ruleId`), `verdicts` from the summary list |
+| GET | `/api/automod/review` | require | config.read | query `ruleId?` (rule-id regex), `limit?` (1..200, default 50) | `{ matches: OpsReviewableMatch[], nativeHits: OpsNativeHit[], nativeBlocked: number, verdicts: Record<ruleId, OpsVerdictCounts> }` — `matches` from `listUnreviewedMatches({ ruleId, limit })`, `nativeHits` from `listUnreviewedNativeHits({ limit })` (ignores `ruleId`), `verdicts` from the summary list. `ruleId` accepts Bananasaurs rule ids only (the regex has no colon); the dashboard builds `?rule=` links only for those |
 | POST | `/api/automod/review/:eventId/verdict` | require | config.write | `{ verdict, note? }` | `{ ok: true, outcome: 'recorded' \| 'recorded-with-label-conflict' }`; 404 on `'no-such-event'` |
-| POST | `/api/automod/rules/:ruleId/suppress` | require | config.write | `{ kind: z.enum(['allowlist_phrase','invite_code','link_domain','channel_exemption']), value: z.string().min(1).max(200) }` — `value` additionally validated per kind: `invite_code` `/^[A-Za-z0-9-]{2,32}$/`, `link_domain` `/^[a-z0-9.-]{1,253}$/`, `channel_exemption` `snowflakeIdSchema` | `{ ok: true, outcome }` where `outcome` is the port's outcome string; 404 on `no-such-rule`; 409 `{ error: 'wrong-kind' }` when the rule's kind does not take that suppression |
+| POST | `/api/automod/rules/:ruleId/suppress` | require | config.write | `{ kind: z.enum(['allowlist_phrase','invite_code','link_domain','channel_exemption']), value: z.string().min(1).max(200) }` — `value` additionally validated per kind: `invite_code` `/^[A-Za-z0-9-]{2,32}$/`, `link_domain` lower-cased with `.toLowerCase()` before matching `/^[a-z0-9.-]{1,253}$/` (the repository canonicalises domains the same way), `channel_exemption` `snowflakeIdSchema` | `{ ok: true, outcome }` where `outcome` is a string: the port's return for the three string-returning ports, and `result.outcome` for `addLinkDomain` (which returns a discriminated object); 404 on `no-such-rule`; 409 `{ error: 'wrong-kind' }` when the rule's kind does not take that suppression |
 
 `reviewedBy` for the verdict is the session's `accountId` (the same
 attribution `dashboardAuditBase` uses). `link_domain` suppression calls
@@ -195,15 +207,26 @@ calls `addInviteAllowlistEntry({ ruleId, code: value, label: 'added from review'
 `allowlist_phrase` calls `addAutomodAllowlistPhrase`.
 
 - [ ] **Step 1: Ports** — add the members and types; wire in the daemon
-  (`addAutomodAllowlistPhrase` checks `findRuleKindAndConfig` for kind
-  `keyword_filter` → else `'wrong-kind'`; pre-checks the phrase against the
-  hydrated rule's `allowlist` for `'already-present'`); test-support (real
+  (`addAutomodAllowlistPhrase`: `ruleExists` false → `'no-such-rule'`;
+  `findRuleKindAndConfig(...).kind !== 'keyword_filter'` → `'wrong-kind'`;
+  the phrase already in the hydrated rule's `allowlist`
+  (`findRuleIncludingDisabled`) → `'already-present'` — this pre-check is
+  load-bearing because the repo's `addAllowlistPhrase` is a bare `INSERT`
+  that throws on a duplicate; else insert → `'added'`); test-support (real
   repos); core fake (`unstubbed`); rule-lists test literal (`notNeeded`).
   `listAutomodRules` now merges `countVerdictsByRule` into each summary.
 - [ ] **Step 2: Route tests first** in `automod.test.ts`, then the three
-  routes. Tests: the review GET returns matches, native hits and the verdict
-  split for this guild only (seed both guilds); a verdict records and the
-  audit row names the event; a second verdict on the same event by the same
+  routes. Tests — `automod.test.ts` has no traced-match seeder, so add one to
+  it: `seedMatch(guild, { eventId, ruleId, trace? })` that calls
+  `modCaseRepo.openOrResolveCase` then `modCaseRepo.recordCaseEvent` with a
+  `trace` JSON string for a Bananasaurs match and none for a native hit
+  (copy `mod-cases.test.ts`'s `seedMatchEvent`). Then: the review GET
+  returns matches, native hits and the verdict split for this guild only
+  (seed both guilds with the same event ids); a verdict records, and the
+  audit row has `subjectType === 'automod_match'`, `subjectId === eventId`,
+  and `after.verdict`; a suppression's audit row has `subjectType ===
+  'automod_rule'`, `subjectId === ruleId`, and `after` equal to `{ kind,
+  value }`; a second verdict on the same event by the same
   account records (revision) and the counts move; 404 for an unknown event;
   suppression of each of the four kinds against a rule of the right kind
   returns 200 and the list/exemption shows it; `allowlist_phrase` against an
@@ -267,7 +290,8 @@ export const suppressionFor = (kind: RuleKind): { readonly kind: SuppressionKind
   2. **Queue** — one `DataTable` "Unreviewed matches", oldest first: When,
      Rule (link), Member (link to `/members/:memberId`), Category, Evidence
      (the `fixtureContent` when present, else the `matchedSnippet` with a
-     muted "(snippet only — the message is no longer held)" when absent),
+     muted "(snippet only — the message is not held: it was deleted in
+     enforce mode, or removed at the member's request)" when absent),
      Trace (a native `<details>` with the raw JSON in a `<p>`, as
      `case.tsx` does), Verdict (three `Button`s: "False positive", "True
      positive", "Unclear"), Suppress (Task 4 — leave an empty cell now).
@@ -303,14 +327,23 @@ export const suppressionFor = (kind: RuleKind): { readonly kind: SuppressionKind
 - Modify: `packages/dashboard/src/pages/automod-rules.tsx`, `packages/dashboard/src/pages/automod-rules.test.tsx`
 - Modify: `packages/dashboard/src/pages/automod-rule.tsx`
 - Modify: `packages/dashboard/src/pages/cases.tsx`, `packages/dashboard/src/pages/case.tsx`, `packages/dashboard/src/pages/member.tsx`
+- Modify: `packages/dashboard/src/ui/ConfirmDialog.tsx`, `packages/dashboard/src/ui/ConfirmDialog.test.tsx` (the `children` slot)
+
 
 - [ ] **Step 1: Suppression per row.** The Suppress cell renders, from
   `suppressionFor(kindOf(ruleId))` (kind looked up from the rules list the
   page already loads): a `Button` with the action's label, or for `regex` a
   `Link` "Narrow the pattern" to `/automod/:ruleId`. Clicking opens
-  `ConfirmDialog` with a `Field` for the value (prefilled from
-  `matchedSnippet` when `prefillFromSnippet`, otherwise empty with the hint
-  "channel ID") and a scope sentence per kind: allowlist_phrase → "Adds
+  `ConfirmDialog`. **`ConfirmDialog` gains an optional `children` slot
+  rendered between the description and the buttons — outside
+  `Dialog.Description`, because an ARIA description must not contain
+  interactive content** (add it to `ui/ConfirmDialog.tsx` with a test in
+  `ui/ConfirmDialog.test.tsx` that a rendered input inside `children` is
+  focusable and is not inside the element `aria-describedby` points at). The
+  suppression dialog puts a `Field`/`Input` for the value in that slot
+  (prefilled from `matchedSnippet` when `prefillFromSnippet`, otherwise empty
+  with the hint "channel ID") and keeps the scope sentence in `scope`, per
+  kind: allowlist_phrase → "Adds
   '{value}' to {ruleId}'s allowlist. Messages containing it will no longer
   match this rule, in every mode."; invite_code → "Allows invite code
   {value} for {ruleId}."; link_domain → "Allows domain {value} for
@@ -349,6 +382,12 @@ export const suppressionFor = (kind: RuleKind): { readonly kind: SuppressionKind
   not faked; verdict writes back to fixtures (`recordVerdict`, unchanged);
   F3.2 warning (Task 3, PR-56); the numerator per rule split by verdict
   (Tasks 1–3), and surfaced on the board (Task 4).
+- **Deliberate gaps (PR-55):** no "raised threshold" one-click for the
+  window and shape tiers (a threshold cannot be invented from one match; the
+  channel exemption is offered and the configuration editor is a link away);
+  no role exemption from the queue (the match does not carry the author's
+  roles); `regex`'s "narrowed pattern" is a link to the configuration, not a
+  button.
 - **Deferred with reasons (ledger):** `invite.last_matched_at` (PR-14) and
   the handwritten-fixture synthetic author — see PR-57 and PR-58.
 - **Type consistency.** `VerdictCounts` is declared in storage (Task 1),

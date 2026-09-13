@@ -375,3 +375,28 @@ the first dispatch:
   the collapsed-author replay Slice 4 warned about cannot occur. The fix (a
   nullable author key, a migration) ships with the first fixture creator,
   which no Release 2 slice names. Cost if wrong: none until a creator exists.
+
+### Plan review (muse-spark-1.3, 2m29s)
+
+Spec PASS / NEEDS_WORK: 6 Important, 6 Minor, all applied before any
+dispatch. The one that was a decision rather than a correction:
+
+- **PR-59 — a suppression preserves the enforcement sign-off.** The reviewer
+  asked why list edits from the review screen do not void
+  `enforce_signed_off_by/at` the way `setRuleConfig` does under ADR 0042
+  Amendment 2. Because every suppression strictly narrows the rule — an
+  allowed phrase, code or domain, an exempt channel — and narrowing cannot
+  create the false positives a sign-off attests against; Amendment 2 voids
+  on configuration *replacement*, which can widen. The suppress route
+  therefore writes nothing to `mod_rules`, which is also the answer the
+  observe window wants. Cost if wrong: a sign-off that survives a narrowing
+  edit — by construction not less true than before.
+
+The corrections: the storage-level `recordCaseEvent` shape (the plan had
+pointed at the port-level one); `addLinkDomain` returns an object, not a
+string; a form control must not live inside `Dialog.Description`, so
+`ConfirmDialog` gains a `children` slot; the review-GET test needs its own
+traced-match seeder; audit assertions name `subjectType`/`subjectId`;
+"blocked" counts the three native actions that stop a message, not one;
+domains lower-cased before validation; the snippet-only copy covers
+enforce-mode deletions.
