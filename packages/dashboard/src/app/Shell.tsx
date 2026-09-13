@@ -1,5 +1,6 @@
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { AuditPage } from '../pages/audit.js';
+import { AutomodRulePage } from '../pages/automod-rule.js';
 import { AutomodRulesPage } from '../pages/automod-rules.js';
 import { CutoverPage } from '../pages/cutover.js';
 import { LoggingPage } from '../pages/logging.js';
@@ -52,19 +53,10 @@ function Rail() {
 }
 
 /**
- * Placeholders for the detail pages Tasks 6 and 7 replace with real pages.
+ * Placeholders for the detail pages Task 7 replaces with real pages.
  * Each renders only its header so its route exists (and the rail entry has
  * somewhere to go) without the shell pretending the page is built.
  */
-function AutomodRulePage() {
-  return (
-    <PageHeader
-      title="Rule"
-      purpose="One automod rule: its status, mode, configuration, and history."
-    />
-  );
-}
-
 function CasesPage() {
   return <PageHeader title="Cases" purpose="Open and recent moderation cases, newest first." />;
 }
