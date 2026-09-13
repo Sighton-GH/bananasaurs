@@ -40,7 +40,13 @@ export interface BackfillPorts {
     cursorMessageId: string | undefined;
     state: BackfillState;
   }): void;
-  enqueueContinuation(input: { channelId: Snowflake; runAfter: number }): void;
+  /**
+   * This tick's own successor. The `jobId` is the tick's own
+   * `context.jobId`, never anything the tick computed — see
+   * `archiveBackfillDedupeKey` (`jobs/kinds.ts`) for why the successor's key
+   * must be minted from it rather than from the channel alone.
+   */
+  enqueueContinuation(input: { channelId: Snowflake; jobId: number; runAfter: number }): void;
   now(): number;
   readonly logger: Logger;
 }
@@ -50,8 +56,9 @@ export const archiveBackfillHandler = (
 ): JobHandler<{ channelId: string }> => ({
   kind: JOB_KINDS.archiveBackfill,
   payload: archiveBackfillPayload,
-  async run(payload) {
+  async run(payload, context) {
     const { channelId } = payload;
+    const jobId = context.jobId;
     const channel = ports.findChannel(channelId);
     if (channel === undefined) {
       // Disabled mid-backfill: the channel row is gone, so there is nothing
@@ -100,7 +107,7 @@ export const archiveBackfillHandler = (
       state: done ? 'done' : 'running',
     });
     if (!done) {
-      ports.enqueueContinuation({ channelId, runAfter: ports.now() });
+      ports.enqueueContinuation({ channelId, jobId, runAfter: ports.now() });
     }
 
     ports.logger.info(

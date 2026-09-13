@@ -320,11 +320,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
     setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
-    enqueueContinuation: ({ channelId, runAfter }) =>
+    enqueueContinuation: ({ channelId, jobId, runAfter }) =>
       void jobRepo.enqueue(scope, {
         kind: JOB_KINDS.archiveBackfill,
         payload: JSON.stringify({ channelId }),
-        dedupeKey: archiveBackfillDedupeKey(guildId, channelId),
+        dedupeKey: archiveBackfillDedupeKey(guildId, channelId, jobId),
         runAfter,
         now: now(),
       }),

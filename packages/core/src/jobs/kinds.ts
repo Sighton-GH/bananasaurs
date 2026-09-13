@@ -212,14 +212,38 @@ export const archiveBackfillPayload = z.object({
 export type ArchiveBackfillPayload = z.infer<typeof archiveBackfillPayload>;
 
 /**
- * One pending backfill per channel (ADR 0046 D4, ADR 0016).
+ * The backfill job's dedupe key.
+ *
+ * Two distinct callers, two distinct shapes, by design — the same trap
+ * `purgeDedupeKey`'s docstring documents, copied here because the backfill
+ * fell into it: `jobs_dedupe` is unique only over `state IN
+ * ('queued','running')` and `enqueue` uses `onConflictDoNothing`, so a tick
+ * that enqueued its successor under the same key its own still-`running`
+ * row holds would see the insert silently refused (its own row is the
+ * conflict) and the channel would backfill exactly one page, forever
+ * `running`. Keying every successor off the tick's own `jobId`
+ * (`context.jobId` — stable across a crash-and-retry, since
+ * `requeueStranded` never changes it) makes self-collision structurally
+ * impossible: a tick was enqueued under its progenitor's id, never its own.
+ *
+ * - `archive enable-channel` mints the *first* job with no `afterJobId`,
+ *   producing the bare `archive_backfill:<guildId>:<channelId>` key — one
+ *   pending backfill per channel (ADR 0046 D4, ADR 0016).
+ * - Every tick after that mints its successor's key from its **own** `jobId`,
+ *   producing `archive_backfill:<guildId>:<channelId>:after:<jobId>`.
  *
  * The guild is redundant under the `(guild_id, dedupe_key)` partial unique
  * index but matches `purgeDedupeKey`'s shape: a key that names everything it
  * scopes reads correctly in `jobs list` without a join.
  */
-export const archiveBackfillDedupeKey = (guildId: string, channelId: string): string =>
-  `${JOB_KINDS.archiveBackfill}:${guildId}:${channelId}`;
+export const archiveBackfillDedupeKey = (
+  guildId: string,
+  channelId: string,
+  afterJobId?: number,
+): string =>
+  afterJobId === undefined
+    ? `${JOB_KINDS.archiveBackfill}:${guildId}:${channelId}`
+    : `${JOB_KINDS.archiveBackfill}:${guildId}:${channelId}:after:${afterJobId}`;
 
 export const archiveExpiryPayload = z.object({
   day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),

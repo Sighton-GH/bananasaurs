@@ -88,7 +88,7 @@ interface Harness {
   ports: BackfillPorts;
   source: FakeMessageSource;
   rows: Map<string, UpsertMessageInput>;
-  continuations: { channelId: string; runAfter: number }[];
+  continuations: { channelId: string; jobId: number; runAfter: number }[];
   channel: {
     live: boolean;
     cursorMessageId: string | undefined;
@@ -100,7 +100,7 @@ interface Harness {
 const harness = (): Harness => {
   const source = new FakeMessageSource();
   const rows = new Map<string, UpsertMessageInput>();
-  const continuations: { channelId: string; runAfter: number }[] = [];
+  const continuations: { channelId: string; jobId: number; runAfter: number }[] = [];
   const channel = {
     live: true,
     cursorMessageId: undefined as string | undefined,
@@ -157,7 +157,7 @@ describe('archive backfill paging', () => {
     expect(h.channel.cursorMessageId).toBe(idAt(150));
     expect(h.channel.state).toBe('running');
     expect(h.continuations).toHaveLength(1);
-    expect(h.continuations[0]).toEqual({ channelId: CHANNEL, runAfter: NOW });
+    expect(h.continuations[0]).toEqual({ channelId: CHANNEL, jobId: 1, runAfter: NOW });
 
     await handler.run({ channelId: CHANNEL }, h.context);
     expect(h.rows.size).toBe(200);
