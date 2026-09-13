@@ -353,8 +353,16 @@ export function formatDoctorReport(report: DoctorReport): string {
     }
   }
 
+  if (report.archiveGuildsNotAllowlisted.length > 0) {
+    lines.push('');
+    for (const guildId of report.archiveGuildsNotAllowlisted) {
+      lines.push(`  ARCHIVE GUILD NOT ALLOWLISTED: ${guildId}`);
+    }
+  }
+
   lines.push('');
-  const b = report.backup;  if (!b.dirExists) {
+  const b = report.backup;
+  if (!b.dirExists) {
     lines.push('  backups: none yet (the timer creates the directory on the first run)');
   } else if (!b.dirWritable) {
     lines.push('  BACKUP DIRECTORY NOT WRITABLE — the backup timer cannot write there');

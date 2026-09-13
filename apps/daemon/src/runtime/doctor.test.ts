@@ -439,6 +439,28 @@ describe('backup health (ADR 0034)', () => {
   });
 });
 
+describe('archive guilds (ADR 0046 D1)', () => {
+  it('fails doctor when an archive guild is not in the allowlist', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config({ BANANASAURS_ARCHIVE_GUILDS: ABSENT_GUILD }));
+
+    expect(report.archiveGuildsNotAllowlisted).toEqual([ABSENT_GUILD]);
+    expect(report.ok).toBe(false);
+    expect(formatDoctorReport(report)).toContain(
+      `  ARCHIVE GUILD NOT ALLOWLISTED: ${ABSENT_GUILD}`,
+    );
+  });
+
+  it('stays clean when every archive guild is allowlisted', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config({ BANANASAURS_ARCHIVE_GUILDS: GUILD }));
+
+    expect(report.archiveGuildsNotAllowlisted).toEqual([]);
+    expect(report.ok).toBe(true);
+    expect(formatDoctorReport(report)).not.toContain('ARCHIVE GUILD NOT ALLOWLISTED');
+  });
+});
+
 describe('the printed report', () => {
   it('is legible and carries no secret', () => {
     addGuild(GUILD, String(REQUIRED_PERMISSIONS));
