@@ -18,8 +18,12 @@ export function ReauthDialog({
   readonly onCancel: () => void;
 }): ReactElement {
   const [password, setPassword] = useState('');
+  const close = () => {
+    setPassword('');
+    onCancel();
+  };
   return (
-    <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
+    <Dialog.Root open={open} onOpenChange={(next) => !next && close()}>
       <Dialog.Portal>
         <Dialog.Overlay className="fixed inset-0 bg-black/60" />
         <Dialog.Content className="fixed top-1/2 left-1/2 w-[24rem] max-w-[calc(100vw-2rem)] -translate-x-1/2 -translate-y-1/2 rounded-md border border-line bg-panel p-4 text-ink">
@@ -45,7 +49,7 @@ export function ReauthDialog({
               </Field>
             </div>
             <div className="mt-4 flex justify-end gap-2">
-              <Button onClick={onCancel}>Cancel</Button>
+              <Button onClick={close}>Cancel</Button>
               <Button type="submit" variant="primary">
                 Confirm
               </Button>
