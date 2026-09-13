@@ -52,7 +52,7 @@
 - Modify: `packages/core/src/discord/events.ts`, `packages/core/src/discord/port.ts`, `packages/core/src/pipeline/fingerprint.ts`, `packages/core/src/pipeline/fingerprint.test.ts`
 - Modify: `packages/discord/src/events.ts`, `packages/discord/src/events.test.ts`, `packages/discord/src/rest/port.ts`, `packages/discord/src/rest/port.test.ts`
 - Modify: `packages/testkit/src/fake-discord.ts`
-- Modify (only if typecheck demands an exhaustive-switch arm): `packages/core/src/logging/subscriber.ts` and any other `switch (event.kind)` that fails to compile — add a no-op arm, nothing else.
+- Modify: `packages/core/src/logging/subscriber.ts` — its `switch (event.kind)` has **no** `never` guard and its `default` throws `unreachable log event kind` (line ~179), so typecheck will not catch the new kind but the first bulk delete would throw at runtime (masked only by pipeline isolation). Add an unconditional early `return` for `'messageDeleteBulk'` before the switch, with a one-line comment; nothing else in that file. `fingerprint.ts` has a `never` guard and will fail typecheck until its arm exists — that is the intended red.
 
 **Interfaces — Produces:**
 ```ts
@@ -95,14 +95,14 @@ export interface FetchedMessage {
   client.on(Events.MessageBulkDelete, (messages, channel) => {
     translate('messageDeleteBulk', () => ({
       kind: 'messageDeleteBulk',
-      guildId: /* the same guild resolution the three message handlers use */,
+      guildId: channel.guildId,   // discord.js types the channel as GuildTextBasedChannel — always a guild
       receivedAtMs: now(),
       channelId: channel.id,
       messageIds: [...messages.keys()],
     }));
   });
   ```
-  Read `toMessageEvent` for how `guildId` is resolved and mirror it; a DM channel (no guild) is skipped the way the others skip it. Test in `events.test.ts` with the file's existing fake-client pattern: a bulk delete of two ids yields one event with both ids; an empty collection yields no event.
+  (discord.js v14 emits `MessageBulkDelete` as `(messages: Collection<Snowflake, Message>, channel: GuildTextBasedChannel)` — `node_modules/discord.js/typings/index.d.ts` around line 6154; there is no DM case.) Test in `events.test.ts` with the file's existing `h.packet(...)` pattern — **the channel must be in the client's cache for discord.js to emit the event**; seed it the way the file's other channel-bearing tests do (read them first). A bulk delete of two ids yields one event with both ids; an empty collection yields no event.
   In `packages/discord/src/rest/port.ts` `fetchRecentMessages`, add `editedTimestampMs: message.edited_timestamp ? Date.parse(message.edited_timestamp) : undefined` and `attachments: message.attachments.map((a) => ({ attachmentId: a.id, fileName: a.filename, contentType: a.content_type ?? undefined, sizeBytes: a.size }))`. Test in `rest/port.test.ts`: a message body with `edited_timestamp` and one attachment maps both.
 - [ ] **Step 4: Fake.** In `fake-discord.ts`: seeded messages gain optional `attachments` and `editedTimestampMs` (defaults `[]` / `undefined`) and `fetchRecentMessages` returns them; add `emitMessageUpdate(p: { channelId; messageId; authorId; content; editedTimestampMs })`, `emitMessageDelete(p: { channelId; messageId; authorId?: Snowflake })`, `emitMessageDeleteBulk(p: { channelId; messageIds })` on the shape of `emitMessageCreate` (`fake-discord.ts:330-350`), each also updating the fake's own `messages` map (update content, mark deleted) so `fetchRecentMessages` agrees with the events. Existing `emitMessageCreate` gains optional `attachments`.
 - [ ] **Step 5: Gates, commit.** `npx vitest run packages/core/src/pipeline packages/discord/src` green; `npm run typecheck` 0. Commit: `feat(pipeline): messageDeleteBulk event; fetched messages carry edits and attachments (M1 task 1)`.
@@ -112,7 +112,7 @@ export interface FetchedMessage {
 ### Task 2: Config, schema, migration, PRIVACY.md — in one commit
 
 **Files:**
-- Modify: `packages/core/src/config/schema.ts`, `packages/core/src/config/schema.test.ts` (or `load.test.ts` — whichever tests `BANANASAURS_GUILD_ALLOWLIST`)
+- Modify: `packages/core/src/config/schema.ts`, `packages/core/src/config/load.test.ts` (where the `BANANASAURS_GUILD_ALLOWLIST` tests live)
 - Modify: `packages/storage/src/schema.ts`
 - Create (generated): `drizzle/00NN_<name>.sql`, `drizzle/meta/*`
 - Modify: `PRIVACY.md`
@@ -137,7 +137,7 @@ export interface FetchedMessage {
     .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean))
     .pipe(z.array(snowflake)),
   ```
-  Tests: unset → `[]`; `'a,b'` with two snowflakes → both; `'not-a-snowflake'` → parse error.
+  Tests: unset → `[]`; `'123456789012345678, 234567890123456789'` → both ids, trimmed; `'not-a-snowflake'` → parse error.
 - [ ] **Step 2: Tables.** In `schema.ts`, after `automodLinkDomains` (`schema.ts:844-863`), on its exact shape (`snowflake('guild_id')`, `snowflakeCheck`, cascade FK to `guilds` where there is no closer parent — read how `modCases` references `guilds`):
   ```ts
   export const archiveChannels = sqliteTable('archive_channels', {
@@ -146,14 +146,14 @@ export interface FetchedMessage {
     attachmentPolicy: text('attachment_policy').notNull().default('none'),
     enabledAt: integer('enabled_at').notNull(),
     cursorMessageId: text('cursor_message_id'),          // NULL = not started or done
-    backfillState: text('backfill_state').notNull().default('pending'),
+    backfillState: text('backfill_state').notNull().default('pending'),   // 'failed' deliberately absent: a failing page throws to the worker, which retries; there is no terminal failure the operator would act on differently from 'running'
   }, (t) => [
     primaryKey({ columns: [t.guildId, t.channelId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('archive_channels_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_channels_channel_id_snowflake', snowflakeCheck(t.channelId)),
     check('archive_channels_attachment_policy', sql`${t.attachmentPolicy} IN ('none','bytes')`),
-    check('archive_channels_backfill_state', sql`${t.backfillState} IN ('pending','running','done','failed')`),
+    check('archive_channels_backfill_state', sql`${t.backfillState} IN ('pending','running','done')`),
   ]);
 
   export const archiveMessages = sqliteTable('archive_messages', {
@@ -175,6 +175,7 @@ export interface FetchedMessage {
     index('archive_messages_deleted').on(t.guildId, t.deletedAt),
     check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('archive_messages_channel_id_snowflake', snowflakeCheck(t.channelId)),   // schema-invariants: every column named in SNOWFLAKE_COLUMNS needs a format CHECK
     check('archive_messages_retention_class', sql`${t.retentionClass} IN ('default','case','preserve')`),
   ]);
 
@@ -188,6 +189,7 @@ export interface FetchedMessage {
     primaryKey({ columns: [t.guildId, t.messageId, t.editSeq] }),
     foreignKey({ columns: [t.guildId, t.messageId], foreignColumns: [archiveMessages.guildId, archiveMessages.messageId] }).onDelete('cascade'),
     check('archive_message_edits_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_message_edits_message_id_snowflake', snowflakeCheck(t.messageId)),
   ]);
 
   export const archiveAttachments = sqliteTable('archive_attachments', {
@@ -203,10 +205,11 @@ export interface FetchedMessage {
     primaryKey({ columns: [t.guildId, t.messageId, t.attachmentId] }),
     foreignKey({ columns: [t.guildId, t.messageId], foreignColumns: [archiveMessages.guildId, archiveMessages.messageId] }).onDelete('cascade'),
     check('archive_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_attachments_message_id_snowflake', snowflakeCheck(t.messageId)),
   ]);
   ```
   If `guilds`' primary key is not `guildId` or the FK helper differs, read `modCases` (`schema.ts:866-891`) and copy its exact reference. Run `npm run db:generate` once; do not edit the SQL. Run `npx vitest run packages/storage/src/schema-invariants.test.ts` — it must pass with the four new tables discovered; if it fails, fix the **schema**, never the test.
-- [ ] **Step 3: PRIVACY.md.** In the retention table (`PRIVACY.md:74-77`) add rows in the same format:
+- [ ] **Step 3: PRIVACY.md.** In the retention table (`PRIVACY.md:74-81`) add rows in the same format (five rows — ADR 0046's Consequences said three; the attachment and preserve rows are additions this plan makes deliberately, so the policy names every class the schema can hold):
   ```
   | Archived messages from channels the owner enabled | Kept until the owner disables the channel or purges; nothing is archived unless the owner lists the server and enables the channel |
   | Archived messages that were deleted | Content removed 30 days after deletion; the fact that a message existed is kept |
@@ -227,7 +230,7 @@ export interface FetchedMessage {
 **Interfaces — Produces (all `GuildScope`-first, all through `read`/`write` from `../write.js`):**
 ```ts
 export type AttachmentPolicy = 'none' | 'bytes';
-export type BackfillState = 'pending' | 'running' | 'done' | 'failed';
+export type BackfillState = 'pending' | 'running' | 'done';
 export type RetentionClass = 'default' | 'case' | 'preserve';
 export interface ArchiveChannel { channelId: string; attachmentPolicy: AttachmentPolicy; enabledAt: number; cursorMessageId: string | undefined; backfillState: BackfillState }
 export interface ArchiveAttachmentInput { attachmentId: string; filename: string; contentType: string | undefined; size: number }
@@ -246,14 +249,15 @@ export const recordEdit = (scope, input: { messageId: string; content: string | 
 /** Sets deleted_at if null. 'no-such-message' when absent; 'already-deleted' when deleted_at was set. */
 export const recordDelete = (scope, input: { messageId: string; deletedAt: number }): 'recorded' | 'no-such-message' | 'already-deleted';
 export const recordBulkDelete = (scope, input: { messageIds: readonly string[]; deletedAt: number }): number;  // rows newly marked
+/** Preserve wins over every other class: a 'case' row becomes 'preserve'. */
 export const markPreserve = (scope, messageId: string): 'preserved' | 'no-such-message' | 'already-preserved';
 /** PR-69: requires the case to exist in scope with status 'open' (read through mod_cases; never written). */
-export const linkToCase = (scope, input: { messageId: string; caseId: string }): 'linked' | 'no-such-message' | 'no-such-case' | 'case-closed' | 'already-linked';
+export const linkToCase = (scope, input: { messageId: string; caseId: string }): 'linked' | 'no-such-message' | 'no-such-case' | 'case-closed' | 'already-linked' | 'preserved';   // 'preserved': the row is 'preserve', which is stronger; nothing changes
 /** Latest mod_case_events.at for a closed case, else undefined. Read-only. */
 export const caseClosedAt = (scope, caseId: string): number | undefined;
 /**
  * The three tiers (ADR 0046 D3). Purges content (content = NULL, content_purged_at = now)
- * and deletes the message's edit rows, for rows where deleted_at IS NOT NULL AND content IS NOT NULL AND:
+ * and deletes the message's edit rows AND its attachment metadata rows (a filename is content too — PRIVACY.md says attachments follow the message), for rows where deleted_at IS NOT NULL AND content IS NOT NULL AND:
  *   default:  deleted_at <= now - 30d
  *   case:     caseClosedAt(caseId) is defined AND caseClosedAt <= now - 90d
  *   preserve: never
@@ -265,14 +269,17 @@ export const ARCHIVE_DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const ARCHIVE_CASE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
 ```
 
-- [ ] **Step 1: The five failing tests, plus two-guild.** In `archive.test.ts`, using the same in-memory DB helper as `automod-admin.test.ts` (read its top 40 lines for `openTestDb`/scope construction and the guild seeding — copy that exactly), write and **watch fail** (commit the red run as step 1's commit):
+- [ ] **Step 1: The five failing tests, plus two-guild.** In `archive.test.ts`, using the same in-memory DB helper as `automod-admin.test.ts` (`openMigratedTestDatabase` — read its top 40 lines for the scope construction and the guild seeding and copy that exactly), write and **watch fail** (commit the red run as step 1's commit):
   - (c) `expireContent` at `deletedAt + 30d` nulls `content`, stamps `content_purged_at`, deletes the edit rows, keeps the row; at `+30d − 1ms` purges nothing.
   - (d) a `case`-class message whose case is **open** survives `+400d`; whose case is **closed** (seed `mod_cases` row with `status='closed'` and one `mod_case_events` row at `T` — seed through raw `db.insert` on the tables, not through any mod writer) purges at `T + 90d` and not at `T + 90d − 1ms`.
   - (e) two guilds: seed guild B with a colliding `messageId`/`channelId`; every read/write above under A leaves B's rows untouched and invisible (assert `listChannels`, `countMessages`, `findChannel`, `upsertMessage` returning `true` for the same id in the other guild, `recordDelete` under A not marking B).
   - `preserve` never purges at `+10y`.
   - `upsertMessage` twice with different content returns `true` then `false` and keeps the first content.
   - `recordEdit` appends `edit_seq` 1 then 2 holding the previous contents.
-  - `linkToCase` on a closed case → `'case-closed'`; on an unknown case → `'no-such-case'`.
+  - `linkToCase` on a closed case → `'case-closed'`; on an unknown case → `'no-such-case'`; twice → `'already-linked'`; on a preserved row → `'preserved'` and the class stays `preserve`.
+  - `markPreserve` twice → `'preserved'` then `'already-preserved'`; on a `case` row → `'preserved'` and the class is now `preserve`.
+  - `enableChannel` twice → `'enabled'` then `'already-enabled'`; `isChannelEnabled` true after, false after `disableChannel` (which cascades the channel's messages — assert `countMessages` is 0 after); `disableChannel` on an unknown channel → `'not-enabled'`; `listChannels` ordered by `channelId`; `findChannel` reflects `setBackfillCursor`'s cursor and state; `recordBulkDelete` of three ids where one is unknown and one already deleted returns 1 and marks only the live one; `countMessages` counts one channel only.
+  - `expireContent` also deletes the purged message's `archive_attachments` rows.
   Tests (a) and (b) — the vetoes — belong to Task 4's subscriber; note that in a comment.
 - [ ] **Step 2: Implement** `archive.ts` on `mod-cases.ts`'s conventions (`read`/`write`, `scope.only`, `now` passed in). `expireContent` in one `write` transaction: select candidate rows, filter per tier in JS using `caseClosedAt` for `case` rows (there will be few), then `UPDATE` and `DELETE FROM archive_message_edits` for the ids.
 - [ ] **Step 3: Export** from `packages/storage/src/index.ts` as `archiveRepo` (read how `automodAdminRepo` is exported and mirror it).
@@ -310,8 +317,8 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber;   // n
   - `messageDelete` → `recordDelete({ messageId, deletedAt: receivedAtMs })`; `'no-such-message'` is silent (a message we never held).
   - `messageDeleteBulk` → `recordBulkDelete`.
   Bot-authored messages are archived too (the archive is a record, not a filter); a test says so.
-- [ ] **Step 3: Wire.** In `guild.ts`, build `archivePorts` from `archiveRepo` + `loggingRepo.isChannelExcluded` (the logging port already closes over it, `guild.ts:259`) + `config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId)` and append `createArchiveSubscriber(archivePorts)` **after** `createAutomodSubscriber(...)` in the `subscribers` array, with a comment: "after automod so a message the automod deletes is archived as created-then-deleted (ADR 0046 D5); read-side only". Read how `config` reaches `guild.ts` (it may need threading from `daemon.ts`).
-- [ ] **Step 4: Integration test.** `apps/daemon/src/archive.integration.test.ts` on `automod.integration.test.ts`'s harness: with the guild listed and a channel enabled through `archiveRepo.enableChannel`, `fake.emitMessageCreate` → one row; `emitMessageUpdate` → edit row + new content; `emitMessageDelete` → `deleted_at` set; `emitMessageDeleteBulk` of two → both marked; replaying the same create (same `messageId`) → still one row (dedupe). With the guild **not** listed → zero rows for the same sequence.
+- [ ] **Step 3: Wire.** In `guild.ts`, build `archivePorts` from `archiveRepo` + `loggingRepo.isChannelExcluded` (the logging port already closes over it, `guild.ts:259`) + `config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId)` and append `createArchiveSubscriber(archivePorts)` **after** `createAutomodSubscriber(...)` in the `subscribers` array, with a comment: "after automod so a message the automod deletes is archived as created-then-deleted (ADR 0046 D5); read-side only". `config` already reaches `guild.ts` as `GuildRuntimeDeps.config` (`guild.ts:92-99`, destructured at ~136), passed by `daemon.ts:123` — no threading needed here.
+- [ ] **Step 4: Integration test.** `apps/daemon/src/archive.integration.test.ts` on `automod.integration.test.ts`'s inline `beforeEach` plus its `buildPipeline` / `seedRule` / `sendMessage` helpers (lines ~72-125 — read them; copy `buildPipeline`, drop `seedRule`): with the guild listed and a channel enabled through `archiveRepo.enableChannel`, `fake.emitMessageCreate` → one row; `emitMessageUpdate` → edit row + new content; `emitMessageDelete` → `deleted_at` set; `emitMessageDeleteBulk` of two → both marked; replaying the same create (same `messageId`) → still one row (dedupe). With the guild **not** listed → zero rows for the same sequence.
 - [ ] **Step 5: Gates, commit.** Commit: `feat(archive): live subscriber after automod — three vetoes, create/edit/delete/bulk (M1 task 4)`.
 
 ---
@@ -329,7 +336,7 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber;   // n
 // kinds.ts
 JOB_KINDS.archiveBackfill = 'archive_backfill'; JOB_KINDS.archiveExpiry = 'archive_expiry';
 export const archiveBackfillPayload = z.object({ channelId: snowflakeIdSchema });
-export const archiveBackfillDedupeKey = (channelId: string) => `${JOB_KINDS.archiveBackfill}:${channelId}`;   // ADR 0016 (guild, channel)
+export const archiveBackfillDedupeKey = (guildId: string, channelId: string) => `${JOB_KINDS.archiveBackfill}:${guildId}:${channelId}`;   // ADR 0016 (guild, channel) — the guild is redundant under the (guild_id, dedupe_key) index but matches purgeDedupeKey's shape
 export const archiveExpiryPayload = z.object({ day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/) });
 export const archiveExpiryDedupeKey = (day: string) => `${JOB_KINDS.archiveExpiry}:${day}`;
 // backfill.ts
@@ -344,12 +351,12 @@ export interface BackfillPorts {
 export const archiveBackfillHandler = (ports: BackfillPorts): JobHandler<{ channelId: string }>;
 // expiry.ts
 export const archiveExpiryHandler = (ports: { expireContent(now: number): number; now(): number; logger: Logger }): JobHandler<{ day: string }>;
-// archive-expiry-timer.ts — on backup-timer.ts's shape
+// archive-expiry-timer.ts — mirrors backup-timer.ts ONLY in its start/stop contract (run once at start, then setInterval(...).unref(); stop clears); its deps are its own
 export function createArchiveExpiryTimer(deps: { guilds: () => readonly { scope: GuildScope }[]; enqueue(scope, input: EnqueueInput): unknown; now(): number; logger: Logger }): { runOnce(): void; start(): void; stop(): void };
 ```
 
-- [ ] **Step 1: Backfill handler, resume test first.** `run({ channelId })`: `findChannel` — absent (disabled mid-backfill) → log and return (job done). Set state `running`. `fetchRecentMessages(channelId, channel.cursorMessageId)`; for each message `upsertMessage` (attachments from `FetchedMessage.attachments`, `editedAt` from `editedTimestampMs`, `createdAt` from `createdAtMs`); then **persist the cursor before anything else**: `setBackfillCursor({ channelId, cursorMessageId: page.nextBefore, state: page.nextBefore === undefined ? 'done' : 'running' })`; if `nextBefore` defined, `enqueueContinuation({ channelId, runAfter: now() })`. A `DiscordApiError` with `isRateLimit` **propagates** (the worker's backoff is the retry, ADR 0018) — do not catch it. Tests with a hand-rolled `BackfillPorts` over `FakeDiscord` seeded with 250 messages: three runs land 250 rows, the cursor after run 1 is the 100th id, state `done` after run 3 and no further continuation; **the resume test**: run 1, then construct a *new* handler over the same store (simulating a restart) and run 2 — it starts from the persisted cursor and never re-fetches page 1 (assert `fake.calls` for `fetchRecentMessages` carry `before = cursor`). A `rateLimited` failure injected on run 2 leaves the cursor at run 1's value and throws.
-- [ ] **Step 2: Expiry handler and timer.** `archiveExpiryHandler.run({ day })` → `const n = expireContent(now())`; log `{ jobKind, count: n }` at info. Test with a frozen clock at day 29 / 30 / 31 after a deletion: 0 / 1 / 1 purged (use `archiveRepo` on the test DB — this is where the 30-day boundary is exercised end-to-end). The timer, on `backup-timer.ts:60-100`'s shape: `runOnce` enqueues `{ kind: archiveExpiry, payload: JSON.stringify({ day }), dedupeKey: archiveExpiryDedupeKey(day), now }` for every guild, where `day` is the UTC date of `now()`; `start` runs once then every 24 h with `unref()`. Test: two `runOnce` calls on the same day enqueue one job per guild (the dedupe index refuses the second — assert through the real `jobRepo` on a test DB); the next day enqueues again.
+- [ ] **Step 1: Backfill handler, resume test first.** `run({ channelId })`: `findChannel` — absent (disabled mid-backfill) → log and return (job done). Set state `running` (there is no `failed` state: a thrown page is retried by the worker and the state stays `running`; `archive status` shows the job's attempts through `jobs list`). `fetchRecentMessages(channelId, channel.cursorMessageId)`; for each message `upsertMessage` (attachments from `FetchedMessage.attachments`, `editedAt` from `editedTimestampMs`, `createdAt` from `createdAtMs`); then **persist the cursor before anything else**: `setBackfillCursor({ channelId, cursorMessageId: page.nextBefore, state: page.nextBefore === undefined ? 'done' : 'running' })`; if `nextBefore` defined, `enqueueContinuation({ channelId, runAfter: now() })`. A `DiscordApiError` with `isRateLimit` **propagates** (the worker's backoff is the retry, ADR 0018) — do not catch it. Tests with a hand-rolled `BackfillPorts` over `FakeDiscord` seeded with 250 messages: three runs land 250 rows, the cursor after run 1 is the 100th id, state `done` after run 3 and no further continuation; **the resume test**: run 1, then construct a *new* handler over the same store (simulating a restart) and run 2 — it starts from the persisted cursor and never re-fetches page 1 (assert `fake.calls` for `fetchRecentMessages` carry `before = cursor`). A `rateLimited` failure injected on run 2 leaves the cursor at run 1's value and throws.
+- [ ] **Step 2: Expiry handler and timer.** `archiveExpiryHandler.run({ day })` → `const n = expireContent(now())`; log `{ jobKind, count: n }` at info. Test with a frozen clock at day 29 / 30 / 31 after a deletion: 0 / 1 / 1 purged (use `archiveRepo` on the test DB — this is where the 30-day boundary is exercised end-to-end). The timer (`backup-timer.ts:60-100` for the start/stop contract only — its deps `{ raw, config, logger }` and `BackupRunResult` do not apply): `runOnce` enqueues `{ kind: archiveExpiry, payload: JSON.stringify({ day }), dedupeKey: archiveExpiryDedupeKey(day), now }` for every guild, where `day` is the UTC date of `now()`; `start` runs once then every 24 h with `unref()`. Test: two `runOnce` calls on the same day enqueue one job per guild (the dedupe index refuses the second — assert through the real `jobRepo` on a test DB); the next day enqueues again.
 - [ ] **Step 3: Wire.** Register `archiveBackfillHandler` and `archiveExpiryHandler` in `guild.ts`'s handlers array with ports built from `archiveRepo`, the guild's `DiscordPort` (`fetchRecentMessages(guildId, channelId, { before, limit: 100 })`), and `jobRepo.enqueue` for the continuation (copy `enqueuePurgeContinuation`'s shape, `guild.ts:370-378`, with `archiveBackfillDedupeKey`). Start the timer in `daemon.ts` next to the backup timer and stop it in the same shutdown path.
 - [ ] **Step 4: Gates, commit.** Commit: `feat(archive): resumable backfill job, three-tier expiry job, daily expiry timer (M1 task 5)`.
 
@@ -374,7 +381,7 @@ enqueueArchiveBackfill(channelId: string): void;
 listUnreadableArchiveChannels(): readonly { channelId: string; reason: 'missing' | 'no-view' | 'no-history' }[];
 ```
 
-- [ ] **Step 1: Ports ×4.** Declare the seven members in `ports.ts` with doc comments on the file's shape; implement in `wiring.ts` over `archiveRepo` and `jobRepo.enqueue` (backfill dedupe key), with `guildArchiveEnabled` from config closed over (`'guild-not-archive-enabled'` when false — **before** any write); `test-support.ts` the same over the test DB with a settable `archiveGuildEnabled` flag; `test-fixtures.ts` `unstubbed(...)` ×7; `automod-rule-lists.test.ts` `notNeeded(...)` ×7. `listUnreadableArchiveChannels` in `wiring.ts` reads the discord.js guild the way `doctor.ts:255-275` computes `held` — if that object is not reachable from `wiring.ts`, implement the check inside `doctor.ts` instead and make the port return the channel list only; say which in the report.
+- [ ] **Step 1: Ports ×4.** Declare the seven members in `ports.ts` with doc comments on the file's shape; implement in `wiring.ts` over `archiveRepo` and `jobRepo.enqueue` (backfill dedupe key). `opsPortsFor(scope, operations, now, client)` (`wiring.ts:59-64`) receives no config: add a fifth parameter `archiveGuildEnabled: boolean` and pass it from `daemon.ts:154-159`'s `portsFor` (which holds `config`) as `config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId)`; update every `opsPortsFor` caller and test. `'guild-not-archive-enabled'` is returned **before** any write; `test-support.ts` the same over the test DB with a settable `archiveGuildEnabled` flag; `test-fixtures.ts` `unstubbed(...)` ×7; `automod-rule-lists.test.ts` `notNeeded(...)` ×7. `listUnreadableArchiveChannels` lives in `wiring.ts`, which already holds the discord.js `Client`: copy the per-channel pattern of `keywordFilterRulesMissingManageMessages` (`wiring.ts:591-621`, `permissionsIn(channel)`) and check `ViewChannel` and `ReadMessageHistory`; `'missing'` when the channel is not in the cache.
 - [ ] **Step 2: Commands.** In `commands/archive.ts` on `commands/automod.ts:1145-1170`'s `defineCommand` shape, `write: true` where noted, args through Zod:
   - `archive enable-channel <channelId> [--attachments none|bytes]` (write): `bytes` → usage answer `{ ok: false, reason: 'attachments-bytes-not-built' }` (PR-67) **before** calling the port; `'guild-not-archive-enabled'` → `{ ok: false, reason, guildId, variable: 'BANANASAURS_ARCHIVE_GUILDS' }`; `'enabled'` → enqueue backfill, audit `archive.channel_enabled` with `after: { channelId, attachmentPolicy }`; `'already-enabled'` → `{ ok: false, reason }`, no audit.
   - `archive disable-channel <channelId>` (write): audit `archive.channel_disabled`.
@@ -382,7 +389,7 @@ listUnreadableArchiveChannels(): readonly { channelId: string; reason: 'missing'
   - `archive preserve <messageId>` (write): audit `archive.message_preserved`, subjectId = messageId.
   - `archive link-case <messageId> <caseId>` (write): audit `archive.message_linked_to_case`, `after: { caseId }`.
   Register all five in `OPERATOR_COMMANDS`. Tests in `commands/archive.test.ts` on `commands/automod.test.ts`'s harness: every outcome above, the `bytes` refusal never reaching the port, and that each write returns an audit record (the dispatcher records it — `dispatch.ts:316-335`).
-- [ ] **Step 3: Doctor.** In `doctor.ts`'s report: (i) every id in `config.BANANASAURS_ARCHIVE_GUILDS` not in `BANANASAURS_GUILD_ALLOWLIST` → `  ARCHIVE GUILD NOT ALLOWLISTED: <id>` and `ok: false`; (ii) per guild, each unreadable archive channel → `    ARCHIVE CHANNEL UNREADABLE: <channelId> (<reason>)` and `ok: false`. Tests: one of each, and the clean case.
+- [ ] **Step 3: Doctor.** Two homes, because `buildDoctorReport(client, config, nowMs)` (`doctor.ts:193-197`) has config but no storage, and the `doctor` ops command has per-guild ports but no config: (i) in `doctor.ts`, every id in `config.BANANASAURS_ARCHIVE_GUILDS` not in `BANANASAURS_GUILD_ALLOWLIST` → `  ARCHIVE GUILD NOT ALLOWLISTED: <id>` and `ok: false`; (ii) where the `doctor` command renders `listUnusableAutomodRules` per guild (find it in `packages/core/src/ops/commands/` — read `status.ts`/`reads.ts`), each `listUnreadableArchiveChannels()` entry → `    ARCHIVE CHANNEL UNREADABLE: <channelId> (<reason>)` and the same problem flag the automod lines set. Tests: one of each, and the clean case, in the files that test those two renderers.
 - [ ] **Step 4: Gates, commit.** Commit: `feat(ops): archive commands, ports x4, doctor archive lines (M1 task 6)`.
 
 ---
@@ -392,3 +399,5 @@ listUnreadableArchiveChannels(): readonly { channelId: string; reason: 'missing'
 - Spec coverage: schema ✓ (T2), repo ✓ (T3), subscriber + vetoes ✓ (T4), backfill + resume ✓ (T5), attachments → metadata only, bytes refused (PR-67) ✓ (T2/T6), expiry three tiers + day 29/30/31 ✓ (T3/T5), CLI ✓ (T6), PRIVACY.md ✓ (T2), doctor ✓ (T6), bulk delete (PR-66) ✓ (T1/T4), case link (PR-69) ✓ (T3/T6), daily producer (PR-70) ✓ (T5).
 - Names used across tasks: `archiveRepo.*` as declared in T3; `UpsertMessageInput.attachments[].filename/size` (repo) vs `MessageAttachment.fileName/sizeBytes` (events) — the subscriber and backfill map between them; `ArchiveChannel.cursorMessageId: string | undefined`.
 - Not in M1: search, MCP, dashboard, attachment bytes, automatic case linking.
+- Close-out (controller, not a task): `docs/STATE.md` "Where the build is" and the ledger's M1 section, after the whole-branch review and merge.
+- Plan review (muse-spark-1.3, 7m07s): 8 Important, 11 Minor, all applied above before the first dispatch.
