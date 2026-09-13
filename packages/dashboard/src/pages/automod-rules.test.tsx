@@ -30,6 +30,7 @@ function rule(overrides: Partial<RuleSummary> = {}): RuleSummary {
     updatedAt: NOW - 3 * DAY_MS,
     matchCount: 12,
     reviewedCount: 5,
+    verdicts: { falsePositive: 0, truePositive: 0, unclear: 0 },
     ...overrides,
   };
 }

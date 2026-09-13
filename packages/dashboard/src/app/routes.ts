@@ -18,6 +18,7 @@ export const NAV: readonly NavEntry[] = [
   { path: '/panels', label: 'Role panels', status: 'built' },
   { path: '/audit', label: 'Audit', status: 'built' },
   { path: '/automod', label: 'Automod', status: 'built' },
+  { path: '/review', label: 'Review', status: 'built' },
   { path: '/cases', label: 'Cases', status: 'built' },
   { path: '/cutover', label: 'Cutover', status: 'built' },
 ];

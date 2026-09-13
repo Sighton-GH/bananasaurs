@@ -22,6 +22,11 @@ function renderAt(path: string) {
     { url: '/api/log-routes', body: { routes: [] } },
     { url: '/api/panels', body: [] },
     { url: '/api/audit?limit=50', body: [] },
+    { url: '/api/automod/rules', body: { rules: [] } },
+    {
+      url: '/api/automod/review?limit=50',
+      body: { matches: [], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+    },
     { method: 'POST', url: '/api/logout', body: {} },
   ]);
   const { hook } = memoryLocation({ path });
@@ -44,6 +49,7 @@ describe('Shell', () => {
     ['/panels', 'Role panels'],
     ['/audit', 'Audit'],
     ['/automod', 'Automod'],
+    ['/review', 'Review'],
     ['/cases', 'Cases'],
     ['/cutover', 'Cutover'],
   ])('renders the %s page titled %s and marks its rail entry current', async (path, title) => {
