@@ -2,12 +2,7 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { parseGuildId, parseSnowflakeId } from '@bananasaurs/core';
 import { upsertGuild } from './guilds.js';
-import {
-  addChannelExemption,
-  addRoleExemption,
-  createRule,
-  setRuleMode,
-} from './automod-rules.js';
+import { addChannelExemption, addRoleExemption, createRule, setRuleMode } from './automod-rules.js';
 import { openOrResolveCase, recordCaseEvent } from './mod-cases.js';
 import { recordVerdict } from './mod-match-reviews.js';
 import {
@@ -93,9 +88,7 @@ describe('automod admin repo', () => {
     expect(rules[1]).toMatchObject({ ruleId: 'b-rule', enabled: false });
     expect(typeof rules[1]!.enabled).toBe('boolean');
 
-    expect(listRules(t.scopes.forGuild(GUILD_B)).map((r) => r.ruleId)).toEqual([
-      'other-rule',
-    ]);
+    expect(listRules(t.scopes.forGuild(GUILD_B)).map((r) => r.ruleId)).toEqual(['other-rule']);
   });
 
   it('findRule returns the row for its guild and undefined under the other guild', () => {
@@ -132,12 +125,12 @@ describe('automod admin repo', () => {
       { exemptType: 'role', exemptId: ROLE },
     ]);
 
-    expect(
-      removeExemption(scopeA, { ruleId: 'r1', exemptType: 'role', exemptId: ROLE }),
-    ).toBe(true);
-    expect(
-      removeExemption(scopeA, { ruleId: 'r1', exemptType: 'role', exemptId: ROLE }),
-    ).toBe(false);
+    expect(removeExemption(scopeA, { ruleId: 'r1', exemptType: 'role', exemptId: ROLE })).toBe(
+      true,
+    );
+    expect(removeExemption(scopeA, { ruleId: 'r1', exemptType: 'role', exemptId: ROLE })).toBe(
+      false,
+    );
     expect(listExemptions(scopeA, 'r1')).toEqual([
       { exemptType: 'channel', exemptId: CHANNEL_LO },
       { exemptType: 'channel', exemptId: CHANNEL_HI },
@@ -151,10 +144,7 @@ describe('automod admin repo', () => {
     const scopeA = t.scopes.forGuild(GUILD_A);
     const scopeB = t.scopes.forGuild(GUILD_B);
     const { caseId: caseA } = openOrResolveCase(scopeA, { memberId: MEMBER_1, now: 1000 });
-    const seed = (
-      eventId: string,
-      ruleId: string,
-    ): void => {
+    const seed = (eventId: string, ruleId: string): void => {
       recordCaseEvent(scopeA, {
         eventId,
         caseId: caseA,
