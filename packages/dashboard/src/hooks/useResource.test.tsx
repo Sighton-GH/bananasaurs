@@ -1,9 +1,13 @@
 // @vitest-environment jsdom
-import { act, render, screen } from '@testing-library/react';
+import { act, cleanup, render, screen } from '@testing-library/react';
 import { useCallback } from 'react';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import { DataState } from '../ui/DataState.js';
 import { useResource } from './useResource.js';
+
+// No global afterEach in this repo (vitest `globals` is off), so the
+// library's auto-cleanup never registers — unmount between tests explicitly.
+afterEach(cleanup);
 
 function Probe({ answers }: { readonly answers: Array<() => Promise<string>> }) {
   const load = useCallback(() => {
@@ -23,7 +27,9 @@ describe('useResource', () => {
   });
 
   it('goes loading → error with the request name, and retry reloads', async () => {
-    render(<Probe answers={[() => Promise.reject(new Error('nope')), () => Promise.resolve('two')]} />);
+    render(
+      <Probe answers={[() => Promise.reject(new Error('nope')), () => Promise.resolve('two')]} />,
+    );
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('Could not load the thing: nope');
     await act(async () => {

@@ -1,15 +1,14 @@
 import type { ReactNode } from 'react';
+import type { Resource } from '../hooks/useResource.js';
 import { Button } from './Button.js';
+
+export type { Resource };
 
 /**
  * The four states `docs/06` requires every page to make explicit. A page
  * renders its data only through this boundary, so omitting a state is harder
  * than including one.
  */
-export type Resource<T> =
-  | { readonly state: 'loading' }
-  | { readonly state: 'error'; readonly request: string; readonly message: string; readonly retry: () => void }
-  | { readonly state: 'ready'; readonly data: T; readonly degraded?: string };
 
 export function DataState<T>({
   resource,

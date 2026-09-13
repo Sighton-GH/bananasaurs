@@ -22,12 +22,18 @@ export function Field({
   readonly label: string;
   readonly hint?: string;
   readonly error?: string;
-  readonly children: ReactElement<{ 'aria-describedby'?: string; 'aria-invalid'?: boolean }>;
+  readonly children: ReactElement<{
+    'aria-describedby'?: string | undefined;
+    'aria-invalid'?: boolean | undefined;
+  }>;
 }) {
   const id = useId();
   const hintId = `${id}-hint`;
   const errorId = `${id}-error`;
-  const describedBy = [hint !== undefined ? hintId : undefined, error !== undefined ? errorId : undefined]
+  const describedBy = [
+    hint !== undefined ? hintId : undefined,
+    error !== undefined ? errorId : undefined,
+  ]
     .filter((x): x is string => x !== undefined)
     .join(' ');
   const control = isValidElement(children)

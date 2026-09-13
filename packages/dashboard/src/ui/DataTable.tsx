@@ -46,7 +46,10 @@ export function DataTable<T>({
           {rows.map((row) => (
             <tr key={rowKey(row)} className="border-b border-line">
               {columns.map((c) => (
-                <td key={c.key} className={`px-2 py-1.5 align-top ${c.numeric === true ? 'text-right' : ''}`}>
+                <td
+                  key={c.key}
+                  className={`px-2 py-1.5 align-top ${c.numeric === true ? 'text-right' : ''}`}
+                >
                   {c.cell(row)}
                 </td>
               ))}

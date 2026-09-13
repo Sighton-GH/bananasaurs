@@ -1,5 +1,24 @@
 import { useCallback, useEffect, useState } from 'react';
-import type { Resource } from '../ui/DataState.js';
+
+/**
+ * The four states `docs/06` requires every page to make explicit. A page
+ * renders its data only through the `DataState` boundary, so omitting a state
+ * is harder than including one.
+ *
+ * Defined here rather than in `ui/DataState.tsx` because `tsconfig.all.json`
+ * type-checks `*.ts` without `jsx`, so a `.ts` file cannot import a type from
+ * a `.tsx` module (TS6142); `DataState.tsx` re-exports this canonical
+ * definition, so both import paths name the same type.
+ */
+export type Resource<T> =
+  | { readonly state: 'loading' }
+  | {
+      readonly state: 'error';
+      readonly request: string;
+      readonly message: string;
+      readonly retry: () => void;
+    }
+  | { readonly state: 'ready'; readonly data: T; readonly degraded?: string };
 
 export interface UseResource<T> {
   readonly resource: Resource<T>;

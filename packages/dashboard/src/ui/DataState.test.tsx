@@ -1,7 +1,11 @@
 // @vitest-environment jsdom
-import { fireEvent, render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { cleanup, fireEvent, render, screen } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DataState } from './DataState.js';
+
+// No global afterEach in this repo (vitest `globals` is off), so the
+// library's auto-cleanup never registers — unmount between tests explicitly.
+afterEach(cleanup);
 
 describe('DataState', () => {
   it('announces loading through a status region', () => {

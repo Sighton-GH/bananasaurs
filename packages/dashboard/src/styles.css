@@ -17,8 +17,7 @@
   --color-danger: #e5484d;
   --color-ok: #3db37a;
 
-  --font-sans:
-    system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
+  --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 
   --text-xs: 0.75rem;
   --text-sm: 0.8125rem;

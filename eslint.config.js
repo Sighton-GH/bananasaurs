@@ -214,7 +214,9 @@ export default tseslint.config(
   ...boundaryRules,
 
   {
-    files: ['**/*.test.ts', 'packages/testkit/**/*.ts'],
+    // Slice 7 adds the repo's first `*.test.tsx` files; they are tests in
+    // every sense the `*.test.ts` entry meant, so they share its relaxations.
+    files: ['**/*.test.ts', '**/*.test.tsx', 'packages/testkit/**/*.ts'],
     rules: {
       // Tests are exactly who `test-support` is for (see the pattern above).
       'no-restricted-imports': 'off',
