@@ -526,3 +526,120 @@ reviews are given the diff and told not to crawl, which is the right cost
 control for a per-task gate and exactly why the whole-branch reviewer must
 be told the opposite. The brief's "verify, do not assert; say what you ran
 or read" is the load-bearing line.
+
+## Slice M1 — archive schema, ingestion, retention
+
+Branch `oc/m1-archive` from `08a3bd9`. ADR 0046 accepted before planning;
+its Amendment 1 written at planning, after a read-only research dispatch
+(muse-spark-1.3, 10m40s, sixteen questions answered with file:line) found
+four things the ADR assumed that the tree did not have.
+
+### Rulings at planning (ADR 0046 Amendment 1)
+
+- **PR-66 — `messageDeleteBulk` enters the pipeline.** The adapter
+  translated three message events; D5 named four. New domain event,
+  fingerprinted on channel + sorted ids. Cost if wrong: a subscriber that
+  did not expect the kind — none exists; the logging subscriber gained an
+  early return.
+- **PR-67 — attachment bytes are deferred out of M1; `none` records no
+  hash.** Hashing needs the bytes; nothing in the tree fetches bytes from
+  anywhere, and the first outbound byte fetch is a rule-8 event for a later
+  ADR. The policy column, CHECK and nullable `sha256`/`bytes_path` ship now;
+  `--attachments bytes` is refused with `'attachments-bytes-not-built'`.
+  Cost if wrong: an attachment whose CDN URL expires before the fetcher
+  exists — recoverable while the message lives.
+- **PR-68 — `FetchedMessage` gains `editedTimestampMs` and `attachments`;
+  `MessageAttachment` gains `attachmentId`.** Purge's pager carried
+  neither. Cost if wrong: none; purge reads neither field.
+- **PR-69 — the case link is `archive_messages.case_id`, set by the
+  operator.** No column ties a message to a case and nothing closes a case
+  yet. `linkToCase` verifies the case exists and is open. The `case` tier's
+  90-day clock starts at the latest `mod_case_events.at` of a closed case —
+  inert in production, tested with a seeded closed row. Cost if wrong: a
+  linked row that never expires while cases never close — which is the
+  conservative direction.
+- **PR-70 — `archive_expiry` is produced by a daily timer.** The job table
+  has no scheduler. One `archive_expiry` per guild per UTC day, dedupe key
+  `archive_expiry:<yyyy-mm-dd>`, proven through the real `jobs_dedupe`
+  index. Cost if wrong: a second timer design later; the job is unchanged.
+
+### Plan review (muse-spark-1.3, 7m07s)
+
+Spec FAIL / NEEDS_WORK: 8 Important, 11 Minor, all applied before the first
+dispatch. The ones that would have cost a fix round each: three missing
+snowflake CHECKs the invariants test enumerates by column name; the logging
+subscriber's `switch` has no `never` guard, so a new event kind compiles and
+throws at runtime; `opsPortsFor` receives no config; the per-channel
+permission precedent is `wiring.ts:591-621`, not the guild-level doctor
+code; discord.js types the bulk-delete channel as always-guild; `'failed'`
+was an unreachable CHECK value.
+
+### Task log
+
+**Task 1 — the pipeline** (`32da41d..fb8acb8`): muse-spark-1.3 stopped at
+NEEDS_CONTEXT after 3m47s with exactly the right question — the plan's
+required `attachmentId` broke literals in files the observe window forbids.
+
+- **PR-71 — `attachmentId`, `editedTimestampMs`, `attachments` are
+  optional properties.** A fixture-derived attachment has no Discord id;
+  purge's callers predate the fields; the adapter, REST port and fake
+  always populate them; the archive skips an attachment without an id.
+  Cost if wrong: a row missing an attachment that had no id, which live
+  events never produce.
+
+Resumed; Steps 2–3 committed; then the session hung (32 minutes, no event,
+D40). Two fresh-session re-dispatches were 0-byte (`ECONNRESET`, provider
+degraded — D41); Step 4 ran on sonnet (9m42s). Review (sonnet, 4m21s)
+PASS/APPROVED, one Important — the bulk-delete test asserted ids
+order-independently while the interface promises Discord's order — fixed in
+one line (`fb8acb8`), verified by the controller. `Partials.Message` is on
+(`client.ts:60`), so a bulk delete carries every id.
+
+**Task 2 — config, schema, migration, PRIVACY.md** (`6d6f0cd..305d481`,
+one commit as required, plus a formatting commit): muse-spark-1.3 did the
+task in ten minutes, verified it, then went idle after `typecheck` (D42);
+the plugin's checkpoint on kill was the required single commit. Review
+(muse-spark-1.3, 1m57s, after two 0-byte attempts) PASS/APPROVED, four
+checks quoted, and it verified the "unset → `[]`" test is not vacuous.
+
+**Task 3 — the repository** (`bc772d3..ff37cdb`, 6m35s): red-first commit;
+the tests caught a real seeding bug (two open cases for one member violate
+`mod_cases_open_per_member`). Review 1m18s PASS/APPROVED.
+
+- **PR-72 — `linkToCase` to a different case re-links.** No unlink exists,
+  so a wrong link must be movable; the audit row records both. Cost if
+  wrong: an operator moves a link they meant to keep.
+
+**Task 4 — the subscriber** (`0e08be6..9a83795`, 8m51s): the implementer
+said plainly that its veto red-run was vacuous (an absence passes against
+an empty handler). The controller neutralised each veto line in turn and
+watched 1 / 2 / 1 tests fail. Review 1m47s PASS/APPROVED; one Minor
+deferred (a channel constant used as a message id in one test).
+
+**Task 5 — backfill, expiry, the timer** (`a2b68f8..96523a0`, 16m08s):
+DONE_WITH_CONCERNS, all three concerns answered by a ruling or a reading.
+
+- **PR-73 — three queue-count assertions in `daemon.integration.test.ts`
+  now name the job kind**, because the expiry timer enqueues one job at
+  startup. Test-only. Cost if wrong: none.
+
+Review 42 s PASS/APPROVED with all four checks quoted: cursor persisted
+before continuation, resume with a fresh handler, dedupe through the real
+index, day 29/30/31 through the real repository, timer stopped on the
+backup timer's path.
+
+**Task 6 — ports ×4, five commands, doctor** (`5c6951b..9a45a12`): the
+first run committed Steps 1–2 and went idle mid-edit when the free tier hit
+(D43); checkpoint, continuation, 7m11s. Review 2m29s Spec FAIL on one claim
+stated twice.
+
+- **PR-74 — refusals audit.** The plan said `'already-enabled'` records no
+  audit; the codebase says the opposite — `OpsWriteResult.audit` "is not
+  optional", and `automod signoff` / `invite-add` audit their refusals with
+  `after.outcome` because "an operator tried to edit a rule that does not
+  exist is a fact worth having". The implementer followed the codebase;
+  the plan line was wrong and is corrected. Cost if wrong: one audit row
+  per mistyped `enable-channel`.
+
+Branch head `9a45a12`: **2,702 tests across 142 files** (+100), typecheck,
+lint and test each exit 0, re-run by the controller in the worktree.

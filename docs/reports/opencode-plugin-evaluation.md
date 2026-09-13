@@ -382,6 +382,128 @@ RESULT block just gives a check nowhere to land. The plugin's
   the sonnet flow did not — repairing two half-template RESULT blocks and
   hand-verifying four deliberate checks a review silently dropped.
 
+### D40 — a silent hang mid-task (M1 Task 1 continuation), 32 minutes of nothing
+
+- **What happened:** the Task 1 session, resumed with the PR-71 ruling,
+  committed Steps 2 and 3 in three minutes, printed "Adapters committed —
+  now extending the fake Discord", read `fake-discord.ts` three times, ran
+  one `grep emitMessageCreate` at 11:27:45 — and then emitted nothing for
+  32 minutes. `opencode run` stayed alive at 0:29 CPU; no error event, no
+  RESULT, no exit. `oc-task` has no idle timeout, so the Bash tool's 600 s
+  ceiling moved it to the background and it would have sat there until the
+  owner asked.
+- **Expected:** either progress or an error event within a few minutes; a
+  plugin-side idle watchdog that kills the run and reports "no model
+  output for N minutes" with the checkpoint state.
+- **Did instead:** killed the three processes by hand (`oc-task` ×2,
+  `opencode run`, then the `opencode serve` they left), verified the tree
+  was clean at the last commit, and dispatched a continuation brief for
+  Steps 4–5 in a fresh session. Armed a 6-minute log-silence watchdog on
+  the controller side for that run.
+- **Cost:** 32 minutes of wall clock and one continuation brief; no work
+  lost, because the step commits are the checkpoints.
+- **Plugin note:** the summary-only-at-exit design (D-mechanics) is what
+  made this invisible. An idle timeout in `oc-task` (say 10 minutes with no
+  event) would turn this into an exit-1 with a log pointer.
+
+### D41 — two consecutive runs produced nothing: `ECONNRESET` from the local `opencode serve`
+
+- **What happened:** the fresh-session re-dispatch of Task 1's Steps 4–5
+  (run `20260913T120023`) wrote a 0-byte event log for 13 minutes; the
+  controller's own silence watchdog (6 min) caught it. When killed, the log
+  held exactly one line: `{"type":"error","error":{"code":"ECONNRESET",
+  "path":"http://127.0.0.1:29356/session/<id>/message"}}` — the plugin's
+  `opencode run --attach` lost its connection to the `opencode serve` it
+  had just started, and neither side reported it. A second attempt under a
+  7-minute `timeout` (run `20260913T121210`) was the same: 0 bytes, no
+  exit. So this is not the provider: it is the local server/attach pair.
+- **Expected:** an exit-1 with the `ECONNRESET` in the `errors:` lines
+  within seconds of the reset.
+- **Did instead:** killed both, dispatched the same continuation brief to a
+  sonnet subagent (the step is one file, the fake). opencode is probed
+  again at the next task.
+- **Cost:** ~20 minutes wall clock across the two attempts; one
+  `sonnetify` of an existing brief.
+- **Diagnosis (12:39):** a third zero-byte run (the Task 1 review,
+  `20260913T123029`, 9 minutes). `opencode serve` answers HTTP (health
+  200, session create 200), and a direct one-line message to
+  `muse-spark-1.3` through the same API returned `PONG` — after **36
+  seconds** for 12 output tokens. The provider is up but degraded, and the
+  first run's `ECONNRESET` landed exactly 12 minutes after its start: the
+  model's first step on a 15 KB brief did not finish inside whatever
+  timeout the attach connection has, and the reset was reported to nobody.
+  Not a plugin bug in the narrow sense; a plugin without a first-token
+  timeout and a visible error is what turned a slow provider into three
+  silent half-hours.
+- **Plugin note:** three silent-failure modes are now on record — D15
+  (merge), D40 (idle mid-task), D41 (attach reset at start). All three
+  share one cause: `oc-task` reports only at exit, and has no idle or
+  connection watchdog of its own.
+
+### D42 — Task 2: the work was done in ten minutes, then the model went idle for eight
+
+- **What happened:** the M1 Task 2 run (schema + migration + config +
+  PRIVACY.md) generated the migration, ran the invariants, read its own
+  diff back against the spec ("Diff matches the spec and the migration is
+  clean"), ran `npm run typecheck` at 12:57:36 — and never emitted another
+  event. No lint, no commit, no RESULT. The controller's watchdog fired at
+  seven minutes; `tsc` was not running. Same shape as D40: idle after a
+  tool result, no error, process alive.
+- **Did instead:** `kill <opencode run>`; `oc-task` then did the right
+  thing — checkpointed the seven files as one commit ("uncommitted
+  changes at end of run"), which is exactly what Task 2 required. The
+  controller ran the two gates the model had not reached (lint was
+  formatting-only; `lint:fix` committed separately) and dispatched the
+  review. **The checkpoint-on-exit behaviour is the plugin's best feature;
+  it is what makes a kill safe.**
+- **Also:** the controller wrapped this dispatch in `timeout 300` to
+  bound a silent start, which would have killed a productive run at five
+  minutes; killing the `timeout` process itself (SIGKILL) orphaned
+  `oc-task` to init and let it finish. A first-token timeout belongs in
+  the plugin, not in a shell wrapper.
+- **Cost:** ~8 minutes idle, one manual kill, one formatting commit.
+
+### D43 — M1 Tasks 3–6 on muse-spark-1.3: the good run, and the limit as silence
+
+- **What worked:** once the provider recovered (~13:30), four M1 dispatches
+  in a row behaved exactly as the skill describes — Task 3 (repository,
+  6m35s, red-first commit, tests that caught a real seed bug), Task 4
+  (subscriber, 8m51s, honest note that its veto red-run was vacuous), Task 5
+  (two jobs and a timer, 16m08s, three well-argued assumptions), and four
+  task reviews in 42 s – 1m57s with every deliberate check quoted from the
+  code. Muse Spark's reports in this stretch were the best of the
+  evaluation: the Task 5 report explained *why* core tests use hand-rolled
+  fakes (an eslint restricted-import rule and a package cycle) with the
+  file that establishes the precedent.
+- **What did not:** the free-tier limit, when it hits mid-run, presents as
+  **silence** — no error event, no exit. Task 6 stopped mid-edit of
+  `doctor.ts` at 14:32:52 and sat idle until the controller's watchdog fired
+  at eight minutes; the owner confirmed the limit had reset. Third occurrence
+  (D40, D42, now this). Each time the plugin's checkpoint-on-exit kept every
+  byte, and a continuation brief on a fresh session picked up from the
+  commit — so the cost is wall-clock, never work.
+- **Controller-side mitigation that became standard:** dispatch in the
+  background, arm a log-silence watchdog (no output for 4 min at start, or 8
+  min mid-run), and on firing: `kill <opencode run>` → checkpoint → read the
+  last events → continuation brief. Two lines of bash the plugin should own.
+- **Cost this stretch:** one 8-minute idle, one continuation brief.
+
+### D44 — `oc-task` validates a review brief's headings, and its error names only the first
+
+- **What happened:** the M1 whole-branch brief was written in the shape the
+  earlier Opus whole-branch briefs used (a title, "Read first", "What to
+  look for", "Required output"). `oc-task --role review` refused it twice,
+  one heading per attempt: first `missing section: # Diff under review`,
+  then `missing section: # Objective`. Each refusal costs a round trip
+  because the validator stops at the first missing heading instead of
+  listing all of them.
+- **Expected:** one refusal naming every missing section, or a `--dry-run`
+  that validates without dispatching (the flag exists; it was not obvious
+  it also validates headings — worth documenting in `--help`).
+- **Cost:** two wasted dispatches, about a minute. Minor, but it is the
+  second time a brief-shape rule was learned by rejection rather than from
+  the templates (the first: the implementer template's Files list).
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created
