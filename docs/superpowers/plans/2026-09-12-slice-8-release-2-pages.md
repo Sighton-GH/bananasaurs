@@ -509,6 +509,8 @@ git commit -m "feat(ops): automod admin and case ports, three implementations (S
 - Create: `packages/http/src/routes/automod.ts`
 - Create: `packages/http/src/routes/automod.test.ts`
 - Modify: `packages/http/src/index.ts` (export `registerAutomodRoutes`)
+- Create: `packages/http/src/routes/audit-base.ts` (`dashboardAuditBase` moved here from `write.ts`)
+- Modify: `packages/http/src/routes/write.ts` (imports `dashboardAuditBase` from `./audit-base.js`; nothing else changes)
 - Modify: `apps/daemon/src/http/wiring.ts` (register it after `registerWriteRoutes`)
 
 **Interfaces — Produces:** `registerAutomodRoutes(app, guard, deps)` with:

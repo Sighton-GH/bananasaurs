@@ -214,6 +214,29 @@ expected, what was done instead, whether it cost a re-dispatch.
   linters; a note in its README would save the next project the same twenty
   minutes.
 
+### D17 — Slice 8 plan review (muse-spark-1.3) — 2m41s, no re-dispatch
+
+- **What happened:** Spec FAIL / NEEDS_WORK with 1 Critical, 8 Important,
+  6 Minor — and every one of them verified true. The Critical was a
+  boundary violation in the coordinator's plan (core importing types from
+  `@bananasaurs/storage`, banned by `eslint.config.js:46` and ADR 0014)
+  that would have failed the implementer's first lint and cost a
+  re-dispatch. The Importants were names the coordinator had asserted from
+  memory: the `read`/`write` import path, `DryRunReport`'s field list,
+  where `RULE_KINDS` lives, `ConfigValidationResult`'s shape, the CLI
+  command names (and that keyword terms have no CLI editor at all), a
+  missing `enforce` sentence in the mode dialog, and a missing test for the
+  slice's own PR-47 workflow. It listed 30+ files it had opened.
+- **Expected:** a sonnet plan review on Slices 3–6 returned 1–3 findings;
+  this returned 15, all real, on a plan roughly twice the size.
+- **Done instead:** nothing — the plan was corrected before Task 1.
+- **Cost:** 2m41s. This single review probably saved two implementer
+  re-dispatches and one fix round.
+- **Verdict on the pattern:** with this plugin the plan review is the
+  highest-value dispatch in the slice, because the implementer executes the
+  brief literally and cannot recover from a wrong name the way a sonnet
+  subagent sometimes does by reading around it. Do not skip it.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created
