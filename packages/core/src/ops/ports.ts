@@ -689,6 +689,10 @@ export interface OpsPorts {
    * queue (Slice 9). `'no-such-rule'` for a mistyped id; `'wrong-kind'` for a
    * rule that exists but is not a `keyword_filter` rule; `'already-present'`
    * checked before the `INSERT`, which throws on a duplicate.
+   *
+   * The phrase is stored lower-cased and space-collapsed because obscenity's
+   * whitelist matcher searches the lower-cased input for the raw term, so a
+   * stored phrase with any uppercase letter could never match.
    */
   addAutomodAllowlistPhrase(input: {
     readonly ruleId: string;

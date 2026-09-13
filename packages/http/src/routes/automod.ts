@@ -430,6 +430,9 @@ export const registerAutomodRoutes = (
       if (kind === 'channel_exemption' && !snowflakeIdSchema.safeParse(value).success) {
         return reply.status(400).send({ error: 'bad-request' });
       }
+      if (kind === 'allowlist_phrase' && value.trim().length === 0) {
+        return reply.status(400).send({ error: 'bad-request' });
+      }
 
       const ports = deps.portsFor(session.scope);
       let outcome: string;
@@ -437,13 +440,17 @@ export const registerAutomodRoutes = (
       // path below (a removal, not an insertion).
       let auditAfter: { readonly [key: string]: string | boolean } = { kind, value };
       if (kind === 'allowlist_phrase') {
+        // Canonicalised with the same expression the port stores, so the
+        // audit row and the written row agree.
+        const phrase = value.toLowerCase().trim().replace(/\s+/g, ' ');
         const result = ports.addAutomodAllowlistPhrase({
           ruleId: request.params.ruleId,
-          phrase: value,
+          phrase,
         });
         if (result === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
         if (result === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
         outcome = result;
+        auditAfter = { kind, value: phrase };
       } else if (kind === 'invite_code') {
         const result = ports.addInviteAllowlistEntry({
           ruleId: request.params.ruleId,

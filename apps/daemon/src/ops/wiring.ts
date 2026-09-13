@@ -420,9 +420,13 @@ export const opsPortsFor = (
     if (automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId)?.kind !== 'keyword_filter') {
       return 'wrong-kind';
     }
+    // Canonicalised before comparing and storing: obscenity lower-cases the
+    // input and searches it for the raw whitelisted term, so a stored phrase
+    // with any uppercase letter (or stray spacing) could never match.
+    const phrase = input.phrase.toLowerCase().trim().replace(/\s+/g, ' ');
     const stored = automodRuleRepo.findRuleIncludingDisabled(scope, input.ruleId);
-    if (stored?.allowlist.includes(input.phrase)) return 'already-present';
-    automodRuleRepo.addAllowlistPhrase(scope, input);
+    if (stored?.allowlist.includes(phrase)) return 'already-present';
+    automodRuleRepo.addAllowlistPhrase(scope, { ruleId: input.ruleId, phrase });
     return 'added';
   },
 

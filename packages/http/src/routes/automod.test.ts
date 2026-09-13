@@ -1073,6 +1073,74 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
     });
   });
 
+  it('canonicalises an allowlist phrase before comparing and storing', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    const { cookie, csrf } = await signIn();
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: '  Free  SPEECH ' },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ ok: true, outcome: 'added' });
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'free speech' },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ ok: true, outcome: 'already-present' });
+
+    const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
+      'kw-one',
+    );
+    expect(detail?.allowlist).toEqual(['free speech']);
+  });
+
+  it('treats an allowlist phrase as case-insensitive for already-present', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    const { cookie, csrf } = await signIn();
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'Ass' },
+    });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ ok: true, outcome: 'added' });
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'ass' },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ ok: true, outcome: 'already-present' });
+  });
+
+  it('answers 400 for a blank allowlist phrase and records no audit row', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: '   ' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'bad-request' });
+    expect(auditActions()).not.toContain('automod_rule.suppression_added');
+  });
+
   it('suppresses with an invite code', async () => {
     grant(['config.write']);
     createKindRule(GUILD, 'inv-one', 'invite');
