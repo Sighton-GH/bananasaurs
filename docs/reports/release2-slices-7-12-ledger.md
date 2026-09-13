@@ -65,4 +65,22 @@ acting; rulings below.
 
 ### Task log
 
-(appended per dispatch)
+**Task 1 — tokens, primitives, `useResource`** (muse-spark-1.3, 14m44s,
+commits `4325f8f..59f3cd5`, 8 tests). Reported `DONE_WITH_CONCERNS`; the
+task review (1m33s) returned Spec FAIL / Quality APPROVED on the same two
+concerns. Coordinator re-ran the verification and two gates in the plugin's
+worktree: 8/8, typecheck 0, lint 0.
+
+- **PR-41 — three deviations from the plan's verbatim code accepted, all
+  forced by repo tooling and all verified.** (a) `packages/dashboard/tsconfig.json`
+  now excludes only `*.test.ts`, so `*.test.tsx` belongs to the DOM+jsx
+  project; excluded from both projects, typed ESLint could not resolve them.
+  (b) `eslint.config.js`'s test-relaxation glob gained `**/*.test.tsx`.
+  (c) `Resource<T>` is defined in `hooks/useResource.ts` and re-exported from
+  `ui/DataState.tsx`, because `tsconfig.all.json` includes every `.ts` under
+  `packages/*/src` with no `jsx` option — a `.ts` file cannot import from a
+  `.tsx` module (TS6142). Also: `afterEach(cleanup)` in every component test
+  (vitest `globals` is off, so RTL's auto-cleanup never registers — without it
+  `DataState.test.tsx` fails on duplicate `role=status`). All four carried into
+  the plan's Global Constraints for Tasks 2–4. Cost if wrong: two one-line
+  config edits to revert.

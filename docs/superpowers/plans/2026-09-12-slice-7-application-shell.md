@@ -71,6 +71,16 @@ Radix Dialog, vitest 2 with `jsdom` per-file, `@testing-library/react`.
   brief marks as a commit point.
 - **Every gate run alone, read by exit code:** `npm run typecheck`,
   `npm run lint`, `npm run test`.
+- **Learned in Task 1 (ruling PR-41):** every `*.test.tsx` file adds
+  `import { cleanup } from '@testing-library/react'` and `afterEach(cleanup)`
+  — vitest `globals` is off, so RTL's auto-cleanup never registers. A `.ts`
+  file may not import from a `.tsx` module (`tsconfig.all.json` has no
+  `jsx`); `Resource<T>` is therefore defined in `hooks/useResource.ts` and
+  re-exported from `ui/DataState.tsx` — import it from either. Optional aria
+  props on `Field`'s child type spell `| undefined`
+  (`exactOptionalPropertyTypes`). `packages/dashboard/tsconfig.json` and
+  `eslint.config.js` were amended in Task 1 so `*.test.tsx` belongs to the
+  DOM project; do not touch them again.
 
 ---
 
