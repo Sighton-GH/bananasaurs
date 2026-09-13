@@ -3,6 +3,7 @@ import {
   useCallback,
   useContext,
   useMemo,
+  useRef,
   useState,
   type ReactElement,
   type ReactNode,
@@ -41,14 +42,32 @@ function SessionInner({
   const toast = useToast();
   const [reauth, setReauth] = useState<ReauthResolver | undefined>(undefined);
 
+  /**
+   * Prompts for the password one at a time. Two writes that both hit 401
+   * `reauth-required` chain on the same promise rather than each installing
+   * their own resolver — without this the second overwrote the first and its
+   * write hung (Slice 7 whole-branch review). The chain is re-armed with a
+   * guarded continuation so a rejection can never wedge later prompts.
+   */
+  const chain = useRef<Promise<void>>(Promise.resolve());
+
   const requireReauth = useCallback(
-    (): Promise<string | undefined> =>
-      new Promise((resolve) => {
-        setReauth(() => (password: string | undefined) => {
-          setReauth(undefined);
-          resolve(password);
-        });
-      }),
+    (): Promise<string | undefined> => {
+      const next = chain.current.then(
+        () =>
+          new Promise<string | undefined>((resolve) => {
+            setReauth(() => (password: string | undefined) => {
+              setReauth(undefined);
+              resolve(password);
+            });
+          }),
+      );
+      chain.current = next.then(
+        () => undefined,
+        () => undefined,
+      );
+      return next;
+    },
     [],
   );
 

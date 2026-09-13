@@ -148,6 +148,58 @@ describe('SessionProvider', () => {
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch']);
   });
 
+  it('two concurrent writes queue their re-auth prompts instead of overwriting each other', async () => {
+    const attempts: Record<string, number> = { '/api/a': 0, '/api/b': 0 };
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/a' || url === '/api/b') {
+        attempts[url] += 1;
+        return attempts[url] === 1
+          ? new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === '/api/reauth') {
+        return new Response('{}', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', mock);
+    function TwoWriters() {
+      const session = useSession();
+      return (
+        <>
+          <button onClick={() => void session.write('/api/a', { from: 'a' })}>write-a</button>
+          <button onClick={() => void session.write('/api/b', { from: 'b' })}>write-b</button>
+        </>
+      );
+    }
+    renderWithSession(<TwoWriters />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-a'));
+      fireEvent.click(screen.getByText('write-b'));
+    });
+    // One dialog at a time: the second prompt waits for the first.
+    expect(screen.getAllByRole('dialog', { name: 'Confirm your password' })).toHaveLength(1);
+    const confirm = async () => {
+      fireEvent.change(screen.getByLabelText('Password'), {
+        target: { value: 'hunter22hunter22' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+      });
+    };
+    await confirm();
+    // Confirming the first prompt opens the second, rather than both writes
+    // sharing (or losing) one resolver.
+    await screen.findByRole('dialog', { name: 'Confirm your password' });
+    await confirm();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(attempts).toEqual({ '/api/a': 2, '/api/b': 2 });
+    expect(mock.mock.calls.filter((c) => c[0] === '/api/reauth')).toHaveLength(2);
+  });
+
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {
     const mock = stubFetch([{ method: 'POST', url: '/api/logout', body: {} }]);
     const onLoggedOut = vi.fn();
