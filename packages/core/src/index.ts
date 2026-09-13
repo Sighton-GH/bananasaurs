@@ -86,6 +86,10 @@ export {
 export {
   adoptDedupeKey,
   adoptPanelPayload,
+  archiveBackfillDedupeKey,
+  archiveBackfillPayload,
+  archiveExpiryDedupeKey,
+  archiveExpiryPayload,
   JOB_KINDS,
   logMessageDeleteDedupeKey,
   logMessageDeletePayload,
@@ -99,6 +103,8 @@ export {
   undoBatchPayload,
   undoDedupeKey,
   type AdoptPanelPayload,
+  type ArchiveBackfillPayload,
+  type ArchiveExpiryPayload,
   type JobKind,
   type LogMessageDeletePayload,
   type ModPurgeCursor,
@@ -109,6 +115,10 @@ export {
 } from './jobs/kinds.js';
 export { createArchiveSubscriber } from './archive/subscriber.js';
 export type { ArchiveAttachmentInput, ArchivePorts, UpsertMessageInput } from './archive/ports.js';
+export { archiveBackfillHandler } from './archive/backfill.js';
+export type { ArchiveChannel, BackfillPorts, BackfillState } from './archive/backfill.js';
+export { archiveExpiryHandler } from './archive/expiry.js';
+export type { ExpiryPorts } from './archive/expiry.js';
 export {
   createConnectionSubscriber,
   type ConnectionPorts,
