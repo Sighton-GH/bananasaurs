@@ -133,27 +133,29 @@ export const archiveDisableChannelCommand = defineCommand<
   positional: [{ name: 'channelId', required: true, describe: 'the channel to stop archiving' }],
   args: archiveDisableChannelArgs,
   run(ctx: OpsContext, args): OpsWriteResult {
-    const outcome = ctx.ports.archiveDisableChannel(args.channelId);
-    if (outcome === 'not-enabled') {
+    const result = ctx.ports.archiveDisableChannel(args.channelId);
+    if (result.outcome === 'not-enabled') {
       return {
         text: `channel ${args.channelId} is not archived; nothing changed`,
-        data: { ok: false, reason: outcome, channelId: args.channelId },
+        data: { ok: false, reason: result.outcome, channelId: args.channelId },
         audit: {
           action: 'archive.channel_disabled',
           subjectType: 'archive_channel',
           subjectId: args.channelId,
-          after: { outcome, channelId: args.channelId },
+          after: { outcome: result.outcome, channelId: args.channelId },
         },
       };
     }
     return {
-      text: `channel ${args.channelId} is no longer archived`,
-      data: { ok: true, channelId: args.channelId },
+      text:
+        `channel ${args.channelId} is no longer archived ` +
+        `(${String(result.messageCount)} archived message(s) removed)`,
+      data: { ok: true, channelId: args.channelId, messageCount: result.messageCount },
       audit: {
         action: 'archive.channel_disabled',
         subjectType: 'archive_channel',
         subjectId: args.channelId,
-        after: { channelId: args.channelId },
+        after: { channelId: args.channelId, messageCount: result.messageCount },
       },
     };
   },

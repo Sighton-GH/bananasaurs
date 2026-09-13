@@ -184,12 +184,12 @@ describe('archive enable-channel', () => {
 });
 
 describe('archive disable-channel', () => {
-  it('disables the channel and audits the write', async () => {
+  it('disables the channel and audits the write with the destroyed message count', async () => {
     const audit: unknown[] = [];
     const res = await driveWrite(
       archiveDisableChannelCommand,
       {
-        archiveDisableChannel: () => 'disabled',
+        archiveDisableChannel: () => ({ outcome: 'disabled', messageCount: 42 }),
         recordAudit: (input) => {
           audit.push(input);
         },
@@ -198,9 +198,13 @@ describe('archive disable-channel', () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.data).toMatchObject({ ok: true, channelId: CHANNEL });
+    expect(res.data).toMatchObject({ ok: true, channelId: CHANNEL, messageCount: 42 });
     expect(audit).toEqual([
-      expect.objectContaining({ action: 'archive.channel_disabled', subjectId: CHANNEL }),
+      expect.objectContaining({
+        action: 'archive.channel_disabled',
+        subjectId: CHANNEL,
+        after: { channelId: CHANNEL, messageCount: 42 },
+      }),
     ]);
   });
 
@@ -208,7 +212,7 @@ describe('archive disable-channel', () => {
     const res = await driveWrite(
       archiveDisableChannelCommand,
       {
-        archiveDisableChannel: () => 'not-enabled',
+        archiveDisableChannel: () => ({ outcome: 'not-enabled' }),
         recordAudit: () => {},
       },
       { channelId: CHANNEL },

@@ -476,7 +476,13 @@ export const opsPortsFor = (
       now: now(),
     });
   },
-  archiveDisableChannel: (channelId) => archiveRepo.disableChannel(scope, channelId),
+  archiveDisableChannel: (channelId) => {
+    // Counted before the delete: the cascade below removes the rows, and the
+    // audit trail should say how many went with the channel.
+    const messageCount = archiveRepo.countMessages(scope, channelId);
+    const outcome = archiveRepo.disableChannel(scope, channelId);
+    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+  },
   archiveStatus: () =>
     archiveRepo.listChannels(scope).map((channel) => ({
       ...channel,

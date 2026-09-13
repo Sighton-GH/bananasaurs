@@ -425,7 +425,11 @@ export const testPortsFor = (
       now: now(),
     });
   },
-  archiveDisableChannel: (channelId) => archiveRepo.disableChannel(scope, channelId),
+  archiveDisableChannel: (channelId) => {
+    const messageCount = archiveRepo.countMessages(scope, channelId);
+    const outcome = archiveRepo.disableChannel(scope, channelId);
+    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+  },
   archiveStatus: () =>
     archiveRepo.listChannels(scope).map((channel) => ({
       ...channel,

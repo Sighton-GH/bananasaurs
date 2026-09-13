@@ -404,6 +404,18 @@ export interface OpsUnreadableArchiveChannel {
   readonly reason: 'missing' | 'no-view' | 'no-history';
 }
 
+/**
+ * What `archive disable-channel` destroyed.
+ *
+ * A discriminated union rather than a bare `'disabled'` string: disabling
+ * cascades away every archived message, edit and attachment for the channel,
+ * and the audit row is the only record that destruction happened — so the
+ * port names how many messages went with it.
+ */
+export type OpsArchiveDisableOutcome =
+  | { readonly outcome: 'disabled'; readonly messageCount: number }
+  | { readonly outcome: 'not-enabled' };
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -791,7 +803,7 @@ export interface OpsPorts {
     readonly attachmentPolicy: ArchiveAttachmentPolicy;
   }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
   /** Removes the channel row; its messages, edits and attachments cascade. */
-  archiveDisableChannel(channelId: string): 'disabled' | 'not-enabled';
+  archiveDisableChannel(channelId: string): OpsArchiveDisableOutcome;
   /** Every enabled channel with its backfill cursor and message count. */
   archiveStatus(): readonly OpsArchiveChannelStatus[];
   /** Marks one archived message preserved (the indefinite retention tier). */
