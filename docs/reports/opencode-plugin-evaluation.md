@@ -314,6 +314,51 @@ RESULT block just gives a check nowhere to land. The plugin's
   in the exit-5 summary, and a quota line in `oc-models`, would save the
   probe.
 
+### D37 — the limit did not lift over ~5 hours; Slice 9 Task 3 on sonnet
+
+- **What happened:** The first Task 2 exit-5 was at ~00:46 local. A probe
+  with the Task 3 brief on `muse-spark-1.3-contributor-free` at ~05:59
+  returned exit 5 again after 1m18s (`Rate limit exceeded`), no checkpoint,
+  no files. So the free-tier window is at least five hours long, and the
+  sonnet session limit (which had also run out, "resets 2am") came back
+  first.
+- **Done instead:** Task 3 (the `/review` page) dispatched to a sonnet
+  subagent with the pre-sonnetified brief
+  (`.oc-runs/slice-9-review/task-3-sonnet-brief.md`); task review will go
+  to sonnet as well unless opencode answers by then. Task 4 the same way.
+- **Cost:** one 78-second probe. The two probes so far cost less than one
+  wasted implementer run would; the policy "probe opencode once per task,
+  then fall back" stays.
+
+### D38 — the limit lifted ~09:55; a non-muse model was killed by the OS; a review skipped its deliberate checks again
+
+- **What happened (limit):** The owner reported the muse-spark rate limit
+  resolved. A Task 3 review dispatch on `muse-spark-1.3` at 09:58 ran
+  normally (3m31s, exit 0). Between 00:46 and ~06:15 every muse-spark
+  dispatch had returned 429; the morning ones were plain `APIError 429
+  isRetryable` from the Zen gateway rather than `FreeUsageLimitError`, so
+  the plugin's exit-5 line covers two different provider conditions with
+  one message.
+- **What happened (memory):** While muse-spark was 429ing I tried the same
+  review brief on `nemotron-3-ultra-free` (1M context, `toolcall=yes`). It
+  ran past the 600 s ceiling into the background and was then **killed by
+  the harness because the machine ran low on memory** (the notification:
+  "stopped because the system is running low on memory"). No RESULT, no
+  log summary. Whether the model, the plugin, or the concurrent sonnet
+  subagent was the memory hog is not recoverable from the run log. Lesson:
+  do not overlap an opencode run with a Claude subagent on this machine.
+- **What happened (checks):** The muse-spark review returned Spec PASS,
+  Quality APPROVED, `Findings: - None` — and did not emit a line for any of
+  the four deliberate checks the brief asked for "as its own Finding line,
+  even if the answer is correct". Second occurrence of this pattern (first:
+  Slice 8). The controller verified all four from the diff by hand (~2
+  minutes); all correct, so the verdict stands, but a PASS that silently
+  drops the requested checks is indistinguishable from a PASS that did
+  them. Next brief moves the checks into the RESULT block template itself
+  (`Check A: …` lines) rather than asking for Finding lines.
+- **Cost:** two wasted dispatches (1m15s + the killed run, ~12 min wall),
+  plus the hand verification.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created

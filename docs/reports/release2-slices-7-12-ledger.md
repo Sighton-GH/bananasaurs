@@ -400,3 +400,99 @@ traced-match seeder; audit assertions name `subjectType`/`subjectId`;
 "blocked" counts the three native actions that stop a message, not one;
 domains lower-cased before validation; the snippet-only copy covers
 enforce-mode deletions.
+
+### Task log
+
+**Task 1 — `automod-admin.ts`** (5m09s, `54158d9..f8b9a10`, muse-spark-1.3):
+`listUnreviewedNativeHits`, `countVerdictsByRule`, `countNativeBlocked`,
+each with a two-guild test. Review Spec FAIL on one Important — guild B was
+seeded with a *different* event id, so a missing `guild_id` filter would
+not have been caught — plus one Minor (`native_blocked_interaction` never
+seeded). Fix round 1/5 (51 s) addressed both; the controller read the
+two-line diff in place of a re-review.
+
+**Task 2 — ports ×4 and the three routes** (5m49s to the rate limit, then
+the sonnet continuation `72ee3ad..f0cddee`; 121 tests in the covering
+files): the free tier ran out mid-task (`FreeUsageLimitError`, account-wide
+across free models). The plugin's auto-checkpoint kept the half-written
+routes; a sonnet subagent verified the work was complete and only
+formatted. Review (sonnet) PASS/APPROVED, two Minors deferred: POST routes
+parse before auth (pre-existing pattern), verdict audit `after` includes the
+outcome.
+
+**Task 3 — the Review page** (10m42s, sonnet, `e5985fd..8531efc`, 10 page
+tests): opencode returned 429 on two probes across five hours, so the task
+ran on sonnet with the same brief. Review (muse-spark-1.3, 3m31s, once the
+limit lifted) PASS/APPROVED.
+
+- **PR-60 — three one-line `verdicts:` fixture additions outside the Files
+  list are accepted.** Task 2 made `RuleSummary.verdicts` required; the
+  Slice 8 page tests' fixture factories could not typecheck without it.
+  Cost if wrong: none — test fixtures only.
+- The reviewer's `Findings: None` silently dropped the four deliberate
+  checks the brief asked for as Finding lines; the controller verified all
+  four from the diff (all correct). From Task 4 on, the checks are slots in
+  the RESULT template (`Check A: …`), and that shape was answered in full.
+
+**Task 4 — suppression, the verdict split, the Slice 8 residue** (13m08s,
+muse-spark-1.3, `47071a9..0ec5aaa`, five step commits; review 45 s
+PASS/APPROVED, checks A–D quoted): `ConfirmDialog` gains a `children` slot
+rendered outside `Dialog.Description` with a test that the input is
+focusable and not inside the `aria-describedby` target; per-kind suppression
+through `writeOrThrow` with 409 `wrong-kind` caught to a danger toast;
+`statusBadge` exported from `cases.tsx`; the Lists note reworded. The
+model's RESULT block left `Commits:` and `Concerns:` as template
+placeholders — the controller filled them from the commit log and the
+worktree.
+
+- **PR-61 — two `fixtureId: undefined` removals in `cases.test.tsx` are
+  accepted.** Step 3 removed the unrendered field from `case.tsx`'s type;
+  the fixture could not typecheck with it. Cost if wrong: none.
+
+Branch head `0ec5aaa`: **2,588 tests across 135 files**, typecheck, lint and
+test each exit 0, re-run by the controller in the worktree.
+
+### Whole-branch review (Opus, `docs/reports/slice-9-whole-branch-review.md`)
+
+8m33s, 45 tool uses. **SHIP-WITH-FIXES**: three Important that no per-task
+review saw, because each needed a read outside the diff — obscenity's
+whitelist matcher, the link-domain predicate's mode filter, the three
+predicates' snippet contents. Third slice in a row where the whole-branch
+review earned its cost.
+
+- **PR-62 — a `link_domain` suppression on a deny-mode rule removes the
+  domain from the deny list.** The route had always written an allow row,
+  which a deny-mode rule never reads: an inert row, `200 added`, "Domain
+  allowed", and the match keeps firing. Removal is still strictly narrowing
+  (PR-59 holds). When the matched domain is not itself on the deny list (a
+  parent is), the route answers 409 `not-denied` and the dialog says to
+  narrow it in the configuration. Cost if wrong: an operator who wanted an
+  allow row on a deny-mode rule — which cannot do anything — does not get
+  one.
+- **PR-63 — the suppression dialog prefills from the trace's `matchedOn`,
+  falling back to the snippet.** The snippet is the matched span
+  (`discord.gg/abc`, the whole URL, `Ass`), not the value the route
+  accepts; `matchedOn` is the code, the host, the configured term, which
+  ADR 0041 R-8 already calls "the thing a reviewer acts on". A pure helper
+  `suppressionPrefill` in `api/automod.ts`. Cost if wrong: a prefill the
+  operator edits before confirming.
+- **PR-64 — allowlist phrases are stored lower-cased and space-collapsed.**
+  obscenity lower-cases the input and searches for the raw whitelisted
+  term, so a phrase with any uppercase letter could never match; the
+  pre-check was also case-sensitive, so `Ass` then `ass` made two rows.
+  Canonicalised in both port literals; the audit row records the canonical
+  value; blank phrases are a 400. Cost if wrong: none — the matcher only
+  ever sees lower case.
+- **PR-65 — verdicts on non-automod events are deferred.** A `config.write`
+  operator who pastes a `manual` event id records a verdict the tally
+  shows under `manual`. The guard needs a storage read of the event's rule
+  id before `recordVerdict`, which the observe-window constraints make a
+  poor trade for a Minor. Carried to the Slice 10–12 residue list. Cost if
+  wrong: a `manual` row on the tally that an operator has to explain.
+
+Minors taken into the same fix wave: native rule ids rendered as text
+(`/automod/native:1` is not a route); `encodeURIComponent` on every
+interpolated id; `INVITE_CODE_PATTERN` widened to the predicate's own
+`[\w-]{2,64}`; a two-guild test for the phrase write. Decorative tests
+closed: the scope sentence is asserted against an *edited* value; PR-59 is
+asserted per suppression kind (sign-off columns byte-for-byte unchanged).
