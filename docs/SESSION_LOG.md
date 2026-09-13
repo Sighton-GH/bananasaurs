@@ -2435,3 +2435,43 @@ daemon with zero file operations performed (traced through
 `scripts/restore.mjs` to confirm the refusal happens strictly before any
 rename/copy, since the script's own console output prints the plan before
 the safety check and reads misleadingly on a refusal).
+
+## Release 2 — observe window started by hand on both guilds — 2026-09-12
+
+The owner took the by-hand route from `docs/reports/release2-slice-6-handoff.md`
+rather than building Slice 11 first. Reasoning recorded in `docs/STATE.md`
+("Release 2 observe window"): for the `not_started → observing` arrow,
+`setRuleMode` writes exactly four columns and no audit row, so a hand-set row
+with the clock stamped in the same statement is indistinguishable from the
+function's own write, and `doctor`'s hand-edit check only inspects
+`mode = 'enforce'` rows.
+
+**Correction to the record:** `STATE.md` had said Release 2's migrations were
+applied to the live database on 2026-09-02. Read-only inspection tonight
+found the live database at migration 5 with no automod tables; the daemon had
+been running Release 1 code since 2026-08-30. All thirteen migrations
+`0005`–`0017` were applied tonight, not three.
+
+Sequence, every database write with the daemon stopped (systemd, owner-run
+`sudo`): backup `bananasaurs-20260913T022534283Z.db` taken and verified;
+`restore` and `db:migrate` each confirmed refusing against the running daemon
+(pid 2399827); restore drill into a scratch path, then all thirteen migrations
+rehearsed on the restored copy; live database migrated 5 → 18, integrity ok,
+row counts unchanged; restart on `a25a5b2` so the daemon seeded
+`default-word-filter`; stop; one guild-scoped `UPDATE` setting `mode`,
+`cutover_state`, `observe_started_at = 1789266853841` and `updated_at`
+together; restart; both doctors run. Floor elapses 2026-09-27T02:34:13.841Z.
+
+The session stopped there as Discord-facing; the owner then added the club
+server (`1430056096722194577`, SFU Racerbot Club, 210 members) to the
+allowlist and invited the bot. Restart seeded its rule; stop; the same
+statement with a fresh `now`: `observe_started_at = 1789267797656`
+(2026-09-13T02:49:57.656Z); restart; doctor `--guild` for the club (a
+two-guild instance now requires it). **Both guilds are observing.** The club's
+floor elapses 2026-09-27T02:49:57.656Z; that is the gate's window.
+
+Found along the way: the bot's role lacks `BanMembers` and `ManageMessages`
+on both guilds and `UseApplicationCommands` on the club, all in Release 2's
+`REQUIRED_PERMISSIONS`, so doctor reports `PROBLEMS FOUND` on both — harmless
+to an observe-only window, an owner action to fix. `/mydata` and `/forgetme`
+were a recorded precondition on allowlisting the real server and are now owed.
