@@ -487,11 +487,64 @@ describe('moderation', () => {
         authorId: USER,
         createdAtMs: expect.any(Number),
         content: 'newer',
+        editedTimestampMs: undefined,
+        attachments: [],
       },
-      { messageId: MESSAGE, authorId: USER, createdAtMs: expect.any(Number), content: 'older' },
+      {
+        messageId: MESSAGE,
+        authorId: USER,
+        createdAtMs: expect.any(Number),
+        content: 'older',
+        editedTimestampMs: undefined,
+        attachments: [],
+      },
     ]);
     // A full page offers a cursor; the caller pages until it is undefined.
     expect(page.nextBefore).toBe(MESSAGE);
+  });
+
+  it('maps edited_timestamp and attachment metadata on a fetched message', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: [
+          {
+            id: MESSAGE,
+            author: { id: USER },
+            content: 'edited with a file',
+            edited_timestamp: '2026-08-30T01:00:00.000Z',
+            attachments: [
+              {
+                id: '123456789012345678',
+                filename: 'notes.txt',
+                content_type: 'text/plain',
+                size: 12,
+              },
+            ],
+          },
+        ],
+      },
+    ]);
+    const page = await port.fetchRecentMessages(GUILD, CHANNEL, { limit: 2 });
+
+    expect(page.messages).toEqual([
+      {
+        messageId: MESSAGE,
+        authorId: USER,
+        createdAtMs: expect.any(Number),
+        content: 'edited with a file',
+        editedTimestampMs: Date.parse('2026-08-30T01:00:00.000Z'),
+        attachments: [
+          {
+            attachmentId: '123456789012345678',
+            fileName: 'notes.txt',
+            contentType: 'text/plain',
+            sizeBytes: 12,
+          },
+        ],
+      },
+    ]);
+    expect(page.nextBefore).toBeUndefined();
   });
 
   it('reports no cursor when the page came back short', async () => {
