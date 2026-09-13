@@ -135,3 +135,36 @@ tests.** All four task reviews had passed; none saw any of the three.
   for `fetch` to have been called. Added: `ReauthDialog` submit/cancel/Escape,
   `ConfirmDialog` busy, and `Field`'s `aria-describedby`/`aria-invalid` wiring
   (the thing PR-37 restructured it for, previously untested).
+
+### Fix wave and close-out
+
+Fix wave 1 (muse-spark-1.3, 10m18s, eight commits `23cb3e8..461836c`, 50
+dashboard tests); the coordinator watched two of the new guards fail (the
+password-clear and the health-unknown hold, each broken by one line and
+restored with `git restore`). Scoped re-review: ALL ADDRESSED, no new
+breakage — but it did not answer the branch-ordering question the brief
+asked, so the coordinator read the branch itself and found a residual **the
+fix brief had caused**: "any other 401" mapped an expired session
+(`unauthenticated`) to "Password not accepted". Round 2 (1m21s, same session,
+`6f8f44a..80166ce`): the three 401 bodies the server can send map to three
+outcomes — `reauth-required` → neutral "Cancelled"; `invalid-credentials` →
+"Password not accepted"; `unauthenticated` → "Signed out" plus `onLoggedOut()`.
+Re-review ALL ADDRESSED (23 s; again skipped the deliberate check, which the
+coordinator verified: `onLoggedOut` is in the `useMemo` dependency list).
+
+Merged `14c3557` into `worktree-release2-slices-7-12`. The merged tree linted
+**red** — not the code: ESLint walked into the plugin's `.oc-worktrees/`
+(307 parse errors from a second copy of every source file), the exact
+failure `.claude/worktrees/**` was already ignored for. `770c1b4` adds
+`.oc-worktrees/**` and `.oc-runs/**` to the ESLint and prettier ignores.
+
+**Gates on `770c1b4`, each run alone, read by exit code: typecheck 0, lint 0,
+test 0 — 2,439 tests across 127 files** (2,388 + 51 new). Built `dist/` and
+screenshotted four pages with a stubbed API through Playwright's cached
+Chromium: rail, amber strip, tables, both themes render as ADR 0043 D4
+describes.
+
+**Carried forward to Slice 8:** the single re-auth resolver (queue or refuse a
+second concurrent write); a first producer for `DataState`'s `degraded`
+state; the `NavEntry.area` grouping once two entries share a `docs/06` area
+(PR-39).

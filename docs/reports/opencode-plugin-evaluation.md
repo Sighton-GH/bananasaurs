@@ -158,6 +158,62 @@ expected, what was done instead, whether it cost a re-dispatch.
   this plugin, and its cost is unchanged from the sonnet flow.**
 - **Cost:** ~11 minutes for Opus. Same as Slices 3–6.
 
+### D11–D14 — Slice 7 fix wave, two scoped re-reviews, round 2 (muse-spark-1.3)
+
+- **Fix wave** (14 files, 10 findings): 10m18s, eight commits, `DONE`, one
+  honest judgment call reported (an `instanceof HTMLButtonElement` narrowing
+  to satisfy both `tsc` and a lint rule). Two of its guards were watched
+  failing by the coordinator. Good work from a detailed brief.
+- **Re-review 1** (1m40s → ALL ADDRESSED) and **re-review 2** (23 s → ALL
+  ADDRESSED) both **ignored the one deliberate check the brief asked for**
+  (branch ordering of `ReadonlyError`/401 cases; the `useMemo` dependency
+  array). Both checks turned out fine or were fixed by the coordinator's own
+  reading — but the coordinator had to do the reading. The scoped
+  re-reviewer is a verdict machine, not an investigator; a sonnet
+  re-reviewer on Slices 3–6 answered such questions roughly two times in
+  three.
+- **Round 2** resumed the fix session by id (1m21s, context intact, correct
+  on the first try). Session resumption works and is the plugin's best
+  feature for fix loops.
+- **Where the residual came from:** the coordinator's fix brief said "any
+  other 401 → Password not accepted" — a brief defect, not a model one. The
+  model followed the brief literally, as the skill says it will. The lesson
+  is the skill's own: the brief is the leverage, and a wrong brief is
+  executed faithfully.
+
+### D15 — `oc-task --merge` cannot merge a multi-task plan (plugin bug)
+
+- **What happened:** `oc-task --merge --branch oc/slice-7-shell --verified
+  "npm run test"` refused with "diff touches files not listed in the spec's
+  # Files section" and listed 30 files — every file from Tasks 1–4. It
+  validated against the **last** brief's Files list (the two-file round-2
+  fix brief), not the union of every brief on the branch, which is what the
+  skill document says it does.
+- **Expected:** a merge, or a refusal naming only files no brief ever
+  listed.
+- **Done instead:** `git merge --no-ff` in the coordinator's worktree, which
+  is what Slices 0–6 did anyway. `oc-undo` is therefore also unusable for
+  this merge.
+- **Cost:** two minutes; no re-dispatch. The guard is a good idea
+  implemented on the wrong set.
+- **Also:** the harness refused `--verified "npm run typecheck && npm run
+  lint && npm run test"` outright (a `&&` inside a quoted argument is
+  unverifiable to the approver), so the plugin's documented merge shape
+  cannot be typed from a worktree-isolated session at all.
+
+### D16 — the plugin's nested worktree breaks the repo's own lint
+
+- **What happened:** after the merge, `npm run lint` on the coordinator
+  branch exited 1 with 307 parse errors — every file under
+  `.oc-worktrees/oc/slice-7-shell/`, which typed ESLint cannot place in any
+  tsconfig project. The same problem `.claude/worktrees/**` is already
+  ignored for.
+- **Done instead:** `.oc-worktrees/**` and `.oc-runs/**` added to
+  `eslint.config.js` ignores and `.prettierignore` (`770c1b4`). The plugin
+  adds both to `.gitignore` on first run but knows nothing about a project's
+  linters; a note in its README would save the next project the same twenty
+  minutes.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created
