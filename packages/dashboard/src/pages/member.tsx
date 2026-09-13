@@ -1,13 +1,11 @@
 import { useCallback } from 'react';
-import { Link } from 'wouter';
-import { useParams } from 'wouter';
+import { Link, useParams } from 'wouter';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
-import { Badge } from '../ui/Badge.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
-import type { ModCase } from './cases.js';
+import { statusBadge, type ModCase } from './cases.js';
 
 /**
  * `/members/:memberId`: every case for this member, open first.
@@ -62,8 +60,7 @@ export function MemberPage() {
               {
                 key: 'status',
                 header: 'Status',
-                cell: (c) =>
-                  c.status === 'open' ? <Badge tone="hold">open</Badge> : <Badge>closed</Badge>,
+                cell: (c) => statusBadge(c.status),
               },
             ]}
           />
