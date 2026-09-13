@@ -643,3 +643,71 @@ stated twice.
 
 Branch head `9a45a12`: **2,702 tests across 142 files** (+100), typecheck,
 lint and test each exit 0, re-run by the controller in the worktree.
+
+### Whole-branch review (Opus, `docs/reports/m1-whole-branch-review.md`)
+
+7m24s, 42 tool uses. **SHIP-WITH-FIXES**: one Critical, three Important,
+six Minor. Fourth slice in a row where the whole-branch review found what
+the per-task reviews could not — and again every one of them needed a read
+outside the diff.
+
+- **PR-75 (Critical) — the backfill continuation collided with its own
+  still-`running` job row.** `archiveBackfillDedupeKey(guildId, channelId)`
+  is the key the running tick's own row holds; `jobs_dedupe` is unique over
+  `state IN ('queued','running')` and `enqueue` uses `onConflictDoNothing`,
+  so the successor was silently refused. A channel over 100 messages would
+  have backfilled exactly one page and sat in `running` with a frozen cursor
+  forever, with nothing to say why. **`packages/core/src/mod/purge.ts:20-60`
+  documents this precise hazard at length** and avoids it by keying every
+  successor off the tick's own `jobId`; the archive repeated what purge had
+  already written down. Fixed with purge's two-shape key
+  (`…:<channel>` first, `…:<channel>:after:<jobId>` after), and a real-queue
+  integration test that drives two ticks through `jobRepo` — the controller
+  reverted the key to the colliding shape and watched that test fail. Cost
+  if wrong: the archive quietly holds one page per channel.
+- **PR-76 (Important) — the backfill honoured one of three vetoes.**
+  `BackfillPorts` had only `findChannel`: a guild removed from
+  `BANANASAURS_ARCHIVE_GUILDS` with a job already queued kept ingesting, and
+  a channel in `log_excluded_channels` was refused by the subscriber and
+  fully backfilled by the job. ADR 0046 D1's whole point is that the
+  precondition is a check, not a note. Both added ahead of the fetch, both
+  directions tested against the call count.
+- **PR-77 (Important) — a deleted row whose content was already NULL never
+  purged.** The candidate predicate required `content IS NOT NULL`, so an
+  attachment-only or embed-only message (the REST pager maps `''` to
+  `undefined`) kept its attachment filenames and edit rows indefinitely and
+  never stamped `content_purged_at` — against PRIVACY.md's own words. Now
+  `deleted_at IS NOT NULL AND content_purged_at IS NULL`.
+- **PR-78 (Important, latent) — a closed case with no events never
+  expired.** `caseClosedAt` returned `undefined`, which the `case` tier read
+  as "not due yet". Falls back to the case's `openedAt`. Latent only because
+  nothing closes a case yet.
+- Minors fixed in the same wave: PRIVACY.md names the edits table (PR-79);
+  the expiry timer skips a guild with no archive channels; `attachment_id`
+  gains its format CHECK and the invariant set names it (migration `0019`);
+  `disable-channel` audits the message count it destroyed;
+  `archiveLinkCase` stops reporting a preserved message as "already
+  linked"; the untested `unreadableArchiveChannels` permission logic gets
+  its own test; two comments (the backfill throttle, the two-clock
+  `created_at`).
+
+### Fix wave and close-out
+
+One fix dispatch (muse-spark-1.3, 14m48s, `78b2d50..1faaae6`, one commit per
+task plus `lint:fix`) with every finding; the implementer chose the right
+home for the real-queue test (eslint bans `packages/core` from importing
+`@bananasaurs/storage`) and said so. Scoped re-review (1m35s): **ALL
+ADDRESSED**, no new breakage, one comment-only observation left (two stale
+"per-channel dedupe key" header comments).
+
+Merged `oc/m1-archive` into `worktree-release2-slices-7-12` with `--no-ff`
+(`1a1c242`). Gates on the merge, each alone, by exit code: typecheck 0,
+lint 0, test 0 — **2,717 tests across 144 files** (+115 this slice).
+
+What M1 teaches that the dashboard slices did not: **the codebase's own
+prose is a reviewer.** The Critical was not a subtle race — it was a hazard
+a sibling module had already hit, documented in forty lines of comment, and
+solved. A brief that had said "read `purge.ts`'s dedupe docstring before
+writing the continuation" would have prevented it; the fix brief did say
+that, and the fix was right first time. Task briefs now name the file that
+already solved the problem, not just the file to copy the pattern from.
