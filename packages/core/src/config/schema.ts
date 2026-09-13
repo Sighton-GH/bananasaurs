@@ -55,7 +55,12 @@ export const configSchema = z.object({
   BANANASAURS_ARCHIVE_GUILDS: z
     .string()
     .default('')
-    .transform((v) => v.split(',').map((s) => s.trim()).filter(Boolean))
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
     .pipe(z.array(snowflake)),
 
   BANANASAURS_OWNER_USER_ID: snowflake,

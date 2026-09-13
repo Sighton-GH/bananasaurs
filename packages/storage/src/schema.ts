@@ -886,7 +886,10 @@ export const archiveChannels = sqliteTable(
     check('archive_channels_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_channels_channel_id_snowflake', snowflakeCheck(t.channelId)),
     check('archive_channels_attachment_policy', sql`${t.attachmentPolicy} IN ('none','bytes')`),
-    check('archive_channels_backfill_state', sql`${t.backfillState} IN ('pending','running','done')`),
+    check(
+      'archive_channels_backfill_state',
+      sql`${t.backfillState} IN ('pending','running','done')`,
+    ),
   ],
 );
 
@@ -919,15 +922,19 @@ export const archiveMessages = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.messageId] }),
-    foreignKey(
-      { columns: [t.guildId, t.channelId], foreignColumns: [archiveChannels.guildId, archiveChannels.channelId] },
-    ).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.channelId],
+      foreignColumns: [archiveChannels.guildId, archiveChannels.channelId],
+    }).onDelete('cascade'),
     index('archive_messages_channel_created').on(t.guildId, t.channelId, t.createdAt),
     index('archive_messages_deleted').on(t.guildId, t.deletedAt),
     check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
     check('archive_messages_channel_id_snowflake', snowflakeCheck(t.channelId)),
-    check('archive_messages_retention_class', sql`${t.retentionClass} IN ('default','case','preserve')`),
+    check(
+      'archive_messages_retention_class',
+      sql`${t.retentionClass} IN ('default','case','preserve')`,
+    ),
   ],
 );
 
@@ -947,9 +954,10 @@ export const archiveMessageEdits = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.messageId, t.editSeq] }),
-    foreignKey(
-      { columns: [t.guildId, t.messageId], foreignColumns: [archiveMessages.guildId, archiveMessages.messageId] },
-    ).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.messageId],
+      foreignColumns: [archiveMessages.guildId, archiveMessages.messageId],
+    }).onDelete('cascade'),
     check('archive_message_edits_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_message_edits_message_id_snowflake', snowflakeCheck(t.messageId)),
   ],
@@ -979,9 +987,10 @@ export const archiveAttachments = sqliteTable(
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.messageId, t.attachmentId] }),
-    foreignKey(
-      { columns: [t.guildId, t.messageId], foreignColumns: [archiveMessages.guildId, archiveMessages.messageId] },
-    ).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.messageId],
+      foreignColumns: [archiveMessages.guildId, archiveMessages.messageId],
+    }).onDelete('cascade'),
     check('archive_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_attachments_message_id_snowflake', snowflakeCheck(t.messageId)),
   ],
