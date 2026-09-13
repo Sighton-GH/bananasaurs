@@ -9,6 +9,7 @@ import {
   type DomainEvent,
   type InteractionRef,
   type EmojiKey,
+  type FetchedMessage,
   type NativeAutoModAction,
   type NativeAutoModTrigger,
   type OutgoingMessage,
@@ -19,6 +20,14 @@ import {
 
 /** Discord's epoch, which every snowflake timestamp is an offset from. */
 const DISCORD_EPOCH_MS = 1_420_070_400_000;
+
+/**
+ * `MessageAttachment` is not among `@bananasaurs/core`'s public exports (only
+ * the union types that carry it — `DomainEvent`, `FetchedMessage` — are), so
+ * it is derived structurally from `FetchedMessage` rather than adding an
+ * export outside this file's remit.
+ */
+type FakeAttachment = NonNullable<FetchedMessage['attachments']>[number];
 
 /**
  * In-memory Discord, built before the features that use it.
@@ -46,6 +55,10 @@ interface FakeMessage {
   deleted: boolean;
   /** Last-known content, for `fetchRecentMessages` (ADR 0037). */
   content: string | undefined;
+  /** Last-known edit timestamp, for `fetchRecentMessages` (PR-68). */
+  editedTimestampMs: number | undefined;
+  /** Metadata only, for `fetchRecentMessages` (PR-68). */
+  attachments: FakeAttachment[];
 }
 
 /**
@@ -222,6 +235,13 @@ export class FakeDiscord implements DiscordPort {
     authorId?: Snowflake;
     cached?: boolean;
     content?: string | undefined;
+    editedTimestampMs?: number | undefined;
+    attachments?: ReadonlyArray<{
+      attachmentId: Snowflake;
+      fileName: string;
+      contentType?: string | undefined;
+      sizeBytes: number;
+    }>;
   }): void {
     this.messages.set(key(msg.channelId, msg.messageId), {
       channelId: msg.channelId,
@@ -231,6 +251,13 @@ export class FakeDiscord implements DiscordPort {
       cached: msg.cached ?? true,
       deleted: false,
       content: msg.content,
+      editedTimestampMs: msg.editedTimestampMs,
+      attachments: (msg.attachments ?? []).map((a) => ({
+        attachmentId: a.attachmentId,
+        fileName: a.fileName,
+        contentType: a.contentType,
+        sizeBytes: a.sizeBytes,
+      })),
     });
   }
   /** A message outside the client cache. Its events arrive partial. */
@@ -334,7 +361,20 @@ export class FakeDiscord implements DiscordPort {
     content: string;
     /** Defaults to the bot's own id being the only bot in the fixture. */
     authorIsBot?: boolean;
+    /** Every attachment on a `messageCreate` carries an id (PR-71). */
+    attachments?: ReadonlyArray<{
+      attachmentId: Snowflake;
+      fileName: string;
+      contentType?: string | undefined;
+      sizeBytes: number;
+    }>;
   }): Promise<void> {
+    const attachments: FakeAttachment[] = (p.attachments ?? []).map((a) => ({
+      attachmentId: a.attachmentId,
+      fileName: a.fileName,
+      contentType: a.contentType,
+      sizeBytes: a.sizeBytes,
+    }));
     await this.emit({
       kind: 'messageCreate',
       guildId: this.guildId,
@@ -348,7 +388,93 @@ export class FakeDiscord implements DiscordPort {
       mentionedUserIds: [],
       mentionedRoleIds: [],
       mentionsEveryone: false,
+      attachments,
+    });
+  }
+
+  /**
+   * MESSAGE_UPDATE: an edit. Updates the fake's own record of the message so
+   * `fetchRecentMessages` agrees with the event just emitted, the same
+   * contract `deleteMessageAs` keeps for deletion.
+   */
+  async emitMessageUpdate(p: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    authorId: Snowflake;
+    content: string;
+    editedTimestampMs: number;
+  }): Promise<void> {
+    const m = this.mustMessage(p);
+    m.content = p.content;
+    m.editedTimestampMs = p.editedTimestampMs;
+    await this.emit({
+      kind: 'messageUpdate',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      channelId: p.channelId,
+      messageId: p.messageId,
+      authorId: p.authorId,
+      authorIsBot: p.authorId === BOT_USER_ID,
+      content: p.content,
+      editedTimestampMs: p.editedTimestampMs,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: m.attachments,
+    });
+  }
+
+  /**
+   * MESSAGE_DELETE, the raw gateway event (not the moderation action
+   * `deleteMessage`/`deleteMessageAs` drive — no audit log entry is written
+   * here). `authorId` is optional the same way `deleteMessageAs`'s own event
+   * body is: an uncached message names nobody.
+   */
+  async emitMessageDelete(p: {
+    channelId: Snowflake;
+    messageId: Snowflake;
+    authorId?: Snowflake;
+  }): Promise<void> {
+    const existing = this.messages.get(key(p.channelId, p.messageId));
+    if (existing) existing.deleted = true;
+    const authorId = p.authorId ?? (existing?.cached ? existing.authorId : undefined);
+    await this.emit({
+      kind: 'messageDelete',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      channelId: p.channelId,
+      messageId: p.messageId,
+      authorId,
+      authorIsBot: authorId === BOT_USER_ID,
+      content: undefined,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
       attachments: [],
+    });
+  }
+
+  /**
+   * MESSAGE_DELETE_BULK (PR-66): one event naming every id Discord named.
+   * Marks each as deleted in the fake's own record, the same as a run of
+   * `emitMessageDelete` would, but as the single dispatch Discord actually
+   * sends.
+   */
+  async emitMessageDeleteBulk(p: {
+    channelId: Snowflake;
+    messageIds: readonly Snowflake[];
+  }): Promise<void> {
+    for (const messageId of p.messageIds) {
+      const m = this.messages.get(key(p.channelId, messageId));
+      if (m) m.deleted = true;
+    }
+    await this.emit({
+      kind: 'messageDeleteBulk',
+      guildId: this.guildId,
+      receivedAtMs: this.clock,
+      channelId: p.channelId,
+      messageIds: p.messageIds,
     });
   }
 
@@ -1017,6 +1143,8 @@ export class FakeDiscord implements DiscordPort {
         authorId: m.authorId,
         createdAtMs: Number((BigInt(m.messageId) >> 22n) + BigInt(DISCORD_EPOCH_MS)),
         content: m.content,
+        editedTimestampMs: m.editedTimestampMs,
+        attachments: m.attachments ?? [],
       }));
     const last = all.length > 0 ? all[all.length - 1] : undefined;
     return {
