@@ -141,6 +141,13 @@
       "when": 1789337740258,
       "tag": "0019_same_jocasta",
       "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "6",
+      "when": 1789337741258,
+      "tag": "0020_archive_fts",
+      "breakpoints": true
     }
   ]
 }

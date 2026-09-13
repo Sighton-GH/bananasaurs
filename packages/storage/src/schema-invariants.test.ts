@@ -710,3 +710,29 @@ describe('runMigrations fails the run when a migration leaves a dangling referen
     raw.close();
   });
 });
+
+/**
+ * The migrator gates on the journal's `when`, not on a hash: an entry whose
+ * `when` is equal to or smaller than the previous entry's is silently skipped
+ * on a database that has already run the earlier migration. Read the shipped
+ * journal and prove its timestamps are strictly increasing, so a new entry
+ * that reuses or backdates a timestamp fails the build instead of looking
+ * exactly like success.
+ */
+describe('the migration journal applies in order', () => {
+  it('has strictly increasing when values', () => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: { idx: number; when: number; tag: string }[] };
+    expect(journal.entries.length).toBeGreaterThan(0);
+    for (let i = 1; i < journal.entries.length; i += 1) {
+      const prev = journal.entries[i - 1]!;
+      const curr = journal.entries[i]!;
+      expect(
+        curr.when,
+        `${curr.tag} (idx ${curr.idx}) has when ${curr.when}, not strictly greater than ` +
+          `${prev.tag} (idx ${prev.idx}) with when ${prev.when}; the migrator would silently skip it.`,
+      ).toBeGreaterThan(prev.when);
+    }
+  });
+});
