@@ -212,7 +212,8 @@ describe('automod rules repo', () => {
     });
   });
 
-  describe('ruleExists', () => {    it('is false before a rule is created and true after, whether enabled or not', () => {
+  describe('ruleExists', () => {
+    it('is false before a rule is created and true after, whether enabled or not', () => {
       const scope = t.scopes.forGuild(GUILD);
       expect(ruleExists(scope, 'r1')).toBe(false);
 

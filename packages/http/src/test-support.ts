@@ -12,12 +12,7 @@ import {
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
-import type {
-  OpsAutomodRuleSummary,
-  OpsCase,
-  OpsInstance,
-  OpsPorts,
-} from '@bananasaurs/core';
+import type { OpsInstance, OpsPorts } from '@bananasaurs/core';
 
 /**
  * Test-only `OpsPorts` and `OpsInstance`, built directly against the repos —
@@ -357,7 +352,7 @@ const testAutomodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
   reviewedCounts: Readonly<Record<string, number>>,
-): OpsAutomodRuleSummary => ({
+) => ({
   ruleId: rule.ruleId,
   kind: rule.kind,
   name: rule.name,
@@ -379,9 +374,7 @@ const testAutomodRuleSummary = (
 });
 
 /** The case projection, shared by the three case reads. */
-const testCaseRow = (
-  found: ReturnType<typeof automodAdminRepo.listRecentCases>[number],
-): OpsCase => ({
+const testCaseRow = (found: ReturnType<typeof automodAdminRepo.listRecentCases>[number]) => ({
   caseId: found.caseId,
   memberId: found.memberId,
   openedAt: found.openedAt,

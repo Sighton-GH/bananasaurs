@@ -1,9 +1,5 @@
 import type { DryRunReport } from '../automod/dry-run.js';
-import type {
-  AutomodRule,
-  FixtureRecord,
-  RuleKind,
-} from '../automod/predicates/types.js';
+import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -282,7 +278,11 @@ export interface OpsAutomodRuleSummary {
  */
 export type OpsEnforcementRefusal =
   | { readonly reason: 'cutover-state'; readonly state: string }
-  | { readonly reason: 'false-positive'; readonly falsePositives: number; readonly reviewed: number }
+  | {
+      readonly reason: 'false-positive';
+      readonly falsePositives: number;
+      readonly reviewed: number;
+    }
   | { readonly reason: 'rate-too-high'; readonly rate: number; readonly threshold: number }
   | {
       readonly reason: 'low-volume-unsigned';
@@ -296,8 +296,7 @@ export type OpsEnforcementRefusal =
  * by the mode write itself.
  */
 export type OpsEnforcementEligibility =
-  | { readonly ok: true }
-  | { readonly ok: false; readonly refusal: OpsEnforcementRefusal };
+  { readonly ok: true } | { readonly ok: false; readonly refusal: OpsEnforcementRefusal };
 
 /**
  * One rule for the dashboard's `/automod/:ruleId` detail page: the summary
@@ -305,7 +304,10 @@ export type OpsEnforcementEligibility =
  * the current eligibility verdict the mode dialog mirrors server-side.
  */
 export interface OpsAutomodRuleDetail extends OpsAutomodRuleSummary {
-  readonly exemptions: readonly { readonly exemptType: 'role' | 'channel'; readonly exemptId: string }[];
+  readonly exemptions: readonly {
+    readonly exemptType: 'role' | 'channel';
+    readonly exemptId: string;
+  }[];
   readonly terms: readonly { readonly text: string; readonly categoryId: string }[];
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly { readonly code: string; readonly label: string }[];

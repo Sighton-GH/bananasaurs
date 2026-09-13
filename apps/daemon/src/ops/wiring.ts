@@ -7,8 +7,6 @@ import {
   runDryRun,
   undoDedupeKey,
   type Config,
-  type OpsAutomodRuleSummary,
-  type OpsCase,
   type OpsInstance,
   type OpsPorts,
   type OpsSettingChange,
@@ -273,8 +271,7 @@ export const opsPortsFor = (
       })),
     };
   },
-  listCasesForMember: (memberId) =>
-    modCaseRepo.listCasesForMember(scope, memberId).map(opsCaseRow),
+  listCasesForMember: (memberId) => modCaseRepo.listCasesForMember(scope, memberId).map(opsCaseRow),
 
   // --- write commands (13d) --------------------------------------------------
   applySetting: (change) => applySetting(scope, change, now()),
@@ -616,12 +613,13 @@ const panelSummary = (panel: ReturnType<typeof panelRepo.listPanels>[number]) =>
 /**
  * One dashboard rule summary: the admin row plus this guild's match and
  * reviewed tallies. Shared by `listAutomodRules` and `findAutomodRuleDetail`.
+ * The return type is inferred — `OpsPorts` checks it at each use.
  */
 const automodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
   reviewedCounts: Readonly<Record<string, number>>,
-): OpsAutomodRuleSummary => ({
+) => ({
   ruleId: rule.ruleId,
   kind: rule.kind,
   name: rule.name,
@@ -643,9 +641,7 @@ const automodRuleSummary = (
 });
 
 /** The case projection, shared by the three case reads. */
-const opsCaseRow = (
-  found: ReturnType<typeof automodAdminRepo.listRecentCases>[number],
-): OpsCase => ({
+const opsCaseRow = (found: ReturnType<typeof automodAdminRepo.listRecentCases>[number]) => ({
   caseId: found.caseId,
   memberId: found.memberId,
   openedAt: found.openedAt,
