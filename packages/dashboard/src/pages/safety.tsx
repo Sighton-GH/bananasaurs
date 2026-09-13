@@ -60,6 +60,7 @@ export function SafetyPage() {
         }
         confirmLabel="Turn kill switch on"
         danger
+        busy={busy}
         onConfirm={() => void setKillswitch(true)}
         onCancel={() => setConfirming(false)}
       />

@@ -42,6 +42,26 @@ describe('ConfirmDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
+  it('busy disables both buttons', () => {
+    render(
+      <ConfirmDialog
+        open
+        title="T"
+        scope="s"
+        confirmLabel="Do it"
+        busy
+        onConfirm={() => undefined}
+        onCancel={() => undefined}
+      />,
+    );
+    expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+    expect((screen.getByRole('button', { name: 'Do it' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    );
+  });
+
   it('renders nothing when closed', () => {
     render(
       <ConfirmDialog

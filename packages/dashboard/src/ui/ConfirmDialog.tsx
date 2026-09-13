@@ -13,6 +13,7 @@ export function ConfirmDialog({
   scope,
   confirmLabel,
   danger = false,
+  busy,
   onConfirm,
   onCancel,
 }: {
@@ -21,6 +22,7 @@ export function ConfirmDialog({
   readonly scope: ReactNode;
   readonly confirmLabel: string;
   readonly danger?: boolean;
+  readonly busy?: boolean;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
 }): ReactElement {
@@ -34,8 +36,14 @@ export function ConfirmDialog({
             <div className="mt-2 text-sm">{scope}</div>
           </Dialog.Description>
           <div className="mt-4 flex justify-end gap-2">
-            <Button onClick={onCancel}>Cancel</Button>
-            <Button variant={danger ? 'danger' : 'primary'} onClick={onConfirm}>
+            <Button onClick={onCancel} busy={busy === true}>
+              Cancel
+            </Button>
+            <Button
+              variant={danger ? 'danger' : 'primary'}
+              onClick={onConfirm}
+              busy={busy === true}
+            >
               {confirmLabel}
             </Button>
           </div>
