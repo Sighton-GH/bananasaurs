@@ -4,3 +4,6 @@ drizzle/
 scratchpad/
 package-lock.json
 *.md
+.claude/worktrees/
+.oc-worktrees/
+.oc-runs/

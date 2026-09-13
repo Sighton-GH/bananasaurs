@@ -123,6 +123,9 @@ export default tseslint.config(
       // `parserOptions.project` refuses. Nothing here needs linting; the
       // worktree's own checkout lints itself.
       '.claude/worktrees/**',
+      // The opencode-delegate plugin's worktrees and run logs, same reason.
+      '.oc-worktrees/**',
+      '.oc-runs/**',
       // Plain-JS build helper. Covered by prettier; no type-aware rules apply.
       'scripts/**',
       // tsc --build's declaration-only output for packages/dashboard (ADR: a
