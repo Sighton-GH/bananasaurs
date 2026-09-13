@@ -263,6 +263,57 @@ field-by-field mapping audit (Task 2). The model is capable; the template's
 RESULT block just gives a check nowhere to land. The plugin's
 `task-reviewer-brief.md` should carry such a slot.
 
+### D30–D33 — Slice 8 fix wave, re-review; Slice 9 plan review (muse-spark-1.3)
+
+- **Slice 8 fix wave** (10 files, 9 findings): 10m11s, eight commits,
+  `DONE`; one guard watched failing. **Re-review** 1m07s: ALL ADDRESSED
+  **and both deliberate checks answered** with the branch order quoted —
+  the RESULT block was given lines `A.` and `B.` to fill. That is now the
+  template used for every re-review.
+- **Slice 9 plan review** 2m29s: 6 Important, 6 Minor, all true — including
+  a design question (does a suppression void the enforcement sign-off?)
+  that produced ruling PR-59, and an ARIA point (no form control inside
+  `Dialog.Description`) the coordinator would have shipped. Three plan
+  reviews in, this is the plugin's most reliably valuable dispatch: 2–3
+  minutes, 15 findings, near-zero false positives.
+- **Slice 8 totals:** seven implement dispatches 57m53s, seven task reviews
+  9m19s, one fix wave 10m11s, one re-review 1m07s, plan review 2m41s —
+  **~81 minutes of opencode time for ~4,300 added lines** with zero
+  re-dispatches. The Opus whole-branch review (~12 minutes) found three
+  Important defects the seven task reviews had passed.
+
+### D34–D36 — the free tier ran out (Slice 9 Task 2), and the fallback
+
+- **What happened:** Slice 9 Task 1 (5m09s) and its fix round (51 s)
+  completed normally on muse-spark-1.3. Task 2 was cut off after 5m49s
+  with exit 5: `FreeUsageLimitError — Error from provider (Console): Rate
+  limit exceeded`. Step 1 (the four port literals) was committed; the
+  plugin auto-committed the half-written routes and tests as a
+  checkpoint (`7bc4441`, "uncommitted changes at end of run"), which is the
+  right behaviour. A continuation brief on `muse-spark-1.2-contributor-free`
+  hit the same error in 1m16s: **the limit is account-wide across free
+  models, not per model.**
+- **When:** after roughly 3h45m of near-continuous dispatching — 25
+  implement/review/re-review runs across three slices, ~112 minutes of model
+  time. That is the budget the free tier gave this evaluation in one
+  sitting; whether it resets hourly or daily is not something the error or
+  the plugin says.
+- **Expected:** the skill says exit 5 means "stop and tell the user; do not
+  retry on your own". The task instruction says a blocked task falls back to
+  a sonnet subagent and the slice continues. Done the second, after one
+  probe on a different free model to learn whether the limit was per model.
+- **Done instead:** Slice 9 Task 2 continues on a sonnet subagent
+  (`superpowers:subagent-driven-development` shape: brief as a file, report
+  back as a file, same worktree and branch), from the checkpoint. Later
+  tasks retry opencode first and fall back the same way.
+- **Cost:** ~7 minutes lost (the truncated run plus the probe) and one
+  continuation brief. The checkpoint meant no work was lost.
+- **Plugin note:** `oc-task` cannot tell a per-model limit from an
+  account-wide one, and `oc-models --free` does not show remaining quota; a
+  coordinator learns the budget by exhausting it. Surfacing the limit type
+  in the exit-5 summary, and a quota line in `oc-models`, would save the
+  probe.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created
