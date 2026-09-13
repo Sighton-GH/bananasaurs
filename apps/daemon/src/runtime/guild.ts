@@ -4,6 +4,7 @@ import {
   editManagedPanel,
   postManagedPanel,
   seedPanelReactions,
+  createArchiveSubscriber,
   createAutomodSubscriber,
   createInteractionSubscriber,
   createLoggingSubscriber,
@@ -20,6 +21,7 @@ import {
   parseSnowflakeId,
   RateLimiter,
   type AdoptionPorts,
+  type ArchivePorts,
   type Config,
   type DiscordPort,
   type EffectGatewayDeps,
@@ -41,6 +43,7 @@ import {
 } from '@bananasaurs/core';
 import {
   authzStoreFor,
+  archiveRepo,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -287,6 +290,20 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   // calls, so it needs no gateway and no witness of its own
   // (`automod/native-wiring.ts`).
   const nativeAutomodPorts: NativeAutomodSubscriberDeps = nativeAutomodPortsFor(scope, logger, now);
+
+  // ADR 0046, Slice M1 Task 4: the live archive subscriber's ports. The guild
+  // allowlist closes over config here; the channel vetoes read the repo and
+  // the logging module's exclusion list through this scope.
+  const archivePorts: ArchivePorts = {
+    guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
+    isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
+    isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+    upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
+    recordEdit: (input) => archiveRepo.recordEdit(scope, input),
+    recordDelete: (input) => archiveRepo.recordDelete(scope, input),
+    recordBulkDelete: (input) => archiveRepo.recordBulkDelete(scope, input),
+    logger,
+  };
 
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
@@ -605,6 +622,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createMemberUpdateSubscriber(memberUpdatePorts),
     createLoggingSubscriber(loggingPorts),
     createAutomodSubscriber(automodPorts),
+    // After automod so a message the automod deletes is archived as
+    // created-then-deleted (ADR 0046 D5); read-side only.
+    createArchiveSubscriber(archivePorts),
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
