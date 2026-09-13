@@ -167,3 +167,51 @@ is removed from the index in the same expiry transaction.
 - **Retention as a follow-up slice.** The design already rejects it; this
   ADR repeats the rejection because it is the one most likely to be
   re-proposed under time pressure.
+
+## Amendment 1 — 2026-09-13, at M1 planning, after reading the code the ADR must fit
+
+Five things the codebase does not have that the decision above assumed. Each
+is recorded in `docs/reports/release2-slices-7-12-ledger.md` as a ruling.
+
+- **PR-66 — `MESSAGE_DELETE_BULK` enters the pipeline.** D5 names it, but the
+  adapter translates only create, update and delete (`packages/discord/src/events.ts`),
+  and `mod/purge.ts` records the gap. M1 adds a `messageDeleteBulk` domain
+  event carrying the channel and the id list, fingerprinted on the channel and
+  the sorted ids, and translated from discord.js's `MessageBulkDelete`. No
+  existing subscriber handles it; the archive subscriber is its first consumer.
+- **PR-67 — attachment bytes are deferred out of M1; `none` records no hash.**
+  D2 said `bytes` is "built and tested" and that `none` stores a SHA-256 "if
+  the CDN URL is still live". Hashing needs the bytes, so the second clause
+  contradicts the first: under `none` nothing is fetched and `sha256` is NULL.
+  And nothing in the tree fetches bytes from anywhere — the first outbound
+  byte fetch is a rule-8 event that deserves its own line in an ADR and the
+  owner's eye, not a sub-task of a schema slice. The `attachment_policy`
+  column, its CHECK and the `sha256`/`bytes_path` columns ship in M1 so the
+  schema does not change later; `enable-channel --attachments bytes` refuses
+  with the usage answer `'attachments-bytes-not-built'` until a later slice
+  builds the fetcher behind a host allowlist. REVIEW §C1's argument stands
+  and is not weakened: a URL not fetched today can still be fetched tomorrow
+  as long as the message is not deleted, and every row keeps its attachment
+  id.
+- **PR-68 — `FetchedMessage` gains `editedTimestampMs` and `attachments`.**
+  The REST pager the backfill reuses (`fetchRecentMessages`, purge's) carries
+  neither, so a backfilled message would lose its edit state and its files.
+  Additive on the port, the adapter and the fake; purge reads neither field.
+  `MessageAttachment` gains `attachmentId` for the same reason.
+- **PR-69 — the case link is `archive_messages.case_id`, set by the operator.**
+  No column anywhere ties a message to a case and nothing closes a case yet
+  (`mod-cases.ts` says so). `linkToCase` verifies the case exists in scope
+  and is open, then sets `retention_class = 'case'`; the CLI `archive
+  link-case <message_id> <case_id> --confirm` is its only caller in M1 — the
+  automod subscriber may not be touched during the window, so the automatic
+  link at match time waits. The `case` tier's "then 90 days" clock starts at
+  the latest `mod_case_events.at` of a case whose `status = 'closed'`; that
+  branch is tested with a seeded closed case and is inert in production.
+- **PR-70 — `archive_expiry` is produced by a daily timer, not by a job that
+  re-enqueues itself.** The job table has no scheduler (the sweep job's
+  producer "is a scheduler this slice does not build"); the only daily thing
+  is the backup `setInterval`. M1 adds an `archive-expiry-timer` on the same
+  shape that enqueues one `archive_expiry` job per guild per UTC day (dedupe
+  key `archive_expiry:<yyyy-mm-dd>`), at startup and every 24 h. The work
+  runs on the job table — retried, visible to `jobs list` — and the timer
+  only says when.
