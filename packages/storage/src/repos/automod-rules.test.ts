@@ -9,6 +9,7 @@ import {
   addRoleExemption,
   addTerm,
   createRule,
+  findRuleIncludingDisabled,
   hasRoleExemption,
   isExempt,
   listEnabledRules,
@@ -191,6 +192,23 @@ describe('automod rules repo', () => {
       setRuleMode(t.scopes.forGuild(GUILD), { ruleId: 'r1', mode: 'enforce', now: 1000 });
 
       expect(listEnforceModeKeywordFilterRules(t.scopes.forGuild(other))).toEqual([]);
+    });
+  });
+
+  describe('findRuleIncludingDisabled', () => {
+    it('returns a disabled rule and undefined for the other guild', () => {
+      const other = parseGuildId('444444444444444444');
+      upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 0 });
+
+      const scope = t.scopes.forGuild(GUILD);
+      createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 1000 });
+      setRuleMode(scope, { ruleId: 'r1', enabled: false, now: 2000 });
+
+      // Disabled, so invisible to the subscriber's read — but still found here.
+      expect(listEnabledRules(scope)).toEqual([]);
+      expect(findRuleIncludingDisabled(scope, 'r1')).toMatchObject({ ruleId: 'r1', kind: 'caps' });
+      expect(findRuleIncludingDisabled(scope, 'missing')).toBeUndefined();
+      expect(findRuleIncludingDisabled(t.scopes.forGuild(other), 'r1')).toBeUndefined();
     });
   });
 

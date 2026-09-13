@@ -1,9 +1,13 @@
 import {
   accountRepo,
+  automodAdminRepo,
+  automodRuleRepo,
   effectRepo,
+  enforcementGateRepo,
   guildRepo,
   jobRepo,
   loggingRepo,
+  modCaseRepo,
   panelRepo,
   type GuildScope,
   type InstanceScope,
@@ -162,6 +166,81 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     throw new Error('not used by the dashboard routes under test');
   },
 
+  // Slice 8's dashboard pages (Task 2): the same real-repo behaviour
+  // `apps/daemon/src/ops/wiring.ts` wires, so route tests exercise real
+  // reads and writes. Only `runAutomodDryRun` differs — a canned report
+  // rather than a real replay (`toAutomodRule` lives in `apps/daemon` and
+  // this package may not import it); the route test asserts pass-through.
+  listAutomodRules: () => {
+    const matchCounts = automodAdminRepo.countMatchesByRule(scope);
+    const reviewedCounts = automodAdminRepo.countReviewedByRule(scope);
+    return automodAdminRepo
+      .listRules(scope)
+      .map((rule) => testAutomodRuleSummary(rule, matchCounts, reviewedCounts));
+  },
+  findAutomodRuleDetail: (ruleId) => {
+    const rule = automodAdminRepo.findRule(scope, ruleId);
+    if (rule === undefined) return undefined;
+    const stored = automodRuleRepo.findRuleIncludingDisabled(scope, ruleId);
+    return {
+      ...testAutomodRuleSummary(
+        rule,
+        automodAdminRepo.countMatchesByRule(scope),
+        automodAdminRepo.countReviewedByRule(scope),
+      ),
+      exemptions: automodAdminRepo.listExemptions(scope, ruleId),
+      terms: stored?.terms ?? [],
+      allowlist: stored?.allowlist ?? [],
+      inviteAllowlist: stored?.inviteAllowlist ?? [],
+      linkDomains: stored?.linkDomains ?? [],
+      eligibility: enforcementGateRepo.enforcementEligibility(scope, ruleId),
+    };
+  },
+  runAutomodDryRun: (ruleId) => {
+    if (!automodRuleRepo.ruleExists(scope, ruleId)) return 'no-such-rule';
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    return {
+      ruleId,
+      kind: rule.kind,
+      usable: true,
+      failure: undefined,
+      threw: 0,
+      corpusSize: 0,
+      total: 0,
+      matched: 0,
+      falsePositives: 0,
+      falseNegatives: 0,
+      results: [],
+    };
+  },
+  listRecentCases: (query) =>
+    automodAdminRepo.listRecentCases(scope, { limit: query.limit }).map(testCaseRow),
+  findCaseDetail: (caseId) => {
+    const found = automodAdminRepo.findCase(scope, caseId);
+    if (found === undefined) return undefined;
+    return {
+      case: testCaseRow(found),
+      events: modCaseRepo.listCaseEvents(scope, caseId).map((event) => ({
+        eventId: event.eventId,
+        caseId: event.caseId,
+        ruleId: event.ruleId,
+        memberId: event.memberId,
+        at: event.at,
+        matchedCategory: event.matchedCategory,
+        matchedSnippet: event.matchedSnippet,
+        actionTaken: event.actionTaken,
+        escalationAction: event.escalationAction,
+        refusalReason: event.refusalReason,
+        actorId: event.actorId,
+        trace: event.trace,
+        fixtureId: event.fixtureId,
+      })),
+    };
+  },
+  listCasesForMember: (memberId) =>
+    modCaseRepo.listCasesForMember(scope, memberId).map(testCaseRow),
+
   applySetting: () => {
     throw new Error('not used by the dashboard routes under test');
   },
@@ -191,6 +270,50 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   },
   removeLinkDomain: () => {
     throw new Error('not used by the dashboard routes under test');
+  },
+  createAutomodRule: (input) => {
+    if (automodRuleRepo.ruleExists(scope, input.ruleId)) return 'exists';
+    automodRuleRepo.createRule(scope, { ...input, now: now() });
+    return 'created';
+  },
+  setAutomodRuleConfig: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    automodRuleRepo.setRuleConfig(scope, { ...input, now: now() });
+    return 'ok';
+  },
+  setAutomodRuleMode: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    return automodRuleRepo.setRuleMode(scope, {
+      ruleId: input.ruleId,
+      ...(input.mode !== undefined && { mode: input.mode }),
+      ...(input.enabled !== undefined && { enabled: input.enabled }),
+      now: now(),
+    });
+  },
+  addAutomodExemption: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const existing = automodAdminRepo.listExemptions(scope, input.ruleId);
+    if (
+      existing.some(
+        (exemption) =>
+          exemption.exemptType === input.exemptType && exemption.exemptId === input.exemptId,
+      )
+    ) {
+      return 'already-present';
+    }
+    if (input.exemptType === 'role') {
+      automodRuleRepo.addRoleExemption(scope, { ruleId: input.ruleId, roleId: input.exemptId });
+    } else {
+      automodRuleRepo.addChannelExemption(scope, {
+        ruleId: input.ruleId,
+        channelId: input.exemptId,
+      });
+    }
+    return 'added';
+  },
+  removeAutomodExemption: (input) => {
+    const removed = automodAdminRepo.removeExemption(scope, input);
+    return removed ? 'removed' : 'not-present';
   },
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {
@@ -222,6 +345,42 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     throw new Error('not used by the dashboard routes under test');
   },
   adoptionAllowance: () => 0,
+});
+
+/** One dashboard rule summary: the admin row plus this guild's match tallies. */
+const testAutomodRuleSummary = (
+  rule: ReturnType<typeof automodAdminRepo.listRules>[number],
+  matchCounts: Readonly<Record<string, number>>,
+  reviewedCounts: Readonly<Record<string, number>>,
+) => ({
+  ruleId: rule.ruleId,
+  kind: rule.kind,
+  name: rule.name,
+  mode: rule.mode,
+  enabled: rule.enabled,
+  config: rule.config,
+  cutoverState: rule.cutoverState,
+  observeStartedAt: rule.observeStartedAt,
+  legacyRuleRef: rule.legacyRuleRef,
+  countsAsViolation: rule.countsAsViolation,
+  maxFalsePositiveRate: rule.maxFalsePositiveRate,
+  minReviewedMatches: rule.minReviewedMatches,
+  enforceSignedOffBy: rule.enforceSignedOffBy,
+  enforceSignedOffAt: rule.enforceSignedOffAt,
+  createdAt: rule.createdAt,
+  updatedAt: rule.updatedAt,
+  matchCount: matchCounts[rule.ruleId] ?? 0,
+  reviewedCount: reviewedCounts[rule.ruleId] ?? 0,
+});
+
+/** The case projection, shared by the three case reads. */
+const testCaseRow = (found: ReturnType<typeof automodAdminRepo.listRecentCases>[number]) => ({
+  caseId: found.caseId,
+  memberId: found.memberId,
+  openedAt: found.openedAt,
+  violationCount: found.violationCount,
+  escalationTier: found.escalationTier,
+  status: found.status,
 });
 
 export const testInstanceFor = (instanceScope: InstanceScope, now: () => number): OpsInstance => ({

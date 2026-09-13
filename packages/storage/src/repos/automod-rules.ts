@@ -242,6 +242,43 @@ export const listEnabledRules = (scope: GuildScope): readonly StoredAutomodRule[
   return rows.map((row) => hydrate(scope, row));
 };
 
+/**
+ * One rule by id, enabled or disabled, with its word list assembled.
+ *
+ * The same select as `listEnabledRules` with `eq(modRules.ruleId, ruleId)`
+ * instead of the enabled filter. Exists for the dashboard's dry run (Slice 8,
+ * PR-47): an operator edits a disabled rule, dry-runs it, then enables it —
+ * the CLI's enabled-only path (`listEnabledRules(...).find(...)` in
+ * `apps/daemon/src/ops/wiring.ts`) is unchanged, since a disabled rule will
+ * not match a message in production either.
+ */
+export const findRuleIncludingDisabled = (
+  scope: GuildScope,
+  ruleId: string,
+): StoredAutomodRule | undefined => {
+  const row = read(scope, (db) =>
+    db
+      .select({
+        ruleId: modRules.ruleId,
+        kind: modRules.kind,
+        mode: modRules.mode,
+        config: modRules.config,
+        cutoverState: modRules.cutoverState,
+        observeStartedAt: modRules.observeStartedAt,
+        legacyRuleRef: modRules.legacyRuleRef,
+        countsAsViolation: modRules.countsAsViolation,
+        maxFalsePositiveRate: modRules.maxFalsePositiveRate,
+        minReviewedMatches: modRules.minReviewedMatches,
+        enforceSignedOffBy: modRules.enforceSignedOffBy,
+        enforceSignedOffAt: modRules.enforceSignedOffAt,
+      })
+      .from(modRules)
+      .where(scope.only(modRules, eq(modRules.ruleId, ruleId)))
+      .get(),
+  );
+  return row === undefined ? undefined : hydrate(scope, row);
+};
+
 export interface IsExemptInput {
   readonly authorRoleIds: readonly string[];
   readonly channelId: string;

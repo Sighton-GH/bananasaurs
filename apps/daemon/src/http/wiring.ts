@@ -12,6 +12,8 @@ import type { GuildScope, ScopeFactory } from '@bananasaurs/storage';
 import {
   createServer,
   issueBootstrapTokenIfNeeded,
+  registerAutomodRoutes,
+  registerCaseRoutes,
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
@@ -125,6 +127,8 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     registerRoutes: (instance, guard, routeDeps) => {
       registerReadRoutes(instance, guard, routeDeps);
       registerWriteRoutes(instance, guard, routeDeps);
+      registerAutomodRoutes(instance, guard, routeDeps);
+      registerCaseRoutes(instance, guard, routeDeps);
     },
   });
   registerStaticAssets(app, DASHBOARD_DIST);

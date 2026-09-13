@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { ApiError } from '../api.js';
 import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { useSession } from './session.js';
 
@@ -13,6 +14,27 @@ function Probe() {
       <button onClick={() => void session.write('/api/killswitch', { on: true })}>write</button>
       <button onClick={() => void session.logout()}>logout</button>
     </>
+  );
+}
+
+interface Settled {
+  readonly value: unknown;
+  readonly error: unknown;
+}
+
+function ThrowProbe({ onSettled }: { readonly onSettled: (settled: Settled) => void }) {
+  const session = useSession();
+  return (
+    <button
+      onClick={() =>
+        void session.writeOrThrow('/api/killswitch', { on: true }).then(
+          (value) => onSettled({ value, error: undefined }),
+          (error: unknown) => onSettled({ value: undefined, error }),
+        )
+      }
+    >
+      write-or-throw
+    </button>
   );
 }
 
@@ -146,6 +168,109 @@ describe('SessionProvider', () => {
     expect(screen.getByRole('status').textContent).toContain('Signed out');
     expect(onLoggedOut).toHaveBeenCalledTimes(1);
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch']);
+  });
+
+  it('two concurrent writes queue their re-auth prompts instead of overwriting each other', async () => {
+    const attempts: Record<string, number> = { '/api/a': 0, '/api/b': 0 };
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/a' || url === '/api/b') {
+        const seen = attempts[url] ?? 0;
+        attempts[url] = seen + 1;
+        return seen === 0
+          ? new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === '/api/reauth') {
+        return new Response('{}', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', mock);
+    function TwoWriters() {
+      const session = useSession();
+      return (
+        <>
+          <button onClick={() => void session.write('/api/a', { from: 'a' })}>write-a</button>
+          <button onClick={() => void session.write('/api/b', { from: 'b' })}>write-b</button>
+        </>
+      );
+    }
+    renderWithSession(<TwoWriters />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-a'));
+      fireEvent.click(screen.getByText('write-b'));
+    });
+    // One dialog at a time: the second prompt waits for the first.
+    expect(screen.getAllByRole('dialog', { name: 'Confirm your password' })).toHaveLength(1);
+    const confirm = async () => {
+      fireEvent.change(screen.getByLabelText('Password'), {
+        target: { value: 'hunter22hunter22' },
+      });
+      await act(async () => {
+        fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+      });
+    };
+    await confirm();
+    // Confirming the first prompt opens the second, rather than both writes
+    // sharing (or losing) one resolver.
+    await screen.findByRole('dialog', { name: 'Confirm your password' });
+    await confirm();
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(attempts).toEqual({ '/api/a': 2, '/api/b': 2 });
+    expect(mock.mock.calls.filter((c) => c[0] === '/api/reauth')).toHaveLength(2);
+  });
+
+  it('writeOrThrow on an expired session shows Signed out, calls onLoggedOut, and resolves undefined', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 401, body: { error: 'unauthenticated' } },
+    ]);
+    const onSettled = vi.fn();
+    const onLoggedOut = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />, { onLoggedOut });
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
+    expect(screen.getByRole('status').textContent).toContain('Signed out');
+    expect(onLoggedOut).toHaveBeenCalledTimes(1);
+  });
+
+  it('writeOrThrow rethrows a 409 so the caller can render it', async () => {
+    stubFetch([{ method: 'POST', url: '/api/killswitch', status: 409, body: { error: 'exists' } }]);
+    const onSettled = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    const settled = onSettled.mock.calls[0]![0] as Settled;
+    expect(settled.value).toBeUndefined();
+    expect(settled.error).toBeInstanceOf(ApiError);
+    expect((settled.error as ApiError).status).toBe(409);
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('writeOrThrow on a read-only 503 shows the hold toast and resolves undefined', async () => {
+    stubFetch([
+      {
+        method: 'POST',
+        url: '/api/killswitch',
+        status: 503,
+        body: { error: 'read-only', message: 'BANANASAURS_READONLY is set' },
+      },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
+    expect(screen.getByRole('status').textContent).toContain('BANANASAURS_READONLY is set');
   });
 
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {

@@ -1,6 +1,12 @@
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { AuditPage } from '../pages/audit.js';
+import { AutomodRulePage } from '../pages/automod-rule.js';
+import { AutomodRulesPage } from '../pages/automod-rules.js';
+import { CasePage } from '../pages/case.js';
+import { CasesPage } from '../pages/cases.js';
+import { CutoverPage } from '../pages/cutover.js';
 import { LoggingPage } from '../pages/logging.js';
+import { MemberPage } from '../pages/member.js';
 import { NotFoundPage } from '../pages/not-found.js';
 import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
@@ -56,6 +62,12 @@ function Pages() {
       <Route path="/logging" component={LoggingPage} />
       <Route path="/panels" component={PanelsPage} />
       <Route path="/audit" component={AuditPage} />
+      <Route path="/automod" component={AutomodRulesPage} />
+      <Route path="/automod/:ruleId" component={AutomodRulePage} />
+      <Route path="/cases" component={CasesPage} />
+      <Route path="/cases/:caseId" component={CasePage} />
+      <Route path="/members/:memberId" component={MemberPage} />
+      <Route path="/cutover" component={CutoverPage} />
       <Route component={NotFoundPage} />
     </Switch>
   );

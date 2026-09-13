@@ -1,4 +1,5 @@
-import type { AutomodRule, FixtureRecord } from '../automod/predicates/types.js';
+import type { DryRunReport } from '../automod/dry-run.js';
+import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -230,6 +231,133 @@ export interface OpsSafetyState {
   readonly breakerThreshold: number;
 }
 
+// `packages/core` may not import from `@bananasaurs/storage` (ADR 0014;
+// `eslint.config.js` boundary rules) — every shape below is re-declared in
+// core, the way `AutomodRule` and `FixtureRecord` already are, and the daemon
+// wiring maps storage rows onto it field by field.
+
+/** A rule's mode, as the dashboard's rules list and cutover board render it. */
+export type OpsRuleMode = 'test' | 'observe' | 'enforce';
+
+/** ADR 0042's cutover state machine, as the cutover board renders it. */
+export type OpsCutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
+
+/**
+ * One rule for the dashboard's `/automod` rules list and `/cutover` board.
+ *
+ * `matchCount` is every recorded match for the rule; `reviewedCount` is how
+ * many of those carry a verdict — the two numbers the cutover board reads to
+ * say whether a rule has served its observe window.
+ */
+export interface OpsAutomodRuleSummary {
+  readonly ruleId: string;
+  readonly kind: RuleKind;
+  readonly name: string;
+  readonly mode: OpsRuleMode;
+  readonly enabled: boolean;
+  readonly config: string;
+  readonly cutoverState: OpsCutoverState;
+  readonly observeStartedAt: number | null;
+  readonly legacyRuleRef: string | null;
+  readonly countsAsViolation: boolean;
+  readonly maxFalsePositiveRate: number;
+  readonly minReviewedMatches: number;
+  readonly enforceSignedOffBy: string | null;
+  readonly enforceSignedOffAt: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+  readonly matchCount: number;
+  readonly reviewedCount: number;
+}
+
+/**
+ * Why the `/automod/:ruleId` mode dialog's `enforce` request was refused —
+ * the same four refusals `enforcementEligibility` returns, re-declared here
+ * rather than imported (ADR 0014), the way `OpsUnusableAutomodRule.reason`
+ * widens `CompileFailure` to a string above.
+ */
+export type OpsEnforcementRefusal =
+  | { readonly reason: 'cutover-state'; readonly state: string }
+  | {
+      readonly reason: 'false-positive';
+      readonly falsePositives: number;
+      readonly reviewed: number;
+    }
+  | { readonly reason: 'rate-too-high'; readonly rate: number; readonly threshold: number }
+  | {
+      readonly reason: 'low-volume-unsigned';
+      readonly reviewed: number;
+      readonly required: number;
+    };
+
+/**
+ * Whether the `/automod/:ruleId` rule may move to `mode = 'enforce'` right
+ * now — shown on the rule detail page beside the mode dialog, and returned
+ * by the mode write itself.
+ */
+export type OpsEnforcementEligibility =
+  { readonly ok: true } | { readonly ok: false; readonly refusal: OpsEnforcementRefusal };
+
+/**
+ * One rule for the dashboard's `/automod/:ruleId` detail page: the summary
+ * row plus everything the page edits — exemptions, the relational lists, and
+ * the current eligibility verdict the mode dialog mirrors server-side.
+ */
+export interface OpsAutomodRuleDetail extends OpsAutomodRuleSummary {
+  readonly exemptions: readonly {
+    readonly exemptType: 'role' | 'channel';
+    readonly exemptId: string;
+  }[];
+  readonly terms: readonly { readonly text: string; readonly categoryId: string }[];
+  readonly allowlist: readonly string[];
+  readonly inviteAllowlist: readonly { readonly code: string; readonly label: string }[];
+  readonly linkDomains: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
+  readonly eligibility: OpsEnforcementEligibility;
+}
+
+/**
+ * One case for the dashboard's `/cases` list and `/members/:memberId`
+ * history page.
+ */
+export interface OpsCase {
+  readonly caseId: string;
+  readonly memberId: string;
+  readonly openedAt: number;
+  readonly violationCount: number;
+  readonly escalationTier: number;
+  readonly status: 'open' | 'closed';
+}
+
+/**
+ * One case event for the dashboard's `/cases/:caseId` detail page.
+ *
+ * `actionTaken`, `escalationAction` and `refusalReason` are plain strings,
+ * not storage's unions — `ports.ts` may not import `@bananasaurs/storage`
+ * (ADR 0014), the same reason `OpsReviewableMatch.actionTaken` is a string
+ * above.
+ */
+export interface OpsCaseEvent {
+  readonly eventId: string;
+  readonly caseId: string;
+  readonly ruleId: string;
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string;
+  readonly matchedSnippet: string;
+  readonly actionTaken: string;
+  readonly escalationAction: string | undefined;
+  readonly refusalReason: string | undefined;
+  readonly actorId: string | undefined;
+  readonly trace: string | undefined;
+  readonly fixtureId: string | undefined;
+}
+
+/** One case with its history, as the `/cases/:caseId` detail page renders it. */
+export interface OpsCaseDetail {
+  readonly case: OpsCase;
+  readonly events: readonly OpsCaseEvent[];
+}
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -323,6 +451,39 @@ export interface OpsPorts {
     readonly ruleId?: string;
     readonly limit: number;
   }): readonly OpsReviewableMatch[];
+  /**
+   * Every rule, enabled or disabled, with its match and reviewed tallies —
+   * the dashboard's `/automod` rules list and `/cutover` board.
+   */
+  listAutomodRules(): readonly OpsAutomodRuleSummary[];
+  /**
+   * One rule with its exemptions, relational lists and eligibility — the
+   * dashboard's `/automod/:ruleId` detail page. `undefined` for a rule id
+   * that names no row in this guild.
+   */
+  findAutomodRuleDetail(ruleId: string): OpsAutomodRuleDetail | undefined;
+  /**
+   * Replays one rule over the whole fixture corpus — the `/automod/:ruleId`
+   * dry-run section. A disabled rule **may** be dry-run here (Slice 8,
+   * PR-47: an operator edits a disabled rule, dry-runs it, then enables
+   * it); the CLI's enabled-only `findAutomodRule` above is unchanged.
+   * `'no-such-rule'` is a usage answer for a mistyped id.
+   */
+  runAutomodDryRun(ruleId: string): DryRunReport | 'no-such-rule';
+  /**
+   * The newest cases first — the dashboard's `/cases` list page.
+   */
+  listRecentCases(query: { readonly limit: number }): readonly OpsCase[];
+  /**
+   * One case with its events — the dashboard's `/cases/:caseId` detail
+   * page. `undefined` for a case id that names no row in this guild.
+   */
+  findCaseDetail(caseId: string): OpsCaseDetail | undefined;
+  /**
+   * Every case ever opened for one member — the dashboard's
+   * `/members/:memberId` history page.
+   */
+  listCasesForMember(memberId: string): readonly OpsCase[];
 
   // --- write commands (13d) --------------------------------------------------
   /**
@@ -452,6 +613,60 @@ export interface OpsPorts {
     | { readonly outcome: 'not-present'; readonly mode: 'allow' | 'deny' | undefined }
     | { readonly outcome: 'no-such-rule' }
     | { readonly outcome: 'wrong-kind' };
+  /**
+   * Creates one rule from the dashboard's `/automod` new-rule form, always
+   * starting in `mode: 'test'`. `'exists'` is a usage answer for an id that
+   * already names a rule — the `INSERT` would otherwise throw on the
+   * `(guild_id, rule_id)` primary key.
+   */
+  createAutomodRule(input: {
+    readonly ruleId: string;
+    readonly kind: RuleKind;
+    readonly name: string;
+    readonly config: string;
+  }): 'created' | 'exists';
+  /**
+   * Replaces one rule's config from the `/automod/:ruleId` config editor.
+   * The caller validates the config with `validateRuleConfig` first; this is
+   * the plain write. `'no-such-rule'` is a usage answer for a mistyped id.
+   */
+  setAutomodRuleConfig(input: {
+    readonly ruleId: string;
+    readonly config: string;
+  }): 'ok' | 'no-such-rule';
+  /**
+   * Moves one rule's mode and/or enabled flag from the `/automod/:ruleId`
+   * mode dialog. A request for `mode: 'enforce'` runs through the ADR 0042
+   * gate at `setRuleMode`, and the refusal is the answer — the dialog states
+   * the consequence, the server decides. `'no-such-rule'` is a usage answer
+   * for a mistyped id.
+   */
+  setAutomodRuleMode(input: {
+    readonly ruleId: string;
+    readonly mode?: OpsRuleMode;
+    readonly enabled?: boolean;
+  }): OpsEnforcementEligibility | 'no-such-rule';
+  /**
+   * Exempts one role or channel from one rule, from the `/automod/:ruleId`
+   * exemptions section. `'already-present'` is a real answer, not a refusal:
+   * the pair is checked before the `INSERT`, so a repeated add never throws.
+   * `'no-such-rule'` is a usage answer for a mistyped id.
+   */
+  addAutomodExemption(input: {
+    readonly ruleId: string;
+    readonly exemptType: 'role' | 'channel';
+    readonly exemptId: string;
+  }): 'added' | 'already-present' | 'no-such-rule';
+  /**
+   * Removes one role or channel exemption from one rule, from the
+   * `/automod/:ruleId` exemptions section. `'not-present'` is a real answer —
+   * nothing to remove is not a fault.
+   */
+  removeAutomodExemption(input: {
+    readonly ruleId: string;
+    readonly exemptType: 'role' | 'channel';
+    readonly exemptId: string;
+  }): 'removed' | 'not-present';
   /** Points an event kind at a channel, creating or re-pointing the route. */
   setRoute(input: { eventKind: string; channelId: string; includeContent: boolean }): void;
   /** Returns whether there was a route to change. False is a real answer. */
