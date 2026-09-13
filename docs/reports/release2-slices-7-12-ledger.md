@@ -324,3 +324,54 @@ unrendered `fixtureId`) and Task 3's extra `OpsSafetyState` export are
 cosmetic and can ride along with Slice 9's first dashboard task. Path-param
 validation runs before the auth guard on the new routes; the review judged
 it leaks only the caller's own input shape — left as is.
+
+---
+
+## Slice 9 — the false-positive review screen
+
+No ADR named (spec §9). Plan
+`docs/superpowers/plans/2026-09-13-slice-9-false-positive-review.md`. The
+one Release 2's gate depends on: it supplies the numerator. Rulings before
+the first dispatch:
+
+- **PR-53 — native hits get their own query, not a widened
+  `listUnreviewedMatches`.** Slice 2's PR-7 defined a match as "an event with
+  a trace" precisely to avoid a hand-maintained `action_taken` list; native
+  events have no trace by design. `listUnreviewedNativeHits` selects on the
+  `native:` rule-id prefix the native subscriber writes, so the two queries
+  stay honest about what each is. A verdict on a native hit records through
+  the unchanged `recordVerdict` (which does not require a trace) under the
+  `native:<id>` rule id — it feeds no Bananasaurs rule's gate, and it is not
+  meant to; it records whether Discord was right. Cost if wrong: one query to
+  fold.
+- **PR-54 — verdicts and suppressions do not need a fresh password.** A
+  verdict is evidence and is revisable; a suppression only narrows a rule.
+  Cost if wrong: `requireFresh` on two routes.
+- **PR-55 — the one-click suppression is per kind, and `regex` gets a link,
+  not a button.** "Narrowed pattern" cannot be invented from a match; the
+  honest action is the configuration editor. `caps`/`emoji`/`attachment_type`
+  and the window tier get a channel exemption (the only one-click that does
+  not require inventing a threshold); role exemptions are not offered from
+  the queue because the match does not carry the author's roles. Cost if
+  wrong: another button.
+- **PR-56 — the F3.2 warning keys off rule kind and native's block count.**
+  Native's three defaults filter mention spam, spam content and flagged
+  words, which overlap `mention_spam`, `rapid_spam`/`duplicate_message` and
+  `keyword_filter`; the warning renders when native has recorded at least
+  one block and such a rule is in view. Discord does not publish its
+  algorithms, so a finer overlap test would be a guess. Cost if wrong: an
+  over- or under-cautious sentence.
+- **PR-57 — `invite.last_matched_at` (PR-14) stays deferred, past the observe
+  window.** It is a write per matched message in the subscriber's hot path,
+  and Slice 4's review recorded that placed on `AutomodRule` without an
+  `EXCLUDED_FIELDS` entry it would recompile — and reset — every windowed
+  rule's window on every observed message. Not a change to make while the
+  clock the release depends on is running. Flagged to the owner in the
+  handoff. Cost if wrong: a rotated partner code sits unnoticed for the
+  length of the window.
+- **PR-58 — the handwritten-fixture synthetic author stays deferred, with a
+  sharper reason:** `addHandwrittenFixture` has **no production caller** —
+  no CLI command and no dashboard surface creates a handwritten fixture, so
+  the collapsed-author replay Slice 4 warned about cannot occur. The fix (a
+  nullable author key, a migration) ships with the first fixture creator,
+  which no Release 2 slice names. Cost if wrong: none until a creator exists.
