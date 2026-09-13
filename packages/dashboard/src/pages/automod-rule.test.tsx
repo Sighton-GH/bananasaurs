@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Route, Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
-import type { DryRunReport, RuleDetail } from '../api/automod.js';
+import { modeScopeSentence, type DryRunReport, type RuleDetail } from '../api/automod.js';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { AutomodRulePage } from './automod-rule.js';
 
@@ -304,5 +304,54 @@ describe('AutomodRulePage', () => {
     renderRule();
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('rule kw-one');
+  });
+
+  it.each([
+    ['not_started', { mode: 'observe' }, "Starts this rule's observe window"],
+    ['rolled_back', { mode: 'observe' }, "Starts this rule's observe window"],
+    ['observing', { mode: 'test' }, 'clock keeps running'],
+    ['cutover', { mode: 'test' }, 'Rolls this rule back'],
+    ['ready', { mode: 'enforce' }, 'cutover'],
+    ['observing', { mode: 'observe' }, 'stays observing'],
+    ['observing', { enabled: false }, 'Disables the rule'],
+    ['observing', { enabled: true }, 'Enables the rule in its current mode'],
+  ])(
+    'modeScopeSentence for %s with %j mentions "%s"',
+    (cutoverState, request, substring) => {
+      const sentence = modeScopeSentence(
+        { cutoverState, mode: 'test', enabled: true },
+        request,
+        NOW,
+      );
+      expect(sentence).toContain(substring as string);
+    },
+  );
+
+  it('modeScopeSentence covers enabled alongside mode', () => {
+    const sentence = modeScopeSentence(
+      { cutoverState: 'not_started', mode: 'test', enabled: true },
+      { mode: 'observe', enabled: false },
+      NOW,
+    );
+    expect(sentence).toContain("Starts this rule's observe window");
+    expect(sentence).toContain('matching nothing');
+  });
+
+  it('disables the enforce radio while enforcement is not offerable, and enables it when it is', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/rules/kw-one',
+        body: detail({ eligibility: { ok: false, refusal: { reason: 'cutover-state', state: 'observing' } } }),
+      },
+    ]);
+    renderRule();
+    await screen.findByRole('heading', { level: 2, name: 'Mode' });
+    expect((screen.getByLabelText('enforce') as HTMLInputElement).disabled).toBe(true);
+    cleanup();
+    vi.unstubAllGlobals();
+    stubFetch([{ url: '/api/automod/rules/kw-one', body: detail({ eligibility: { ok: true } }) }]);
+    renderRule();
+    await screen.findByRole('heading', { level: 2, name: 'Mode' });
+    expect((screen.getByLabelText('enforce') as HTMLInputElement).disabled).toBe(false);
   });
 });
