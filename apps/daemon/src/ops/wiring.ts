@@ -4,14 +4,18 @@ import {
   JOB_KINDS,
   reconcileDedupeKey,
   redactConfig,
+  runDryRun,
   undoDedupeKey,
   type Config,
+  type OpsAutomodRuleSummary,
+  type OpsCase,
   type OpsInstance,
   type OpsPorts,
   type OpsSettingChange,
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  automodAdminRepo,
   automodFixtureRepo,
   automodRuleListsRepo,
   automodRuleRepo,
@@ -200,6 +204,78 @@ export const opsPortsFor = (
   listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
   listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
 
+  // Slice 8's dashboard pages (Task 2). The `/automod` rules list and the
+  // `/cutover` board read summaries; `/automod/:ruleId` reads the detail and
+  // dry-runs it; `/cases`, `/cases/:caseId` and `/members/:memberId` read
+  // cases. The two tallies come from `automodAdminRepo`'s grouped counts, so
+  // a list is three reads, not one per rule.
+  listAutomodRules: () => {
+    const matchCounts = automodAdminRepo.countMatchesByRule(scope);
+    const reviewedCounts = automodAdminRepo.countReviewedByRule(scope);
+    return automodAdminRepo
+      .listRules(scope)
+      .map((rule) => automodRuleSummary(rule, matchCounts, reviewedCounts));
+  },
+  findAutomodRuleDetail: (ruleId) => {
+    const rule = automodAdminRepo.findRule(scope, ruleId);
+    if (rule === undefined) return undefined;
+    // The relational lists live on the hydrated rule, which `findRule` does
+    // not carry — read them through the one function that assembles them for
+    // a rule regardless of `enabled`.
+    const stored = automodRuleRepo.findRuleIncludingDisabled(scope, ruleId);
+    return {
+      ...automodRuleSummary(
+        rule,
+        automodAdminRepo.countMatchesByRule(scope),
+        automodAdminRepo.countReviewedByRule(scope),
+      ),
+      exemptions: automodAdminRepo.listExemptions(scope, ruleId),
+      terms: stored?.terms ?? [],
+      allowlist: stored?.allowlist ?? [],
+      inviteAllowlist: stored?.inviteAllowlist ?? [],
+      linkDomains: stored?.linkDomains ?? [],
+      eligibility: enforcementGateRepo.enforcementEligibility(scope, ruleId),
+    };
+  },
+  // A disabled rule **may** be dry-run from the dashboard (Slice 8, PR-47):
+  // an operator edits a disabled rule, dry-runs it, then enables it. The
+  // CLI's enabled-only `findAutomodRule` above is unchanged.
+  runAutomodDryRun: (ruleId) => {
+    const stored = automodRuleRepo.findRuleIncludingDisabled(scope, ruleId);
+    if (stored === undefined) return 'no-such-rule';
+    return runDryRun({
+      guildId: scope.guildId,
+      rule: toAutomodRule(stored),
+      fixtures: automodFixtureRepo.listFixtures(scope, {}),
+    });
+  },
+  listRecentCases: (query) =>
+    automodAdminRepo.listRecentCases(scope, { limit: query.limit }).map(opsCaseRow),
+  findCaseDetail: (caseId) => {
+    const found = automodAdminRepo.findCase(scope, caseId);
+    if (found === undefined) return undefined;
+    return {
+      case: opsCaseRow(found),
+      events: modCaseRepo.listCaseEvents(scope, caseId).map((event) => ({
+        eventId: event.eventId,
+        caseId: event.caseId,
+        ruleId: event.ruleId,
+        memberId: event.memberId,
+        at: event.at,
+        matchedCategory: event.matchedCategory,
+        matchedSnippet: event.matchedSnippet,
+        actionTaken: event.actionTaken,
+        escalationAction: event.escalationAction,
+        refusalReason: event.refusalReason,
+        actorId: event.actorId,
+        trace: event.trace,
+        fixtureId: event.fixtureId,
+      })),
+    };
+  },
+  listCasesForMember: (memberId) =>
+    modCaseRepo.listCasesForMember(scope, memberId).map(opsCaseRow),
+
   // --- write commands (13d) --------------------------------------------------
   applySetting: (change) => applySetting(scope, change, now()),
   recordMatchVerdict: (input) =>
@@ -278,6 +354,62 @@ export const opsPortsFor = (
     const mode = linkDomainModeOf(rule.config);
     const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
     return { outcome: removed ? 'removed' : 'not-present', mode };
+  },
+
+  // Slice 8's dashboard writes (Task 2): the `/automod` new-rule form, the
+  // `/automod/:ruleId` config editor, mode dialog and exemptions section.
+  // `ruleExists` guards first in every member that names a rule id, so a
+  // mistyped id is a usage answer, never a thrown constraint error — the
+  // same treatment `addInviteAllowlistEntry` above gives `'no-such-rule'`.
+  createAutomodRule: (input) => {
+    if (automodRuleRepo.ruleExists(scope, input.ruleId)) return 'exists';
+    automodRuleRepo.createRule(scope, { ...input, now: now() });
+    return 'created';
+  },
+  setAutomodRuleConfig: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    automodRuleRepo.setRuleConfig(scope, { ...input, now: now() });
+    return 'ok';
+  },
+  setAutomodRuleMode: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    // Conditional spreads, not `mode: input.mode` directly:
+    // `exactOptionalPropertyTypes` treats an explicit `undefined` as distinct
+    // from the property being absent.
+    return automodRuleRepo.setRuleMode(scope, {
+      ruleId: input.ruleId,
+      ...(input.mode !== undefined && { mode: input.mode }),
+      ...(input.enabled !== undefined && { enabled: input.enabled }),
+      now: now(),
+    });
+  },
+  // A pre-check rather than the before/after count `addInviteAllowlistEntry`
+  // above uses: the pair either exists or it does not, and checking first
+  // never lets the `INSERT` throw.
+  addAutomodExemption: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    const existing = automodAdminRepo.listExemptions(scope, input.ruleId);
+    if (
+      existing.some(
+        (exemption) =>
+          exemption.exemptType === input.exemptType && exemption.exemptId === input.exemptId,
+      )
+    ) {
+      return 'already-present';
+    }
+    if (input.exemptType === 'role') {
+      automodRuleRepo.addRoleExemption(scope, { ruleId: input.ruleId, roleId: input.exemptId });
+    } else {
+      automodRuleRepo.addChannelExemption(scope, {
+        ruleId: input.ruleId,
+        channelId: input.exemptId,
+      });
+    }
+    return 'added';
+  },
+  removeAutomodExemption: (input) => {
+    const removed = automodAdminRepo.removeExemption(scope, input);
+    return removed ? 'removed' : 'not-present';
   },
 
   setRoute: (input) =>
@@ -479,6 +611,47 @@ const panelSummary = (panel: ReturnType<typeof panelRepo.listPanels>[number]) =>
   status: panel.status,
   messageId: panel.messageId,
   optionCount: panel.options.length,
+});
+
+/**
+ * One dashboard rule summary: the admin row plus this guild's match and
+ * reviewed tallies. Shared by `listAutomodRules` and `findAutomodRuleDetail`.
+ */
+const automodRuleSummary = (
+  rule: ReturnType<typeof automodAdminRepo.listRules>[number],
+  matchCounts: Readonly<Record<string, number>>,
+  reviewedCounts: Readonly<Record<string, number>>,
+): OpsAutomodRuleSummary => ({
+  ruleId: rule.ruleId,
+  kind: rule.kind,
+  name: rule.name,
+  mode: rule.mode,
+  enabled: rule.enabled,
+  config: rule.config,
+  cutoverState: rule.cutoverState,
+  observeStartedAt: rule.observeStartedAt,
+  legacyRuleRef: rule.legacyRuleRef,
+  countsAsViolation: rule.countsAsViolation,
+  maxFalsePositiveRate: rule.maxFalsePositiveRate,
+  minReviewedMatches: rule.minReviewedMatches,
+  enforceSignedOffBy: rule.enforceSignedOffBy,
+  enforceSignedOffAt: rule.enforceSignedOffAt,
+  createdAt: rule.createdAt,
+  updatedAt: rule.updatedAt,
+  matchCount: matchCounts[rule.ruleId] ?? 0,
+  reviewedCount: reviewedCounts[rule.ruleId] ?? 0,
+});
+
+/** The case projection, shared by the three case reads. */
+const opsCaseRow = (
+  found: ReturnType<typeof automodAdminRepo.listRecentCases>[number],
+): OpsCase => ({
+  caseId: found.caseId,
+  memberId: found.memberId,
+  openedAt: found.openedAt,
+  violationCount: found.violationCount,
+  escalationTier: found.escalationTier,
+  status: found.status,
 });
 
 export interface OpsInstanceDeps {
