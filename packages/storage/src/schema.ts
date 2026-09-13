@@ -993,6 +993,7 @@ export const archiveAttachments = sqliteTable(
     }).onDelete('cascade'),
     check('archive_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_attachments_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('archive_attachments_attachment_id_snowflake', snowflakeCheck(t.attachmentId)),
   ],
 );
 
