@@ -344,7 +344,7 @@ describe('preserve and case link', () => {
     expect(caseClosedAt(a, 'case-closed')).toBe(7000);
 
     seedCase(a, { caseId: 'case-closed-quiet', status: 'closed' });
-    expect(caseClosedAt(a, 'case-closed-quiet')).toBeUndefined();
+    expect(caseClosedAt(a, 'case-closed-quiet')).toBe(1000);
   });
 });
 
@@ -464,6 +464,30 @@ describe('expiry — the three tiers', () => {
 
     expect(expireContent(a, closedAt + ARCHIVE_CASE_RETENTION_MS - 1)).toBe(0);
     expect(expireContent(a, closedAt + ARCHIVE_CASE_RETENTION_MS)).toBe(1);
+    expect(readMessage(a, messageId)?.content).toBeNull();
+  });
+
+  it('a case-class message on a closed case with no events purges 90d after the case opened', () => {
+    const messageId = seedMessage(a, { content: 'quiet evidence' });
+    // `seedCase` opens the row at `openedAt: 1000`; no events are seeded.
+    seedCase(a, { caseId: 'case-quiet', status: 'open' });
+    expect(linkToCase(a, { messageId, caseId: 'case-quiet' })).toBe('linked');
+    const deletedAt = 10_000;
+    expect(recordDelete(a, { messageId, deletedAt })).toBe('recorded');
+
+    // While the case is open, nothing purges.
+    expect(expireContent(a, 1000 + ARCHIVE_CASE_RETENTION_MS)).toBe(0);
+    expect(readMessage(a, messageId)?.content).toBe('quiet evidence');
+
+    // The case closes with no events: the 90-day clock starts at `openedAt`.
+    t.db
+      .update(modCases)
+      .set({ status: 'closed' })
+      .where(and(eq(modCases.guildId, a.guildId), eq(modCases.caseId, 'case-quiet')))
+      .run();
+    expect(expireContent(a, 1000 + ARCHIVE_CASE_RETENTION_MS - 1)).toBe(0);
+    expect(readMessage(a, messageId)?.content).toBe('quiet evidence');
+    expect(expireContent(a, 1000 + ARCHIVE_CASE_RETENTION_MS)).toBe(1);
     expect(readMessage(a, messageId)?.content).toBeNull();
   });
 

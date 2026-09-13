@@ -348,7 +348,7 @@ export const linkToCase = (
 
 const caseClosedAtOn = (db: Db, scope: GuildScope, caseId: string): number | undefined => {
   const kase = db
-    .select({ status: modCases.status })
+    .select({ status: modCases.status, openedAt: modCases.openedAt })
     .from(modCases)
     .where(scope.only(modCases, eq(modCases.caseId, caseId)))
     .get();
@@ -360,13 +360,19 @@ const caseClosedAtOn = (db: Db, scope: GuildScope, caseId: string): number | und
     .orderBy(desc(modCaseEvents.at))
     .limit(1)
     .get();
-  return latest?.at;
+  if (latest !== undefined) return latest.at;
+  // A closed case with zero events has no latest event to start the 90-day
+  // clock from. Fall back to the case's `openedAt`: deliberately
+  // conservative-in-the-other-direction — a closed case's messages must not
+  // be retained forever just because nothing was logged against it.
+  return kase.openedAt;
 };
 
 /**
  * The one read on `mod_case_events` this module owns: the latest event
- * timestamp for a closed case, else undefined — for an open case, an unknown
- * case, and a closed case with no events alike. Read-only.
+ * timestamp for a closed case (or the case's `openedAt` when a closed case
+ * has no events), else undefined — for an open case and an unknown case
+ * alike. Read-only.
  */
 export const caseClosedAt = (scope: GuildScope, caseId: string): number | undefined =>
   read(scope, (db) => caseClosedAtOn(db, scope, caseId));
