@@ -197,6 +197,23 @@ describe('message creations', () => {
   });
 });
 
+describe('message bulk deletions', () => {
+  it('fingerprints the channel and the sorted set of ids', () => {
+    const bulk = (channelId: string, messageIds: readonly string[]): DomainEvent => ({
+      ...base,
+      kind: 'messageDeleteBulk',
+      channelId,
+      messageIds,
+    });
+    expect(fingerprintOf(bulk('C', ['3', '1', '2']))).toBe(
+      fingerprintOf(bulk('C', ['1', '2', '3'])),
+    );
+    expect(fingerprintOf(bulk('C', ['1', '2', '3']))).not.toBe(
+      fingerprintOf(bulk('D', ['1', '2', '3'])),
+    );
+  });
+});
+
 describe('member joins and leaves', () => {
   it('are identified by the join timestamp when Discord provides it', () => {
     const a = member('memberAdd', { joinedAtMs: 1_699_000_000_000 });
