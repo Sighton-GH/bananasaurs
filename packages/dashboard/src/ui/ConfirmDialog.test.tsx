@@ -73,4 +73,31 @@ describe('ConfirmDialog', () => {
     );
     expect(screen.queryByRole('dialog')).toBeNull();
   });
+
+  it('renders children outside the ARIA description so an input stays focusable', () => {
+    render(
+      <ConfirmDialog
+        open
+        title="T"
+        scope="s"
+        confirmLabel="Do it"
+        onConfirm={() => undefined}
+        onCancel={() => undefined}
+      >
+        <div>
+          <label htmlFor="slot-value">Value</label>
+          <input id="slot-value" defaultValue="x" />
+        </div>
+      </ConfirmDialog>,
+    );
+    const input = screen.getByRole('textbox', { name: 'Value' });
+    input.focus();
+    expect(document.activeElement).toBe(input);
+    const dialog = screen.getByRole('dialog');
+    const describedBy = dialog.getAttribute('aria-describedby');
+    expect(describedBy).not.toBeNull();
+    const described = document.getElementById(describedBy ?? '');
+    expect(described).not.toBeNull();
+    expect(described?.contains(input)).toBe(false);
+  });
 });

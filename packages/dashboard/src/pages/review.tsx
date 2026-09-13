@@ -1,19 +1,24 @@
 import { useCallback, useState } from 'react';
 import { Link, useSearch } from 'wouter';
+import { ApiError } from '../api.js';
 import {
   NATIVE_OVERLAP_KINDS,
+  suppressionFor,
   type NativeHit,
   type ReviewableMatch,
   type ReviewQueue,
   type RuleSummary,
+  type SuppressionKind,
   type Verdict,
   type VerdictCounts,
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Button } from '../ui/Button.js';
+import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -24,6 +29,43 @@ interface ReviewData {
 }
 
 const ZERO_COUNTS: VerdictCounts = { falsePositive: 0, truePositive: 0, unclear: 0 };
+
+/** One row's one-click narrowing, with the kind the page looked up from the rules list. */
+interface SuppressTarget {
+  readonly eventId: string;
+  readonly ruleId: string;
+  readonly kind: SuppressionKind;
+  readonly label: string;
+  readonly prefill: boolean;
+}
+
+/** The `ConfirmDialog` scope for a suppression: the exact narrowing, stated. */
+const suppressionScope = (kind: SuppressionKind, ruleId: string, value: string): string => {
+  switch (kind) {
+    case 'allowlist_phrase':
+      return `Adds '${value}' to ${ruleId}'s allowlist. Messages containing it will no longer match this rule, in every mode.`;
+    case 'invite_code':
+      return `Allows invite code ${value} for ${ruleId}.`;
+    case 'link_domain':
+      return `Allows domain ${value} for ${ruleId}.`;
+    case 'channel_exemption':
+      return `Exempts channel ${value} from ${ruleId} entirely.`;
+  }
+};
+
+/** The success toast repeats the verb on the button that was confirmed. */
+const suppressionDoneTitle = (kind: SuppressionKind): string => {
+  switch (kind) {
+    case 'allowlist_phrase':
+      return 'Phrase allowed';
+    case 'invite_code':
+      return 'Invite code allowed';
+    case 'link_domain':
+      return 'Domain allowed';
+    case 'channel_exemption':
+      return 'Channel exempted';
+  }
+};
 
 /** Evidence: the fixture's whole message when one was captured, else the snippet with a note that it is not the whole message. */
 function EvidenceCell({
@@ -73,6 +115,60 @@ export function ReviewPage() {
   const review = useResource('the review queue', load);
 
   const [busyIds, setBusyIds] = useState<ReadonlySet<string>>(new Set());
+  const [suppressTarget, setSuppressTarget] = useState<SuppressTarget | null>(null);
+  const [suppressValue, setSuppressValue] = useState('');
+  const [suppressBusy, setSuppressBusy] = useState(false);
+
+  const openSuppress = useCallback(
+    (match: ReviewableMatch, action: { readonly kind: SuppressionKind; readonly label: string; readonly prefillFromSnippet: boolean }) => {
+      setSuppressTarget({
+        eventId: match.eventId,
+        ruleId: match.ruleId,
+        kind: action.kind,
+        label: action.label,
+        prefill: action.prefillFromSnippet,
+      });
+      setSuppressValue(action.prefillFromSnippet ? match.matchedSnippet : '');
+    },
+    [],
+  );
+
+  const confirmSuppress = useCallback(async () => {
+    if (suppressTarget === null) return;
+    const { ruleId, kind } = suppressTarget;
+    const value = suppressValue;
+    setSuppressBusy(true);
+    try {
+      const result = await session.writeOrThrow<{ ok: boolean; outcome: string }>(
+        `/api/automod/rules/${ruleId}/suppress`,
+        { kind, value },
+      );
+      if (result === undefined) return;
+      setSuppressTarget(null);
+      if (result.outcome === 'already-present') {
+        toast({ tone: 'neutral', title: 'Already allowed' });
+      } else {
+        toast({ tone: 'ok', title: suppressionDoneTitle(kind) });
+        review.reload();
+      }
+    } catch (err) {
+      if (
+        err instanceof ApiError &&
+        err.status === 409 &&
+        (err.body as { error?: unknown }).error === 'wrong-kind'
+      ) {
+        toast({ tone: 'danger', title: "That suppression does not apply to this rule's kind" });
+        setSuppressTarget(null);
+      } else if (err instanceof Error) {
+        toast({ tone: 'danger', title: 'The request failed', message: err.message });
+        setSuppressTarget(null);
+      } else {
+        throw err;
+      }
+    } finally {
+      setSuppressBusy(false);
+    }
+  }, [session, toast, review, suppressTarget, suppressValue]);
 
   const castVerdict = useCallback(
     async (eventId: string, verdict: Verdict) => {
@@ -269,7 +365,19 @@ export function ReviewPage() {
                       {
                         key: 'suppress',
                         header: 'Suppress',
-                        cell: () => null,
+                        cell: (m) => {
+                          const kind = ruleKindOf.get(m.ruleId);
+                          if (kind === undefined) return null;
+                          const action = suppressionFor(kind);
+                          if (action === undefined) {
+                            return <Link href={`/automod/${m.ruleId}`}>Narrow the pattern</Link>;
+                          }
+                          return (
+                            <Button onClick={() => openSuppress(m, action)}>
+                              {action.label}
+                            </Button>
+                          );
+                        },
                       },
                     ]}
                   />
@@ -329,6 +437,24 @@ export function ReviewPage() {
           );
         }}
       </DataState>
+      {suppressTarget !== null && (
+        <ConfirmDialog
+          open
+          title={`${suppressTarget.label}?`}
+          scope={<p>{suppressionScope(suppressTarget.kind, suppressTarget.ruleId, suppressValue)}</p>}
+          confirmLabel={suppressTarget.label}
+          busy={suppressBusy}
+          onConfirm={() => void confirmSuppress()}
+          onCancel={() => setSuppressTarget(null)}
+        >
+          <Field
+            label="Value"
+            {...(suppressTarget.prefill ? {} : { hint: 'channel ID' })}
+          >
+            <Input value={suppressValue} onChange={(e) => setSuppressValue(e.target.value)} />
+          </Field>
+        </ConfirmDialog>
+      )}
     </>
   );
 }
