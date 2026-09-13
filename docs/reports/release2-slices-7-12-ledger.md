@@ -496,3 +496,33 @@ interpolated id; `INVITE_CODE_PATTERN` widened to the predicate's own
 `[\w-]{2,64}`; a two-guild test for the phrase write. Decorative tests
 closed: the scope sentence is asserted against an *edited* value; PR-59 is
 asserted per suppression kind (sign-off columns byte-for-byte unchanged).
+
+### Fix wave and close-out
+
+One fix dispatch (muse-spark-1.3, 12m14s, `9eb0c6c..3a40697`, nine task
+commits and a `lint:fix` commit) with every finding and both decorative
+gaps; the RESULT block came back fully filled. Scoped re-review (42 s):
+**ALL ADDRESSED**, three deliberate checks quoted from the code — the 409
+`not-denied` returns before `recordAudit`; the two port literals share the
+identical canonicalisation expression and pre-check on it; the dashboard's
+`not-denied` catch sits inside the same 409 gate as `wrong-kind`, so a 400
+still falls through. No new breakage.
+
+Merged `oc/slice-9-review` into `worktree-release2-slices-7-12` with
+`--no-ff` (`cbd6000`; the plugin's `--merge` still cannot validate a
+multi-task plan, D15). Gates on the merge, each alone, by exit code:
+typecheck 0, lint 0, test 0 — **2,602 tests across 135 files** (+68 this
+slice: 14 route, 16 page, 6 dialog/tally, 32 storage and port).
+
+Carried forward to Slices 10–12: PR-65 (verdicts on non-automod events);
+Task 2's two Minors (POST routes parse before auth — pre-existing shape;
+the verdict audit `after` includes the outcome); PR-57 (PR-14 deferred past
+the window); `/mydata` and `/forgetme` owed.
+
+What this slice teaches that Slices 7–8 did not: **every Important the
+whole-branch review found needed a read outside the diff** — a dependency's
+matcher, a predicate's mode filter, the shape of a stored snippet. Task
+reviews are given the diff and told not to crawl, which is the right cost
+control for a per-task gate and exactly why the whole-branch reviewer must
+be told the opposite. The brief's "verify, do not assert; say what you ran
+or read" is the load-bearing line.

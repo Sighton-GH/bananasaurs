@@ -359,6 +359,29 @@ RESULT block just gives a check nowhere to land. The plugin's
 - **Cost:** two wasted dispatches (1m15s + the killed run, ~12 min wall),
   plus the hand verification.
 
+### D39 — Slice 9 close: the fix wave and re-review on muse-spark-1.3
+
+- **What happened:** the whole-branch fix brief (ten items, nine to
+  implement, one ruled deferred and listed so the reviewer would see it)
+  ran 12m14s, ten commits, RESULT block fully filled — the first Slice 9
+  implement run whose report needed no controller repair. The scoped
+  re-review took 42 s and answered its three checks with quoted code.
+- **Model quality (muse-spark-1.3):** the fix wave's assumptions line was
+  the useful kind — it reported that a `/review?rule=` link the brief
+  assumed did not exist in the page, and named the seven interpolations it
+  did wrap. It also found the existing `setEnforceSignOff` repo function
+  for the PR-59 tests rather than inventing a helper outside the Files
+  list, which the brief had explicitly allowed it to decline.
+- **Slice 9 totals:** 9 opencode runs that completed (Task 1 + fix, Task 2
+  partial, Task 3 review, Task 4 + review, fix wave + re-review, plan
+  review) ≈ 41 min model time; 4 exit-5 runs ≈ 5 min wasted; 1 killed by
+  the OS; 2 sonnet fallbacks (Task 2 tail, Task 3) ≈ 13 min; 1 Opus
+  whole-branch review 8m33s. Versus Slices 0–6 on sonnet: the implement
+  runs are the same wall-clock range (5–14 min), the reviews are faster
+  (45 s – 3.5 min vs 2–5 min), and the coordinator paid two extra costs
+  the sonnet flow did not — repairing two half-template RESULT blocks and
+  hand-verifying four deliberate checks a review silently dropped.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created
