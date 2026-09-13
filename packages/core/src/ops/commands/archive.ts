@@ -28,9 +28,7 @@ const archiveEnableChannelArgs = z.object({
   attachments: z.enum(['none', 'bytes']).optional(),
 });
 
-export const archiveEnableChannelCommand = defineCommand<
-  z.infer<typeof archiveEnableChannelArgs>
->({
+export const archiveEnableChannelCommand = defineCommand<z.infer<typeof archiveEnableChannelArgs>>({
   name: 'archive enable-channel',
   write: true,
   summary: 'archive a channel going forward and backfill its history',

@@ -427,9 +427,10 @@ export const testPortsFor = (
   },
   archiveDisableChannel: (channelId) => archiveRepo.disableChannel(scope, channelId),
   archiveStatus: () =>
-    archiveRepo
-      .listChannels(scope)
-      .map((channel) => ({ ...channel, messageCount: archiveRepo.countMessages(scope, channel.channelId) })),
+    archiveRepo.listChannels(scope).map((channel) => ({
+      ...channel,
+      messageCount: archiveRepo.countMessages(scope, channel.channelId),
+    })),
   archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
   archiveLinkCase: (input) => {
     const outcome = archiveRepo.linkToCase(scope, input);
