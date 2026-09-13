@@ -1,8 +1,8 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { snowflakeIdSchema, LOG_EVENT_KINDS, type OpsAuditWrite } from '@bananasaurs/core';
+import { snowflakeIdSchema, LOG_EVENT_KINDS } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
-import type { SessionContext } from '../auth.js';
+import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
 /**
@@ -29,26 +29,6 @@ const logRouteBodySchema = z.object({
   eventKind: eventKindSchema,
   channelId: snowflakeIdSchema,
   includeContent: z.boolean(),
-});
-
-/** The one fact both routes need to build their audit row's attribution. */
-const dashboardAuditBase = (
-  session: SessionContext,
-  now: number,
-): Pick<
-  OpsAuditWrite,
-  'at' | 'actorType' | 'actorId' | 'actorUnixUserClaimed' | 'via' | 'dryRun'
-> => ({
-  at: now,
-  actorType: 'dashboard',
-  // Verified: session.accountId is the primary key of a session row this
-  // server issued after checking an Argon2id hash, not a claim the caller
-  // sent (ADR 0031) — the opposite reasoning from the CLI's actorId, which
-  // stays undefined because it has none to verify.
-  actorId: session.accountId,
-  actorUnixUserClaimed: undefined,
-  via: 'http',
-  dryRun: false,
 });
 
 export const registerWriteRoutes = (
