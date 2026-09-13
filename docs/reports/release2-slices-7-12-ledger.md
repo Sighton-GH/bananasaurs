@@ -215,3 +215,40 @@ choices the spec leaves open, recorded before the first dispatch:
 - **Rule creation is in scope**, per `STATE.md` ("the creation surface
   arrives with the dashboard (Slice 8)") — the nine kinds from Slices 1–5
   have no production caller until it exists.
+
+### Plan review (muse-spark-1.3, 2m41s)
+
+Spec FAIL / NEEDS_WORK: 1 Critical, 8 Important, 6 Minor — all verified, all
+applied at `cf3aaf8` before any dispatch. The Critical was the
+coordinator's: the plan had core importing types from `@bananasaurs/storage`,
+which `eslint.config.js` bans and ADR 0014 forbids; the port types are now
+re-declared in core the way `AutomodRule` and `FixtureRecord` already are.
+The Importants were names asserted from memory (`read`/`write` live in
+`write.ts`; `DryRunReport`'s real fields; `RULE_KINDS` in
+`predicates/types.ts`; `ConfigValidationResult` carries `reason`/`detail`,
+not `issues`; the CLI names are `invite-allow`/`invite-deny`/`domain-add`/
+`domain-rm`, and keyword terms have no CLI editor at all), a missing
+`enforce` sentence in the mode dialog, and a missing route test for the
+PR-47 workflow.
+
+### Task log
+
+**Task 1 — `automod-admin.ts`** (6m09s, `f4eb728..cb036a3`): tests written
+first and watched failing (the step-1 commit is the red run), 6/6 after, each
+with a second guild seeded. Review PASS/APPROVED.
+
+**Task 2 — the port surface** (11m59s, `9cdaa35..145d1a4`, 88 tests in the
+covering files): `findRuleIncludingDisabled` with its two-guild test, the
+eleven members declared in core and implemented three times.
+
+- **PR-51 — a fourth hand-built `OpsPorts` literal exists**
+  (`packages/storage/src/repos/automod-rule-lists.test.ts`), which the plan
+  did not know about; the implementer gave it eleven `notNeeded` stubs
+  outside its Files list because typecheck cannot pass otherwise. Accepted.
+  Cost if wrong: none. The plan's "implemented three times" was wrong by
+  one, and the next plan that widens `OpsPorts` should say four.
+- The review, asked in its own section to compare the wiring's field
+  mappings against the storage shapes, did so and found nothing dropped,
+  renamed or defaulted. That brief shape — a named check with file paths —
+  is what makes the muse-spark reviewer investigate rather than list under
+  "cannot verify".
