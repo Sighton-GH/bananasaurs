@@ -26,7 +26,12 @@ export default defineConfig({
     },
   },
   test: {
-    include: ['packages/**/*.test.ts', 'apps/**/*.test.ts', 'scripts/**/*.test.mjs'],
+    include: [
+      'packages/**/*.test.ts',
+      'packages/**/*.test.tsx',
+      'apps/**/*.test.ts',
+      'scripts/**/*.test.mjs',
+    ],
     environment: 'node',
     coverage: { provider: 'v8', include: ['packages/*/src/**', 'apps/*/src/**'] },
   },
