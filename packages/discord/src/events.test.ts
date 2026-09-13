@@ -524,10 +524,7 @@ describe('message bulk deletes', () => {
       channelId: CHANNEL,
       receivedAtMs: 1_700_000_000_000,
     });
-    expect((h.events[0] as { messageIds: readonly string[] }).messageIds).toEqual(
-      expect.arrayContaining([MESSAGE, OTHER]),
-    );
-    expect((h.events[0] as { messageIds: readonly string[] }).messageIds).toHaveLength(2);
+    expect((h.events[0] as { messageIds: readonly string[] }).messageIds).toEqual([MESSAGE, OTHER]);
   });
 
   it('emits no event for an empty collection', () => {
