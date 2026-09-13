@@ -67,6 +67,18 @@ function SessionInner({
             toast({ tone: 'hold', title: 'This instance is read-only', message: err.message });
             return undefined;
           }
+          if (err instanceof ApiError && err.status === 401 && err.body.error === 'reauth-required') {
+            toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
+            return undefined;
+          }
+          if (err instanceof ApiError && err.status === 401) {
+            toast({
+              tone: 'danger',
+              title: 'Password not accepted',
+              message: 'Nothing was changed. Try again.',
+            });
+            return undefined;
+          }
           if (err instanceof ApiError) {
             toast({ tone: 'danger', title: 'The request failed', message: err.message });
             return undefined;

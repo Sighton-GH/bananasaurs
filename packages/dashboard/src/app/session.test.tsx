@@ -103,7 +103,35 @@ describe('SessionProvider', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Cancel' }));
     });
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch']);
-    expect(screen.getByRole('status').textContent).toContain('The request failed');
+    expect(screen.getByRole('status').textContent).toContain('Cancelled');
+    expect(screen.getByRole('status').textContent).not.toContain('The request failed');
+  });
+
+  it("a rejected password shows 'Password not accepted' and does not retry the write", async () => {
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/killswitch') {
+        return new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 });
+      }
+      if (url === '/api/reauth') {
+        return new Response(JSON.stringify({ error: 'wrong-password' }), { status: 401 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', mock);
+    renderWithSession(<Probe />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write'));
+    });
+    await screen.findByRole('dialog');
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'hunter22hunter22' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    });
+    expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/killswitch', '/api/reauth']);
+    expect(screen.getByRole('status').textContent).toContain('Password not accepted');
   });
 
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {
