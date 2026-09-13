@@ -455,6 +455,7 @@ export type {
   OpsInstance,
   OpsJobQuery,
   OpsJobRow,
+  OpsNativeHit,
   OpsPanelDetail,
   OpsPanelSummary,
   OpsPorts,
@@ -463,6 +464,7 @@ export type {
   OpsRuleMode,
   OpsSafetyState,
   OpsUndoableCount,
+  OpsVerdictCounts,
 } from './ops/ports.js';
 export {
   findSetting,

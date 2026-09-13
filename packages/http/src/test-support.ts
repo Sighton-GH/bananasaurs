@@ -1,6 +1,7 @@
 import {
   accountRepo,
   automodAdminRepo,
+  automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
   enforcementGateRepo,
@@ -8,6 +9,7 @@ import {
   jobRepo,
   loggingRepo,
   modCaseRepo,
+  modMatchReviewRepo,
   panelRepo,
   type GuildScope,
   type InstanceScope,
@@ -162,9 +164,21 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   listAutomodFixtures: () => {
     throw new Error('not used by the dashboard routes under test');
   },
-  listUnreviewedMatches: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
+  listUnreviewedMatches: (query) =>
+    modCaseRepo.listUnreviewedMatches(scope, query).map((match) => ({
+      eventId: match.eventId,
+      ruleId: match.ruleId,
+      memberId: match.memberId,
+      at: match.at,
+      matchedCategory: match.matchedCategory,
+      matchedSnippet: match.matchedSnippet,
+      actionTaken: match.actionTaken,
+      trace: match.trace,
+      fixtureContent: match.fixtureContent,
+    })),
+  listUnreviewedNativeHits: (query) =>
+    automodAdminRepo.listUnreviewedNativeHits(scope, query),
+  nativeBlockedCount: () => automodAdminRepo.countNativeBlocked(scope),
 
   // Slice 8's dashboard pages (Task 2): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires, so route tests exercise real
@@ -174,9 +188,10 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   listAutomodRules: () => {
     const matchCounts = automodAdminRepo.countMatchesByRule(scope);
     const reviewedCounts = automodAdminRepo.countReviewedByRule(scope);
+    const verdicts = automodAdminRepo.countVerdictsByRule(scope);
     return automodAdminRepo
       .listRules(scope)
-      .map((rule) => testAutomodRuleSummary(rule, matchCounts, reviewedCounts));
+      .map((rule) => testAutomodRuleSummary(rule, matchCounts, reviewedCounts, verdicts));
   },
   findAutomodRuleDetail: (ruleId) => {
     const rule = automodAdminRepo.findRule(scope, ruleId);
@@ -187,6 +202,7 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
         rule,
         automodAdminRepo.countMatchesByRule(scope),
         automodAdminRepo.countReviewedByRule(scope),
+        automodAdminRepo.countVerdictsByRule(scope),
       ),
       exemptions: automodAdminRepo.listExemptions(scope, ruleId),
       terms: stored?.terms ?? [],
@@ -244,32 +260,55 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
   applySetting: () => {
     throw new Error('not used by the dashboard routes under test');
   },
-  recordMatchVerdict: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
+  recordMatchVerdict: (input) =>
+    modMatchReviewRepo.recordVerdict(scope, { ...input, reviewedAt: now() }),
   setAutomodRuleReady: () => {
     throw new Error('not used by the dashboard routes under test');
   },
   recordAutomodSignOff: () => {
     throw new Error('not used by the dashboard routes under test');
   },
-  addInviteAllowlistEntry: () => {
-    throw new Error('not used by the dashboard routes under test');
+  addInviteAllowlistEntry: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
+    const before = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+    automodRuleListsRepo.addInviteAllowlistEntry(scope, { ...input, now: now() });
+    const after = automodRuleListsRepo.listInviteAllowlist(scope, input.ruleId).length;
+    return after > before ? 'added' : 'already-present';
   },
-  listInviteAllowlist: () => {
-    throw new Error('not used by the dashboard routes under test');
+  listInviteAllowlist: (ruleId) => automodRuleListsRepo.listInviteAllowlist(scope, ruleId),
+  removeInviteAllowlistEntry: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return 'no-such-rule';
+    if (rule.kind !== 'invite') return 'wrong-kind';
+    const removed = automodRuleListsRepo.removeInviteAllowlistEntry(
+      scope,
+      input.ruleId,
+      input.code,
+    );
+    return removed ? 'removed' : 'not-present';
   },
-  removeInviteAllowlistEntry: () => {
-    throw new Error('not used by the dashboard routes under test');
+  addLinkDomain: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const result = automodRuleListsRepo.addLinkDomain(scope, { ...input, now: now() });
+    if (result.inserted) return { outcome: 'added', mode };
+    const stored = automodRuleListsRepo
+      .listLinkDomains(scope, input.ruleId)
+      .find((entry) => entry.domain === result.domain);
+    return { outcome: 'already-present', listType: stored?.listType ?? input.listType, mode };
   },
-  addLinkDomain: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
-  listLinkDomains: () => {
-    throw new Error('not used by the dashboard routes under test');
-  },
-  removeLinkDomain: () => {
-    throw new Error('not used by the dashboard routes under test');
+  listLinkDomains: (ruleId) => automodRuleListsRepo.listLinkDomains(scope, ruleId),
+  removeLinkDomain: (input) => {
+    const rule = automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId);
+    if (rule === undefined) return { outcome: 'no-such-rule' };
+    if (rule.kind !== 'link_domain') return { outcome: 'wrong-kind' };
+    const mode = linkDomainModeOf(rule.config);
+    const removed = automodRuleListsRepo.removeLinkDomain(scope, input.ruleId, input.domain);
+    return { outcome: removed ? 'removed' : 'not-present', mode };
   },
   createAutomodRule: (input) => {
     if (automodRuleRepo.ruleExists(scope, input.ruleId)) return 'exists';
@@ -315,6 +354,16 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     const removed = automodAdminRepo.removeExemption(scope, input);
     return removed ? 'removed' : 'not-present';
   },
+  addAutomodAllowlistPhrase: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    if (automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId)?.kind !== 'keyword_filter') {
+      return 'wrong-kind';
+    }
+    const stored = automodRuleRepo.findRuleIncludingDisabled(scope, input.ruleId);
+    if (stored?.allowlist.includes(input.phrase)) return 'already-present';
+    automodRuleRepo.addAllowlistPhrase(scope, input);
+    return 'added';
+  },
   setRoute: (input) =>
     loggingRepo.setRoute(scope, {
       eventKind: input.eventKind,
@@ -352,6 +401,7 @@ const testAutomodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
   reviewedCounts: Readonly<Record<string, number>>,
+  verdicts: Readonly<Record<string, { falsePositive: number; truePositive: number; unclear: number }>>,
 ) => ({
   ruleId: rule.ruleId,
   kind: rule.kind,
@@ -371,9 +421,19 @@ const testAutomodRuleSummary = (
   updatedAt: rule.updatedAt,
   matchCount: matchCounts[rule.ruleId] ?? 0,
   reviewedCount: reviewedCounts[rule.ruleId] ?? 0,
+  verdicts: verdicts[rule.ruleId] ?? { falsePositive: 0, truePositive: 0, unclear: 0 },
 });
 
 /** The case projection, shared by the three case reads. */
+const linkDomainModeOf = (configJson: string): 'allow' | 'deny' | undefined => {
+  try {
+    const parsed = JSON.parse(configJson) as { mode?: unknown };
+    return parsed.mode === 'allow' || parsed.mode === 'deny' ? parsed.mode : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
 const testCaseRow = (found: ReturnType<typeof automodAdminRepo.listRecentCases>[number]) => ({
   caseId: found.caseId,
   memberId: found.memberId,
