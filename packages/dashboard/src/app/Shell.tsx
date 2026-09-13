@@ -57,7 +57,12 @@ function Rail() {
  * somewhere to go) without the shell pretending the page is built.
  */
 function AutomodRulePage() {
-  return <PageHeader title="Rule" purpose="One automod rule: its status, mode, configuration, and history." />;
+  return (
+    <PageHeader
+      title="Rule"
+      purpose="One automod rule: its status, mode, configuration, and history."
+    />
+  );
 }
 
 function CasesPage() {

@@ -1,5 +1,10 @@
 import { useCallback } from 'react';
-import { daysObserved, OBSERVE_FLOOR_DAYS, type CutoverState, type RuleSummary } from '../api/automod.js';
+import {
+  daysObserved,
+  OBSERVE_FLOOR_DAYS,
+  type CutoverState,
+  type RuleSummary,
+} from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -8,7 +13,11 @@ import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 const stateTone = (state: CutoverState): 'hold' | 'danger' | 'neutral' =>
-  state === 'observing' ? 'hold' : state === 'cutover' || state === 'rolled_back' ? 'danger' : 'neutral';
+  state === 'observing'
+    ? 'hold'
+    : state === 'cutover' || state === 'rolled_back'
+      ? 'danger'
+      : 'neutral';
 
 const observedCell = (rule: RuleSummary): string => {
   const days = daysObserved(rule.observeStartedAt, Date.now());
@@ -43,8 +52,8 @@ export function CutoverPage() {
         purpose="Where each rule stands on its way from observe to enforce."
       />
       <p className="mb-4 text-sm text-ink-muted">
-        Enforcement is offered only by the release gate (ADR 0042); this board reports, it does
-        not move anything.
+        Enforcement is offered only by the release gate (ADR 0042); this board reports, it does not
+        move anything.
       </p>
       <DataState
         resource={rules.resource}

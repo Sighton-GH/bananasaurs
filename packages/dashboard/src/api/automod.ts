@@ -73,7 +73,12 @@ export interface RuleDetail extends RuleSummary {
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly { readonly code: string; readonly label: string }[];
   readonly linkDomains: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
-  readonly eligibility: { readonly ok: true } | { readonly ok: false; readonly refusal: { readonly reason: string; readonly [k: string]: unknown } };
+  readonly eligibility:
+    | { readonly ok: true }
+    | {
+        readonly ok: false;
+        readonly refusal: { readonly reason: string; readonly [k: string]: unknown };
+      };
 }
 
 export interface DryRunFixtureResult {

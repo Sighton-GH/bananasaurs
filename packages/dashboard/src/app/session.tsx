@@ -58,25 +58,22 @@ function SessionInner({
    */
   const chain = useRef<Promise<void>>(Promise.resolve());
 
-  const requireReauth = useCallback(
-    (): Promise<string | undefined> => {
-      const next = chain.current.then(
-        () =>
-          new Promise<string | undefined>((resolve) => {
-            setReauth(() => (password: string | undefined) => {
-              setReauth(undefined);
-              resolve(password);
-            });
-          }),
-      );
-      chain.current = next.then(
-        () => undefined,
-        () => undefined,
-      );
-      return next;
-    },
-    [],
-  );
+  const requireReauth = useCallback((): Promise<string | undefined> => {
+    const next = chain.current.then(
+      () =>
+        new Promise<string | undefined>((resolve) => {
+          setReauth(() => (password: string | undefined) => {
+            setReauth(undefined);
+            resolve(password);
+          });
+        }),
+    );
+    chain.current = next.then(
+      () => undefined,
+      () => undefined,
+    );
+    return next;
+  }, []);
 
   const value = useMemo<Session>(() => {
     const writeOrThrow = <T,>(

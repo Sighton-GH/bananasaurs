@@ -150,11 +150,12 @@ describe('SessionProvider', () => {
 
   it('two concurrent writes queue their re-auth prompts instead of overwriting each other', async () => {
     const attempts: Record<string, number> = { '/api/a': 0, '/api/b': 0 };
-    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url === '/api/a' || url === '/api/b') {
-        attempts[url] += 1;
-        return attempts[url] === 1
+        const seen = attempts[url] ?? 0;
+        attempts[url] = seen + 1;
+        return seen === 0
           ? new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 })
           : new Response(JSON.stringify({ ok: true }), { status: 200 });
       }

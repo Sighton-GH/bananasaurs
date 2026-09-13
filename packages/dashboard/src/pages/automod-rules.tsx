@@ -1,7 +1,13 @@
 import { useCallback, useState } from 'react';
 import { Link } from 'wouter';
 import { ApiError } from '../api.js';
-import { daysObserved, RULE_KINDS, type RuleKind, type RuleMode, type RuleSummary } from '../api/automod.js';
+import {
+  daysObserved,
+  RULE_KINDS,
+  type RuleKind,
+  type RuleMode,
+  type RuleSummary,
+} from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -77,7 +83,9 @@ export function AutomodRulesPage() {
         err.body.error === 'invalid-config'
       ) {
         const detail = (err.body as { detail?: unknown }).detail;
-        setConfigError(typeof detail === 'string' ? detail : 'The configuration is invalid for this kind.');
+        setConfigError(
+          typeof detail === 'string' ? detail : 'The configuration is invalid for this kind.',
+        );
       } else if (err instanceof ApiError && err.status === 409) {
         setFormError('A rule with that id already exists.');
       } else if (err instanceof Error) {
@@ -99,9 +107,7 @@ export function AutomodRulesPage() {
       <DataState
         resource={rules.resource}
         isEmpty={(r) => r.length === 0}
-        empty={
-          <p className="text-sm text-ink-muted">No rules yet. Create one below.</p>
-        }
+        empty={<p className="text-sm text-ink-muted">No rules yet. Create one below.</p>}
       >
         {(rows) => (
           <DataTable
