@@ -51,7 +51,7 @@ export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
         <Field label="Username">
           <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
         </Field>
-        <Field label="Password" error={error}>
+        <Field label="Password" {...(error !== undefined ? { error } : {})}>
           <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="current-password" />
         </Field>
         <div>
@@ -99,7 +99,7 @@ export function BootstrapForm({ token, onSignedIn }: { readonly token: string; r
         <Field label="Username">
           <Input value={username} onChange={(e) => setUsername(e.target.value)} autoFocus autoComplete="username" />
         </Field>
-        <Field label="Password" hint="At least 12 characters" error={error}>
+        <Field label="Password" hint="At least 12 characters" {...(error !== undefined ? { error } : {})}>
           <Input type="password" value={password} onChange={(e) => setPassword(e.target.value)} autoComplete="new-password" />
         </Field>
         <div>
