@@ -389,6 +389,40 @@ describe('expiry — the three tiers', () => {
     expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS + 1)).toBe(0);
   });
 
+  it('a deleted attachment-only row (content NULL) still purges its files and stamps the purge', () => {
+    enable(a, CHANNEL_A);
+    upsertMessage(a, {
+      messageId: '666666666666666666',
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: undefined,
+      createdAt: 2000,
+      editedAt: undefined,
+      attachments: [
+        {
+          attachmentId: '888888888888888888',
+          filename: 'pic.png',
+          contentType: 'image/png',
+          size: 1234,
+        },
+      ],
+    });
+    const deletedAt = 10_000;
+    expect(recordDelete(a, { messageId: '666666666666666666', deletedAt })).toBe('recorded');
+
+    expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS - 1)).toBe(0);
+    expect(readAttachments(a, '666666666666666666')).toHaveLength(1);
+
+    expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS)).toBe(1);
+    expect(readAttachments(a, '666666666666666666')).toEqual([]);
+    const purged = readMessage(a, '666666666666666666');
+    expect(purged?.content).toBeNull();
+    expect(purged?.contentPurgedAt).toBe(deletedAt + ARCHIVE_DEFAULT_RETENTION_MS);
+
+    // Already purged rows are not re-processed.
+    expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS + 1)).toBe(0);
+  });
+
   it('live messages never purge, however old', () => {
     seedMessage(a, { content: 'alive' });
     expect(expireContent(a, 2000 + 400 * DAY_MS)).toBe(0);

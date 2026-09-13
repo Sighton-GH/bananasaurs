@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, inArray, isNotNull } from 'drizzle-orm';
+import { asc, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
 import type { Db } from '../db.js';
 import {
   archiveAttachments,
@@ -376,8 +376,11 @@ export const caseClosedAt = (scope: GuildScope, caseId: string): number | undefi
  *
  * Purges content (`content = NULL`, `content_purged_at = now`) and deletes
  * the message's edit rows AND its attachment metadata rows (a filename is
- * content too), for rows where `deleted_at` is set and `content` is still
- * present and:
+ * content too), for rows where `deleted_at` is set and `content_purged_at`
+ * is still NULL — a deleted row whose `content` is already NULL (an
+ * attachment-only or embed-only message stores `content = NULL`) still has
+ * filenames and edit history to remove, and still gets its
+ * `content_purged_at` stamped — and:
  *
  * - `default`: `deleted_at <= now - 30d`;
  * - `case`: the linked case has closed and its latest event is `<= now - 90d`;
@@ -396,7 +399,7 @@ export const expireContent = (scope: GuildScope, now: number): number =>
         scope.only(
           archiveMessages,
           isNotNull(archiveMessages.deletedAt),
-          isNotNull(archiveMessages.content),
+          isNull(archiveMessages.contentPurgedAt),
         ),
       )
       .all();
