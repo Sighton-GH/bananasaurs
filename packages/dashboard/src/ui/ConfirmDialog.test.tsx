@@ -54,12 +54,10 @@ describe('ConfirmDialog', () => {
         onCancel={() => undefined}
       />,
     );
-    expect((screen.getByRole('button', { name: 'Cancel' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
-    expect((screen.getByRole('button', { name: 'Do it' }) as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+    const cancel = screen.getByRole('button', { name: 'Cancel' });
+    const confirm = screen.getByRole('button', { name: 'Do it' });
+    expect(cancel instanceof HTMLButtonElement && cancel.disabled).toBe(true);
+    expect(confirm instanceof HTMLButtonElement && confirm.disabled).toBe(true);
   });
 
   it('renders nothing when closed', () => {

@@ -108,7 +108,7 @@ describe('SessionProvider', () => {
   });
 
   it("a rejected password shows 'Password not accepted' and does not retry the write", async () => {
-    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
       const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
       if (url === '/api/killswitch') {
         return new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 });

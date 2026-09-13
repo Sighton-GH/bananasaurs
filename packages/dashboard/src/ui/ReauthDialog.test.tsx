@@ -28,7 +28,8 @@ describe('ReauthDialog', () => {
     expect(onCancel).toHaveBeenCalledTimes(1);
     rerender(<ReauthDialog open={false} onSubmit={onSubmit} onCancel={onCancel} />);
     rerender(<ReauthDialog open onSubmit={onSubmit} onCancel={onCancel} />);
-    expect((screen.getByLabelText('Password') as HTMLInputElement).value).toBe('');
+    const reopened = screen.getByLabelText('Password');
+    expect((reopened as HTMLInputElement).value).toBe('');
   });
 
   it('escape cancels', () => {
