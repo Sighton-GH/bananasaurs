@@ -2,14 +2,16 @@ import { Link, Route, Switch, useLocation } from 'wouter';
 import { AuditPage } from '../pages/audit.js';
 import { AutomodRulePage } from '../pages/automod-rule.js';
 import { AutomodRulesPage } from '../pages/automod-rules.js';
+import { CasePage } from '../pages/case.js';
+import { CasesPage } from '../pages/cases.js';
 import { CutoverPage } from '../pages/cutover.js';
 import { LoggingPage } from '../pages/logging.js';
+import { MemberPage } from '../pages/member.js';
 import { NotFoundPage } from '../pages/not-found.js';
 import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
 import { SafetyPage } from '../pages/safety.js';
 import { Button } from '../ui/Button.js';
-import { PageHeader } from '../ui/PageHeader.js';
 import { HealthProvider, useHealth } from './health.js';
 import { NAV } from './routes.js';
 import { useSession } from './session.js';
@@ -50,23 +52,6 @@ function Rail() {
       </ul>
     </nav>
   );
-}
-
-/**
- * Placeholders for the detail pages Task 7 replaces with real pages.
- * Each renders only its header so its route exists (and the rail entry has
- * somewhere to go) without the shell pretending the page is built.
- */
-function CasesPage() {
-  return <PageHeader title="Cases" purpose="Open and recent moderation cases, newest first." />;
-}
-
-function CasePage() {
-  return <PageHeader title="Case" purpose="One moderation case and what the bot did about it." />;
-}
-
-function MemberPage() {
-  return <PageHeader title="Member" purpose="Every case for this member, open first." />;
 }
 
 function Pages() {
