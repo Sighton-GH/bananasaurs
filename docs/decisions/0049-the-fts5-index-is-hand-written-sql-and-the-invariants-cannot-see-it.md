@@ -1,4 +1,4 @@
-# 0049 — The FTS5 index is hand-written SQL, and earns a named exemption from the schema invariants
+# 0049 — The FTS5 index is hand-written SQL, and the schema invariants cannot see it
 
 Status: accepted
 Date: 2026-09-13
@@ -95,6 +95,11 @@ the tombstone is still there.
 
 ### D4 — The invariants gain a named exemption, not a widened rule
 
+> **Superseded by Amendment 1 (below): `PRAGMA table_list` reports the FTS
+> table as `virtual` and its shadows as `shadow`, which the invariants never
+> enumerate, so no exemption is needed. Kept for the record of what was
+> reasoned before the SQL was run.**
+
 `schema-invariants.test.ts` gains one exported constant:
 
 ```ts
@@ -180,3 +185,81 @@ first and watched failing.
   read without it (ADR 0046's Context). The constraint that would be
   honoured by deferring is a plan convention; the one that would be broken
   is the owner's decision D1.
+
+## Amendment 1 — 2026-09-13, at M2 planning, after running the SQL rather than reasoning about it
+
+The plan review asked whether `PRAGMA table_list` even reports an FTS5
+table as a `table`. It does not, and that unmakes D4. Probe run in the M1
+worktree against the installed `better-sqlite3` 13.0.3 (an in-memory
+database, the exact table and trigger shapes D2/D3 specify):
+
+```
+table_list: src        type=table    strict=1
+            src_fts    type=virtual  strict=0
+            src_fts_config|_docsize|_idx|_data  type=shadow  strict=0
+```
+
+`schema-invariants.test.ts:114-117` keeps only rows with `type === 'table'`.
+**The FTS table and all four shadows are therefore already invisible to
+every invariant** — STRICT, the partition key, the composite foreign key,
+the snowflake CHECKs. No exemption is needed, and the one D4 specifies
+would be dead code guarding nothing; the exhaustiveness test it proposed
+would have passed vacuously, which is worse than absent.
+
+### D4 (replaced) — no exemption; two positive tests and one guard
+
+`VIRTUAL_TABLE_MACHINERY` is **not** added. Instead
+`schema-invariants.test.ts` gains:
+
+- **The machinery is invisible for the reason we think.** A test asserting
+  that `PRAGMA table_list` reports `archive_messages_fts` as `virtual` and
+  its four shadows as `shadow` — so if a future SQLite reclassifies them
+  into `table`, the suite fails loudly and this ADR is revisited, rather
+  than the FTS table silently failing STRICT.
+- **The index cannot outlive its content** (unchanged from the original
+  D4): two guilds with colliding message ids, delete one, assert that
+  row's FTS entry is gone and the other's remains.
+- **The index carries its partition key.** A test asserting
+  `archive_messages_fts` has a `guild_id` column and that a `MATCH` query
+  filtered by `guild_id` returns only that guild's rows — the replacement
+  for the schema-level guarantee the invariants cannot give a virtual
+  table. This is the test that pays for the gap.
+
+The `guildPartitioned()` and STRICT helpers are **not** touched.
+
+### D5 (amended) — the query form, as executed
+
+Three things the probe settled that the plan had only reasoned about:
+
+- **`MATCH` names the table, not the alias.** `FROM archive_messages_fts f
+  … WHERE archive_messages_fts MATCH ?` works; `WHERE f MATCH ?` fails with
+  `no such column: f`. The aliased form is correct as written.
+- **A malformed query throws.** `MATCH '"unbalanced'` raises
+  `SqliteError: unterminated string`, so the catch that turns an operator's
+  typo into an empty result is load-bearing, not defensive decoration.
+- **`ORDER BY rank` and `snippet(archive_messages_fts, 0, …)` work** against
+  the column order D2 fixes, and `bm25()` returns a negative score whose
+  ascending order is best-first.
+
+### D7 (new) — `findMessage` is M2's, not M1's
+
+M1 ships no by-id reader (`archive.ts` exports no `findMessage` or
+`getMessage`). ADR 0046 D6's promise that purged content "remains
+reachable by `getMessage`" therefore has nothing to call. M2 adds
+`findMessage(scope, messageId): ArchiveMessage | undefined` to
+`packages/storage/src/repos/archive.ts` — one `read` with `scope.only`,
+returning the row including a NULL `content` and its `contentPurgedAt` —
+and the purge test asserts against it: search finds nothing, `findMessage`
+still returns the tombstone.
+
+### D1 (clarified) — what the hand-added journal entry contains
+
+The journal stores no hash: `{ idx, version, when, tag, breakpoints }`, and
+the migrator computes a hash at read time without ever comparing it.
+`when` must be **strictly greater** than the previous entry's, because the
+migrator gates on that millisecond — an entry with an equal or smaller
+`when` is silently skipped on a database that has already run `0019`, which
+would look exactly like the migration working. The M2 entry is therefore
+`{ idx: 20, version: "6", when: <now, > 1789337740258>, tag:
+"0020_archive_fts", breakpoints: true }`, and a test asserts the journal's
+`when` values are strictly increasing.
