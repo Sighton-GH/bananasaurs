@@ -123,6 +123,14 @@ export interface SlashCommandEvent extends Base {
  * are fetched here or anywhere in Release 2.
  */
 export interface MessageAttachment {
+  /**
+   * Discord's attachment id. Optional (PR-71): a fixture-derived attachment
+   * (`FixtureAttachment` in storage, replayed by the dry-run evaluator)
+   * genuinely has no Discord attachment id, so `undefined` (absent) is a true
+   * statement there. The live adapter and `FakeDiscord` always populate it;
+   * later archive consumers treat absence as "none" and skip the attachment.
+   */
+  readonly attachmentId?: Snowflake;
   readonly fileName: string;
   /** Absent when Discord did not declare one. Never flattened to `''`. */
   readonly contentType: string | undefined;
@@ -157,6 +165,13 @@ export interface MessageEvent extends Base {
   mentionsEveryone: boolean;
   /** For Slice 5's `attachment_type`. Metadata only; no bytes are fetched. */
   attachments: readonly MessageAttachment[];
+}
+
+export interface MessageBulkDeleteEvent extends Base {
+  kind: 'messageDeleteBulk';
+  channelId: Snowflake;
+  /** Every id Discord named, in the order it named them. Never empty. */
+  messageIds: readonly Snowflake[];
 }
 
 /** Which action Discord's own AutoMod executed. */
@@ -247,6 +262,7 @@ export type DomainEvent =
   | InteractionEvent
   | SlashCommandEvent
   | MessageEvent
+  | MessageBulkDeleteEvent
   | MemberEvent
   | RoleEvent
   | GuildEvent
