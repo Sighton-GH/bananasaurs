@@ -47,6 +47,26 @@ const exemptionBodySchema = z.object({
 
 const exemptTypeParamSchema = z.enum(['role', 'channel']);
 
+const reviewQuerySchema = z.object({
+  ruleId: ruleIdSchema.optional(),
+  limit: z.coerce.number().int().min(1).max(200).optional(),
+});
+
+const eventIdParamSchema = z.string().min(1).max(64);
+
+const verdictBodySchema = z.object({
+  verdict: z.enum(['false_positive', 'true_positive', 'unclear']),
+  note: z.string().max(500).optional(),
+});
+
+const suppressBodySchema = z.object({
+  kind: z.enum(['allowlist_phrase', 'invite_code', 'link_domain', 'channel_exemption']),
+  value: z.string().min(1).max(200),
+});
+
+const INVITE_CODE_PATTERN = /^[A-Za-z0-9-]{2,32}$/;
+const LINK_DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/;
+
 export const registerAutomodRoutes = (
   app: FastifyInstance,
   guard: RouteGuard,
@@ -314,4 +334,140 @@ export const registerAutomodRoutes = (
       return reply.status(200).send(report);
     },
   );
+
+  app.get('/api/automod/review', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    const parsed = reviewQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const limit = parsed.data.limit ?? 50;
+
+    const ports = deps.portsFor(session.scope);
+    const matches = ports.listUnreviewedMatches({
+      ...(parsed.data.ruleId !== undefined && { ruleId: parsed.data.ruleId }),
+      limit,
+    });
+    // Native rule ids are Discord's, not Bananasaurs' — the dashboard builds
+    // `?rule=` links only for Bananasaurs rule ids, and the native section
+    // ignores the filter either way (PR-53).
+    const nativeHits = ports.listUnreviewedNativeHits({ limit });
+    const nativeBlocked = ports.nativeBlockedCount();
+    const verdicts: Record<string, { falsePositive: number; truePositive: number; unclear: number }> =
+      {};
+    for (const rule of ports.listAutomodRules()) {
+      verdicts[rule.ruleId] = rule.verdicts;
+    }
+    return reply.status(200).send({ matches, nativeHits, nativeBlocked, verdicts });
+  });
+
+  app.post<{ Params: { eventId: string } }>('/api/automod/review/:eventId/verdict', (request, reply) => {
+    if (!eventIdParamSchema.safeParse(request.params.eventId).success) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+    const parsed = verdictBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    // A verdict is evidence, and revisable — no fresh password (PR-54).
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.recordMatchVerdict({
+      eventId: request.params.eventId,
+      verdict: parsed.data.verdict,
+      reviewedBy: session.accountId,
+      ...(parsed.data.note !== undefined && { note: parsed.data.note }),
+    });
+    if (outcome === 'no-such-event') return reply.status(404).send({ error: 'not-found' });
+
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'automod_match.verdict_recorded',
+      subjectType: 'automod_match',
+      subjectId: request.params.eventId,
+      before: undefined,
+      after: {
+        verdict: parsed.data.verdict,
+        ...(parsed.data.note !== undefined && { note: parsed.data.note }),
+        outcome,
+      },
+    });
+
+    return reply.status(200).send({ ok: true, outcome });
+  });
+
+  app.post<{ Params: { ruleId: string } }>('/api/automod/rules/:ruleId/suppress', (request, reply) => {
+    if (!ruleIdSchema.safeParse(request.params.ruleId).success) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+    const parsed = suppressBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    // A suppression strictly narrows the rule, so no fresh password (PR-54)
+    // and no change to the sign-off columns — the route writes nothing to
+    // `mod_rules` (PR-59).
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const { kind, value } = parsed.data;
+    if (kind === 'invite_code' && !INVITE_CODE_PATTERN.test(value)) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+    if (kind === 'link_domain' && !LINK_DOMAIN_PATTERN.test(value.toLowerCase())) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+    if (kind === 'channel_exemption' && !snowflakeIdSchema.safeParse(value).success) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+
+    const ports = deps.portsFor(session.scope);
+    let outcome: string;
+    if (kind === 'allowlist_phrase') {
+      const result = ports.addAutomodAllowlistPhrase({ ruleId: request.params.ruleId, phrase: value });
+      if (result === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
+      if (result === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
+      outcome = result;
+    } else if (kind === 'invite_code') {
+      const result = ports.addInviteAllowlistEntry({
+        ruleId: request.params.ruleId,
+        code: value,
+        label: 'added from review',
+      });
+      if (result === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
+      if (result === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
+      outcome = result;
+    } else if (kind === 'link_domain') {
+      const result = ports.addLinkDomain({
+        ruleId: request.params.ruleId,
+        domain: value,
+        listType: 'allow',
+      });
+      if (result.outcome === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
+      if (result.outcome === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
+      outcome = result.outcome;
+    } else {
+      const result = ports.addAutomodExemption({
+        ruleId: request.params.ruleId,
+        exemptType: 'channel',
+        exemptId: value,
+      });
+      if (result === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
+      outcome = result;
+    }
+
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'automod_rule.suppression_added',
+      subjectType: 'automod_rule',
+      subjectId: request.params.ruleId,
+      before: undefined,
+      after: { kind, value },
+    });
+
+    return reply.status(200).send({ ok: true, outcome });
+  });
 };

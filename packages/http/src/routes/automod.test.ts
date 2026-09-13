@@ -10,8 +10,10 @@ import {
   automodAdminRepo,
   effectRepo,
   guildRepo,
+  modCaseRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
+import type { GuildId } from '@bananasaurs/core';
 import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { POLICY } from '../policy.js';
@@ -24,6 +26,7 @@ const PASSWORD = 'correct horse battery staple';
 const ACCOUNT = 'acct_0123456789abcdef0123456789abcdef';
 const ROLE = '333333333333333333';
 const CHANNEL = '444444444444444444';
+const MEMBER = '555555555555555555';
 
 let t: MigratedTestDatabase;
 let clock: number;
@@ -103,6 +106,43 @@ const createRule = (ruleId = 'kw-one'): void => {
     kind: 'keyword_filter',
     name: 'Keyword one',
     config: '{}',
+  });
+};
+
+const createKindRule = (
+  guild: GuildId,
+  ruleId: string,
+  kind: 'keyword_filter' | 'invite' | 'link_domain' | 'caps',
+): void => {
+  testPortsFor(t.scopes.forGuild(guild), () => clock).createAutomodRule({
+    ruleId,
+    kind,
+    name: ruleId,
+    config: '{}',
+  });
+};
+
+/**
+ * Seeds a case and one event against it — the shape a `test`/`observe`-mode
+ * automod match really writes: a case event carrying a trace JSON string for
+ * a Bananasaurs match, and none for a native hit.
+ */
+const seedMatch = (
+  guild: GuildId,
+  input: { readonly eventId: string; readonly ruleId: string; readonly trace?: string },
+): void => {
+  const scope = t.scopes.forGuild(guild);
+  const { caseId } = modCaseRepo.openOrResolveCase(scope, { memberId: MEMBER, now: clock });
+  modCaseRepo.recordCaseEvent(scope, {
+    eventId: input.eventId,
+    caseId,
+    ruleId: input.ruleId,
+    memberId: MEMBER,
+    at: clock,
+    matchedCategory: 'keyword_filter',
+    matchedSnippet: 'snippet',
+    actionTaken: input.trace === undefined ? 'native_blocked' : 'would_delete',
+    ...(input.trace === undefined ? {} : { trace: input.trace }),
   });
 };
 
@@ -756,5 +796,377 @@ describe('POST /api/automod/rules/:ruleId/dry-run', () => {
       payload: {},
     });
     expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('GET /api/automod/review', () => {
+  it('answers 401 with no session', async () => {
+    const response = await app.inject({ method: 'GET', url: '/api/automod/review' });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('answers 403 no-grant without config.read', async () => {
+    grant(['config.write']);
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/automod/review',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: 'no-grant' });
+  });
+
+  it('returns matches, native hits and the verdict split for this guild only', async () => {
+    grant(['config.read', 'config.write']);
+    grant(['config.read', 'config.write'], OTHER_GUILD);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    // Same event ids in both guilds: the response must carry this guild's only.
+    seedMatch(GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    seedMatch(GUILD, { eventId: 'e2', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    seedMatch(GUILD, { eventId: 'n1', ruleId: 'native:1' });
+    seedMatch(OTHER_GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    seedMatch(OTHER_GUILD, { eventId: 'e2', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    seedMatch(OTHER_GUILD, { eventId: 'n1', ruleId: 'native:1' });
+
+    const { cookie, csrf } = await signIn();
+    const verdict = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'false_positive' },
+    });
+    expect(verdict.statusCode).toBe(200);
+
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/automod/review',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      matches: { eventId: string }[];
+      nativeHits: { eventId: string }[];
+      nativeBlocked: number;
+      verdicts: Record<string, { falsePositive: number; truePositive: number; unclear: number }>;
+    }>();
+    // e1 was just reviewed, so only e2 remains unreviewed — once, not twice.
+    expect(body.matches.map((m) => m.eventId)).toEqual(['e2']);
+    expect(body.nativeHits.map((h) => h.eventId)).toEqual(['n1']);
+    expect(body.nativeBlocked).toBe(1);
+    expect(body.verdicts['kw-one']).toEqual({ falsePositive: 1, truePositive: 0, unclear: 0 });
+  });
+
+  it('filters matches by ruleId and validates the query', async () => {
+    grant(['config.read']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    createKindRule(GUILD, 'kw-two', 'keyword_filter');
+    seedMatch(GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    seedMatch(GUILD, { eventId: 'e2', ruleId: 'kw-two', trace: '{"kind":"keyword_filter"}' });
+    const { cookie } = await signIn();
+
+    const filtered = await app.inject({
+      method: 'GET',
+      url: '/api/automod/review?ruleId=kw-one',
+      headers: { cookie },
+    });
+    expect(filtered.statusCode).toBe(200);
+    expect(filtered.json<{ matches: { eventId: string }[] }>().matches.map((m) => m.eventId)).toEqual(
+      ['e1'],
+    );
+
+    const badRule = await app.inject({
+      method: 'GET',
+      url: '/api/automod/review?ruleId=Bad_ID!',
+      headers: { cookie },
+    });
+    expect(badRule.statusCode).toBe(400);
+
+    const badLimit = await app.inject({
+      method: 'GET',
+      url: '/api/automod/review?limit=201',
+      headers: { cookie },
+    });
+    expect(badLimit.statusCode).toBe(400);
+  });
+});
+
+describe('POST /api/automod/review/:eventId/verdict', () => {
+  it('answers 401 with no session', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      payload: { verdict: 'false_positive' },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('answers 403 no-grant without config.write', async () => {
+    grant(['config.read']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    seedMatch(GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'false_positive' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: 'no-grant' });
+  });
+
+  it('records the verdict with an attributed audit row', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    seedMatch(GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'false_positive', note: 'quoted text, not a slur' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'recorded' });
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
+      limit: 10,
+      sinceMs: undefined,
+    });
+    const row = rows.find((r) => r.action === 'automod_match.verdict_recorded');
+    expect(row?.subjectType).toBe('automod_match');
+    expect(row?.subjectId).toBe('e1');
+    expect(row?.actorId).toBe(ACCOUNT);
+    expect(JSON.parse(row?.after ?? 'null')).toMatchObject({ verdict: 'false_positive' });
+  });
+
+  it('records a revision by the same account and the counts move', async () => {
+    grant(['config.write', 'config.read']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    seedMatch(GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    const { cookie, csrf } = await signIn();
+
+    const first = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'false_positive' },
+    });
+    expect(first.statusCode).toBe(200);
+
+    const second = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'true_positive' },
+    });
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ ok: true, outcome: 'recorded' });
+
+    const review = await app.inject({
+      method: 'GET',
+      url: '/api/automod/review',
+      headers: { cookie },
+    });
+    expect(
+      review.json<{
+        verdicts: Record<string, { falsePositive: number; truePositive: number }>;
+      }>().verdicts['kw-one'],
+    ).toMatchObject({ falsePositive: 0, truePositive: 1 });
+  });
+
+  it('answers 404 for an unknown event and records no audit row', async () => {
+    grant(['config.write']);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/no-such-event/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'false_positive' },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(auditActions()).not.toContain('automod_match.verdict_recorded');
+  });
+
+  it('answers 400 for a malformed verdict', async () => {
+    grant(['config.write']);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'wrong' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(auditActions()).not.toContain('automod_match.verdict_recorded');
+  });
+
+  it("guild B's session cannot record a verdict on guild A's event", async () => {
+    grant(['config.write']);
+    grant(['config.write'], OTHER_GUILD);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    seedMatch(GUILD, { eventId: 'e1', ruleId: 'kw-one', trace: '{"kind":"keyword_filter"}' });
+    const { cookie, csrf } = await signIn(OTHER_GUILD);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/review/e1/verdict',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { verdict: 'false_positive' },
+    });
+    expect(response.statusCode).toBe(404);
+  });
+});
+
+describe('POST /api/automod/rules/:ruleId/suppress', () => {
+  it('answers 401 with no session', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      payload: { kind: 'allowlist_phrase', value: 'hello' },
+    });
+    expect(response.statusCode).toBe(401);
+  });
+
+  it('answers 403 no-grant without config.write', async () => {
+    grant(['config.read']);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'hello' },
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: 'no-grant' });
+  });
+
+  it('suppresses with an allowlist phrase and audits kind and value', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'kw-one', 'keyword_filter');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/kw-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'hello world' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'added' });
+
+    const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
+      'kw-one',
+    );
+    expect(detail?.allowlist).toContain('hello world');
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {
+      limit: 10,
+      sinceMs: undefined,
+    });
+    const row = rows.find((r) => r.action === 'automod_rule.suppression_added');
+    expect(row?.subjectType).toBe('automod_rule');
+    expect(row?.subjectId).toBe('kw-one');
+    expect(JSON.parse(row?.after ?? 'null')).toEqual({
+      kind: 'allowlist_phrase',
+      value: 'hello world',
+    });
+  });
+
+  it('suppresses with an invite code', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'inv-one', 'invite');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/inv-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'invite_code', value: 'clubhouse' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'added' });
+
+    const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
+      'inv-one',
+    );
+    expect(detail?.inviteAllowlist).toContainEqual({ code: 'clubhouse', label: 'added from review' });
+  });
+
+  it('suppresses with a link domain', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'link-one', 'link_domain');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/link-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'link_domain', value: 'Example.COM' },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'added' });
+
+    const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
+      'link-one',
+    );
+    expect(detail?.linkDomains).toContainEqual({ domain: 'example.com', listType: 'allow' });
+  });
+
+  it('suppresses with a channel exemption', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'caps-one', 'caps');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/caps-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'channel_exemption', value: CHANNEL },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'added' });
+    expect(automodAdminRepo.listExemptions(t.scopes.forGuild(GUILD), 'caps-one')).toContainEqual({
+      exemptType: 'channel',
+      exemptId: CHANNEL,
+    });
+  });
+
+  it('answers 409 wrong-kind for an allowlist phrase against an invite rule', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'inv-one', 'invite');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/inv-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'hello' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'wrong-kind' });
+    expect(auditActions()).not.toContain('automod_rule.suppression_added');
+  });
+
+  it('answers 400 for a malformed value', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'inv-one', 'invite');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/inv-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'invite_code', value: 'not a code!!' },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(auditActions()).not.toContain('automod_rule.suppression_added');
+  });
+
+  it('answers 404 for an unknown rule', async () => {
+    grant(['config.write']);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/no-such-rule/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'allowlist_phrase', value: 'hello' },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(auditActions()).not.toContain('automod_rule.suppression_added');
   });
 });
