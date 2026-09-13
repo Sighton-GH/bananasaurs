@@ -282,4 +282,160 @@ describe('ReviewPage', () => {
       ),
     ).toBeTruthy();
   });
+
+  it('suppresses a keyword match: the button allows the phrase, prefilled from the snippet', async () => {
+    const mock = stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: { matches: [match()], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule()] } },
+      {
+        method: 'POST',
+        url: '/api/automod/rules/kw-one/suppress',
+        body: { ok: true, outcome: 'added' },
+      },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow this phrase' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Allow this phrase?' });
+    const input = within(dialog).getByLabelText('Value');
+    expect((input as HTMLInputElement).value).toBe('badword');
+    expect(dialog.textContent).toContain("Adds 'badword' to kw-one's allowlist.");
+    const before = mock.mock.calls.filter(
+      (c) => (c[0] as string) === '/api/automod/review?limit=50',
+    ).length;
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Allow this phrase' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/automod/rules/kw-one/suppress' &&
+        (c[1] as RequestInit).method === 'POST',
+    );
+    expect(post).toBeTruthy();
+    expect(bodyOf(post!)).toEqual({ kind: 'allowlist_phrase', value: 'badword' });
+    await screen.findByText('Phrase allowed');
+    const after = mock.mock.calls.filter(
+      (c) => (c[0] as string) === '/api/automod/review?limit=50',
+    ).length;
+    expect(after).toBeGreaterThan(before);
+  });
+
+  it('renders a "Narrow the pattern" link to the rule for a regex match', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: {
+          matches: [match({ eventId: 'evt-rx', ruleId: 'rx-one' })],
+          nativeHits: [],
+          nativeBlocked: 0,
+          verdicts: {},
+        },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule({ ruleId: 'rx-one', kind: 'regex' })] } },
+    ]);
+    renderAt('/review');
+    const table = await screen.findByRole('table', { name: 'Unreviewed matches' });
+    const link = within(table).getByRole('link', { name: 'Narrow the pattern' });
+    expect(link.getAttribute('href')).toBe('/automod/rx-one');
+  });
+
+  it('suppresses a caps match with an empty channel input posting channel_exemption', async () => {
+    const mock = stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: {
+          matches: [match({ eventId: 'evt-caps', ruleId: 'caps-one' })],
+          nativeHits: [],
+          nativeBlocked: 0,
+          verdicts: {},
+        },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule({ ruleId: 'caps-one', kind: 'caps' })] } },
+      {
+        method: 'POST',
+        url: '/api/automod/rules/caps-one/suppress',
+        body: { ok: true, outcome: 'added' },
+      },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Exempt a channel' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Exempt a channel?' });
+    const input = within(dialog).getByLabelText('Value');
+    expect((input as HTMLInputElement).value).toBe('');
+    expect(within(dialog).getByText('channel ID')).toBeTruthy();
+    fireEvent.change(input, { target: { value: '1540816150026518620' } });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Exempt a channel' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/automod/rules/caps-one/suppress' &&
+        (c[1] as RequestInit).method === 'POST',
+    );
+    expect(post).toBeTruthy();
+    expect(bodyOf(post!)).toEqual({
+      kind: 'channel_exemption',
+      value: '1540816150026518620',
+    });
+    await screen.findByText('Channel exempted');
+  });
+
+  it('shows the wrong-kind toast when the rule rejects the suppression kind', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: { matches: [match()], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule()] } },
+      {
+        method: 'POST',
+        url: '/api/automod/rules/kw-one/suppress',
+        status: 409,
+        body: { error: 'wrong-kind' },
+      },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow this phrase' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Allow this phrase?' });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Allow this phrase' }));
+    });
+    await screen.findByText("That suppression does not apply to this rule's kind");
+  });
+
+  it('shows "Already allowed" when the value is already present', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: { matches: [match()], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule()] } },
+      {
+        method: 'POST',
+        url: '/api/automod/rules/kw-one/suppress',
+        body: { ok: true, outcome: 'already-present' },
+      },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow this phrase' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Allow this phrase?' });
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Allow this phrase' }));
+    });
+    await screen.findByText('Already allowed');
+  });
 });
