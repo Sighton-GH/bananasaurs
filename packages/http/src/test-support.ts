@@ -176,8 +176,7 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
       trace: match.trace,
       fixtureContent: match.fixtureContent,
     })),
-  listUnreviewedNativeHits: (query) =>
-    automodAdminRepo.listUnreviewedNativeHits(scope, query),
+  listUnreviewedNativeHits: (query) => automodAdminRepo.listUnreviewedNativeHits(scope, query),
   nativeBlockedCount: () => automodAdminRepo.countNativeBlocked(scope),
 
   // Slice 8's dashboard pages (Task 2): the same real-repo behaviour
@@ -401,7 +400,9 @@ const testAutomodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
   reviewedCounts: Readonly<Record<string, number>>,
-  verdicts: Readonly<Record<string, { falsePositive: number; truePositive: number; unclear: number }>>,
+  verdicts: Readonly<
+    Record<string, { falsePositive: number; truePositive: number; unclear: number }>
+  >,
 ) => ({
   ruleId: rule.ruleId,
   kind: rule.kind,

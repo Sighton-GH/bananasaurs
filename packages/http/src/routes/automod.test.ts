@@ -871,9 +871,9 @@ describe('GET /api/automod/review', () => {
       headers: { cookie },
     });
     expect(filtered.statusCode).toBe(200);
-    expect(filtered.json<{ matches: { eventId: string }[] }>().matches.map((m) => m.eventId)).toEqual(
-      ['e1'],
-    );
+    expect(
+      filtered.json<{ matches: { eventId: string }[] }>().matches.map((m) => m.eventId),
+    ).toEqual(['e1']);
 
     const badRule = await app.inject({
       method: 'GET',
@@ -1088,7 +1088,10 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
     const detail = testPortsFor(t.scopes.forGuild(GUILD), () => clock).findAutomodRuleDetail(
       'inv-one',
     );
-    expect(detail?.inviteAllowlist).toContainEqual({ code: 'clubhouse', label: 'added from review' });
+    expect(detail?.inviteAllowlist).toContainEqual({
+      code: 'clubhouse',
+      label: 'added from review',
+    });
   });
 
   it('suppresses with a link domain', async () => {

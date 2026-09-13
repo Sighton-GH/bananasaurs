@@ -636,7 +636,9 @@ const automodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
   reviewedCounts: Readonly<Record<string, number>>,
-  verdicts: Readonly<Record<string, { falsePositive: number; truePositive: number; unclear: number }>>,
+  verdicts: Readonly<
+    Record<string, { falsePositive: number; truePositive: number; unclear: number }>
+  >,
 ) => ({
   ruleId: rule.ruleId,
   kind: rule.kind,
