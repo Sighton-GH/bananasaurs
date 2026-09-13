@@ -27,5 +27,6 @@ export {
 export { POLICY, passwordSchema, usernameSchema } from './policy.js';
 export { csrfTokenFor, generateToken, hashPassword, hashToken, verifyPassword } from './secrets.js';
 export { registerReadRoutes } from './routes/read.js';
+export { registerAutomodRoutes } from './routes/automod.js';
 export { registerWriteRoutes } from './routes/write.js';
 export { requireCapability } from './routes/capability.js';
