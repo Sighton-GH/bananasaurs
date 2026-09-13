@@ -85,6 +85,13 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   enqueueUndo: unstubbed('enqueueUndo'),
   grantAdoptionAllowance: unstubbed('grantAdoptionAllowance'),
   adoptionAllowance: unstubbed('adoptionAllowance'),
+  archiveEnableChannel: unstubbed('archiveEnableChannel'),
+  archiveDisableChannel: unstubbed('archiveDisableChannel'),
+  archiveStatus: unstubbed('archiveStatus'),
+  archivePreserve: unstubbed('archivePreserve'),
+  archiveLinkCase: unstubbed('archiveLinkCase'),
+  enqueueArchiveBackfill: unstubbed('enqueueArchiveBackfill'),
+  listUnreadableArchiveChannels: unstubbed('listUnreadableArchiveChannels'),
   ...over,
 });
 

@@ -196,6 +196,13 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   enqueueUndo: notNeeded('enqueueUndo'),
   grantAdoptionAllowance: notNeeded('grantAdoptionAllowance'),
   adoptionAllowance: notNeeded('adoptionAllowance'),
+  archiveEnableChannel: notNeeded('archiveEnableChannel'),
+  archiveDisableChannel: notNeeded('archiveDisableChannel'),
+  archiveStatus: notNeeded('archiveStatus'),
+  archivePreserve: notNeeded('archivePreserve'),
+  archiveLinkCase: notNeeded('archiveLinkCase'),
+  enqueueArchiveBackfill: notNeeded('enqueueArchiveBackfill'),
+  listUnreadableArchiveChannels: notNeeded('listUnreadableArchiveChannels'),
 });
 
 const instance: OpsInstance = {

@@ -1,5 +1,6 @@
 import { PermissionsBitField, type Client } from 'discord.js';
 import {
+  archiveBackfillDedupeKey,
   compileRule,
   JOB_KINDS,
   reconcileDedupeKey,
@@ -13,6 +14,7 @@ import {
 } from '@bananasaurs/core';
 import {
   accountRepo,
+  archiveRepo,
   automodAdminRepo,
   automodFixtureRepo,
   automodRuleListsRepo,
@@ -61,6 +63,14 @@ export const opsPortsFor = (
   operations: GuildOperations,
   now: () => number,
   client: Client,
+  /**
+   * Whether this guild is in `BANANASAURS_ARCHIVE_GUILDS` (ADR 0046 D1).
+   *
+   * A parameter rather than a config read: this module has no config of its
+   * own, and the caller (`daemon.ts`'s `portsFor`) already holds it. Closed
+   * over here so `archiveEnableChannel` can refuse before any write.
+   */
+  archiveGuildEnabled: boolean,
 ): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
@@ -454,6 +464,42 @@ export const opsPortsFor = (
   },
   adoptionAllowance: () => operations.adoptionAllowance(),
 
+  // --- archive (ADR 0046, Slice M1 Task 6) ------------------------------------
+  // `archiveEnableChannel` refuses before any write when the guild is not in
+  // `BANANASAURS_ARCHIVE_GUILDS` — the subscriber enforces the same veto on
+  // the read path, so a row written by hand still archives nothing.
+  archiveEnableChannel: (input) => {
+    if (!archiveGuildEnabled) return 'guild-not-archive-enabled';
+    return archiveRepo.enableChannel(scope, {
+      channelId: input.channelId,
+      attachmentPolicy: input.attachmentPolicy,
+      now: now(),
+    });
+  },
+  archiveDisableChannel: (channelId) => archiveRepo.disableChannel(scope, channelId),
+  archiveStatus: () =>
+    archiveRepo
+      .listChannels(scope)
+      .map((channel) => ({ ...channel, messageCount: archiveRepo.countMessages(scope, channel.channelId) })),
+  archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
+  archiveLinkCase: (input) => {
+    const outcome = archiveRepo.linkToCase(scope, input);
+    // `preserve` outranks any case link, so there is nothing to link — and
+    // the port's union (the plan's exact surface) has no `preserved` arm.
+    // `already-linked` is the honest neighbour: the message already carries a
+    // retention class stronger than the one asked for.
+    return outcome === 'preserved' ? 'already-linked' : outcome;
+  },
+  enqueueArchiveBackfill: (channelId) => {
+    jobRepo.enqueue(scope, {
+      kind: JOB_KINDS.archiveBackfill,
+      payload: JSON.stringify({ channelId }),
+      dedupeKey: archiveBackfillDedupeKey(scope.guildId, channelId),
+      now: now(),
+    });
+  },
+  listUnreadableArchiveChannels: () => unreadableArchiveChannels(scope, client),
+
   enqueueReconcile: (panelId) =>
     enqueued(
       jobRepo.enqueue(scope, {
@@ -618,6 +664,48 @@ const keywordFilterRulesMissingManageMessages = (
     }
   }
   return missing;
+};
+
+/**
+ * `doctor`'s archive check (ADR 0046 D1, Slice M1 Task 6): every enabled
+ * archive channel the bot cannot read, and why.
+ *
+ * The same "already in memory, nothing to fetch" style as
+ * `keywordFilterRulesMissingManageMessages` above — this runs on every
+ * `doctor` call and the gateway cache already holds the answer.
+ * `permissionsIn` folds channel-specific overwrites on top of the
+ * role-derived base, which a guild-level check cannot see.
+ */
+const unreadableArchiveChannels = (
+  scope: GuildScope,
+  client: Client,
+): readonly { channelId: string; reason: 'missing' | 'no-view' | 'no-history' }[] => {
+  const channels = archiveRepo.listChannels(scope);
+  if (channels.length === 0) return [];
+
+  const guild = client.guilds.cache.get(scope.guildId);
+  // Same treatment as `keywordFilterRulesMissingManageMessages`: not present
+  // in the cache is itself a finding elsewhere in `doctor`, so this check
+  // stays silent rather than reporting a channel list it cannot see.
+  if (guild === undefined) return [];
+  const me = guild.members.me;
+  if (me === null) return [];
+
+  const unreadable: { channelId: string; reason: 'missing' | 'no-view' | 'no-history' }[] = [];
+  for (const { channelId } of channels) {
+    const channel = guild.channels.cache.get(channelId);
+    if (channel === undefined) {
+      unreadable.push({ channelId, reason: 'missing' });
+      continue;
+    }
+    const permissions = me.permissionsIn(channel);
+    if (!permissions.has(PermissionsBitField.Flags.ViewChannel)) {
+      unreadable.push({ channelId, reason: 'no-view' });
+    } else if (!permissions.has(PermissionsBitField.Flags.ReadMessageHistory)) {
+      unreadable.push({ channelId, reason: 'no-history' });
+    }
+  }
+  return unreadable;
 };
 
 /** The listing projection, shared by `panel list` and `panel show`. */

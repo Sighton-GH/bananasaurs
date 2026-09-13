@@ -377,6 +377,33 @@ export interface OpsCaseDetail {
   readonly events: readonly OpsCaseEvent[];
 }
 
+// Archive shapes (ADR 0046, Slice M1 Task 6), re-declared here rather than
+// imported from `@bananasaurs/storage` (ADR 0014) — the same reason
+// `OpsUnusableAutomodRule.reason` widens `CompileFailure` to a string above,
+// and the same way `AutomodRule` is re-declared at the top of this file.
+
+/** `archive_channels.attachment_policy`: metadata only, or fetched bytes. */
+export type ArchiveAttachmentPolicy = 'none' | 'bytes';
+
+/** `archive_channels.backfill_state`: no terminal failure — a failing page throws to the worker, which retries. */
+export type ArchiveBackfillState = 'pending' | 'running' | 'done';
+
+/** One enabled archive channel, as `archive status` renders it. */
+export interface OpsArchiveChannelStatus {
+  readonly channelId: string;
+  readonly attachmentPolicy: ArchiveAttachmentPolicy;
+  readonly enabledAt: number;
+  readonly cursorMessageId: string | undefined;
+  readonly backfillState: ArchiveBackfillState;
+  readonly messageCount: number;
+}
+
+/** An archive-enabled channel the bot cannot read, and why. */
+export interface OpsUnreadableArchiveChannel {
+  readonly channelId: string;
+  readonly reason: 'missing' | 'no-view' | 'no-history';
+}
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -752,6 +779,35 @@ export interface OpsPorts {
   grantAdoptionAllowance(count: number): void;
   /** Unconsumed approved actions, before and after a grant. */
   adoptionAllowance(): number;
+
+  // --- archive (ADR 0046, Slice M1 Task 6) ------------------------------------
+  /**
+   * Names a channel whose messages enter the archive. Refused before any
+   * write when the guild is not in `BANANASAURS_ARCHIVE_GUILDS` — the
+   * composition root closes over that fact, so the command cannot vary it.
+   */
+  archiveEnableChannel(input: {
+    readonly channelId: string;
+    readonly attachmentPolicy: ArchiveAttachmentPolicy;
+  }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
+  /** Removes the channel row; its messages, edits and attachments cascade. */
+  archiveDisableChannel(channelId: string): 'disabled' | 'not-enabled';
+  /** Every enabled channel with its backfill cursor and message count. */
+  archiveStatus(): readonly OpsArchiveChannelStatus[];
+  /** Marks one archived message preserved (the indefinite retention tier). */
+  archivePreserve(messageId: string): 'preserved' | 'no-such-message' | 'already-preserved';
+  /** Links one archived message to an open moderation case (the `case` tier). */
+  archiveLinkCase(input: {
+    readonly messageId: string;
+    readonly caseId: string;
+  }): 'linked' | 'no-such-message' | 'no-such-case' | 'case-closed' | 'already-linked';
+  /** Queues one `archive_backfill` job for the channel (dedupe-collapsed). */
+  enqueueArchiveBackfill(channelId: string): void;
+  /**
+   * `doctor`'s archive check: enabled channels the bot cannot read, and why.
+   * `missing` means the channel is not in the client's cache at all.
+   */
+  listUnreadableArchiveChannels(): readonly OpsUnreadableArchiveChannel[];
 }
 
 /** A job this command queued, or the one already pending that absorbed it. */
