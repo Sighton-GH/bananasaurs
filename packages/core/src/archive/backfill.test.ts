@@ -107,6 +107,8 @@ const harness = (): Harness => {
     state: 'pending' as ArchiveChannel['backfillState'],
   };
   const ports: BackfillPorts = {
+    guildArchiveEnabled: true,
+    isChannelExcluded: () => false,
     fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
     findChannel: (channelId) =>
       channel.live && channelId === CHANNEL
@@ -221,6 +223,53 @@ describe('archive backfill paging', () => {
     expect(h.source.calls).toHaveLength(0);
     expect(h.rows.size).toBe(0);
     expect(h.continuations).toHaveLength(0);
+  });
+
+  it('a guild removed from the allowlist mid-backfill ends the job with no fetch and no writes', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 250);
+    (h.ports as { guildArchiveEnabled: boolean }).guildArchiveEnabled = false;
+
+    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+
+    expect(h.source.calls).toHaveLength(0);
+    expect(h.rows.size).toBe(0);
+    expect(h.continuations).toHaveLength(0);
+    expect(h.channel.state).toBe('pending');
+  });
+
+  it('a guild still listed backfills normally (the veto passing, not just absent)', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 10);
+
+    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+
+    expect(h.source.calls).toHaveLength(1);
+    expect(h.rows.size).toBe(10);
+  });
+
+  it('an excluded channel ends the job with no fetch and no writes', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 250);
+    h.ports.isChannelExcluded = () => true;
+
+    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+
+    expect(h.source.calls).toHaveLength(0);
+    expect(h.rows.size).toBe(0);
+    expect(h.continuations).toHaveLength(0);
+    expect(h.channel.state).toBe('pending');
+  });
+
+  it('a non-excluded channel backfills normally (the veto passing, not just absent)', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 10);
+    h.ports.isChannelExcluded = () => false;
+
+    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+
+    expect(h.source.calls).toHaveLength(1);
+    expect(h.rows.size).toBe(10);
   });
 
   it('maps edits and attachments, skipping an attachment without an id', async () => {

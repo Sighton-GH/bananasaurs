@@ -107,6 +107,8 @@ describe('archive backfill continuation through the real queue', () => {
     // Wired exactly like `runtime/guild.ts`: the successor's key is minted
     // from the tick's own `jobId`, never from the channel alone.
     const ports: BackfillPorts = {
+      guildArchiveEnabled: true,
+      isChannelExcluded: () => false,
       fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
       findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
       upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),

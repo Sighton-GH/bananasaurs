@@ -315,6 +315,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   // rather than restarting (D4); the continuation re-enqueues under the
   // per-channel dedupe key, collapsing while live (ADR 0016).
   const archiveBackfillPorts: BackfillPorts = {
+    guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
+    isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     fetchRecentMessages: (channelId, before) =>
       discord.fetchRecentMessages(guildId, channelId, { before, limit: 100 }),
     findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),

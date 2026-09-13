@@ -28,6 +28,10 @@ export interface ArchiveChannel {
 }
 
 export interface BackfillPorts {
+  /** ADR 0046 D1: the guild must be in BANANASAURS_ARCHIVE_GUILDS. Closed over by the daemon. */
+  readonly guildArchiveEnabled: boolean;
+  /** `log_excluded_channels` — the second veto (ADR 0009, standing under 0046 D1). */
+  isChannelExcluded(channelId: Snowflake): boolean;
   /** One page of 100, newest first, through the guild's `DiscordPort`. */
   fetchRecentMessages(
     channelId: Snowflake,
@@ -59,6 +63,20 @@ export const archiveBackfillHandler = (
   async run(payload, context) {
     const { channelId } = payload;
     const jobId = context.jobId;
+    if (!ports.guildArchiveEnabled) {
+      // The operator removed the guild from BANANASAURS_ARCHIVE_GUILDS
+      // while this job was queued: the next page must not land (ADR 0046
+      // D1 holds for the job path exactly as for the subscriber).
+      ports.logger.info(
+        safeLogFields({
+          component: 'archive',
+          jobKind: JOB_KINDS.archiveBackfill,
+          channelId,
+        }),
+        'archive: backfill guild no longer archive-enabled, stopping',
+      );
+      return;
+    }
     const channel = ports.findChannel(channelId);
     if (channel === undefined) {
       // Disabled mid-backfill: the channel row is gone, so there is nothing
@@ -70,6 +88,20 @@ export const archiveBackfillHandler = (
           channelId,
         }),
         'archive: backfill channel no longer enabled, stopping',
+      );
+      return;
+    }
+    if (ports.isChannelExcluded(channelId)) {
+      // Archive-enabled and excluded at once: the subscriber refuses these,
+      // so the job must too — otherwise the backfill writes rows the live
+      // path would never have written.
+      ports.logger.info(
+        safeLogFields({
+          component: 'archive',
+          jobKind: JOB_KINDS.archiveBackfill,
+          channelId,
+        }),
+        'archive: backfill channel excluded, stopping',
       );
       return;
     }
