@@ -5,6 +5,7 @@ import path from 'node:path';
 import { pino } from 'pino';
 import { ChannelType, Client, Events, type Guild } from 'discord.js';
 import {
+  JOB_KINDS,
   panelDefinitionSchema,
   parseConfig,
   parseGuildId,
@@ -474,7 +475,11 @@ describe('reconnecting', () => {
 
     const scope = t.scopes.forGuild(GUILD);
     expect(pipelineRepo.unreconciledGaps(scope)).toHaveLength(1);
-    expect(jobRepo.countByState(scope)['queued']).toBe(1);
+    // The startup enqueues no archive_expiry job here (no archive channel is
+    // enabled, so the timer skips the guild) — what this proves is the one
+    // reconciliation.
+    const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
+    expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(1);
   });
 
   it('records a resumed session as a gap that needs no repair', async () => {
@@ -486,7 +491,12 @@ describe('reconnecting', () => {
 
     const scope = t.scopes.forGuild(GUILD);
     expect(pipelineRepo.unreconciledGaps(scope)).toHaveLength(1);
-    expect(jobRepo.countByState(scope)['queued']).toBeUndefined();
+    // No reconciliation is enqueued for a resumed session — and no
+    // archive_expiry job either (no archive channel is enabled, so the
+    // timer skips the guild). This names the kind rather than counting the
+    // queue.
+    const queuedKinds = jobRepo.listJobs(scope, {}).map((job) => job.kind);
+    expect(queuedKinds.filter((kind) => kind === JOB_KINDS.reconcileGuild)).toHaveLength(0);
   });
 });
 
@@ -644,6 +654,9 @@ describe('/status, end to end', () => {
     expect(discord.wasEphemeral(INTERACTION)).toBe(true);
     expect(statusReply()).toContain('**Not connected**');
     expect(statusReply()).toContain('Role changes are **enabled**');
+    // None queued: no archive channel is enabled, so the startup timer
+    // enqueues no archive_expiry job — the "0 queued" signal reads
+    // meaningfully again.
     expect(statusReply()).toContain('0 queued, 0 running, 0 failed');
   });
 

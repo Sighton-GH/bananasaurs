@@ -101,6 +101,11 @@ export function fingerprintOf(event: DomainEvent): string | undefined {
       // Deletion is terminal: a message is deleted at most once.
       return digest(event.messageId);
 
+    case 'messageDeleteBulk':
+      // A bulk delete is identified by the channel and the set of ids; Discord
+      // may order the list differently on a replay, so sort before digesting.
+      return digest(event.channelId, ...[...event.messageIds].sort());
+
     case 'memberAdd':
     case 'memberRemove':
       return digest(

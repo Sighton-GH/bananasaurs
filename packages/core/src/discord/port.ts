@@ -9,6 +9,8 @@
  * reach another guild's data by omission.
  */
 
+import type { MessageAttachment } from './events.js';
+
 export type Snowflake = string;
 
 /** Canonical emoji key. `u:<codepoints>` for unicode, `c:<id>` for custom. */
@@ -100,6 +102,19 @@ export interface FetchedMessage {
   /** From the snowflake itself, like every timestamp Discord does not send. */
   createdAtMs: number;
   content: string | undefined;
+  /**
+   * From `edited_timestamp`. Optional (PR-71): `fetchRecentMessages`'s
+   * existing callers (purge) predate this field and must not be touched
+   * during the observe window. The REST adapter and `FakeDiscord` always
+   * populate it.
+   */
+  editedTimestampMs?: number | undefined;
+  /**
+   * Metadata only. Optional (PR-71) for the same pre-existing-caller reason
+   * as `editedTimestampMs`; the REST adapter and `FakeDiscord` always
+   * populate it (possibly empty).
+   */
+  attachments?: readonly MessageAttachment[] | undefined;
 }
 
 export interface RecentMessagesPage {

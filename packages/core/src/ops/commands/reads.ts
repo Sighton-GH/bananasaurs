@@ -48,6 +48,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     const unusable = ctx.ports.listUnusableAutomodRules();
     const badCutoverState = ctx.ports.listAutomodRulesEnforcingWithBadCutoverState();
     const observePastWindow = ctx.ports.listAutomodRulesObservingPastWindowWithBacklog(ctx.now());
+    const unreadableArchiveChannels = ctx.ports.listUnreadableArchiveChannels();
 
     const lines = [report.text, ''];
     lines.push(
@@ -109,7 +110,20 @@ export const doctorCommand = defineCommand<Record<string, never>>({
               .join('\n'),
     );
 
-    // The gateway half already decides `ok`; the six guild-scoped findings
+    lines.push(
+      // ADR 0046 D1's per-guild check: an enabled archive channel the bot
+      // cannot read archives nothing, silently. Same problem flag as the
+      // automod lines above — a silent no-op under a green header is the
+      // exact confusion `doctor` exists to prevent.
+      unreadableArchiveChannels.length === 0
+        ? 'archive    every enabled archive channel is readable'
+        : `archive    ${String(unreadableArchiveChannels.length)} channel(s) unreadable:\n` +
+            unreadableArchiveChannels
+              .map((c) => `    ARCHIVE CHANNEL UNREADABLE: ${c.channelId} (${c.reason})`)
+              .join('\n'),
+    );
+
+    // The gateway half already decides `ok`; the seven guild-scoped findings
     // here are just as capable of making a panel, an enforce-mode rule, or an
     // automod rule that never gets as far as matching — silently do nothing,
     // so they count the same way rather than being printed as decoration
@@ -121,7 +135,8 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       missingManageMessages.length === 0 &&
       unusable.length === 0 &&
       badCutoverState.length === 0 &&
-      observePastWindow.length === 0;
+      observePastWindow.length === 0 &&
+      unreadableArchiveChannels.length === 0;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
     return {
@@ -152,6 +167,10 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           ruleId: r.ruleId,
           observeStartedAt: r.observeStartedAt,
           unreviewedCount: r.unreviewedCount,
+        })),
+        unreadableArchiveChannels: unreadableArchiveChannels.map((c) => ({
+          channelId: c.channelId,
+          reason: c.reason,
         })),
       },
     };

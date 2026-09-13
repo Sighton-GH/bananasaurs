@@ -147,6 +147,19 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
   client.on(Events.MessageDelete, (message: AnyMessage) => {
     translate('messageDelete', () => toMessageEvent('messageDelete', message, now()));
   });
+  client.on(Events.MessageBulkDelete, (messages, channel) => {
+    translate('messageDeleteBulk', () => {
+      const messageIds = [...messages.keys()];
+      if (messageIds.length === 0) return undefined;
+      return {
+        kind: 'messageDeleteBulk',
+        guildId: channel.guildId, // discord.js types the channel as GuildTextBasedChannel — always a guild
+        receivedAtMs: now(),
+        channelId: channel.id,
+        messageIds,
+      };
+    });
+  });
 
   // --- native auto-moderation (ADR 0038) ----------------------------------
   client.on(Events.AutoModerationActionExecution, (execution: AutoModerationActionExecution) => {
@@ -400,6 +413,7 @@ function toMessageEvent(
     attachments: message.partial
       ? []
       : [...message.attachments.values()].map((a) => ({
+          attachmentId: a.id,
           fileName: a.name,
           contentType: a.contentType ?? undefined,
           sizeBytes: a.size,

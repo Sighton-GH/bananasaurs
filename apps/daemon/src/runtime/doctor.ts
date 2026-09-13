@@ -188,6 +188,12 @@ export interface DoctorReport {
   };
   readonly guilds: readonly DoctorGuild[];
   readonly backup: DoctorBackupHealth;
+  /**
+   * Guilds in `BANANASAURS_ARCHIVE_GUILDS` that are not in
+   * `BANANASAURS_GUILD_ALLOWLIST` (ADR 0046 D1) — almost certainly a typo,
+   * since an archive guild the bot never joins archives nothing.
+   */
+  readonly archiveGuildsNotAllowlisted: readonly string[];
 }
 
 export function buildDoctorReport(
@@ -209,6 +215,11 @@ export function buildDoctorReport(
     inspectGuild(client.guilds.cache.get(guildId), guildId),
   );
 
+  const allowlisted = new Set(config.BANANASAURS_GUILD_ALLOWLIST);
+  const archiveGuildsNotAllowlisted = config.BANANASAURS_ARCHIVE_GUILDS.filter(
+    (guildId) => !allowlisted.has(guildId),
+  );
+
   const backup = checkBackupHealth(config, nowMs);
   // A missing directory is not yet a finding — the timer creates it on the
   // daemon's first backup, so a never-started instance legitimately has none.
@@ -223,7 +234,8 @@ export function buildDoctorReport(
     guilds.every(
       (g) => g.present && g.missingPermissions.length === 0 && g.forbiddenPermissions.length === 0,
     ) &&
-    backupOk;
+    backupOk &&
+    archiveGuildsNotAllowlisted.length === 0;
 
   return {
     ok,
@@ -231,6 +243,7 @@ export function buildDoctorReport(
     intents: { privileged, sessionEstablished },
     guilds,
     backup,
+    archiveGuildsNotAllowlisted,
   };
 }
 
@@ -337,6 +350,13 @@ export function formatDoctorReport(report: DoctorReport): string {
       lines.push(
         `    native AutoMod observability inactive: Manage Server not held, so AUTO_MODERATION_ACTION_EXECUTION is never dispatched (ADR 0038) — see MISSING PERMISSIONS above`,
       );
+    }
+  }
+
+  if (report.archiveGuildsNotAllowlisted.length > 0) {
+    lines.push('');
+    for (const guildId of report.archiveGuildsNotAllowlisted) {
+      lines.push(`  ARCHIVE GUILD NOT ALLOWLISTED: ${guildId}`);
     }
   }
 

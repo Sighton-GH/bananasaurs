@@ -297,6 +297,15 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         authorId: message.author?.id ?? undefined,
         createdAtMs: snowflakeToMs(message.id),
         content: message.content === '' ? undefined : message.content,
+        editedTimestampMs: message.edited_timestamp
+          ? Date.parse(message.edited_timestamp)
+          : undefined,
+        attachments: (message.attachments ?? []).map((a) => ({
+          attachmentId: a.id,
+          fileName: a.filename,
+          contentType: a.content_type ?? undefined,
+          sizeBytes: a.size,
+        })),
       }));
 
       const last = messages.length > 0 ? messages[messages.length - 1] : undefined;

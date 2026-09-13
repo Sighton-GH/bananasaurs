@@ -132,6 +132,9 @@ async function postGapMarkers(
 export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
   name: 'logging',
   async handle(event) {
+    // Bulk deletes are not a logging-module event; ignore before the switch below.
+    if (event.kind === 'messageDeleteBulk') return;
+
     if (event.kind === 'connection') {
       if (event.resumed) return; // nothing lost — the session replayed the gap
       await postGapMarkers(ports, event);

@@ -421,6 +421,7 @@ describe('bananasaurs doctor', () => {
     listUnusableAutomodRules: () => [],
     listAutomodRulesEnforcingWithBadCutoverState: () => [],
     listAutomodRulesObservingPastWindowWithBacklog: () => [],
+    listUnreadableArchiveChannels: () => [],
   };
 
   it('reports ok when the gateway half is ok and nothing is stale', async () => {
@@ -628,6 +629,32 @@ describe('bananasaurs doctor', () => {
     expect(res.text).toContain(
       'no observing rule is both past its window and carrying an unreviewed backlog',
     );
+  });
+
+  it('flags an unreadable archive channel, and fails the check', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listUnreadableArchiveChannels: () => [{ channelId: '777', reason: 'no-view' }],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('    ARCHIVE CHANNEL UNREADABLE: 777 (no-view)');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({
+      ok: false,
+      unreadableArchiveChannels: [{ channelId: '777', reason: 'no-view' }],
+    });
+  });
+
+  it('reports clean when every enabled archive channel is readable', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      listUnreadableArchiveChannels: () => [],
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('every enabled archive channel is readable');
+    expect(res.data).toMatchObject({ ok: true });
   });
 
   it('survives a doctor report that could not be built', async () => {

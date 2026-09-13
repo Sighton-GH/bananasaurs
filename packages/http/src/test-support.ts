@@ -1,5 +1,6 @@
 import {
   accountRepo,
+  archiveRepo,
   automodAdminRepo,
   automodRuleListsRepo,
   automodRuleRepo,
@@ -14,7 +15,12 @@ import {
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
-import type { OpsInstance, OpsPorts } from '@bananasaurs/core';
+import {
+  archiveBackfillDedupeKey,
+  JOB_KINDS,
+  type OpsInstance,
+  type OpsPorts,
+} from '@bananasaurs/core';
 
 /**
  * Test-only `OpsPorts` and `OpsInstance`, built directly against the repos —
@@ -29,7 +35,16 @@ import type { OpsInstance, OpsPorts } from '@bananasaurs/core';
  * `apps/daemon` still builds the production `portsFor` the same way it always
  * has; this only proves the routes call the right port with the right scope.
  */
-export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => ({
+export const testPortsFor = (
+  scope: GuildScope,
+  now: () => number,
+  /**
+   * Whether this guild is in `BANANASAURS_ARCHIVE_GUILDS` (ADR 0046 D1).
+   * Off by default — the same empty-by-default the config parses to — so a
+   * route test that wants the archive has to say so.
+   */
+  opts: { readonly archiveGuildEnabled?: boolean } = {},
+): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
   jobCounts: () => jobRepo.countByState(scope),
@@ -397,6 +412,45 @@ export const testPortsFor = (scope: GuildScope, now: () => number): OpsPorts => 
     throw new Error('not used by the dashboard routes under test');
   },
   adoptionAllowance: () => 0,
+
+  // Archive (ADR 0046, Slice M1 Task 6): the same real-repo behaviour
+  // `apps/daemon/src/ops/wiring.ts` wires, including the guild veto before
+  // any write. `listUnreadableArchiveChannels` throws like the other members
+  // that need a real Discord client, which this package may not import.
+  archiveEnableChannel: (input) => {
+    if (!(opts.archiveGuildEnabled ?? false)) return 'guild-not-archive-enabled';
+    return archiveRepo.enableChannel(scope, {
+      channelId: input.channelId,
+      attachmentPolicy: input.attachmentPolicy,
+      now: now(),
+    });
+  },
+  archiveDisableChannel: (channelId) => {
+    const messageCount = archiveRepo.countMessages(scope, channelId);
+    const outcome = archiveRepo.disableChannel(scope, channelId);
+    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+  },
+  archiveStatus: () =>
+    archiveRepo.listChannels(scope).map((channel) => ({
+      ...channel,
+      messageCount: archiveRepo.countMessages(scope, channel.channelId),
+    })),
+  archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
+  // `preserved` passes through as its own arm, the same as
+  // `apps/daemon/src/ops/wiring.ts` — a preserved message is linked to no
+  // case, and the audit row must say so.
+  archiveLinkCase: (input) => archiveRepo.linkToCase(scope, input),
+  enqueueArchiveBackfill: (channelId) => {
+    jobRepo.enqueue(scope, {
+      kind: JOB_KINDS.archiveBackfill,
+      payload: JSON.stringify({ channelId }),
+      dedupeKey: archiveBackfillDedupeKey(scope.guildId, channelId),
+      now: now(),
+    });
+  },
+  listUnreadableArchiveChannels: () => {
+    throw new Error('not used by the dashboard routes under test — needs a real Discord client');
+  },
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */

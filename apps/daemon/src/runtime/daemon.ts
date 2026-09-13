@@ -21,11 +21,13 @@ import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/dis
 import {
   automodRuleRepo,
   guildRepo,
+  jobRepo,
   pipelineRepo,
   type GuildScope,
   type ScopeFactory,
 } from '@bananasaurs/storage';
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
+import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
@@ -124,6 +126,16 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     });
   }
 
+  // ADR 0046, Slice M1 Task 5 (PR-70): the daily archive-expiry producer. One
+  // expiry job per guild per UTC day, beside the backup timer — the job table
+  // has no scheduler, so this `setInterval` is what says when.
+  const archiveExpiryTimer = createArchiveExpiryTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
   // Shared by the operator dispatcher, the dashboard API and the `/status`
   // slash command: all three need "the process-level facts" and none should
   // build its own second copy of them.
@@ -156,7 +168,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     if (entry === undefined) {
       throw new Error(`portsFor: no guild runtime for ${scope.guildId} — outside the allowlist`);
     }
-    return opsPortsFor(entry.scope, entry.runtime.ops, now, client);
+    return opsPortsFor(
+      entry.scope,
+      entry.runtime.ops,
+      now,
+      client,
+      config.BANANASAURS_ARCHIVE_GUILDS.includes(entry.scope.guildId),
+    );
   };
 
   /**
@@ -373,7 +391,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       return {
         guildId: parseGuildId(guildId),
         now,
-        ports: opsPortsFor(entry.scope, entry.runtime.ops, now, client),
+        ports: opsPortsFor(
+          entry.scope,
+          entry.runtime.ops,
+          now,
+          client,
+          config.BANANASAURS_ARCHIVE_GUILDS.includes(entry.scope.guildId),
+        ),
       };
     },
     instance,
@@ -396,12 +420,14 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       // what should do that. A daemon whose gateway died must exit, not idle.
       timer.unref();
       backupTimer.start();
+      archiveExpiryTimer.start();
     },
 
     async stop() {
       if (timer !== undefined) clearInterval(timer);
       timer = undefined;
       backupTimer.stop();
+      archiveExpiryTimer.stop();
       await settle();
     },
 

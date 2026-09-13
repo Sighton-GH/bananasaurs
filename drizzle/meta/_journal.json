@@ -127,6 +127,20 @@
       "when": 1788626672766,
       "tag": "0017_nasty_piledriver",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "6",
+      "when": 1789329304831,
+      "tag": "0018_oval_cammi",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "6",
+      "when": 1789337740258,
+      "tag": "0019_same_jocasta",
+      "breakpoints": true
     }
   ]
 }

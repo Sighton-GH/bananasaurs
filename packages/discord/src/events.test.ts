@@ -481,7 +481,12 @@ describe('messages', () => {
       mentionedRoleIds: [ROLE],
       mentionsEveryone: true,
       attachments: [
-        { fileName: 'payload.exe', contentType: 'application/octet-stream', sizeBytes: 4096 },
+        {
+          attachmentId: '1',
+          fileName: 'payload.exe',
+          contentType: 'application/octet-stream',
+          sizeBytes: 4096,
+        },
       ],
     });
   });
@@ -503,6 +508,29 @@ describe('messages', () => {
       mentionsEveryone: false,
       attachments: [],
     });
+  });
+});
+
+describe('message bulk deletes', () => {
+  it('translates a bulk delete of two ids into one event with both ids', () => {
+    const h = harness();
+    const OTHER = '444444444444444445';
+    h.packet('MessageDeleteBulk', { ids: [MESSAGE, OTHER], channel_id: CHANNEL, guild_id: GUILD });
+
+    expect(h.events).toHaveLength(1);
+    expect(h.events[0]).toMatchObject({
+      kind: 'messageDeleteBulk',
+      guildId: GUILD,
+      channelId: CHANNEL,
+      receivedAtMs: 1_700_000_000_000,
+    });
+    expect((h.events[0] as { messageIds: readonly string[] }).messageIds).toEqual([MESSAGE, OTHER]);
+  });
+
+  it('emits no event for an empty collection', () => {
+    const h = harness();
+    h.packet('MessageDeleteBulk', { ids: [], channel_id: CHANNEL, guild_id: GUILD });
+    expect(h.events).toEqual([]);
   });
 });
 

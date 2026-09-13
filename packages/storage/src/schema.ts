@@ -862,6 +862,146 @@ export const automodLinkDomains = sqliteTable(
   ],
 );
 
+/**
+ * Channels the owner enabled for archiving (ADR 0046 D1).
+ *
+ * A row here is one veto passing, not permission: live ingestion additionally
+ * requires the guild in `BANANASAURS_ARCHIVE_GUILDS` and the channel absent
+ * from `log_excluded_channels`, both checked in code rather than the schema.
+ */
+export const archiveChannels = sqliteTable(
+  'archive_channels',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    attachmentPolicy: text('attachment_policy').notNull().default('none'),
+    enabledAt: integer('enabled_at').notNull(),
+    /** NULL = not started or done. */
+    cursorMessageId: text('cursor_message_id'),
+    backfillState: text('backfill_state').notNull().default('pending'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.channelId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('archive_channels_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_channels_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('archive_channels_attachment_policy', sql`${t.attachmentPolicy} IN ('none','bytes')`),
+    check(
+      'archive_channels_backfill_state',
+      sql`${t.backfillState} IN ('pending','running','done')`,
+    ),
+  ],
+);
+
+/**
+ * One archived message. `content` is NULL after purge, or never known.
+ *
+ * `caseId` (PR-69) is set by the operator via `linkToCase`, which verifies
+ * the case exists in scope and is open. Deliberately no FK: a case deleted
+ * by a future path must not cascade into the moderation record's neighbour,
+ * and `ON DELETE SET NULL` would be a write to a row whose lifetime the
+ * expiry job owns.
+ */
+export const archiveMessages = sqliteTable(
+  'archive_messages',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    /** NULL for webhook/system messages. */
+    authorId: text('author_id'),
+    /** NULL after purge, or never known. */
+    content: text('content'),
+    /**
+     * Live ingestion stores `receivedAtMs`, the backfill stores the
+     * snowflake-derived `createdAtMs`, so the two populations differ by the
+     * gateway delivery delay — M2's search ordering must not assume otherwise.
+     */
+    createdAt: integer('created_at').notNull(),
+    editedAt: integer('edited_at'),
+    deletedAt: integer('deleted_at'),
+    retentionClass: text('retention_class').notNull().default('default'),
+    /** PR-69; no FK. */
+    caseId: text('case_id'),
+    contentPurgedAt: integer('content_purged_at'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId] }),
+    foreignKey({
+      columns: [t.guildId, t.channelId],
+      foreignColumns: [archiveChannels.guildId, archiveChannels.channelId],
+    }).onDelete('cascade'),
+    index('archive_messages_channel_created').on(t.guildId, t.channelId, t.createdAt),
+    index('archive_messages_deleted').on(t.guildId, t.deletedAt),
+    check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('archive_messages_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check(
+      'archive_messages_retention_class',
+      sql`${t.retentionClass} IN ('default','case','preserve')`,
+    ),
+  ],
+);
+
+/**
+ * Edit history for an archived message. `content` is the content BEFORE this
+ * edit. Purged with the message it belongs to.
+ */
+export const archiveMessageEdits = sqliteTable(
+  'archive_message_edits',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    editSeq: integer('edit_seq').notNull(),
+    /** The content BEFORE this edit. */
+    content: text('content'),
+    editedAt: integer('edited_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId, t.editSeq] }),
+    foreignKey({
+      columns: [t.guildId, t.messageId],
+      foreignColumns: [archiveMessages.guildId, archiveMessages.messageId],
+    }).onDelete('cascade'),
+    check('archive_message_edits_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_message_edits_message_id_snowflake', snowflakeCheck(t.messageId)),
+  ],
+);
+
+/**
+ * One attachment on an archived message: filename, declared type, size.
+ *
+ * `sha256` and `bytesPath` are always NULL in M1 (PR-67): under `none`
+ * nothing is fetched so there is nothing to hash, and the `bytes` fetcher
+ * ships in a later slice behind a host allowlist. The columns ship now so
+ * the schema does not change later.
+ */
+export const archiveAttachments = sqliteTable(
+  'archive_attachments',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    attachmentId: snowflake('attachment_id').notNull(),
+    filename: text('filename').notNull(),
+    contentType: text('content_type'),
+    size: integer('size').notNull(),
+    /** Always NULL in M1 (PR-67). */
+    sha256: text('sha256'),
+    /** Always NULL in M1 (PR-67). */
+    bytesPath: text('bytes_path'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId, t.attachmentId] }),
+    foreignKey({
+      columns: [t.guildId, t.messageId],
+      foreignColumns: [archiveMessages.guildId, archiveMessages.messageId],
+    }).onDelete('cascade'),
+    check('archive_attachments_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('archive_attachments_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('archive_attachments_attachment_id_snowflake', snowflakeCheck(t.attachmentId)),
+  ],
+);
+
 /** Per-member violation history. What escalation reads to pick the next tier. */
 export const modCases = sqliteTable(
   'mod_cases',

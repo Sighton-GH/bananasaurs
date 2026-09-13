@@ -332,6 +332,90 @@ describe('interaction deadlines, which Discord enforces strictly', () => {
   });
 });
 
+describe('message emitters (PR-66, PR-68, PR-71)', () => {
+  it('emitMessageCreate carries attachment ids and shows up in fetchRecentMessages', async () => {
+    const attachmentMessageId = '333333333333333335';
+    await d.emitMessageCreate({
+      channelId: CHANNEL,
+      messageId: attachmentMessageId,
+      authorId: USER,
+      content: 'see attached',
+      attachments: [{ attachmentId: 'att-1', fileName: 'a.png', sizeBytes: 10 }],
+    });
+
+    const created = seen[0];
+    expect(created?.kind).toBe('messageCreate');
+    expect(created?.kind === 'messageCreate' ? created.attachments : undefined).toEqual([
+      { attachmentId: 'att-1', fileName: 'a.png', sizeBytes: 10 },
+    ]);
+
+    // emitMessageCreate does not itself define the message, so it must be
+    // defined for fetchRecentMessages to see it — matching defineMessage's
+    // existing contract for every other emitter's pre-existing message.
+    d.defineMessage({
+      channelId: CHANNEL,
+      messageId: attachmentMessageId,
+      attachments: [{ attachmentId: 'att-1', fileName: 'a.png', sizeBytes: 10 }],
+    });
+    const page = await d.fetchRecentMessages(GUILD, CHANNEL);
+    const fetched = page.messages.find((m) => m.messageId === attachmentMessageId);
+    expect(fetched?.attachments).toEqual([
+      { attachmentId: 'att-1', fileName: 'a.png', sizeBytes: 10 },
+    ]);
+  });
+
+  it('emitMessageUpdate updates content and edit timestamp, and fetchRecentMessages agrees', async () => {
+    await d.emitMessageUpdate({
+      channelId: CHANNEL,
+      messageId: MESSAGE,
+      authorId: USER,
+      content: 'edited content',
+      editedTimestampMs: 1_700_000_005_000,
+    });
+
+    const updated = seen[0];
+    expect(updated?.kind).toBe('messageUpdate');
+    expect(updated?.kind === 'messageUpdate' ? updated.content : undefined).toBe('edited content');
+    expect(updated?.kind === 'messageUpdate' ? updated.editedTimestampMs : undefined).toBe(
+      1_700_000_005_000,
+    );
+
+    const page = await d.fetchRecentMessages(GUILD, CHANNEL);
+    const fetched = page.messages.find((m) => m.messageId === MESSAGE);
+    expect(fetched?.content).toBe('edited content');
+    expect(fetched?.editedTimestampMs).toBe(1_700_000_005_000);
+  });
+
+  it('emitMessageDelete marks the message deleted so fetchRecentMessages omits it', async () => {
+    await d.emitMessageDelete({ channelId: CHANNEL, messageId: MESSAGE, authorId: USER });
+
+    const deleted = seen[0];
+    expect(deleted?.kind).toBe('messageDelete');
+    expect(deleted?.kind === 'messageDelete' ? deleted.authorId : undefined).toBe(USER);
+
+    const page = await d.fetchRecentMessages(GUILD, CHANNEL);
+    expect(page.messages.find((m) => m.messageId === MESSAGE)).toBeUndefined();
+  });
+
+  it('emitMessageDeleteBulk emits one event naming every id and deletes them all', async () => {
+    const second = '333333333333333336';
+    d.defineMessage({ channelId: CHANNEL, messageId: second });
+
+    await d.emitMessageDeleteBulk({ channelId: CHANNEL, messageIds: [MESSAGE, second] });
+
+    expect(seen).toHaveLength(1);
+    const bulk = seen[0];
+    expect(bulk?.kind).toBe('messageDeleteBulk');
+    expect(bulk?.kind === 'messageDeleteBulk' ? bulk.messageIds : undefined).toEqual([
+      MESSAGE,
+      second,
+    ]);
+
+    const page = await d.fetchRecentMessages(GUILD, CHANNEL);
+    expect(page.messages).toEqual([]);
+  });
+});
+
 describe('guild scope', () => {
   it('refuses a call for another guild rather than quietly answering', async () => {
     await expect(d.fetchMember('888888888888888888', USER)).rejects.toThrow(/scoped to guild/);

@@ -75,6 +75,7 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'role_id',
   'channel_id',
   'message_id',
+  'attachment_id',
   'required_role_id',
   'principal_id',
 ]);

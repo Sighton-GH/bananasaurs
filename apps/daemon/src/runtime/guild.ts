@@ -4,6 +4,10 @@ import {
   editManagedPanel,
   postManagedPanel,
   seedPanelReactions,
+  archiveBackfillDedupeKey,
+  archiveBackfillHandler,
+  archiveExpiryHandler,
+  createArchiveSubscriber,
   createAutomodSubscriber,
   createInteractionSubscriber,
   createLoggingSubscriber,
@@ -20,6 +24,8 @@ import {
   parseSnowflakeId,
   RateLimiter,
   type AdoptionPorts,
+  type ArchivePorts,
+  type BackfillPorts,
   type Config,
   type DiscordPort,
   type EffectGatewayDeps,
@@ -41,6 +47,7 @@ import {
 } from '@bananasaurs/core';
 import {
   authzStoreFor,
+  archiveRepo,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -287,6 +294,51 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   // calls, so it needs no gateway and no witness of its own
   // (`automod/native-wiring.ts`).
   const nativeAutomodPorts: NativeAutomodSubscriberDeps = nativeAutomodPortsFor(scope, logger, now);
+
+  // ADR 0046, Slice M1 Task 4: the live archive subscriber's ports. The guild
+  // allowlist closes over config here; the channel vetoes read the repo and
+  // the logging module's exclusion list through this scope.
+  const archivePorts: ArchivePorts = {
+    guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
+    isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
+    isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+    upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
+    recordEdit: (input) => archiveRepo.recordEdit(scope, input),
+    recordDelete: (input) => archiveRepo.recordDelete(scope, input),
+    recordBulkDelete: (input) => archiveRepo.recordBulkDelete(scope, input),
+    logger,
+  };
+
+  // ADR 0046, Slice M1 Task 5: the archive backfill and expiry jobs' ports.
+  // The backfill pages the guild's `DiscordPort` at 100 per run and persists
+  // its cursor in `archive_channels` after every page, so a restart resumes
+  // rather than restarting (D4); the continuation re-enqueues under the
+  // per-channel dedupe key, collapsing while live (ADR 0016).
+  const archiveBackfillPorts: BackfillPorts = {
+    guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
+    isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
+    fetchRecentMessages: (channelId, before) =>
+      discord.fetchRecentMessages(guildId, channelId, { before, limit: 100 }),
+    findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
+    upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
+    setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
+    enqueueContinuation: ({ channelId, jobId, runAfter }) =>
+      void jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.archiveBackfill,
+        payload: JSON.stringify({ channelId }),
+        dedupeKey: archiveBackfillDedupeKey(guildId, channelId, jobId),
+        runAfter,
+        now: now(),
+      }),
+    now,
+    logger,
+  };
+
+  const archiveExpiryPorts = {
+    expireContent: (nowMs: number) => archiveRepo.expireContent(scope, nowMs),
+    now,
+    logger,
+  };
 
   const deletionAttributionPorts: MessageDeleteAttributionPorts = {
     guildId,
@@ -605,6 +657,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createMemberUpdateSubscriber(memberUpdatePorts),
     createLoggingSubscriber(loggingPorts),
     createAutomodSubscriber(automodPorts),
+    // After automod so a message the automod deletes is archived as
+    // created-then-deleted (ADR 0046 D5); read-side only.
+    createArchiveSubscriber(archivePorts),
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
@@ -617,6 +672,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       adoptPanelHandler(adoptionPorts),
       logMessageDeleteHandler(deletionAttributionPorts),
       modPurgeHandler(purgePorts),
+      archiveBackfillHandler(archiveBackfillPorts),
+      archiveExpiryHandler(archiveExpiryPorts),
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this

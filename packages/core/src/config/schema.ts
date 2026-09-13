@@ -46,6 +46,23 @@ export const configSchema = z.object({
     )
     .pipe(z.array(snowflake).min(1, 'must list at least one guild id')),
 
+  /**
+   * Guilds that may hold archive channels at all (ADR 0046 D1). Empty by
+   * default: nothing is archived until the operator lists a guild here AND
+   * enables a channel. The club guild stays off this list until /mydata and
+   * /forgetme ship — that is the privacy precondition, enforced by absence.
+   */
+  BANANASAURS_ARCHIVE_GUILDS: z
+    .string()
+    .default('')
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(snowflake)),
+
   BANANASAURS_OWNER_USER_ID: snowflake,
 
   BANANASAURS_ENV: z.enum(['development', 'production']).default('development'),

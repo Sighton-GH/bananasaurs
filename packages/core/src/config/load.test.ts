@@ -56,6 +56,24 @@ describe('parseConfig', () => {
     );
   });
 
+  it('defaults the archive guild list to empty: nothing is archived until listed', () => {
+    expect(parseConfig(VALID).BANANASAURS_ARCHIVE_GUILDS).toEqual([]);
+  });
+
+  it('parses the archive guild list into a trimmed array of snowflakes', () => {
+    const c = parseConfig({
+      ...VALID,
+      BANANASAURS_ARCHIVE_GUILDS: '123456789012345678, 234567890123456789',
+    });
+    expect(c.BANANASAURS_ARCHIVE_GUILDS).toEqual(['123456789012345678', '234567890123456789']);
+  });
+
+  it('rejects an archive guild list containing a non-snowflake', () => {
+    expect(() => parseConfig({ ...VALID, BANANASAURS_ARCHIVE_GUILDS: 'not-a-snowflake' })).toThrow(
+      ConfigError,
+    );
+  });
+
   it('rejects a session secret under 32 characters', () => {
     expect(() => parseConfig({ ...VALID, DASHBOARD_SESSION_SECRET: 'x'.repeat(31) })).toThrow(
       ConfigError,
