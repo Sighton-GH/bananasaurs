@@ -93,7 +93,7 @@ const fakePorts = (over: FakeOptions = {}) => {
     },
     logger: capture.logger,
   };
-  return { ports, messages, calls, lines: capture.lines, logged: capture.messages };
+  return { ports, messages, calls, lines: capture.lines, logged: () => capture.messages() };
 };
 
 const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
@@ -231,9 +231,7 @@ describe('archive subscriber ingestion', () => {
     expect(f.calls).toHaveLength(1);
     const input = f.calls[0]?.input as UpsertMessageInput;
     expect(input.attachments).toEqual([]);
-    const skipped = f
-      .logged()
-      .find((l) => l.msg === 'archive: attachment without id, skipped');
+    const skipped = f.logged().find((l) => l.msg === 'archive: attachment without id, skipped');
     expect(skipped?.messageId).toBe(MESSAGE);
   });
 
@@ -270,9 +268,7 @@ describe('archive subscriber ingestion', () => {
 
     expect(f.calls.map((c) => c.method)).toEqual(['recordEdit', 'upsertMessage']);
     expect(f.messages.get(MESSAGE)?.content).toBe('full content on update');
-    const inserted = f
-      .logged()
-      .find((l) => l.msg === 'archive: edit to unknown message, inserted');
+    const inserted = f.logged().find((l) => l.msg === 'archive: edit to unknown message, inserted');
     expect(inserted?.messageId).toBe(MESSAGE);
     expect(inserted?.channelId).toBe(CHANNEL);
   });

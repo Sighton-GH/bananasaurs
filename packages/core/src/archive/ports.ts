@@ -44,9 +44,6 @@ export interface ArchivePorts {
     messageId: Snowflake;
     deletedAt: number;
   }): 'recorded' | 'no-such-message' | 'already-deleted';
-  recordBulkDelete(input: {
-    messageIds: readonly Snowflake[];
-    deletedAt: number;
-  }): number;
+  recordBulkDelete(input: { messageIds: readonly Snowflake[]; deletedAt: number }): number;
   readonly logger: Logger;
 }

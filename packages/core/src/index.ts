@@ -108,11 +108,7 @@ export {
   type UndoBatchPayload,
 } from './jobs/kinds.js';
 export { createArchiveSubscriber } from './archive/subscriber.js';
-export type {
-  ArchiveAttachmentInput,
-  ArchivePorts,
-  UpsertMessageInput,
-} from './archive/ports.js';
+export type { ArchiveAttachmentInput, ArchivePorts, UpsertMessageInput } from './archive/ports.js';
 export {
   createConnectionSubscriber,
   type ConnectionPorts,
