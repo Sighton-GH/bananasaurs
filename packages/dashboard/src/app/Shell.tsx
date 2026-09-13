@@ -10,6 +10,7 @@ import { MemberPage } from '../pages/member.js';
 import { NotFoundPage } from '../pages/not-found.js';
 import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
+import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { Button } from '../ui/Button.js';
 import { HealthProvider, useHealth } from './health.js';
@@ -64,6 +65,7 @@ function Pages() {
       <Route path="/audit" component={AuditPage} />
       <Route path="/automod" component={AutomodRulesPage} />
       <Route path="/automod/:ruleId" component={AutomodRulePage} />
+      <Route path="/review" component={ReviewPage} />
       <Route path="/cases" component={CasesPage} />
       <Route path="/cases/:caseId" component={CasePage} />
       <Route path="/members/:memberId" component={MemberPage} />

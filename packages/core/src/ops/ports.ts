@@ -249,6 +249,23 @@ export type OpsCutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' 
  * many of those carry a verdict — the two numbers the cutover board reads to
  * say whether a rule has served its observe window.
  */
+export interface OpsVerdictCounts {
+  readonly falsePositive: number;
+  readonly truePositive: number;
+  readonly unclear: number;
+}
+
+/** A native Discord AutoMod decision nobody has ruled on — mirror of storage's `NativeHit`, re-declared here (ADR 0014). */
+export interface OpsNativeHit {
+  readonly eventId: string;
+  readonly ruleId: string;
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string;
+  readonly matchedSnippet: string;
+  readonly actionTaken: string;
+}
+
 export interface OpsAutomodRuleSummary {
   readonly ruleId: string;
   readonly kind: RuleKind;
@@ -268,6 +285,8 @@ export interface OpsAutomodRuleSummary {
   readonly updatedAt: number;
   readonly matchCount: number;
   readonly reviewedCount: number;
+  /** The verdict split for this rule — zeros when the rule has none. */
+  readonly verdicts: OpsVerdictCounts;
 }
 
 /**
@@ -451,6 +470,14 @@ export interface OpsPorts {
     readonly ruleId?: string;
     readonly limit: number;
   }): readonly OpsReviewableMatch[];
+  /**
+   * Native AutoMod decisions (rule_id `native:…`) nobody has ruled on, oldest
+   * first (Slice 9, PR-53) — the review queue's native section. Ignores any
+   * rule filter: native rule ids are Discord's, not Bananasaurs'.
+   */
+  listUnreviewedNativeHits(query: { readonly limit: number }): readonly OpsNativeHit[];
+  /** How many native decisions that stopped a message this guild has recorded. */
+  nativeBlockedCount(): number;
   /**
    * Every rule, enabled or disabled, with its match and reviewed tallies —
    * the dashboard's `/automod` rules list and `/cutover` board.
@@ -657,6 +684,20 @@ export interface OpsPorts {
     readonly exemptType: 'role' | 'channel';
     readonly exemptId: string;
   }): 'added' | 'already-present' | 'no-such-rule';
+  /**
+   * Adds one phrase to a `keyword_filter` rule's allowlist from the review
+   * queue (Slice 9). `'no-such-rule'` for a mistyped id; `'wrong-kind'` for a
+   * rule that exists but is not a `keyword_filter` rule; `'already-present'`
+   * checked before the `INSERT`, which throws on a duplicate.
+   *
+   * The phrase is stored lower-cased and space-collapsed because obscenity's
+   * whitelist matcher searches the lower-cased input for the raw term, so a
+   * stored phrase with any uppercase letter could never match.
+   */
+  addAutomodAllowlistPhrase(input: {
+    readonly ruleId: string;
+    readonly phrase: string;
+  }): 'added' | 'already-present' | 'no-such-rule' | 'wrong-kind';
   /**
    * Removes one role or channel exemption from one rule, from the
    * `/automod/:ruleId` exemptions section. `'not-present'` is a real answer —

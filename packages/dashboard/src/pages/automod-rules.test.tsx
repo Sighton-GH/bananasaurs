@@ -30,6 +30,7 @@ function rule(overrides: Partial<RuleSummary> = {}): RuleSummary {
     updatedAt: NOW - 3 * DAY_MS,
     matchCount: 12,
     reviewedCount: 5,
+    verdicts: { falsePositive: 0, truePositive: 0, unclear: 0 },
     ...overrides,
   };
 }
@@ -47,7 +48,14 @@ describe('AutomodRulesPage', () => {
   });
 
   it('renders one row per rule from GET /api/automod/rules', async () => {
-    stubFetch([{ url: '/api/automod/rules', body: { rules: [rule()] } }]);
+    stubFetch([
+      {
+        url: '/api/automod/rules',
+        body: {
+          rules: [rule({ verdicts: { falsePositive: 2, truePositive: 4, unclear: 1 } })],
+        },
+      },
+    ]);
     renderWithSession(<AutomodRulesPage />);
     expect(await screen.findByRole('heading', { level: 1, name: 'Automod' })).toBeTruthy();
     const table = await screen.findByRole('table', { name: 'Automod rules' });
@@ -59,7 +67,8 @@ describe('AutomodRulesPage', () => {
     expect(within(table).getByText('observe')).toBeTruthy();
     expect(within(table).getByText('3 days')).toBeTruthy();
     expect(within(table).getByText('12')).toBeTruthy();
-    expect(within(table).getByText('5')).toBeTruthy();
+    const reviewed = within(table).getByRole('link', { name: '7 (2 fp)' });
+    expect(reviewed.getAttribute('href')).toBe('/review?rule=no-invites');
   });
 
   it('posts the create body exactly and toasts on success', async () => {

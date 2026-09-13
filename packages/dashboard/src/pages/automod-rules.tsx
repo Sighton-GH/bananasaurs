@@ -136,7 +136,16 @@ export function AutomodRulesPage() {
                 },
               },
               { key: 'matches', header: 'Matches', numeric: true, cell: (r) => r.matchCount },
-              { key: 'reviewed', header: 'Reviewed', numeric: true, cell: (r) => r.reviewedCount },
+              {
+                key: 'reviewed',
+                header: 'Reviewed',
+                numeric: true,
+                cell: (r) => (
+                  <Link href={`/review?rule=${encodeURIComponent(r.ruleId)}`}>
+                    {`${String(r.verdicts.falsePositive + r.verdicts.truePositive + r.verdicts.unclear)} (${String(r.verdicts.falsePositive)} fp)`}
+                  </Link>
+                ),
+              },
             ]}
           />
         )}

@@ -81,7 +81,24 @@ export function CutoverPage() {
               },
               { key: 'observed', header: 'Observed', cell: observedCell },
               { key: 'matches', header: 'Matches', numeric: true, cell: (r) => r.matchCount },
-              { key: 'reviewed', header: 'Reviewed', numeric: true, cell: (r) => r.reviewedCount },
+              {
+                key: 'falsePositive',
+                header: 'False positive',
+                numeric: true,
+                cell: (r) => r.verdicts.falsePositive,
+              },
+              {
+                key: 'truePositive',
+                header: 'True positive',
+                numeric: true,
+                cell: (r) => r.verdicts.truePositive,
+              },
+              {
+                key: 'unclear',
+                header: 'Unclear',
+                numeric: true,
+                cell: (r) => r.verdicts.unclear,
+              },
               { key: 'signoff', header: 'Sign-off', cell: signoffCell },
             ]}
           />

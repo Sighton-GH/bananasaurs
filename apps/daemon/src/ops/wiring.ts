@@ -201,6 +201,8 @@ export const opsPortsFor = (
       .find((r) => r.ruleId === ruleId),
   listAutomodFixtures: (filter) => automodFixtureRepo.listFixtures(scope, filter),
   listUnreviewedMatches: (query) => modCaseRepo.listUnreviewedMatches(scope, query),
+  listUnreviewedNativeHits: (query) => automodAdminRepo.listUnreviewedNativeHits(scope, query),
+  nativeBlockedCount: () => automodAdminRepo.countNativeBlocked(scope),
 
   // Slice 8's dashboard pages (Task 2). The `/automod` rules list and the
   // `/cutover` board read summaries; `/automod/:ruleId` reads the detail and
@@ -210,9 +212,10 @@ export const opsPortsFor = (
   listAutomodRules: () => {
     const matchCounts = automodAdminRepo.countMatchesByRule(scope);
     const reviewedCounts = automodAdminRepo.countReviewedByRule(scope);
+    const verdicts = automodAdminRepo.countVerdictsByRule(scope);
     return automodAdminRepo
       .listRules(scope)
-      .map((rule) => automodRuleSummary(rule, matchCounts, reviewedCounts));
+      .map((rule) => automodRuleSummary(rule, matchCounts, reviewedCounts, verdicts));
   },
   findAutomodRuleDetail: (ruleId) => {
     const rule = automodAdminRepo.findRule(scope, ruleId);
@@ -226,6 +229,7 @@ export const opsPortsFor = (
         rule,
         automodAdminRepo.countMatchesByRule(scope),
         automodAdminRepo.countReviewedByRule(scope),
+        automodAdminRepo.countVerdictsByRule(scope),
       ),
       exemptions: automodAdminRepo.listExemptions(scope, ruleId),
       terms: stored?.terms ?? [],
@@ -407,6 +411,23 @@ export const opsPortsFor = (
   removeAutomodExemption: (input) => {
     const removed = automodAdminRepo.removeExemption(scope, input);
     return removed ? 'removed' : 'not-present';
+  },
+  // One-click suppression from the review queue (Slice 9): the repo's
+  // `addAllowlistPhrase` is a bare `INSERT` that throws on a duplicate, so
+  // the pre-check against the hydrated rule's allowlist is load-bearing.
+  addAutomodAllowlistPhrase: (input) => {
+    if (!automodRuleRepo.ruleExists(scope, input.ruleId)) return 'no-such-rule';
+    if (automodRuleRepo.findRuleKindAndConfig(scope, input.ruleId)?.kind !== 'keyword_filter') {
+      return 'wrong-kind';
+    }
+    // Canonicalised before comparing and storing: obscenity lower-cases the
+    // input and searches it for the raw whitelisted term, so a stored phrase
+    // with any uppercase letter (or stray spacing) could never match.
+    const phrase = input.phrase.toLowerCase().trim().replace(/\s+/g, ' ');
+    const stored = automodRuleRepo.findRuleIncludingDisabled(scope, input.ruleId);
+    if (stored?.allowlist.includes(phrase)) return 'already-present';
+    automodRuleRepo.addAllowlistPhrase(scope, { ruleId: input.ruleId, phrase });
+    return 'added';
   },
 
   setRoute: (input) =>
@@ -619,6 +640,9 @@ const automodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
   reviewedCounts: Readonly<Record<string, number>>,
+  verdicts: Readonly<
+    Record<string, { falsePositive: number; truePositive: number; unclear: number }>
+  >,
 ) => ({
   ruleId: rule.ruleId,
   kind: rule.kind,
@@ -638,6 +662,7 @@ const automodRuleSummary = (
   updatedAt: rule.updatedAt,
   matchCount: matchCounts[rule.ruleId] ?? 0,
   reviewedCount: reviewedCounts[rule.ruleId] ?? 0,
+  verdicts: verdicts[rule.ruleId] ?? { falsePositive: 0, truePositive: 0, unclear: 0 },
 });
 
 /** The case projection, shared by the three case reads. */

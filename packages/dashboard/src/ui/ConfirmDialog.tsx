@@ -5,7 +5,11 @@ import { Button } from './Button.js';
 /**
  * A destructive or dangerous action states its exact scope before it can be
  * confirmed (`docs/06`). Radix supplies the focus trap, escape handling and
- * ARIA wiring; escape and the backdrop both cancel.
+ * ARIA wiring; escape and the backdrop both cancel. The optional `children`
+ * render between the description and the buttons, outside
+ * `Dialog.Description` — an ARIA description must not contain interactive
+ * content, so a dialog that needs a form control (the review page's
+ * suppression value) puts it here.
  */
 export function ConfirmDialog({
   open,
@@ -16,6 +20,7 @@ export function ConfirmDialog({
   busy,
   onConfirm,
   onCancel,
+  children,
 }: {
   readonly open: boolean;
   readonly title: string;
@@ -25,6 +30,7 @@ export function ConfirmDialog({
   readonly busy?: boolean;
   readonly onConfirm: () => void;
   readonly onCancel: () => void;
+  readonly children?: ReactNode;
 }): ReactElement {
   return (
     <Dialog.Root open={open} onOpenChange={(next) => !next && onCancel()}>
@@ -35,6 +41,7 @@ export function ConfirmDialog({
           <Dialog.Description asChild>
             <div className="mt-2 text-sm">{scope}</div>
           </Dialog.Description>
+          {children}
           <div className="mt-4 flex justify-end gap-2">
             <Button onClick={onCancel} busy={busy === true}>
               Cancel

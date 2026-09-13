@@ -146,7 +146,6 @@ describe('CasePage', () => {
         refusalReason: undefined,
         actorId: 'mod-1',
         trace: '{"step":"second"}',
-        fixtureId: undefined,
       },
       {
         eventId: 'event-old',
@@ -161,7 +160,6 @@ describe('CasePage', () => {
         refusalReason: 'dry-run',
         actorId: undefined,
         trace: '{"step":"first"}',
-        fixtureId: undefined,
       },
     ],
   });

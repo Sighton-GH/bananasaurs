@@ -21,7 +21,7 @@ export interface ModCase {
 export const CASES_DEGRADED =
   'Gateway disconnected: this list is served from the database and may be behind Discord.';
 
-const statusBadge = (status: ModCase['status']) =>
+export const statusBadge = (status: ModCase['status']) =>
   status === 'open' ? <Badge tone="hold">open</Badge> : <Badge>closed</Badge>;
 
 /**

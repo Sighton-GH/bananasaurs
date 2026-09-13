@@ -38,6 +38,13 @@ export type RuleMode = 'test' | 'observe' | 'enforce';
 
 export type CutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
 
+/** The verdict split for one rule — mirrors `OpsVerdictCounts`. */
+export interface VerdictCounts {
+  readonly falsePositive: number;
+  readonly truePositive: number;
+  readonly unclear: number;
+}
+
 /** Every `AdminRule` field plus the two counts the cutover board reads. */
 export interface RuleSummary {
   readonly ruleId: string;
@@ -58,6 +65,8 @@ export interface RuleSummary {
   readonly updatedAt: number;
   readonly matchCount: number;
   readonly reviewedCount: number;
+  /** The verdict split for this rule — zeros when the rule has none. */
+  readonly verdicts: VerdictCounts;
 }
 
 export interface RuleExemption {
@@ -169,3 +178,109 @@ export const modeScopeSentence = (
 /** Whole days since the observe clock started, or `null` when it never did. */
 export const daysObserved = (observeStartedAt: number | null, now: number): number | null =>
   observeStartedAt === null ? null : Math.floor((now - observeStartedAt) / DAY_MS);
+
+/** A human verdict on a match, as `POST /api/automod/review/:eventId/verdict` records it (Slice 9). */
+export type Verdict = 'false_positive' | 'true_positive' | 'unclear';
+
+/**
+ * One Bananasaurs match nobody has ruled on yet — mirror of
+ * `OpsReviewableMatch` in `packages/core/src/ops/ports.ts`.
+ */
+export interface ReviewableMatch {
+  readonly eventId: string;
+  readonly ruleId: string;
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string;
+  readonly matchedSnippet: string;
+  readonly actionTaken: string;
+  /** Raw JSON, rendered behind a `<details>`; `undefined` should not occur but is not trusted not to. */
+  readonly trace: string | undefined;
+  /** The fixture's whole message, when one was captured; `undefined` once `/forgetme` has removed it. */
+  readonly fixtureContent: string | undefined;
+}
+
+/** A native Discord AutoMod decision nobody has ruled on — mirror of `OpsNativeHit`. */
+export interface NativeHit {
+  readonly eventId: string;
+  readonly ruleId: string;
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string;
+  readonly matchedSnippet: string;
+  readonly actionTaken: string;
+}
+
+/** The `GET /api/automod/review` body. */
+export interface ReviewQueue {
+  readonly matches: readonly ReviewableMatch[];
+  readonly nativeHits: readonly NativeHit[];
+  readonly nativeBlocked: number;
+  readonly verdicts: Record<string, VerdictCounts>;
+}
+
+/**
+ * Kinds whose observe stream native AutoMod's three default rules filter
+ * first (spec F3, PR-56): mention spam, spam content, and flagged words
+ * overlap `mention_spam`, `rapid_spam`/`duplicate_message` and
+ * `keyword_filter` respectively. Used to decide whether the F3.2 warning is
+ * relevant to what is in view.
+ */
+export const NATIVE_OVERLAP_KINDS: readonly RuleKind[] = [
+  'keyword_filter',
+  'mention_spam',
+  'rapid_spam',
+  'duplicate_message',
+];
+
+/** What a one-click suppression narrows, as `POST /api/automod/rules/:ruleId/suppress` takes it. */
+export type SuppressionKind =
+  'allowlist_phrase' | 'invite_code' | 'link_domain' | 'channel_exemption';
+
+/** The value a suppression should act on: the trace's `matchedOn` (the invite code, the host, the configured term — ADR 0041 R-8) when the trace carries one, else the snippet. */
+export function suppressionPrefill(match: {
+  readonly trace: string | undefined;
+  readonly matchedSnippet: string;
+}): string {
+  if (match.trace !== undefined) {
+    try {
+      const parsed = JSON.parse(match.trace) as { matchedOn?: unknown };
+      if (typeof parsed.matchedOn === 'string' && parsed.matchedOn.length > 0) {
+        return parsed.matchedOn;
+      }
+    } catch {
+      // A trace that is not JSON carries no `matchedOn` — fall through.
+    }
+  }
+  return match.matchedSnippet;
+}
+
+/**
+ * The one-click suppression appropriate to a predicate kind (spec Slice 9),
+ * or `undefined` when the honest answer is "edit the configuration" — a
+ * `regex` rule's pattern cannot be narrowed from a single match without
+ * inventing what the narrower pattern should be (PR-55).
+ */
+export const suppressionFor = (
+  kind: RuleKind,
+):
+  | { readonly kind: SuppressionKind; readonly label: string; readonly prefillFromSnippet: boolean }
+  | undefined => {
+  switch (kind) {
+    case 'keyword_filter':
+      return { kind: 'allowlist_phrase', label: 'Allow this phrase', prefillFromSnippet: true };
+    case 'invite':
+      return { kind: 'invite_code', label: 'Allow this invite code', prefillFromSnippet: true };
+    case 'link_domain':
+      return { kind: 'link_domain', label: 'Allow this domain', prefillFromSnippet: true };
+    case 'caps':
+    case 'emoji':
+    case 'attachment_type':
+    case 'mention_spam':
+    case 'rapid_spam':
+    case 'duplicate_message':
+      return { kind: 'channel_exemption', label: 'Exempt a channel', prefillFromSnippet: false };
+    case 'regex':
+      return undefined;
+  }
+};

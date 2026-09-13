@@ -7,12 +7,15 @@ import { openOrResolveCase, recordCaseEvent } from './mod-cases.js';
 import { recordVerdict } from './mod-match-reviews.js';
 import {
   countMatchesByRule,
+  countNativeBlocked,
   countReviewedByRule,
+  countVerdictsByRule,
   findCase,
   findRule,
   listExemptions,
   listRecentCases,
   listRules,
+  listUnreviewedNativeHits,
   removeExemption,
 } from './automod-admin.js';
 
@@ -262,5 +265,210 @@ describe('automod admin repo', () => {
       status: 'open',
     });
     expect(findCase(scopeB, first.caseId)).toBeUndefined();
+  });
+});
+
+describe('listUnreviewedNativeHits', () => {
+  const seedNative = (
+    s: ReturnType<typeof t.scopes.forGuild>,
+    input: {
+      readonly eventId: string;
+      readonly ruleId?: string;
+      readonly memberId?: string;
+      readonly at: number;
+      readonly actionTaken?:
+        'native_blocked' | 'native_timeout' | 'native_alerted' | 'native_blocked_interaction';
+    },
+  ): void => {
+    const memberId = input.memberId ?? MEMBER_1;
+    const { caseId } = openOrResolveCase(s, { memberId, now: input.at });
+    recordCaseEvent(s, {
+      eventId: input.eventId,
+      caseId,
+      ruleId: input.ruleId ?? 'native:123',
+      memberId,
+      at: input.at,
+      matchedCategory: 'keyword',
+      matchedSnippet: 'snippet',
+      actionTaken: input.actionTaken ?? 'native_blocked',
+    });
+  };
+
+  it('returns only unreviewed native events, oldest first, honouring limit', () => {
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    seedNative(scopeA, { eventId: 'native-old', at: 1000 });
+    seedNative(scopeA, { eventId: 'native-new', at: 3000 });
+
+    // A Bananasaurs predicate match (with a trace) is not a native hit.
+    const { caseId } = openOrResolveCase(scopeA, { memberId: MEMBER_1, now: 2000 });
+    recordCaseEvent(scopeA, {
+      eventId: 'bananasaurs-traced',
+      caseId,
+      ruleId: 'rule-a',
+      memberId: MEMBER_1,
+      at: 2000,
+      matchedCategory: 'c',
+      matchedSnippet: 's',
+      actionTaken: 'would_delete',
+      trace: '{"kind":"keyword_filter"}',
+    });
+
+    // A native event with a verdict is excluded.
+    seedNative(scopeA, { eventId: 'native-reviewed', at: 500 });
+    recordVerdict(scopeA, {
+      eventId: 'native-reviewed',
+      verdict: 'false_positive',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 4000,
+    });
+
+    // The other guild reuses the same event ids: isolation is on (guildId, eventId).
+    const scopeB = t.scopes.forGuild(GUILD_B);
+    seedNative(scopeB, { eventId: 'native-old', at: 1000 });
+    seedNative(scopeB, { eventId: 'native-only-b', at: 1500 });
+
+    const limited = listUnreviewedNativeHits(scopeA, { limit: 1 });
+    expect(limited.map((h) => h.eventId)).toEqual(['native-old']);
+
+    const all = listUnreviewedNativeHits(scopeA, { limit: 10 });
+    expect(all.map((h) => h.eventId)).toEqual(['native-old', 'native-new']);
+    expect(all[0]).toMatchObject({
+      eventId: 'native-old',
+      ruleId: 'native:123',
+      memberId: MEMBER_1,
+      at: 1000,
+      matchedCategory: 'keyword',
+      matchedSnippet: 'snippet',
+      actionTaken: 'native_blocked',
+    });
+
+    const forB = listUnreviewedNativeHits(scopeB, { limit: 10 });
+    expect(forB.map((h) => h.eventId)).toEqual(['native-old', 'native-only-b']);
+  });
+});
+
+describe('countVerdictsByRule', () => {
+  it('counts verdicts per rule and ignores the other guild', () => {
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    const { caseId } = openOrResolveCase(scopeA, { memberId: MEMBER_1, now: 1000 });
+    const seed = (eventId: string, ruleId: string): void => {
+      recordCaseEvent(scopeA, {
+        eventId,
+        caseId,
+        ruleId,
+        memberId: MEMBER_1,
+        at: 1000,
+        matchedCategory: 'c',
+        matchedSnippet: 's',
+        actionTaken: 'would_delete',
+      });
+    };
+    seed('e1', 'rule-a');
+    seed('e2', 'rule-a');
+    seed('e3', 'rule-a');
+    seed('e4', 'rule-a');
+    seed('e5', 'rule-b');
+    recordVerdict(scopeA, {
+      eventId: 'e1',
+      verdict: 'false_positive',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 2000,
+    });
+    recordVerdict(scopeA, {
+      eventId: 'e2',
+      verdict: 'false_positive',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 2000,
+    });
+    recordVerdict(scopeA, {
+      eventId: 'e3',
+      verdict: 'true_positive',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 2000,
+    });
+    recordVerdict(scopeA, {
+      eventId: 'e4',
+      verdict: 'unclear',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 2000,
+    });
+
+    // Colliding eventId in the other guild with its own verdict must not move A's counts.
+    const scopeB = t.scopes.forGuild(GUILD_B);
+    const { caseId: caseB } = openOrResolveCase(scopeB, { memberId: MEMBER_1, now: 1000 });
+    recordCaseEvent(scopeB, {
+      eventId: 'e1',
+      caseId: caseB,
+      ruleId: 'rule-other',
+      memberId: MEMBER_1,
+      at: 1000,
+      matchedCategory: 'c',
+      matchedSnippet: 's',
+      actionTaken: 'would_delete',
+    });
+    recordVerdict(scopeB, {
+      eventId: 'e1',
+      verdict: 'true_positive',
+      reviewedBy: 'cli:bryan',
+      reviewedAt: 2000,
+    });
+
+    // Rule B has an event but no verdicts, so it has no key at all.
+    expect(countVerdictsByRule(scopeA)).toEqual({
+      'rule-a': { falsePositive: 2, truePositive: 1, unclear: 1 },
+    });
+    expect(countVerdictsByRule(scopeB)).toEqual({
+      'rule-other': { falsePositive: 0, truePositive: 1, unclear: 0 },
+    });
+  });
+});
+
+describe('countNativeBlocked', () => {
+  it('counts blocking native actions and ignores alerts and the other guild', () => {
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    const { caseId } = openOrResolveCase(scopeA, { memberId: MEMBER_1, now: 1000 });
+    const seed = (
+      eventId: string,
+      actionTaken:
+        | 'native_blocked'
+        | 'native_timeout'
+        | 'native_alerted'
+        | 'native_blocked_interaction'
+        | 'would_delete',
+    ): void => {
+      recordCaseEvent(scopeA, {
+        eventId,
+        caseId,
+        ruleId: 'native:123',
+        memberId: MEMBER_1,
+        at: 1000,
+        matchedCategory: 'c',
+        matchedSnippet: 's',
+        actionTaken,
+      });
+    };
+    seed('n1', 'native_blocked');
+    seed('n2', 'native_blocked');
+    seed('n3', 'native_timeout');
+    seed('n4', 'native_alerted');
+    seed('n5', 'native_blocked_interaction');
+    seed('b1', 'would_delete');
+
+    const scopeB = t.scopes.forGuild(GUILD_B);
+    const { caseId: caseB } = openOrResolveCase(scopeB, { memberId: MEMBER_1, now: 1000 });
+    // Colliding eventId with guild A's 'n1': a missing guild_id condition would double-count.
+    recordCaseEvent(scopeB, {
+      eventId: 'n1',
+      caseId: caseB,
+      ruleId: 'native:123',
+      memberId: MEMBER_1,
+      at: 1000,
+      matchedCategory: 'c',
+      matchedSnippet: 's',
+      actionTaken: 'native_blocked',
+    });
+
+    expect(countNativeBlocked(scopeA)).toBe(4);
+    expect(countNativeBlocked(scopeB)).toBe(1);
   });
 });

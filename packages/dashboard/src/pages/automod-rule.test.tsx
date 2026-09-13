@@ -39,6 +39,7 @@ function detail(overrides: Partial<RuleDetail> = {}): RuleDetail {
     updatedAt: NOW - 3 * DAY_MS,
     matchCount: 12,
     reviewedCount: 5,
+    verdicts: { falsePositive: 0, truePositive: 0, unclear: 0 },
     exemptions: [],
     terms: [],
     allowlist: [],

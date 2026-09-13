@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, like, sql } from 'drizzle-orm';
 import {
   modCaseEvents,
   modCases,
@@ -218,4 +218,108 @@ export const findCase = (scope: GuildScope, caseId: string): ModCase | undefined
           escalationTier: row.escalationTier,
           status: row.status as ModCase['status'],
         };
+  });
+
+/** Native AutoMod decisions (rule_id 'native:…') nobody has ruled on, oldest first. No trace, no fixture: the evidence is the snippet Discord sent. */
+export interface NativeHit {
+  readonly eventId: string;
+  readonly ruleId: string; // 'native:<discord rule id>'
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string; // Discord's trigger type
+  readonly matchedSnippet: string;
+  readonly actionTaken: string; // one of the native_* values
+}
+
+export const listUnreviewedNativeHits = (
+  scope: GuildScope,
+  query: { readonly limit: number },
+): readonly NativeHit[] =>
+  read(scope, (db) =>
+    db
+      .select({
+        eventId: modCaseEvents.eventId,
+        ruleId: modCaseEvents.ruleId,
+        memberId: modCaseEvents.memberId,
+        at: modCaseEvents.at,
+        matchedCategory: modCaseEvents.matchedCategory,
+        matchedSnippet: modCaseEvents.matchedSnippet,
+        actionTaken: modCaseEvents.actionTaken,
+      })
+      .from(modCaseEvents)
+      .leftJoin(
+        modMatchReviews,
+        and(
+          eq(modMatchReviews.guildId, modCaseEvents.guildId),
+          eq(modMatchReviews.eventId, modCaseEvents.eventId),
+        ),
+      )
+      .where(
+        scope.only(
+          modCaseEvents,
+          like(modCaseEvents.ruleId, 'native:%'),
+          isNull(modMatchReviews.eventId),
+        ),
+      )
+      .orderBy(asc(modCaseEvents.at), sql`mod_case_events.rowid`)
+      .limit(query.limit)
+      .all(),
+  );
+
+export interface VerdictCounts {
+  readonly falsePositive: number;
+  readonly truePositive: number;
+  readonly unclear: number;
+}
+
+/** Verdicts per rule, attributed through the event each verdict names — the numerator Release 2's gate is written against. Rules with no verdicts are absent. */
+export const countVerdictsByRule = (scope: GuildScope): Readonly<Record<string, VerdictCounts>> =>
+  read(scope, (db) => {
+    const rows = db
+      .select({
+        ruleId: modCaseEvents.ruleId,
+        verdict: modMatchReviews.verdict,
+        n: sql<number>`count(*)`,
+      })
+      .from(modMatchReviews)
+      .innerJoin(
+        modCaseEvents,
+        and(
+          eq(modMatchReviews.guildId, modCaseEvents.guildId),
+          eq(modMatchReviews.eventId, modCaseEvents.eventId),
+        ),
+      )
+      .where(scope.only(modMatchReviews))
+      .groupBy(modCaseEvents.ruleId, modMatchReviews.verdict)
+      .all();
+    const out: Record<string, { falsePositive: number; truePositive: number; unclear: number }> =
+      {};
+    for (const row of rows) {
+      const counts = out[row.ruleId] ?? { falsePositive: 0, truePositive: 0, unclear: 0 };
+      if (row.verdict === 'false_positive') counts.falsePositive += Number(row.n);
+      else if (row.verdict === 'true_positive') counts.truePositive += Number(row.n);
+      else if (row.verdict === 'unclear') counts.unclear += Number(row.n);
+      out[row.ruleId] = counts;
+    }
+    return out;
+  });
+
+/** How many native AutoMod decisions that stopped a message this guild has recorded — `native_blocked`, `native_timeout` and `native_blocked_interaction`; `native_alerted` lets the message through and is excluded. Nonzero means the observe window measures a stream native already filtered (spec F3.2). */
+export const countNativeBlocked = (scope: GuildScope): number =>
+  read(scope, (db) => {
+    const row = db
+      .select({ n: sql<number>`count(*)` })
+      .from(modCaseEvents)
+      .where(
+        scope.only(
+          modCaseEvents,
+          inArray(modCaseEvents.actionTaken, [
+            'native_blocked',
+            'native_timeout',
+            'native_blocked_interaction',
+          ]),
+        ),
+      )
+      .get();
+    return row === undefined ? 0 : Number(row.n);
   });

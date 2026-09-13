@@ -7,8 +7,6 @@ import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import type { ModCase } from './cases.js';
 
-export type { ModCase };
-
 /** One event of a case, as `GET /api/mod/cases/:caseId` returns it. */
 export interface ModCaseEvent {
   readonly eventId: string;
@@ -23,7 +21,6 @@ export interface ModCaseEvent {
   readonly refusalReason: string | undefined;
   readonly actorId: string | undefined;
   readonly trace: string | undefined;
-  readonly fixtureId: string | undefined;
 }
 
 /** One case with its events, oldest first as the page renders them. */

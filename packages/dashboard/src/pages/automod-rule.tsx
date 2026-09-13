@@ -418,8 +418,8 @@ function RuleDetailView({
                 ))}
                 {detail.allowlist.length > 0 && <p>Allowlist: {detail.allowlist.join(', ')}</p>}
                 <p className="mt-1 text-ink-muted">
-                  The keyword word list has no editor yet — it is seeded, and Slice 9&apos;s review
-                  screen adds allowlist terms.
+                  The keyword word list is seeded and has no editor; the Review page adds allowlist
+                  phrases from real matches.
                 </p>
               </div>
             )}
