@@ -196,19 +196,57 @@ describe('automod rules repo', () => {
   });
 
   describe('findRuleIncludingDisabled', () => {
-    it('returns a disabled rule and undefined for the other guild', () => {
+    it('returns a disabled rule, and each guild sees only its own colliding r1', () => {
       const other = parseGuildId('444444444444444444');
       upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 0 });
 
       const scope = t.scopes.forGuild(GUILD);
       createRule(scope, { ruleId: 'r1', kind: 'caps', name: 'x', config: '{}', now: 1000 });
       setRuleMode(scope, { ruleId: 'r1', enabled: false, now: 2000 });
+      addAllowlistPhrase(scope, { ruleId: 'r1', phrase: 'our-phrase' });
+
+      const otherScope = t.scopes.forGuild(other);
+      createRule(otherScope, { ruleId: 'r1', kind: 'caps', name: 'y', config: '{}', now: 1000 });
+      addAllowlistPhrase(otherScope, { ruleId: 'r1', phrase: 'their-phrase' });
 
       // Disabled, so invisible to the subscriber's read — but still found here.
       expect(listEnabledRules(scope)).toEqual([]);
       expect(findRuleIncludingDisabled(scope, 'r1')).toMatchObject({ ruleId: 'r1', kind: 'caps' });
+      expect(findRuleIncludingDisabled(scope, 'r1')?.allowlist).toEqual(['our-phrase']);
       expect(findRuleIncludingDisabled(scope, 'missing')).toBeUndefined();
-      expect(findRuleIncludingDisabled(t.scopes.forGuild(other), 'r1')).toBeUndefined();
+      expect(findRuleIncludingDisabled(otherScope, 'r1')).toMatchObject({
+        ruleId: 'r1',
+        kind: 'caps',
+      });
+      expect(findRuleIncludingDisabled(otherScope, 'r1')?.allowlist).toEqual(['their-phrase']);
+    });
+
+    it('writes an allowlist phrase under one guild without touching the colliding r1', () => {
+      const other = parseGuildId('444444444444444444');
+      upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 0 });
+
+      const scope = t.scopes.forGuild(GUILD);
+      createRule(scope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'x',
+        config: '{}',
+        now: 1000,
+      });
+      const otherScope = t.scopes.forGuild(other);
+      createRule(otherScope, {
+        ruleId: 'r1',
+        kind: 'keyword_filter',
+        name: 'y',
+        config: '{}',
+        now: 1000,
+      });
+      addAllowlistPhrase(otherScope, { ruleId: 'r1', phrase: 'their-phrase' });
+
+      addAllowlistPhrase(scope, { ruleId: 'r1', phrase: 'our-phrase' });
+
+      expect(findRuleIncludingDisabled(scope, 'r1')?.allowlist).toEqual(['our-phrase']);
+      expect(findRuleIncludingDisabled(otherScope, 'r1')?.allowlist).toEqual(['their-phrase']);
     });
   });
 
