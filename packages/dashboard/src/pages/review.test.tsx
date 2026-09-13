@@ -305,6 +305,9 @@ describe('ReviewPage', () => {
     const input = within(dialog).getByLabelText('Value');
     expect((input as HTMLInputElement).value).toBe('badword');
     expect(dialog.textContent).toContain("Adds 'badword' to kw-one's allowlist.");
+    fireEvent.change(input, { target: { value: 'free speech' } });
+    expect(dialog.textContent).toContain('free speech');
+    expect(dialog.textContent).not.toContain('badword');
     const before = mock.mock.calls.filter(
       (c) => (c[0] as string) === '/api/automod/review?limit=50',
     ).length;
@@ -317,7 +320,7 @@ describe('ReviewPage', () => {
         (c[1] as RequestInit).method === 'POST',
     );
     expect(post).toBeTruthy();
-    expect(bodyOf(post!)).toEqual({ kind: 'allowlist_phrase', value: 'badword' });
+    expect(bodyOf(post!)).toEqual({ kind: 'allowlist_phrase', value: 'free speech' });
     await screen.findByText('Phrase allowed');
     const after = mock.mock.calls.filter(
       (c) => (c[0] as string) === '/api/automod/review?limit=50',
