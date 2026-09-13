@@ -64,7 +64,7 @@ const suppressBodySchema = z.object({
   value: z.string().min(1).max(200),
 });
 
-const INVITE_CODE_PATTERN = /^[A-Za-z0-9-]{2,32}$/;
+const INVITE_CODE_PATTERN = /^[\w-]{2,64}$/;
 const LINK_DOMAIN_PATTERN = /^[a-z0-9.-]{1,253}$/;
 
 export const registerAutomodRoutes = (

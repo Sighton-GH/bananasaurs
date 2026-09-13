@@ -1163,6 +1163,22 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
     });
   });
 
+  it('allowlists a long invite code with an underscore, like the predicate matches', async () => {
+    grant(['config.write']);
+    createKindRule(GUILD, 'inv-one', 'invite');
+    const code = `club_${'x'.repeat(35)}`;
+    expect(code).toHaveLength(40);
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/automod/rules/inv-one/suppress',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { kind: 'invite_code', value: code },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true, outcome: 'added' });
+  });
+
   it('suppresses with a link domain', async () => {
     grant(['config.write']);
     createKindRule(GUILD, 'link-one', 'link_domain');
