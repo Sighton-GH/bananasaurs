@@ -237,6 +237,24 @@ export const NATIVE_OVERLAP_KINDS: readonly RuleKind[] = [
 export type SuppressionKind =
   'allowlist_phrase' | 'invite_code' | 'link_domain' | 'channel_exemption';
 
+/** The value a suppression should act on: the trace's `matchedOn` (the invite code, the host, the configured term — ADR 0041 R-8) when the trace carries one, else the snippet. */
+export function suppressionPrefill(match: {
+  readonly trace: string | undefined;
+  readonly matchedSnippet: string;
+}): string {
+  if (match.trace !== undefined) {
+    try {
+      const parsed = JSON.parse(match.trace) as { matchedOn?: unknown };
+      if (typeof parsed.matchedOn === 'string' && parsed.matchedOn.length > 0) {
+        return parsed.matchedOn;
+      }
+    } catch {
+      // A trace that is not JSON carries no `matchedOn` — fall through.
+    }
+  }
+  return match.matchedSnippet;
+}
+
 /**
  * The one-click suppression appropriate to a predicate kind (spec Slice 9),
  * or `undefined` when the honest answer is "edit the configuration" — a

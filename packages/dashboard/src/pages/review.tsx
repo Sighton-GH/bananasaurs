@@ -4,6 +4,7 @@ import { ApiError } from '../api.js';
 import {
   NATIVE_OVERLAP_KINDS,
   suppressionFor,
+  suppressionPrefill,
   type NativeHit,
   type ReviewableMatch,
   type ReviewQueue,
@@ -133,7 +134,7 @@ export function ReviewPage() {
         label: action.label,
         prefill: action.prefillFromSnippet,
       });
-      setSuppressValue(action.prefillFromSnippet ? match.matchedSnippet : '');
+      setSuppressValue(action.prefillFromSnippet ? suppressionPrefill(match) : '');
     },
     [],
   );

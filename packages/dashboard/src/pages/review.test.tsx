@@ -325,6 +325,59 @@ describe('ReviewPage', () => {
     expect(after).toBeGreaterThan(before);
   });
 
+  it('prefills an invite suppression from the trace matchedOn, not the snippet', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: {
+          matches: [
+            match({
+              eventId: 'evt-inv',
+              ruleId: 'inv-one',
+              matchedSnippet: 'discord.gg/abc123',
+              trace: JSON.stringify({ matchedOn: 'abc123', kind: 'invite' }),
+            }),
+          ],
+          nativeHits: [],
+          nativeBlocked: 0,
+          verdicts: {},
+        },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule({ ruleId: 'inv-one', kind: 'invite' })] } },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow this invite code' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Allow this invite code?' });
+    const inviteInput = within(dialog).getByLabelText('Value');
+    expect((inviteInput as HTMLInputElement).value).toBe('abc123');
+  });
+
+  it('falls back to the snippet when the trace carries no matchedOn', async () => {
+    stubFetch([
+      {
+        url: '/api/automod/review?limit=50',
+        body: {
+          matches: [match({ matchedSnippet: 'Ass', trace: undefined })],
+          nativeHits: [],
+          nativeBlocked: 0,
+          verdicts: {},
+        },
+      },
+      { url: '/api/automod/rules', body: { rules: [rule()] } },
+    ]);
+    renderAt('/review');
+    await screen.findByRole('heading', { level: 1, name: 'Review' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow this phrase' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Allow this phrase?' });
+    const fallbackInput = within(dialog).getByLabelText('Value');
+    expect((fallbackInput as HTMLInputElement).value).toBe('Ass');
+  });
+
   it('renders a "Narrow the pattern" link to the rule for a regex match', async () => {
     stubFetch([
       {
