@@ -53,7 +53,7 @@ bind every task.
   write uses `guard.require`.
 - **Validation (rule 3):** every request body passes a Zod schema; a rule
   `config` body is validated with core's `validateRuleConfig(kind, json)`
-  before any write and a failure returns 400 with the issues. `ruleId`,
+  before any write and a failure returns 400 with its `reason` and `detail`. `ruleId`,
   `caseId`, `memberId` path params are validated too (`ruleId`: `/^[a-z0-9][a-z0-9-]{0,63}$/`;
   `memberId` and exemption ids: `snowflakeIdSchema` from `@bananasaurs/core`;
   `caseId`: `z.string().uuid()`).
@@ -119,7 +119,7 @@ packages/dashboard/src/pages/member.tsx              (Task 7)  history
 
 ```ts
 import type { CutoverState, RuleKind, RuleMode } from './automod-rules.js';
-import type { ModCase, ModCaseEvent } from './mod-cases.js';
+import type { ModCase } from './mod-cases.js';
 
 export interface AdminRule {
   readonly ruleId: string;
@@ -197,7 +197,8 @@ expected: fails to import the module.
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { modCaseEvents, modCases, modMatchReviews, modRuleExemptions, modRules } from '../schema.js';
 import type { GuildScope } from '../scope.js';
-import { read, write } from '../db.js';
+import { read, write } from '../write.js';
+import type { GuildScope } from '../scope.js';
 import type { CutoverState, RuleKind, RuleMode } from './automod-rules.js';
 import type { ModCase } from './mod-cases.js';
 
@@ -347,12 +348,10 @@ export const findCase = (scope: GuildScope, caseId: string): ModCase | undefined
   });
 ```
 
-Check `scope.only`'s signature in `packages/storage/src/scope.ts` before
-writing — if it requires a second argument, pass `sql\`1=1\`` where no extra
-filter is needed, or use whatever idiom `listEnabledRules`'s neighbours use
-for "this guild, no other filter" (`rg -n "scope.only\(" packages/storage/src/repos/mod-cases.ts`).
-Check `read`/`write`'s import path (`rg -n "^import .* from '\.\./db" packages/storage/src/repos/mod-cases.ts`)
-and the `modMatchReviews.guildId` column name in `schema.ts`.
+`scope.only(table)` with no extra condition is the repository idiom for
+"this guild, nothing else" (`packages/storage/src/scope.ts`); `read` and
+`write` come from `../write.js` as in every other repo. Check the
+`modMatchReviews.guildId` column name in `schema.ts` before writing the join.
 
 - [ ] **Step 3: Run the tests, then the gates, then commit**
 
@@ -382,41 +381,96 @@ git commit -m "feat(storage): automod admin queries for the dashboard (Slice 8 t
 **Interfaces — Produces (add to `OpsPorts`, with doc comments in the file's style):**
 
 ```ts
-export interface OpsAutomodRuleSummary extends AdminRule {   // import type { AdminRule } from '@bananasaurs/storage'
+// `packages/core` may not import from `@bananasaurs/storage` (ADR 0014;
+// `eslint.config.js` boundary rules) — every shape below is re-declared in
+// core, the way `AutomodRule` and `FixtureRecord` already are, and the daemon
+// wiring maps storage rows onto it field by field.
+export type OpsRuleMode = 'test' | 'observe' | 'enforce';
+export type OpsCutoverState = 'not_started' | 'observing' | 'ready' | 'cutover' | 'rolled_back';
+export interface OpsAutomodRuleSummary {
+  readonly ruleId: string;
+  readonly kind: RuleKind;                 // core's own RuleKind from '../automod/predicates/types.js'
+  readonly name: string;
+  readonly mode: OpsRuleMode;
+  readonly enabled: boolean;
+  readonly config: string;
+  readonly cutoverState: OpsCutoverState;
+  readonly observeStartedAt: number | null;
+  readonly legacyRuleRef: string | null;
+  readonly countsAsViolation: boolean;
+  readonly maxFalsePositiveRate: number;
+  readonly minReviewedMatches: number;
+  readonly enforceSignedOffBy: string | null;
+  readonly enforceSignedOffAt: number | null;
+  readonly createdAt: number;
+  readonly updatedAt: number;
   readonly matchCount: number;
   readonly reviewedCount: number;
 }
+export type OpsEnforcementRefusal =
+  | { readonly reason: 'cutover-state'; readonly state: string }
+  | { readonly reason: 'false-positive'; readonly falsePositives: number; readonly reviewed: number }
+  | { readonly reason: 'rate-too-high'; readonly rate: number; readonly threshold: number }
+  | { readonly reason: 'low-volume-unsigned'; readonly reviewed: number; readonly required: number };
+export type OpsEnforcementEligibility = { readonly ok: true } | { readonly ok: false; readonly refusal: OpsEnforcementRefusal };
 export interface OpsAutomodRuleDetail extends OpsAutomodRuleSummary {
   readonly exemptions: readonly { readonly exemptType: 'role' | 'channel'; readonly exemptId: string }[];
   readonly terms: readonly { readonly text: string; readonly categoryId: string }[];
   readonly allowlist: readonly string[];
   readonly inviteAllowlist: readonly { readonly code: string; readonly label: string }[];
   readonly linkDomains: readonly { readonly domain: string; readonly listType: 'allow' | 'deny' }[];
-  readonly eligibility: EnforcementEligibility;                 // from @bananasaurs/storage
+  readonly eligibility: OpsEnforcementEligibility;
 }
-export interface OpsCaseDetail { readonly case: ModCase; readonly events: readonly ModCaseEvent[] }   // types from @bananasaurs/storage
+export interface OpsCase {
+  readonly caseId: string;
+  readonly memberId: string;
+  readonly openedAt: number;
+  readonly violationCount: number;
+  readonly escalationTier: number;
+  readonly status: 'open' | 'closed';
+}
+export interface OpsCaseEvent {
+  readonly eventId: string;
+  readonly caseId: string;
+  readonly ruleId: string;
+  readonly memberId: string;
+  readonly at: number;
+  readonly matchedCategory: string;
+  readonly matchedSnippet: string;
+  readonly actionTaken: string;
+  readonly escalationAction: string | undefined;
+  readonly refusalReason: string | undefined;
+  readonly actorId: string | undefined;
+  readonly trace: string | undefined;
+  readonly fixtureId: string | undefined;
+}
+export interface OpsCaseDetail { readonly case: OpsCase; readonly events: readonly OpsCaseEvent[] }
+
 
 // members:
 listAutomodRules(): readonly OpsAutomodRuleSummary[];
 findAutomodRuleDetail(ruleId: string): OpsAutomodRuleDetail | undefined;
 createAutomodRule(input: { readonly ruleId: string; readonly kind: RuleKind; readonly name: string; readonly config: string }): 'created' | 'exists';
 setAutomodRuleConfig(input: { readonly ruleId: string; readonly config: string }): 'ok' | 'no-such-rule';
-setAutomodRuleMode(input: { readonly ruleId: string; readonly mode?: RuleMode; readonly enabled?: boolean }): EnforcementEligibility | 'no-such-rule';
+setAutomodRuleMode(input: { readonly ruleId: string; readonly mode?: OpsRuleMode; readonly enabled?: boolean }): OpsEnforcementEligibility | 'no-such-rule';
 addAutomodExemption(input: { readonly ruleId: string; readonly exemptType: 'role' | 'channel'; readonly exemptId: string }): 'added' | 'already-present' | 'no-such-rule';
 removeAutomodExemption(input: { readonly ruleId: string; readonly exemptType: 'role' | 'channel'; readonly exemptId: string }): 'removed' | 'not-present';
 runAutomodDryRun(ruleId: string): DryRunReport | 'no-such-rule';     // DryRunReport from '../automod/dry-run.js'
-listRecentCases(query: { readonly limit: number }): readonly ModCase[];
+listRecentCases(query: { readonly limit: number }): readonly OpsCase[];
 findCaseDetail(caseId: string): OpsCaseDetail | undefined;
-listCasesForMember(memberId: string): readonly ModCase[];
+listCasesForMember(memberId: string): readonly OpsCase[];
 ```
 
 - [ ] **Step 1: Types and members in `ports.ts`**, each with a doc comment
   saying which page consumes it. `createAutomodRule` checks `ruleExists`
   first and returns `'exists'`; `setAutomodRuleConfig` and
   `setAutomodRuleMode` check `ruleExists` and return `'no-such-rule'`;
-  `addAutomodExemption` catches the primary-key conflict and returns
-  `'already-present'` (look at how `addInviteAllowlistEntry` in
-  `wiring.ts` handles its `already-present` case and do the same).
+  `addAutomodExemption` checks `automodAdminRepo.listExemptions` first and
+  returns `'already-present'` when the pair is already there, otherwise
+  calls `addRoleExemption`/`addChannelExemption` (the existing
+  `addInviteAllowlistEntry` in `wiring.ts` detects its own already-present
+  case by comparing list lengths before and after; a pre-check is the same
+  idea one step earlier and never lets the INSERT throw).
   `runAutomodDryRun` uses `findRuleIncludingDisabled` → `toAutomodRule` →
   `runDryRun({ guildId, rule, fixtures: listFixtures(scope, {}) })` — a
   disabled rule **may** be dry-run from the dashboard (PR-47: an operator
@@ -429,9 +483,9 @@ listCasesForMember(memberId: string): readonly ModCase[];
 - [ ] **Step 3: `packages/http/src/test-support.ts`** — the same, except
   `runAutomodDryRun` returns `'no-such-rule'` when
   `automodRuleRepo.ruleExists` is false and otherwise a canned report
-  `{ ruleId, kind: rule.kind, usable: true, failure: undefined, threwCount: 0, abandoned: false, fixtures: [], matched: 0, agreed: 0, disagreed: 0, unlabelled: 0 }` —
-  read `DryRunReport`'s actual field list from `dry-run.ts` and fill every
-  field; the route test only asserts pass-through (`toAutomodRule` lives in
+  `{ ruleId, kind: rule.kind, usable: true, failure: undefined, threw: 0, corpusSize: 0, total: 0, matched: 0, falsePositives: 0, falseNegatives: 0, results: [] }`
+  (the real field list of `DryRunReport` in `packages/core/src/automod/dry-run.ts`;
+  re-read it and add any field this list misses); the route test only asserts pass-through (`toAutomodRule` lives in
   `apps/daemon` and this package may not import it).
 - [ ] **Step 4: `packages/core/src/ops/test-fixtures.ts`** — eleven
   `unstubbed('…')` entries.
@@ -463,19 +517,20 @@ git commit -m "feat(ops): automod admin and case ports, three implementations (S
 | --- | --- | --- | --- | --- | --- |
 | GET | `/api/automod/rules` | require | config.read | — | `{ rules: OpsAutomodRuleSummary[] }` |
 | GET | `/api/automod/rules/:ruleId` | require | config.read | — | `OpsAutomodRuleDetail` with `config` parsed to an object as `configObject` alongside the raw string |
-| POST | `/api/automod/rules` | requireFresh | config.write | `{ ruleId, kind: z.enum(RULE_KINDS), name: z.string().min(1).max(80), config: z.record(z.unknown()) }` | `{ ok: true }`; 409 `{ error: 'exists' }`; 400 `{ error: 'invalid-config', issues }` |
-| PUT | `/api/automod/rules/:ruleId/config` | require | config.write | `{ config: z.record(z.unknown()) }` | `{ ok: true }`; 404; 400 `invalid-config` |
+| POST | `/api/automod/rules` | requireFresh | config.write | `{ ruleId, kind: z.enum(RULE_KINDS), name: z.string().min(1).max(80), config: z.record(z.unknown()) }` | `{ ok: true }`; 409 `{ error: 'exists' }`; 400 `{ error: 'invalid-config', reason, detail }` |
+| PUT | `/api/automod/rules/:ruleId/config` | require | config.write | `{ config: z.record(z.unknown()) }` | `{ ok: true }`; 404; 400 `{ error: 'invalid-config', reason, detail }` |
 | POST | `/api/automod/rules/:ruleId/mode` | requireFresh | config.write | `{ mode?: z.enum(['test','observe','enforce']), enabled?: z.boolean() }` (at least one, `.refine`) | `{ ok: true }`; 404; 409 `{ error: 'not-eligible', refusal }` when eligibility `ok: false` |
 | POST | `/api/automod/rules/:ruleId/exemptions` | require | config.write | `{ exemptType: z.enum(['role','channel']), exemptId: snowflakeIdSchema }` | `{ ok: true, outcome: 'added' \| 'already-present' }`; 404 |
 | DELETE | `/api/automod/rules/:ruleId/exemptions/:exemptType/:exemptId` | require | config.write | — | `{ ok: true, outcome: 'removed' \| 'not-present' }` |
 | POST | `/api/automod/rules/:ruleId/dry-run` | require | config.read | — | the `DryRunReport`; 404 |
 
-`RULE_KINDS`: find the exported list of the ten kinds in core
-(`rg -n "RULE_KINDS|as const" packages/core/src/automod/predicates/registry.ts packages/storage/src/repos/automod-rules.ts`)
-and import it rather than retyping. `validateRuleConfig(kind, JSON.stringify(config))`
+`RULE_KINDS` is exported from `packages/core/src/automod/predicates/types.ts`
+(re-exported by `@bananasaurs/core` — check `packages/core/src/index.ts`, and
+add the export there if it is missing); import it rather than retyping. `validateRuleConfig(kind, JSON.stringify(config))`
 from `@bananasaurs/core` gates create and config; on `{ ok: false }` reply
-400 with `{ error: 'invalid-config', issues }` where `issues` is whatever the
-result carries (read `ConfigValidationResult`).
+400 with `{ error: 'invalid-config', reason, detail }` — `ConfigValidationResult`
+carries `reason` (`'unknown-kind' | 'no-predicate' | 'invalid-config'`) and a
+`detail` string; the dashboard renders `detail`.
 
 Audit rows: `automod_rule.created`, `automod_rule.config_set` (before: old
 config string; after: new), `automod_rule.mode_set` (before: `{ mode, enabled }`;
@@ -487,10 +542,11 @@ audit row.
   `write.test.ts` (real migrated database, `testPortsFor`, a session cookie
   from a real login; copy its `beforeEach`, `grant`, and login helpers). One
   `it` per row of the table plus: capability refused → 403; the fresh-session
-  routes return 401 `reauth-required` when the session is stale (see how
-  `write.test.ts` ages the session for the killswitch-off case); a config that
-  fails the kind's schema → 400 with issues and **no** change to the stored
-  config; `mode: 'enforce'` on a `not_started` rule → 409 with
+  routes return 401 `reauth-required` when the session is stale (age it the
+  way `write.test.ts` does inline: `clock += POLICY.reauthWindowMs + 1`); a
+  config that fails the kind's schema → 400 with `reason`/`detail` and **no**
+  change to the stored config; **a dry run of a disabled rule returns 200
+  with the report** (PR-47 — the workflow this slice exists to enable); `mode: 'enforce'` on a `not_started` rule → 409 with
   `refusal.reason === 'cutover-state'` and the row unchanged; the two-guild
   case: a rule created under guild A is 404 under a session for guild B.
 - [ ] **Step 2: Implement `automod.ts`**, following `write.ts`'s structure
@@ -587,7 +643,7 @@ export const OBSERVE_FLOOR_DAYS = 14;
   element is acceptable here, PR-49: the Radix Select is for Slice 9's
   per-row verdicts), config (a `<textarea>` seeded with `{}`; hint "JSON;
   validated against the kind's schema when you save"). Submit → `POST
-  /api/automod/rules`; 400 `invalid-config` renders the issues under the
+  /api/automod/rules`; 400 `invalid-config` renders its `detail` under the
   textarea via `Field`'s `error`; 409 → error "A rule with that id already
   exists."; success → toast "Rule created" and reload.
 - [ ] **Step 4: Cutover board** (`/cutover`). Purpose: "Where each rule stands
@@ -601,8 +657,9 @@ export const OBSERVE_FLOOR_DAYS = 14;
   `GET /api/automod/rules`; posts the create body exactly; renders 400 issues
   as the field error; empty state text. `cutover.test.tsx`: days observed
   computed from a fixed `now` (stub `Date.now` with `vi.setSystemTime`),
-  "of 14" appears only for an observing rule under the floor, sign-off
-  column shows by/at.
+  "of 14" appears only for an observing rule under the
+  floor, sign-off column shows by/at, and the Matches and Reviewed cells show
+  the stubbed counts.
 - [ ] **Step 6: Gates, commit**
 
 ```bash
@@ -635,15 +692,22 @@ error state naming the rule. Sections, top to bottom, each an `<h2>`:
    and an Enabled checkbox, with one "Apply mode" button. Clicking opens
    `ConfirmDialog` whose `scope` states, in full sentences, exactly what the
    change does to the state machine, computed client-side from the current
-   `cutoverState` and the request (PR-48): `not_started`/`rolled_back` +
-   observe → "Starts this rule's observe window now. The two-week floor
-   elapses on {date}."; `observing` + test → "Stops this rule evaluating
-   for real while its observe clock keeps running; the window will elapse
-   without evidence."; `cutover` + any non-enforce mode → "Rolls this rule
-   back from enforcement and withdraws its sign-off; it must observe again
-   before it can enforce."; enabled → false → "Disables the rule. Its cutover
-   state and clock are unchanged."; anything else → "Changes mode from {a} to
-   {b}; cutover state stays {state}." Confirm → `POST …/mode`; 409 → danger
+   `cutoverState` and the request (PR-48): the sentence is chosen by `mode` when one is requested, and by
+   `enabled` only when no `mode` is (the server's precedence: `mode` drives
+   the state machine, `enabled` alone never moves it). `mode: 'enforce'` →
+   "Enforces this rule for real. Its cutover state becomes cutover and the
+   bot starts acting on matches."; `not_started`/`rolled_back` + observe →
+   "Starts this rule's observe window now. The two-week floor elapses on
+   {date}."; `observing` + test → "Switches to test mode: the rule keeps
+   matching and recording fixtures but stops deleting; its cutover state
+   stays observing and its clock keeps running, so the window will elapse
+   with a gap in its evidence."; `cutover` + any non-enforce mode → "Rolls
+   this rule back from enforcement and withdraws its sign-off; it must
+   observe again before it can enforce."; any other non-enforce transition →
+   "Changes mode from {a} to {b}; cutover state stays {state}."; no `mode`,
+   `enabled: false` → "Disables the rule. Its cutover state and clock are
+   unchanged."; no `mode`, `enabled: true` → "Enables the rule in its current
+   mode, {mode}." Confirm → `POST …/mode`; 409 → danger
    toast with the refusal sentence; success → toast "Mode applied", reload.
 3. **Configuration** — a `<textarea>` seeded with
    `JSON.stringify(configObject, null, 2)`; "Save configuration" opens
@@ -651,7 +715,7 @@ error state naming the rule. Sections, top to bottom, each an `<h2>`:
    enforcement sign-off is withdrawn; the observe window and its clock are
    unchanged, so matches recorded before now were produced by the old
    configuration." Invalid JSON is caught client-side (`Field` error "Not
-   valid JSON"); a 400 renders the server's issues. Success → toast
+   valid JSON"); a 400 renders the server's `detail`. Success → toast
    "Configuration saved", reload.
 4. **Exemptions** — a table of role/channel exemptions each with a "Remove"
    button (`DELETE …/exemptions/:type/:id`, no dialog: an exemption removal
@@ -661,20 +725,24 @@ error state naming the rule. Sections, top to bottom, each an `<h2>`:
 5. **Lists** (read-only in Slice 8; the CLI edits them): for
    `keyword_filter`, terms grouped by category and the allowlist; for
    `invite`, the code allowlist; for `link_domain`, the domains with their
-   list type. Rendered only when non-empty; a one-line note names the CLI
-   command that edits them (`automod term add`, `automod invite allow`,
-   `automod domain add` — read `packages/core/src/ops/commands/automod.ts`
-   for the real command names and use those).
-6. **Dry run** — a "Run against fixtures" button → `POST …/dry-run`; result
-   rendered as: usable/failure line; counts (fixtures, matched, agreed,
-   disagreed, unlabelled, threw, abandoned); then a `DataTable` of fixtures
-   with a `disagreed` outcome first (fixture id, label, matched, agreement).
+   list type. Rendered only when non-empty; a one-line note names how each list is
+   edited: invite codes with `bananasaurs automod invite-allow` /
+   `invite-deny`, domains with `automod domain-add` / `domain-rm` (the real
+   names in `packages/core/src/ops/commands/automod.ts`); the keyword word
+   list has no editor yet — it is seeded, and Slice 9's review screen adds
+   allowlist terms — so say exactly that.
+6. **Dry run** — a "Run against fixtures" button → `POST …/dry-run`; result rendered as: usable/failure line (when `usable` is false, the
+   `failure.reason` and `failure.detail`); counts from the report's real
+   fields — corpus size, evaluated (`total`), matched, false positives, false
+   negatives, threw; then a `DataTable` of `results` with `disagreed`
+   agreement first (fixture id, label, matched, agreement, outcome).
    Empty corpus → "No fixtures yet. Matches recorded during the observe
    window become fixtures." The report is transient page state, not a
    resource.
 
 Tests (`automod-rule.test.tsx`), each with a stubbed detail response: status
-renders every field; the eligibility sentence for `cutover-state`; the mode
+renders every field; the eligibility sentence for each of the four refusal reasons (four
+stubs); the mode
 dialog's scope text for `observing` + `test`; applying mode posts exactly
 `{ mode: 'test' }`; a 409 shows the refusal in the status region; config save
 with invalid JSON never fetches; config save posts `{ config: {...} }` parsed
