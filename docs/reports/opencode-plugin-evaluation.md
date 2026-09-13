@@ -237,6 +237,32 @@ expected, what was done instead, whether it cost a re-dispatch.
   brief literally and cannot recover from a wrong name the way a sonnet
   subagent sometimes does by reading around it. Do not skip it.
 
+### D18–D29 — Slice 8 Tasks 1–6, implement + review (muse-spark-1.3)
+
+| Task | Implement | Review | Notes |
+| --- | --- | --- | --- |
+| 1 storage queries | 6m09s, DONE | 55 s, clean | tests-first with the red run committed |
+| 2 port surface ×4 | 11m59s, DONE_WITH_CONCERNS | 1m23s, clean | found a fourth `OpsPorts` literal the plan missed (PR-51) |
+| 3 automod routes | 6m40s, DONE | 2m17s, 1 minor | 42 route tests incl. cross-guild 404, stale session, enforce refusal, disabled dry-run |
+| 4 case routes | 3m59s, DONE | 1m15s, clean | |
+| 5 rules list + cutover + re-auth queue | 10m02s, DONE | 1m59s, clean | diagnosed that a full fake clock hangs RTL's `findBy` (PR-52) |
+| 6 rule detail | 14m08s, DONE | 53 s, 2 minor | one commit, not per step |
+
+Six implement dispatches, zero re-dispatches, zero fix rounds; ~53 minutes
+of implementation for roughly 2,900 added lines including tests. The sonnet
+baseline for a slice this size (Slice 6) was two sessions and two fix waves.
+
+**The one lesson worth the whole evaluation:** the muse-spark reviewer does
+the investigative check you ask for **only when the brief gives it its own
+heading and tells it where to put the answer**. "One deliberate check" as a
+paragraph inside `# Method` was skipped twice (Slice 7's re-reviews, Task
+5). "Deliberate check — report the answer as its own Finding line, even if
+the answer is 'correct'", naming the two files to open, produced a
+seven-branch trace of the mode dialog against `setRuleMode` (Task 6) and a
+field-by-field mapping audit (Task 2). The model is capable; the template's
+RESULT block just gives a check nowhere to land. The plugin's
+`task-reviewer-brief.md` should carry such a slot.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created

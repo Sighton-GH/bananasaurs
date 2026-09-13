@@ -252,3 +252,49 @@ eleven members declared in core and implemented three times.
   renamed or defaulted. That brief shape — a named check with file paths —
   is what makes the muse-spark reviewer investigate rather than list under
   "cannot verify".
+
+**Tasks 3–7** (automod routes 6m40s `fe5e94b..0cf43d5`, 42 tests; case
+routes 3m59s `d8a73b6..8916f42`, 18 tests; rules list + cutover board + the
+re-auth queue 10m02s `10a98d9..7161c99`; rule detail 14m08s `84cf05d`; cases
+pages 4m46s `c46987f`). Every task review PASS/APPROVED; seven Minors
+deferred to the whole-branch wave. Branch head `c46987f`: **2,534 tests
+across 134 files**, gates green.
+
+- **PR-52 — `writeOrThrow` beside `write`, and `vi.useFakeTimers({ toFake:
+  ['Date'] })`.** A form must render a 400's `detail` and a 409's refusal
+  inline, which the toast-only `write` cannot supply; a full fake clock
+  freezes the timers RTL's `findBy` polls with and hangs every async
+  assertion. Both accepted. Cost if wrong: one helper to fold back.
+- The muse-spark reviewer answered a deliberate check only when the brief
+  gave it its own heading and a place to put the answer ("report it as its
+  own Finding line") — Task 6's seven-branch trace of the mode dialog
+  against `setRuleMode` and Task 2's field-mapping audit were produced that
+  way; the same check phrased inside `# Method` was skipped twice.
+
+### Whole-branch review (Opus, `docs/reports/slice-8-whole-branch-review.md`)
+
+**SHIP-WITH-FIXES: 3 Important, 3 Minor, 3 decorative tests.** No path to an
+impermissible state transition; guild scope, capabilities, re-auth and
+validation all traced clean. What the seven task reviews missed:
+
+- **I-1 — the mode dialog is silent about `enabled` when both change.** An
+  operator picking `observe` and unticking Enabled on a `not_started` rule is
+  told the window starts; the server stamps `observe_started_at` **and** sets
+  `enabled = 0` in one write, so the clock runs on a rule matching nothing —
+  the "worthless window" shape ADR 0042 §1 exists to prevent. PR-48 permits
+  the transition; it requires the sentence. Fixed in the wave;
+  `modeScopeSentence` becomes an exported pure function with a nine-row
+  `it.each`.
+- **I-2 — the three `writeOrThrow` callers bypassed Slice 7's 401 mapping.**
+  An expired session mid-edit showed "The request failed" and left the page
+  looking signed in; a read-only instance lost its hold toast. Fixed: one
+  shared error handler; `writeOrThrow` throws only 400/409.
+- **I-3 — one of seven sentences tested**, and the `enforce` radio's disabled
+  state untested. Fixed in the wave.
+- Minors fixed in the same wave: the mode audit row's `before` carries
+  `cutoverState` and `observeStartedAt`; the `countReviewedByRule`
+  cross-guild test seeds a colliding `eventId` in the other guild; the
+  production `runAutomodDryRun` gets an integration test on a disabled rule
+  (the PR-47 proof the route test cannot give, because test-support's twin is
+  canned); the 409 test compares whole rows; the audit tests parse
+  `before`/`after`.
