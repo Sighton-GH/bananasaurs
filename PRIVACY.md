@@ -81,6 +81,7 @@ Bananasaurs only uses providers whose terms state they **do not train models on 
 | Attachments | Same as the messages they belong to |
 | Archived messages from channels the owner enabled | Kept until the owner disables the channel or purges; nothing is archived unless the owner lists the server and enables the channel |
 | Archived messages that were deleted | Content removed 30 days after deletion; the fact that a message existed is kept |
+| Previous versions of edited archived messages | Kept with the message; removed when the message's content is removed |
 | Archived messages linked to a moderation case | Content kept until the case closes, then 90 days |
 | Archived messages the owner marked preserved | Kept indefinitely; the audit log records who preserved it and when |
 | Attachments on archived messages | File name, type and size only; no file contents are downloaded |
