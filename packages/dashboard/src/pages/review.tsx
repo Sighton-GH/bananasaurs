@@ -416,7 +416,9 @@ export function ReviewPage() {
                         {
                           key: 'rule',
                           header: 'Rule',
-                          cell: (h) => <Link href={`/automod/${h.ruleId}`}>{h.ruleId}</Link>,
+                          // Native rule ids are Discord's (`native:…`), not
+                          // Bananasaurs routes — plain text, not a link.
+                          cell: (h) => h.ruleId,
                         },
                         {
                           key: 'member',
