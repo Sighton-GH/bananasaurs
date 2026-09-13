@@ -75,12 +75,21 @@ function SessionInner({
             toast({ tone: 'neutral', title: 'Cancelled', message: 'Nothing was changed.' });
             return undefined;
           }
-          if (err instanceof ApiError && err.status === 401) {
+          if (err instanceof ApiError && err.body.error === 'invalid-credentials') {
             toast({
               tone: 'danger',
               title: 'Password not accepted',
               message: 'Nothing was changed. Try again.',
             });
+            return undefined;
+          }
+          if (err instanceof ApiError && err.body.error === 'unauthenticated') {
+            toast({
+              tone: 'danger',
+              title: 'Signed out',
+              message: 'Your session has expired. Sign in again.',
+            });
+            onLoggedOut();
             return undefined;
           }
           if (err instanceof ApiError) {
