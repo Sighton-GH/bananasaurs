@@ -511,6 +511,7 @@ git commit -m "feat(ops): automod admin and case ports, three implementations (S
 - Modify: `packages/http/src/index.ts` (export `registerAutomodRoutes`)
 - Create: `packages/http/src/routes/audit-base.ts` (`dashboardAuditBase` moved here from `write.ts`)
 - Modify: `packages/http/src/routes/write.ts` (imports `dashboardAuditBase` from `./audit-base.js`; nothing else changes)
+- Modify: `packages/core/src/index.ts` (add named type exports for `OpsAutomodRuleSummary`, `OpsAutomodRuleDetail`, `OpsEnforcementEligibility`, `OpsEnforcementRefusal`, `OpsCase`, `OpsCaseEvent`, `OpsCaseDetail`, `OpsRuleMode`, `OpsCutoverState` next to the existing `OpsPorts` export — Task 2 declared them in `ops/ports.ts` but did not export them from the package)
 - Modify: `apps/daemon/src/http/wiring.ts` (register it after `registerWriteRoutes`)
 
 **Interfaces — Produces:** `registerAutomodRoutes(app, guard, deps)` with:
