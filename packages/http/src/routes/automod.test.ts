@@ -1321,7 +1321,11 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
     grant(['config.write']);
     createKindRule(GUILD, 'kw-one', 'keyword_filter');
     const scope = t.scopes.forGuild(GUILD);
-    automodRuleRepo.setEnforceSignOff(scope, { ruleId: 'kw-one', signedOffBy: 'owner', now: clock });
+    automodRuleRepo.setEnforceSignOff(scope, {
+      ruleId: 'kw-one',
+      signedOffBy: 'owner',
+      now: clock,
+    });
     const ports = testPortsFor(scope, () => clock);
     const before = ports.findAutomodRuleDetail('kw-one');
     expect(before?.enforceSignedOffBy).toBe('owner');
@@ -1345,7 +1349,11 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
     grant(['config.write']);
     createKindRule(GUILD, 'inv-one', 'invite');
     const scope = t.scopes.forGuild(GUILD);
-    automodRuleRepo.setEnforceSignOff(scope, { ruleId: 'inv-one', signedOffBy: 'owner', now: clock });
+    automodRuleRepo.setEnforceSignOff(scope, {
+      ruleId: 'inv-one',
+      signedOffBy: 'owner',
+      now: clock,
+    });
     const ports = testPortsFor(scope, () => clock);
     const before = ports.findAutomodRuleDetail('inv-one');
 
