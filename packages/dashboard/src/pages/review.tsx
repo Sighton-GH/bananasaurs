@@ -32,7 +32,6 @@ const ZERO_COUNTS: VerdictCounts = { falsePositive: 0, truePositive: 0, unclear:
 
 /** One row's one-click narrowing, with the kind the page looked up from the rules list. */
 interface SuppressTarget {
-  readonly eventId: string;
   readonly ruleId: string;
   readonly kind: SuppressionKind;
   readonly label: string;
@@ -120,9 +119,15 @@ export function ReviewPage() {
   const [suppressBusy, setSuppressBusy] = useState(false);
 
   const openSuppress = useCallback(
-    (match: ReviewableMatch, action: { readonly kind: SuppressionKind; readonly label: string; readonly prefillFromSnippet: boolean }) => {
+    (
+      match: ReviewableMatch,
+      action: {
+        readonly kind: SuppressionKind;
+        readonly label: string;
+        readonly prefillFromSnippet: boolean;
+      },
+    ) => {
       setSuppressTarget({
-        eventId: match.eventId,
         ruleId: match.ruleId,
         kind: action.kind,
         label: action.label,
@@ -373,9 +378,7 @@ export function ReviewPage() {
                             return <Link href={`/automod/${m.ruleId}`}>Narrow the pattern</Link>;
                           }
                           return (
-                            <Button onClick={() => openSuppress(m, action)}>
-                              {action.label}
-                            </Button>
+                            <Button onClick={() => openSuppress(m, action)}>{action.label}</Button>
                           );
                         },
                       },
@@ -441,16 +444,15 @@ export function ReviewPage() {
         <ConfirmDialog
           open
           title={`${suppressTarget.label}?`}
-          scope={<p>{suppressionScope(suppressTarget.kind, suppressTarget.ruleId, suppressValue)}</p>}
+          scope={
+            <p>{suppressionScope(suppressTarget.kind, suppressTarget.ruleId, suppressValue)}</p>
+          }
           confirmLabel={suppressTarget.label}
           busy={suppressBusy}
           onConfirm={() => void confirmSuppress()}
           onCancel={() => setSuppressTarget(null)}
         >
-          <Field
-            label="Value"
-            {...(suppressTarget.prefill ? {} : { hint: 'channel ID' })}
-          >
+          <Field label="Value" {...(suppressTarget.prefill ? {} : { hint: 'channel ID' })}>
             <Input value={suppressValue} onChange={(e) => setSuppressValue(e.target.value)} />
           </Field>
         </ConfirmDialog>
