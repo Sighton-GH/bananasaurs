@@ -450,8 +450,9 @@ describe('countNativeBlocked', () => {
 
     const scopeB = t.scopes.forGuild(GUILD_B);
     const { caseId: caseB } = openOrResolveCase(scopeB, { memberId: MEMBER_1, now: 1000 });
+    // Colliding eventId with guild A's 'n1': a missing guild_id condition would double-count.
     recordCaseEvent(scopeB, {
-      eventId: 'n5',
+      eventId: 'n1',
       caseId: caseB,
       ruleId: 'native:123',
       memberId: MEMBER_1,
