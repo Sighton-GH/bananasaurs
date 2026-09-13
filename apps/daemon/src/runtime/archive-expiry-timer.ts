@@ -1,10 +1,5 @@
-import {
-  archiveExpiryDedupeKey,
-  JOB_KINDS,
-  safeLogFields,
-  type Logger,
-} from '@bananasaurs/core';
-import { jobRepo, type GuildScope } from '@bananasaurs/storage';
+import { archiveExpiryDedupeKey, JOB_KINDS, safeLogFields, type Logger } from '@bananasaurs/core';
+import { type GuildScope, type jobRepo } from '@bananasaurs/storage';
 
 /**
  * The daily archive-expiry timer (ADR 0046 PR-70, Slice M1 Task 5, Step 2).

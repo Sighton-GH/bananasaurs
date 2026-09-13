@@ -65,10 +65,15 @@ describe('archive expiry run', () => {
     const h = harness({ purged: 3 });
     const handler = archiveExpiryHandler(h.ports);
 
-    await handler.run({ day: '2026-09-13' }, { jobId: 1, attempts: 1, cursor: null, saveCursor: () => {} });
+    await handler.run(
+      { day: '2026-09-13' },
+      { jobId: 1, attempts: 1, cursor: null, saveCursor: () => {} },
+    );
 
     expect(h.seen).toEqual([NOW]);
-    const logged = h.records().find((r) => r['msg'] === 'archive: expiry run purged deleted content');
+    const logged = h
+      .records()
+      .find((r) => r['msg'] === 'archive: expiry run purged deleted content');
     expect(logged).toMatchObject({ jobKind: 'archive_expiry', count: 3 });
     // Rule 4: no member content, no channel — the only fields are the allowlisted ones.
     expect(logged?.['content']).toBeUndefined();
@@ -82,7 +87,9 @@ describe('archive expiry run', () => {
       { jobId: 1, attempts: 1, cursor: null, saveCursor: () => {} },
     );
 
-    const logged = h.records().find((r) => r['msg'] === 'archive: expiry run purged deleted content');
+    const logged = h
+      .records()
+      .find((r) => r['msg'] === 'archive: expiry run purged deleted content');
     expect(logged).toMatchObject({ jobKind: 'archive_expiry', count: 0 });
   });
 });

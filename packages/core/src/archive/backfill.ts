@@ -45,7 +45,9 @@ export interface BackfillPorts {
   readonly logger: Logger;
 }
 
-export const archiveBackfillHandler = (ports: BackfillPorts): JobHandler<{ channelId: string }> => ({
+export const archiveBackfillHandler = (
+  ports: BackfillPorts,
+): JobHandler<{ channelId: string }> => ({
   kind: JOB_KINDS.archiveBackfill,
   payload: archiveBackfillPayload,
   async run(payload) {

@@ -3,11 +3,7 @@ import { pino } from 'pino';
 import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
 import type { FetchedMessage, RecentMessagesPage, Snowflake } from '../discord/port.js';
 import type { JobContext } from '../jobs/worker.js';
-import {
-  archiveBackfillHandler,
-  type ArchiveChannel,
-  type BackfillPorts,
-} from './backfill.js';
+import { archiveBackfillHandler, type ArchiveChannel, type BackfillPorts } from './backfill.js';
 import type { UpsertMessageInput } from './ports.js';
 
 /**
@@ -72,16 +68,14 @@ class FakeMessageSource {
       .filter((m) => before === undefined || BigInt(m.messageId) < BigInt(before))
       .sort((a, b) => (BigInt(b.messageId) > BigInt(a.messageId) ? 1 : -1))
       .slice(0, limit)
-      .map(
-        (m): FetchedMessage => ({
-          messageId: m.messageId,
-          authorId: m.authorId,
-          createdAtMs: m.createdAtMs,
-          content: m.content,
-          editedTimestampMs: m.editedTimestampMs,
-          attachments: m.attachments,
-        }),
-      );
+      .map((m): FetchedMessage => ({
+        messageId: m.messageId,
+        authorId: m.authorId,
+        createdAtMs: m.createdAtMs,
+        content: m.content,
+        editedTimestampMs: m.editedTimestampMs,
+        attachments: m.attachments,
+      }));
     const last = all.length > 0 ? all[all.length - 1] : undefined;
     return {
       messages: all,
@@ -95,7 +89,11 @@ interface Harness {
   source: FakeMessageSource;
   rows: Map<string, UpsertMessageInput>;
   continuations: { channelId: string; runAfter: number }[];
-  channel: { live: boolean; cursorMessageId: string | undefined; state: ArchiveChannel['backfillState'] };
+  channel: {
+    live: boolean;
+    cursorMessageId: string | undefined;
+    state: ArchiveChannel['backfillState'];
+  };
   context: JobContext;
 }
 
@@ -201,7 +199,9 @@ describe('archive backfill paging', () => {
     const cursor = h.channel.cursorMessageId;
 
     h.source.failure = rateLimited();
-    const error = await handler.run({ channelId: CHANNEL }, h.context).catch((err: unknown) => err);
+    const error = await Promise.resolve(handler.run({ channelId: CHANNEL }, h.context)).catch(
+      (err: unknown) => err,
+    );
     expect(error).toBeInstanceOf(DiscordApiError);
     expect((error as DiscordApiError).isRateLimit).toBe(true);
 

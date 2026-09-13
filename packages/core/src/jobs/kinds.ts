@@ -233,5 +233,4 @@ export type ArchiveExpiryPayload = z.infer<typeof archiveExpiryPayload>;
  * the same key, and the `(guild_id, dedupe_key)` index collapses per guild —
  * a second `runOnce` on the same day enqueues nothing anywhere.
  */
-export const archiveExpiryDedupeKey = (day: string): string =>
-  `${JOB_KINDS.archiveExpiry}:${day}`;
+export const archiveExpiryDedupeKey = (day: string): string => `${JOB_KINDS.archiveExpiry}:${day}`;
