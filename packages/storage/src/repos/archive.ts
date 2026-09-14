@@ -450,3 +450,47 @@ export const countMessages = (scope: GuildScope, channelId: string): number =>
         .where(scope.only(archiveMessages, eq(archiveMessages.channelId, channelId)))
         .get()?.n ?? 0,
   );
+
+/**
+ * One archived message row, including a purged one (ADR 0049 Amendment 1 D7).
+ *
+ * `content` is NULL after purge, or never known; a purged row keeps its
+ * tombstone — `contentPurgedAt` set — and stays reachable by id even though it
+ * has left the search index.
+ */
+export interface ArchiveMessage {
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly authorId: string | undefined;
+  readonly content: string | null;
+  readonly createdAt: number;
+  readonly editedAt: number | undefined;
+  readonly deletedAt: number | undefined;
+  readonly retentionClass: RetentionClass;
+  readonly caseId: string | undefined;
+  readonly contentPurgedAt: number | undefined;
+}
+
+const toArchiveMessage = (row: typeof archiveMessages.$inferSelect): ArchiveMessage => ({
+  messageId: row.messageId,
+  channelId: row.channelId,
+  authorId: row.authorId ?? undefined,
+  content: row.content,
+  createdAt: row.createdAt,
+  editedAt: row.editedAt ?? undefined,
+  deletedAt: row.deletedAt ?? undefined,
+  retentionClass: row.retentionClass as RetentionClass,
+  caseId: row.caseId ?? undefined,
+  contentPurgedAt: row.contentPurgedAt ?? undefined,
+});
+
+/** The row by id, including a purged one — the tombstone is the point. */
+export const findMessage = (scope: GuildScope, messageId: string): ArchiveMessage | undefined =>
+  read(scope, (db) => {
+    const row = db
+      .select()
+      .from(archiveMessages)
+      .where(scope.only(archiveMessages, eq(archiveMessages.messageId, messageId)))
+      .get();
+    return row === undefined ? undefined : toArchiveMessage(row);
+  });
