@@ -116,9 +116,7 @@ export const searchMessages = (
       ...new Set(
         input.channelIds === undefined
           ? input.visibility.channelIds
-          : input.channelIds.filter((channelId) =>
-              input.visibility.channelIds.includes(channelId),
-            ),
+          : input.channelIds.filter((channelId) => input.visibility.channelIds.includes(channelId)),
       ),
     ];
     if (channels.length > SEARCH_MAX_CHANNELS) {

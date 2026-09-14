@@ -1363,9 +1363,9 @@ describe('archive search visibility, end to end', () => {
     startDaemon({ BANANASAURS_ARCHIVE_GUILDS: GUILD });
     guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
     const ports = daemon.portsFor(scope());
-    expect(
-      ports.archiveEnableChannel({ channelId: CHANNEL_A, attachmentPolicy: 'none' }),
-    ).toBe('enabled');
+    expect(ports.archiveEnableChannel({ channelId: CHANNEL_A, attachmentPolicy: 'none' })).toBe(
+      'enabled',
+    );
 
     archiveRepo.upsertMessage(scope(), {
       messageId: '678901234567890123',
