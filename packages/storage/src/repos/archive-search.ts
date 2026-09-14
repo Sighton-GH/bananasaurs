@@ -46,6 +46,26 @@ const SEARCH_SNIPPET_ELLIPSIS = '…';
 const SEARCH_SNIPPET_TOKENS = 12;
 
 /**
+ * The FTS5 query-syntax family: the signatures SQLite produces for a malformed
+ * `MATCH` query, read off the installed `better-sqlite3` rather than assumed —
+ * `"unbalanced` raises `unterminated string`, a bare `column:` term raises
+ * `no such column: column`, a bare `AND` or unbalanced paren raises
+ * `fts5: syntax error near …`, and a bare `*` raises `unknown special query`.
+ * Anything outside this family (`no such table`, `too many SQL variables`,
+ * `database disk image is malformed`) is a fault, not a typo, and is rethrown.
+ */
+const FTS_QUERY_SYNTAX_SIGNATURES = [
+  'fts5: syntax error',
+  'unterminated string',
+  'unknown special query',
+  'no such column',
+] as const;
+
+const isFtsQuerySyntaxError = (err: unknown): boolean =>
+  err instanceof Error &&
+  FTS_QUERY_SYNTAX_SIGNATURES.some((signature) => err.message.includes(signature));
+
+/**
  * The raw better-sqlite3 handle behind a Drizzle `Db`.
  *
  * drizzle attaches it at construction (`better-sqlite3/driver.js`: `db.$client
@@ -143,11 +163,16 @@ export const searchMessages = (
         })),
         total: counted?.n ?? 0,
       };
-    } catch {
-      // An operator's typo is a usage answer, not a fault: a malformed FTS
+    } catch (err) {
+      // An operator's typo is a usage answer, not a fault: a malformed FTS5
       // query (e.g. `MATCH '"unbalanced'` raising `SqliteError: unterminated
       // string`) returns empty rather than throwing out of the function.
-      return { hits: [], total: 0 };
+      // Everything else — a missing table, `too many SQL variables`,
+      // SQLITE_CORRUPT — is rethrown: the caller is an operator command that
+      // will surface it, and answering "no matches" to a broken index is the
+      // failure mode ruling PR-85 fixed.
+      if (isFtsQuerySyntaxError(err)) return { hits: [], total: 0 };
+      throw err;
     }
   });
 

@@ -149,6 +149,16 @@ describe('visibility filtering', () => {
     });
     expect(result).toEqual({ hits: [], total: 0 });
   });
+
+  it('a missing FTS table throws rather than returning empty', () => {
+    // The failure-visibility test for the narrowed catch: a broken index must
+    // surface as an error the operator command reports, never as "no matches".
+    seedMessage(a, { content: 'ordinary content' });
+    t.raw.exec('DROP TABLE archive_messages_fts');
+    expect(() =>
+      searchMessages(a, { query: 'ordinary', visibility: { channelIds: [CHANNEL_A] } }),
+    ).toThrow(/no such table: archive_messages_fts/);
+  });
 });
 
 describe('guild scope', () => {
