@@ -627,6 +627,45 @@ equal value to a research dispatch — for an authorization boundary it may be
 the better first move, because the findings land in the controller's context
 already adjudicated rather than as a file to be trusted.
 
+### D48 — the 10-minute foreground cap kills a big task mid-gates, and a review stalls the D46 way
+
+M3 Task 3 (the OAuth provider, the slice's biggest task) and its review, both
+on `opencode/muse-spark-1.3-contributor-free`.
+
+**Task 3, run `20260913T220137`.** Dispatched in the foreground with the Bash
+tool's maximum 600 s timeout. The model wrote 1,201 lines across four files,
+committed twice (`70867d4` item 1 at 22:02, `adde4e7` the provider at 22:05),
+and was still running when the wrapper was killed at 22:11 — the log shows it
+mid-gates. **What was lost:** only the mechanical tail — `lint:fix` (Prettier
+on two files), the two break-probes the brief asked for, and the `## RESULT`
+report. **What was not lost:** any code. `oc-task`'s commit-per-task discipline
+meant the kill cost nothing that mattered. No orphaned `opencode` process
+this time (checked `ps`; the ones present belonged to a different session).
+
+**What I did instead:** ran `lint:fix` and committed it as a separately-labelled
+formatting commit; ran both break-probes myself (PKCE check neutralised →
+exactly the one expected failure; replay cascade removed → exactly the two
+expected failures); ran the gates. Then told the reviewer it was the first
+reader of the diff because no self-report existed. Net cost: about six
+minutes of controller time and no re-dispatch.
+
+**The review, run `20260913T221539`, was worse.** 418 KB of events in the
+first 90 seconds — 17 tool calls, eight steps — then the log stopped at
+22:17:10 after a `step_finish` with reason `tool-calls`, and nothing followed
+for eight minutes until the cap killed it. That is D46's shape exactly: the
+provider stopped answering and the run blocked rather than failing. A second
+Claude session on this machine was dispatching against the same free account
+at the time (visible in `ps`), which D46 also recorded as a cause.
+
+**What this argues.** The foreground 600 s timeout is the wrong tool for a
+task this size: it does not distinguish "still working" from "stalled", and
+it kills both. From here (ruling PR-114) long dispatches run in the background
+with a log-silence watchdog, so a working run is left alone and a stalled one
+is reported to the owner at five minutes of silence, per the standing
+instruction. Against Slices 0–6 with sonnet — where no dispatch was ever
+killed by the harness or stalled by the provider — this is the second
+recurring tax of the free tier, after D47's fast 429.
+
 ## What worked well
 
 (appended as observed)
