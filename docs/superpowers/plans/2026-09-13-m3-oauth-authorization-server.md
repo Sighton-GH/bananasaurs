@@ -976,3 +976,25 @@ opening `.oc-runs/`.
   OAuth routes into an encapsulated `app.register` child context, with a
   regression test pinning `/api/login`'s pre-Task-4 500; re-adding a
   root-level parser fails exactly that test.
+- **PR-121** — the Task 5 brief predicted that logging `{token: raw}` would
+  trip the log-scan test. It does not: `token` is a Pino `redact` path
+  (`packages/core/src/obs/logger.ts`), so Pino censors it to `<redacted>`
+  before the sink. The implementer reported the contradiction rather than
+  forcing a failure; the controller verified it. The planted leak that
+  matters — the token **value** under the allowlisted key `oauthTokenId` —
+  did fail as designed. Defence in depth, not a gap.
+- **PR-122** — controller finding, from no review: **`safeLogFields` is
+  opt-in at the call site, and `packages/http` has no call sites at all.**
+  The allowlist `CLAUDE.md` rule 4 describes is applied only where a caller
+  wraps its fields in it; every OAuth log line M3 adds passes a bare object,
+  so those lines rest on Pino's `redact` **denylist** plus the new
+  value-scan test — the mechanism rule 4 explicitly calls insufficient.
+  Pre-existing in `packages/http` rather than an M3 regression, and the
+  value-scan does cover the real secrets end to end, so it is **not** fixed
+  blind: it is written into the whole-branch review brief as a named
+  hypothesis to confirm and size. Cost if wrong: a future OAuth log line
+  adds an unvetted field and only the value-scan catches it.
+- **PR-123** — `log-scan.test.ts` imports `REDACT_PATHS` by relative path
+  rather than the package root, because the fix's Files list kept
+  `packages/core/src/index.ts` out of scope. Test-only; typecheck, lint and
+  vitest all resolve it.
