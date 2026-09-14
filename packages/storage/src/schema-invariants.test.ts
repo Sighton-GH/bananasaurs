@@ -712,6 +712,40 @@ describe('runMigrations fails the run when a migration leaves a dangling referen
 });
 
 /**
+ * ADR 0049 Amendment 1 D4, step 1: the machinery is invisible for the reason
+ * we think.
+ *
+ * `allTables()` keeps only `PRAGMA table_list` rows with `type === 'table'`,
+ * so every invariant above skips the FTS5 index — but only because SQLite
+ * reports `archive_messages_fts` as `type === 'virtual'` and its four shadow
+ * tables as `type === 'shadow'`. If a future SQLite reclassifies these as
+ * `table`, this test fails loudly and ADR 0049 is revisited — rather than the
+ * FTS table silently failing STRICT. No exemption is added here, and none is
+ * wanted: an exemption would keep passing while the reason for it changed.
+ */
+describe('the FTS5 machinery is invisible to the invariants for the reason we think', () => {
+  it("reports archive_messages_fts as virtual and its shadows as shadow in PRAGMA table_list", () => {
+    const rows = t.raw.prepare(`PRAGMA table_list`).all() as {
+      schema: string;
+      name: string;
+      type: string;
+    }[];
+    const byName = new Map(
+      rows.filter((r) => r.schema === 'main').map((r) => [r.name, r.type]),
+    );
+    expect(byName.get('archive_messages_fts')).toBe('virtual');
+    for (const shadow of [
+      'archive_messages_fts_data',
+      'archive_messages_fts_idx',
+      'archive_messages_fts_docsize',
+      'archive_messages_fts_config',
+    ]) {
+      expect(byName.get(shadow)).toBe('shadow');
+    }
+    expect(allTables().map((r) => r.name)).not.toContain('archive_messages_fts');
+  });
+});
+/**
  * The migrator gates on the journal's `when`, not on a hash: an entry whose
  * `when` is equal to or smaller than the previous entry's is silently skipped
  * on a database that has already run the earlier migration. Read the shipped
