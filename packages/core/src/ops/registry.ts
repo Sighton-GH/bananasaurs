@@ -19,8 +19,15 @@ import {
   automodSignoffCommand,
   automodVerdictCommand,
 } from './commands/automod.js';
+import { accountGrantCommand } from './commands/account.js';
 import { backupListCommand, backupNowCommand } from './commands/backup.js';
 import { bootstrapReissueCommand } from './commands/bootstrap.js';
+import {
+  mcpClientsCommand,
+  mcpRevokeClientCommand,
+  mcpRevokeCommand,
+  mcpTokensCommand,
+} from './commands/mcp.js';
 import { killswitchCommand } from './commands/killswitch.js';
 import {
   auditTailCommand,
@@ -87,6 +94,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   archivePreserveCommand,
   archiveLinkCaseCommand,
   archiveReindexCommand,
+  mcpClientsCommand,
+  mcpTokensCommand,
+  mcpRevokeCommand,
+  mcpRevokeClientCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).
@@ -100,4 +111,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   // nobody can log in, so gating it on a dashboard credential would make it
   // useless in the only situation it is for.
   bootstrapReissueCommand,
+  // The ADR 0028 grant path: granting a dashboard account a capability.
+  // Authorised by the socket like everything here.
+  accountGrantCommand,
 ];

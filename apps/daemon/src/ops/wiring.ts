@@ -561,9 +561,7 @@ export const opsPortsFor = (
     const account = accountRepo.findAccountByUsername(instanceScopeOf(scope), input.username);
     if (account === undefined) return 'no-such-account';
     if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'no-guild-access';
-    if (
-      authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)
-    ) {
+    if (authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {
       return 'already-held';
     }
     authzRepo.grantAccountCapability(scope, {
@@ -980,8 +978,7 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,
     })),
-  mcpRevokeToken: (tokenId) =>
-    oauthRepo.revokeToken(deps.instanceScope, tokenId, deps.now()) === 1,
+  mcpRevokeToken: (tokenId) => oauthRepo.revokeToken(deps.instanceScope, tokenId, deps.now()) === 1,
   // `deleteClient` returns 0 for an unknown client and a count otherwise, so
   // existence is checked first: the port must answer `undefined` for "no such
   // client" rather than "0 tokens revoked", which would read as a success that
