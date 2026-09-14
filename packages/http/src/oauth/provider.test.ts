@@ -328,7 +328,9 @@ describe('exchangeCode', () => {
     expect(refused.ok).toBe(false);
     if (refused.ok) throw new Error('exchange unexpectedly succeeded');
     expect(trackFailure(refused).error).toBe('invalid_grant');
-    expect(oauthRepo.findAuthorizationCode(t.scopes.instance(), hashToken(code))?.usedAt).toBeNull();
+    expect(
+      oauthRepo.findAuthorizationCode(t.scopes.instance(), hashToken(code))?.usedAt,
+    ).toBeNull();
     const legitimate = exchangeCode(deps, {
       code,
       clientId: CLIENT,
@@ -579,7 +581,10 @@ describe('refreshTokens', () => {
     registerClient(CLIENT);
     registerClient(OTHER_CLIENT);
     const { issued } = fullFlow();
-    const result = refreshTokens(deps, { refreshToken: issued.refreshToken, clientId: OTHER_CLIENT });
+    const result = refreshTokens(deps, {
+      refreshToken: issued.refreshToken,
+      clientId: OTHER_CLIENT,
+    });
     expect(result.ok).toBe(false);
     if (result.ok) throw new Error('refresh unexpectedly succeeded');
     expect(trackFailure(result).error).toBe('invalid_grant');
@@ -639,7 +644,7 @@ describe('verifyAccessToken', () => {
     expect(verifyAccessToken(deps, unknown)).toEqual({ ok: false, reason: 'unknown' });
   });
 
-  it("reports not-access for a refresh token value", () => {
+  it('reports not-access for a refresh token value', () => {
     registerClient();
     const { issued } = fullFlow();
     expect(verifyAccessToken(deps, issued.refreshToken)).toEqual({

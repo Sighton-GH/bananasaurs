@@ -422,7 +422,8 @@ export interface VerifiedToken {
 
 export type VerifyFailure = {
   readonly ok: false;
-  readonly reason: 'unknown' | 'not-access' | 'revoked' | 'expired' | 'account-gone' | 'account-disabled';
+  readonly reason:
+    'unknown' | 'not-access' | 'revoked' | 'expired' | 'account-gone' | 'account-disabled';
 };
 
 export const verifyAccessToken = (
