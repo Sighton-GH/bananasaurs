@@ -416,6 +416,22 @@ describe('indexHealth', () => {
   });
 });
 
+describe('deleted-but-not-purged messages stay searchable', () => {
+  it('a recordDeleted but unexpired message is still found (ADR 0049 Amendment 1 D5)', () => {
+    const now = 50 * DAY_MS;
+    const messageId = seedMessage(a, { content: 'longan discord-deleted plan' });
+    expect(recordDelete(a, { messageId, deletedAt: now - DAY_MS })).toBe('recorded');
+
+    const result = searchMessages(a, {
+      query: 'longan',
+      visibility: { channelIds: [CHANNEL_A] },
+    });
+    expect(result.hits).toHaveLength(1);
+    expect(result.total).toBe(1);
+    expect(result.hits[0]?.messageId).toBe(messageId);
+  });
+});
+
 describe('rebuildSearchIndex', () => {
   it('restores every row after the index is wiped, and reports this guild count', () => {
     seedMessage(a, { messageId: '666666666666666666', content: 'durian log one' });

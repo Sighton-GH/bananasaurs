@@ -241,6 +241,11 @@ Three things the probe settled that the plan had only reasoned about:
   the column order D2 fixes, and `bm25()` returns a negative score whose
   ascending order is best-first.
 
+A message deleted in Discord remains searchable with its text until
+`expireContent` purges it at 30 days (ADR 0046 D3), because the archive exists
+for moderation review and the retention window is the rule; `searchMessages`
+therefore applies no `deleted_at` predicate.
+
 ### D7 (new) — `findMessage` is M2's, not M1's
 
 M1 ships no by-id reader (`archive.ts` exports no `findMessage` or
