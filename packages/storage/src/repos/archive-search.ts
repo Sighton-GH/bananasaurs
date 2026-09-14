@@ -133,16 +133,14 @@ export const searchMessages = (
       const rows = raw.prepare<unknown[], SearchRow>(hitsSql).all(...params, limit);
       const counted = raw.prepare<unknown[], { readonly n: number }>(countSql).get(...params);
       return {
-        hits: rows.map(
-          (row): SearchHit => ({
-            messageId: row.messageId,
-            channelId: row.channelId,
-            authorId: row.authorId ?? undefined,
-            createdAt: row.createdAt,
-            excerpt: row.excerpt,
-            rank: row.rank,
-          }),
-        ),
+        hits: rows.map((row): SearchHit => ({
+          messageId: row.messageId,
+          channelId: row.channelId,
+          authorId: row.authorId ?? undefined,
+          createdAt: row.createdAt,
+          excerpt: row.excerpt,
+          rank: row.rank,
+        })),
         total: counted?.n ?? 0,
       };
     } catch {

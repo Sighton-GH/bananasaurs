@@ -192,9 +192,9 @@ describe('guild scope', () => {
     expect(underB.hits[0]?.excerpt).toContain('pie');
 
     // Each guild's own term is invisible from the other side.
-    expect(
-      searchMessages(a, { query: 'pie', visibility: { channelIds: [CHANNEL_A] } }).total,
-    ).toBe(0);
+    expect(searchMessages(a, { query: 'pie', visibility: { channelIds: [CHANNEL_A] } }).total).toBe(
+      0,
+    );
     expect(
       searchMessages(b, { query: 'tart', visibility: { channelIds: [CHANNEL_A] } }).total,
     ).toBe(0);
@@ -203,8 +203,16 @@ describe('guild scope', () => {
 
 describe('narrowing, filters and limits', () => {
   it('channelIds narrows within the visibility set and never widens it', () => {
-    seedMessage(a, { messageId: '666666666666666666', channelId: CHANNEL_A, content: 'plum notes' });
-    seedMessage(a, { messageId: '777777777777777777', channelId: CHANNEL_B, content: 'plum notes' });
+    seedMessage(a, {
+      messageId: '666666666666666666',
+      channelId: CHANNEL_A,
+      content: 'plum notes',
+    });
+    seedMessage(a, {
+      messageId: '777777777777777777',
+      channelId: CHANNEL_B,
+      content: 'plum notes',
+    });
 
     const narrowed = searchMessages(a, {
       query: 'plum',
