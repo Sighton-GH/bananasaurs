@@ -8,6 +8,7 @@ import {
   archiveEnableChannelCommand,
   archiveLinkCaseCommand,
   archivePreserveCommand,
+  archiveReindexCommand,
   archiveSearchCommand,
   archiveStatusCommand,
 } from './archive.js';
@@ -509,5 +510,37 @@ describe('archive search', () => {
       { query: 'pineapple', limit: 101 },
     );
     expect(over.ok).toBe(false);
+  });
+});
+
+describe('archive reindex', () => {
+  it('is a write, so it needs --confirm', () => {
+    expect(archiveReindexCommand.write).toBe(true);
+  });
+
+  it('reports the indexed row count and audits archive.index_rebuilt against the guild', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      archiveReindexCommand,
+      {
+        archiveReindex: () => 7,
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      {},
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toBe('reindexed 7 archived messages');
+    expect(res.data).toMatchObject({ ok: true, indexedRows: 7 });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'archive.index_rebuilt',
+        subjectType: 'archive',
+        subjectId: FIXTURE_GUILD_ID,
+        after: { indexedRows: 7 },
+      }),
+    ]);
   });
 });

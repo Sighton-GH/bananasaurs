@@ -8,13 +8,13 @@ import {
 } from '../dispatch.js';
 
 /**
- * The `archive …` operator surface (ADR 0046, Slice M1 Task 6; search from
- * Slice M2 Task 4).
+ * The `archive …` operator surface (ADR 0046, Slice M1 Task 6; search and
+ * reindex from Slice M2 Task 4).
  *
- * Six commands over the eight `OpsPorts` archive members: enabling a
+ * Seven commands over the nine `OpsPorts` archive members: enabling a
  * channel (which queues its backfill), disabling one, listing the enabled
- * set, preserving a message, linking a message to a moderation case, and
- * searching archived content.
+ * set, preserving a message, linking a message to a moderation case,
+ * searching archived content, and rebuilding the search index.
  * Attachment bytes are refused at this layer (PR-67) — `bytes` never reaches
  * the port, so no later slice can mistake a stored `bytes` policy for one
  * this slice actually fetched.
@@ -350,6 +350,28 @@ export const archiveSearchCommand = defineCommand<z.infer<typeof archiveSearchAr
           createdAt: hit.createdAt,
           excerpt: hit.excerpt,
         })),
+      },
+    };
+  },
+});
+
+// --- archive reindex ---------------------------------------------------------
+
+export const archiveReindexCommand = defineCommand<Record<string, never>>({
+  name: 'archive reindex',
+  write: true,
+  summary: 'rebuild the archive full-text index from archived messages',
+  args: z.object({}),
+  run(ctx: OpsContext): OpsWriteResult {
+    const indexedRows = ctx.ports.archiveReindex();
+    return {
+      text: `reindexed ${String(indexedRows)} archived messages`,
+      data: { ok: true, indexedRows },
+      audit: {
+        action: 'archive.index_rebuilt',
+        subjectType: 'archive',
+        subjectId: ctx.guildId,
+        after: { indexedRows },
       },
     };
   },
