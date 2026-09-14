@@ -103,20 +103,14 @@ export const configSchema = z.object({
   MCP_PUBLIC_URL: z
     .string()
     .url()
-    .refine(
-      (u) => {
-        const url = new URL(u);
-        return url.protocol === 'https:' || url.hostname === '127.0.0.1';
-      },
-      'MCP_PUBLIC_URL must be https:// or a 127.0.0.1 dev origin',
-    )
-    .refine(
-      (u) => {
-        const url = new URL(u);
-        return url.pathname === '/' && url.search === '' && url.hash === '' && !u.endsWith('/');
-      },
-      'MCP_PUBLIC_URL must be a bare origin: no path, query, fragment or trailing slash',
-    )
+    .refine((u) => {
+      const url = new URL(u);
+      return url.protocol === 'https:' || url.hostname === '127.0.0.1';
+    }, 'MCP_PUBLIC_URL must be https:// or a 127.0.0.1 dev origin')
+    .refine((u) => {
+      const url = new URL(u);
+      return url.pathname === '/' && url.search === '' && url.hash === '' && !u.endsWith('/');
+    }, 'MCP_PUBLIC_URL must be a bare origin: no path, query, fragment or trailing slash')
     .optional(),
 
   /**

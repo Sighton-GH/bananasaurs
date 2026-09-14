@@ -14,6 +14,7 @@ import {
   issueBootstrapTokenIfNeeded,
   registerAutomodRoutes,
   registerCaseRoutes,
+  registerOAuthRoutes,
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
@@ -130,6 +131,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
       registerWriteRoutes(instance, guard, routeDeps);
       registerAutomodRoutes(instance, guard, routeDeps);
       registerCaseRoutes(instance, guard, routeDeps);
+      registerOAuthRoutes(instance, guard, routeDeps);
     },
   });
   registerStaticAssets(app, DASHBOARD_DIST);
