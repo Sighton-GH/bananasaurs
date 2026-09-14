@@ -139,6 +139,62 @@ export const actorFor = (accountId: string): Actor => ({
 export const reauthIsFresh = (session: SessionContext, now: number): boolean =>
   session.reauthAt !== null && now - session.reauthAt <= POLICY.reauthWindowMs;
 
+export type CredentialFailure = 'invalid-credentials' | 'locked-out';
+export type CredentialResult =
+  | { readonly ok: true; readonly account: accountRepo.AccountRow }
+  | { readonly ok: false; readonly reason: CredentialFailure };
+
+/**
+ * The credential check `login` performs, on its own, so a second caller
+ * (the OAuth consent page, ADR 0045 D6) inherits every control — dummy-hash
+ * timing, lockout-without-verify, disabled-as-invalid, failed-attempt
+ * accounting — rather than re-implementing a subset. Issues no session.
+ */
+export const verifyAccountCredentials = async (
+  deps: AuthDeps,
+  input: { readonly username: string; readonly password: string; readonly ip: string | null },
+): Promise<CredentialResult> => {
+  const instance = deps.scopes.instance();
+  const now = deps.now();
+  const account = accountRepo.findAccountByUsername(instance, input.username);
+
+  if (account === undefined) {
+    // Not an early return. The verification is the point: it makes "no such
+    // account" cost what "wrong password" costs.
+    await verifyPassword(await dummyPasswordHashPromise, input.password);
+    return { ok: false, reason: 'invalid-credentials' };
+  }
+
+  if (account.lockedUntil !== null && account.lockedUntil > now) {
+    // The password is deliberately not checked. A lockout that still verified
+    // would let an attacker keep testing guesses through it, and would tell
+    // them when they got one right.
+    return { ok: false, reason: 'locked-out' };
+  }
+
+  if (account.disabled) {
+    await verifyPassword(await dummyPasswordHashPromise, input.password);
+    return { ok: false, reason: 'invalid-credentials' };
+  }
+
+  const correct = await verifyPassword(account.passwordHash, input.password);
+  if (!correct) {
+    const outcome = accountRepo.recordFailedAttempt(instance, {
+      accountId: account.accountId,
+      now,
+      maxAttempts: POLICY.maxFailedAttempts,
+      lockoutMs: POLICY.lockoutMs,
+    });
+    return {
+      ok: false,
+      reason: outcome.lockedUntil === null ? 'invalid-credentials' : 'locked-out',
+    };
+  }
+
+  accountRepo.clearFailedAttempts(instance, account.accountId);
+  return { ok: true, account };
+};
+
 export type LoginFailure =
   /** The single answer for a wrong username, a wrong password, or a disabled account. */
   | 'invalid-credentials'
@@ -186,40 +242,13 @@ export const login = async (
 ): Promise<LoginResult> => {
   const instance = deps.scopes.instance();
   const now = deps.now();
-  const account = accountRepo.findAccountByUsername(instance, input.username);
-
-  if (account === undefined) {
-    // Not an early return. The verification is the point: it makes "no such
-    // account" cost what "wrong password" costs.
-    await verifyPassword(await dummyPasswordHashPromise, input.password);
-    return { ok: false, reason: 'invalid-credentials' };
-  }
-
-  if (account.lockedUntil !== null && account.lockedUntil > now) {
-    // The password is deliberately not checked. A lockout that still verified
-    // would let an attacker keep testing guesses through it, and would tell
-    // them when they got one right.
-    return { ok: false, reason: 'locked-out' };
-  }
-
-  if (account.disabled) {
-    await verifyPassword(await dummyPasswordHashPromise, input.password);
-    return { ok: false, reason: 'invalid-credentials' };
-  }
-
-  const correct = await verifyPassword(account.passwordHash, input.password);
-  if (!correct) {
-    const outcome = accountRepo.recordFailedAttempt(instance, {
-      accountId: account.accountId,
-      now,
-      maxAttempts: POLICY.maxFailedAttempts,
-      lockoutMs: POLICY.lockoutMs,
-    });
-    return {
-      ok: false,
-      reason: outcome.lockedUntil === null ? 'invalid-credentials' : 'locked-out',
-    };
-  }
+  const checked = await verifyAccountCredentials(deps, {
+    username: input.username,
+    password: input.password,
+    ip: input.ip,
+  });
+  if (!checked.ok) return checked;
+  const account = checked.account;
 
   const reachable = accountRepo
     .listAccessibleGuilds(instance, account.accountId)
@@ -235,8 +264,6 @@ export const login = async (
   if (chosen === undefined || !reachable.includes(chosen)) {
     return { ok: false, reason: 'guild-required' };
   }
-
-  accountRepo.clearFailedAttempts(instance, account.accountId);
 
   const guildId = parseGuildId(chosen);
   const token = generateToken();
