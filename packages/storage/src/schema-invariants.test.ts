@@ -725,15 +725,13 @@ describe('runMigrations fails the run when a migration leaves a dangling referen
  * wanted: an exemption would keep passing while the reason for it changed.
  */
 describe('the FTS5 machinery is invisible to the invariants for the reason we think', () => {
-  it("reports archive_messages_fts as virtual and its shadows as shadow in PRAGMA table_list", () => {
+  it('reports archive_messages_fts as virtual and its shadows as shadow in PRAGMA table_list', () => {
     const rows = t.raw.prepare(`PRAGMA table_list`).all() as {
       schema: string;
       name: string;
       type: string;
     }[];
-    const byName = new Map(
-      rows.filter((r) => r.schema === 'main').map((r) => [r.name, r.type]),
-    );
+    const byName = new Map(rows.filter((r) => r.schema === 'main').map((r) => [r.name, r.type]));
     expect(byName.get('archive_messages_fts')).toBe('virtual');
     for (const shadow of [
       'archive_messages_fts_data',
