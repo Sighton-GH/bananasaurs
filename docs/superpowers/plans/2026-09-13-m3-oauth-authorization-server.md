@@ -27,6 +27,11 @@ Drizzle, Zod, Vitest, `@node-rs/argon2` (passwords only), `node:crypto`.
 **Research:** `.oc-runs/m3-oauth/research-findings.md` (every signature below
 is quoted from it and carries a file:line).
 
+> **Read "Plan review rulings" at the end of this file before starting any
+> task.** A plan review found three Criticals and eight Importants; the
+> rulings PR-94..PR-108 there **override** the task text above wherever they
+> disagree, and the task text has been corrected in place for the Criticals.
+
 ---
 
 ## Global Constraints
@@ -245,8 +250,13 @@ export const oauthTokens = sqliteTable(
     lastUsedAt: integer('last_used_at'),
     /** The refresh token this was rotated from, for D5's cascade. */
     parentTokenId: text('parent_token_id'),
-    /** The code_hash this was minted from, for D5's replay cascade. */
-    issuedFromCodeHash: text('issued_from_code_hash'),
+    /**
+     * The code_hash this token's ANCESTRY was minted from — **inherited by
+     * every rotation**, not just the first pair (ruling PR-94). Without the
+     * inheritance, a code replayed after one rotation finds only dead rows
+     * and the live tokens survive the very event that proves the code leaked.
+     */
+    issuedFromCodeHash: text('issued_from_code_hash').notNull(),
   },
   (t) => [
     uniqueIndex('oauth_tokens_hash').on(t.tokenHash),
@@ -494,10 +504,15 @@ const s256 = (verifier: string): string =>
   createHash('sha256').update(verifier, 'ascii').digest('base64url');
 ```
 
-- [ ] **Step 6: `refresh`** — rotates. The presented refresh token is revoked
-      in the same write that mints its replacement, and the new pair carries
-      `parentTokenId` of the old. A refresh token presented **after** it was
-      rotated is refused **and** revokes its whole chain, on D5's reasoning.
+- [ ] **Step 6: `refresh`** — rotates, through Task 2's `rotateRefreshToken`
+      so the revoke and the two mints are **one transaction** (ruling PR-99).
+      The new pair carries `parentTokenId` of the old **and inherits the old
+      token's `issuedFromCodeHash`** (ruling PR-94). A refresh token presented
+      **after** it was rotated is refused **and** revokes its whole chain via
+      `revokeTokenChain`, on D5's reasoning.
+      **Test the inheritance explicitly:** exchange a code, refresh twice,
+      then replay the original code — the *live* pair must end up revoked.
+      Without PR-94 this test fails, which is the point of writing it.
 
 - [ ] **Step 7: `revoke`** — RFC 7009. Revoking a refresh token also revokes
       the access token minted alongside it. An unknown token returns success
@@ -534,13 +549,55 @@ const s256 = (verifier: string): string =>
 registering the route module requires — read how `registerWriteRoutes` is
 passed in (`packages/http/src/routes/write.test.ts:24-25`) and follow it.
 
-- [ ] **Step 1: the rate limiter**, tests first. A fixed-window counter keyed
-      by client IP, injected clock, no global state:
+- [ ] **Step 0: extract the credential check so the consent form cannot
+      bypass it** (ruling PR-96, a **Critical**). `login`
+      (`packages/http/src/auth.ts:177-215`) does four things a bare
+      `verifyPassword` does not: it verifies a **dummy hash** for an unknown
+      account so "no such account" costs what "wrong password" costs; it
+      refuses a locked-out account **without checking the password at all**;
+      it treats `disabled` as indistinguishable from wrong credentials; and it
+      calls `recordFailedAttempt` so guesses count toward `POLICY.maxFailedAttempts`.
+      A consent form that called `verifyPassword` directly would be an
+      unthrottled password oracle that **also bypasses account lockout** —
+      a way in that the dashboard login does not offer.
+
+      Extract the body of those checks into
+      `verifyAccountCredentials(deps, {username, password, ip}): Promise<
+      {ok: true; account: AccountRow} | {ok: false; reason: 'invalid-credentials' | 'locked-out'}>`
+      in `packages/http/src/auth.ts`, and **make `login` call it** so the two
+      paths cannot drift apart. `login` keeps everything after the credential
+      check (guild selection, session creation) unchanged.
+
+      **This is a refactor of working authentication code during an observe
+      window.** Change no behaviour: run `packages/http/src/auth.test.ts`
+      before and after and confirm the same tests pass with no edits to them.
+      Then add tests proving the consent path inherits the controls: five
+      wrong passwords at the **consent form** lock the account; a locked-out
+      account is refused at the consent form without its password being
+      checked; an unknown username and a wrong password are indistinguishable
+      in both status and body.
+
+- [ ] **Step 1: the rate limiter**, tests first. A fixed-window counter with
+      an injected clock and no global state:
       `createRateLimiter({limit, windowMs, now})` → `{check(key): boolean}`.
-      Tests: the nth request inside the window passes and the (n+1)th fails;
-      the window rolls over on the injected clock; two keys do not interfere;
-      memory does not grow without bound (old windows are dropped — assert the
-      internal size after rollover). Applied to `POST /oauth/register` only.
+
+      **Do not key it by client IP** (ruling PR-97). Behind the tunnel every
+      request arrives from `127.0.0.1`, `ipOf` is `request.ip`
+      (`packages/http/src/server.ts:120`) and Fastify's `trustProxy` is not
+      set anywhere, so an IP key is one global bucket wearing a disguise.
+      Say what it is instead: **one deliberate global bucket** for
+      `POST /oauth/register`, 20 registrations per hour, with a comment
+      naming this ruling. The trade is accepted rather than hidden: a stranger
+      who finds the tunnel can exhaust the hour, and the cost is that the
+      owner cannot register a **new** client until it rolls over — existing
+      tokens and clients are untouched, because a registered client can do
+      nothing until someone types the owner's password at the consent page.
+      `mcp clients` lists the junk and `mcp revoke-client` removes it.
+
+      Tests: the 20th request inside the window passes and the 21st fails;
+      the window rolls over on the injected clock; two keys do not interfere
+      (the limiter stays general even though M3 uses one key); memory does not
+      grow without bound — assert the internal map size after rollover.
 
 - [ ] **Step 2: the consent page** (`consent.ts`). One function returning an
       HTML string. **This is the project's first server-rendered HTML and
@@ -572,11 +629,13 @@ const esc = (s: string): string =>
   - `GET /oauth/authorize` — `beginAuthorization`, then render. On refusal,
     render an error page; **never redirect to an unvalidated `redirect_uri`.**
   - `POST /oauth/authorize` — require `originMatchesHost`; parse the form
-    (`application/x-www-form-urlencoded`); `verifyPassword` +
-    `findAccountByUsername`; require `mcp.authorize` in at least one guild the
-    account can reach (**refusal (f)**); then `completeAuthorization` and
-    302 to the redirect URI with `code` and `state`. Deny → 302 with
-    `error=access_denied`.
+    (`application/x-www-form-urlencoded`); then check the credentials through
+    **`verifyAccountCredentials`, the shared function Task 4 step 0 extracts
+    from `login`** — never a bare `verifyPassword` (ruling PR-96). Then
+    require `mcp.authorize` in at least one guild the account can reach
+    (**refusal (f)**, enforced here and tested here — see PR-98); then
+    `completeAuthorization` and 302 to the redirect URI with `code` and
+    `state`. Deny → 302 with `error=access_denied`.
   - `POST /oauth/token` — `grant_type` of `authorization_code` or
     `refresh_token`; anything else → `unsupported_grant_type`. Errors use the
     RFC 6749 §5.2 JSON shape (`{error, error_description}`) with the right
@@ -603,9 +662,18 @@ this creates one.
 - [ ] **Step 1: `verifyBearer(deps, authorizationHeader)`.** Parses
       `Bearer <token>`, looks up `hashToken(value)`, and returns
       `{accountId, clientId, tokenId, scopes}` or a typed failure. Checks, in
-      order: present, `kind === 'access'`, not revoked, not expired. **Every
-      request, no caching** — assert in a test that two calls issue two
-      lookups (inject a counting repo).
+      order: present, `kind === 'access'`, not revoked, not expired, **and
+      then the approving account itself — it must still exist and must not be
+      `disabled`** (ruling PR-95). ADR 0045 D6 promises "revoking the account
+      revokes every token it approved"; without this lookup that sentence is
+      false, because nothing else in the slice ever reads the account again
+      after minting. Follow `authenticate`'s own order
+      (`packages/http/src/auth.ts:88-122`), which checks `account-gone` and
+      `account-disabled` for exactly this reason.
+      **Every request, no caching** — assert in a test that two calls issue
+      two lookups (inject a counting repo). Two more tests: disabling the
+      account fails the **next** verification with an unexpired token; and
+      deleting it does the same.
 - [ ] **Step 2: the RFC 9728 challenge.** No token, or a bad one, answers 401
       with `WWW-Authenticate: Bearer resource_metadata="<the
       oauth-protected-resource URL>"`. Test the header string exactly.
@@ -710,3 +778,139 @@ step rather than an assumption: no capability-grant CLI command (T6), no rate
 limiter (T4 step 1), no server-rendered HTML or escaping helper (T4 step 2).
 One thing the slice text got wrong: `mcp.authorize` is per-guild, so the
 reachable set is computed live (T5 step 3, ADR 0045 PR-92).
+
+---
+
+## Plan review rulings (PR-94 .. PR-108)
+
+A plan review (`opencode/muse-spark-1.3`, run `20260913T210650`) returned
+**NEEDS-REWORK** with three Criticals and eight Importants. It executed
+rather than argued — it read `originMatchesHost`, found `ipOf` has no
+`trustProxy`, and verified the journal timestamp — so every finding below was
+checked against the tree before being accepted. **These rulings override the
+task text wherever they disagree**; the three Criticals have also been
+corrected in place above.
+
+### Accepted — Critical
+
+**PR-94 — a code replayed after a rotation would not have killed the live
+tokens.** Only the first access/refresh pair carried `issuedFromCodeHash`;
+rotation propagated `parentTokenId` alone, so `revokeTokensFromCode` matched
+two dead rows and left the live pair working — precisely when a replay proves
+the code leaked. **Every rotation now inherits its ancestor's
+`issuedFromCodeHash`**, the column is `NOT NULL`, and Task 3 step 6 carries a
+test that exchanges, refreshes twice, then replays the original code and
+asserts the *live* pair is revoked. Cost if wrong: none — the column is
+already written on every mint.
+
+**PR-95 — `verifyBearer` never looked at the account.** ADR 0045 D6 promises
+that revoking the account revokes every token it approved. Nothing in the
+slice read the account again after minting, so a disabled or deleted owner's
+tokens would have kept working for up to an hour, and its refresh token for
+thirty days. `verifyBearer` now checks existence and `disabled` on every
+request, in `authenticate`'s own order. Cost if wrong: one extra indexed
+lookup per request, on a single-owner bot.
+
+**PR-96 — the consent form was an unthrottled password oracle that bypassed
+lockout.** `login` verifies a dummy hash for unknown accounts, refuses a
+locked-out account without checking its password, hides `disabled` behind
+`invalid-credentials`, and records failed attempts. The plan's consent POST
+called `verifyPassword` directly and inherited none of it, so the OAuth
+endpoint would have been a softer way in than the front door it sits beside.
+Task 4 step 0 extracts `verifyAccountCredentials` and makes **both** paths
+use it. Cost if wrong: a refactor of live authentication code, which is why
+the step forbids behaviour change and requires `auth.test.ts` to pass
+untouched before and after.
+
+### Accepted — Important
+
+**PR-97 — the IP-keyed limiter was one global bucket pretending otherwise.**
+Re-specified as one deliberate global bucket with the trade written down
+(Task 4 step 1).
+
+**PR-98 — refusal (f) was unimplementable where it was placed.**
+`completeAuthorization` has no capability input, so the provider cannot refuse
+an account lacking `mcp.authorize`. Refusal (f) moves **route-side**: the
+route checks the capability and only then calls the provider, and the test
+lives in `routes/oauth.test.ts`. Task 3 step 8's list keeps six provider-level
+refusals; (f) is Task 4's. The provider gains no capability parameter —
+threading one in would put an authorization decision in a layer that cannot
+see the guild it applies to.
+
+**PR-99 — three writes that must not interleave had no transaction.** Task 2
+gains two functions, both single `writeInstance` transactions:
+`rotateRefreshToken(scope, {oldTokenId, …new pair…, now})`, which revokes and
+mints atomically, and `revokeTokenChain(scope, rootTokenId, now)`, which walks
+`parentTokenId` descendants. Task 3 steps 6 and 7 call these rather than
+composing repo calls.
+
+**PR-100 — the code consume was find-then-mark with the count ignored.** Two
+concurrent exchanges could both pass the `usedAt === null` read.
+`markAuthorizationCodeUsed` is `UPDATE … SET used_at = ? WHERE code_hash = ?
+AND used_at IS NULL`; Task 3 step 5 **checks its return count** and, on 0,
+treats it as a replay: refuse and cascade. The test drives two exchanges of
+one code and asserts exactly one succeeds.
+
+**PR-101 — `OAuthDeps` had no `guildIds`.** It mirrors `AuthDeps`
+(`packages/http/src/auth.ts:30`) fully: `{scopes, now, guildIds}`. The
+reachable-set computation needs it.
+
+**PR-102 — `account grant` cannot live on `OpsInstance`.** Capabilities are
+keyed `(guild_id, account_id, capability)` and `grantAccountCapability` takes
+a `GuildScope` (`packages/storage/src/repos/authz.ts:163`), which
+`OpsInstance` does not have. The command moves to **`OpsPorts`** and its
+**four** literals (`apps/daemon/src/ops/wiring.ts`,
+`packages/http/src/test-support.ts`, `packages/core/src/ops/test-fixtures.ts`,
+`packages/storage/src/repos/automod-rule-lists.test.ts`). The four MCP
+members stay on `OpsInstance` and its five. Task 6 therefore touches **two**
+port surfaces; count them separately or the build breaks twice.
+
+**PR-103 — the scope vocabulary was undefined.** It is the design's
+(§3 "Scopes", line 120): exactly **`bananasaurs:read`** and
+**`bananasaurs:send`** — not `write`. A scope outside that pair is refused at
+`beginAuthorization`. M3 only issues them; M4 filters `tools/list` by them.
+
+**PR-104 — Task 1 step 7's probe would have left a stray migration.** Adding
+a `guild_id` column and regenerating produces a `0022` file *and* a journal
+entry, and removing them means hand-editing migration metadata, which Global
+Constraint 4 forbids. **The probe is replaced**: prove the no-`guild_id`
+assertion by temporarily adding a genuinely guild-partitioned table name
+(`'guilds'`) to the test's own `OAUTH_TABLES` array and watching that test
+fail, then removing it. Nothing under `drizzle/` is touched. The
+`INSTANCE_LEVEL` removal probe is unchanged and stays.
+
+### Accepted — Minor
+
+**PR-105** — `s256` uses `'utf8'`, matching `hashToken`
+(`packages/http/src/secrets.ts:80`); the tree has no `'ascii'` precedent and
+the two agree for every legal PKCE verifier anyway.
+**PR-106** — the consent page's attributes are **double-quoted**, stated
+explicitly: `value="<escaped>"`. `esc`'s five entities are sufficient for a
+double-quoted attribute and insufficient for an unquoted one.
+**PR-107** — `touchToken` is wired into `verifyBearer`'s success path, or
+`lastUsedAt` is always null and `mcp tokens`' most useful column is a lie.
+**PR-108** — `purgeExpired` also deletes tokens that are expired **and**
+revoked; `deleteClient` gains no CLI surface in M3 and is used only by
+`mcp revoke-client`, which is stated where it is declared.
+
+### Rejected, and why
+
+**The consent-phishing observation is real but is not M3's to fix.** The
+review correctly notes that the nonce does not stop an attacker who registers
+their own client and induces the owner to approve it, since registration is
+unauthenticated and the client name is attacker-controlled. That is inherent
+to RFC 7591 dynamic registration, and the mitigations are the ones already in
+the plan: the consent page shows the client name and the redirect URI's
+**host**, approval costs the owner's password, and `mcp clients` /
+`mcp revoke-client` make an unwanted client visible and removable. Recorded
+as an accepted residual risk rather than a plan defect. **Task 4 step 2 adds
+one line of page copy** naming the risk to the person reading the form:
+*"Approve only if you started this from a client you recognise."*
+
+**`originMatchesHost` returning `true` for an absent `Origin` is correct and
+stays.** The review flagged it as contributing nothing to header-less
+requests. It is deliberate (`packages/http/src/server.ts:128`: non-browser
+clients send no `Origin`), and the consent POST's real protection is the
+single-use nonce plus the password, not the origin check. Changing it would
+break every non-browser caller of the existing dashboard API for no gain
+here.
