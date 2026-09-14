@@ -950,3 +950,29 @@ opening `.oc-runs/`.
 - **PR-117** — `reachableGuilds` (the live guild set, ADR 0045 PR-92) is
   built in Task 4 rather than Task 5, because route-level refusal (f) needs
   it; Task 5's bearer middleware reuses it.
+- **PR-118** — `revokeByValue` revokes by **lineage**
+  (`revokeTokensFromCode`) rather than by chain for a refresh token: the
+  sibling access token minted alongside it has `parentTokenId: null`, so a
+  chain walk from the refresh id would miss it. Accepted as provably safer
+  than the brief's text.
+- **PR-119** — the credential extraction moved `clearFailedAttempts` ahead
+  of `login`'s guild checks, so a correct password with no guild access now
+  clears the counter where before it did not. Confirmed factually and
+  **refuted as a security issue** by the Task 4 review: that line is
+  reachable only after `correct === true`, locked-out accounts return
+  before any verification, and wrong passwords still record. Adjudicated
+  benign.
+- **PR-120** — the Task 4 review's first Minor is **escalated to
+  Important**. The form parser was registered on the root Fastify instance,
+  so `POST /api/login` began parsing `application/x-www-form-urlencoded`.
+  `/api/login` has no origin check and no CSRF token and it **issues the
+  session cookie**; a cross-origin HTML form can send a form-encoded body
+  with no CORS preflight but can never send JSON. A root-level parser
+  therefore converts a route an attacker's page could not reach into
+  **login CSRF** — their page signs the owner's browser into the
+  attacker's account, and everything the owner then does on the dashboard
+  happens in that session. The review measured the status change (500 →
+  401) without naming the consequence. Fixed by moving the parser and the
+  OAuth routes into an encapsulated `app.register` child context, with a
+  regression test pinning `/api/login`'s pre-Task-4 500; re-adding a
+  root-level parser fails exactly that test.
