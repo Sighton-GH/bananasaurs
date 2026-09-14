@@ -203,6 +203,8 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   archiveLinkCase: notNeeded('archiveLinkCase'),
   enqueueArchiveBackfill: notNeeded('enqueueArchiveBackfill'),
   listUnreadableArchiveChannels: notNeeded('listUnreadableArchiveChannels'),
+  archiveSearch: notNeeded('archiveSearch'),
+  archiveReindex: notNeeded('archiveReindex'),
 });
 
 const instance: OpsInstance = {
