@@ -134,7 +134,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
             `${String(archiveIndex.rows)} archived — run 'archive reindex --confirm'`,
     );
 
-    // The gateway half already decides `ok`; the seven guild-scoped findings
+    // The gateway half already decides `ok`; the eight guild-scoped findings
     // here are just as capable of making a panel, an enforce-mode rule, or an
     // automod rule that never gets as far as matching — silently do nothing,
     // so they count the same way rather than being printed as decoration
