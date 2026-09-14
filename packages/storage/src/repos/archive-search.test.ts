@@ -15,6 +15,7 @@ import {
   indexHealth,
   rebuildSearchIndex,
   SEARCH_LIMIT_MAX,
+  SEARCH_MAX_CHANNELS,
   searchMessages,
 } from './archive-search.js';
 
@@ -128,6 +129,33 @@ describe('visibility filtering', () => {
     });
     expect(five.hits).toHaveLength(5);
     expect(five.total).toBe(5);
+  });
+
+  it('de-duplicates repeated channels into one placeholder each', () => {
+    seedMessage(a, { content: 'mango overview' });
+    const prepare = vi.spyOn(t.raw, 'prepare');
+    const result = searchMessages(a, {
+      query: 'mango',
+      visibility: { channelIds: [CHANNEL_A, CHANNEL_A, CHANNEL_A] },
+    });
+    expect(result.total).toBe(1);
+    const hitsSql = String(prepare.mock.calls[0]?.[0] ?? '');
+    // One `?` for the query, one for the guild, one for the channel, one for
+    // the limit — a second channel placeholder would mean the IN list was
+    // built from the raw input rather than the de-duplicated set.
+    expect(hitsSql).toContain('IN (?)');
+    prepare.mockRestore();
+  });
+
+  it('refuses a visibility set above SEARCH_MAX_CHANNELS rather than truncating it', () => {
+    expect(SEARCH_MAX_CHANNELS).toBe(1000);
+    const channelIds = Array.from(
+      { length: SEARCH_MAX_CHANNELS + 1 },
+      (_, i) => `44${String(i).padStart(16, '0')}`,
+    );
+    expect(() => searchMessages(a, { query: 'mango', visibility: { channelIds } })).toThrow(
+      /1000-channel limit/,
+    );
   });
 
   it('an empty visibility set returns empty without running a query', () => {

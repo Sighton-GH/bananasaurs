@@ -40,6 +40,13 @@ export interface SearchResult {
 export const SEARCH_SNIPPET_OPEN = '[';
 export const SEARCH_SNIPPET_CLOSE = ']';
 export const SEARCH_LIMIT_MAX = 100;
+/**
+ * The largest visibility set a search binds: one `?` placeholder per channel,
+ * well under SQLite's 32766-variable limit. Above it the function throws
+ * rather than truncating — a truncated visibility set is a wrong answer (rows
+ * silently excluded), not a small one.
+ */
+export const SEARCH_MAX_CHANNELS = 1000;
 
 const SEARCH_LIMIT_DEFAULT = 20;
 const SEARCH_SNIPPET_ELLIPSIS = '…';
@@ -103,10 +110,23 @@ export const searchMessages = (
     // Narrow within the visibility set; never widen. An empty set — no visible
     // channels, or a narrowing outside them — returns empty without running a
     // query: `IN ()` is a syntax error, and "nothing visible" is a real state.
-    const channels =
-      input.channelIds === undefined
-        ? [...input.visibility.channelIds]
-        : input.channelIds.filter((channelId) => input.visibility.channelIds.includes(channelId));
+    // De-duplicated: one placeholder per channel, so a repeated entry cannot
+    // inflate the `IN` list toward the variable limit.
+    const channels = [
+      ...new Set(
+        input.channelIds === undefined
+          ? input.visibility.channelIds
+          : input.channelIds.filter((channelId) =>
+              input.visibility.channelIds.includes(channelId),
+            ),
+      ),
+    ];
+    if (channels.length > SEARCH_MAX_CHANNELS) {
+      throw new Error(
+        `search visibility set of ${String(channels.length)} channels exceeds the ` +
+          `${String(SEARCH_MAX_CHANNELS)}-channel limit; narrow the search with --channel`,
+      );
+    }
     if (channels.length === 0) return { hits: [], total: 0 };
 
     const limit =
