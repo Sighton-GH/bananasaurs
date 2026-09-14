@@ -9,6 +9,7 @@ import { parseGuildId, RULE_KINDS } from '@bananasaurs/core';
 import * as schema from './schema.js';
 import { runMigrations } from './db.js';
 import { createRule, type RuleKind } from './repos/automod-rules.js';
+import { disableChannel, enableChannel, upsertMessage } from './repos/archive.js';
 import { upsertGuild } from './repos/guilds.js';
 import {
   MIGRATIONS_FOLDER,
@@ -745,6 +746,60 @@ describe('the FTS5 machinery is invisible to the invariants for the reason we th
     expect(allTables().map((r) => r.name)).not.toContain('archive_messages_fts');
   });
 });
+/**
+ * ADR 0049 Amendment 1 D4, step 2: the index cannot outlive its content.
+ *
+ * The external-content triggers in `drizzle/0020_archive_fts.sql` are
+ * hand-written SQL the invariants cannot see, so this proves they are attached
+ * and the external-content contract holds: two guilds with colliding message
+ * ids, one row each, both findable by a raw MATCH; then guild A's row deleted
+ * through `archiveRepo` — `disableChannel`, whose cascade issues the real
+ * DELETE on `archive_messages` the `…_ad` trigger listens for (the repo owns
+ * no single-message hard delete; `recordDelete` is a soft mark) — and A's FTS
+ * entry is gone while B's remains.
+ */
+describe('the FTS triggers keep the index from outliving its content', () => {
+  it('deletes one guild’s FTS entry and keeps the colliding neighbour’s', () => {
+    const scopeA = t.scopes.forGuild(parseGuildId('777777777777777777'));
+    const scopeB = t.scopes.forGuild(parseGuildId('888888888888888888'));
+    upsertGuild(scopeA, { name: 'fts-trigger-guild-a', now: 0 });
+    upsertGuild(scopeB, { name: 'fts-trigger-guild-b', now: 0 });
+    const channelA = '919191919191919191';
+    const channelB = '929292929292929292';
+    enableChannel(scopeA, { channelId: channelA, attachmentPolicy: 'none', now: 1 });
+    enableChannel(scopeB, { channelId: channelB, attachmentPolicy: 'none', now: 1 });
+    const messageId = '939393939393939393';
+    for (const [scope, channelId] of [
+      [scopeA, channelA],
+      [scopeB, channelB],
+    ] as const) {
+      upsertMessage(scope, {
+        messageId,
+        channelId,
+        authorId: undefined,
+        content: 'quokkasnack trampoline',
+        createdAt: 2,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+
+    const matchedGuilds = (): string[] =>
+      (
+        t.raw
+          .prepare(
+            `SELECT guild_id AS guildId FROM archive_messages_fts WHERE archive_messages_fts MATCH ?`,
+          )
+          .all('quokkasnack') as { guildId: string }[]
+      ).map((r) => r.guildId);
+    expect(matchedGuilds().sort()).toEqual([scopeA.guildId, scopeB.guildId].sort());
+
+    disableChannel(scopeA, channelA);
+
+    expect(matchedGuilds()).toEqual([scopeB.guildId]);
+  });
+});
+
 /**
  * The migrator gates on the journal's `when`, not on a hash: an entry whose
  * `when` is equal to or smaller than the previous entry's is silently skipped
