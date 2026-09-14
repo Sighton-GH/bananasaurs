@@ -30,6 +30,15 @@ export const LOGGABLE_FIELDS = new Set([
   'principalId',
   'principalType',
   'capability',
+  /**
+   * ADR 0045 D8: the opaque id of an OAuth client (`cli_…`) or token
+   * (`tok_…`). An id is a row key, never a credential — the credential is
+   * the token VALUE, which is hashed at rest and has no allowlisted name.
+   * Nothing under any other key may carry a token value either; the
+   * log-scan test in `packages/http/src/oauth/log-scan.test.ts` enforces it.
+   */
+  'oauthClientId',
+  'oauthTokenId',
   // work identity
   'effectId',
   'batchId',
