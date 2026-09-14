@@ -534,14 +534,16 @@ describe('archive reindex', () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toBe('reindexed 7 archived messages');
+    expect(res.text).toBe(
+      'reindexed the full-text index (database-wide); this guild now has 7 indexed messages',
+    );
     expect(res.data).toMatchObject({ ok: true, indexedRows: 7 });
     expect(audit).toEqual([
       expect.objectContaining({
         action: 'archive.index_rebuilt',
         subjectType: 'archive',
         subjectId: FIXTURE_GUILD_ID,
-        after: { indexedRows: 7 },
+        after: { indexedRows: 7, scope: 'database-wide' },
       }),
     ]);
   });

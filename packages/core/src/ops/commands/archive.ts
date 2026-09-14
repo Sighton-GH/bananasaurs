@@ -360,18 +360,20 @@ export const archiveSearchCommand = defineCommand<z.infer<typeof archiveSearchAr
 export const archiveReindexCommand = defineCommand<Record<string, never>>({
   name: 'archive reindex',
   write: true,
-  summary: 'rebuild the archive full-text index from archived messages',
+  summary: 'rebuild the archive full-text index (database-wide) from archived messages',
   args: z.object({}),
   run(ctx: OpsContext): OpsWriteResult {
     const indexedRows = ctx.ports.archiveReindex();
     return {
-      text: `reindexed ${String(indexedRows)} archived messages`,
+      text:
+        `reindexed the full-text index (database-wide); this guild now has ` +
+        `${String(indexedRows)} indexed messages`,
       data: { ok: true, indexedRows },
       audit: {
         action: 'archive.index_rebuilt',
         subjectType: 'archive',
         subjectId: ctx.guildId,
-        after: { indexedRows },
+        after: { indexedRows, scope: 'database-wide' },
       },
     };
   },
