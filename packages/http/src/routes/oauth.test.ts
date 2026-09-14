@@ -239,6 +239,25 @@ describe('GET /oauth/authorize', () => {
     expect(response.headers.location).toBeUndefined();
     expect(response.body).toContain('invalid_request');
   });
+
+  it('refuses the 61st authorization in an hour with 429 and recovers after rollover', async () => {
+    const clientId = await registerClient();
+    const { challenge } = newPkce();
+    const url = authorizeQuery({ client_id: clientId, code_challenge: challenge });
+    for (let i = 0; i < 60; i++) {
+      const response = await app.inject({ method: 'GET', url });
+      expect(response.statusCode).toBe(200);
+    }
+    const refused = await app.inject({ method: 'GET', url });
+    expect(refused.statusCode).toBe(429);
+    scannedBodies.push(refused.body);
+    expect(refused.headers['retry-after']).toBe('3600');
+    expect(refused.body).toContain('too many authorization requests; try again later');
+
+    clock += 3_600_000;
+    const recovered = await app.inject({ method: 'GET', url });
+    expect(recovered.statusCode).toBe(200);
+  });
 });
 
 describe('POST /oauth/authorize', () => {
@@ -490,6 +509,24 @@ describe('POST /oauth/token', () => {
     expect(response.statusCode).toBe(400);
     scannedBodies.push(response.body);
     expect(response.json()).toMatchObject({ error: 'unsupported_grant_type' });
+  });
+
+  it('still parses a form body at POST /oauth/token inside the child context', async () => {
+    // Without the child-context parser this never reaches the provider: the
+    // route answers 500. Reaching `invalid_grant` proves the form was parsed.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'refresh_token',
+        refresh_token: 'never-minted',
+        client_id: 'no-such-client',
+      }),
+    });
+    expect(response.statusCode).toBe(400);
+    scannedBodies.push(response.body);
+    expect(response.json()).toMatchObject({ error: 'invalid_grant' });
   });
 });
 

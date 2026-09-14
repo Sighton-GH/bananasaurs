@@ -116,296 +116,319 @@ export const registerOAuthRoutes = (
   const issuer = deps.mcpPublicUrl;
   if (issuer === undefined) return;
 
-  app.addContentTypeParser(
-    'application/x-www-form-urlencoded',
-    { parseAs: 'string', bodyLimit: 8 * 1024 },
-    (_req, body, done) => {
-      try {
-        done(null, Object.fromEntries(new URLSearchParams(body as string)));
-      } catch (err) {
-        done(err instanceof Error ? err : new Error('bad form body'), undefined);
-      }
-    },
-  );
+  // Fix 1: every OAuth route lives in an encapsulated child context, and the
+  // form parser with it. Registered on the root instance the parser would
+  // also parse `application/x-www-form-urlencoded` for `/api/login` — an
+  // unauthenticated route with no origin check that a cross-origin HTML form
+  // can reach without a CORS preflight (login CSRF). A child context without
+  // a `prefix` serves the same paths, so no URL changes.
+  void app.register((scoped, _opts, done) => {
+    scoped.addContentTypeParser(
+      'application/x-www-form-urlencoded',
+      { parseAs: 'string', bodyLimit: 8 * 1024 },
+      (_req, body, done) => {
+        try {
+          done(null, Object.fromEntries(new URLSearchParams(body as string)));
+        } catch (err) {
+          done(err instanceof Error ? err : new Error('bad form body'), undefined);
+        }
+      },
+    );
 
-  // Ruling PR-97: behind the tunnel every request arrives from 127.0.0.1 and
-  // trustProxy is not set, so an IP key would be one global bucket wearing a
-  // disguise. This is one global bucket, said plainly. A stranger can exhaust
-  // the hour; a registered client can do nothing until the owner types a
-  // password at the consent page, and `mcp revoke-client` removes the junk.
-  const registerLimiter = createRateLimiter({
-    limit: 20,
-    windowMs: 3_600_000,
-    now: deps.now,
-  });
-
-  const oauthDeps: OAuthDeps = { scopes: deps.scopes, now: deps.now, guildIds: deps.guildIds };
-
-  app.get('/.well-known/oauth-authorization-server', (_request, reply) => {
-    return reply.status(200).send({
-      issuer,
-      authorization_endpoint: `${issuer}/oauth/authorize`,
-      token_endpoint: `${issuer}/oauth/token`,
-      registration_endpoint: `${issuer}/oauth/register`,
-      revocation_endpoint: `${issuer}/oauth/revoke`,
-      response_types_supported: ['code'],
-      grant_types_supported: ['authorization_code', 'refresh_token'],
-      code_challenge_methods_supported: ['S256'],
-      token_endpoint_auth_methods_supported: ['none'],
-      scopes_supported: [...OAUTH_SCOPES],
+    // Ruling PR-97: behind the tunnel every request arrives from 127.0.0.1 and
+    // trustProxy is not set, so an IP key would be one global bucket wearing a
+    // disguise. This is one global bucket, said plainly. A stranger can exhaust
+    // the hour; a registered client can do nothing until the owner types a
+    // password at the consent page, and `mcp revoke-client` removes the junk.
+    const registerLimiter = createRateLimiter({
+      limit: 20,
+      windowMs: 3_600_000,
+      now: deps.now,
     });
-  });
 
-  app.get('/.well-known/oauth-protected-resource', (_request, reply) => {
-    return reply.status(200).send({
-      resource: `${issuer}/mcp`,
-      authorization_servers: [issuer],
-      scopes_supported: [...OAUTH_SCOPES],
-      bearer_methods_supported: ['header'],
+    // Fix 1: `GET /oauth/authorize` writes a pending row per call, so it gets
+    // its own bucket. Checked first, before any work, since bounding the work
+    // is the point.
+    const authorizeLimiter = createRateLimiter({
+      limit: 60,
+      windowMs: 3_600_000,
+      now: deps.now,
     });
-  });
 
-  app.get('/oauth/authorize', (request, reply) => {
-    const parsed = authorizeQuerySchema.safeParse(request.query);
-    if (!parsed.success || parsed.data.response_type !== 'code') {
-      // Never a redirect to an unvalidated `redirect_uri`: the failure is
-      // rendered here, and the error code is named, not the URI.
-      htmlError(reply, 200, 'invalid_request: the authorization request is malformed');
-      return reply;
-    }
-    const result = beginAuthorization(oauthDeps, {
-      clientId: parsed.data.client_id,
-      redirectUri: parsed.data.redirect_uri,
-      codeChallenge: parsed.data.code_challenge,
-      codeChallengeMethod: parsed.data.code_challenge_method,
-      scope: parsed.data.scope,
-      state: parsed.data.state ?? null,
-    });
-    if (!result.ok) {
-      htmlError(reply, 200, `${result.error}: ${result.description}`);
-      return reply;
-    }
-    return reply
-      .status(200)
-      .header('content-type', 'text/html; charset=utf-8')
-      .header('content-security-policy', "default-src 'none'")
-      .header('cache-control', 'no-store')
-      .send(
-        renderConsentPage({
-          clientName: result.client.clientName,
-          redirectUriHost: result.redirectUriHost,
-          scopes: result.scopes,
-          requestId: result.requestId,
-          nonce: result.nonce,
-        }),
-      );
-  });
+    const oauthDeps: OAuthDeps = { scopes: deps.scopes, now: deps.now, guildIds: deps.guildIds };
 
-  app.post('/oauth/authorize', async (request, reply) => {
-    if (!originMatchesHost(request)) {
-      htmlError(reply, 403, 'forbidden: the request origin does not match this server');
-      return reply;
-    }
-    const parsed = authorizeFormSchema.safeParse(request.body);
-    if (!parsed.success) {
-      htmlError(reply, 400, 'invalid_request: the authorization form is malformed');
-      return reply;
-    }
-    const instance = deps.scopes.instance();
-    const now = deps.now();
-
-    if (parsed.data.decision === 'deny') {
-      // Consumed, not completed: the pending row must not stay spendable, and
-      // there is deliberately no approval for the client to exchange.
-      const row = oauthRepo.consumePendingAuthorization(instance, parsed.data.requestId, now);
-      if (row === undefined) {
-        htmlError(reply, 400, 'invalid_grant: the authorization request is unknown or expired');
-        return reply;
-      }
-      if (!secretsMatch(hashToken(parsed.data.nonce), row.nonceHash)) {
-        htmlError(reply, 400, 'invalid_grant: the authorization request does not match');
-        return reply;
-      }
-      const params: Record<string, string> = { error: 'access_denied' };
-      if (row.state !== null) params.state = row.state;
-      return reply.redirect(redirectWith(row.redirectUri, params));
-    }
-
-    const checked = await verifyAccountCredentials(deps, {
-      username: parsed.data.username,
-      password: parsed.data.password,
-      ip: request.ip ?? null,
-    });
-    if (!checked.ok) {
-      // The pending row stays unconsumed, so the owner can resubmit the same
-      // form once with the right password.
-      htmlError(reply, 200, 'sign-in failed; start the authorization again from your client');
-      return reply;
-    }
-    // Refusal (f): minting requires `mcp.authorize` in at least one guild the
-    // account can reach, checked live — never stored, never frozen (PR-92).
-    if (reachableGuilds(oauthDeps, checked.account.accountId).length === 0) {
-      htmlError(
-        reply,
-        403,
-        'no-grant: this account holds mcp.authorize in no guild this server serves',
-      );
-      return reply;
-    }
-    const done = completeAuthorization(oauthDeps, {
-      requestId: parsed.data.requestId,
-      nonce: parsed.data.nonce,
-      accountId: checked.account.accountId,
-    });
-    if (!done.ok) {
-      htmlError(reply, 400, `${done.error}: ${done.description}`);
-      return reply;
-    }
-    deps.logger.info({ component: 'http' }, 'oauth authorization completed');
-    const params: Record<string, string> = { code: done.code };
-    if (done.state !== null) params.state = done.state;
-    return reply.redirect(redirectWith(done.redirectUri, params));
-  });
-
-  app.post('/oauth/token', async (request, reply) => {
-    const base = tokenBaseSchema.safeParse(request.body);
-    if (!base.success) {
-      return tokenFailure(reply, {
-        ok: false,
-        error: 'invalid_request',
-        description: 'grant_type is required',
+    scoped.get('/.well-known/oauth-authorization-server', (_request, reply) => {
+      return reply.status(200).send({
+        issuer,
+        authorization_endpoint: `${issuer}/oauth/authorize`,
+        token_endpoint: `${issuer}/oauth/token`,
+        registration_endpoint: `${issuer}/oauth/register`,
+        revocation_endpoint: `${issuer}/oauth/revoke`,
+        response_types_supported: ['code'],
+        grant_types_supported: ['authorization_code', 'refresh_token'],
+        code_challenge_methods_supported: ['S256'],
+        token_endpoint_auth_methods_supported: ['none'],
+        scopes_supported: [...OAUTH_SCOPES],
       });
-    }
-    if (base.data.grant_type === 'authorization_code') {
-      const parsed = authorizationCodeGrantSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return tokenFailure(reply, {
-          ok: false,
-          error: 'invalid_request',
-          description: 'the authorization_code grant is malformed',
-        });
+    });
+
+    scoped.get('/.well-known/oauth-protected-resource', (_request, reply) => {
+      return reply.status(200).send({
+        resource: `${issuer}/mcp`,
+        authorization_servers: [issuer],
+        scopes_supported: [...OAUTH_SCOPES],
+        bearer_methods_supported: ['header'],
+      });
+    });
+
+    scoped.get('/oauth/authorize', (request, reply) => {
+      if (!authorizeLimiter.check('authorize')) {
+        reply.header('retry-after', '3600');
+        htmlError(reply, 429, 'too many authorization requests; try again later');
+        return reply;
       }
-      const issued = exchangeCode(oauthDeps, {
-        code: parsed.data.code,
+      const parsed = authorizeQuerySchema.safeParse(request.query);
+      if (!parsed.success || parsed.data.response_type !== 'code') {
+        // Never a redirect to an unvalidated `redirect_uri`: the failure is
+        // rendered here, and the error code is named, not the URI.
+        htmlError(reply, 200, 'invalid_request: the authorization request is malformed');
+        return reply;
+      }
+      const result = beginAuthorization(oauthDeps, {
         clientId: parsed.data.client_id,
         redirectUri: parsed.data.redirect_uri,
-        codeVerifier: parsed.data.code_verifier,
+        codeChallenge: parsed.data.code_challenge,
+        codeChallengeMethod: parsed.data.code_challenge_method,
+        scope: parsed.data.scope,
+        state: parsed.data.state ?? null,
       });
-      if (!issued.ok) return tokenFailure(reply, issued);
-      deps.logger.info(
-        {
-          component: 'http',
-          oauthClientId: parsed.data.client_id,
-          oauthTokenId: issued.accessTokenId,
-        },
-        'oauth code exchanged',
-      );
+      if (!result.ok) {
+        htmlError(reply, 200, `${result.error}: ${result.description}`);
+        return reply;
+      }
       return reply
         .status(200)
+        .header('content-type', 'text/html; charset=utf-8')
+        .header('content-security-policy', "default-src 'none'")
         .header('cache-control', 'no-store')
-        .header('pragma', 'no-cache')
-        .send({
-          access_token: issued.accessToken,
-          refresh_token: issued.refreshToken,
-          token_type: 'Bearer',
-          expires_in: issued.expiresInSeconds,
-          scope: issued.scopes.join(' '),
-        });
-    }
-    if (base.data.grant_type === 'refresh_token') {
-      const parsed = refreshTokenGrantSchema.safeParse(request.body);
+        .send(
+          renderConsentPage({
+            clientName: result.client.clientName,
+            redirectUriHost: result.redirectUriHost,
+            scopes: result.scopes,
+            requestId: result.requestId,
+            nonce: result.nonce,
+          }),
+        );
+    });
+
+    scoped.post('/oauth/authorize', async (request, reply) => {
+      if (!originMatchesHost(request)) {
+        htmlError(reply, 403, 'forbidden: the request origin does not match this server');
+        return reply;
+      }
+      const parsed = authorizeFormSchema.safeParse(request.body);
       if (!parsed.success) {
+        htmlError(reply, 400, 'invalid_request: the authorization form is malformed');
+        return reply;
+      }
+      const instance = deps.scopes.instance();
+      const now = deps.now();
+
+      if (parsed.data.decision === 'deny') {
+        // Consumed, not completed: the pending row must not stay spendable, and
+        // there is deliberately no approval for the client to exchange.
+        const row = oauthRepo.consumePendingAuthorization(instance, parsed.data.requestId, now);
+        if (row === undefined) {
+          htmlError(reply, 400, 'invalid_grant: the authorization request is unknown or expired');
+          return reply;
+        }
+        if (!secretsMatch(hashToken(parsed.data.nonce), row.nonceHash)) {
+          htmlError(reply, 400, 'invalid_grant: the authorization request does not match');
+          return reply;
+        }
+        const params: Record<string, string> = { error: 'access_denied' };
+        if (row.state !== null) params.state = row.state;
+        return reply.redirect(redirectWith(row.redirectUri, params));
+      }
+
+      const checked = await verifyAccountCredentials(deps, {
+        username: parsed.data.username,
+        password: parsed.data.password,
+        ip: request.ip ?? null,
+      });
+      if (!checked.ok) {
+        // The pending row stays unconsumed, so the owner can resubmit the same
+        // form once with the right password.
+        htmlError(reply, 200, 'sign-in failed; start the authorization again from your client');
+        return reply;
+      }
+      // Refusal (f): minting requires `mcp.authorize` in at least one guild the
+      // account can reach, checked live — never stored, never frozen (PR-92).
+      if (reachableGuilds(oauthDeps, checked.account.accountId).length === 0) {
+        htmlError(
+          reply,
+          403,
+          'no-grant: this account holds mcp.authorize in no guild this server serves',
+        );
+        return reply;
+      }
+      const done = completeAuthorization(oauthDeps, {
+        requestId: parsed.data.requestId,
+        nonce: parsed.data.nonce,
+        accountId: checked.account.accountId,
+      });
+      if (!done.ok) {
+        htmlError(reply, 400, `${done.error}: ${done.description}`);
+        return reply;
+      }
+      deps.logger.info({ component: 'http' }, 'oauth authorization completed');
+      const params: Record<string, string> = { code: done.code };
+      if (done.state !== null) params.state = done.state;
+      return reply.redirect(redirectWith(done.redirectUri, params));
+    });
+
+    scoped.post('/oauth/token', async (request, reply) => {
+      const base = tokenBaseSchema.safeParse(request.body);
+      if (!base.success) {
         return tokenFailure(reply, {
           ok: false,
           error: 'invalid_request',
-          description: 'the refresh_token grant is malformed',
+          description: 'grant_type is required',
         });
       }
-      const issued = refreshTokens(oauthDeps, {
-        refreshToken: parsed.data.refresh_token,
-        clientId: parsed.data.client_id,
+      if (base.data.grant_type === 'authorization_code') {
+        const parsed = authorizationCodeGrantSchema.safeParse(request.body);
+        if (!parsed.success) {
+          return tokenFailure(reply, {
+            ok: false,
+            error: 'invalid_request',
+            description: 'the authorization_code grant is malformed',
+          });
+        }
+        const issued = exchangeCode(oauthDeps, {
+          code: parsed.data.code,
+          clientId: parsed.data.client_id,
+          redirectUri: parsed.data.redirect_uri,
+          codeVerifier: parsed.data.code_verifier,
+        });
+        if (!issued.ok) return tokenFailure(reply, issued);
+        deps.logger.info(
+          {
+            component: 'http',
+            oauthClientId: parsed.data.client_id,
+            oauthTokenId: issued.accessTokenId,
+          },
+          'oauth code exchanged',
+        );
+        return reply
+          .status(200)
+          .header('cache-control', 'no-store')
+          .header('pragma', 'no-cache')
+          .send({
+            access_token: issued.accessToken,
+            refresh_token: issued.refreshToken,
+            token_type: 'Bearer',
+            expires_in: issued.expiresInSeconds,
+            scope: issued.scopes.join(' '),
+          });
+      }
+      if (base.data.grant_type === 'refresh_token') {
+        const parsed = refreshTokenGrantSchema.safeParse(request.body);
+        if (!parsed.success) {
+          return tokenFailure(reply, {
+            ok: false,
+            error: 'invalid_request',
+            description: 'the refresh_token grant is malformed',
+          });
+        }
+        const issued = refreshTokens(oauthDeps, {
+          refreshToken: parsed.data.refresh_token,
+          clientId: parsed.data.client_id,
+        });
+        if (!issued.ok) return tokenFailure(reply, issued);
+        deps.logger.info(
+          {
+            component: 'http',
+            oauthClientId: parsed.data.client_id,
+            oauthTokenId: issued.accessTokenId,
+          },
+          'oauth token refreshed',
+        );
+        return reply
+          .status(200)
+          .header('cache-control', 'no-store')
+          .header('pragma', 'no-cache')
+          .send({
+            access_token: issued.accessToken,
+            refresh_token: issued.refreshToken,
+            token_type: 'Bearer',
+            expires_in: issued.expiresInSeconds,
+            scope: issued.scopes.join(' '),
+          });
+      }
+      return tokenFailure(reply, {
+        ok: false,
+        error: 'unsupported_grant_type',
+        description: 'only authorization_code and refresh_token are supported',
       });
-      if (!issued.ok) return tokenFailure(reply, issued);
-      deps.logger.info(
-        {
-          component: 'http',
-          oauthClientId: parsed.data.client_id,
-          oauthTokenId: issued.accessTokenId,
-        },
-        'oauth token refreshed',
-      );
-      return reply
-        .status(200)
-        .header('cache-control', 'no-store')
-        .header('pragma', 'no-cache')
-        .send({
-          access_token: issued.accessToken,
-          refresh_token: issued.refreshToken,
-          token_type: 'Bearer',
-          expires_in: issued.expiresInSeconds,
-          scope: issued.scopes.join(' '),
-        });
-    }
-    return tokenFailure(reply, {
-      ok: false,
-      error: 'unsupported_grant_type',
-      description: 'only authorization_code and refresh_token are supported',
     });
-  });
 
-  app.post('/oauth/register', (request, reply) => {
-    if (!registerLimiter.check('register')) {
-      return reply.status(429).send({ error: 'too_many_requests' });
-    }
-    const parsed = registerBodySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: 'invalid_request' });
-    }
-    for (const uri of parsed.data.redirect_uris) {
-      if (!isAllowedRedirectUri(uri)) {
-        return reply.status(400).send({ error: 'invalid_redirect_uri' });
+    scoped.post('/oauth/register', (request, reply) => {
+      if (!registerLimiter.check('register')) {
+        return reply.status(429).send({ error: 'too_many_requests' });
       }
-    }
-    const clientId = `cli_${randomBytes(16).toString('hex')}`;
-    oauthRepo.createClient(deps.scopes.instance(), {
-      clientId,
-      clientName: parsed.data.client_name,
-      redirectUris: [...parsed.data.redirect_uris],
-      createdAt: deps.now(),
-      createdByAccountId: null,
-      registrationSource: 'dynamic',
+      const parsed = registerBodySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'invalid_request' });
+      }
+      for (const uri of parsed.data.redirect_uris) {
+        if (!isAllowedRedirectUri(uri)) {
+          return reply.status(400).send({ error: 'invalid_redirect_uri' });
+        }
+      }
+      const clientId = `cli_${randomBytes(16).toString('hex')}`;
+      oauthRepo.createClient(deps.scopes.instance(), {
+        clientId,
+        clientName: parsed.data.client_name,
+        redirectUris: [...parsed.data.redirect_uris],
+        createdAt: deps.now(),
+        createdByAccountId: null,
+        registrationSource: 'dynamic',
+      });
+      deps.logger.info({ component: 'http', oauthClientId: clientId }, 'oauth client registered');
+      return reply.status(201).send({
+        client_id: clientId,
+        client_name: parsed.data.client_name,
+        redirect_uris: [...parsed.data.redirect_uris],
+        token_endpoint_auth_method: 'none',
+        grant_types: ['authorization_code', 'refresh_token'],
+        response_types: ['code'],
+      });
     });
-    deps.logger.info({ component: 'http', oauthClientId: clientId }, 'oauth client registered');
-    return reply.status(201).send({
-      client_id: clientId,
-      client_name: parsed.data.client_name,
-      redirect_uris: [...parsed.data.redirect_uris],
-      token_endpoint_auth_method: 'none',
-      grant_types: ['authorization_code', 'refresh_token'],
-      response_types: ['code'],
-    });
-  });
 
-  app.post('/oauth/revoke', (request, reply) => {
-    const parsed = revokeBodySchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: 'invalid_request' });
-    }
-    const existing = oauthRepo.findTokenByHash(
-      deps.scopes.instance(),
-      hashToken(parsed.data.token),
-    );
-    revokeByValue(oauthDeps, { token: parsed.data.token, clientId: parsed.data.client_id });
-    // RFC 7009: revocation always succeeds, even for an unknown token — and an
-    // unknown token carries no id to log.
-    if (existing !== undefined && existing.clientId === parsed.data.client_id) {
-      deps.logger.info(
-        { component: 'http', oauthClientId: existing.clientId, oauthTokenId: existing.tokenId },
-        'oauth token revoked',
+    scoped.post('/oauth/revoke', (request, reply) => {
+      const parsed = revokeBodySchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'invalid_request' });
+      }
+      const existing = oauthRepo.findTokenByHash(
+        deps.scopes.instance(),
+        hashToken(parsed.data.token),
       );
-    } else {
-      deps.logger.info({ component: 'http' }, 'oauth token revoked');
-    }
-    return reply.status(200).send();
+      revokeByValue(oauthDeps, { token: parsed.data.token, clientId: parsed.data.client_id });
+      // RFC 7009: revocation always succeeds, even for an unknown token — and an
+      // unknown token carries no id to log.
+      if (existing !== undefined && existing.clientId === parsed.data.client_id) {
+        deps.logger.info(
+          { component: 'http', oauthClientId: existing.clientId, oauthTokenId: existing.tokenId },
+          'oauth token revoked',
+        );
+      } else {
+        deps.logger.info({ component: 'http' }, 'oauth token revoked');
+      }
+      return reply.status(200).send();
+    });
+    done();
   });
 };
