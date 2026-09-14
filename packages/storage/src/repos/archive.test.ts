@@ -20,6 +20,7 @@ import {
   enableChannel,
   expireContent,
   findChannel,
+  findMessage,
   isChannelEnabled,
   linkToCase,
   listChannels,
@@ -538,5 +539,38 @@ describe('two guilds with colliding ids', () => {
     // Expiry under A purges only A's row.
     expect(expireContent(a, 3000 + ARCHIVE_DEFAULT_RETENTION_MS)).toBe(1);
     expect(readMessage(b, messageId)?.content).toBe('guild b row');
+  });
+});
+
+describe('findMessage', () => {
+  it('returns the row by id, and undefined for a missing id', () => {
+    const messageId = seedMessage(a, { content: 'find me' });
+    expect(findMessage(a, messageId)).toMatchObject({
+      messageId,
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      content: 'find me',
+      createdAt: 2000,
+    });
+    expect(findMessage(a, '999999999999999999')).toBeUndefined();
+  });
+
+  it('is guild-scoped: a colliding id returns this guild row', () => {
+    const messageId = '666666666666666666';
+    seedMessage(a, { messageId, content: 'guild a row' });
+    seedMessage(b, { messageId, content: 'guild b row' });
+    expect(findMessage(a, messageId)?.content).toBe('guild a row');
+    expect(findMessage(b, messageId)?.content).toBe('guild b row');
+  });
+
+  it('still returns the tombstone after the content is purged', () => {
+    const messageId = seedMessage(a, { content: 'doomed' });
+    const deletedAt = 10_000;
+    expect(recordDelete(a, { messageId, deletedAt })).toBe('recorded');
+    expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS)).toBe(1);
+    const tombstone = findMessage(a, messageId);
+    expect(tombstone?.messageId).toBe(messageId);
+    expect(tombstone?.content).toBeNull();
+    expect(tombstone?.contentPurgedAt).toBe(deletedAt + ARCHIVE_DEFAULT_RETENTION_MS);
   });
 });

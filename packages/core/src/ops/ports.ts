@@ -416,6 +416,15 @@ export type OpsArchiveDisableOutcome =
   | { readonly outcome: 'disabled'; readonly messageCount: number }
   | { readonly outcome: 'not-enabled' };
 
+/** One archive search hit, as `archive search` renders it. */
+export interface OpsArchiveSearchHit {
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly authorId: string | undefined;
+  readonly createdAt: number;
+  readonly excerpt: string;
+}
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -827,6 +836,27 @@ export interface OpsPorts {
    * `missing` means the channel is not in the client's cache at all.
    */
   listUnreadableArchiveChannels(): readonly OpsUnreadableArchiveChannel[];
+  /**
+   * `doctor`'s archive-index check: the FTS row count beside the
+   * `archive_messages` row count, both for this guild. Unequal means the index
+   * is stale — a restored database disagrees until `archive reindex` runs.
+   */
+  archiveIndexHealth(): { readonly indexed: number; readonly rows: number };
+  /**
+   * Searches the archive. The visibility set is every archive-enabled channel
+   * in this guild — the operator sees what the archive holds, nothing wider.
+   *
+   * `rank` is dropped from this surface (an operator does not need BM25's
+   * scale) but the order is kept: best match first, as the repository returns.
+   */
+  archiveSearch(input: {
+    readonly query: string;
+    readonly channelId?: string;
+    readonly authorId?: string;
+    readonly limit?: number;
+  }): { readonly hits: readonly OpsArchiveSearchHit[]; readonly total: number };
+  /** Rebuilds the FTS index from archive_messages. Returns the indexed row count. */
+  archiveReindex(): number;
 }
 
 /** A job this command queued, or the one already pending that absorbed it. */

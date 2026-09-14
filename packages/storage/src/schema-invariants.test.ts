@@ -9,6 +9,7 @@ import { parseGuildId, RULE_KINDS } from '@bananasaurs/core';
 import * as schema from './schema.js';
 import { runMigrations } from './db.js';
 import { createRule, type RuleKind } from './repos/automod-rules.js';
+import { disableChannel, enableChannel, upsertMessage } from './repos/archive.js';
 import { upsertGuild } from './repos/guilds.js';
 import {
   MIGRATIONS_FOLDER,
@@ -708,5 +709,222 @@ describe('runMigrations fails the run when a migration leaves a dangling referen
     expect(raw.pragma('foreign_keys', { simple: true })).toBe(1);
 
     raw.close();
+  });
+});
+
+/**
+ * ADR 0049 Amendment 1 D4, step 1: the machinery is invisible for the reason
+ * we think.
+ *
+ * `allTables()` keeps only `PRAGMA table_list` rows with `type === 'table'`,
+ * so every invariant above skips the FTS5 index — but only because SQLite
+ * reports `archive_messages_fts` as `type === 'virtual'` and its four shadow
+ * tables as `type === 'shadow'`. If a future SQLite reclassifies these as
+ * `table`, this test fails loudly and ADR 0049 is revisited — rather than the
+ * FTS table silently failing STRICT. No exemption is added here, and none is
+ * wanted: an exemption would keep passing while the reason for it changed.
+ */
+describe('the FTS5 machinery is invisible to the invariants for the reason we think', () => {
+  it('reports archive_messages_fts as virtual and its shadows as shadow in PRAGMA table_list', () => {
+    const rows = t.raw.prepare(`PRAGMA table_list`).all() as {
+      schema: string;
+      name: string;
+      type: string;
+    }[];
+    const byName = new Map(rows.filter((r) => r.schema === 'main').map((r) => [r.name, r.type]));
+    expect(byName.get('archive_messages_fts')).toBe('virtual');
+    for (const shadow of [
+      'archive_messages_fts_data',
+      'archive_messages_fts_idx',
+      'archive_messages_fts_docsize',
+      'archive_messages_fts_config',
+    ]) {
+      expect(byName.get(shadow)).toBe('shadow');
+    }
+    expect(allTables().map((r) => r.name)).not.toContain('archive_messages_fts');
+  });
+});
+/**
+ * ADR 0049 Amendment 1 D4, step 2: the index cannot outlive its content.
+ *
+ * The external-content triggers in `drizzle/0020_archive_fts.sql` are
+ * hand-written SQL the invariants cannot see, so this proves they are attached
+ * and the external-content contract holds: two guilds with colliding message
+ * ids, one row each, both findable by a raw MATCH; then guild A's row deleted
+ * through `archiveRepo` — `disableChannel`, whose cascade issues the real
+ * DELETE on `archive_messages` the `…_ad` trigger listens for (the repo owns
+ * no single-message hard delete; `recordDelete` is a soft mark) — and A's FTS
+ * entry is gone while B's remains.
+ */
+describe('the FTS triggers keep the index from outliving its content', () => {
+  it('deletes one guild’s FTS entry and keeps the colliding neighbour’s', () => {
+    const scopeA = t.scopes.forGuild(parseGuildId('777777777777777777'));
+    const scopeB = t.scopes.forGuild(parseGuildId('888888888888888888'));
+    upsertGuild(scopeA, { name: 'fts-trigger-guild-a', now: 0 });
+    upsertGuild(scopeB, { name: 'fts-trigger-guild-b', now: 0 });
+    const channelA = '919191919191919191';
+    const channelB = '929292929292929292';
+    enableChannel(scopeA, { channelId: channelA, attachmentPolicy: 'none', now: 1 });
+    enableChannel(scopeB, { channelId: channelB, attachmentPolicy: 'none', now: 1 });
+    const messageId = '939393939393939393';
+    for (const [scope, channelId] of [
+      [scopeA, channelA],
+      [scopeB, channelB],
+    ] as const) {
+      upsertMessage(scope, {
+        messageId,
+        channelId,
+        authorId: undefined,
+        content: 'quokkasnack trampoline',
+        createdAt: 2,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+
+    const matchedGuilds = (): string[] =>
+      (
+        t.raw
+          .prepare(
+            `SELECT guild_id AS guildId FROM archive_messages_fts WHERE archive_messages_fts MATCH ?`,
+          )
+          .all('quokkasnack') as { guildId: string }[]
+      ).map((r) => r.guildId);
+    expect(matchedGuilds().sort()).toEqual([scopeA.guildId, scopeB.guildId].sort());
+
+    disableChannel(scopeA, channelA);
+
+    expect(matchedGuilds()).toEqual([scopeB.guildId]);
+  });
+});
+
+/**
+ * ADR 0049 Amendment 1 D4, step 3: the index carries its partition key.
+ *
+ * The replacement for the schema-level partition guarantee the invariants
+ * cannot give the FTS table: `archive_messages_fts` has a stored (UNINDEXED)
+ * `guild_id` column, so guild scope stays expressible in SQL, and a MATCH
+ * query filtered by `guild_id` returns only that guild's rows — even with
+ * colliding message ids and a token both guilds share.
+ */
+describe('the FTS index carries its partition key', () => {
+  it('has a guild_id column', () => {
+    expect(columns('archive_messages_fts').map((c) => c.name)).toContain('guild_id');
+  });
+
+  it('returns only the scoped guild’s rows for a MATCH filtered by guild_id', () => {
+    const scopeA = t.scopes.forGuild(parseGuildId('747474747474747474'));
+    const scopeB = t.scopes.forGuild(parseGuildId('848484848484848484'));
+    upsertGuild(scopeA, { name: 'fts-partition-guild-a', now: 0 });
+    upsertGuild(scopeB, { name: 'fts-partition-guild-b', now: 0 });
+    const channelA = '717171717171717171';
+    const channelB = '727272727272727272';
+    enableChannel(scopeA, { channelId: channelA, attachmentPolicy: 'none', now: 1 });
+    enableChannel(scopeB, { channelId: channelB, attachmentPolicy: 'none', now: 1 });
+    const messageId = '737373737373737373';
+    for (const [scope, channelId] of [
+      [scopeA, channelA],
+      [scopeB, channelB],
+    ] as const) {
+      upsertMessage(scope, {
+        messageId,
+        channelId,
+        authorId: undefined,
+        content: 'wombatpost strictly scoped',
+        createdAt: 2,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+
+    const rows = t.raw
+      .prepare(
+        `SELECT guild_id AS guildId FROM archive_messages_fts WHERE archive_messages_fts MATCH ? AND guild_id = ?`,
+      )
+      .all('wombatpost', scopeA.guildId) as { guildId: string }[];
+    expect(rows.map((r) => r.guildId)).toEqual([scopeA.guildId]);
+  });
+});
+
+/**
+ * Ruling PR-85: 0020 populates the index it creates.
+ *
+ * A database that already holds `archive_messages` rows when 0020 runs gets an
+ * empty index without the trailing `rebuild` — and worse, the `_au`/`_ad`
+ * triggers then issue FTS5 `delete` commands for rows that were never indexed,
+ * which FTS5 rejects with `database disk image is malformed`. This migrates to
+ * 0019, inserts one row, migrates through 0020, and proves the index is
+ * populated and the purge/delete paths work.
+ */
+describe('0020 populates the index it creates (ruling PR-85)', () => {
+  it('migrates a pre-existing archive row through 0020 with a populated, working index', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    runMigrations(raw, db, migrationsFolderUpTo(19));
+
+    const GUILD_ID = '555555555555555555';
+    const CHANNEL_ID = '666666666666666666';
+    const MESSAGE_ID = '777777777777777777';
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_channels (guild_id, channel_id, attachment_policy, enabled_at, backfill_state) VALUES (?, ?, 'none', 0, 'pending')`,
+      )
+      .run(GUILD_ID, CHANNEL_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages (guild_id, message_id, channel_id, author_id, content, created_at) VALUES (?, ?, ?, ?, ?, 1)`,
+      )
+      .run(GUILD_ID, MESSAGE_ID, CHANNEL_ID, '888888888888888888', 'rebuildmarker legacy content');
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const matched = raw
+      .prepare(`SELECT COUNT(*) AS n FROM archive_messages_fts WHERE archive_messages_fts MATCH ?`)
+      .get('rebuildmarker') as { n: number };
+    expect(matched.n).toBe(1);
+
+    expect(() =>
+      raw
+        .prepare(`UPDATE archive_messages SET content = NULL WHERE guild_id = ? AND message_id = ?`)
+        .run(GUILD_ID, MESSAGE_ID),
+    ).not.toThrow();
+    expect(() =>
+      raw
+        .prepare(`DELETE FROM archive_messages WHERE guild_id = ? AND message_id = ?`)
+        .run(GUILD_ID, MESSAGE_ID),
+    ).not.toThrow();
+
+    raw.close();
+  });
+});
+
+/**
+ * The migrator gates on the journal's `when`, not on a hash: an entry whose
+ * `when` is equal to or smaller than the previous entry's is silently skipped
+ * on a database that has already run the earlier migration. Read the shipped
+ * journal and prove its timestamps are strictly increasing, so a new entry
+ * that reuses or backdates a timestamp fails the build instead of looking
+ * exactly like success.
+ */
+describe('the migration journal applies in order', () => {
+  it('has strictly increasing when values', () => {
+    const journal = JSON.parse(
+      fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+    ) as { entries: { idx: number; when: number; tag: string }[] };
+    expect(journal.entries.length).toBeGreaterThan(0);
+    for (let i = 1; i < journal.entries.length; i += 1) {
+      const prev = journal.entries[i - 1]!;
+      const curr = journal.entries[i]!;
+      expect(
+        curr.when,
+        `${curr.tag} (idx ${curr.idx}) has when ${curr.when}, not strictly greater than ` +
+          `${prev.tag} (idx ${prev.idx}) with when ${prev.when}; the migrator would silently skip it.`,
+      ).toBeGreaterThan(prev.when);
+    }
   });
 });

@@ -896,6 +896,10 @@ export const archiveChannels = sqliteTable(
 /**
  * One archived message. `content` is NULL after purge, or never known.
  *
+ * An FTS5 external-content index over this table's `content` exists; it is
+ * created by `drizzle/0020_archive_fts.sql` because a virtual table cannot
+ * be declared here; see ADR 0049.
+ *
  * `caseId` (PR-69) is set by the operator via `linkToCase`, which verifies
  * the case exists in scope and is open. Deliberately no FK: a case deleted
  * by a future path must not cascade into the moderation record's neighbour,

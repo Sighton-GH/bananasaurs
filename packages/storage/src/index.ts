@@ -40,6 +40,7 @@ export * as accountRepo from './repos/accounts.js';
 export * as automodRuleRepo from './repos/automod-rules.js';
 export * as automodAdminRepo from './repos/automod-admin.js';
 export * as archiveRepo from './repos/archive.js';
+export * as archiveSearchRepo from './repos/archive-search.js';
 export * as automodFixtureRepo from './repos/automod-fixtures.js';
 export * as automodRuleListsRepo from './repos/automod-rule-lists.js';
 export * as enforcementGateRepo from './repos/enforcement-gate.js';

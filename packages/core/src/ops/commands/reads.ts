@@ -49,6 +49,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     const badCutoverState = ctx.ports.listAutomodRulesEnforcingWithBadCutoverState();
     const observePastWindow = ctx.ports.listAutomodRulesObservingPastWindowWithBacklog(ctx.now());
     const unreadableArchiveChannels = ctx.ports.listUnreadableArchiveChannels();
+    const archiveIndex = ctx.ports.archiveIndexHealth();
 
     const lines = [report.text, ''];
     lines.push(
@@ -123,7 +124,17 @@ export const doctorCommand = defineCommand<Record<string, never>>({
               .join('\n'),
     );
 
-    // The gateway half already decides `ok`; the seven guild-scoped findings
+    lines.push(
+      // The FTS row count beside the `archive_messages` row count, both for
+      // this guild: a restored database disagrees until `archive reindex`
+      // runs. Same problem flag as the archive line above.
+      archiveIndex.indexed === archiveIndex.rows
+        ? 'archive    every archived message is indexed'
+        : `    ARCHIVE INDEX STALE: ${String(archiveIndex.indexed)} indexed, ` +
+            `${String(archiveIndex.rows)} archived — run 'archive reindex --confirm'`,
+    );
+
+    // The gateway half already decides `ok`; the eight guild-scoped findings
     // here are just as capable of making a panel, an enforce-mode rule, or an
     // automod rule that never gets as far as matching — silently do nothing,
     // so they count the same way rather than being printed as decoration
@@ -136,7 +147,8 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       unusable.length === 0 &&
       badCutoverState.length === 0 &&
       observePastWindow.length === 0 &&
-      unreadableArchiveChannels.length === 0;
+      unreadableArchiveChannels.length === 0 &&
+      archiveIndex.indexed === archiveIndex.rows;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
     return {
@@ -172,6 +184,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           channelId: c.channelId,
           reason: c.reason,
         })),
+        archiveIndexHealth: { indexed: archiveIndex.indexed, rows: archiveIndex.rows },
       },
     };
   },

@@ -1,6 +1,7 @@
 import {
   accountRepo,
   archiveRepo,
+  archiveSearchRepo,
   automodAdminRepo,
   automodRuleListsRepo,
   automodRuleRepo,
@@ -451,6 +452,31 @@ export const testPortsFor = (
   listUnreadableArchiveChannels: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },
+  archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
+  // Same real-repo behaviour `apps/daemon/src/ops/wiring.ts` wires: the
+  // visibility set is every archive-enabled channel in this guild, never the
+  // caller's input.
+  archiveSearch: (input) => {
+    const visibleChannelIds = archiveRepo.listChannels(scope).map((channel) => channel.channelId);
+    const result = archiveSearchRepo.searchMessages(scope, {
+      query: input.query,
+      visibility: { channelIds: visibleChannelIds },
+      ...(input.channelId !== undefined && { channelIds: [input.channelId] }),
+      ...(input.authorId !== undefined && { authorId: input.authorId }),
+      ...(input.limit !== undefined && { limit: input.limit }),
+    });
+    return {
+      total: result.total,
+      hits: result.hits.map((hit) => ({
+        messageId: hit.messageId,
+        channelId: hit.channelId,
+        authorId: hit.authorId,
+        createdAt: hit.createdAt,
+        excerpt: hit.excerpt,
+      })),
+    };
+  },
+  archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */

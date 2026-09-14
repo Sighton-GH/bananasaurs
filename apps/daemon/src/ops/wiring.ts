@@ -15,6 +15,7 @@ import {
 import {
   accountRepo,
   archiveRepo,
+  archiveSearchRepo,
   automodAdminRepo,
   automodFixtureRepo,
   automodRuleListsRepo,
@@ -502,6 +503,33 @@ export const opsPortsFor = (
     });
   },
   listUnreadableArchiveChannels: () => unreadableArchiveChannels(scope, client),
+  archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
+  // The operator sees what the archive holds, nothing wider: the visibility
+  // set is every archive-enabled channel in this guild, built here from
+  // `listChannels` — never from the caller's input. A `channelId` narrows
+  // within that set (the repository returns empty for one outside it); `rank`
+  // is dropped at this boundary but the best-first order is kept.
+  archiveSearch: (input) => {
+    const visibleChannelIds = archiveRepo.listChannels(scope).map((channel) => channel.channelId);
+    const result = archiveSearchRepo.searchMessages(scope, {
+      query: input.query,
+      visibility: { channelIds: visibleChannelIds },
+      ...(input.channelId !== undefined && { channelIds: [input.channelId] }),
+      ...(input.authorId !== undefined && { authorId: input.authorId }),
+      ...(input.limit !== undefined && { limit: input.limit }),
+    });
+    return {
+      total: result.total,
+      hits: result.hits.map((hit) => ({
+        messageId: hit.messageId,
+        channelId: hit.channelId,
+        authorId: hit.authorId,
+        createdAt: hit.createdAt,
+        excerpt: hit.excerpt,
+      })),
+    };
+  },
+  archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
 
   enqueueReconcile: (panelId) =>
     enqueued(

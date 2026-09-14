@@ -422,6 +422,7 @@ describe('bananasaurs doctor', () => {
     listAutomodRulesEnforcingWithBadCutoverState: () => [],
     listAutomodRulesObservingPastWindowWithBacklog: () => [],
     listUnreadableArchiveChannels: () => [],
+    archiveIndexHealth: () => ({ indexed: 0, rows: 0 }),
   };
 
   it('reports ok when the gateway half is ok and nothing is stale', async () => {
@@ -654,6 +655,34 @@ describe('bananasaurs doctor', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('every enabled archive channel is readable');
+    expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('flags a stale archive index, and fails the check', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      archiveIndexHealth: () => ({ indexed: 1, rows: 3 }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain(
+      "    ARCHIVE INDEX STALE: 1 indexed, 3 archived — run 'archive reindex --confirm'",
+    );
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({
+      ok: false,
+      archiveIndexHealth: { indexed: 1, rows: 3 },
+    });
+  });
+
+  it('reports clean when every archived message is indexed', async () => {
+    const res = await drive(doctorCommand, {
+      ...healthy,
+      archiveIndexHealth: () => ({ indexed: 2, rows: 2 }),
+    });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('every archived message is indexed');
     expect(res.data).toMatchObject({ ok: true });
   });
 

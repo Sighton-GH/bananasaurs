@@ -15,6 +15,7 @@ import {
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  archiveRepo,
   automodFixtureRepo,
   automodRuleRepo,
   effectRepo,
@@ -1343,5 +1344,65 @@ describe('the dashboard recovery path, end to end (ADR 0012)', () => {
     expect(result.code).not.toBe(0);
     expect(result.err).toContain('BANANASAURS_READONLY');
     expect(bootstrapTokenRows()).toHaveLength(0);
+  });
+});
+
+/**
+ * The visibility set behind `archiveSearch` (review F4): the port builds it
+ * from `archiveRepo.listChannels`, never from caller input — the single most
+ * security-relevant line in the slice. Nothing but driving the real ports
+ * proves the two are joined that way: a regression passing `input.channelId`
+ * in as the visibility set would keep every stub-driven command test green.
+ */
+describe('archive search visibility, end to end', () => {
+  const scope = () => t.scopes.forGuild(GUILD);
+  const CHANNEL_A = '456789012345678901';
+  const CHANNEL_B = '567890123456789012';
+
+  it('returns only the enabled channel’s message, and nothing for the non-enabled one', () => {
+    startDaemon({ BANANASAURS_ARCHIVE_GUILDS: GUILD });
+    guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
+    const ports = daemon.portsFor(scope());
+    expect(ports.archiveEnableChannel({ channelId: CHANNEL_A, attachmentPolicy: 'none' })).toBe(
+      'enabled',
+    );
+
+    archiveRepo.upsertMessage(scope(), {
+      messageId: '678901234567890123',
+      channelId: CHANNEL_A,
+      authorId: '789012345678901234',
+      content: 'quince visibility proof alpha',
+      createdAt: discord.now(),
+      editedAt: undefined,
+      attachments: [],
+    });
+    // A message in a channel that is NOT archive-enabled: no channel row, so
+    // the composite foreign key would refuse it — inserted with enforcement
+    // off, the shape a hand-written orphan row has. The FTS trigger still
+    // fires, so the text IS in the index; only the visibility set keeps it
+    // out of results.
+    t.raw.pragma('foreign_keys = OFF');
+    try {
+      archiveRepo.upsertMessage(scope(), {
+        messageId: '890123456789012345',
+        channelId: CHANNEL_B,
+        authorId: '789012345678901234',
+        content: 'quince visibility proof alpha',
+        createdAt: discord.now(),
+        editedAt: undefined,
+        attachments: [],
+      });
+    } finally {
+      t.raw.pragma('foreign_keys = ON');
+    }
+
+    const result = ports.archiveSearch({ query: 'visibility' });
+    expect(result.hits).toHaveLength(1);
+    expect(result.hits[0]?.channelId).toBe(CHANNEL_A);
+    expect(result.total).toBe(1);
+
+    const narrowed = ports.archiveSearch({ query: 'visibility', channelId: CHANNEL_B });
+    expect(narrowed.hits).toHaveLength(0);
+    expect(narrowed.total).toBe(0);
   });
 });
