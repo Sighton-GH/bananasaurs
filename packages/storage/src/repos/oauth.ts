@@ -256,10 +256,15 @@ export const listClients = (scope: InstanceScope): readonly OAuthClientRow[] =>
   );
 
 /**
- * Deletes the client AND revokes every unrevoked token it holds, in ONE write
+ * Deletes the client, revokes every unrevoked token it holds, AND deletes its
+ * pending authorizations and authorization codes — all in ONE write
  * transaction (ruling PR-109: the tables have no foreign keys by design, so
- * this is where the orphan is prevented). Returns the number of tokens
- * revoked. Deleting an unknown client returns 0 and deletes nothing.
+ * this is where the orphan is prevented). A deleted client must leave nothing
+ * exchangeable: an unconsumed pending row or an unused code would otherwise
+ * survive the client they were issued for. All codes go, used or not — a used
+ * code for a deleted client has no audit value the token rows do not already
+ * carry. Returns the number of tokens revoked. Deleting an unknown client
+ * returns 0 and deletes nothing.
  */
 export const deleteClient = (scope: InstanceScope, clientId: string, now: number): number =>
   writeInstance(scope, ({ db }) => {
@@ -270,6 +275,10 @@ export const deleteClient = (scope: InstanceScope, clientId: string, now: number
       .set({ revokedAt: now })
       .where(and(eq(oauthTokens.clientId, clientId), isNull(oauthTokens.revokedAt)))
       .run();
+    db.delete(oauthPendingAuthorizations)
+      .where(eq(oauthPendingAuthorizations.clientId, clientId))
+      .run();
+    db.delete(oauthAuthorizationCodes).where(eq(oauthAuthorizationCodes.clientId, clientId)).run();
     return revoked.changes;
   });
 

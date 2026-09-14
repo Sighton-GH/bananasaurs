@@ -160,6 +160,90 @@ describe('clients', () => {
     expect(findClient(instance, 'client-1')?.clientId).toBe('client-1');
     expect(listTokens(instance)).toHaveLength(2);
   });
+
+  it('deleteClient leaves nothing exchangeable: pending rows and codes go too', () => {
+    seedClient('client-1');
+    seedClient('client-2');
+    const pending = (requestId: string, clientId: string): void =>
+      createPendingAuthorization(instance, {
+        requestId,
+        nonceHash: 'nonce-hash-1',
+        clientId,
+        redirectUri: 'https://example.test/cb',
+        scopes: ['bananasaurs:read'],
+        codeChallenge: 'challenge-1',
+        state: null,
+        createdAt: 1000,
+        expiresAt: 60_000,
+      });
+    pending('req-1', 'client-1');
+    pending('req-2', 'client-2');
+    seedCode('code-1', 'client-1');
+    seedCode('code-2', 'client-2');
+
+    expect(deleteClient(instance, 'client-1', 5000)).toBe(0);
+
+    expect(consumePendingAuthorization(instance, 'req-1', 5000)).toBeUndefined();
+    expect(findAuthorizationCode(instance, 'code-1')).toBeUndefined();
+    // The second client's rows are untouched: still consumable, still readable.
+    expect(consumePendingAuthorization(instance, 'req-2', 5000)).toBeDefined();
+    expect(findAuthorizationCode(instance, 'code-2')).toBeDefined();
+  });
+});
+
+describe('malformed scopes rows throw on read', () => {
+  // Written through the raw handle: the repository never writes this shape.
+  it.each(['pending', 'code', 'token'] as const)('%s with malformed scopes throws', (kind) => {
+    if (kind === 'pending') {
+      createPendingAuthorization(instance, {
+        requestId: 'req-bad',
+        nonceHash: 'nonce-hash-1',
+        clientId: 'client-1',
+        redirectUri: 'https://example.test/cb',
+        scopes: ['bananasaurs:read'],
+        codeChallenge: 'challenge-1',
+        state: null,
+        createdAt: 1000,
+        expiresAt: 60_000,
+      });
+      t.raw
+        .prepare(`UPDATE oauth_pending_authorizations SET scopes = 'not json' WHERE request_id = ?`)
+        .run('req-bad');
+      expect(() => consumePendingAuthorization(instance, 'req-bad', 2000)).toThrow();
+    } else if (kind === 'code') {
+      createAuthorizationCode(instance, {
+        codeHash: 'code-bad',
+        clientId: 'client-1',
+        accountId: 'acct-1',
+        scopes: ['bananasaurs:read'],
+        codeChallenge: 'challenge-1',
+        redirectUri: 'https://example.test/cb',
+        createdAt: 1000,
+        expiresAt: 60_000,
+      });
+      t.raw
+        .prepare(`UPDATE oauth_authorization_codes SET scopes = 'not json' WHERE code_hash = ?`)
+        .run('code-bad');
+      expect(() => findAuthorizationCode(instance, 'code-bad')).toThrow();
+    } else {
+      createToken(instance, {
+        tokenId: 'token-bad',
+        tokenHash: 'hash-token-bad',
+        kind: 'access',
+        clientId: 'client-1',
+        accountId: 'acct-1',
+        scopes: ['bananasaurs:read'],
+        createdAt: 1000,
+        expiresAt: 100_000,
+        parentTokenId: null,
+        issuedFromCodeHash: 'code-1',
+      });
+      t.raw
+        .prepare(`UPDATE oauth_tokens SET scopes = 'not json' WHERE token_id = ?`)
+        .run('token-bad');
+      expect(() => findTokenById(instance, 'token-bad')).toThrow();
+    }
+  });
 });
 
 describe('pending authorizations', () => {
