@@ -939,6 +939,29 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
   it.each(OAUTH_TABLES)('%s is still STRICT', (table) => {
     expect(allTables().find((r) => r.name === table)?.strict).toBe(1);
   });
+
+  /**
+   * Ruling PR-110: the three tests above pin exemptions, not DDL — a schema
+   * regeneration could silently drop a NOT NULL, a UNIQUE index or a CHECK
+   * and all three would still pass. Ruling PR-94 depends on
+   * `issued_from_code_hash` being NOT NULL, so this pins the DDL itself,
+   * read from the live database through the same helpers.
+   */
+  it('pins the OAuth DDL a regeneration could silently drop (ruling PR-110)', () => {
+    expect(
+      columns('oauth_tokens').find((c) => c.name === 'issued_from_code_hash')?.notnull,
+      'oauth_tokens.issued_from_code_hash must be NOT NULL (ruling PR-94)',
+    ).toBe(1);
+    expect(
+      uniqueIndexes('oauth_tokens').map((i) => i.name),
+      'a UNIQUE index on oauth_tokens(token_hash) must exist',
+    ).toContain('oauth_tokens_hash');
+    expect(indexColumns('oauth_tokens_hash')).toEqual(['token_hash']);
+    expect(ddl('oauth_tokens')).toContain('oauth_tokens_kind');
+    expect(ddl('oauth_tokens')).toContain(`IN ('access','refresh')`);
+    expect(ddl('oauth_clients')).toContain('oauth_clients_registration_source');
+    expect(ddl('oauth_clients')).toContain(`IN ('dynamic','cli')`);
+  });
 });
 
 /**
