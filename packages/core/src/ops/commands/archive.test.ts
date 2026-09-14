@@ -8,6 +8,7 @@ import {
   archiveEnableChannelCommand,
   archiveLinkCaseCommand,
   archivePreserveCommand,
+  archiveSearchCommand,
   archiveStatusCommand,
 } from './archive.js';
 
@@ -381,5 +382,132 @@ describe('archive link-case', () => {
         after: { outcome: 'preserved', messageId: MESSAGE, caseId: 'case-1' },
       }),
     ]);
+  });
+});
+
+describe('archive search', () => {
+  const HIT = {
+    messageId: '333333333333333333',
+    channelId: '222222222222222222',
+    authorId: '777777777777777777',
+    createdAt: 1_700_000_010_000,
+    excerpt: 'hello [pineapple] harvest …',
+  };
+
+  it('is a read, so it needs no --confirm', () => {
+    expect(archiveSearchCommand.write).toBe(false);
+  });
+
+  it('renders one line per hit as <messageId> #<channelId> <ISO createdAt> <excerpt>', async () => {
+    const res = await drive(
+      archiveSearchCommand,
+      { archiveSearch: () => ({ hits: [HIT], total: 1 }) },
+      { query: 'pineapple' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toBe(
+      `${HIT.messageId}  #${HIT.channelId}  ${new Date(HIT.createdAt).toISOString()}  ${HIT.excerpt}`,
+    );
+    expect(res.data).toMatchObject({
+      total: 1,
+      hits: [
+        {
+          messageId: HIT.messageId,
+          channelId: HIT.channelId,
+          authorId: HIT.authorId,
+          createdAt: HIT.createdAt,
+          excerpt: HIT.excerpt,
+        },
+      ],
+    });
+  });
+
+  it('adds an "N of M shown" summary line only when truncated', async () => {
+    const truncated = await drive(
+      archiveSearchCommand,
+      { archiveSearch: () => ({ hits: [HIT, { ...HIT, messageId: MESSAGE }], total: 5 }) },
+      { query: 'pineapple' },
+    );
+    expect(truncated.ok).toBe(true);
+    if (!truncated.ok) return;
+    expect(truncated.text).toContain('2 of 5 shown');
+
+    const whole = await drive(
+      archiveSearchCommand,
+      { archiveSearch: () => ({ hits: [HIT], total: 1 }) },
+      { query: 'pineapple' },
+    );
+    expect(whole.ok).toBe(true);
+    if (!whole.ok) return;
+    expect(whole.text).not.toContain('shown');
+  });
+
+  it('passes --channel, --author and --limit through to the port', async () => {
+    let seen: unknown;
+    const res = await drive(
+      archiveSearchCommand,
+      {
+        archiveSearch: (input) => {
+          seen = input;
+          return { hits: [], total: 0 };
+        },
+      },
+      { query: 'pineapple', channel: CHANNEL, author: '777777777777777777', limit: 5 },
+    );
+    expect(res.ok).toBe(true);
+    expect(seen).toEqual({
+      query: 'pineapple',
+      channelId: CHANNEL,
+      authorId: '777777777777777777',
+      limit: 5,
+    });
+  });
+
+  it('a --channel outside the archive set yields nothing', async () => {
+    let seen: unknown;
+    const res = await drive(
+      archiveSearchCommand,
+      {
+        // The repository narrows `channelIds` within the visibility set, so a
+        // channel outside it searches nothing — the command just passes it on.
+        archiveSearch: (input) => {
+          seen = input;
+          return { hits: [], total: 0 };
+        },
+      },
+      { query: 'pineapple', channel: '999999999999999999' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(seen).toMatchObject({ channelId: '999999999999999999' });
+    expect(res.text).toBe('no archived message matches that search');
+  });
+
+  it('an empty archive yields the empty text', async () => {
+    const res = await drive(
+      archiveSearchCommand,
+      { archiveSearch: () => ({ hits: [], total: 0 }) },
+      { query: 'pineapple' },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toBe('no archived message matches that search');
+    expect(res.data).toMatchObject({ total: 0, hits: [] });
+  });
+
+  it('rejects an empty query and a limit over 100', async () => {
+    const empty = await drive(
+      archiveSearchCommand,
+      { archiveSearch: () => ({ hits: [], total: 0 }) },
+      { query: '' },
+    );
+    expect(empty.ok).toBe(false);
+    const over = await drive(
+      archiveSearchCommand,
+      { archiveSearch: () => ({ hits: [], total: 0 }) },
+      { query: 'pineapple', limit: 101 },
+    );
+    expect(over.ok).toBe(false);
   });
 });

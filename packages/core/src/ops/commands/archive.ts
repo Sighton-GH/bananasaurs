@@ -8,11 +8,13 @@ import {
 } from '../dispatch.js';
 
 /**
- * The `archive …` operator surface (ADR 0046, Slice M1 Task 6).
+ * The `archive …` operator surface (ADR 0046, Slice M1 Task 6; search from
+ * Slice M2 Task 4).
  *
- * Five commands over the seven `OpsPorts` archive members: enabling a
+ * Six commands over the eight `OpsPorts` archive members: enabling a
  * channel (which queues its backfill), disabling one, listing the enabled
- * set, preserving a message, and linking a message to a moderation case.
+ * set, preserving a message, linking a message to a moderation case, and
+ * searching archived content.
  * Attachment bytes are refused at this layer (PR-67) — `bytes` never reaches
  * the port, so no later slice can mistake a stored `bytes` policy for one
  * this slice actually fetched.
@@ -289,6 +291,65 @@ export const archiveLinkCaseCommand = defineCommand<z.infer<typeof archiveLinkCa
         subjectType: 'archive_message',
         subjectId: args.messageId,
         after: { caseId: args.caseId },
+      },
+    };
+  },
+});
+
+// --- archive search ----------------------------------------------------------
+
+// Flag names are the arg keys: the CLI maps `--channel` to `args.channel`
+// (the way `--attachments` maps to `args.attachments` above), and the port
+// input's `channelId`/`authorId` are built from them here.
+const archiveSearchArgs = z.object({
+  query: z.string().min(1).max(200),
+  channel: channelIdArg.optional(),
+  author: snowflakeIdSchema.optional(),
+  limit: z.coerce.number().int().positive().max(100).optional(),
+});
+
+export const archiveSearchCommand = defineCommand<z.infer<typeof archiveSearchArgs>>({
+  name: 'archive search',
+  write: false,
+  summary: 'search archived message content within this guild’s archive',
+  positional: [{ name: 'query', required: true, describe: 'the full-text query' }],
+  flags: [
+    { name: 'channel', kind: 'string', describe: 'only this archived channel' },
+    { name: 'author', kind: 'string', describe: 'only messages by this author' },
+    { name: 'limit', kind: 'number', describe: 'how many hits (default 20, max 100)' },
+  ],
+  args: archiveSearchArgs,
+  run(ctx: OpsContext, args): OpsCommandResult {
+    const result = ctx.ports.archiveSearch({
+      query: args.query,
+      ...(args.channel !== undefined && { channelId: args.channel }),
+      ...(args.author !== undefined && { authorId: args.author }),
+      ...(args.limit !== undefined && { limit: args.limit }),
+    });
+    if (result.hits.length === 0) {
+      return {
+        text: 'no archived message matches that search',
+        data: { total: 0, hits: [] },
+      };
+    }
+    const lines = result.hits.map(
+      (hit) =>
+        `${hit.messageId}  #${hit.channelId}  ${new Date(hit.createdAt).toISOString()}  ${hit.excerpt}`,
+    );
+    if (result.total > result.hits.length) {
+      lines.push(`${String(result.hits.length)} of ${String(result.total)} shown`);
+    }
+    return {
+      text: lines.join('\n'),
+      data: {
+        total: result.total,
+        hits: result.hits.map((hit) => ({
+          messageId: hit.messageId,
+          channelId: hit.channelId,
+          authorId: hit.authorId ?? null,
+          createdAt: hit.createdAt,
+          excerpt: hit.excerpt,
+        })),
       },
     };
   },
