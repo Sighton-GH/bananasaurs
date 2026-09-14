@@ -503,6 +503,7 @@ export const opsPortsFor = (
     });
   },
   listUnreadableArchiveChannels: () => unreadableArchiveChannels(scope, client),
+  archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
   // The operator sees what the archive holds, nothing wider: the visibility
   // set is every archive-enabled channel in this guild, built here from
   // `listChannels` — never from the caller's input. A `channelId` narrows

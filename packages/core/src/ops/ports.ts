@@ -837,6 +837,12 @@ export interface OpsPorts {
    */
   listUnreadableArchiveChannels(): readonly OpsUnreadableArchiveChannel[];
   /**
+   * `doctor`'s archive-index check: the FTS row count beside the
+   * `archive_messages` row count, both for this guild. Unequal means the index
+   * is stale — a restored database disagrees until `archive reindex` runs.
+   */
+  archiveIndexHealth(): { readonly indexed: number; readonly rows: number };
+  /**
    * Searches the archive. The visibility set is every archive-enabled channel
    * in this guild — the operator sees what the archive holds, nothing wider.
    *

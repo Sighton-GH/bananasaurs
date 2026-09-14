@@ -177,6 +177,33 @@ export const searchMessages = (
   });
 
 /**
+ * The FTS row count beside the `archive_messages` row count, both for this
+ * guild — what `doctor` compares to say whether the index is stale (a restored
+ * database's index is rebuilt from the restored rows, so the two disagree
+ * until `archive reindex` runs).
+ */
+export interface IndexHealth {
+  readonly indexed: number;
+  readonly rows: number;
+}
+
+export const indexHealth = (scope: GuildScope): IndexHealth =>
+  read(scope, (db) => {
+    const raw = rawOf(db);
+    const indexed = raw
+      .prepare<unknown[], { readonly n: number }>(
+        'SELECT COUNT(*) AS n FROM archive_messages_fts WHERE guild_id = ?',
+      )
+      .get(scope.guildId)?.n;
+    const rows = raw
+      .prepare<unknown[], { readonly n: number }>(
+        'SELECT COUNT(*) AS n FROM archive_messages WHERE guild_id = ?',
+      )
+      .get(scope.guildId)?.n;
+    return { indexed: indexed ?? 0, rows: rows ?? 0 };
+  });
+
+/**
  * `INSERT INTO archive_messages_fts(archive_messages_fts) VALUES('rebuild')`, then the index row count.
  * The rebuild is table-global — FTS5 has no per-guild rebuild — while the count returned is this
  * guild's. That seam is deliberate and is why the command is operator-only and its audit row names

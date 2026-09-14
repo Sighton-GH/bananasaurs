@@ -452,6 +452,7 @@ export const testPortsFor = (
   listUnreadableArchiveChannels: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },
+  archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
   // Same real-repo behaviour `apps/daemon/src/ops/wiring.ts` wires: the
   // visibility set is every archive-enabled channel in this guild, never the
   // caller's input.

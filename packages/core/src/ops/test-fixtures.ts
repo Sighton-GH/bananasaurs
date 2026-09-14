@@ -92,6 +92,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   archiveLinkCase: unstubbed('archiveLinkCase'),
   enqueueArchiveBackfill: unstubbed('enqueueArchiveBackfill'),
   listUnreadableArchiveChannels: unstubbed('listUnreadableArchiveChannels'),
+  archiveIndexHealth: unstubbed('archiveIndexHealth'),
   archiveSearch: unstubbed('archiveSearch'),
   archiveReindex: unstubbed('archiveReindex'),
   ...over,

@@ -12,6 +12,7 @@ import {
 } from './archive.js';
 import {
   findMessage,
+  indexHealth,
   rebuildSearchIndex,
   SEARCH_LIMIT_MAX,
   searchMessages,
@@ -369,6 +370,21 @@ describe('purge leaves the index while the tombstone stays', () => {
     expect(tombstone?.content).toBeNull();
     expect(tombstone?.contentPurgedAt).toBe(now);
     expect(tombstone?.messageId).toBe(messageId);
+  });
+});
+
+describe('indexHealth', () => {
+  it('reports this guild’s indexed and archived counts, scoped to the guild', () => {
+    seedMessage(a, { messageId: '666666666666666666', content: 'elderberry log one' });
+    seedMessage(a, { messageId: '777777777777777777', content: 'elderberry log two' });
+    seedMessage(b, {
+      messageId: '888888888888888888',
+      channelId: CHANNEL_A,
+      content: 'elderberry log three',
+    });
+
+    expect(indexHealth(a)).toEqual({ indexed: 2, rows: 2 });
+    expect(indexHealth(b)).toEqual({ indexed: 1, rows: 1 });
   });
 });
 
