@@ -914,3 +914,39 @@ clients send no `Origin`), and the consent POST's real protection is the
 single-use nonce plus the password, not the origin check. Changing it would
 break every non-browser caller of the existing dashboard API for no gain
 here.
+
+### Rulings taken during execution (PR-109 .. PR-117)
+
+Recorded here from the ledger so a reader of the plan sees them without
+opening `.oc-runs/`.
+
+- **PR-109** — no foreign keys on the four OAuth tables, deliberately:
+  revoke-not-delete semantics, and a cascade would delete the audit trail.
+  Compensated in Task 2 (`deleteClient` revokes tokens and deletes the
+  client's pending rows and codes in one transaction) and Task 3
+  (`exchangeCode` checks `findClient`; `verifyAccessToken` and
+  `refreshTokens` check the account).
+- **PR-110** — a fourth invariants test pins the DDL a regeneration could
+  silently drop: `issued_from_code_hash NOT NULL`, the unique `token_hash`
+  index, both CHECKs.
+- **PR-111** — PR-94 changes D5's mechanics; filed as ADR 0045 Amendment 2
+  at close-out.
+- **PR-112** — reviewers cannot see the coordinator's `.oc-runs`; every
+  brief and diff is copied into the worktree before a review dispatch.
+- **PR-113** — Task 3's implementer was killed before reporting; the task
+  is accepted on the controller's own verification (gates, both
+  break-probes) plus the review, never on a self-report.
+- **PR-114** — long dispatches run in the background with a log-silence
+  watchdog, not under a foreground 10-minute timeout.
+- **PR-115** — no `@fastify/formbody`. The consent form's
+  `application/x-www-form-urlencoded` body is parsed by a scoped
+  `addContentTypeParser` over Node's `URLSearchParams`, then Zod.
+- **PR-116** — a new optional config value **`MCP_PUBLIC_URL`** (https, or
+  a `127.0.0.1` dev origin; a bare origin with no path) supplies the OAuth
+  `issuer`. **When unset, the OAuth routes are not mounted at all**, so a
+  daemon that has not opted in exposes no authorization endpoint and the
+  observe-window guilds are untouched by default. Cost if wrong: one env var
+  to set.
+- **PR-117** — `reachableGuilds` (the live guild set, ADR 0045 PR-92) is
+  built in Task 4 rather than Task 5, because route-level refusal (f) needs
+  it; Task 5's bearer middleware reuses it.
