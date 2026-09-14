@@ -95,6 +95,31 @@ export const configSchema = z.object({
   DASHBOARD_BIND: z.enum(['127.0.0.1', 'localhost', '::1']).default('127.0.0.1'),
 
   /**
+   * ADR 0045 (ruling PR-116): the public https origin the MCP server is
+   * reached at through the tunnel — the OAuth `issuer`. Optional: when unset
+   * the OAuth routes are not mounted at all, so a daemon that has not opted
+   * in exposes no authorization endpoints.
+   */
+  MCP_PUBLIC_URL: z
+    .string()
+    .url()
+    .refine(
+      (u) => {
+        const url = new URL(u);
+        return url.protocol === 'https:' || url.hostname === '127.0.0.1';
+      },
+      'MCP_PUBLIC_URL must be https:// or a 127.0.0.1 dev origin',
+    )
+    .refine(
+      (u) => {
+        const url = new URL(u);
+        return url.pathname === '/' && url.search === '' && url.hash === '' && !u.endsWith('/');
+      },
+      'MCP_PUBLIC_URL must be a bare origin: no path, query, fragment or trailing slash',
+    )
+    .optional(),
+
+  /**
    * Unused, and optional since ADR 0029.
    *
    * It was specified when dashboard sessions were going to be signed cookies.
