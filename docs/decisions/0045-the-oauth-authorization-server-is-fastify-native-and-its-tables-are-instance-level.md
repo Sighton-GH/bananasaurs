@@ -161,3 +161,78 @@ six without anyone noticing.
 What this ADR does not decide: how `/mcp` itself is served, what the tools
 are, or how the evidence envelope is shaped — those are ADR 0044 and M4.
 M3 stops at a bearer token that a request can be authenticated with.
+
+---
+
+## Amendment 1 — 2026-09-13, before M3's plan
+
+The first draft of this ADR inherited three claims from the design's §5 and
+one from its own reasoning. Reading the tree rather than the spec, all four
+are wrong. Rulings PR-90..PR-93.
+
+**PR-90 — `policy.ts` holds no origin or CSRF rules, so D1's "reuses them
+for the consent form" is not a thing that can happen.**
+`packages/http/src/policy.ts` is 77 lines of ADR 0029 constants (`POLICY`)
+and Zod schemas (`passwordSchema`, `usernameSchema`, `loginBodySchema`,
+`bootstrapBodySchema`, `reauthBodySchema`). The origin and CSRF rules live
+in `packages/http/src/server.ts`: `originMatchesHost` at :132 and `csrfOk`
+at :217, both closed over inside `createServer`. D1 is amended to name
+`server.ts`. The consent route still sits beside the dashboard's routes; it
+simply does not inherit a helper from `policy.ts`, because there is none.
+
+**PR-91 — the dashboard's CSRF mechanism cannot protect an HTML form, so
+the consent page needs its own.** `csrfOk` requires a **custom request
+header** whose value matches `session.csrfToken` (`server.ts:217-222`).
+That works because the dashboard is React calling `fetch`. A
+server-rendered `<form>` cannot set a custom header, so `POST /oauth/authorize`
+could not satisfy `csrfOk` even if it wanted to — and it has no session to
+take a `csrfToken` from, because D6 forbids accepting the session cookie.
+
+The consent flow therefore carries its own protection, and it is stronger
+than a bare origin check: `GET /oauth/authorize` validates the client, the
+redirect URI and the PKCE parameters **before rendering anything**, then
+writes a short-lived single-use pending-authorization row and renders its
+id and a random nonce as hidden inputs. `POST /oauth/authorize` requires
+`originMatchesHost`, an unexpired unused pending row whose nonce matches,
+and the password. The nonce is consumed on use, so a replayed or forged
+form post has nothing to spend. This adds a fourth table,
+`oauth_pending_authorizations`, to D3's list — instance-level on the same
+reasoning, and `INSTANCE_LEVEL` therefore goes from two names to **six**,
+not five. D3's second test is amended to expect six.
+Cost if wrong: one table and one nonce check; the failure mode is a consent
+form that refuses a legitimate submission, which is loud, not silent.
+
+**PR-92 — capabilities are guild-scoped, and `mcp.authorize` was being
+treated as instance-level. This is the hole in the slice.**
+`account_capabilities` (`packages/storage/src/schema.ts:1451-1466`) is keyed
+`(guild_id, account_id, capability)` with a snowflake CHECK on `guild_id`,
+and its own comment calls guild-scoped capability "the load-bearing part".
+So there is no such thing as holding `mcp.authorize` instance-wide. But
+D3 makes tokens instance-level and the design's §5 says an account
+"holds `mcp.authorize`" as though it were global. Left alone, an account
+granted `mcp.authorize` in guild A would mint a token that M4 could then
+point at guild B — the precise cross-guild leak ADR 0004 exists to prevent,
+arriving through the authorization layer instead of through a query.
+
+Ruling: **a token's reachable guild set is never stored and never frozen.**
+It is computed at **each tool call** as the set of guilds in which the
+approving account *currently* holds `mcp.authorize`, intersected with the
+guilds the bot is in. Minting requires the capability in at least one
+guild. Revoking the grant in guild B stops the next call naming B, with no
+token revocation and no cache to invalidate — which is why D3 refused to
+put a `guild_id` on the token in the first place. This makes D3's "M4
+resolves the guild per tool call against the allowlist" concrete, and moves
+the allowlist's definition from "the config" to "the approving account's
+live grants". M4's ADR 0044 inherits this. Cost if wrong: a tool call is
+refused for a guild the owner expected to reach, and the fix is a grant.
+
+**PR-93 — `mcp.authorize` does not exist and M3 must create it.**
+`CAPABILITIES` (`packages/core/src/authz.ts:49-60`) lists nine strings and
+`mcp.authorize` is not among them; `Capability` is the union of that
+literal tuple, so the string does not typecheck anywhere today. M3 adds it
+to the tuple with a comment naming this ADR. The dot-separated lowercase
+form matches the nine that exist.
+
+The net effect on M3's scope: one more table, one more capability, a
+consent-form nonce, and a per-call guild resolution that M4 must honour.
+None of it is optional, and none of it was visible from the design.
