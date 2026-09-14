@@ -146,6 +146,30 @@ export interface LoggerOptions {
   env: 'development' | 'production';
 }
 
+/**
+ * Pino's `redact` paths. Exported so a test can build a logger with the
+ * SAME censoring production uses; a copy would let the two drift and
+ * quietly weaken what the log-scan test proves.
+ */
+export const REDACT_PATHS = [
+  'token',
+  '*.token',
+  'DISCORD_BOT_TOKEN',
+  '*.DISCORD_BOT_TOKEN',
+  'secret',
+  '*.secret',
+  'DASHBOARD_SESSION_SECRET',
+  '*.DASHBOARD_SESSION_SECRET',
+  'password',
+  '*.password',
+  'passwordHash',
+  '*.passwordHash',
+  'authorization',
+  '*.authorization',
+  'cookie',
+  '*.cookie',
+] as const;
+
 export function createLogger(options: LoggerOptions): Logger {
   return pino({
     level: options.level,
@@ -153,24 +177,7 @@ export function createLogger(options: LoggerOptions): Logger {
     // Defence in depth only. The allowlist above is the control; these paths are
     // the ones whose appearance in a log would be worst if it somehow got past it.
     redact: {
-      paths: [
-        'token',
-        '*.token',
-        'DISCORD_BOT_TOKEN',
-        '*.DISCORD_BOT_TOKEN',
-        'secret',
-        '*.secret',
-        'DASHBOARD_SESSION_SECRET',
-        '*.DASHBOARD_SESSION_SECRET',
-        'password',
-        '*.password',
-        'passwordHash',
-        '*.passwordHash',
-        'authorization',
-        '*.authorization',
-        'cookie',
-        '*.cookie',
-      ],
+      paths: [...REDACT_PATHS],
       censor: '<redacted>',
     },
     ...(options.env === 'development'

@@ -8,6 +8,10 @@ import {
 } from '@bananasaurs/storage/test-support';
 import { accountRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
+// The package root does not re-export this, and the fix brief keeps that
+// file untouched — so the test reaches the module directly. Production code
+// must keep importing `@bananasaurs/core`.
+import { REDACT_PATHS } from '../../../core/src/obs/logger.js';
 import { createServer, type HttpDeps } from '../server.js';
 import { generateToken, hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
@@ -51,30 +55,13 @@ beforeEach(async () => {
     },
   };
   // Same construction as `createLogger`'s production branch (no pretty
-  // transport), redact block copied verbatim so drift is visible here.
+  // transport), with the SAME paths object production censors with.
   const logger = pino(
     {
       level: 'trace',
       base: { component: 'bananasaurs' },
       redact: {
-        paths: [
-          'token',
-          '*.token',
-          'DISCORD_BOT_TOKEN',
-          '*.DISCORD_BOT_TOKEN',
-          'secret',
-          '*.secret',
-          'DASHBOARD_SESSION_SECRET',
-          '*.DASHBOARD_SESSION_SECRET',
-          'password',
-          '*.password',
-          'passwordHash',
-          '*.passwordHash',
-          'authorization',
-          '*.authorization',
-          'cookie',
-          '*.cookie',
-        ],
+        paths: [...REDACT_PATHS],
         censor: '<redacted>',
       },
     },

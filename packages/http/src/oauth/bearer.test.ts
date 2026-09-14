@@ -275,7 +275,25 @@ describe('requireBearer', () => {
     expect(response.json()).toEqual({ accountId: ACCOUNT, reachableGuilds: [] });
   });
 
-  it('does no caching: lastUsedAt advances on each of two calls at two clock values', async () => {
+  it('sees a revocation between two requests at the same instant', async () => {
+    const { clientId, accessToken } = await mintToken();
+    const first = await stubWith(`Bearer ${accessToken}`);
+    expect(first.statusCode).toBe(200);
+    const revoked = await app.inject({
+      method: 'POST',
+      url: '/oauth/revoke',
+      payload: { token: accessToken, client_id: clientId },
+    });
+    expect(revoked.statusCode).toBe(200);
+    // The clock never moves in this test: a cache of any kind — of the row,
+    // the principal, or the verification result — would answer 200 again.
+    const second = await stubWith(`Bearer ${accessToken}`);
+    expect(second.statusCode).toBe(401);
+    expect(second.headers['www-authenticate']).toBe(CHALLENGE);
+    expect(second.json()).toEqual({ error: 'invalid_token' });
+  });
+
+  it('touches lastUsedAt on every successful verification (PR-107)', async () => {
     const { accessToken } = await mintToken();
     const first = await stubWith(`Bearer ${accessToken}`);
     expect(first.statusCode).toBe(200);
