@@ -431,6 +431,10 @@ describe('automod, end to end on the fake gateway', () => {
       reissueBootstrapToken: notUsedByDoctorInstance('reissueBootstrapToken'),
       backupNow: notUsedByDoctorInstance('backupNow'),
       backupList: notUsedByDoctorInstance('backupList'),
+      mcpClients: notUsedByDoctorInstance('mcpClients'),
+      mcpTokens: notUsedByDoctorInstance('mcpTokens'),
+      mcpRevokeToken: notUsedByDoctorInstance('mcpRevokeToken'),
+      mcpRevokeClient: notUsedByDoctorInstance('mcpRevokeClient'),
     };
 
     const dispatcher = createDispatcher({

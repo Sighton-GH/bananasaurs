@@ -1,5 +1,6 @@
 import type { DryRunReport } from '../automod/dry-run.js';
 import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
+import type { Capability } from '../authz.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -423,6 +424,38 @@ export interface OpsArchiveSearchHit {
   readonly authorId: string | undefined;
   readonly createdAt: number;
   readonly excerpt: string;
+}
+
+/**
+ * A registered OAuth client, as `mcp clients` renders it (ADR 0045).
+ *
+ * Never a secret: there is none on a client. The client authenticates nothing;
+ * the approving account's password at the consent page is what mints a token.
+ */
+export interface OpsMcpClient {
+  readonly clientId: string;
+  readonly clientName: string;
+  readonly registrationSource: 'dynamic' | 'cli';
+  readonly createdAt: number;
+  readonly redirectUriCount: number;
+}
+
+/**
+ * One OAuth token row, as `mcp tokens` renders it (ADR 0045).
+ *
+ * Ids only — a token VALUE is never retrievable. The repository stores only
+ * the hash and the one response that mints a token is the only place the
+ * value ever appears, so there is nothing here to print.
+ */
+export interface OpsMcpToken {
+  readonly tokenId: string;
+  readonly kind: 'access' | 'refresh';
+  readonly clientId: string;
+  readonly accountId: string;
+  readonly createdAt: number;
+  readonly expiresAt: number;
+  readonly revokedAt: number | null;
+  readonly lastUsedAt: number | null;
 }
 
 export interface OpsPorts {
@@ -857,6 +890,18 @@ export interface OpsPorts {
   }): { readonly hits: readonly OpsArchiveSearchHit[]; readonly total: number };
   /** Rebuilds the FTS index from archive_messages. Returns the indexed row count. */
   archiveReindex(): number;
+
+  /**
+   * ADR 0028 / ADR 0045: grant a dashboard account a capability IN THIS
+   * GUILD. Returns 'granted', 'already-held', 'no-such-account', or
+   * 'no-guild-access' (the account cannot reach this guild, so the FK would
+   * refuse — say so rather than throw).
+   */
+  grantAccountCapability(input: {
+    readonly username: string;
+    readonly capability: Capability;
+    readonly grantedBy: string;
+  }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
 }
 
 /** A job this command queued, or the one already pending that absorbed it. */
@@ -969,6 +1014,15 @@ export interface OpsInstance {
   backupNow(): OpsBackupRunResult;
   /** Every backup on disk, oldest first, for `backup list`. */
   backupList(): readonly OpsBackupListing[];
+
+  /** ADR 0045: registered OAuth clients. Never a secret; there is none on a client. */
+  mcpClients(): readonly OpsMcpClient[];
+  /** ADR 0045: every token row, live or not. Ids only — a token VALUE is never retrievable. */
+  mcpTokens(): readonly OpsMcpToken[];
+  /** Returns true if the token was live and is now revoked. */
+  mcpRevokeToken(tokenId: string): boolean;
+  /** Deletes the client and everything issued to it; returns the number of tokens revoked, or undefined if no such client. */
+  mcpRevokeClient(clientId: string): number | undefined;
 }
 
 export interface OpsBackupOutcome {

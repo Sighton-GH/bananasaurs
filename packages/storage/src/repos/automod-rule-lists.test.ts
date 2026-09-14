@@ -206,6 +206,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   archiveIndexHealth: notNeeded('archiveIndexHealth'),
   archiveSearch: notNeeded('archiveSearch'),
   archiveReindex: notNeeded('archiveReindex'),
+  grantAccountCapability: notNeeded('grantAccountCapability'),
 });
 
 const instance: OpsInstance = {
@@ -218,6 +219,10 @@ const instance: OpsInstance = {
   reissueBootstrapToken: () => ({ ok: false, reason: 'readonly' }),
   backupNow: notNeeded('backupNow'),
   backupList: notNeeded('backupList'),
+  mcpClients: notNeeded('mcpClients'),
+  mcpTokens: notNeeded('mcpTokens'),
+  mcpRevokeToken: notNeeded('mcpRevokeToken'),
+  mcpRevokeClient: notNeeded('mcpRevokeClient'),
 };
 
 const actor: Actor = { type: 'operator_cli', id: undefined, roleIds: [], unixUserClaimed: 'test' };

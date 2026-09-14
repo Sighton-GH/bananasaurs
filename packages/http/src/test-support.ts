@@ -2,6 +2,7 @@ import {
   accountRepo,
   archiveRepo,
   archiveSearchRepo,
+  authzRepo,
   automodAdminRepo,
   automodRuleListsRepo,
   automodRuleRepo,
@@ -12,6 +13,7 @@ import {
   loggingRepo,
   modCaseRepo,
   modMatchReviewRepo,
+  oauthRepo,
   panelRepo,
   type GuildScope,
   type InstanceScope,
@@ -477,6 +479,29 @@ export const testPortsFor = (
     };
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
+  // ADR 0028 / ADR 0045 (ruling PR-102): the same real-repo behaviour
+  // `apps/daemon/src/ops/wiring.ts` wires. The account lookup is
+  // instance-level while this port closes over one `GuildScope`; both are
+  // handles over the one test database, and the instance repos reach only
+  // `dbOf`/`isReadonly`, so the guild scope reads the same rows.
+  grantAccountCapability: (input) => {
+    const account = accountRepo.findAccountByUsername(
+      scope as unknown as InstanceScope,
+      input.username,
+    );
+    if (account === undefined) return 'no-such-account';
+    if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'no-guild-access';
+    if (authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {
+      return 'already-held';
+    }
+    authzRepo.grantAccountCapability(scope, {
+      accountId: account.accountId,
+      capability: input.capability,
+      grantedBy: input.grantedBy,
+      now: now(),
+    });
+    return 'granted';
+  },
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */
@@ -544,4 +569,31 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
     throw new Error('not used by the dashboard routes under test');
   },
   backupList: () => [],
+  // ADR 0045: real implementations over the test database, the same way the
+  // neighbouring `reissueBootstrapToken` reads `accountRepo` — so a route test
+  // exercising the operator surface sees real OAuth rows, not stubs.
+  mcpClients: () =>
+    oauthRepo.listClients(instanceScope).map((row) => ({
+      clientId: row.clientId,
+      clientName: row.clientName,
+      registrationSource: row.registrationSource,
+      createdAt: row.createdAt,
+      redirectUriCount: row.redirectUris.length,
+    })),
+  mcpTokens: () =>
+    oauthRepo.listTokens(instanceScope).map((row) => ({
+      tokenId: row.tokenId,
+      kind: row.kind,
+      clientId: row.clientId,
+      accountId: row.accountId,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      revokedAt: row.revokedAt,
+      lastUsedAt: row.lastUsedAt,
+    })),
+  mcpRevokeToken: (tokenId) => oauthRepo.revokeToken(instanceScope, tokenId, now()) === 1,
+  mcpRevokeClient: (clientId) => {
+    if (oauthRepo.findClient(instanceScope, clientId) === undefined) return undefined;
+    return oauthRepo.deleteClient(instanceScope, clientId, now());
+  },
 });

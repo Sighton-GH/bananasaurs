@@ -95,6 +95,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   archiveIndexHealth: unstubbed('archiveIndexHealth'),
   archiveSearch: unstubbed('archiveSearch'),
   archiveReindex: unstubbed('archiveReindex'),
+  grantAccountCapability: unstubbed('grantAccountCapability'),
   ...over,
 });
 
@@ -111,6 +112,10 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   reissueBootstrapToken: () => ({ ok: false, reason: 'accounts-exist', accountCount: 1 }),
   backupNow: unstubbed('backupNow'),
   backupList: unstubbed('backupList'),
+  mcpClients: unstubbed('mcpClients'),
+  mcpTokens: unstubbed('mcpTokens'),
+  mcpRevokeToken: unstubbed('mcpRevokeToken'),
+  mcpRevokeClient: unstubbed('mcpRevokeClient'),
   ...over,
 });
 
