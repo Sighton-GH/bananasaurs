@@ -468,23 +468,29 @@ describe('archive search', () => {
   });
 
   it('a --channel outside the archive set yields nothing', async () => {
-    let seen: unknown;
-    const res = await drive(
+    // Discriminates on the channel the way the repository does (narrowing
+    // within the visibility set): a hit for the archived channel, nothing for
+    // one outside it — so this proves the command renders the port's
+    // per-channel answer rather than the behaviour of its own fixture.
+    const search: OpsPorts['archiveSearch'] = (input) =>
+      input.channelId === CHANNEL ? { hits: [HIT], total: 1 } : { hits: [], total: 0 };
+    const outside = await drive(
       archiveSearchCommand,
-      {
-        // The repository narrows `channelIds` within the visibility set, so a
-        // channel outside it searches nothing — the command just passes it on.
-        archiveSearch: (input) => {
-          seen = input;
-          return { hits: [], total: 0 };
-        },
-      },
+      { archiveSearch: search },
       { query: 'pineapple', channel: '999999999999999999' },
     );
-    expect(res.ok).toBe(true);
-    if (!res.ok) return;
-    expect(seen).toMatchObject({ channelId: '999999999999999999' });
-    expect(res.text).toBe('no archived message matches that search');
+    expect(outside.ok).toBe(true);
+    if (!outside.ok) return;
+    expect(outside.text).toBe('no archived message matches that search');
+
+    const inside = await drive(
+      archiveSearchCommand,
+      { archiveSearch: search },
+      { query: 'pineapple', channel: CHANNEL },
+    );
+    expect(inside.ok).toBe(true);
+    if (!inside.ok) return;
+    expect(inside.text).toContain(HIT.messageId);
   });
 
   it('an empty archive yields the empty text', async () => {

@@ -434,6 +434,13 @@ describe('deleted-but-not-purged messages stay searchable', () => {
 
 describe('rebuildSearchIndex', () => {
   it('restores every row after the index is wiped, and reports this guild count', () => {
+    // A synthetic wipe, not the production scenario: `DELETE FROM
+    // archive_messages_fts` clears the token index (MATCH finds nothing) while
+    // leaving the rows themselves behind. The production scenario is the FTS
+    // table created after rows already exist — a database holding archive rows
+    // when 0020 runs — and that one is covered by the migration test in
+    // `schema-invariants.test.ts` (ruling PR-85). This test proves the rebuild
+    // recovers the search path, whatever emptied it.
     seedMessage(a, { messageId: '666666666666666666', content: 'durian log one' });
     seedMessage(a, { messageId: '777777777777777777', content: 'durian log two' });
     seedMessage(b, {
