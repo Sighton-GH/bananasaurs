@@ -801,6 +801,54 @@ describe('the FTS triggers keep the index from outliving its content', () => {
 });
 
 /**
+ * ADR 0049 Amendment 1 D4, step 3: the index carries its partition key.
+ *
+ * The replacement for the schema-level partition guarantee the invariants
+ * cannot give the FTS table: `archive_messages_fts` has a stored (UNINDEXED)
+ * `guild_id` column, so guild scope stays expressible in SQL, and a MATCH
+ * query filtered by `guild_id` returns only that guild's rows — even with
+ * colliding message ids and a token both guilds share.
+ */
+describe('the FTS index carries its partition key', () => {
+  it('has a guild_id column', () => {
+    expect(columns('archive_messages_fts').map((c) => c.name)).toContain('guild_id');
+  });
+
+  it('returns only the scoped guild’s rows for a MATCH filtered by guild_id', () => {
+    const scopeA = t.scopes.forGuild(parseGuildId('747474747474747474'));
+    const scopeB = t.scopes.forGuild(parseGuildId('848484848484848484'));
+    upsertGuild(scopeA, { name: 'fts-partition-guild-a', now: 0 });
+    upsertGuild(scopeB, { name: 'fts-partition-guild-b', now: 0 });
+    const channelA = '717171717171717171';
+    const channelB = '727272727272727272';
+    enableChannel(scopeA, { channelId: channelA, attachmentPolicy: 'none', now: 1 });
+    enableChannel(scopeB, { channelId: channelB, attachmentPolicy: 'none', now: 1 });
+    const messageId = '737373737373737373';
+    for (const [scope, channelId] of [
+      [scopeA, channelA],
+      [scopeB, channelB],
+    ] as const) {
+      upsertMessage(scope, {
+        messageId,
+        channelId,
+        authorId: undefined,
+        content: 'wombatpost strictly scoped',
+        createdAt: 2,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+
+    const rows = t.raw
+      .prepare(
+        `SELECT guild_id AS guildId FROM archive_messages_fts WHERE archive_messages_fts MATCH ? AND guild_id = ?`,
+      )
+      .all('wombatpost', scopeA.guildId) as { guildId: string }[];
+    expect(rows.map((r) => r.guildId)).toEqual([scopeA.guildId]);
+  });
+});
+
+/**
  * The migrator gates on the journal's `when`, not on a hash: an entry whose
  * `when` is equal to or smaller than the previous entry's is silently skipped
  * on a database that has already run the earlier migration. Read the shipped
