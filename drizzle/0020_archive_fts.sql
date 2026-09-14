@@ -20,4 +20,5 @@ CREATE TRIGGER archive_messages_fts_au AFTER UPDATE OF content ON archive_messag
   VALUES ('delete', old.rowid, old.content, old.guild_id, old.channel_id, old.message_id);
   INSERT INTO archive_messages_fts(rowid, content, guild_id, channel_id, message_id)
   VALUES (new.rowid, new.content, new.guild_id, new.channel_id, new.message_id);
-END;
+END;--> statement-breakpoint
+INSERT INTO archive_messages_fts(archive_messages_fts) VALUES('rebuild');

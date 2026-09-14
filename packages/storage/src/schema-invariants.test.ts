@@ -847,6 +847,63 @@ describe('the FTS index carries its partition key', () => {
 });
 
 /**
+ * Ruling PR-85: 0020 populates the index it creates.
+ *
+ * A database that already holds `archive_messages` rows when 0020 runs gets an
+ * empty index without the trailing `rebuild` — and worse, the `_au`/`_ad`
+ * triggers then issue FTS5 `delete` commands for rows that were never indexed,
+ * which FTS5 rejects with `database disk image is malformed`. This migrates to
+ * 0019, inserts one row, migrates through 0020, and proves the index is
+ * populated and the purge/delete paths work.
+ */
+describe('0020 populates the index it creates (ruling PR-85)', () => {
+  it('migrates a pre-existing archive row through 0020 with a populated, working index', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    runMigrations(raw, db, migrationsFolderUpTo(19));
+
+    const GUILD_ID = '555555555555555555';
+    const CHANNEL_ID = '666666666666666666';
+    const MESSAGE_ID = '777777777777777777';
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_channels (guild_id, channel_id, attachment_policy, enabled_at, backfill_state) VALUES (?, ?, 'none', 0, 'pending')`,
+      )
+      .run(GUILD_ID, CHANNEL_ID);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages (guild_id, message_id, channel_id, author_id, content, created_at) VALUES (?, ?, ?, ?, ?, 1)`,
+      )
+      .run(GUILD_ID, MESSAGE_ID, CHANNEL_ID, '888888888888888888', 'rebuildmarker legacy content');
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const matched = raw
+      .prepare(`SELECT COUNT(*) AS n FROM archive_messages_fts WHERE archive_messages_fts MATCH ?`)
+      .get('rebuildmarker') as { n: number };
+    expect(matched.n).toBe(1);
+
+    expect(() =>
+      raw
+        .prepare(`UPDATE archive_messages SET content = NULL WHERE guild_id = ? AND message_id = ?`)
+        .run(GUILD_ID, MESSAGE_ID),
+    ).not.toThrow();
+    expect(() =>
+      raw
+        .prepare(`DELETE FROM archive_messages WHERE guild_id = ? AND message_id = ?`)
+        .run(GUILD_ID, MESSAGE_ID),
+    ).not.toThrow();
+
+    raw.close();
+  });
+});
+
+/**
  * The migrator gates on the journal's `when`, not on a hash: an entry whose
  * `when` is equal to or smaller than the previous entry's is silently skipped
  * on a database that has already run the earlier migration. Read the shipped
