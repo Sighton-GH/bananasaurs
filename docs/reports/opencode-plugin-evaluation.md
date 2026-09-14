@@ -577,6 +577,56 @@ RESULT block just gives a check nowhere to land. The plugin's
   it means brief generation needs a script file, not a one-liner. Wrote
   `.oc-runs/mkbrief.py` for that.
 
+### D47 — a rate limit that fails fast, and the `# Files` rejection again
+
+M3's read-only research dispatch, run `20260913T203945-oc_m3-oauth`,
+`opencode/muse-spark-1.3-contributor-free`.
+
+**Two separate things happened, and only one of them is the provider's.**
+
+First, `oc-task` rejected the brief before dispatching:
+`brief rejected (role implement): missing section: # Files`. This is D44's
+behaviour on the implement role — validation names only the **first** missing
+section, so a brief with two gaps costs two round trips. Here it cost one.
+The research brief genuinely had no `# Files` section because the task writes
+one findings file and no source; the fix was a four-line section naming that
+file. Worth noting that a read-only research task is a shape the implement
+role's validation does not anticipate, and the `review` role cannot be used
+instead because it may not write the findings file at all.
+
+**What I expected:** a dispatch.
+**What happened:** `exit: 5 (rate limited by the provider)` after **1m12s**,
+with `APIError: Error from provider (Console): Rate limit exceeded. Please
+try again later.` and no `## RESULT` block.
+**What I did instead:** did not retry — the skill and the owner's standing
+instruction both say a 429 is the owner's to clear — and gathered M3's facts
+by hand in the controller session while waiting.
+
+**This is the good failure mode, and it contradicts D46.** D46 recorded that
+a rate-limited run *blocks in-process and resumes when the limit clears*,
+presenting as silence for up to fifty-four minutes. This one failed in 72
+seconds with the real provider message and the correct exit code. Both
+behaviours are now observed on the same model and the same account, so the
+limit does not have one presentation: it can block or it can refuse, and a
+silent run cannot be assumed to be either. The practical rule stands —
+watchdog the log, and tell the owner at five minutes of no output — but a
+fast exit 5 is no longer surprising and should not be treated as a setup
+failure.
+
+**Cost:** 1m12s of wall clock, no tokens of controller context beyond the
+summary, and no lost work. Against Slices 0-6 with sonnet, where a dispatch
+never failed for provider reasons at all, this is the recurring tax of the
+free tier rather than a plugin defect.
+
+**What the wait bought.** Reading the four files the research dispatch would
+have read produced four corrections to ADR 0045 (PR-90..PR-93), one of them
+a cross-guild authorization hole that neither the design nor my own ADR draft
+had seen. Recorded here because it argues something about the method rather
+than the tool: the controller reading the tree directly is not a fallback of
+equal value to a research dispatch — for an authorization boundary it may be
+the better first move, because the findings land in the controller's context
+already adjudicated rather than as a file to be trusted.
+
 ## What worked well
 
 (appended as observed)
