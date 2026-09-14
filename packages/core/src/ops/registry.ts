@@ -4,6 +4,8 @@ import {
   archiveEnableChannelCommand,
   archiveLinkCaseCommand,
   archivePreserveCommand,
+  archiveReindexCommand,
+  archiveSearchCommand,
   archiveStatusCommand,
 } from './commands/archive.js';
 import {
@@ -62,6 +64,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   automodDryRunCommand,
   automodReviewCommand,
   archiveStatusCommand,
+  archiveSearchCommand,
 
   // Writes. Each needs `--confirm` and each records an audit row; the
   // dispatcher enforces both, so the ordering here is for `--help` only.
@@ -83,6 +86,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   archiveDisableChannelCommand,
   archivePreserveCommand,
   archiveLinkCaseCommand,
+  archiveReindexCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).

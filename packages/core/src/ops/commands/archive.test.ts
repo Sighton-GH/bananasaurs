@@ -56,13 +56,15 @@ const driveWrite = (
   }).dispatch({ v: 1, command: command.name, args, confirm: true, unixUserClaimed: 'bryan' });
 
 describe('archive commands are registered', () => {
-  it('registers all five archive commands', () => {
+  it('registers all seven archive commands', () => {
     const names = OPERATOR_COMMANDS.map((c) => c.name);
     expect(names).toContain('archive enable-channel');
     expect(names).toContain('archive disable-channel');
     expect(names).toContain('archive status');
     expect(names).toContain('archive preserve');
     expect(names).toContain('archive link-case');
+    expect(names).toContain('archive search');
+    expect(names).toContain('archive reindex');
   });
 });
 
