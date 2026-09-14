@@ -711,3 +711,136 @@ solved. A brief that had said "read `purge.ts`'s dedupe docstring before
 writing the continuation" would have prevented it; the fix brief did say
 that, and the fix was right first time. Task briefs now name the file that
 already solved the problem, not just the file to copy the pattern from.
+
+## Slice M2 — FTS5 search and permission-filtered citations
+
+Branch `oc/m2-search` from `ddf3abe`. **ADR 0049 written before the plan**,
+after a read-only research dispatch found a collision the slice text did not
+anticipate: drizzle-kit cannot generate a virtual table, and the project's
+own `strictify.mjs` says out loud that FTS5 tables cannot be `STRICT`. So
+M2 needed the project's first hand-written migration.
+
+### The ADR, and the amendment that undid a third of it
+
+ADR 0049's first draft added a named exemption to `schema-invariants.test.ts`
+for the FTS table and its four shadows. The plan review asked the question
+the draft had not: *does `PRAGMA table_list` even report a virtual table as
+a `table`?* Run rather than reasoned, the answer is no — the FTS table is
+`virtual`, its shadows are `shadow`, and `allTables()` keeps only `table`.
+
+- **PR-81 — the exemption is withdrawn (Amendment 1).** It would have been
+  dead code, and its "exhaustiveness" test would have passed vacuously,
+  which is worse than no test. Replaced by three positive tests: the
+  machinery is `virtual`/`shadow` *for the reason we think* (so a future
+  SQLite that reclassifies it fails loudly); the triggers keep the index
+  from outliving its content; the index carries `guild_id` and a `MATCH`
+  filtered by it returns only that guild's rows. Cost if wrong: the first
+  test is the tripwire.
+- **PR-80 — a review finding rejected.** The plan review said
+  `WHERE archive_messages_fts MATCH ?` was wrong under an alias and should
+  be `f MATCH ?`. Executing both: the plan's form works, the suggested fix
+  raises `no such column: f`. The plan stood and the fact became a Global
+  Constraint with its evidence. First review finding overturned by running
+  the code rather than arguing about it.
+- **PR-82 — `findMessage` is M2's.** ADR 0046 D6 promised purged content
+  stays "reachable by `getMessage`"; M1 shipped no by-id reader, so the
+  promise had nothing to call.
+- The Critical the plan review *did* find: a journal entry whose `when` is
+  not **strictly greater** than its predecessor is silently skipped on a
+  database that has already migrated — indistinguishable from success.
+
+### Task log
+
+**Tasks 1–2 — the migration and the tests that pay for it**
+(`927f143..871fb6e`): the hand-written `0020_archive_fts.sql` with the
+virtual table and three triggers, the journal entry, and the three tests.
+Task 1 reported `DONE_WITH_CONCERNS` over red `typecheck`/`lint` — correctly:
+the controller had never run `npm ci` in the new worktree, and the model
+proved its own four files clean with `prettier --check` and `eslint`
+directly rather than reporting DONE over red gates. Review PASS/APPROVED.
+Controller break-and-watch-fail: removing the `_ad` trigger fails 1 test;
+removing `guild_id UNINDEXED` fails 3.
+
+**Task 3 — `searchMessages`** (`7b0eb3a..891fca0`, 9m33s, red run first):
+the citation-leak test written and watched failing, then one raw-SQL
+function whose hits and count queries share a single `WHERE`.
+
+- **PR-83 — the brief was wrong about `db.$client`.** It claimed the handle
+  was reachable at the type level; the implementer found `TS2339` (the
+  repo's `Db` alias is the bare class; `$client` lives on `drizzle()`'s
+  return intersection) and recovered drizzle's own declared type through
+  `unknown`, citing the runtime attachment — no `as any` anywhere in the
+  file. Accepted. Cost if wrong: one cast to revisit if drizzle changes its
+  export shape.
+- **PR-84 — `rebuildSearchIndex` uses the transaction's typed handle**,
+  because `$client` is absent at runtime on a `write()` transaction object.
+
+Controller break-and-watch-fail: neutralising the visibility `IN` clause
+fails 10 of 12 tests; neutralising the guild predicate fails 10. Review
+PASS/APPROVED.
+
+**Task 4 — ports ×4 and two commands** (`ef2ed51..5889240`, 7m11s): the
+visibility set is built from `archiveRepo.listChannels(scope)` and never
+from caller input. Review PASS/APPROVED.
+
+### Whole-branch review (Opus, `docs/reports/m2-whole-branch-review.md`)
+
+9m03s, 38 tool uses. **SHIP-WITH-FIXES** with a merge blocker, and it is the
+question the brief pointed at hardest: *what happens on a database that
+already has rows?*
+
+- **PR-85 (Critical) — the migration created the index but never populated
+  it.** An external-content FTS5 table created after rows exist is empty and
+  stays empty — and worse, the `_au`/`_ad` triggers then issue FTS5
+  `'delete'` for rows that were never indexed, which raises
+  `database disk image is malformed`. **Reproduced independently by the
+  controller** against the installed `better-sqlite3` with the exact shapes
+  the migration ships: no rebuild → `MATCH` count 0, and both
+  `UPDATE … SET content = NULL` (the retention purge) and `DELETE` throw;
+  with one `'rebuild'` statement → all three succeed. Blast radius in this
+  tree: `recordEdit` loses the edit; `expireContent` purges every candidate
+  in one transaction, so a single legacy row aborts the whole retention run,
+  permanently, every run — ADR 0046 D3 silently broken. Fixed by appending
+  the rebuild as the migration's final statement, with a test that seeds at
+  0019 and migrates through 0020. The controller removed the statement again
+  and watched that test fail. Cost if wrong: none — the rebuild is a no-op
+  on an empty table.
+- **PR-86 (Important) — the catch swallowed everything.** A missing table,
+  `SQLITE_CORRUPT` and `too many SQL variables` all returned "no results",
+  identical to an operator's typo — which is what would have made PR-85
+  invisible in production. Narrowed to the FTS5 syntax family; everything
+  else rethrows.
+- **PR-87 (Important) — nothing checked the index.** ADR 0049's
+  Consequences claimed reindex existed "so a restored backup has a
+  documented recovery"; the command existed, the documentation did not. Now
+  an `archiveIndexHealth` port, a `doctor` line
+  (`ARCHIVE INDEX STALE: …`), and a restore note in `docs/SMOKE_TESTS.md`.
+  The implementer flagged, unprompted, that a row-count comparison detects
+  row-level skew but not token-level staleness — recorded so the line is not
+  read as a total integrity proof.
+- **PR-88 (Important) — the slice's most security-relevant line had no
+  test.** `archiveSearch`'s visibility set could have been regressed to pass
+  caller input and every existing test would have stayed green. Now an
+  integration test drives the real port.
+- Minors fixed in the same wave: the placeholder list de-duplicated and
+  capped (refusing above the cap rather than truncating a visibility set);
+  the rebuild-is-global/count-is-per-guild seam named in the command text
+  and the audit row; the deliberate choice that deleted-but-unpurged
+  messages stay searchable written into ADR 0049 and pinned by a test; two
+  decorative tests repaired.
+
+### Fix wave and close-out
+
+One fix dispatch (muse-spark-1.3, 17m52s, `ee69596..91c4a15`, one commit per
+task) with every finding; scoped re-review (59 s): **ALL ADDRESSED**, no new
+breakage. Merged into `worktree-release2-slices-7-12` with `--no-ff`.
+Gates on the merge, each alone, by exit code: typecheck 0, lint 0, test 0 —
+**2,755 tests across 145 files** (+53 this slice).
+
+What M2 teaches that M1 did not: **the failure that matters is the one the
+happy path never reaches.** Every per-task review, and every test, exercised
+a database where the FTS table existed before any row did — which is true in
+every test and false in every restore. The whole-branch brief asked "what
+happens on a database that already has rows?" explicitly, and that single
+question found a migration bug that could not have been fixed after it
+shipped. Ask it of every migration from here.

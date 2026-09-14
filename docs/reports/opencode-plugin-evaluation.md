@@ -504,6 +504,56 @@ RESULT block just gives a check nowhere to land. The plugin's
   second time a brief-shape rule was learned by rejection rather than from
   the templates (the first: the implementer template's Files list).
 
+### D45 — a second worktree, the same missing `node_modules`, and a model that reported it correctly
+
+- **What happened:** `oc-task` created `.oc-worktrees/oc/m2-search` on the
+  first dispatch against that branch (the research run) with **no
+  `node_modules`** — the same gap recorded at the very first run for
+  `oc/slice-7-shell`, four slices ago. Vitest still passed, because Node's
+  resolution walks up into the parent worktree's `node_modules`; `tsc` and
+  `eslint` did not, so the implementer's `npm run typecheck` and
+  `npm run lint` came back red on `packages/dashboard/vite.config.ts`.
+- **The model got this exactly right.** Rather than editing a file outside
+  its Files list or reporting DONE over red gates, it reported
+  `DONE_WITH_CONCERNS`, named the failure as pre-existing and out of scope,
+  and proved its own four files were clean by running `prettier --check`
+  and `eslint` on them directly. That is the behaviour the brief asks for
+  and the first time an implementer has drawn the line that precisely.
+- **Cost:** ~5 minutes (one `npm ci` the controller should have run when
+  the branch was created) and one concern to adjudicate. Both gates are 0
+  afterwards.
+- **Plugin note:** `oc-task` knows when it has just created a worktree —
+  that is the moment to run the project's install command, or at minimum
+  to print "new worktree: dependencies not installed". Four slices in, this
+  is the only mechanical gap that has recurred every single time.
+
+### D46 — the limit presents as a *stalled* run, and two sessions share one account
+
+- **What happened:** M2 Task 2 was dispatched three times across an hour.
+  The first (`20260913T155241`) read six files, then went silent for nine
+  minutes and exited 1 with no checkpoint. The second
+  (`20260913T160207`) wrote **zero bytes for 55 minutes** — and then, the
+  moment the owner cleared the limit, resumed *in the same process* and
+  carried on working from where it had queued. So a rate-limited run is not
+  refused and is not killed: it blocks, invisibly, for as long as the limit
+  lasts.
+- **Two causes of contention, one of them mine:** a `kill` of an earlier
+  run's `timeout` wrapper had left an **orphaned `opencode` process alive
+  for 54 minutes** still holding a slot; and a *second Claude session on the
+  same machine* was dispatching `oc-task` against the same free-tier account
+  (`.oc-runs/governance-suite/`). Neither is visible from inside a run —
+  the controller found both only by reading `ps`.
+- **Expected:** a rate-limited attach should surface as exit 5 within
+  seconds, as it does when the limit is hit at request time. Blocking
+  silently is the worst of the three failure modes recorded so far, because
+  it is indistinguishable from a model thinking hard.
+- **Did instead:** killed the orphan, left the second run to recover, and
+  reported to the owner rather than burning further dispatches. The run
+  completed its work afterwards.
+- **Cost:** ~70 minutes of wall clock on one small task; no work lost.
+- **Controller rule added:** after killing any `oc-task`, check `ps` for a
+  surviving `opencode` child — killing the wrapper does not kill the model.
+
 ### Plugin mechanics found at the first two runs
 
 - **No dependency install in the plugin's worktree.** `oc-task` created
