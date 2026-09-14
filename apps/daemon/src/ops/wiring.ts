@@ -61,22 +61,10 @@ import type { GuildOperations } from '../runtime/guild.js';
  * else enqueues a job dated in the future that is never claimed. It shows up as
  * a row sitting in `jobs list` forever, with nothing anywhere saying why.
  */
-/**
- * The instance-level handle for a guild scope (ADR 0045, ruling PR-102).
- *
- * `opsPortsFor` closes over one `GuildScope` and takes no `InstanceScope`
- * (its signature is the operator surface's guild partition, `CLAUDE.md`
- * rule 2), but the OAuth tables and `dashboard_accounts` are instance-level
- * by ADR 0045 D3. Both scopes are handles over the one database handle the
- * daemon's single `createScopeFactory` was built with, and the instance
- * repos reach only `dbOf`/`isReadonly` — never `scope.only` — so the guild
- * scope reads and writes the same instance rows. The cast is confined to
- * this one helper rather than repeated at each call site.
- */
-const instanceScopeOf = (scope: GuildScope): InstanceScope => scope as unknown as InstanceScope;
-
 export const opsPortsFor = (
   scope: GuildScope,
+  /** A separate parameter rather than derived from the guild scope: the two scopes are different types on purpose, and a derivation would be the cast this prevents. */
+  instanceScope: InstanceScope,
   operations: GuildOperations,
   now: () => number,
   client: Client,
@@ -549,16 +537,13 @@ export const opsPortsFor = (
 
   // ADR 0028 / ADR 0045 (ruling PR-102): grant a dashboard account a
   // capability in this guild. `findAccountByUsername` is instance-level while
-  // this port is guild-scoped, so the account lookup runs against the same
-  // database through this guild's scope: both scopes are handles over the one
-  // handle `createScopeFactory` was built with, and the instance repos only
-  // reach `dbOf`/`isReadonly` (never `scope.only`), so the guild scope reads
-  // the same `dashboard_accounts` rows. The grant itself is guild-scoped, and
+  // this port is guild-scoped, so the account lookup runs through the
+  // `instanceScope` parameter above. The grant itself is guild-scoped, and
   // the composite foreign key would refuse an account without guild access —
   // `hasGuildAccess` is checked first so the operator hears why, not a
   // constraint error.
   grantAccountCapability: (input) => {
-    const account = accountRepo.findAccountByUsername(instanceScopeOf(scope), input.username);
+    const account = accountRepo.findAccountByUsername(instanceScope, input.username);
     if (account === undefined) return 'no-such-account';
     if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'no-guild-access';
     if (authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {

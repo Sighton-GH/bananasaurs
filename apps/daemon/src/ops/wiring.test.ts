@@ -131,7 +131,14 @@ const enable = (...channelIds: string[]): void => {
 };
 
 const unreadable = () =>
-  opsPortsFor(scope, operations, () => NOW, client, true).listUnreadableArchiveChannels();
+  opsPortsFor(
+    scope,
+    t.scopes.instance(),
+    operations,
+    () => NOW,
+    client,
+    true,
+  ).listUnreadableArchiveChannels();
 
 describe('listUnreadableArchiveChannels', () => {
   it('reports a channel absent from the cache as missing', () => {

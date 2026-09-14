@@ -136,6 +136,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     logger,
   });
 
+  // One instance-level handle for the composition below: `scopes.instance()`
+  // returns a fresh handle per call by design, but every handle resolves to
+  // the same database, so the operator surface and the dashboard seam share
+  // one rather than minting a second.
+  const instanceScope = scopes.instance();
+
   // Shared by the operator dispatcher, the dashboard API and the `/status`
   // slash command: all three need "the process-level facts" and none should
   // build its own second copy of them.
@@ -143,7 +149,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     config,
     client,
     startedAtMs: now(),
-    instanceScope: scopes.instance(),
+    instanceScope,
     now,
     backupTimer,
   });
@@ -170,6 +176,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     }
     return opsPortsFor(
       entry.scope,
+      instanceScope,
       entry.runtime.ops,
       now,
       client,
@@ -393,6 +400,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         now,
         ports: opsPortsFor(
           entry.scope,
+          instanceScope,
           entry.runtime.ops,
           now,
           client,
