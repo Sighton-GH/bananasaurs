@@ -465,7 +465,15 @@ export const verifyAccessToken = (
   const account = accountRepo.findAccountById(instance, row.accountId);
   if (account === undefined) return { ok: false, reason: 'account-gone' };
   if (account.disabled) return { ok: false, reason: 'account-disabled' };
-  oauthRepo.touchToken(instance, row.tokenId, now);
+  try {
+    oauthRepo.touchToken(instance, row.tokenId, now);
+  } catch {
+    // `lastUsedAt` is telemetry for `mcp tokens`; it must never gate
+    // authentication. Under BANANASAURS_READONLY every write throws
+    // (packages/storage/src/write.ts), and a read-only daemon must still
+    // be able to verify a token — that is precisely what read-only mode
+    // is for. Swallowed deliberately, and only here.
+  }
   return {
     ok: true,
     accountId: row.accountId,

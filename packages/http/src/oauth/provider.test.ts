@@ -662,6 +662,23 @@ describe('verifyAccessToken', () => {
     );
   });
 
+  it('verifies a valid token under a read-only scope, leaving lastUsedAt untouched', () => {
+    registerClient();
+    const { issued } = fullFlow();
+    // `t.readonlyScopes` is how `packages/http/src/test-support.ts` builds a
+    // read-only scope: every write throws `ReadonlyError`
+    // (`packages/storage/src/write.ts`).
+    const roDeps: OAuthDeps = { scopes: t.readonlyScopes, now: () => clock, guildIds: [] };
+    expect(verifyAccessToken(roDeps, issued.accessToken)).toEqual({
+      ok: true,
+      accountId: ACCOUNT,
+      clientId: CLIENT,
+      tokenId: issued.accessTokenId,
+      scopes: ['bananasaurs:read'],
+    });
+    expect(oauthRepo.findTokenById(t.scopes.instance(), issued.accessTokenId)?.lastUsedAt).toBeNull();
+  });
+
   it('reports unknown for a token that was never minted', () => {
     registerClient();
     const unknown = generateToken();
