@@ -173,7 +173,11 @@ describe('beginAuthorization', () => {
     expect(result.ok).toBe(true);
     if (!result.ok) throw new Error('begin failed');
     trackSecrets(result.nonce);
-    expect(result.client).toEqual({ clientId: CLIENT, clientName: `name of ${CLIENT}` });
+    expect(result.client).toEqual({
+      clientId: CLIENT,
+      clientName: `name of ${CLIENT}`,
+      createdAt: clock,
+    });
     expect(result.redirectUriHost).toBe('example.test');
     expect(result.scopes).toEqual(['bananasaurs:read', 'bananasaurs:send']);
   });

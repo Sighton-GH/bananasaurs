@@ -3,6 +3,8 @@ import { renderConsentPage, renderErrorPage } from './consent.js';
 
 const VIEW = {
   clientName: 'Claude Desktop',
+  clientId: 'cli_abcdef0123456789',
+  registeredAt: '2026-09-13T12:00:00.000Z',
   redirectUriHost: 'claude.ai',
   scopes: ['bananasaurs:read'],
   requestId: 'req_abc',
@@ -49,6 +51,30 @@ describe('renderConsentPage', () => {
     expect(html).toContain('name="decision"');
     expect(html).toContain('value="approve"');
     expect(html).toContain('value="deny"');
+  });
+
+  it('explains each scope in plain English beside the raw string', () => {
+    const html = renderConsentPage({ ...VIEW, scopes: ['bananasaurs:read', 'bananasaurs:send'] });
+    expect(html).toContain('<li>bananasaurs:read — read messages, cases and server settings</li>');
+    expect(html).toContain('<li>bananasaurs:send — send messages as the bot</li>');
+  });
+
+  it('names the client id and the registration date', () => {
+    const html = renderConsentPage({ ...VIEW });
+    expect(html).toContain('<code>cli_abcdef0123456789</code>');
+    expect(html).toContain('registered 2026-09-13T12:00:00.000Z');
+  });
+
+  it('escapes a hostile client id and registration date, leaving no raw copy', () => {
+    const html = renderConsentPage({
+      ...VIEW,
+      clientId: 'cli_<img src=x onerror=alert(1)>',
+      registeredAt: '</p><script>alert(1)</script>',
+    });
+    expect(html).not.toContain('cli_<img src=x onerror=alert(1)>');
+    expect(html).not.toContain('</p><script>alert(1)</script>');
+    expect(html).toContain('cli_&lt;img src=x onerror=alert(1)&gt;');
+    expect(html).toContain('&lt;/p&gt;&lt;script&gt;alert(1)&lt;/script&gt;');
   });
 
   it('uses no script, no style attribute, and no external resource', () => {

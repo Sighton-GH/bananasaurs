@@ -69,7 +69,11 @@ export type BeginAuthorizationResult =
       readonly ok: true;
       readonly requestId: string;
       readonly nonce: string;
-      readonly client: { readonly clientId: string; readonly clientName: string };
+      readonly client: {
+        readonly clientId: string;
+        readonly clientName: string;
+        readonly createdAt: number;
+      };
       readonly redirectUriHost: string;
       readonly scopes: readonly OAuthScope[];
     }
@@ -139,7 +143,7 @@ export const beginAuthorization = (
     ok: true,
     requestId,
     nonce,
-    client: { clientId: client.clientId, clientName: client.clientName },
+    client: { clientId: client.clientId, clientName: client.clientName, createdAt: client.createdAt },
     redirectUriHost: new URL(input.redirectUri).host,
     scopes,
   };

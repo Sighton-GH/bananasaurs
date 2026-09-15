@@ -215,6 +215,8 @@ export const registerOAuthRoutes = (
         .send(
           renderConsentPage({
             clientName: result.client.clientName,
+            clientId: result.client.clientId,
+            registeredAt: new Date(result.client.createdAt).toISOString(),
             redirectUriHost: result.redirectUriHost,
             scopes: result.scopes,
             requestId: result.requestId,

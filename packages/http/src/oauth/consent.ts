@@ -10,6 +10,10 @@
 
 export interface ConsentView {
   readonly clientName: string;
+  /** The `cli_…` id, so two clients with the same display name are distinguishable. */
+  readonly clientId: string;
+  /** ISO date of the client's registration, formatted by the route from the row. */
+  readonly registeredAt: string;
   readonly redirectUriHost: string;
   readonly scopes: readonly string[];
   readonly requestId: string;
@@ -35,8 +39,16 @@ const errorLine = (error: NonNullable<ConsentView['error']>): string => {
   }
 };
 
+/** One plain-English clause per scope in the vocabulary (ruling PR-103). */
+const SCOPE_DESCRIPTIONS: Readonly<Record<string, string>> = {
+  'bananasaurs:read': 'read messages, cases and server settings',
+  'bananasaurs:send': 'send messages as the bot',
+};
+
 export const renderConsentPage = (view: ConsentView): string => {
-  const scopes = view.scopes.map((scope) => `<li>${esc(scope)}</li>`).join('');
+  const scopes = view.scopes
+    .map((scope) => `<li>${esc(scope)} — ${esc(SCOPE_DESCRIPTIONS[scope] ?? 'unknown permission')}</li>`)
+    .join('');
   const error = view.error === undefined ? '' : errorLine(view.error);
   return (
     '<!DOCTYPE html>' +
@@ -47,6 +59,7 @@ export const renderConsentPage = (view: ConsentView): string => {
     '<body>' +
     `<h1>Authorize ${esc(view.clientName)}?</h1>` +
     `<p>Client <strong>${esc(view.clientName)}</strong> is requesting access to this server.</p>` +
+    `<p>Client id <code>${esc(view.clientId)}</code>, registered ${esc(view.registeredAt)}.</p>` +
     `<p>It will return to host <code>${esc(view.redirectUriHost)}</code>.</p>` +
     '<p>Scopes requested:</p>' +
     `<ul>${scopes}</ul>` +
