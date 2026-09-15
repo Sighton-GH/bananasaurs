@@ -53,11 +53,17 @@ bananasaurs automod review [--rule <id>] [--limit N]
 bananasaurs automod verdict <event-id> <false_positive|true_positive|unclear> --confirm
 bananasaurs account list                     # every dashboard account: owner, enabled/DISABLED, lockout
 bananasaurs account disable <username> --confirm
-                                             # the ADR 0045 D6 lever: every session and every OAuth
-                                             # token this account approved stops verifying for as
-                                             # long as it stays disabled. A pause, not a rotation —
-                                             # `account enable` hands every credential back intact.
+                                              # the ADR 0045 D6 lever: every session and every OAuth
+                                              # token this account approved stops verifying for as
+                                              # long as it stays disabled. A pause, not a rotation —
+                                              # `account enable` hands every credential back intact;
+                                              # `account revoke-credentials` is the rotation.
 bananasaurs account enable <username> --confirm
+bananasaurs account revoke-credentials <username> --confirm
+                                              # ends every live dashboard session and every live
+                                              # OAuth token for the account, without disabling it —
+                                              # the account keeps its password and can sign in
+                                              # again for new ones.
 bananasaurs account delete <username> --confirm
                                              # deletes the account AND revokes its OAuth tokens in
                                              # one transaction; guild access, capabilities and
@@ -72,7 +78,7 @@ bananasaurs mcp revoke-client <client-id> --confirm
 
 The four `account` commands act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
 
-`disable` is a pause, not a rotation: re-enabling an account restores every session and token it approved, intact. There is no command in this release that rotates a password or ends an account's sessions without deleting the account — `account delete` is the only irreversible remedy today.
+`disable` is a pause, not a rotation: re-enabling an account restores every session and token it approved, intact. `account revoke-credentials` is the rotation: it ends every live dashboard session and every live OAuth token for the account without disabling it. It does not rotate the password, so an attacker who knows the password can sign in again and get new sessions and tokens — to stop the account signing in at all, use `account disable`; to remove it, `account delete`.
 
 Later releases add `case`, `archive search`, `channels enable|disable`.
 
