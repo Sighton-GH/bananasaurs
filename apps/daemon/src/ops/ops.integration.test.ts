@@ -1418,6 +1418,45 @@ describe('the account capability grant, end to end (ADR 0028)', () => {
 });
 
 /**
+ * The account commands through the real socket (M3b fix wave, finding 1):
+ * `account list` is instance-level but still resolves a guild before it runs,
+ * like every other operator command — this is the seam the five task reviews
+ * missed, because nothing but the real dispatcher plus the real wiring joins
+ * them. One dispatch proves the join; the second proves what the flag means.
+ */
+describe('the account commands, end to end', () => {
+  const scope = () => t.scopes.forGuild(GUILD);
+  const OWNER_ID = 'acct_cccccccccccccccccccccccccccccccc';
+
+  it('`account list` answers over the real socket against the real database', async () => {
+    startDaemon();
+    guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: OWNER_ID,
+      username: 'owner',
+      passwordHash: 'not-a-real-hash',
+      isOwner: true,
+      now: discord.now(),
+    });
+
+    const result = await cli('account list');
+    expect(result.code, result.err).toBe(0);
+    expect(result.out).toContain('owner');
+    // Usernames and ids only — never a hash.
+    expect(result.out).not.toContain('not-a-real-hash');
+  });
+
+  it('an account command without --guild is refused on a two-guild instance', async () => {
+    startDaemon({ BANANASAURS_GUILD_ALLOWLIST: `${GUILD},245678901234567890` });
+    guildRepo.upsertGuild(scope(), { name: 'g', enabled: true, now: discord.now() });
+
+    const result = await cli('account list');
+    expect(result.code).not.toBe(0);
+    expect(result.err).toContain('must say which');
+  });
+});
+
+/**
  * The visibility set behind `archiveSearch` (review F4): the port builds it
  * from `archiveRepo.listChannels`, never from caller input — the single most
  * security-relevant line in the slice. Nothing but driving the real ports
