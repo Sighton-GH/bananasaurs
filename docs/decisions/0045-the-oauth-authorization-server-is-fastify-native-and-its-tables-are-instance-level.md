@@ -236,3 +236,75 @@ form matches the nine that exist.
 The net effect on M3's scope: one more table, one more capability, a
 consent-form nonce, and a per-call guild resolution that M4 must honour.
 None of it is optional, and none of it was visible from the design.
+
+---
+
+## Amendment 2 — 2026-09-14, at M3's close
+
+D5 ("a replayed authorization code revokes the token it already minted") and
+D6 ("revoking the account revokes every token it approved") were both
+written as one-line promises. Implementing them, and then reviewing the
+whole branch, showed that each needs a mechanism the first draft did not
+name, and that one of them was **false as shipped** until the fix wave.
+Rulings PR-94, PR-126..PR-134.
+
+**D5 is revocation by lineage, not by descent (PR-94, PR-118, PR-127).**
+A token's ancestry is recorded in `oauth_tokens.issued_from_code_hash`,
+which is `NOT NULL` and **inherited by every rotation** — the row minted by
+a refresh copies its parent's value rather than taking one from the caller.
+Revoking "what a code minted" therefore means
+`revokeTokensFromCode(issued_from_code_hash)`, which reaches the whole
+lineage, and **not** a walk down `parent_token_id`. The difference is not
+academic: the access token from the first exchange has `parent_token_id
+= NULL`, so a descent walk from the refresh token it was minted beside can
+never reach it. Both the code-replay path and the refresh-replay path use
+lineage. `revokeTokenChain` survives for exactly one caller — revoking an
+access token by value, which has no descendants — and any future revocation
+surface must choose between them deliberately.
+
+**D6 bites at mint and at use, and the capability is re-checked on every
+mint (PR-126, PR-95, and the amendment to the old reading).**
+The first implementation read D6 as "at use, not at mint": a code consented
+to while the account was healthy still minted, and the tokens were refused
+later. That is now wrong in both directions. At **use**, `verifyAccessToken`
+and `refreshTokens` check that the approving account exists and is not
+disabled, on every request, with no cache. At **mint**, `exchangeCode`
+checks the same, and — the part that was missing entirely —
+**`refreshTokens` re-checks that the account still holds `mcp.authorize`**.
+
+That last one was a real hole, not a tidiness point. PR-92 says minting
+requires the capability in at least one guild; rotation mints; and rotation
+did not check. Because **nothing in this tree can disable or delete a
+dashboard account** — there is no route, no CLI command and no repository
+function; `disabled` is read in four places and written in none outside
+tests — revoking the capability is the *only* lever an operator actually
+has. It did not end a session: the refresh chain renewed itself for thirty
+rolling days. The check lives in the route layer, not the provider, because
+the provider cannot see guilds (PR-98); the provider exposes only
+`accountForRefreshToken`, a hash-and-read with no other logic, so the two
+layers cannot drift.
+
+**What D6 still does not give the operator.** Revoking the capability stops
+the *next* mint; it does not revoke live tokens, because PR-92 deliberately
+recomputes the reachable guild set per call rather than freezing it. An
+access token therefore keeps verifying until it expires — up to an hour —
+returning an empty reachable set. **M4 must refuse on an empty set**, and
+every tool must intersect against it; a tool that takes no guild would
+otherwise be reachable by an account that holds no grant anywhere. This is
+the single most important thing M3 hands forward.
+
+**D8 gains a caveat worth stating (PR-122).** `safeLogFields`, the allowlist
+rule 4 describes, is applied only where a call site wraps its fields in it,
+and `packages/http` has no call sites at all — a pre-existing pattern this
+slice followed rather than introduced. Every field M3 logs is allowlisted
+and carries an id, and the log-scan test pins the real secrets end to end,
+so the promise holds today. It holds by call-site discipline plus Pino's
+`redact` denylist, not by the allowlist, and the next OAuth log line is not
+protected by anything stronger than review.
+
+**One operational consequence.** `touchToken` was called on the bearer
+success path and is a write, so under `BANANASAURS_READONLY` a **valid**
+token got a 503 while an invalid one got a 401 — the guard unusable in
+precisely the mode read-only exists for, and an oracle besides. The touch is
+now best-effort: `lastUsedAt` is telemetry for `mcp tokens` and must never
+gate authentication.
