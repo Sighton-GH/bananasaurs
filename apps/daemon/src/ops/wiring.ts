@@ -840,6 +840,72 @@ export interface OpsInstanceDeps {
 }
 
 /**
+ * Dashboard-account operators (ADR 0045 D6), split out of `opsInstanceFor`
+ * below.
+ *
+ * `opsInstanceFor` requires a `Config` and a live discord.js `Client` and has
+ * no test anywhere in the tree; the account mapping needs neither. A separate
+ * factory is what makes "no password hash crosses this boundary" a cheap test
+ * — `accountOpsFor` over a migrated test database — rather than an expensive
+ * one.
+ */
+export const accountOpsFor = (
+  instanceScope: InstanceScope,
+  now: () => number,
+): Pick<OpsInstance, 'accountList' | 'accountSetDisabled' | 'accountDelete'> => ({
+  // Field by field, never a spread: the row carries a `passwordHash` that
+  // must not cross this boundary (`ports.ts` may not import
+  // `@bananasaurs/storage`, ADR 0014, so the shape names what crosses).
+  accountList: () =>
+    accountRepo.listAccounts(instanceScope).map((row) => ({
+      accountId: row.accountId,
+      username: row.username,
+      isOwner: row.isOwner,
+      disabled: row.disabled,
+      lockedUntil: row.lockedUntil,
+      createdAt: row.createdAt,
+    })),
+  accountSetDisabled: (username, disabled) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    const matched = accountRepo.setAccountDisabled(instanceScope, {
+      accountId: row.accountId,
+      disabled,
+    });
+    // `setAccountDisabled` reports whether a row matched, not whether the
+    // value moved, so `changed` is the conjunction: the row existed AND the
+    // value differed from what it already was.
+    return {
+      changed: matched && row.disabled !== disabled,
+      username: row.username,
+      isOwner: row.isOwner,
+      disabled: matched ? disabled : row.disabled,
+      lockedUntil: row.lockedUntil,
+      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+    };
+  },
+  accountDelete: (username) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    const result = accountRepo.deleteAccount(instanceScope, {
+      accountId: row.accountId,
+      now: now(),
+    });
+    // A successful lookup followed by `deleted: false` is a race, not a
+    // usage mistake.
+    if (!result.deleted) return 'no-such-account';
+    return {
+      username: row.username,
+      accountId: row.accountId,
+      wasOwner: row.isOwner,
+      tokensRevoked: result.tokensRevoked,
+      codesDeleted: result.codesDeleted,
+      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+    };
+  },
+});
+
+/**
  * Process-level facts for `status` and `doctor`.
  *
  * `gateway()` is a function rather than a snapshot because it is read at
@@ -979,4 +1045,5 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     if (oauthRepo.findClient(deps.instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(deps.instanceScope, clientId, deps.now());
   },
+  ...accountOpsFor(deps.instanceScope, deps.now),
 });
