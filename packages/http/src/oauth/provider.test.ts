@@ -568,6 +568,31 @@ describe('refreshTokens', () => {
     ).not.toBeNull();
   });
 
+  it('refusal (d) lineage: replaying the rotated refresh revokes all four rows, sibling included', () => {
+    registerClient();
+    const { issued } = fullFlow();
+    const rotated = refreshTokens(deps, { refreshToken: issued.refreshToken, clientId: CLIENT });
+    expect(rotated.ok).toBe(true);
+    if (!rotated.ok) throw new Error('refresh failed');
+    trackSecrets(rotated.accessToken, rotated.refreshToken);
+    const replay = refreshTokens(deps, { refreshToken: issued.refreshToken, clientId: CLIENT });
+    expect(replay.ok).toBe(false);
+    if (replay.ok) throw new Error('refresh replay unexpectedly succeeded');
+    expect(trackFailure(replay).error).toBe('invalid_grant');
+    // The sibling access token minted alongside the replayed refresh has
+    // parentTokenId null, so a chain walk from the refresh never reaches it —
+    // only the lineage (issuedFromCodeHash) kills the whole first pair.
+    for (const tokenId of [
+      issued.accessTokenId,
+      issued.refreshTokenId,
+      rotated.accessTokenId,
+      rotated.refreshTokenId,
+    ]) {
+      expect(oauthRepo.findTokenById(t.scopes.instance(), tokenId)?.revokedAt).not.toBeNull();
+    }
+    expect(verifyAccessToken(deps, issued.accessToken)).toEqual({ ok: false, reason: 'revoked' });
+  });
+
   it('refuses an access token presented as a refresh token', () => {
     registerClient();
     const { issued } = fullFlow();

@@ -351,7 +351,14 @@ export const refreshTokens = (
     return { ok: false, error: 'invalid_grant', description: 'not a refresh token' };
   }
   if (row.revokedAt !== null) {
-    oauthRepo.revokeTokenChain(instance, row.tokenId, now);
+    // Ruling PR-118: a replay kills the LINEAGE, not the chain. The sibling
+    // access token minted alongside this refresh by `exchangeCode` has
+    // `parentTokenId: null`, so it is not a descendant and a chain walk from
+    // the presented token leaves it live — the token a leak most likely
+    // exposed outliving the leak signal. Every row carries the inherited
+    // `issuedFromCodeHash` (PR-94), so revoking by code reaches the whole
+    // lineage from any member of it — the same choice `revokeByValue` makes.
+    oauthRepo.revokeTokensFromCode(instance, row.issuedFromCodeHash, now);
     return { ok: false, error: 'invalid_grant', description: 'refresh token was already used' };
   }
   if (row.expiresAt <= now) {
