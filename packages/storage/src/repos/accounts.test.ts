@@ -357,17 +357,25 @@ describe('setAccountDisabled (ADR 0045 Amendment 3, A3-1)', () => {
 
   it('returns false for an unknown id and writes nothing', () => {
     seedAccount();
-    expect(setAccountDisabled(instance, { accountId: 'acct_missing', disabled: true })).toBe(
-      false,
-    );
+    expect(setAccountDisabled(instance, { accountId: 'acct_missing', disabled: true })).toBe(false);
     expect(countAccounts(instance)).toBe(1);
     expect(findAccountById(instance, ACCOUNT)?.disabled).toBe(false);
   });
 
   it('leaves failedAttempts and lockedUntil exactly as the lockout left them', () => {
     seedAccount();
-    recordFailedAttempt(instance, { accountId: ACCOUNT, now: 2000, maxAttempts: 5, lockoutMs: 900_000 });
-    recordFailedAttempt(instance, { accountId: ACCOUNT, now: 2001, maxAttempts: 5, lockoutMs: 900_000 });
+    recordFailedAttempt(instance, {
+      accountId: ACCOUNT,
+      now: 2000,
+      maxAttempts: 5,
+      lockoutMs: 900_000,
+    });
+    recordFailedAttempt(instance, {
+      accountId: ACCOUNT,
+      now: 2001,
+      maxAttempts: 5,
+      lockoutMs: 900_000,
+    });
     const before = findAccountById(instance, ACCOUNT);
     setAccountDisabled(instance, { accountId: ACCOUNT, disabled: true });
     setAccountDisabled(instance, { accountId: ACCOUNT, disabled: false });

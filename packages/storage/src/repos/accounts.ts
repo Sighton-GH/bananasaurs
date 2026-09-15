@@ -304,7 +304,12 @@ export const countEnabledOwners = (scope: InstanceScope): number =>
  */
 export const listAccounts = (scope: InstanceScope): readonly AccountRow[] =>
   readInstance(scope, (db) =>
-    db.select(SELECT).from(dashboardAccounts).orderBy(asc(dashboardAccounts.createdAt)).all().map(toRow),
+    db
+      .select(SELECT)
+      .from(dashboardAccounts)
+      .orderBy(asc(dashboardAccounts.createdAt))
+      .all()
+      .map(toRow),
   );
 
 // --- guild access -----------------------------------------------------------
