@@ -2,7 +2,13 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { ChannelType, Client, PermissionsBitField, type Guild } from 'discord.js';
 import { parseGuildId } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { accountRepo, archiveRepo, guildRepo, oauthRepo, type GuildScope } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  archiveRepo,
+  guildRepo,
+  oauthRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
 import { accountOpsFor, opsPortsFor } from './wiring.js';
