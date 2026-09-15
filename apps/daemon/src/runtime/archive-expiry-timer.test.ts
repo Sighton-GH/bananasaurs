@@ -10,6 +10,7 @@ import {
   archiveRepo,
   guildRepo,
   jobRepo,
+  oauthRepo,
   read,
   schema,
   type GuildScope,
@@ -52,11 +53,12 @@ let a: GuildScope;
 let b: GuildScope;
 let nowMs: number;
 
-const depsFor = (): ArchiveExpiryTimerDeps => ({
+const depsFor = (over: Partial<ArchiveExpiryTimerDeps> = {}): ArchiveExpiryTimerDeps => ({
   guilds: () => [{ scope: a }, { scope: b }],
   enqueue: (scope, input) => jobRepo.enqueue(scope, input),
   now: () => nowMs,
   logger,
+  ...over,
 });
 
 const jobsFor = (scope: GuildScope) => jobRepo.listJobs(scope, {});
@@ -148,6 +150,52 @@ describe('archive expiry timer', () => {
     nowMs += DAY_MS;
     vi.advanceTimersByTime(2 * ARCHIVE_EXPIRY_INTERVAL_MS);
     expect(jobsFor(a)).toHaveLength(2);
+  });
+
+  it('runOnce runs the wired OAuth purge once, with the timer clock', () => {
+    enableChannels(a, b);
+    const seen: number[] = [];
+    createArchiveExpiryTimer(
+      depsFor({
+        purgeOAuth: (at) => {
+          seen.push(at);
+          return { pending: 0, codes: 0, tokens: 0 };
+        },
+      }),
+    ).runOnce();
+    expect(seen).toEqual([nowMs]);
+  });
+
+  it('the real purge wired to runOnce deletes expired OAuth rows and keeps live ones', () => {
+    enableChannels(a, b);
+    const instance = t.scopes.instance();
+    oauthRepo.createPendingAuthorization(instance, {
+      requestId: 'req-old',
+      nonceHash: 'n',
+      clientId: 'client-1',
+      redirectUri: 'https://example.test/cb',
+      scopes: [],
+      codeChallenge: 'c',
+      state: null,
+      createdAt: nowMs - DAY_MS,
+      expiresAt: nowMs - 1,
+    });
+    oauthRepo.createPendingAuthorization(instance, {
+      requestId: 'req-live',
+      nonceHash: 'n',
+      clientId: 'client-1',
+      redirectUri: 'https://example.test/cb',
+      scopes: [],
+      codeChallenge: 'c',
+      state: null,
+      createdAt: nowMs,
+      expiresAt: nowMs + DAY_MS,
+    });
+    createArchiveExpiryTimer(
+      depsFor({ purgeOAuth: (at) => oauthRepo.purgeExpired(instance, at) }),
+    ).runOnce();
+    expect(oauthRepo.consumePendingAuthorization(instance, 'req-old', nowMs)).toBeUndefined();
+    expect(oauthRepo.consumePendingAuthorization(instance, 'req-live', nowMs)).toBeDefined();
   });
 });
 

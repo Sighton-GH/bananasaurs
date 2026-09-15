@@ -22,6 +22,7 @@ import {
   automodRuleRepo,
   guildRepo,
   jobRepo,
+  oauthRepo,
   pipelineRepo,
   type GuildScope,
   type ScopeFactory,
@@ -126,21 +127,24 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     });
   }
 
+  // One instance-level handle for the composition below: `scopes.instance()`
+  // returns a fresh handle per call by design, but every handle resolves to
+  // the same database, so the operator surface and the dashboard seam share
+  // one rather than minting a second.
+  const instanceScope = scopes.instance();
+
   // ADR 0046, Slice M1 Task 5 (PR-70): the daily archive-expiry producer. One
   // expiry job per guild per UTC day, beside the backup timer — the job table
   // has no scheduler, so this `setInterval` is what says when.
   const archiveExpiryTimer = createArchiveExpiryTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    // Item 7: the OAuth purge is instance-level, not per-guild, so it rides
+    // the timer's once-a-day `runOnce` rather than the per-guild expiry jobs.
+    purgeOAuth: (nowMs) => oauthRepo.purgeExpired(instanceScope, nowMs),
     now,
     logger,
   });
-
-  // One instance-level handle for the composition below: `scopes.instance()`
-  // returns a fresh handle per call by design, but every handle resolves to
-  // the same database, so the operator surface and the dashboard seam share
-  // one rather than minting a second.
-  const instanceScope = scopes.instance();
 
   // Shared by the operator dispatcher, the dashboard API and the `/status`
   // slash command: all three need "the process-level facts" and none should
