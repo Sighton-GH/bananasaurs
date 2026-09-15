@@ -229,7 +229,12 @@ describe('conformance against the SDK client', () => {
     const metadata = await discoverAuthorizationServerMetadata('https://bot.test', { fetchFn });
     if (metadata === undefined) throw new Error('authorization-server discovery returned nothing');
     expect(metadata.code_challenge_methods_supported).toEqual(['S256']);
+    // Absolute, origin included: `injectFetch` strips the origin before
+    // `app.inject` sees the path, so a wrong-host endpoint here would still
+    // pass the SDK's flows — these assertions are what catch it.
+    expect(metadata.authorization_endpoint).toBe('https://bot.test/oauth/authorize');
     expect(metadata.token_endpoint).toBe('https://bot.test/oauth/token');
+    expect(metadata.registration_endpoint).toBe('https://bot.test/oauth/register');
   });
 
   it('registers, authorizes, exchanges, and calls the stub', async () => {
@@ -351,6 +356,9 @@ describe('conformance against the SDK client', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(InvalidGrantError);
       expect((err as InvalidGrantError).errorCode).toBe('invalid_grant');
+      // The class proves the code; a non-empty message proves the server's
+      // `error_description` arrived (the SDK carries it in the message).
+      expect((err as Error).message.length).toBeGreaterThan(0);
     }
 
     // After the replay the new access token is revoked too (the D5 cascade).
@@ -416,11 +424,14 @@ describe('conformance against the SDK client', () => {
     expect(challenge).toBe(
       'Bearer resource_metadata="https://bot.test/.well-known/oauth-protected-resource"',
     );
-    const probe = new Response(JSON.stringify({ error: 'invalid_token' }), {
-      status: 401,
-      headers: { 'WWW-Authenticate': challenge },
+    // The SDK's parser gets the REAL 401 through `injectFetch` — not a
+    // hand-built `Response` — so this proves the stub's actual challenge
+    // parses, header included.
+    const live = await fetchFn('https://bot.test/mcp-stub', {
+      headers: { Authorization: `Bearer ${tokens.access_token}` },
     });
-    expect(extractResourceMetadataUrl(probe)).toEqual(
+    expect(live.status).toBe(401);
+    expect(extractResourceMetadataUrl(live)).toEqual(
       new URL('https://bot.test/.well-known/oauth-protected-resource'),
     );
   });
@@ -462,6 +473,7 @@ describe('conformance against the SDK client', () => {
     } catch (err) {
       expect(err).toBeInstanceOf(InvalidGrantError);
       expect((err as InvalidGrantError).errorCode).toBe('invalid_grant');
+      expect((err as Error).message.length).toBeGreaterThan(0);
     }
 
     const bad = await startAuthorization('https://bot.test', {
