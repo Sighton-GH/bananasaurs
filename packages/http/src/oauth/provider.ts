@@ -319,6 +319,24 @@ export interface RefreshInput {
   readonly clientId: string;
 }
 
+/**
+ * The account behind a presented refresh token, for the route's PR-92
+ * re-check. Returns `row.accountId` only when the row exists and
+ * `kind === 'refresh'` — deliberately NO other checks (not revoked, not
+ * expired, not this client, not the account): those stay `refreshTokens`'
+ * job, so this cannot become a second, divergent copy of its logic. When
+ * this returns `undefined` the route falls through to `refreshTokens`, which
+ * owns the unknown-token wording and status.
+ */
+export const accountForRefreshToken = (
+  deps: OAuthDeps,
+  rawRefreshToken: string,
+): string | undefined => {
+  const row = oauthRepo.findTokenByHash(deps.scopes.instance(), hashToken(rawRefreshToken));
+  if (row === undefined || row.kind !== 'refresh') return undefined;
+  return row.accountId;
+};
+
 export const refreshTokens = (
   deps: OAuthDeps,
   input: RefreshInput,

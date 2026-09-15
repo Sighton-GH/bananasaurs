@@ -9,6 +9,7 @@ import { accountRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { generateToken, hashPassword } from '../secrets.js';
+import { verifyAccessToken } from '../oauth/provider.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
 import { registerOAuthRoutes } from './oauth.js';
 
@@ -527,6 +528,92 @@ describe('POST /oauth/token', () => {
     expect(response.statusCode).toBe(400);
     scannedBodies.push(response.body);
     expect(response.json()).toMatchObject({ error: 'invalid_grant' });
+  });
+
+  /** register -> authorize -> approve -> exchange through the routes. */
+  const mintRoutePair = async (): Promise<{
+    clientId: string;
+    accessToken: string;
+    refreshToken: string;
+  }> => {
+    const clientId = await registerClient();
+    const { verifier, challenge } = newPkce();
+    const page = await app.inject({
+      method: 'GET',
+      url: authorizeQuery({ client_id: clientId, code_challenge: challenge }),
+    });
+    expect(page.statusCode).toBe(200);
+    const requestId = hiddenInput(page.body, 'requestId');
+    const nonce = hiddenInput(page.body, 'nonce');
+    trackSecrets(nonce);
+    const approval = await app.inject({
+      method: 'POST',
+      url: '/oauth/authorize',
+      headers: formHeaders,
+      payload: formBody({
+        requestId,
+        nonce,
+        username: 'owner',
+        password: PASSWORD,
+        decision: 'approve',
+      }),
+    });
+    expect(approval.statusCode).toBe(302);
+    const code = new URL(approval.headers.location as string).searchParams.get('code');
+    if (code === null) throw new Error('redirect carried no code');
+    trackSecrets(code);
+    return { clientId, ...(await exchange(app, { code, clientId, verifier })) };
+  };
+
+  const tokenRowCount = (): number =>
+    (t.raw.prepare('SELECT COUNT(*) AS n FROM oauth_tokens').get() as { n: number }).n;
+
+  const refreshGrant = (input: { refreshToken: string; clientId: string }) =>
+    app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'refresh_token',
+        refresh_token: input.refreshToken,
+        client_id: input.clientId,
+      }),
+    });
+
+  it('rotates with the grant still held: the same request answers 200', async () => {
+    grantAuthorize();
+    const { clientId, refreshToken } = await mintRoutePair();
+    const response = await refreshGrant({ refreshToken, clientId });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ access_token: string; refresh_token: string }>();
+    trackSecrets(body.access_token, body.refresh_token);
+    expect(typeof body.access_token).toBe('string');
+  });
+
+  it('refuses to mint when the approving account no longer holds mcp.authorize, and writes no rows', async () => {
+    grantAuthorize();
+    const { clientId, accessToken, refreshToken } = await mintRoutePair();
+    authzRepo.revokeAccountCapability(t.scopes.forGuild(GUILD_A), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+    });
+    const before = tokenRowCount();
+    const response = await refreshGrant({ refreshToken, clientId });
+    expect(response.statusCode).toBe(400);
+    scannedBodies.push(response.body);
+    expect(response.json()).toMatchObject({
+      error: 'invalid_grant',
+      error_description: 'the account that approved this token no longer holds mcp.authorize',
+    });
+    // The refusal refuses to mint: no new token rows were written.
+    expect(tokenRowCount()).toBe(before);
+    // And it does not revoke: the original access token still verifies.
+    expect(
+      verifyAccessToken(
+        { scopes: t.scopes, now: () => clock, guildIds: [GUILD_A, GUILD_B] },
+        accessToken,
+      ).ok,
+    ).toBe(true);
   });
 });
 

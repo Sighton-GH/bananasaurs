@@ -6,6 +6,7 @@ import { originMatchesHost, type HttpDeps, type RouteGuard } from '../server.js'
 import { hashToken, secretsMatch } from '../secrets.js';
 import { verifyAccountCredentials } from '../auth.js';
 import {
+  accountForRefreshToken,
   beginAuthorization,
   completeAuthorization,
   exchangeCode,
@@ -340,6 +341,20 @@ export const registerOAuthRoutes = (
             ok: false,
             error: 'invalid_request',
             description: 'the refresh_token grant is malformed',
+          });
+        }
+        // ADR 0045 PR-92, enforced at rotation: minting requires
+        // `mcp.authorize` in at least one guild, and rotation mints. The
+        // provider must not learn about guilds (PR-98) — it cannot see them
+        // and this layer already can — so the reachable-set decision lives
+        // here, before `refreshTokens` writes anything. `undefined` falls
+        // through, so the unknown-token path keeps its existing wording.
+        const approver = accountForRefreshToken(oauthDeps, parsed.data.refresh_token);
+        if (approver !== undefined && reachableGuilds(oauthDeps, approver).length === 0) {
+          return tokenFailure(reply, {
+            ok: false,
+            error: 'invalid_grant',
+            description: 'the account that approved this token no longer holds mcp.authorize',
           });
         }
         const issued = refreshTokens(oauthDeps, {
