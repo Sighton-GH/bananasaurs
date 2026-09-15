@@ -310,8 +310,7 @@ describe('account list (tests 3-5)', () => {
     expect(response.ok && response.text).toContain(`locked until ${iso(future)}`);
     // The past lockout is elapsed, so it is not a fact about the account any
     // more: exactly one locked-until line, the future one.
-    const occurrences =
-      response.ok === false ? 0 : response.text.split('locked until').length - 1;
+    const occurrences = response.ok === false ? 0 : response.text.split('locked until').length - 1;
     expect(occurrences).toBe(1);
     // Order follows accountList().
     if (response.ok) {
@@ -541,9 +540,7 @@ describe('account delete (tests 11-12)', () => {
       before: { exists: true, isOwner: true },
       after: { exists: false, tokensRevoked: 3, codesDeleted: 2 },
     });
-    expect(
-      (h.audit[0]?.after as { tokensRevoked?: number } | undefined)?.tokensRevoked,
-    ).toBe(3);
+    expect((h.audit[0]?.after as { tokensRevoked?: number } | undefined)?.tokensRevoked).toBe(3);
   });
 });
 
