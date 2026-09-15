@@ -29,14 +29,17 @@ const iso = (ms: number): string => new Date(ms).toISOString();
 
 // The dashboard's own username rules (`packages/http/src/policy.ts`): an
 // owner-provisioned local account, narrow by design, so every command names
-// an account exactly the way the bootstrap form created it.
+// an account exactly the way the bootstrap form created it. The first
+// character cannot be a dash: `packages/cli/src/args.ts` reads a leading `-`
+// as a flag, so such an account could never be named back to `account delete`.
 const username = z
   .string()
   .min(3)
   .max(64)
   .regex(
-    /^[a-z0-9._-]+$/,
-    'a username may contain lowercase letters, digits, dot, dash, underscore',
+    /^[a-z0-9][a-z0-9._-]*$/,
+    'a username must start with a lowercase letter or digit, and may then contain ' +
+      'lowercase letters, digits, dot, dash, underscore',
   );
 
 const accountNameArgs = z.object({ username });

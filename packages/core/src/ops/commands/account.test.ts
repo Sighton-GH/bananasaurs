@@ -659,6 +659,23 @@ describe('account disable states the pause, not a rotation (M3b-R11)', () => {
   });
 });
 
+describe('a leading-dash username is refused by every command that takes one (fix wave, finding 7)', () => {
+  it('refuses -eve at account disable, enable, delete and grant', async () => {
+    for (const command of ['account disable', 'account enable', 'account delete'] as const) {
+      const h = accountHarness();
+      const response = await h.run(command, { username: '-eve' });
+      expect(response.ok, command).toBe(false);
+      expect(response.ok === false && response.code, command).toBe('bad-request');
+      expect(response.ok === false && response.message, command).toContain('must start with');
+    }
+    const grant = harness(() => 'granted');
+    const grantResponse = await grant.run({ username: '-eve', capability: 'mcp.authorize' });
+    expect(grantResponse.ok).toBe(false);
+    expect(grantResponse.ok === false && grantResponse.code).toBe('bad-request');
+    expect(grantResponse.ok === false && grantResponse.message).toContain('must start with');
+  });
+});
+
 describe('account lifecycle outputs carry no secret (test 13)', () => {
   it('never renders a password hash in text, data, or audit', async () => {
     const accounts: OpsAccount[] = [
