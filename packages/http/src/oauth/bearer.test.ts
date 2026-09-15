@@ -334,3 +334,105 @@ describe('requireBearer', () => {
     }
   });
 });
+
+describe('ADR 0045 D6: revoking the account revokes what it approved (M3b)', () => {
+  it("a deleted account's live access token dies on the next request", async () => {
+    const { accessToken } = await mintToken();
+    const before = await stubWith(`Bearer ${accessToken}`);
+    expect(before.statusCode).toBe(200);
+
+    accountRepo.deleteAccount(t.scopes.instance(), { accountId: ACCOUNT, now: clock });
+
+    // The SAME token, the SAME clock — nothing has expired.
+    const after = await stubWith(`Bearer ${accessToken}`);
+    expect(after.statusCode).toBe(401);
+    expect(after.headers['www-authenticate']).toBe(CHALLENGE);
+    expect(after.json()).toEqual({ error: 'invalid_token' });
+  });
+
+  it('a deleted account cannot refresh — the row was revoked, not just unfindable', async () => {
+    const { clientId, refreshToken } = await mintToken();
+
+    accountRepo.deleteAccount(t.scopes.instance(), { accountId: ACCOUNT, now: clock });
+
+    const refresh = await app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }),
+    });
+    expect(refresh.statusCode).toBe(400);
+    expect(refresh.json()).toMatchObject({ error: 'invalid_grant' });
+
+    const row = oauthRepo.findTokenByHash(t.scopes.instance(), hashToken(refreshToken));
+    expect(row?.revokedAt).not.toBeNull();
+  });
+
+  it("a disabled account's live access token dies on the next request", async () => {
+    const { accessToken } = await mintToken();
+    const before = await stubWith(`Bearer ${accessToken}`);
+    expect(before.statusCode).toBe(200);
+
+    accountRepo.setAccountDisabled(t.scopes.instance(), { accountId: ACCOUNT, disabled: true });
+
+    // The SAME token, the SAME clock — nothing has expired.
+    const after = await stubWith(`Bearer ${accessToken}`);
+    expect(after.statusCode).toBe(401);
+    expect(after.headers['www-authenticate']).toBe(CHALLENGE);
+    expect(after.json()).toEqual({ error: 'invalid_token' });
+  });
+
+  it('enabling the account restores the same token — nothing was cached', async () => {
+    const { accessToken } = await mintToken();
+    const before = await stubWith(`Bearer ${accessToken}`);
+    expect(before.statusCode).toBe(200);
+    const reachableBefore = before.json<{ reachableGuilds: string[] }>().reachableGuilds;
+
+    accountRepo.setAccountDisabled(t.scopes.instance(), { accountId: ACCOUNT, disabled: true });
+    const refused = await stubWith(`Bearer ${accessToken}`);
+    expect(refused.statusCode).toBe(401);
+
+    accountRepo.setAccountDisabled(t.scopes.instance(), { accountId: ACCOUNT, disabled: false });
+    const restored = await stubWith(`Bearer ${accessToken}`);
+    expect(restored.statusCode).toBe(200);
+    expect(restored.json<{ reachableGuilds: string[] }>().reachableGuilds).toEqual(
+      reachableBefore,
+    );
+  });
+
+  it('a disabled account cannot refresh, and enabling restores the refresh', async () => {
+    const { clientId, refreshToken } = await mintToken();
+
+    accountRepo.setAccountDisabled(t.scopes.instance(), { accountId: ACCOUNT, disabled: true });
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }),
+    });
+    expect(refused.statusCode).toBe(400);
+    expect(refused.json()).toMatchObject({ error: 'invalid_grant' });
+
+    accountRepo.setAccountDisabled(t.scopes.instance(), { accountId: ACCOUNT, disabled: false });
+    const renewed = await app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'refresh_token',
+        refresh_token: refreshToken,
+        client_id: clientId,
+      }),
+    });
+    expect(renewed.statusCode).toBe(200);
+    expect(renewed.json()).toMatchObject({ access_token: expect.any(String) });
+  });
+});
