@@ -187,9 +187,63 @@ M4 cannot: the server half is what serves `tools/list` and `tools/call`.
 
 The owner accepted the promotion on 2026-09-14. `CLAUDE.md` asks for a
 one-line justification per dependency; one line is not enough here, because
-promoting this package pulls **Express 5, Hono, `cors`, `express-rate-limit`,
-`ajv` and `eventsource`** into the production closure of a process that
-currently has exactly one HTTP server (Fastify) and wants exactly one.
+promoting this package pulls a second HTTP stack into the production closure
+of a process that currently has exactly one HTTP server (Fastify) and wants
+exactly one.
+
+**Correction, measured 2026-09-15 before M4 began.** An earlier draft of this
+section — and the owner's decision as recorded in `docs/STATE.md` — named
+**six** packages: Express 5, Hono, `cors`, `express-rate-limit`, `ajv` and
+`eventsource`. That was written from the SDK's `dependencies` field as quoted
+in the design document, and it is wrong: those six are the *direct*
+dependencies worth naming, not the closure. Walked from
+`node_modules/@modelcontextprotocol/sdk/package.json`, the SDK's transitive
+closure is **91 packages**, of which **84 are not already in this project's
+production closure**. The production closure goes from **172 packages to
+256** — it grows by roughly **49%** to add one server.
+
+The 84, in full, so nobody has to re-derive them:
+
+`accepts` `body-parser` `bytes` `call-bind-apply-helpers` `call-bound`
+`content-disposition` `content-type` `cookie-signature` `cors` `cross-spawn`
+`debug` `depd` `dunder-proto` `ee-first` `encodeurl` `escape-html`
+`es-define-property` `es-errors` `es-object-atoms` `etag` `eventsource`
+`eventsource-parser` `express` `express-rate-limit`
+`fast-json-stable-stringify` `finalhandler` `forwarded` `fresh`
+`function-bind` `get-intrinsic` `get-proto` `gopd` `hasown` `has-symbols`
+`hono` `@hono/node-server` `http-errors` `iconv-lite` `inherits`
+`ip-address` `isexe` `is-promise` `jose` `json-schema-typed`
+`math-intrinsics` `media-typer` `merge-descriptors` `mime-db` `mime-types`
+`ms` `negotiator` `object-assign` `object-inspect` `once` `on-finished`
+`parseurl` `path-key` `path-to-regexp` `pkce-challenge` `proxy-addr`
+`punycode` `qs` `range-parser` `raw-body` `router` `safer-buffer` `send`
+`serve-static` `setprototypeof` `shebang-command` `shebang-regex`
+`side-channel` `side-channel-list` `side-channel-map` `side-channel-weakmap`
+`statuses` `toidentifier` `type-is` `unpipe` `uri-js` `vary` `which`
+`wrappy` `zod-to-json-schema`
+
+**The owner should see this number before M4 lands**, because the decision
+they took was "six transitive HTTP packages" and the decision they are
+actually getting is eighty-four. It does not change the *kind* of trade —
+everything below still holds, and the alternatives are the same two — but it
+changes its size by more than an order of magnitude, and a decision record
+that understates its own cost by that much is the thing this project's
+"verify, do not assert" rule exists to catch. It was caught by running
+`npm ls` rather than by re-reading the ADR.
+
+**One of the 84 deserves naming: `cross-spawn`.** A process spawner enters
+the production closure of a project whose hard rule 9 is that nothing may
+spawn the `claude` binary. Two things keep that from being as bad as it
+sounds, and both should be stated rather than assumed. It arrives for the
+SDK's **client** stdio transport
+(`dist/esm/client/stdio.js` — verified by grep, it is the only file that
+imports it), which is how an MCP *client* launches a local server process;
+this code is a server and imports no client module outside M3's conformance
+test. And it confers no new capability: Node's `child_process` is built in,
+so nothing that could not spawn before can spawn now. What it adds is audit
+surface, not power. Obligation 1 below — no non-test import of the SDK's
+Express, Hono, auth-router or client modules — is what keeps it that way,
+and it is now worth an explicit test rather than review discipline.
 
 **What it buys.** The MCP wire protocol is a moving specification with
 versioned capability negotiation, a JSON-RPC framing layer, two transports
@@ -232,10 +286,12 @@ supply-chain surface is the cheaper of the two.
    The imports M4 adds are the server, the Streamable HTTP transport, and the
    protocol types — nothing else. A test asserts the import surface, the same
    way M3's test asserted the SDK had *no* runtime import.
-2. **The count is recorded and watched.** `npm ls --omit=dev` before and after
-   the promotion goes in the M4 ledger, so the next person to ask "why is
-   Express in a Fastify project" has the answer in one grep rather than in
-   this paragraph alone.
+2. **The count is recorded and watched.** Measured before the promotion on
+   2026-09-15: **172 packages** in the production closure, one direct
+   production dependency (`@node-rs/argon2`). The post-promotion count goes in
+   the M4 ledger beside it, and the expected value is **256**. A number that
+   comes back materially different from 256 means the SDK's own dependencies
+   moved, and that is worth reading before merging rather than after.
 3. **The version is pinned** (`@modelcontextprotocol/sdk` 1.30.0, MIT) and
    moves only on a deliberate bump, because a transitive HTTP server's patch
    level is now a production fact.
