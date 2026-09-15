@@ -189,6 +189,34 @@ export const setPasswordHash = (
       .run();
   });
 
+/**
+ * Disables or re-enables an account (ADR 0045 Amendment 3, A3-1).
+ *
+ * The lever ADR 0045 D6 promised and M3 did not have: `disabled` was read in
+ * five places and written in none outside tests, so "revoking the account
+ * revokes everything it approved" had no trigger at all. Returns `false` for
+ * an unknown id, so the caller can tell "no such account" from "already in
+ * the state you asked for" — both write nothing, and they are different
+ * answers to an operator.
+ *
+ * It does NOT touch `failed_attempts` or `locked_until` (A3-4): a lockout
+ * (ADR 0029) answers a different question from a disablement, and clearing
+ * one as a side effect of undoing the other would make the login throttle
+ * depend on an unrelated command.
+ */
+export const setAccountDisabled = (
+  scope: InstanceScope,
+  input: { accountId: string; disabled: boolean },
+): boolean =>
+  writeInstance(scope, ({ db }) => {
+    const result = db
+      .update(dashboardAccounts)
+      .set({ disabled: input.disabled ? 1 : 0 })
+      .where(eq(dashboardAccounts.accountId, input.accountId))
+      .run();
+    return result.changes === 1;
+  });
+
 // --- guild access -----------------------------------------------------------
 
 /**
