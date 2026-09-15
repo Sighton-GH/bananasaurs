@@ -119,6 +119,7 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   accountList: unstubbed('accountList'),
   accountSetDisabled: unstubbed('accountSetDisabled'),
   accountDelete: unstubbed('accountDelete'),
+  accountRevokeCredentials: unstubbed('accountRevokeCredentials'),
   ...over,
 });
 

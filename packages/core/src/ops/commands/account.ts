@@ -284,6 +284,62 @@ export const accountDeleteCommand = defineCommand<z.infer<typeof accountDeleteAr
   },
 });
 
+// --- account revoke-credentials ----------------------------------------------
+
+export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof accountNameArgs>>({
+  name: 'account revoke-credentials',
+  write: true,
+  summary:
+    'revoke every live dashboard session and OAuth token for an account, without disabling it',
+  positional: [{ name: 'username', required: true, describe: 'the dashboard account username' }],
+  args: accountNameArgs,
+
+  run(ctx: OpsContext, args): OpsWriteResult {
+    const outcome = ctx.instance.accountRevokeCredentials(args.username);
+
+    // The existing convention for a write that changed nothing because there
+    // was nothing to change: an unknown name is a usage mistake, not an
+    // answer, and a throw produces no audit row for a state that did not
+    // change.
+    if (outcome === 'no-such-account') {
+      throw new Error(`no dashboard account ${args.username}`);
+    }
+
+    const lines = [
+      `revoked ${String(outcome.sessionsRevoked)} dashboard session(s) and ` +
+        `${String(outcome.tokensRevoked)} OAuth token(s) for ${outcome.username} across ` +
+        `${String(outcome.guildsTouched)} guild(s)`,
+      outcome.stillEnabled
+        ? `${outcome.username} is still enabled and can sign in again with its existing password. ` +
+          `To stop it signing in at all, use \`account disable\`; to remove it, \`account delete\`.`
+        : `${outcome.username} is disabled, so it cannot sign in regardless; ` +
+          `these credentials will not work if it is re-enabled.`,
+    ];
+    return {
+      text: lines.join('\n'),
+      data: {
+        username: outcome.username,
+        accountId: outcome.accountId,
+        sessionsRevoked: outcome.sessionsRevoked,
+        tokensRevoked: outcome.tokensRevoked,
+        guildsTouched: outcome.guildsTouched,
+        stillEnabled: outcome.stillEnabled,
+      },
+      audit: {
+        action: 'account.credentials.revoked',
+        subjectType: 'account',
+        subjectId: args.username,
+        before: {},
+        after: {
+          sessionsRevoked: outcome.sessionsRevoked,
+          tokensRevoked: outcome.tokensRevoked,
+          guildsTouched: outcome.guildsTouched,
+        },
+      },
+    };
+  },
+});
+
 // --- account grant -----------------------------------------------------------
 
 /**

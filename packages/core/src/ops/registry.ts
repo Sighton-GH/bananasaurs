@@ -25,6 +25,7 @@ import {
   accountEnableCommand,
   accountGrantCommand,
   accountListCommand,
+  accountRevokeCredentialsCommand,
 } from './commands/account.js';
 import { backupListCommand, backupNowCommand } from './commands/backup.js';
 import { bootstrapReissueCommand } from './commands/bootstrap.js';
@@ -123,5 +124,6 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   accountDisableCommand,
   accountEnableCommand,
   accountDeleteCommand,
+  accountRevokeCredentialsCommand,
   accountGrantCommand,
 ];

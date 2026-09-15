@@ -185,7 +185,7 @@ describe('listUnreadableArchiveChannels', () => {
 
 describe('accountOpsFor', () => {
   const instance = () => t.scopes.instance();
-  const ops = () => accountOpsFor(instance(), () => NOW);
+  const ops = () => accountOpsFor(instance(), [], () => NOW);
 
   const seedAccount = (
     accountId: string,

@@ -652,4 +652,7 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       accountsRemaining: accountRepo.countAccounts(instanceScope),
     };
   },
+  accountRevokeCredentials: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
 });

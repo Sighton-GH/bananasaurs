@@ -154,6 +154,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     client,
     startedAtMs: now(),
     instanceScope,
+    guildScopes: [...byGuild.values()].map(({ scope }) => scope),
     now,
     backupTimer,
   });
