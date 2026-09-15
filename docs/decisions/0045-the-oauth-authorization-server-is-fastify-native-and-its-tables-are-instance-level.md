@@ -332,10 +332,15 @@ functions that already exist and are tested. Cost if wrong: the owner uses
 SSH for a thing they would rather click.
 
 **A3-2 — deleting an account revokes its OAuth tokens in the same
-transaction, even though the guard would refuse them anyway.**
-`verifyAccessToken` already returns `account-gone` for a token whose account
-has vanished, so the 401 does not depend on this. Two reasons to do it
-regardless. The rows survive the account — `oauth_tokens.account_id` carries
+transaction, and the revoke is what actually refuses them.**
+The first draft of this paragraph said the revoke was belt-and-braces
+"because `verifyAccessToken` would return `account-gone` anyway". That was
+written from reading the code rather than from running it, and Task 4 of
+M3b proved it wrong in an instructive direction. Removing the `account-gone`
+guard leaves the whole suite **green**, because the revoke happens inside
+the same transaction as the delete, so the very next request is refused as
+`revoked` and the account lookup's branch never executes. Through
+`deleteAccount`, this write **is** the refusal. Two reasons it is here. The rows survive the account — `oauth_tokens.account_id` carries
 no foreign key, deliberately, because the token table is instance-level and
 must not cascade-vanish the record of what was issued — so without an
 explicit revoke `mcp tokens` would print them as **live** for up to thirty
@@ -346,6 +351,17 @@ found false in two directions at once. The authorization codes for that
 account go in the same transaction: an unexchanged code is a token that has
 not been minted yet. Cost if wrong: a few extra `UPDATE`s on a table with
 tens of rows.
+
+Two facts that only came out of trying to break the guards, and that belong
+here rather than in a test comment. **The `account-gone` branch is
+unreachable through `deleteAccount`** and is therefore pinned by a test that
+deletes the row with raw SQL instead (ruling M3b-R7) — the branch still
+matters in production, because a restored backup taken before the account
+existed, or a row removed by hand during the `bootstrap reissue` recovery,
+both reach it. And **removing that branch is a 500, not a bypass**: without
+it, `verifyAccessToken` reads `.disabled` off `undefined` and throws, so the
+guard's real job is turning a crash into an honest 401. Both were found by
+watching the guards fail, not by reading them, which is the point.
 
 **A3-3 — disable and delete refuse nothing, and say what they cost.**
 Neither command guards "the last owner". Both are recoverable from the same

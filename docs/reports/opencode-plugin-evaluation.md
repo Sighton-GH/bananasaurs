@@ -716,6 +716,84 @@ must never treat "no output" as "no work to do"** — each one needed the
 owner, and each one was cheap only because the work was committed and
 ledgered before the dispatch went out.
 
+### D51 — M3b: five tasks, two NEEDS_CONTEXT stops, and both were right
+
+Slice M3b (dashboard account disable/enable/delete) ran five tasks on
+muse-spark-1.3, implementer and task reviewer both. Four task reviews
+returned Spec PASS / Quality APPROVED with **no findings at all**, which has
+not happened before on this project — the earlier slices averaged three
+Important findings per whole-branch review that the task reviews had passed.
+Two things plausibly explain it, and they are worth separating: the slice is
+small and mostly additive, and the briefs carried the exact code and the
+exact test list. Only the next slice will say which.
+
+**Both NEEDS_CONTEXT stops were correct refusals to widen scope.** Task 2's
+brief listed four files; adding a member to `OpsInstance` broke three more
+`OpsInstance` literals elsewhere in the tree. The implementer reported the
+typecheck failure, quoted it, and asked, rather than editing files its brief
+did not name. It did the same thing again one round later when two further
+literals surfaced. That is the behaviour the `# Files` section exists to
+produce, and it cost two cheap round trips instead of a review finding.
+
+**The finding of the slice came from an implementer refusing to write a
+test that would assert nothing.** Task 4's brief instructed it to remove the
+`account-gone` guard in `verifyAccessToken` and watch a test go red. The
+suite stayed green. It reported that honestly, with the reason —
+`deleteAccount` revokes the token in the same transaction, so the request is
+refused as `revoked` before the account lookup runs — and said what staging
+the branch would require rather than adjusting the test until it passed for
+the wrong reason. **That falsified a sentence in the controller's own ADR**
+(0045 Amendment 3, A3-2, which claimed the in-transaction revoke was a
+redundant belt over a guard that "would refuse them anyway"). The amendment
+was corrected. A free model found an error in an Opus-written decision
+record by doing exactly what the brief asked and reporting what happened.
+
+**Watching a guard fail paid twice more.** Flipping `accountDeleteCommand`
+from `write: true` to `write: false` produced three distinct failures, not
+one — the unconfirmed dispatch reaching the port, the registry write-flag
+assertion, and a **missing audit row** — which is how the run learned that
+`--confirm` and auditing ride on the same flag, so one typo removes both.
+And removing the `account-gone` branch turns out to be a **500, not a
+bypass**: `verifyAccessToken` reads `.disabled` off `undefined` and throws.
+Neither fact is visible in a diff.
+
+### D52 — the worktree does not inherit nested workspace installs
+
+`oc-task` links the base checkout's **root** `node_modules` into a fresh
+worktree. This repo also has a nested install at
+`packages/dashboard/node_modules`, which the worktree does not get, so
+full-repo `npm run typecheck` fails there on
+`Cannot find module '@vitejs/plugin-react'` — an error with nothing to do
+with the work, which the first implementer correctly diagnosed as
+pre-existing and refused to chase.
+
+**Fix, now in every brief's Verification section:**
+
+```
+test -e packages/dashboard/node_modules || ln -s <repo>/packages/dashboard/node_modules packages/dashboard/node_modules
+```
+
+Note that a `--role review` run discarded the symlink as an unexpected file
+change ("reviewer modified 1 file(s); changes discarded"), so it has to be
+re-created rather than assumed present. Worth fixing in the tool: linking
+every `*/node_modules` the base checkout has, not only the root one.
+
+### D53 — the host's memory watchdog kills background runs
+
+Two background jobs were killed mid-run with "the system is running low on
+memory", one of them an `oc-task` fix round during its verification step —
+**after both its commits had landed**, so the work survived and only the
+RESULT block was lost. `free` showed 14 GB available immediately afterwards,
+so the watchdog is reacting to a spike, not a shortage: a full `npm run test`
+(157 files, vitest workers) concurrent with an `opencode` session is enough.
+
+**What the controller does now:** never run the full suite while a dispatch
+is in flight, and run the gates in the foreground, one at a time. And the
+recovery is the ledger plus `git log`, not recollection — the killed run's
+two commits were found there and verified by re-running the gates, which is
+the second time this session that committing per step has turned a lost
+session into a non-event.
+
 ## What worked well
 
 (appended as observed)
