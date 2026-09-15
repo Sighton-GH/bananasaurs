@@ -2,10 +2,10 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { ChannelType, Client, PermissionsBitField, type Guild } from 'discord.js';
 import { parseGuildId } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
-import { archiveRepo, guildRepo, type GuildScope } from '@bananasaurs/storage';
+import { accountRepo, archiveRepo, guildRepo, oauthRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
-import { opsPortsFor } from './wiring.js';
+import { accountOpsFor, opsPortsFor } from './wiring.js';
 
 /**
  * `doctor`'s archive check: `listUnreadableArchiveChannels`
@@ -173,5 +173,164 @@ describe('listUnreadableArchiveChannels', () => {
       { channelId: NO_VIEW, reason: 'no-view' },
       { channelId: NO_HISTORY, reason: 'no-history' },
     ]);
+  });
+});
+
+describe('accountOpsFor', () => {
+  const instance = () => t.scopes.instance();
+  const ops = () => accountOpsFor(instance(), () => NOW);
+
+  const seedAccount = (
+    accountId: string,
+    username: string,
+    over: { isOwner?: boolean; now?: number; passwordHash?: string } = {},
+  ): void => {
+    accountRepo.createAccount(instance(), {
+      accountId,
+      username,
+      passwordHash: over.passwordHash ?? '$argon2id$fake',
+      isOwner: over.isOwner ?? false,
+      now: over.now ?? NOW,
+    });
+  };
+
+  const seedClient = (clientId = 'client-1'): void => {
+    oauthRepo.createClient(instance(), {
+      clientId,
+      clientName: `name of ${clientId}`,
+      redirectUris: ['https://example.test/cb'],
+      createdAt: NOW,
+      createdByAccountId: null,
+      registrationSource: 'dynamic',
+    });
+  };
+
+  const seedToken = (tokenId: string, accountId: string): void => {
+    oauthRepo.createToken(instance(), {
+      tokenId,
+      tokenHash: `hash-${tokenId}`,
+      kind: 'access',
+      clientId: 'client-1',
+      accountId,
+      scopes: ['bananasaurs:read'],
+      createdAt: NOW,
+      expiresAt: NOW + 100_000,
+      parentTokenId: null,
+      issuedFromCodeHash: `code-for-${tokenId}`,
+    });
+  };
+
+  it('accountList never exposes a password hash', () => {
+    seedAccount('acct_sentinel00000000000000000000001', 'sentinel', {
+      passwordHash: '$argon2id$v=19$SENTINEL',
+    });
+
+    const rows = ops().accountList();
+    expect(JSON.stringify(rows)).not.toContain('SENTINEL');
+    for (const row of rows) {
+      expect(Object.keys(row)).not.toContain('passwordHash');
+    }
+  });
+
+  it('accountList returns every account with its disabled, isOwner, lockedUntil and createdAt intact', () => {
+    seedAccount('acct_owner00000000000000000000000001', 'owner-one', {
+      isOwner: true,
+      now: NOW - 2000,
+    });
+    seedAccount('acct_member0000000000000000000000001', 'member-one', {
+      isOwner: false,
+      now: NOW - 1000,
+    });
+    accountRepo.setAccountDisabled(instance(), {
+      accountId: 'acct_member0000000000000000000000001',
+      disabled: true,
+    });
+    accountRepo.recordFailedAttempt(instance(), {
+      accountId: 'acct_owner00000000000000000000000001',
+      now: NOW,
+      maxAttempts: 1,
+      lockoutMs: 900_000,
+    });
+
+    const rows = ops().accountList();
+    expect(rows.map((r) => r.username)).toEqual(['owner-one', 'member-one']);
+    const owner = rows.find((r) => r.username === 'owner-one');
+    const member = rows.find((r) => r.username === 'member-one');
+    expect(owner).toMatchObject({
+      accountId: 'acct_owner00000000000000000000000001',
+      isOwner: true,
+      disabled: false,
+      lockedUntil: NOW + 900_000,
+      createdAt: NOW - 2000,
+    });
+    expect(member).toMatchObject({
+      accountId: 'acct_member0000000000000000000000001',
+      isOwner: false,
+      disabled: true,
+      lockedUntil: null,
+      createdAt: NOW - 1000,
+    });
+  });
+
+  it("accountSetDisabled('nobody') returns no-such-account and writes nothing", () => {
+    seedAccount('acct_keeper0000000000000000000000001', 'keeper');
+
+    expect(ops().accountSetDisabled('nobody', true)).toBe('no-such-account');
+    expect(accountRepo.findAccountByUsername(instance(), 'keeper')?.disabled).toBe(false);
+  });
+
+  it('accountSetDisabled reports changed on the first write and not on a repeat', () => {
+    seedAccount('acct_toggle0000000000000000000000001', 'toggle');
+
+    const first = ops().accountSetDisabled('toggle', true);
+    expect(first).toMatchObject({ changed: true, disabled: true, username: 'toggle' });
+    const second = ops().accountSetDisabled('toggle', true);
+    expect(second).toMatchObject({ changed: false, disabled: true });
+  });
+
+  it('accountSetDisabled reports enabledOwnersRemaining after the write', () => {
+    seedAccount('acct_soloowner00000000000000000000001', 'solo', { isOwner: true });
+
+    const only = ops().accountSetDisabled('solo', true);
+    expect(only).toMatchObject({ disabled: true, enabledOwnersRemaining: 0 });
+
+    accountRepo.setAccountDisabled(instance(), {
+      accountId: 'acct_soloowner00000000000000000000001',
+      disabled: false,
+    });
+    seedAccount('acct_secondowner000000000000000000001', 'second', { isOwner: true });
+    const oneLeft = ops().accountSetDisabled('solo', true);
+    expect(oneLeft).toMatchObject({ disabled: true, enabledOwnersRemaining: 1 });
+  });
+
+  it("accountDelete('nobody') returns no-such-account", () => {
+    seedAccount('acct_keeper0000000000000000000000002', 'keeper');
+
+    expect(ops().accountDelete('nobody')).toBe('no-such-account');
+    expect(accountRepo.findAccountByUsername(instance(), 'keeper')).not.toBeUndefined();
+  });
+
+  it('accountDelete reports the token count the repository revoked', () => {
+    seedAccount('acct_tokenowner0000000000000000000001', 'token-owner', { isOwner: true });
+    seedClient();
+    seedToken('token-one', 'acct_tokenowner0000000000000000000001');
+    seedToken('token-two', 'acct_tokenowner0000000000000000000001');
+
+    const result = ops().accountDelete('token-owner');
+    expect(result).toMatchObject({
+      username: 'token-owner',
+      accountId: 'acct_tokenowner0000000000000000000001',
+      wasOwner: true,
+      tokensRevoked: 2,
+    });
+    expect(accountRepo.findAccountByUsername(instance(), 'token-owner')).toBeUndefined();
+  });
+
+  it('accountDelete reports enabledOwnersRemaining after the delete', () => {
+    seedAccount('acct_delowner100000000000000000000001', 'del-one', { isOwner: true });
+    seedAccount('acct_delowner200000000000000000000001', 'del-two', { isOwner: true });
+
+    const result = ops().accountDelete('del-one');
+    expect(result).toMatchObject({ username: 'del-one', enabledOwnersRemaining: 1 });
   });
 });
