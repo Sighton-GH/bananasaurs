@@ -245,6 +245,7 @@ describe('account lifecycle --confirm gate (test 1)', () => {
         tokensRevoked: 0,
         codesDeleted: 0,
         enabledOwnersRemaining: 1,
+        accountsRemaining: 1,
       }),
     });
     const response = await h.run('account delete', { username: 'owner' }, false);
@@ -491,6 +492,7 @@ describe('account delete (tests 11-12)', () => {
         tokensRevoked: 3,
         codesDeleted: 2,
         enabledOwnersRemaining: 0,
+        accountsRemaining: 0,
       }),
     });
     const lastResponse = await last.run('account delete', { username: 'owner' });
@@ -512,6 +514,7 @@ describe('account delete (tests 11-12)', () => {
         tokensRevoked: 1,
         codesDeleted: 0,
         enabledOwnersRemaining: 1,
+        accountsRemaining: 2,
       }),
     });
     const sparedResponse = await spared.run('account delete', { username: 'member' });
@@ -528,6 +531,7 @@ describe('account delete (tests 11-12)', () => {
         tokensRevoked: 3,
         codesDeleted: 2,
         enabledOwnersRemaining: 1,
+        accountsRemaining: 1,
       }),
     });
     const response = await h.run('account delete', { username: 'owner' });
@@ -541,6 +545,47 @@ describe('account delete (tests 11-12)', () => {
       after: { exists: false, tokensRevoked: 3, codesDeleted: 2 },
     });
     expect((h.audit[0]?.after as { tokensRevoked?: number } | undefined)?.tokensRevoked).toBe(3);
+  });
+});
+
+describe('account delete ownerless warning branches on rows remaining (M3b-R9)', () => {
+  it('prints the bootstrap reissue wording only when accountsRemaining === 0', async () => {
+    const last = accountHarness({
+      accountDelete: () => ({
+        username: 'owner',
+        accountId: 'acc-1',
+        wasOwner: true,
+        tokensRevoked: 0,
+        codesDeleted: 0,
+        enabledOwnersRemaining: 0,
+        accountsRemaining: 0,
+      }),
+    });
+    const response = await last.run('account delete', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('bootstrap reissue --confirm');
+    expect(response.ok && response.data).toMatchObject({ accountsRemaining: 0 });
+  });
+
+  it('prints the will-refuse wording when accountsRemaining > 0', async () => {
+    const h = accountHarness({
+      accountDelete: () => ({
+        username: 'owner',
+        accountId: 'acc-1',
+        wasOwner: true,
+        tokensRevoked: 0,
+        codesDeleted: 0,
+        enabledOwnersRemaining: 0,
+        accountsRemaining: 2,
+      }),
+    });
+    const response = await h.run('account delete', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).not.toContain('bootstrap reissue --confirm');
+    expect(response.ok && response.text).toContain(
+      'will refuse while the remaining 2 account(s) exist',
+    );
+    expect(response.ok && response.data).toMatchObject({ accountsRemaining: 2 });
   });
 });
 
@@ -612,6 +657,7 @@ describe('account lifecycle outputs carry no secret (test 13)', () => {
         tokensRevoked: 1,
         codesDeleted: 1,
         enabledOwnersRemaining: 1,
+        accountsRemaining: 1,
       }),
     });
     const deleteResponse = await deleteHarness.run('account delete', { username: 'owner' });

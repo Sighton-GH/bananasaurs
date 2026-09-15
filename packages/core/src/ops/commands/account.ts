@@ -226,10 +226,17 @@ export const accountDeleteCommand = defineCommand<z.infer<typeof accountDeleteAr
       `revoked ${String(outcome.tokensRevoked)} OAuth token(s) and removed ${String(outcome.codesDeleted)} ` +
         `unexchanged authorization code(s); guild access, capabilities and dashboard sessions cascaded`,
     ];
-    if (outcome.enabledOwnersRemaining === 0) {
+    if (outcome.enabledOwnersRemaining === 0 && outcome.accountsRemaining === 0) {
       lines.push(
-        `WARNING: that was the last enabled owner account. Nobody can sign in to the dashboard. ` +
+        `WARNING: that was the last enabled owner account and the last account of any kind. ` +
+          `Nobody can sign in to the dashboard. ` +
           `Run \`bananasaurs bootstrap reissue --confirm\` to re-arm the setup page.`,
+      );
+    } else if (outcome.enabledOwnersRemaining === 0) {
+      lines.push(
+        `WARNING: that was the last enabled owner account. Nobody can sign in to the dashboard, and ` +
+          `\`bootstrap reissue\` will refuse while the remaining ${String(outcome.accountsRemaining)} ` +
+          `account(s) exist — delete or enable them first.`,
       );
     }
     return {
@@ -241,6 +248,7 @@ export const accountDeleteCommand = defineCommand<z.infer<typeof accountDeleteAr
         tokensRevoked: outcome.tokensRevoked,
         codesDeleted: outcome.codesDeleted,
         enabledOwnersRemaining: outcome.enabledOwnersRemaining,
+        accountsRemaining: outcome.accountsRemaining,
       },
       audit: {
         action: 'account.deleted',

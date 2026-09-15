@@ -899,6 +899,7 @@ export const accountOpsFor = (
       tokensRevoked: result.tokensRevoked,
       codesDeleted: result.codesDeleted,
       enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+      accountsRemaining: accountRepo.countAccounts(instanceScope),
     };
   },
 });

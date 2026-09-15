@@ -499,6 +499,13 @@ export type OpsAccountDeleteResult =
       readonly codesDeleted: number;
       /** Enabled owner accounts remaining AFTER the delete. */
       readonly enabledOwnersRemaining: number;
+      /**
+       * Every account row remaining AFTER the delete. `bootstrap reissue`
+       * refuses while ANY row exists — not while any enabled owner exists —
+       * so the ownerless warning cannot be written from the owner count
+       * alone (ruling M3b-R9).
+       */
+      readonly accountsRemaining: number;
     };
 
 export interface OpsPorts {

@@ -319,6 +319,14 @@ describe('accountOpsFor', () => {
     expect(ops().accountSetDisabled('gone', true)).toBe('no-such-account');
   });
 
+  it('accountDelete returns accountsRemaining counted after the delete', () => {
+    seedAccount('acct_remain1000000000000000000000001', 'remain-one');
+    seedAccount('acct_remain2000000000000000000000001', 'remain-two');
+
+    const result = ops().accountDelete('remain-one');
+    expect(result).toMatchObject({ username: 'remain-one', accountsRemaining: 1 });
+  });
+
   it("accountDelete('nobody') returns no-such-account", () => {
     seedAccount('acct_keeper0000000000000000000000002', 'keeper');
 
