@@ -308,3 +308,70 @@ token got a 503 while an invalid one got a 401 — the guard unusable in
 precisely the mode read-only exists for, and an oracle besides. The touch is
 now best-effort: `lastUsedAt` is telemetry for `mcp tokens` and must never
 gate authentication.
+
+---
+
+## Amendment 3 — 2026-09-14, Slice M3b: D6 gets its trigger
+
+Amendment 2 recorded that D6 — "revoking the account revokes everything it
+approved" — was a promise with no trigger: **nothing in this tree could
+disable or delete a dashboard account.** `disabled` was read in four places
+and written in none outside tests. This amendment records the lever, and the
+four decisions it needed. No new ADR: the promise is D6's, so the mechanism
+belongs beside it.
+
+**A3-1 — the lever is the operator CLI, not the dashboard.** `bananasaurs
+account disable|enable|delete <username> --confirm`, over the operator
+socket (ADR 0024), instance-level like `bootstrap reissue` for the reason
+ADR 0027 gives: an account exists before a guild is chosen, so neither the
+question nor the answer names one. No dashboard route ships with it. An
+account-management screen is a real thing to want, but the first thing D6
+needs is a lever that works when the dashboard is exactly what is
+compromised — and the slice that adds a route can add it against repository
+functions that already exist and are tested. Cost if wrong: the owner uses
+SSH for a thing they would rather click.
+
+**A3-2 — deleting an account revokes its OAuth tokens in the same
+transaction, even though the guard would refuse them anyway.**
+`verifyAccessToken` already returns `account-gone` for a token whose account
+has vanished, so the 401 does not depend on this. Two reasons to do it
+regardless. The rows survive the account — `oauth_tokens.account_id` carries
+no foreign key, deliberately, because the token table is instance-level and
+must not cascade-vanish the record of what was issued — so without an
+explicit revoke `mcp tokens` would print them as **live** for up to thirty
+days, and an operator auditing "what can still reach this daemon" would read
+a list that is wrong in the one direction that matters. And a revocation
+that depends on a *second* module's check is exactly the shape Amendment 2
+found false in two directions at once. The authorization codes for that
+account go in the same transaction: an unexchanged code is a token that has
+not been minted yet. Cost if wrong: a few extra `UPDATE`s on a table with
+tens of rows.
+
+**A3-3 — disable and delete refuse nothing, and say what they cost.**
+Neither command guards "the last owner". Both are recoverable from the same
+terminal that ran them: a disabled account is re-enabled with `account
+enable`, and deleting the last account is the documented recovery path
+`bootstrap reissue` already names ("if there is no owner left, remove the
+account rows deliberately and run this again") — a guard here would make
+that path unreachable forever. What the commands owe the operator instead is
+an honest sentence: when the target was the last enabled owner, the output
+says so and names the next command. Cost if wrong: an operator locks
+themselves out of the dashboard and has to run one more CLI command.
+
+**A3-4 — `enable` clears `disabled` and nothing else.** It does not clear
+`failed_attempts` or `locked_until`, because a lockout (ADR 0029) answers a
+different question from a disablement and silently clearing one while
+undoing the other would make the login-throttle state depend on an unrelated
+command. The output reports a live lockout so the operator is not puzzled by
+an enabled account that still cannot sign in. Cost if wrong: an operator
+waits out a lockout window, or resets it by the path ADR 0029 defines.
+
+**What this closes and what it does not.** D6 now has a trigger at both
+ends: revoking `mcp.authorize` stops the next mint (Amendment 2), and
+disabling or deleting the account stops the current one on the very next
+request — proven by a test that drives the real OAuth routes, mints a token,
+verifies it, deletes the account, and asserts the next call to the same
+route is a 401 with the RFC 9728 challenge. What it does not close is the
+gap Amendment 2 hands to M4 and this slice does not touch: an account that
+merely loses its capability keeps a verifying access token with an **empty**
+reachable guild set until it expires. **M4 must still refuse on empty.**
