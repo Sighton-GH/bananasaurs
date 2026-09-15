@@ -5,6 +5,7 @@ import type {
   OpsAccount,
   OpsAccountDeleteResult,
   OpsAccountDisableResult,
+  OpsAccountRevokeResult,
   OpsAuditWrite,
   OpsPorts,
 } from '../ports.js';
@@ -15,6 +16,7 @@ import {
   accountEnableCommand,
   accountGrantCommand,
   accountListCommand,
+  accountRevokeCredentialsCommand,
 } from './account.js';
 
 const NOW = 1_700_000_000_000;
@@ -62,6 +64,7 @@ interface AccountStubs {
   accountList?: () => readonly OpsAccount[];
   accountSetDisabled?: (username: string, disabled: boolean) => OpsAccountDisableResult;
   accountDelete?: (username: string) => OpsAccountDeleteResult;
+  accountRevokeCredentials?: (username: string) => OpsAccountRevokeResult;
 }
 
 interface AccountHarness {
@@ -70,12 +73,14 @@ interface AccountHarness {
   readonly listCalls: number;
   readonly setDisabledCalls: Array<{ username: string; disabled: boolean }>;
   readonly deleteCalls: string[];
+  readonly revokeCalls: string[];
 }
 
 const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
   const audit: OpsAuditWrite[] = [];
   const setDisabledCalls: Array<{ username: string; disabled: boolean }> = [];
   const deleteCalls: string[] = [];
+  const revokeCalls: string[] = [];
   let listCalls = 0;
   const dispatcher = createDispatcher({
     commands: [
@@ -83,6 +88,7 @@ const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
       accountDisableCommand,
       accountEnableCommand,
       accountDeleteCommand,
+      accountRevokeCredentialsCommand,
     ],
     guildIds: [FIXTURE_GUILD_ID],
     contextFor: () => ({
@@ -107,12 +113,17 @@ const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
         deleteCalls.push(username);
         return stubs.accountDelete?.(username) ?? 'no-such-account';
       },
+      accountRevokeCredentials: (username) => {
+        revokeCalls.push(username);
+        return stubs.accountRevokeCredentials?.(username) ?? 'no-such-account';
+      },
     }),
   });
   return {
     audit,
     setDisabledCalls,
     deleteCalls,
+    revokeCalls,
     get listCalls() {
       return listCalls;
     },
@@ -254,6 +265,24 @@ describe('account lifecycle --confirm gate (test 1)', () => {
     expect(h.deleteCalls).toHaveLength(0);
     expect(h.audit).toHaveLength(0);
   });
+
+  it('refuses account revoke-credentials without --confirm and never reaches the instance', async () => {
+    const h = accountHarness({
+      accountRevokeCredentials: () => ({
+        username: 'alice',
+        accountId: 'acc-1',
+        sessionsRevoked: 2,
+        tokensRevoked: 3,
+        guildsTouched: 2,
+        stillEnabled: true,
+      }),
+    });
+    const response = await h.run('account revoke-credentials', { username: 'alice' }, false);
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.code).toBe('needs-confirm');
+    expect(h.revokeCalls).toHaveLength(0);
+    expect(h.audit).toHaveLength(0);
+  });
 });
 
 describe('account lifecycle commands are registered (test 2)', () => {
@@ -265,6 +294,10 @@ describe('account lifecycle commands are registered (test 2)', () => {
     expect(OPERATOR_COMMANDS.find((c) => c.name === 'account disable')?.write).toBe(true);
     expect(OPERATOR_COMMANDS.find((c) => c.name === 'account enable')?.write).toBe(true);
     expect(OPERATOR_COMMANDS.find((c) => c.name === 'account delete')?.write).toBe(true);
+    expect(OPERATOR_COMMANDS.map((c) => c.name)).toContain('account revoke-credentials');
+    expect(OPERATOR_COMMANDS.find((c) => c.name === 'account revoke-credentials')?.write).toBe(
+      true,
+    );
   });
 });
 
@@ -659,9 +692,84 @@ describe('account disable states the pause, not a rotation (M3b-R11)', () => {
   });
 });
 
+describe('account revoke-credentials (M3c)', () => {
+  it('rejects an unknown account by name and writes no audit row', async () => {
+    const h = accountHarness({ accountRevokeCredentials: () => 'no-such-account' });
+    const response = await h.run('account revoke-credentials', { username: 'ghost' });
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.message).toContain('ghost');
+    expect(h.audit).toHaveLength(0);
+  });
+
+  it('reports counts and audits the rotation for a still-enabled account', async () => {
+    const h = accountHarness({
+      accountRevokeCredentials: () => ({
+        username: 'alice',
+        accountId: 'acc-1',
+        sessionsRevoked: 2,
+        tokensRevoked: 3,
+        guildsTouched: 2,
+        stillEnabled: true,
+      }),
+    });
+    const response = await h.run('account revoke-credentials', { username: 'alice' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain(
+      'revoked 2 dashboard session(s) and 3 OAuth token(s) for alice across 2 guild(s)',
+    );
+    expect(response.ok && response.text).toContain(
+      'alice is still enabled and can sign in again with its existing password. ' +
+        'To stop it signing in at all, use `account disable`; to remove it, `account delete`.',
+    );
+    expect(response.ok && response.data).toMatchObject({
+      username: 'alice',
+      accountId: 'acc-1',
+      sessionsRevoked: 2,
+      tokensRevoked: 3,
+      guildsTouched: 2,
+      stillEnabled: true,
+    });
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'account.credentials.revoked',
+      subjectType: 'account',
+      subjectId: 'alice',
+      before: {},
+      after: { sessionsRevoked: 2, tokensRevoked: 3, guildsTouched: 2 },
+    });
+  });
+
+  it('says the credentials stay dead for a disabled account', async () => {
+    const h = accountHarness({
+      accountRevokeCredentials: () => ({
+        username: 'alice',
+        accountId: 'acc-1',
+        sessionsRevoked: 1,
+        tokensRevoked: 1,
+        guildsTouched: 2,
+        stillEnabled: false,
+      }),
+    });
+    const response = await h.run('account revoke-credentials', { username: 'alice' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain(
+      'revoked 1 dashboard session(s) and 1 OAuth token(s) for alice across 2 guild(s)',
+    );
+    expect(response.ok && response.text).toContain(
+      'alice is disabled, so it cannot sign in regardless; ' +
+        'these credentials will not work if it is re-enabled.',
+    );
+  });
+});
+
 describe('a leading-dash username is refused by every command that takes one (fix wave, finding 7)', () => {
   it('refuses -eve at account disable, enable, delete and grant', async () => {
-    for (const command of ['account disable', 'account enable', 'account delete'] as const) {
+    for (const command of [
+      'account disable',
+      'account enable',
+      'account delete',
+      'account revoke-credentials',
+    ] as const) {
       const h = accountHarness();
       const response = await h.run(command, { username: '-eve' });
       expect(response.ok, command).toBe(false);

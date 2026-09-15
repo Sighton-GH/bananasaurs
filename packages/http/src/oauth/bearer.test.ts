@@ -454,4 +454,19 @@ describe('ADR 0045 D6: revoking the account revokes what it approved (M3b)', () 
     expect(after.headers['www-authenticate']).toBe(CHALLENGE);
     expect(after.json()).toEqual({ error: 'invalid_token' });
   });
+
+  it("revoke-credentials kills the live token while the account stays enabled (M3c)", async () => {
+    const { accessToken } = await mintToken();
+    const before = await stubWith(`Bearer ${accessToken}`);
+    expect(before.statusCode).toBe(200);
+
+    oauthRepo.revokeAllTokensForAccount(t.scopes.instance(), { accountId: ACCOUNT, now: clock });
+
+    // The SAME token, the SAME clock — nothing has expired and nobody was disabled.
+    const after = await stubWith(`Bearer ${accessToken}`);
+    expect(after.statusCode).toBe(401);
+    expect(after.headers['www-authenticate']).toBe(CHALLENGE);
+    expect(after.json()).toEqual({ error: 'invalid_token' });
+    expect(accountRepo.findAccountById(t.scopes.instance(), ACCOUNT)?.disabled).toBe(false);
+  });
 });
