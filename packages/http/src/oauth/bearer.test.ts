@@ -399,9 +399,7 @@ describe('ADR 0045 D6: revoking the account revokes what it approved (M3b)', () 
     accountRepo.setAccountDisabled(t.scopes.instance(), { accountId: ACCOUNT, disabled: false });
     const restored = await stubWith(`Bearer ${accessToken}`);
     expect(restored.statusCode).toBe(200);
-    expect(restored.json<{ reachableGuilds: string[] }>().reachableGuilds).toEqual(
-      reachableBefore,
-    );
+    expect(restored.json<{ reachableGuilds: string[] }>().reachableGuilds).toEqual(reachableBefore);
   });
 
   it('a disabled account cannot refresh, and enabling restores the refresh', async () => {
