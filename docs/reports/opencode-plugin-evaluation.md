@@ -666,6 +666,56 @@ instruction. Against Slices 0–6 with sonnet — where no dispatch was ever
 killed by the harness or stalled by the provider — this is the second
 recurring tax of the free tier, after D47's fast 429.
 
+### D49 — the plugin grew an exit code for the exact failure D46 and D48 described
+
+Mid-M3 the owner updated the plugin. `oc-task --help` now lists a seventh
+exit code:
+
+```
+  6  stalled — no output for the idle timeout; the session is dead
+```
+
+That is precisely the failure this evaluation had recorded twice and could
+not distinguish from useful work: **D46** (a run that blocked in-process for
+fifty-four minutes) and **D48** (a review that wrote 418 KB in ninety seconds
+and then went silent until a wall-clock timeout killed it). Both were
+diagnosed by hand — reading `.oc-runs/*.log` mtimes, checking `ps` for an
+orphaned `opencode` child. The tool now reports it.
+
+**What this changes for the controller.** Ruling PR-114 stands but gets
+cheaper: long dispatches still run in the background, but the log-silence
+watchdog becomes a backstop rather than the primary detector, because a
+stalled run now exits on its own with a distinguishable code. The
+five-minute report-to-owner rule is unchanged — it is about the owner
+cycling a rate limit, not about detection.
+
+Worth recording as a property of the whole exercise rather than of one run:
+this evaluation file is not only a record, it is the input that produced the
+fix. D46 and D48 described a failure mode precisely enough to be
+implemented against.
+
+### D50 — the whole-branch review's first attempt died on a Claude session limit
+
+M3's whole-branch review is dispatched to Opus via the Agent tool, per the
+owner's standing instruction that the strongest available model reviews the
+finished branch. The first attempt terminated immediately:
+
+> Agent terminated early due to an API error: You've hit your session limit
+> · resets 7pm (America/Vancouver) (rate_limit, HTTP 429, model
+> claude-opus-5)
+
+**Cost:** nothing but wall-clock — the agent produced no output, so there was
+no partial work to reconcile and no context spent. The owner cycled the
+limit and it was re-dispatched unchanged.
+
+This is the third distinct rate-limit presentation in the record and the
+first on the *Claude* side rather than opencode's: D47's fast provider 429,
+D46/D48's silent block, and now a hard session cap that fails the agent
+before its first tool call. The pattern across all three: **the controller
+must never treat "no output" as "no work to do"** — each one needed the
+owner, and each one was cheap only because the work was committed and
+ledgered before the dispatch went out.
+
 ## What worked well
 
 (appended as observed)
