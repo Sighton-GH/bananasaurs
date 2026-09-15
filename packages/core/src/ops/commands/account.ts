@@ -122,10 +122,15 @@ export const accountDisableCommand = defineCommand<z.infer<typeof accountNameArg
       `disabled ${args.username}`,
       `every dashboard session and every OAuth token this account approved stops verifying on the next request`,
     ];
-    if (outcome.enabledOwnersRemaining === 0) {
+    if (outcome.isOwner && outcome.changed && outcome.enabledOwnersRemaining === 0) {
       lines.push(
         `WARNING: that was the last enabled owner account. Nobody can sign in to the dashboard. ` +
           `Re-enable it with \`bananasaurs account enable ${args.username} --confirm\`.`,
+      );
+    } else if (outcome.changed && outcome.enabledOwnersRemaining === 0) {
+      lines.push(
+        `note: no enabled owner account remains on this instance; ${args.username} is not an owner, ` +
+          `so enabling it would not restore dashboard sign-in.`,
       );
     }
     return {
@@ -226,17 +231,22 @@ export const accountDeleteCommand = defineCommand<z.infer<typeof accountDeleteAr
       `revoked ${String(outcome.tokensRevoked)} OAuth token(s) and removed ${String(outcome.codesDeleted)} ` +
         `unexchanged authorization code(s); guild access, capabilities and dashboard sessions cascaded`,
     ];
-    if (outcome.enabledOwnersRemaining === 0 && outcome.accountsRemaining === 0) {
+    if (outcome.wasOwner && outcome.enabledOwnersRemaining === 0 && outcome.accountsRemaining === 0) {
       lines.push(
         `WARNING: that was the last enabled owner account and the last account of any kind. ` +
           `Nobody can sign in to the dashboard. ` +
           `Run \`bananasaurs bootstrap reissue --confirm\` to re-arm the setup page.`,
       );
-    } else if (outcome.enabledOwnersRemaining === 0) {
+    } else if (outcome.wasOwner && outcome.enabledOwnersRemaining === 0) {
       lines.push(
         `WARNING: that was the last enabled owner account. Nobody can sign in to the dashboard, and ` +
           `\`bootstrap reissue\` will refuse while the remaining ${String(outcome.accountsRemaining)} ` +
           `account(s) exist — delete or enable them first.`,
+      );
+    } else if (outcome.enabledOwnersRemaining === 0) {
+      lines.push(
+        `note: no enabled owner account remains on this instance; ${args.username} is not an owner, ` +
+          `so re-creating it would not restore dashboard sign-in.`,
       );
     }
     return {

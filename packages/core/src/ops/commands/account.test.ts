@@ -502,7 +502,8 @@ describe('account delete (tests 11-12)', () => {
       'revoked 3 OAuth token(s) and removed 2 unexchanged authorization code(s)',
     );
     expect(lastResponse.ok && lastResponse.text).toContain(
-      'WARNING: that was the last enabled owner account. Nobody can sign in to the dashboard.',
+      'WARNING: that was the last enabled owner account and the last account of any kind. ' +
+        'Nobody can sign in to the dashboard.',
     );
     expect(lastResponse.ok && lastResponse.text).toContain('bootstrap reissue');
 
@@ -586,6 +587,49 @@ describe('account delete ownerless warning branches on rows remaining (M3b-R9)',
       'will refuse while the remaining 2 account(s) exist',
     );
     expect(response.ok && response.data).toMatchObject({ accountsRemaining: 2 });
+  });
+});
+
+describe('account warnings are gated on the target having been an owner (M3b-R10)', () => {
+  it('disable of a non-owner at zero owners warns nothing and notes instead', async () => {
+    const h = accountHarness({
+      accountSetDisabled: () => ({
+        changed: true,
+        username: 'member',
+        isOwner: false,
+        disabled: true,
+        lockedUntil: null,
+        enabledOwnersRemaining: 0,
+      }),
+    });
+    const response = await h.run('account disable', { username: 'member' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).not.toContain('WARNING');
+    expect(response.ok && response.text).toContain(
+      'note: no enabled owner account remains on this instance; ' +
+        'member is not an owner, so enabling it would not restore dashboard sign-in.',
+    );
+  });
+
+  it('delete of a non-owner at zero owners warns nothing and notes instead', async () => {
+    const h = accountHarness({
+      accountDelete: () => ({
+        username: 'member',
+        accountId: 'acc-2',
+        wasOwner: false,
+        tokensRevoked: 0,
+        codesDeleted: 0,
+        enabledOwnersRemaining: 0,
+        accountsRemaining: 1,
+      }),
+    });
+    const response = await h.run('account delete', { username: 'member' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).not.toContain('WARNING');
+    expect(response.ok && response.text).toContain(
+      'note: no enabled owner account remains on this instance; ' +
+        'member is not an owner, so re-creating it would not restore dashboard sign-in.',
+    );
   });
 });
 
