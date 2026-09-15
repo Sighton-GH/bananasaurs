@@ -309,6 +309,16 @@ describe('accountOpsFor', () => {
     expect(oneLeft).toMatchObject({ disabled: true, enabledOwnersRemaining: 1 });
   });
 
+  it('accountSetDisabled on an account deleted from under it returns no-such-account', () => {
+    seedAccount('acct_gone00000000000000000000000001', 'gone');
+    accountRepo.deleteAccount(instance(), {
+      accountId: 'acct_gone00000000000000000000000001',
+      now: NOW,
+    });
+
+    expect(ops().accountSetDisabled('gone', true)).toBe('no-such-account');
+  });
+
   it("accountDelete('nobody') returns no-such-account", () => {
     seedAccount('acct_keeper0000000000000000000000002', 'keeper');
 

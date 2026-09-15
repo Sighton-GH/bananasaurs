@@ -868,18 +868,16 @@ export const accountOpsFor = (
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
     if (row === undefined) return 'no-such-account';
-    const matched = accountRepo.setAccountDisabled(instanceScope, {
-      accountId: row.accountId,
-      disabled,
-    });
-    // `setAccountDisabled` reports whether a row matched, not whether the
-    // value moved, so `changed` is the conjunction: the row existed AND the
-    // value differed from what it already was.
+    // A successful lookup followed by no matched row is a race, not a usage
+    // mistake — the same answer the delete branch below gives, deliberately.
+    if (!accountRepo.setAccountDisabled(instanceScope, { accountId: row.accountId, disabled })) {
+      return 'no-such-account';
+    }
     return {
-      changed: matched && row.disabled !== disabled,
+      changed: row.disabled !== disabled,
       username: row.username,
       isOwner: row.isOwner,
-      disabled: matched ? disabled : row.disabled,
+      disabled,
       lockedUntil: row.lockedUntil,
       enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
     };
