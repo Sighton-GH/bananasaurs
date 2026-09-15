@@ -649,6 +649,7 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       tokensRevoked: result.tokensRevoked,
       codesDeleted: result.codesDeleted,
       enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+      accountsRemaining: accountRepo.countAccounts(instanceScope),
     };
   },
 });
