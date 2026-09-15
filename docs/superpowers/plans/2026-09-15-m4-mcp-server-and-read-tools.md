@@ -118,13 +118,30 @@ by copying how `packages/http` is registered).
    register of the neighbouring blocks that says **why** (ADR 0044 and the
    design's §4: `packages/mcp` has its own authorization boundary and shares
    only the Fastify instance).
-4. **The import-surface test** (ADR 0044 obligation 2). A test that reads the
-   source of `packages/mcp` and asserts no non-test file imports the SDK's
-   `server/express`, `server/auth/router`, `hono`, `express`, or any
-   `client/` module. Model it on M3's test that asserted the SDK had no
-   runtime import at all — find it with
-   `grep -rn "modelcontextprotocol" packages/http/src --include=*.test.ts`.
-   **Watch it fail**: add such an import temporarily, see it red, remove it.
+4. **The runtime-surface test** (ADR 0044 obligation 2, as amended
+   2026-09-15). Not a grep over imports — a static scan passes while a
+   transitive import three modules deep pulls Express in. The property worth
+   defending is what ends up *in the process*, so measure that: load
+   `packages/mcp`'s server module, then probe Node's module cache for
+   `express`, `hono`, `cors`, `express-rate-limit`, `ajv`, `cross-spawn`,
+   `eventsource` and `jose`, and fail if any is present.
+
+   The probe that works (verified 2026-09-15 against the installed SDK —
+   `createRequire` because these are CJS packages, and ESM has no registry
+   API to ask):
+
+   ```js
+   const { createRequire } = await import('node:module');
+   const req = createRequire(<repo root>);
+   const loaded = HEAVY.filter((p) => {
+     try { return !!req.cache[req.resolve(p)]; } catch { return false; }
+   });
+   expect(loaded).toEqual([]);
+   ```
+
+   **Watch it fail**: add `import '@modelcontextprotocol/sdk/server/auth/router.js'`
+   to a non-test file in `packages/mcp`, see the test go red, quote the
+   failure, remove it. A guard nobody has watched fail is not accepted.
 
 **Verification:** `npm run typecheck && npm run lint && npm run test`
 

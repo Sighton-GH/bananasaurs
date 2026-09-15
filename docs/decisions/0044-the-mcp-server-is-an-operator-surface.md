@@ -222,14 +222,40 @@ The 84, in full, so nobody has to re-derive them:
 `statuses` `toidentifier` `type-is` `unpipe` `uri-js` `vary` `which`
 `wrappy` `zod-to-json-schema`
 
-**The owner should see this number before M4 lands**, because the decision
-they took was "six transitive HTTP packages" and the decision they are
-actually getting is eighty-four. It does not change the *kind* of trade —
-everything below still holds, and the alternatives are the same two — but it
-changes its size by more than an order of magnitude, and a decision record
-that understates its own cost by that much is the thing this project's
-"verify, do not assert" rule exists to catch. It was caught by running
-`npm ls` rather than by re-reading the ADR.
+The owner saw this number before M4 landed and confirmed the promotion
+(2026-09-15). The decision they originally took was "six transitive HTTP
+packages" and the decision they are actually getting is eighty-four; that
+does not change the *kind* of trade, but it changes its size by more than an
+order of magnitude, and a decision record that understates its own cost by
+that much is the thing "verify, do not assert" exists to catch. It was caught
+by running `npm ls` rather than by re-reading the ADR.
+
+**The number that actually bounds the risk is zero, and it is a different
+number.** Eighty-four packages are *installed*; the question that matters is
+how many are *loaded into the daemon*, and the answer was measured the same
+day, two ways:
+
+- **Statically.** The five modules M4 imports — `server/mcp.js`,
+  `server/index.js`, `server/webStandardStreamableHttp.js`, `types.js`,
+  `shared/protocol.js` — import **none** of `express`, `hono`, `cors`,
+  `express-rate-limit`, `ajv`, `cross-spawn`, `eventsource` or `jose`. They
+  reach `zod` (already a production dependency here) and
+  `zod-to-json-schema`, and nothing else outside the SDK.
+- **At runtime.** Loading both server modules in a real Node process and then
+  probing the module cache for those eight packages returns **none**.
+
+So the production closure grows by 84 packages on disk and in `npm audit`
+output, and the daemon's process grows by two. The heavy half of this SDK is
+the Express/Hono auth-router and the stdio *client* transport — precisely the
+parts approach A (ADR 0045 D5) rejected on other grounds — and rejecting them
+turns out to keep them out of memory as well as out of the request path.
+
+That is the correct framing of the cost, and it is materially smaller than
+"84 packages in production" implies: **a CVE in `express` is audit noise to
+triage, not an exposure in the running daemon.** It is also a property that
+can silently stop being true the first time someone imports `mcpAuthRouter`,
+which is why obligation 1 below is a runtime assertion and not a code review
+rule.
 
 **One of the 84 deserves naming: `cross-spawn`.** A process spawner enters
 the production closure of a project whose hard rule 9 is that nothing may
@@ -282,10 +308,16 @@ supply-chain surface is the cheaper of the two.
 
 **What this obliges.** Three things, and they are the price of the decision:
 
-1. **No non-test import of the SDK's Express, Hono, or auth-router modules.**
-   The imports M4 adds are the server, the Streamable HTTP transport, and the
-   protocol types — nothing else. A test asserts the import surface, the same
-   way M3's test asserted the SDK had *no* runtime import.
+1. **No non-test import of the SDK's Express, Hono, auth-router or client
+   modules.** The imports M4 adds are the server, the Streamable HTTP
+   transport, and the protocol types — nothing else. This is asserted **at
+   runtime, not by grepping imports**: a test loads the MCP server module and
+   probes Node's module cache for `express`, `hono`, `cors`,
+   `express-rate-limit`, `ajv`, `cross-spawn`, `eventsource` and `jose`,
+   failing if any is present. A static import scan would pass while a
+   transitive import three modules deep pulled Express in; the property worth
+   defending is what ends up in the process, so that is what the test
+   measures.
 2. **The count is recorded and watched.** Measured before the promotion on
    2026-09-15: **172 packages** in the production closure, one direct
    production dependency (`@node-rs/argon2`). The post-promotion count goes in
