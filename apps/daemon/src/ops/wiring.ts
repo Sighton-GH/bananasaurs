@@ -963,7 +963,14 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,
     })),
-  mcpRevokeToken: (tokenId) => oauthRepo.revokeToken(deps.instanceScope, tokenId, deps.now()) === 1,
+  mcpRevokeToken: (tokenId) => {
+    // A single-row revoke would leave the sibling refresh token free to mint
+    // a replacement, so the operator's remedy kills the whole lineage — the
+    // same `revokeTokensFromCode` the replay and revoke paths use.
+    const row = oauthRepo.findTokenById(deps.instanceScope, tokenId);
+    if (row === undefined) return undefined;
+    return oauthRepo.revokeTokensFromCode(deps.instanceScope, row.issuedFromCodeHash, deps.now());
+  },
   // `deleteClient` returns 0 for an unknown client and a count otherwise, so
   // existence is checked first: the port must answer `undefined` for "no such
   // client" rather than "0 tokens revoked", which would read as a success that

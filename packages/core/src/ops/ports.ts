@@ -1019,8 +1019,13 @@ export interface OpsInstance {
   mcpClients(): readonly OpsMcpClient[];
   /** ADR 0045: every token row, live or not. Ids only — a token VALUE is never retrievable. */
   mcpTokens(): readonly OpsMcpToken[];
-  /** Returns true if the token was live and is now revoked. */
-  mcpRevokeToken(tokenId: string): boolean;
+  /**
+   * Revokes the token's whole lineage (every row sharing its
+   * `issuedFromCodeHash`), not just the one row: revoking a leaked access
+   * token must not leave its sibling refresh token free to mint a new one.
+   * `undefined` for an unknown id, otherwise how many rows were revoked.
+   */
+  mcpRevokeToken(tokenId: string): number | undefined;
   /** Deletes the client and everything issued to it; returns the number of tokens revoked, or undefined if no such client. */
   mcpRevokeClient(clientId: string): number | undefined;
 }

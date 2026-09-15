@@ -597,7 +597,11 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       revokedAt: row.revokedAt,
       lastUsedAt: row.lastUsedAt,
     })),
-  mcpRevokeToken: (tokenId) => oauthRepo.revokeToken(instanceScope, tokenId, now()) === 1,
+  mcpRevokeToken: (tokenId) => {
+    const row = oauthRepo.findTokenById(instanceScope, tokenId);
+    if (row === undefined) return undefined;
+    return oauthRepo.revokeTokensFromCode(instanceScope, row.issuedFromCodeHash, now());
+  },
   mcpRevokeClient: (clientId) => {
     if (oauthRepo.findClient(instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(instanceScope, clientId, now());

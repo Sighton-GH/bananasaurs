@@ -191,7 +191,7 @@ describe('mcp tokens', () => {
 
 describe('mcp revoke', () => {
   it('refuses without --confirm before argument validation', async () => {
-    const h = harness({ mcpRevokeToken: () => true });
+    const h = harness({ mcpRevokeToken: () => 1 });
     // A deliberately invalid argument: the error must still be needs-confirm,
     // because the dispatcher checks confirmation before running validation.
     const response = await h.run('mcp revoke', { tokenId: 123 }, false);
@@ -200,25 +200,40 @@ describe('mcp revoke', () => {
   });
 
   it('revokes a live token and audits the write', async () => {
-    const h = harness({ mcpRevokeToken: () => true });
+    const h = harness({ mcpRevokeToken: () => 1 });
     const response = await h.run('mcp revoke', { tokenId: 'tok_abc' });
     expect(response.ok).toBe(true);
-    expect(response.ok && response.text).toBe('revoked token tok_abc');
+    expect(response.ok && response.text).toBe('revoked token tok_abc and 1 token(s) in its lineage');
     expect(h.audit).toHaveLength(1);
     expect(h.audit[0]).toMatchObject({
       action: 'mcp.token.revoked',
       subjectType: 'instance',
       subjectId: undefined,
       before: { tokenId: 'tok_abc', live: true },
-      after: { tokenId: 'tok_abc', live: false },
+      after: { tokenId: 'tok_abc', live: false, tokensRevoked: 1 },
+    });
+  });
+
+  it('reports the lineage count when the sibling is live, and audits it', async () => {
+    // The port killed the access token and its live sibling refresh token:
+    // the text and the audit row carry how many rows went, not just the id.
+    const h = harness({ mcpRevokeToken: () => 2 });
+    const response = await h.run('mcp revoke', { tokenId: 'tok_abc' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toBe('revoked token tok_abc and 2 token(s) in its lineage');
+    expect(response.ok && response.data).toMatchObject({ tokenId: 'tok_abc', tokensRevoked: 2 });
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'mcp.token.revoked',
+      after: { tokenId: 'tok_abc', tokensRevoked: 2 },
     });
   });
 
   it('throws on an unknown id and produces no audit row', async () => {
-    const h = harness({ mcpRevokeToken: () => false });
+    const h = harness({ mcpRevokeToken: () => undefined });
     const response = await h.run('mcp revoke', { tokenId: 'tok_nope' });
     expect(response.ok).toBe(false);
-    expect(response.ok === false && response.message).toContain('no live token tok_nope');
+    expect(response.ok === false && response.message).toContain('no such token tok_nope');
     expect(h.audit).toHaveLength(0);
   });
 });

@@ -114,21 +114,22 @@ export const mcpRevokeCommand = defineCommand<z.infer<typeof mcpRevokeArgs>>({
 
   run(ctx: OpsContext, args): OpsWriteResult {
     // A throw is the existing convention for a write that changed nothing
-    // (`backup now` throws when the backup itself failed): an unknown or
-    // already-revoked id is a usage mistake, not an answer, and a throw
-    // produces no audit row for a state that did not change.
-    if (!ctx.instance.mcpRevokeToken(args.tokenId)) {
-      throw new Error(`no live token ${args.tokenId}`);
+    // (`backup now` throws when the backup itself failed): an unknown id is a
+    // usage mistake, not an answer, and a throw produces no audit row for a
+    // state that did not change.
+    const tokensRevoked = ctx.instance.mcpRevokeToken(args.tokenId);
+    if (tokensRevoked === undefined) {
+      throw new Error(`no such token ${args.tokenId}`);
     }
     return {
-      text: `revoked token ${args.tokenId}`,
-      data: { tokenId: args.tokenId, revoked: true },
+      text: `revoked token ${args.tokenId} and ${String(tokensRevoked)} token(s) in its lineage`,
+      data: { tokenId: args.tokenId, tokensRevoked },
       audit: {
         action: 'mcp.token.revoked',
         subjectType: 'instance',
         subjectId: undefined,
         before: { tokenId: args.tokenId, live: true },
-        after: { tokenId: args.tokenId, live: false },
+        after: { tokenId: args.tokenId, live: false, tokensRevoked },
       },
     };
   },
