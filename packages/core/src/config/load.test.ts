@@ -137,6 +137,40 @@ describe('parseConfig', () => {
       expect((err as ConfigError).message).toContain('DISCORD_APPLICATION_ID');
     }
   });
+
+  it('accepts an https MCP_PUBLIC_URL (ADR 0045, ruling PR-116)', () => {
+    expect(
+      parseConfig({ ...VALID, MCP_PUBLIC_URL: 'https://bot.example.test' }).MCP_PUBLIC_URL,
+    ).toBe('https://bot.example.test');
+  });
+
+  it('refuses a plain-http MCP_PUBLIC_URL', () => {
+    expect(() => parseConfig({ ...VALID, MCP_PUBLIC_URL: 'http://bot.example.test' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('refuses an MCP_PUBLIC_URL with a path', () => {
+    expect(() => parseConfig({ ...VALID, MCP_PUBLIC_URL: 'https://bot.example.test/mcp' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('refuses an MCP_PUBLIC_URL with a trailing slash', () => {
+    expect(() => parseConfig({ ...VALID, MCP_PUBLIC_URL: 'https://bot.example.test/' })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it('accepts a 127.0.0.1 dev origin over http', () => {
+    expect(parseConfig({ ...VALID, MCP_PUBLIC_URL: 'http://127.0.0.1:8787' }).MCP_PUBLIC_URL).toBe(
+      'http://127.0.0.1:8787',
+    );
+  });
+
+  it('leaves MCP_PUBLIC_URL undefined when unset', () => {
+    expect(parseConfig(VALID).MCP_PUBLIC_URL).toBeUndefined();
+  });
 });
 
 describe('redactConfig', () => {

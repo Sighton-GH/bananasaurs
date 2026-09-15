@@ -15,7 +15,9 @@ import {
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  accountRepo,
   archiveRepo,
+  authzRepo,
   automodFixtureRepo,
   automodRuleRepo,
   effectRepo,
@@ -1344,6 +1346,74 @@ describe('the dashboard recovery path, end to end (ADR 0012)', () => {
     expect(result.code).not.toBe(0);
     expect(result.err).toContain('BANANASAURS_READONLY');
     expect(bootstrapTokenRows()).toHaveLength(0);
+  });
+});
+
+/**
+ * The ADR 0028 grant path through the real ports (ruling PR-102): the
+ * capability lives in a guild, so the grant is a guild-scoped port over the
+ * real `accountRepo` + `authzRepo`, reached here through `daemon.portsFor`
+ * the way the operator dispatcher reaches it — not through a stub.
+ */
+describe('the account capability grant, end to end (ADR 0028)', () => {
+  const scope = () => t.scopes.forGuild(GUILD);
+  const OWNER_ID = 'acct_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const STRANGER_ID = 'acct_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+  const seed = (): void => {
+    guildRepo.upsertGuild(scope(), {
+      name: 'Engineering Club',
+      enabled: true,
+      now: discord.now(),
+    });
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: OWNER_ID,
+      username: 'owner',
+      passwordHash: 'not-a-real-hash',
+      isOwner: true,
+      now: discord.now(),
+    });
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: STRANGER_ID,
+      username: 'stranger',
+      passwordHash: 'not-a-real-hash',
+      isOwner: false,
+      now: discord.now(),
+    });
+    accountRepo.grantGuildAccess(scope(), OWNER_ID);
+  };
+
+  it('grants once, remembers the grant, and refuses an account without guild access', () => {
+    startDaemon();
+    seed();
+    const ports = daemon.portsFor(scope());
+
+    expect(
+      ports.grantAccountCapability({
+        username: 'owner',
+        capability: 'mcp.authorize',
+        grantedBy: 'operator_cli',
+      }),
+    ).toBe('granted');
+    expect(
+      ports.grantAccountCapability({
+        username: 'owner',
+        capability: 'mcp.authorize',
+        grantedBy: 'operator_cli',
+      }),
+    ).toBe('already-held');
+    expect(authzRepo.listAccountCapabilities(scope(), OWNER_ID)).toEqual(['mcp.authorize']);
+
+    // No guild access: the composite foreign key would refuse, so the port
+    // says so rather than throwing — and writes no row.
+    expect(
+      ports.grantAccountCapability({
+        username: 'stranger',
+        capability: 'mcp.authorize',
+        grantedBy: 'operator_cli',
+      }),
+    ).toBe('no-guild-access');
+    expect(authzRepo.listAccountCapabilities(scope(), STRANGER_ID)).toEqual([]);
   });
 });
 

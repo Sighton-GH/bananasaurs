@@ -2,6 +2,7 @@ import {
   accountRepo,
   archiveRepo,
   archiveSearchRepo,
+  authzRepo,
   automodAdminRepo,
   automodRuleListsRepo,
   automodRuleRepo,
@@ -12,6 +13,7 @@ import {
   loggingRepo,
   modCaseRepo,
   modMatchReviewRepo,
+  oauthRepo,
   panelRepo,
   type GuildScope,
   type InstanceScope,
@@ -43,8 +45,15 @@ export const testPortsFor = (
    * Whether this guild is in `BANANASAURS_ARCHIVE_GUILDS` (ADR 0046 D1).
    * Off by default — the same empty-by-default the config parses to — so a
    * route test that wants the archive has to say so.
+   *
+   * The instance-level handle, beside the guild scope rather than derived
+   * from it: the two scopes are different types on purpose, and a derivation
+   * would be the cast this prevents. Optional so the existing two-argument
+   * call sites keep compiling; a test that reaches `grantAccountCapability`
+   * must pass `t.scopes.instance()`, the same handle it builds for
+   * `testInstanceFor`.
    */
-  opts: { readonly archiveGuildEnabled?: boolean } = {},
+  opts: { readonly archiveGuildEnabled?: boolean; readonly instanceScope?: InstanceScope } = {},
 ): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
@@ -477,6 +486,28 @@ export const testPortsFor = (
     };
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
+  // ADR 0028 / ADR 0045 (ruling PR-102): the same real-repo behaviour
+  // `apps/daemon/src/ops/wiring.ts` wires, with the account lookup running
+  // through `opts.instanceScope`.
+  grantAccountCapability: (input) => {
+    const instanceScope = opts.instanceScope;
+    if (instanceScope === undefined) {
+      throw new Error('grantAccountCapability needs opts.instanceScope: pass t.scopes.instance()');
+    }
+    const account = accountRepo.findAccountByUsername(instanceScope, input.username);
+    if (account === undefined) return 'no-such-account';
+    if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'no-guild-access';
+    if (authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {
+      return 'already-held';
+    }
+    authzRepo.grantAccountCapability(scope, {
+      accountId: account.accountId,
+      capability: input.capability,
+      grantedBy: input.grantedBy,
+      now: now(),
+    });
+    return 'granted';
+  },
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */
@@ -544,4 +575,35 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
     throw new Error('not used by the dashboard routes under test');
   },
   backupList: () => [],
+  // ADR 0045: real implementations over the test database, the same way the
+  // neighbouring `reissueBootstrapToken` reads `accountRepo` — so a route test
+  // exercising the operator surface sees real OAuth rows, not stubs.
+  mcpClients: () =>
+    oauthRepo.listClients(instanceScope).map((row) => ({
+      clientId: row.clientId,
+      clientName: row.clientName,
+      registrationSource: row.registrationSource,
+      createdAt: row.createdAt,
+      redirectUriCount: row.redirectUris.length,
+    })),
+  mcpTokens: () =>
+    oauthRepo.listTokens(instanceScope).map((row) => ({
+      tokenId: row.tokenId,
+      kind: row.kind,
+      clientId: row.clientId,
+      accountId: row.accountId,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      revokedAt: row.revokedAt,
+      lastUsedAt: row.lastUsedAt,
+    })),
+  mcpRevokeToken: (tokenId) => {
+    const row = oauthRepo.findTokenById(instanceScope, tokenId);
+    if (row === undefined) return undefined;
+    return oauthRepo.revokeTokensFromCode(instanceScope, row.issuedFromCodeHash, now());
+  },
+  mcpRevokeClient: (clientId) => {
+    if (oauthRepo.findClient(instanceScope, clientId) === undefined) return undefined;
+    return oauthRepo.deleteClient(instanceScope, clientId, now());
+  },
 });

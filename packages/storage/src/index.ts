@@ -51,6 +51,7 @@ export type { StoredAutomodRule } from './repos/automod-rules.js';
 export * as modCaseRepo from './repos/mod-cases.js';
 export * as modMatchReviewRepo from './repos/mod-match-reviews.js';
 export * as modPendingRepo from './repos/mod-pending.js';
+export * as oauthRepo from './repos/oauth.js';
 export * as sessionRepo from './repos/sessions.js';
 export * as guildRepo from './repos/guilds.js';
 export * as authzRepo from './repos/authz.js';

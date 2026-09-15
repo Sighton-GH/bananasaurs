@@ -57,6 +57,8 @@ export const CAPABILITIES = [
   'undo.execute',
   /** ADR 0035: timeout/kick actions taken by the automod rule engine. */
   'moderation.act',
+  /** ADR 0045: may approve an OAuth client at the consent page and mint a token. */
+  'mcp.authorize',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];

@@ -14,6 +14,7 @@ import {
   issueBootstrapTokenIfNeeded,
   registerAutomodRoutes,
   registerCaseRoutes,
+  registerOAuthRoutes,
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
@@ -96,6 +97,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     readonly: deps.config.BANANASAURS_READONLY,
     portsFor: deps.portsFor,
     instance: deps.instance,
+    mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.
@@ -129,6 +131,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
       registerWriteRoutes(instance, guard, routeDeps);
       registerAutomodRoutes(instance, guard, routeDeps);
       registerCaseRoutes(instance, guard, routeDeps);
+      registerOAuthRoutes(instance, guard, routeDeps);
     },
   });
   registerStaticAssets(app, DASHBOARD_DIST);

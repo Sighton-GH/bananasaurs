@@ -16,6 +16,7 @@ import {
   logout,
   reauthenticate,
   reauthIsFresh,
+  verifyAccountCredentials,
   type AuthDeps,
 } from './auth.js';
 import { POLICY } from './policy.js';
@@ -257,6 +258,61 @@ describe('lockout (ADR 0029)', () => {
     expect(
       accountRepo.findAccountById(t.scopes.instance(), await currentAccountId())?.failedAttempts,
     ).toBe(0);
+  });
+});
+
+describe('verifyAccountCredentials (the shared check the consent page uses)', () => {
+  it('locks the account after five wrong passwords', async () => {
+    await provision({});
+    for (let i = 0; i < 4; i++) {
+      expect(
+        await verifyAccountCredentials(deps, {
+          username: 'owner',
+          password: 'wrong',
+          ip: null,
+        }),
+      ).toEqual({ ok: false, reason: 'invalid-credentials' });
+    }
+    expect(
+      await verifyAccountCredentials(deps, { username: 'owner', password: 'wrong', ip: null }),
+    ).toEqual({ ok: false, reason: 'locked-out' });
+    expect(
+      accountRepo.findAccountById(t.scopes.instance(), await currentAccountId())?.lockedUntil,
+    ).not.toBeNull();
+  });
+
+  it('refuses a locked-out account without checking the password or counting the attempt', async () => {
+    await provision({});
+    for (let i = 0; i < 5; i++)
+      await verifyAccountCredentials(deps, { username: 'owner', password: 'wrong', ip: null });
+    const before = accountRepo.findAccountById(
+      t.scopes.instance(),
+      await currentAccountId(),
+    )?.failedAttempts;
+    expect(
+      await verifyAccountCredentials(deps, { username: 'owner', password: 'wrong', ip: null }),
+    ).toEqual({ ok: false, reason: 'locked-out' });
+    const after = accountRepo.findAccountById(
+      t.scopes.instance(),
+      await currentAccountId(),
+    )?.failedAttempts;
+    expect(after).toBe(before);
+  });
+
+  it('answers an unknown username exactly as it answers a wrong password', async () => {
+    await provision({});
+    const unknown = await verifyAccountCredentials(deps, {
+      username: 'nobody',
+      password: PASSWORD,
+      ip: null,
+    });
+    const wrong = await verifyAccountCredentials(deps, {
+      username: 'owner',
+      password: 'wrong',
+      ip: null,
+    });
+    expect(unknown).toEqual(wrong);
+    expect(unknown).toEqual({ ok: false, reason: 'invalid-credentials' });
   });
 });
 

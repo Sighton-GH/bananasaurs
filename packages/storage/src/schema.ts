@@ -1511,6 +1511,96 @@ export const bootstrapTokens = sqliteTable('bootstrap_tokens', {
 });
 
 /**
+ * OAuth 2.1 clients. Instance-level (ADR 0045 D3): a client is registered
+ * against the daemon, not against a guild.
+ */
+export const oauthClients = sqliteTable(
+  'oauth_clients',
+  {
+    clientId: text('client_id').primaryKey(),
+    clientName: text('client_name').notNull(),
+    /** JSON array of absolute URIs. */
+    redirectUris: text('redirect_uris').notNull(),
+    createdAt: integer('created_at').notNull(),
+    createdByAccountId: text('created_by_account_id'),
+    registrationSource: text('registration_source').notNull(),
+  },
+  (t) => [
+    check('oauth_clients_registration_source', sql`${t.registrationSource} IN ('dynamic','cli')`),
+  ],
+);
+
+/**
+ * Pending consent forms (ADR 0045 Amendment 1, PR-91). The dashboard's CSRF
+ * is a custom request header matched against the session's token, which an
+ * HTML form cannot send and this flow has no session to draw from. So the
+ * form carries a single-use nonce instead, issued only after the client,
+ * redirect URI and PKCE parameters have already been validated.
+ */
+export const oauthPendingAuthorizations = sqliteTable('oauth_pending_authorizations', {
+  requestId: text('request_id').primaryKey(),
+  nonceHash: text('nonce_hash').notNull(),
+  clientId: text('client_id').notNull(),
+  redirectUri: text('redirect_uri').notNull(),
+  scopes: text('scopes').notNull(),
+  codeChallenge: text('code_challenge').notNull(),
+  state: text('state'),
+  createdAt: integer('created_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+  consumedAt: integer('consumed_at'),
+});
+
+/** Authorization codes. Single-use; a replay revokes what it minted (ADR 0045 D5). */
+export const oauthAuthorizationCodes = sqliteTable('oauth_authorization_codes', {
+  codeHash: text('code_hash').primaryKey(),
+  clientId: text('client_id').notNull(),
+  accountId: text('account_id').notNull(),
+  scopes: text('scopes').notNull(),
+  codeChallenge: text('code_challenge').notNull(),
+  redirectUri: text('redirect_uri').notNull(),
+  createdAt: integer('created_at').notNull(),
+  expiresAt: integer('expires_at').notNull(),
+  usedAt: integer('used_at'),
+});
+
+/**
+ * Access and refresh tokens. No `guild_id`, deliberately and permanently:
+ * ADR 0045 Amendment 1 PR-92 computes the reachable guild set live at each
+ * call from the approving account's current `mcp.authorize` grants, so a
+ * guild recorded here would be a second, staler place where scope is decided.
+ */
+export const oauthTokens = sqliteTable(
+  'oauth_tokens',
+  {
+    tokenId: text('token_id').primaryKey(),
+    tokenHash: text('token_hash').notNull(),
+    kind: text('kind').notNull(),
+    clientId: text('client_id').notNull(),
+    accountId: text('account_id').notNull(),
+    scopes: text('scopes').notNull(),
+    createdAt: integer('created_at').notNull(),
+    expiresAt: integer('expires_at').notNull(),
+    revokedAt: integer('revoked_at'),
+    lastUsedAt: integer('last_used_at'),
+    /** The refresh token this was rotated from. */
+    parentTokenId: text('parent_token_id'),
+    /**
+     * The code_hash this token's ANCESTRY was minted from — inherited by
+     * every rotation, not just the first pair (ruling PR-94). Without the
+     * inheritance, a code replayed after a rotation finds only dead rows and
+     * the live tokens survive the very event that proves the code leaked.
+     */
+    issuedFromCodeHash: text('issued_from_code_hash').notNull(),
+  },
+  (t) => [
+    uniqueIndex('oauth_tokens_hash').on(t.tokenHash),
+    index('oauth_tokens_by_account').on(t.accountId),
+    index('oauth_tokens_by_client').on(t.clientId),
+    check('oauth_tokens_kind', sql`${t.kind} IN ('access','refresh')`),
+  ],
+);
+
+/**
  * A Discord identity that can hold capability.
  *
  * Discord Administrator grants nothing (ADR 0012). Capability comes only from

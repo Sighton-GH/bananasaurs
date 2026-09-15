@@ -30,4 +30,6 @@ export { registerReadRoutes } from './routes/read.js';
 export { registerAutomodRoutes } from './routes/automod.js';
 export { registerCaseRoutes } from './routes/cases.js';
 export { registerWriteRoutes } from './routes/write.js';
+export { registerOAuthRoutes } from './routes/oauth.js';
+export { requireBearer, wwwAuthenticateFor, type BearerPrincipal } from './oauth/bearer.js';
 export { requireCapability } from './routes/capability.js';

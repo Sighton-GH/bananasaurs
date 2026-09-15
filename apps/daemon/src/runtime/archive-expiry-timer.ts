@@ -29,6 +29,16 @@ export interface ArchiveExpiryTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
   readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
   /**
+   * Instance-level OAuth housekeeping (`oauthRepo.purgeExpired`): expired
+   * pending rows, expired codes and revoked+expired tokens, which otherwise
+   * accumulate forever at a rate an unauthenticated stranger sets. It rides
+   * this timer because the timer already runs once at start and every 24 h
+   * with an injected clock — but it is NOT per-guild, so it runs once per
+   * `runOnce`, outside the guild loop. Optional so existing callers keep
+   * their shape; `daemon.ts` wires the real purge.
+   */
+  readonly purgeOAuth?: (now: number) => OAuthPurgeCounts;
+  /**
    * Whether the guild has any enabled archive channel. A guild with none
    * gets no `archive_expiry` job — an empty guild's daily row would only
    * noise up `/status`'s "queued" count. Optional with a default that reads
@@ -39,6 +49,13 @@ export interface ArchiveExpiryTimerDeps {
   readonly hasArchiveChannels?: (scope: GuildScope) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
+}
+
+/** What `purgeOAuth` deleted: expired pending rows, codes, revoked+expired tokens. */
+export interface OAuthPurgeCounts {
+  readonly pending: number;
+  readonly codes: number;
+  readonly tokens: number;
 }
 
 const utcDay = (nowMs: number): string => new Date(nowMs).toISOString().slice(0, 10);
@@ -64,6 +81,17 @@ export function createArchiveExpiryTimer(deps: ArchiveExpiryTimerDeps): ArchiveE
       safeLogFields({ component: 'archive', jobKind: JOB_KINDS.archiveExpiry }),
       'archive: expiry enqueued for the day',
     );
+    // Instance-level, so once per run — not once per guild. The three counts
+    // ride the message text; the fields stay inside the allowlist (`count`
+    // carries the total) and no new key is invented.
+    if (deps.purgeOAuth !== undefined) {
+      const purged = deps.purgeOAuth(now);
+      deps.logger.info(
+        safeLogFields({ component: 'oauth', count: purged.pending + purged.codes + purged.tokens }),
+        `oauth: purged ${String(purged.pending)} pending authorization(s), ` +
+          `${String(purged.codes)} code(s) and ${String(purged.tokens)} token(s)`,
+      );
+    }
   };
 
   return {

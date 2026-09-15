@@ -16,6 +16,7 @@ import {
   accountRepo,
   archiveRepo,
   archiveSearchRepo,
+  authzRepo,
   automodAdminRepo,
   automodFixtureRepo,
   automodRuleListsRepo,
@@ -28,6 +29,7 @@ import {
   loggingRepo,
   modCaseRepo,
   modMatchReviewRepo,
+  oauthRepo,
   panelRepo,
   roleRepo,
   type GuildScope,
@@ -61,6 +63,8 @@ import type { GuildOperations } from '../runtime/guild.js';
  */
 export const opsPortsFor = (
   scope: GuildScope,
+  /** A separate parameter rather than derived from the guild scope: the two scopes are different types on purpose, and a derivation would be the cast this prevents. */
+  instanceScope: InstanceScope,
   operations: GuildOperations,
   now: () => number,
   client: Client,
@@ -531,6 +535,29 @@ export const opsPortsFor = (
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
 
+  // ADR 0028 / ADR 0045 (ruling PR-102): grant a dashboard account a
+  // capability in this guild. `findAccountByUsername` is instance-level while
+  // this port is guild-scoped, so the account lookup runs through the
+  // `instanceScope` parameter above. The grant itself is guild-scoped, and
+  // the composite foreign key would refuse an account without guild access —
+  // `hasGuildAccess` is checked first so the operator hears why, not a
+  // constraint error.
+  grantAccountCapability: (input) => {
+    const account = accountRepo.findAccountByUsername(instanceScope, input.username);
+    if (account === undefined) return 'no-such-account';
+    if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'no-guild-access';
+    if (authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {
+      return 'already-held';
+    }
+    authzRepo.grantAccountCapability(scope, {
+      accountId: account.accountId,
+      capability: input.capability,
+      grantedBy: input.grantedBy,
+      now: now(),
+    });
+    return 'granted';
+  },
+
   enqueueReconcile: (panelId) =>
     enqueued(
       jobRepo.enqueue(scope, {
@@ -910,4 +937,46 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       createdAtMs: backup.createdAt.getTime(),
       hasChecksum: backup.hasChecksum,
     })),
+
+  // ADR 0045: the operator's view of the OAuth tables. Instance-level, the
+  // same reason `reissueBootstrapToken` is — a client is registered against
+  // the daemon and a token carries no guild — so these read `deps.instanceScope`
+  // directly. Projections are field by field: `ports.ts` may not import
+  // `@bananasaurs/storage` (ADR 0014), and a token value never crosses this
+  // boundary at all (there is no value to project; only the hash is stored).
+  mcpClients: () =>
+    oauthRepo.listClients(deps.instanceScope).map((row) => ({
+      clientId: row.clientId,
+      clientName: row.clientName,
+      registrationSource: row.registrationSource,
+      createdAt: row.createdAt,
+      redirectUriCount: row.redirectUris.length,
+    })),
+  mcpTokens: () =>
+    oauthRepo.listTokens(deps.instanceScope).map((row) => ({
+      tokenId: row.tokenId,
+      kind: row.kind,
+      clientId: row.clientId,
+      accountId: row.accountId,
+      createdAt: row.createdAt,
+      expiresAt: row.expiresAt,
+      revokedAt: row.revokedAt,
+      lastUsedAt: row.lastUsedAt,
+    })),
+  mcpRevokeToken: (tokenId) => {
+    // A single-row revoke would leave the sibling refresh token free to mint
+    // a replacement, so the operator's remedy kills the whole lineage — the
+    // same `revokeTokensFromCode` the replay and revoke paths use.
+    const row = oauthRepo.findTokenById(deps.instanceScope, tokenId);
+    if (row === undefined) return undefined;
+    return oauthRepo.revokeTokensFromCode(deps.instanceScope, row.issuedFromCodeHash, deps.now());
+  },
+  // `deleteClient` returns 0 for an unknown client and a count otherwise, so
+  // existence is checked first: the port must answer `undefined` for "no such
+  // client" rather than "0 tokens revoked", which would read as a success that
+  // removed nothing.
+  mcpRevokeClient: (clientId) => {
+    if (oauthRepo.findClient(deps.instanceScope, clientId) === undefined) return undefined;
+    return oauthRepo.deleteClient(deps.instanceScope, clientId, deps.now());
+  },
 });

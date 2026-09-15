@@ -8,6 +8,7 @@ import { accountRepo, guildRepo } from '@bananasaurs/storage';
 import { CAPABILITIES, createLogger, parseGuildId } from '@bananasaurs/core';
 import { issueBootstrapTokenIfNeeded } from './auth.js';
 import { createServer, CSRF_HEADER, SESSION_COOKIE, type HttpDeps } from './server.js';
+import { registerOAuthRoutes } from './routes/oauth.js';
 import { hashPassword } from './secrets.js';
 import { POLICY } from './policy.js';
 import { testInstanceFor, testPortsFor } from './test-support.js';
@@ -191,6 +192,34 @@ describe('login sets a session cookie with the right attributes (ADR 0029)', () 
       payload: { username: 'Owner With Spaces', password: PASSWORD },
     });
     expect(response.statusCode).toBe(400);
+  });
+
+  it('rejects a form body at /api/login exactly as before Task 4 (login-CSRF guard)', async () => {
+    // Task 4 fix 1: the OAuth form parser lives in an encapsulated child
+    // context. Registered on the root instance it also parsed form bodies for
+    // /api/login — an unauthenticated route with no origin check, which a
+    // cross-origin HTML <form> can reach without a CORS preflight while it
+    // can never send application/json. Parsing the body turned a route that
+    // was unreachable from such a page into a login CSRF: a silent sign-in
+    // to the attacker's account. Measured pre-fix: 500 without the OAuth
+    // routes, 401 with the root parser. This pins the 500 with the routes
+    // mounted, so the leak cannot return quietly.
+    const withOAuth = createServer({
+      deps: { ...deps, mcpPublicUrl: 'https://bot.test' },
+      registerRoutes: registerOAuthRoutes,
+    });
+    try {
+      const response = await withOAuth.inject({
+        method: 'POST',
+        url: '/api/login',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        payload: new URLSearchParams({ username: 'owner', password: 'wrong' }).toString(),
+      });
+      expect(response.statusCode).toBe(500);
+      expect(response.json()).toEqual({ error: 'internal' });
+    } finally {
+      await withOAuth.close();
+    }
   });
 });
 

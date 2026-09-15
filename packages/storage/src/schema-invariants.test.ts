@@ -40,7 +40,18 @@ import {
  * are instance-level by ADR 0012. Adding to this list requires editing this
  * test, which is the point — it is a decision, not an oversight.
  */
-const INSTANCE_LEVEL = new Set<string>(['dashboard_accounts', 'bootstrap_tokens']);
+const INSTANCE_LEVEL = new Set<string>([
+  'dashboard_accounts',
+  'bootstrap_tokens',
+  // ADR 0045 D3: an OAuth client is registered against the daemon, not a guild.
+  'oauth_clients',
+  // ADR 0045 PR-91: a consent form in flight, before any guild is chosen.
+  'oauth_pending_authorizations',
+  // ADR 0045 D3: a code is exchanged for a token, and a token carries no guild.
+  'oauth_authorization_codes',
+  // ADR 0045 PR-92: reachable guilds are computed live per call, never stored.
+  'oauth_tokens',
+]);
 
 /**
  * Unique indexes that may not lead with `guild_id`, each because leading with
@@ -900,6 +911,56 @@ describe('0020 populates the index it creates (ruling PR-85)', () => {
     ).not.toThrow();
 
     raw.close();
+  });
+});
+
+describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
+  const OAUTH_TABLES = [
+    'oauth_clients',
+    'oauth_pending_authorizations',
+    'oauth_authorization_codes',
+    'oauth_tokens',
+  ];
+
+  it.each(OAUTH_TABLES)('%s has no guild_id column', (table) => {
+    // A guild_id here would be a second place where scope is decided, ahead
+    // of and out of sight of the tool call that uses it (ADR 0045 PR-92).
+    expect(columns(table).map((c) => c.name)).not.toContain('guild_id');
+  });
+
+  it('INSTANCE_LEVEL contains exactly the six expected names', () => {
+    // The tripwire. A seventh table cannot join the exemption without this
+    // failing and a human reading ADR 0045.
+    expect([...INSTANCE_LEVEL].sort()).toEqual(
+      ['bootstrap_tokens', 'dashboard_accounts', ...OAUTH_TABLES].sort(),
+    );
+  });
+
+  it.each(OAUTH_TABLES)('%s is still STRICT', (table) => {
+    expect(allTables().find((r) => r.name === table)?.strict).toBe(1);
+  });
+
+  /**
+   * Ruling PR-110: the three tests above pin exemptions, not DDL — a schema
+   * regeneration could silently drop a NOT NULL, a UNIQUE index or a CHECK
+   * and all three would still pass. Ruling PR-94 depends on
+   * `issued_from_code_hash` being NOT NULL, so this pins the DDL itself,
+   * read from the live database through the same helpers.
+   */
+  it('pins the OAuth DDL a regeneration could silently drop (ruling PR-110)', () => {
+    expect(
+      columns('oauth_tokens').find((c) => c.name === 'issued_from_code_hash')?.notnull,
+      'oauth_tokens.issued_from_code_hash must be NOT NULL (ruling PR-94)',
+    ).toBe(1);
+    expect(
+      uniqueIndexes('oauth_tokens').map((i) => i.name),
+      'a UNIQUE index on oauth_tokens(token_hash) must exist',
+    ).toContain('oauth_tokens_hash');
+    expect(indexColumns('oauth_tokens_hash')).toEqual(['token_hash']);
+    expect(ddl('oauth_tokens')).toContain('oauth_tokens_kind');
+    expect(ddl('oauth_tokens')).toContain(`IN ('access','refresh')`);
+    expect(ddl('oauth_clients')).toContain('oauth_clients_registration_source');
+    expect(ddl('oauth_clients')).toContain(`IN ('dynamic','cli')`);
   });
 });
 

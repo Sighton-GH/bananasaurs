@@ -416,7 +416,14 @@ describe('automod, end to end on the fake gateway', () => {
     // for a guild absent from `client.guilds.cache` (see that function's own
     // comment), exactly this client's state.
     const client = new Client(buildClientOptions(() => BOT_USER_ID));
-    const ports = opsPortsFor(scope, operations, () => discord.now(), client, false);
+    const ports = opsPortsFor(
+      scope,
+      t.scopes.instance(),
+      operations,
+      () => discord.now(),
+      client,
+      false,
+    );
 
     const notUsedByDoctorInstance = (name: string) => (): never => {
       throw new Error(`OpsInstance.${name} was called but this test did not stub it`);
@@ -431,6 +438,10 @@ describe('automod, end to end on the fake gateway', () => {
       reissueBootstrapToken: notUsedByDoctorInstance('reissueBootstrapToken'),
       backupNow: notUsedByDoctorInstance('backupNow'),
       backupList: notUsedByDoctorInstance('backupList'),
+      mcpClients: notUsedByDoctorInstance('mcpClients'),
+      mcpTokens: notUsedByDoctorInstance('mcpTokens'),
+      mcpRevokeToken: notUsedByDoctorInstance('mcpRevokeToken'),
+      mcpRevokeClient: notUsedByDoctorInstance('mcpRevokeClient'),
     };
 
     const dispatcher = createDispatcher({

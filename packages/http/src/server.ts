@@ -40,6 +40,14 @@ export interface HttpDeps extends AuthDeps {
   /** `BANANASAURS_READONLY`. Decides whether `/bootstrap` is even armed. */
   readonly readonly: boolean;
   /**
+   * ADR 0045 (ruling PR-116): the public origin the OAuth metadata documents
+   * advertise. `undefined` when the operator has not set `MCP_PUBLIC_URL` —
+   * the OAuth routes are then not mounted at all. Optional (rather than
+   * `string | undefined` required) so the existing dashboard route tests,
+   * which build `HttpDeps` literals directly, keep compiling untouched.
+   */
+  readonly mcpPublicUrl?: string | undefined;
+  /**
    * One `OpsPorts` per guild, supplied by the composition root.
    *
    * `packages/http` cannot import `apps/daemon` (ADR 0014), and building an
@@ -129,7 +137,7 @@ const ipOf = (request: FastifyRequest): string | null => request.ip || null;
  * omit it entirely, and the token check below is the control that does not
  * depend on the browser's cooperation.
  */
-const originMatchesHost = (request: FastifyRequest): boolean => {
+export const originMatchesHost = (request: FastifyRequest): boolean => {
   const origin = request.headers.origin;
   if (origin === undefined || origin === 'null') return true;
   const host = request.headers.host;

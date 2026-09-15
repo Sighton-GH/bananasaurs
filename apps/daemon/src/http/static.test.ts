@@ -36,6 +36,24 @@ describe('registerStaticAssets', () => {
     expect(response.json()).toEqual({ error: 'not-found' });
   });
 
+  it('answers JSON 404, not the SPA shell, for OAuth paths nothing claimed', async () => {
+    // With `MCP_PUBLIC_URL` unset `registerOAuthRoutes` returns early
+    // (PR-116), so these reach the not-found handler — which must not serve
+    // the dashboard HTML with a 200 in place of the authorization server.
+    for (const url of [
+      '/oauth/authorize?client_id=x',
+      '/oauth/token',
+      '/oauth/register',
+      '/oauth/revoke',
+      '/.well-known/oauth-authorization-server',
+      '/.well-known/oauth-protected-resource',
+    ]) {
+      const response = await app.inject({ method: 'GET', url });
+      expect(response.statusCode).toBe(404);
+      expect(response.json()).toEqual({ error: 'not-found' });
+    }
+  });
+
   it('serves a real static file with its content type', async () => {
     const response = await app.inject({ method: 'GET', url: '/app.js' });
     expect(response.statusCode).toBe(200);

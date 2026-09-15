@@ -109,7 +109,8 @@ describe('TOTP is deferred, and this test is what re-arms it (ADR 0030)', () => 
   });
 
   it('still has the eight Release 1 capabilities plus moderation.act (ADR 0035), so the guard is not vacuous', () => {
-    expect(CAPABILITIES).toHaveLength(9);
+    expect(CAPABILITIES).toHaveLength(10);
+    expect(CAPABILITIES as readonly string[]).toContain('mcp.authorize');
   });
 });
 

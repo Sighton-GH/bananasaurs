@@ -88,8 +88,29 @@ describe('safeLogFields — allowlist, not denylist', () => {
       'content',
       'sessionSecret',
       'totpSecret',
+      'accessToken',
+      'refreshToken',
+      'oauthToken',
+      'authorizationCode',
+      'codeVerifier',
+      'nonce',
+      'clientSecret',
     ]) {
       expect(LOGGABLE_FIELDS.has(forbidden), `${forbidden} must not be loggable`).toBe(false);
     }
+  });
+
+  it('allowlists the OAuth id fields (ADR 0045 D8)', () => {
+    // An id is a row key, never a credential — the credential is the token
+    // VALUE, which has no allowlisted name. `code` stays allowlisted for its
+    // unrelated error/status-code purpose; the log-scan test in
+    // `packages/http/src/oauth/log-scan.test.ts` is what guards against an
+    // authorization-code VALUE going out under it.
+    expect(LOGGABLE_FIELDS.has('oauthClientId')).toBe(true);
+    expect(LOGGABLE_FIELDS.has('oauthTokenId')).toBe(true);
+    expect(safeLogFields({ oauthClientId: 'cli_abc', oauthTokenId: 'tok_def' })).toEqual({
+      oauthClientId: 'cli_abc',
+      oauthTokenId: 'tok_def',
+    });
   });
 });
