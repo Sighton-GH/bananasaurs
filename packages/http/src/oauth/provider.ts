@@ -265,6 +265,26 @@ export const exchangeCode = (
   if (!secretsMatch(s256(input.codeVerifier), row.codeChallenge)) {
     return { ok: false, error: 'invalid_grant', description: 'PKCE verification failed' };
   }
+  // A code approved before the account was disabled must not mint: the tokens
+  // would be inert (bearer and refresh both refuse), but `mcp tokens` would
+  // report them live — the one column an operator triaging a compromise
+  // reads. The same `findAccountById` + `disabled` check `refreshTokens`
+  // already carries, before the code is consumed.
+  const approver = accountRepo.findAccountById(instance, row.accountId);
+  if (approver === undefined) {
+    return {
+      ok: false,
+      error: 'invalid_grant',
+      description: 'account that approved this token no longer exists',
+    };
+  }
+  if (approver.disabled) {
+    return {
+      ok: false,
+      error: 'invalid_grant',
+      description: 'account that approved this token is disabled',
+    };
+  }
   const marked = oauthRepo.markAuthorizationCodeUsed(instance, codeHash, now);
   if (marked === 0) {
     oauthRepo.revokeTokensFromCode(instance, codeHash, now);

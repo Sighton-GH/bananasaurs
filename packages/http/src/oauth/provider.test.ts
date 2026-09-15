@@ -508,7 +508,7 @@ describe('exchangeCode', () => {
     expect(trackFailure(result).error).toBe('invalid_grant');
   });
 
-  it('exchange after the account is disabled still succeeds: D6 bites at use, not at mint', () => {
+  it('exchange after the account is disabled is refused: D6 bites at mint too', () => {
     registerClient();
     const { code, verifier } = authorize();
     disableAccount();
@@ -518,17 +518,11 @@ describe('exchangeCode', () => {
       redirectUri: REDIRECT,
       codeVerifier: verifier,
     });
-    expect(result.ok).toBe(true);
-    if (!result.ok) throw new Error(`exchange failed: ${result.error}`);
-    trackSecrets(result.accessToken, result.refreshToken);
-    expect(verifyAccessToken(deps, result.accessToken)).toEqual({
-      ok: false,
-      reason: 'account-disabled',
-    });
-    const refreshed = refreshTokens(deps, { refreshToken: result.refreshToken, clientId: CLIENT });
-    expect(refreshed.ok).toBe(false);
-    if (refreshed.ok) throw new Error('refresh unexpectedly succeeded');
-    expect(trackFailure(refreshed).error).toBe('invalid_grant');
+    expect(result.ok).toBe(false);
+    if (result.ok) throw new Error('exchange unexpectedly succeeded');
+    expect(trackFailure(result).error).toBe('invalid_grant');
+    // Nothing was minted for `mcp tokens` to report as live.
+    expect(oauthRepo.listTokens(t.scopes.instance())).toHaveLength(0);
   });
 });
 
