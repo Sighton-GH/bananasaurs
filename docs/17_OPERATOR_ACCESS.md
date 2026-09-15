@@ -51,6 +51,22 @@ bananasaurs automod review [--rule <id>] [--limit N]
                                              # matched snippet — prints member message content,
                                              # see the warning below
 bananasaurs automod verdict <event-id> <false_positive|true_positive|unclear> --confirm
+bananasaurs account list                     # every dashboard account: owner, enabled/DISABLED, lockout
+bananasaurs account disable <username> --confirm
+                                             # the ADR 0045 D6 lever: every session and every OAuth
+                                             # token this account approved stops verifying on the
+                                             # next request. Reversible with `account enable`.
+bananasaurs account enable <username> --confirm
+bananasaurs account delete <username> --confirm
+                                             # deletes the account AND revokes its OAuth tokens in
+                                             # one transaction; guild access, capabilities and
+                                             # dashboard sessions cascade. Not reversible.
+bananasaurs account grant <username> <capability> --confirm
+                                             # ADR 0028, guild-scoped — takes the global --guild
+bananasaurs mcp clients                      # registered OAuth clients (no client holds a secret)
+bananasaurs mcp tokens                       # every token row, live or revoked — ids only
+bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
+bananasaurs mcp revoke-client <client-id> --confirm
 ```
 
 Later releases add `case`, `archive search`, `channels enable|disable`.
