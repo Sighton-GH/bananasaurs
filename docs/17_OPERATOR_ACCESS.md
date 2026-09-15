@@ -69,6 +69,8 @@ bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage
 bananasaurs mcp revoke-client <client-id> --confirm
 ```
 
+The four `account` commands are instance-level (ADR 0027) and take no `--guild` flag — a dashboard account exists before a guild is chosen — unlike `account grant`, which grants a capability in a guild and takes the global `--guild`. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
+
 Later releases add `case`, `archive search`, `channels enable|disable`.
 
 **Restore is deliberately not on this list.** ADR 0034: it needs the daemon
