@@ -868,8 +868,13 @@ export const accountOpsFor = (
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
     if (row === undefined) return 'no-such-account';
-    // A successful lookup followed by no matched row is a race, not a usage
-    // mistake — the same answer the delete branch below gives, deliberately.
+    // Unreachable under the current synchronous single-writer model: nothing
+    // is awaited between the lookup above and this write, and better-sqlite3
+    // runs the whole handler on one writer, so the row cannot disappear in
+    // between. Kept because the port must answer something for the
+    // found-then-gone case, and a successful lookup followed by no matched
+    // row is a race, not a usage mistake — the same answer the delete branch
+    // below gives, deliberately.
     if (!accountRepo.setAccountDisabled(instanceScope, { accountId: row.accountId, disabled })) {
       return 'no-such-account';
     }
@@ -889,8 +894,12 @@ export const accountOpsFor = (
       accountId: row.accountId,
       now: now(),
     });
-    // A successful lookup followed by `deleted: false` is a race, not a
-    // usage mistake.
+    // Unreachable under the current synchronous single-writer model: nothing
+    // is awaited between the lookup above and this delete, and better-sqlite3
+    // runs the whole handler on one writer, so the row cannot disappear in
+    // between. Kept because the port must answer something for the
+    // found-then-gone case, and a successful lookup followed by
+    // `deleted: false` is a race, not a usage mistake.
     if (!result.deleted) return 'no-such-account';
     return {
       username: row.username,
