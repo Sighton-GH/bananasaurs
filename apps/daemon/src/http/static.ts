@@ -21,7 +21,16 @@ export const registerStaticAssets = (app: FastifyInstance, distDir: string): voi
   const indexHtml = path.join(distDir, 'index.html');
 
   app.setNotFoundHandler(async (request: FastifyRequest, reply: FastifyReply) => {
-    if (request.url.startsWith('/api/')) {
+    // `/api/` is the dashboard; `/oauth/` and `/.well-known/` are the OAuth
+    // authorization server (ADR 0045). When `MCP_PUBLIC_URL` is unset
+    // `registerOAuthRoutes` returns early (PR-116) and no route claims those
+    // paths — answering the SPA shell with a 200 there would masquerade as
+    // the authorization server instead of saying nothing is served.
+    if (
+      request.url.startsWith('/api/') ||
+      request.url.startsWith('/oauth/') ||
+      request.url.startsWith('/.well-known/')
+    ) {
       return reply.status(404).send({ error: 'not-found' });
     }
 
