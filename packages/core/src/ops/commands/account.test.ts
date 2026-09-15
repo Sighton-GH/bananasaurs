@@ -398,7 +398,8 @@ describe('account disable (tests 6-9)', () => {
     expect(lastResponse.ok).toBe(true);
     expect(lastResponse.ok && lastResponse.text).toContain('disabled owner');
     expect(lastResponse.ok && lastResponse.text).toContain(
-      'every dashboard session and every OAuth token this account approved stops verifying on the next request',
+      'every dashboard session and every OAuth token this account approved ' +
+        'stops verifying for as long as it stays disabled',
     );
     expect(lastResponse.ok && lastResponse.text).toContain(
       'WARNING: that was the last enabled owner account. Nobody can sign in to the dashboard.',
@@ -629,6 +630,31 @@ describe('account warnings are gated on the target having been an owner (M3b-R10
     expect(response.ok && response.text).toContain(
       'note: no enabled owner account remains on this instance; ' +
         'member is not an owner, so re-creating it would not restore dashboard sign-in.',
+    );
+  });
+});
+
+describe('account disable states the pause, not a rotation (M3b-R11)', () => {
+  it('success text contains the pause-not-rotation line', async () => {
+    const h = accountHarness({
+      accountSetDisabled: () => ({
+        changed: true,
+        username: 'owner',
+        isOwner: true,
+        disabled: true,
+        lockedUntil: null,
+        enabledOwnersRemaining: 1,
+      }),
+    });
+    const response = await h.run('account disable', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain(
+      'every dashboard session and every OAuth token this account approved ' +
+        'stops verifying for as long as it stays disabled',
+    );
+    expect(response.ok && response.text).toContain(
+      'this is a pause, not a rotation: `account enable` restores every one of those ' +
+        'credentials intact. To end them for good, use `account delete`.',
     );
   });
 });

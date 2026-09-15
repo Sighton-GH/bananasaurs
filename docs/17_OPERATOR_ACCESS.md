@@ -54,8 +54,9 @@ bananasaurs automod verdict <event-id> <false_positive|true_positive|unclear> --
 bananasaurs account list                     # every dashboard account: owner, enabled/DISABLED, lockout
 bananasaurs account disable <username> --confirm
                                              # the ADR 0045 D6 lever: every session and every OAuth
-                                             # token this account approved stops verifying on the
-                                             # next request. Reversible with `account enable`.
+                                             # token this account approved stops verifying for as
+                                             # long as it stays disabled. A pause, not a rotation —
+                                             # `account enable` hands every credential back intact.
 bananasaurs account enable <username> --confirm
 bananasaurs account delete <username> --confirm
                                              # deletes the account AND revokes its OAuth tokens in
@@ -70,6 +71,8 @@ bananasaurs mcp revoke-client <client-id> --confirm
 ```
 
 The four `account` commands act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
+
+`disable` is a pause, not a rotation: re-enabling an account restores every session and token it approved, intact. There is no command in this release that rotates a password or ends an account's sessions without deleting the account — `account delete` is the only irreversible remedy today.
 
 Later releases add `case`, `archive search`, `channels enable|disable`.
 

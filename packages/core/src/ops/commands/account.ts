@@ -120,7 +120,9 @@ export const accountDisableCommand = defineCommand<z.infer<typeof accountNameArg
 
     const lines = [
       `disabled ${args.username}`,
-      `every dashboard session and every OAuth token this account approved stops verifying on the next request`,
+      `every dashboard session and every OAuth token this account approved stops verifying for as long as it stays disabled`,
+      `this is a pause, not a rotation: \`account enable\` restores every one of those credentials intact. ` +
+        `To end them for good, use \`account delete\`.`,
     ];
     if (outcome.isOwner && outcome.changed && outcome.enabledOwnersRemaining === 0) {
       lines.push(
