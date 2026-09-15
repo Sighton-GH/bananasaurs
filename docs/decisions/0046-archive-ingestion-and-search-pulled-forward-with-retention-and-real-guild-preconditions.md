@@ -215,3 +215,55 @@ is recorded in `docs/reports/release2-slices-7-12-ledger.md` as a ruling.
   key `archive_expiry:<yyyy-mm-dd>`), at startup and every 24 h. The work
   runs on the job table — retried, visible to `jobs list` — and the timer
   only says when.
+
+---
+
+## Amendment 2 — 2026-09-14: the `/mydata` precondition is withdrawn
+
+D1 held the club guild out of `BANANASAURS_ARCHIVE_GUILDS` until `/mydata`
+and `/forgetme` shipped, and called that "the privacy precondition, enforced
+by absence." **The owner withdrew it on 2026-09-14** and directed that the
+club guild be added to archive scope. Ruling PR-135.
+
+**The reason given, and it is a real one.** The same messages are already
+retained by another bot in the same server (Carlbot). Bananasaurs archiving
+them therefore adds no new *category* of exposure for members — the messages
+were already being kept by a third party, on someone else's servers, under
+someone else's policy. Against that baseline, a local archive on a machine
+the club controls, with a 30-day content purge, is not obviously worse and
+is arguably better.
+
+**What this does not change.** Every other control in this ADR stands:
+
+- **D3's retention still runs in full.** Content is purged at 30 days unless
+  the message is preserved or linked to a case; the daily expiry timer is
+  live and M3 added the OAuth purge beside it.
+- **The three vetoes still hold.** A row is written only if the guild is
+  listed, the channel is in `archive_channels`, and the channel is not in
+  `log_excluded_channels`. Listing the guild is necessary, never sufficient.
+- **No attachment bytes are fetched** (PR-67). File name, type and size only.
+- **Nothing is archived by adding the guild.** A channel must still be
+  enabled explicitly, one at a time, by the operator.
+
+**What it does change, stated plainly.** Real members' messages in whichever
+channels get enabled are now retained by this bot, for up to 30 days, with
+no self-serve way for a member to see or remove them. The data-subject route
+is a request to the owner — which works, because this is a 210-member club
+server whose owner is findable, and which is what `PRIVACY.md` now says.
+
+**The consequence that was acted on immediately.** `PRIVACY.md` listed
+`/mydata` and `/forgetme` in the present tense — "Shows what Bananasaurs
+holds about you" — and said "`/mydata` and `/forgetme` exist because they
+should." Neither exists. That was already untrue before this amendment, and
+enabling the club archive would have made a member-facing document actively
+misleading about a real archive of their messages. The page now marks both
+as **not built yet**, points at the owner as the working route, and says
+outright that an earlier version claimed otherwise. **Correcting the
+document was not optional and is not a substitute for the commands** — it is
+the minimum that keeps the page honest while they remain unbuilt.
+
+**What would reopen this.** If the club grows past the point where "ask the
+owner" is a real answer, if a member asks and is not served promptly, or if
+the archive's scope widens much beyond the channels first enabled, then
+`/mydata` and `/forgetme` stop being deferrable. They are on hiatus, not
+cancelled.

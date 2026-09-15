@@ -90,15 +90,25 @@ Current settings are shown by `/privacy`. If they change, this policy is updated
 
 ## Your choices
 
-| Command | What it does |
+**Ask the owner.** Today that is the only route, and it works: the owner can
+show you everything Bananasaurs holds about you and delete your stored
+messages and any notes built about you. This is a club server, not a
+helpdesk, and the owner is someone you can find.
+
+| Command | Status |
 |---|---|
 | `/privacy` | Shows this policy and the current settings |
-| `/mydata` | Shows what Bananasaurs holds about you |
-| `/forgetme` | Asks the owner to delete your stored messages and any notes the bot has built about you |
+| `/mydata` | **Not built yet.** Ask the owner instead. |
+| `/forgetme` | **Not built yet.** Ask the owner instead. |
 
-`/forgetme` does not delete moderation records. A warning or ban record has to survive for moderation to mean anything, the same as it would with any other bot. Everything else can go.
+These two are planned, not shipped. An earlier version of this page listed
+them as though they existed; that was wrong, and this page says so rather
+than quietly dropping them. Until they ship, the request goes to a person
+rather than to a command — the outcome is the same, the speed is not.
 
-You can also just ask the owner directly. This is a club server, not a helpdesk.
+Deletion does not remove moderation records. A warning or ban record has to
+survive for moderation to mean anything, the same as it would with any other
+bot. Everything else can go.
 
 ## How this compares to what already applies to you
 
@@ -108,7 +118,7 @@ The differences worth knowing:
 
 - **It is narrower.** Most bots that log messages log everywhere they can see. Bananasaurs only logs channels that were deliberately turned on.
 - **It is local.** Your messages sit on one machine run by someone in this club, not on a company's servers.
-- **You can see inside it.** `/mydata` and `/forgetme` exist because they should.
+- **You can see inside it.** Ask the owner what is held about you, or to delete it, and they will. The self-serve `/mydata` and `/forgetme` commands are planned but not built yet — see "Your choices" above.
 
 None of that makes it harmless. It is a real archive of things people said, and it should be treated that way. Do not post anything in this server you would not want kept — which was already true before this bot existed.
 

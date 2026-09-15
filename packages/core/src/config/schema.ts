@@ -49,8 +49,17 @@ export const configSchema = z.object({
   /**
    * Guilds that may hold archive channels at all (ADR 0046 D1). Empty by
    * default: nothing is archived until the operator lists a guild here AND
-   * enables a channel. The club guild stays off this list until /mydata and
-   * /forgetme ship — that is the privacy precondition, enforced by absence.
+   * enables a channel.
+   *
+   * The club guild was held off this list until `/mydata` and `/forgetme`
+   * shipped. **That precondition was withdrawn by the owner on 2026-09-14**
+   * (ADR 0046 Amendment 2): the same messages are already retained by another
+   * bot in the server, so Bananasaurs retaining them adds no new category of
+   * exposure, and the data-subject route is a request to the owner rather
+   * than a command. Retention still applies in full — content is purged at
+   * 30 days unless preserved or linked to a case (ADR 0046 D3). Listing a
+   * guild here is still not enough on its own; a channel must also be
+   * enabled, and an excluded channel is still refused.
    */
   BANANASAURS_ARCHIVE_GUILDS: z
     .string()
