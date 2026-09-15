@@ -236,7 +236,11 @@ export const accountDeleteCommand = defineCommand<z.infer<typeof accountDeleteAr
       `revoked ${String(outcome.tokensRevoked)} OAuth token(s) and removed ${String(outcome.codesDeleted)} ` +
         `unexchanged authorization code(s); guild access, capabilities and dashboard sessions cascaded`,
     ];
-    if (outcome.wasOwner && outcome.enabledOwnersRemaining === 0 && outcome.accountsRemaining === 0) {
+    if (
+      outcome.wasOwner &&
+      outcome.enabledOwnersRemaining === 0 &&
+      outcome.accountsRemaining === 0
+    ) {
       lines.push(
         `WARNING: that was the last enabled owner account and the last account of any kind. ` +
           `Nobody can sign in to the dashboard. ` +
