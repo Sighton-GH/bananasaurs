@@ -433,4 +433,25 @@ describe('ADR 0045 D6: revoking the account revokes what it approved (M3b)', () 
     expect(renewed.statusCode).toBe(200);
     expect(renewed.json()).toMatchObject({ access_token: expect.any(String) });
   });
+
+  it('a hand-removed account row kills the live token — the account-gone branch (M3b-R7)', async () => {
+    const { accessToken } = await mintToken();
+    const before = await stubWith(`Bearer ${accessToken}`);
+    expect(before.statusCode).toBe(200);
+
+    // Raw SQL, deliberately NOT accountRepo.deleteAccount: the repository
+    // function revokes every token in the same transaction, so it refuses as
+    // `revoked` before the account lookup and can never exercise the
+    // `account-gone` branch. This branch still matters in production — a
+    // token can outlive its account by a path that is not deleteAccount, such
+    // as a restored backup taken before the account existed or an operator
+    // removing rows by hand during recovery.
+    t.raw.prepare('DELETE FROM dashboard_accounts WHERE account_id = ?').run(ACCOUNT);
+
+    // The SAME token, the SAME clock — nothing has expired or been revoked.
+    const after = await stubWith(`Bearer ${accessToken}`);
+    expect(after.statusCode).toBe(401);
+    expect(after.headers['www-authenticate']).toBe(CHALLENGE);
+    expect(after.json()).toEqual({ error: 'invalid_token' });
+  });
 });
