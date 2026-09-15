@@ -455,7 +455,7 @@ describe('ADR 0045 D6: revoking the account revokes what it approved (M3b)', () 
     expect(after.json()).toEqual({ error: 'invalid_token' });
   });
 
-  it("revoke-credentials kills the live token while the account stays enabled (M3c)", async () => {
+  it('revoke-credentials kills the live token while the account stays enabled (M3c)', async () => {
     const { accessToken } = await mintToken();
     const before = await stubWith(`Bearer ${accessToken}`);
     expect(before.statusCode).toBe(200);

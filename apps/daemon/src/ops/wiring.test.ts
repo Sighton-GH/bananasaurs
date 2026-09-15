@@ -379,11 +379,7 @@ describe('accountRevokeCredentials (M3c)', () => {
     });
   };
 
-  const openSession = (
-    scope: GuildScope,
-    sessionIdHash: string,
-    accountId: string,
-  ): void => {
+  const openSession = (scope: GuildScope, sessionIdHash: string, accountId: string): void => {
     sessionRepo.createSession(scope, {
       sessionIdHash,
       accountId,
@@ -447,7 +443,7 @@ describe('accountRevokeCredentials (M3c)', () => {
     expect(accountRepo.findAccountByUsername(instance(), 'disabled-one')?.disabled).toBe(true);
   });
 
-  it("returns no-such-account for an unknown username and revokes nothing", () => {
+  it('returns no-such-account for an unknown username and revokes nothing', () => {
     seedAccount('acct_keeper0000000000000000000000003', 'keeper');
     openSession(scope, 'f'.repeat(64), 'acct_keeper0000000000000000000000003');
 
@@ -481,8 +477,6 @@ describe('accountRevokeCredentials (M3c)', () => {
     const result = ops().accountRevokeCredentials('holder');
 
     expect(result).toMatchObject({ tokensRevoked: 1, stillEnabled: true });
-    expect(
-      oauthRepo.findTokenById(instance(), 'holder-token')?.revokedAt,
-    ).toBe(NOW);
+    expect(oauthRepo.findTokenById(instance(), 'holder-token')?.revokedAt).toBe(NOW);
   });
 });
