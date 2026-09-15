@@ -997,3 +997,126 @@ two directions at once — nothing could revoke an account, and the lever that
 did exist did not stop a rotation. Neither gap is visible in a diff; both
 required asking what an operator would actually reach for. Ask that of every
 promise an ADR makes from here.
+
+## Slice M3b — dashboard account disable, enable, delete
+
+Rulings PR-136..PR-147 (recorded in the run ledger as M3b-R1..R12).
+Branch `oc/m3b-account-lifecycle`, merged to `main` 2026-09-15 as `6f47112`.
+No new ADR: ADR 0045 **Amendment 3** carries the four decisions, because the
+promise being closed is D6's.
+
+**Why the slice exists.** M3's whole-branch review established that nothing
+in this tree could disable or delete a dashboard account — no route, no CLI
+command, no repository function; `disabled` was read in five places and
+written in none outside tests. ADR 0045 D6 ("revoking the account revokes
+everything it approved") was therefore a promise with no trigger. The owner
+scoped M3b at M3's close: repository functions, three commands, and a test
+proving a deleted account's live tokens stop verifying on the next request.
+
+**What shipped.** `setAccountDisabled`, `deleteAccount`, `countEnabledOwners`
+and `listAccounts` in `packages/storage/src/repos/accounts.ts`; three
+`OpsInstance` members behind an exported `accountOpsFor(instanceScope, now)`
+factory; `account list` plus `account disable|enable|delete --confirm`; six
+tests in `bearer.test.ts` driving the real OAuth routes. **3,001 tests across
+157 files**, gates clean by exit code on the merge commit. No moderation
+source touched — the two automod files in the diff gain three-line test stubs
+— so the observe window running on both guilds is unaffected.
+
+### Rulings
+
+- **PR-136 (M3b-R1)** — `account list` ships although the owner's spec named
+  only disable/enable/delete: without it nothing in the tree can *show* that a
+  disable took effect, and an unobservable write is half-shipped.
+- **PR-137 (M3b-R2)** — no "last owner" guard on either command. Both are
+  recoverable from the same terminal, and a guard on delete would make
+  `bootstrap reissue`'s documented recovery path unreachable forever. They
+  warn instead. **This ruling was the one the whole-branch review nearly
+  falsified — see PR-145.**
+- **PR-138 (M3b-R3)** — the account members live in `accountOpsFor` rather
+  than inline in `opsInstanceFor`, which needs a `Config` and a live
+  discord.js `Client` and has no test anywhere. That split is what made "no
+  password hash crosses this boundary" a cheap sentinel test.
+- **PR-139 (M3b-R4)** — `packages/http/src/test-support.ts` duplicates the
+  mapping, because `packages/http` cannot import `apps/daemon`. Cost recorded
+  at the time as "one mapping exists twice"; **paid twice**, once when the
+  member was added and again when `accountsRemaining` was.
+- **PR-140 (M3b-R5)** — `accountSetDisabled` answers `'no-such-account'` on
+  the no-match race, matching `accountDelete`.
+- **PR-141 (M3b-R6)** — five hand-rolled `OpsInstance` literals now exist
+  across four packages, so adding one port member is a five-file change.
+  Consolidating them onto `fakeOpsInstance` ruled out of scope here.
+- **PR-142 (M3b-R7)** — the `account-gone` branch is pinned by a raw-SQL row
+  delete, because `deleteAccount` can never reach it.
+- **PR-143 (M3b-R8)** — the `--guild` finding is fixed in prose, not in the
+  dispatcher. `resolveGuild` running for every command is what makes "every
+  write is audited against a guild" a property of the machinery; carving out
+  four commands is a change to the operator surface's shape and needs its own
+  slice.
+- **PR-144 (M3b-R9)** — `accountsRemaining` added to
+  `OpsAccountDeleteResult`; the warning branches on it.
+- **PR-145 (M3b-R10)** — both warnings gated on ownership.
+- **PR-146 (M3b-R11)** — the fix wave fixes the *claim*, not the capability;
+  a rotation command is an owner decision. Open, in `docs/STATE.md`.
+- **PR-147 (M3b-R12)** — the unreachable race branches are kept but commented
+  as unreachable-by-construction. **Decorative guard #19.**
+
+### What the whole-branch review found that five task reviews did not
+
+**SHIP-WITH-FIXES: 0 Critical, 4 Important, 4 Minor**, every one reproduced
+by running probes against the built code rather than read off the diff. Full
+account in `docs/reports/m3b-whole-branch-review.md`. The controller
+independently re-confirmed the two load-bearing ones before ruling.
+
+- **The `--guild` claim was false on the real daemon.** `docs/17` said the
+  four commands "take no `--guild` flag". `resolveGuild` runs for *every*
+  command before `run` (`dispatch.ts:281`) and the deployed allowlist holds
+  two guilds, so all four refuse without it. The new sentence also
+  contradicted the unchanged rule four lines below it. The seam that hid this
+  from five reviews: **no `account` command ran through the real socket** —
+  the stub-based command tests and the real-database wiring tests were joined
+  only by the `OpsInstance` type. One integration test now closes it, and
+  that Minor is the most valuable of the four.
+- **`account delete`'s warning named a command that throws.** It advised
+  `bootstrap reissue`, which refuses while *any* account row exists, not
+  while any enabled owner exists. PR-137's entire recovery argument holds
+  only when the deleted account was the last row — so the ruling survived,
+  but its justification had a hole the ruling's own author did not see.
+- **Both warnings fired for non-owners.** Executed: with the sole owner
+  already disabled, disabling a member printed "that was the last enabled
+  owner account… re-enable it", naming an account whose re-enabling restores
+  no sign-in. Wrong about what happened *and* wrong about the remedy.
+- **`disable` is a pause, not a rotation.** Both guards are live re-reads, so
+  `enable` hands every stolen credential back intact — this branch's own
+  tests assert that, correctly, because it is what proves nothing is cached.
+  But `docs/17` presented disable as the D6 compromise lever.
+  `sessionRepo.revokeAllForAccount` and `accountRepo.setPasswordHash` both
+  exist, are tested, and have **zero production callers**.
+
+### What this slice teaches that M1, M2 and M3 did not
+
+M3 taught that a promise in an ADR is not a guarantee until something fails
+without it. M3b teaches the next turn of the same screw: **an ADR's
+justification can be wrong even when its decision is right, and only running
+the code tells you which.**
+
+A3-2 was written — by the controller, in an ADR, before implementation —
+saying the in-transaction token revoke was a redundant belt "because
+`verifyAccessToken` would return `account-gone` anyway". An implementer was
+told to remove that guard and watch a test go red. The suite stayed **green**,
+and it reported that honestly with the reason rather than adjusting the test
+until it passed: the revoke lands first, so the request is refused as
+`revoked` and the account-lookup branch never executes. Two facts followed
+that nothing in a diff would have shown — the `account-gone` branch is
+unreachable through `deleteAccount`, and removing it is a **500, not a
+bypass**, because `verifyAccessToken` reads `.disabled` off `undefined` and
+throws. A3-2 was corrected.
+
+The same discipline paid a third time on the `--confirm` gate: flipping
+`write: true` to `write: false` produced **three** distinct failures, not one
+— the unconfirmed dispatch reaching the port, the registry write-flag
+assertion, and a **missing audit row** — which is how the run learned that
+`--confirm` and auditing ride on the same flag, so one typo removes both.
+
+So: **write the ADR first, then try to falsify it.** Three of this slice's
+most useful facts came from breaking a guard and reading what happened, and
+none of them was visible to a reviewer reading a diff.

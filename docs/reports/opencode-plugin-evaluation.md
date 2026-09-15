@@ -778,6 +778,54 @@ change ("reviewer modified 1 file(s); changes discarded"), so it has to be
 re-created rather than assumed present. Worth fixing in the tool: linking
 every `*/node_modules` the base checkout has, not only the root one.
 
+**And the symlink is a hazard, not just a workaround — it damaged the base
+checkout.** An implementer ran `npm install` inside the worktree (reasonably,
+while diagnosing the missing module), npm followed the symlink, and wrote
+through it into the **main checkout's** `packages/dashboard/node_modules`.
+The damage surfaced only after the merge, when `npm run typecheck` on `main`
+failed on the same missing module the worktree had originally failed on, and
+`@vitejs/plugin-react/` on `main` turned out to be an empty directory while
+the worktree's copy was intact. One `npm install` at the repo root repaired
+it; the merged code was never affected, and all three gates then passed on
+`main`.
+
+The lesson is about the shape of the fix, not the incident: **a symlink from
+a worktree into the base checkout makes the base checkout writable by every
+dispatch**, and the whole point of a worktree is that it is not. A copy
+(`cp -r`) would have cost a few megabytes and contained the blast radius, and
+the real fix belongs in `oc-task`: link or copy every nested `node_modules`
+at worktree creation, the same way it already handles the root one. Until
+then, copy rather than link.
+
+### D54 — a killed run loses the record that authorizes its files
+
+`oc-task --merge` audits the branch diff against the union of every `# Files`
+section from **the runs it has records for** (`.oc-runs/*.json`, filtered by
+branch). Fix round 2 of Task 2 was killed by the host memory watchdog *after*
+both its commits landed but before its run record was written — so its brief
+never entered the union, and the merge was refused for two files that brief
+explicitly authorizes:
+
+```
+oc-task: merge refused — diff touches files not listed in the spec's # Files section:
+  apps/daemon/src/automod.integration.test.ts
+  packages/storage/src/repos/automod-rule-lists.test.ts
+```
+
+**The audit was right to refuse** — it reported exactly what it could see —
+and the brief was sitting on disk at
+`.oc-runs/m3b-account-lifecycle/task-2-fix-2-brief.md` the whole time. The
+controller performed the audit by hand instead (read the brief's Files
+section, read both diffs — three-line test stubs), merged with plain `git
+merge --no-ff`, and said so in the merge commit rather than reaching for a
+flag to silence the check.
+
+Worth fixing in the tool: fall back to scanning `.oc-runs/<plan-slug>/*.md`
+for `# Files` sections when a brief has no run record, or write the run
+record at dispatch rather than at completion so a killed run still leaves
+one. The second is better — a record written at dispatch is also what tells
+you a run existed at all.
+
 ### D53 — the host's memory watchdog kills background runs
 
 Two background jobs were killed mid-run with "the system is running low on
