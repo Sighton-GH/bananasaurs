@@ -606,4 +606,50 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
     if (oauthRepo.findClient(instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(instanceScope, clientId, now());
   },
+  // Canonical implementation: `accountOpsFor` in `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the test database, field by field so no `passwordHash` crosses.
+  accountList: () =>
+    accountRepo.listAccounts(instanceScope).map((row) => ({
+      accountId: row.accountId,
+      username: row.username,
+      isOwner: row.isOwner,
+      disabled: row.disabled,
+      lockedUntil: row.lockedUntil,
+      createdAt: row.createdAt,
+    })),
+  accountSetDisabled: (username, disabled) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    // Same race answer as the canonical implementation: a lookup followed by
+    // no matched row is not a usage mistake.
+    if (!accountRepo.setAccountDisabled(instanceScope, { accountId: row.accountId, disabled })) {
+      return 'no-such-account';
+    }
+    return {
+      changed: row.disabled !== disabled,
+      username: row.username,
+      isOwner: row.isOwner,
+      disabled,
+      lockedUntil: row.lockedUntil,
+      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+    };
+  },
+  accountDelete: (username) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    const result = accountRepo.deleteAccount(instanceScope, {
+      accountId: row.accountId,
+      now: now(),
+    });
+    // Same race answer as the canonical implementation (see above).
+    if (!result.deleted) return 'no-such-account';
+    return {
+      username: row.username,
+      accountId: row.accountId,
+      wasOwner: row.isOwner,
+      tokensRevoked: result.tokensRevoked,
+      codesDeleted: result.codesDeleted,
+      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+      accountsRemaining: accountRepo.countAccounts(instanceScope),
+    };
+  },
 });

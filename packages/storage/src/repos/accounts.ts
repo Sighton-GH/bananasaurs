@@ -1,4 +1,4 @@
-import { and, eq, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, eq, isNull, lt, sql } from 'drizzle-orm';
 import type { Capability } from '@bananasaurs/core';
 import type { GuildScope, InstanceScope } from '../scope.js';
 import { read, readInstance, write, writeInstance } from '../write.js';
@@ -7,6 +7,8 @@ import {
   accountGuildAccess,
   bootstrapTokens,
   dashboardAccounts,
+  oauthAuthorizationCodes,
+  oauthTokens,
 } from '../schema.js';
 
 /**
@@ -188,6 +190,127 @@ export const setPasswordHash = (
       .where(eq(dashboardAccounts.accountId, input.accountId))
       .run();
   });
+
+/**
+ * Disables or re-enables an account (ADR 0045 Amendment 3, A3-1).
+ *
+ * The lever ADR 0045 D6 promised and M3 did not have: `disabled` was read in
+ * five places and written in none outside tests, so "revoking the account
+ * revokes everything it approved" had no trigger at all. Returns `false` for
+ * an unknown id, so the caller can tell "no such account" from "already in
+ * the state you asked for" — both write nothing, and they are different
+ * answers to an operator.
+ *
+ * It does NOT touch `failed_attempts` or `locked_until` (A3-4): a lockout
+ * (ADR 0029) answers a different question from a disablement, and clearing
+ * one as a side effect of undoing the other would make the login throttle
+ * depend on an unrelated command.
+ */
+export const setAccountDisabled = (
+  scope: InstanceScope,
+  input: { accountId: string; disabled: boolean },
+): boolean =>
+  writeInstance(scope, ({ db }) => {
+    const result = db
+      .update(dashboardAccounts)
+      .set({ disabled: input.disabled ? 1 : 0 })
+      .where(eq(dashboardAccounts.accountId, input.accountId))
+      .run();
+    return result.changes === 1;
+  });
+
+export interface AccountDeletion {
+  readonly deleted: boolean;
+  /** OAuth tokens revoked in the same transaction. */
+  readonly tokensRevoked: number;
+  /** Unexchanged authorization codes deleted in the same transaction. */
+  readonly codesDeleted: number;
+}
+
+/**
+ * Deletes an account and, in the SAME transaction, revokes every live OAuth
+ * token it approved and removes every authorization code it consented to.
+ *
+ * The revoke is belt as well as suspenders, deliberately: `verifyAccessToken`
+ * already refuses a token whose account has vanished, so the 401 on the next
+ * request does not depend on this write — but `oauth_tokens.account_id`
+ * carries no foreign key, so without an explicit revoke the rows outlive the
+ * account and `bananasaurs mcp tokens` would keep printing them as LIVE for
+ * up to thirty days. That is wrong in exactly the direction an operator
+ * auditing "what can still reach this daemon" cannot afford: a list that
+ * understates access is a bug, a list that overstates it after a revocation
+ * the operator just performed is a betrayal of the command. And a revocation
+ * that depends on a second module's check holding is the shape that was
+ * already found false twice here — the check can change, the row cannot
+ * speak for itself.
+ *
+ * The cross-table writes live in this file rather than in `oauth.ts` because
+ * they must share one transaction with the delete, and `writeInstance` does
+ * not nest: calling an `oauth.ts` helper from here would open a second
+ * transaction, leaving a crash between the two with the account gone and its
+ * tokens still live.
+ */
+export const deleteAccount = (
+  scope: InstanceScope,
+  input: { accountId: string; now: number },
+): AccountDeletion =>
+  writeInstance(scope, ({ db }) => {
+    const revoked = db
+      .update(oauthTokens)
+      .set({ revokedAt: input.now })
+      .where(and(eq(oauthTokens.accountId, input.accountId), isNull(oauthTokens.revokedAt)))
+      .run();
+    const codes = db
+      .delete(oauthAuthorizationCodes)
+      .where(eq(oauthAuthorizationCodes.accountId, input.accountId))
+      .run();
+    const deleted = db
+      .delete(dashboardAccounts)
+      .where(eq(dashboardAccounts.accountId, input.accountId))
+      .run();
+    return {
+      deleted: deleted.changes === 1,
+      tokensRevoked: revoked.changes,
+      codesDeleted: codes.changes,
+    };
+  });
+
+/**
+ * How many owners can still log in: `is_owner = 1 AND disabled = 0`.
+ *
+ * A disabled owner keeps the title but has lost the access, so counting the
+ * title alone would answer a question nobody asked — the caller is deciding
+ * whether revoking this account leaves the daemon ownerless, and an account
+ * that cannot authenticate is already gone for that purpose.
+ */
+export const countEnabledOwners = (scope: InstanceScope): number =>
+  readInstance(
+    scope,
+    (db) =>
+      db
+        .select({ n: sql<number>`count(*)` })
+        .from(dashboardAccounts)
+        .where(and(eq(dashboardAccounts.isOwner, 1), eq(dashboardAccounts.disabled, 0)))
+        .get()?.n ?? 0,
+  );
+
+/**
+ * Every account, oldest first (`created_at` ascending).
+ *
+ * An operator listing accounts is auditing provisioning order — "who was
+ * here first" — so insertion order is the wrong answer and rowid order is an
+ * accident; the clock the rows were written with is the ordering that means
+ * something.
+ */
+export const listAccounts = (scope: InstanceScope): readonly AccountRow[] =>
+  readInstance(scope, (db) =>
+    db
+      .select(SELECT)
+      .from(dashboardAccounts)
+      .orderBy(asc(dashboardAccounts.createdAt))
+      .all()
+      .map(toRow),
+  );
 
 // --- guild access -----------------------------------------------------------
 

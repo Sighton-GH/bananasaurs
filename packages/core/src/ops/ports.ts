@@ -458,6 +458,56 @@ export interface OpsMcpToken {
   readonly lastUsedAt: number | null;
 }
 
+/** One dashboard account, as the operator CLI shows it. Never a hash. */
+export interface OpsAccount {
+  readonly accountId: string;
+  readonly username: string;
+  readonly isOwner: boolean;
+  readonly disabled: boolean;
+  readonly lockedUntil: number | null;
+  readonly createdAt: number;
+}
+
+/**
+ * What `account disable|enable` did. `'no-such-account'` is a distinct
+ * outcome from `changed: false`: one is a usage mistake, the other is an
+ * account that was already in the state asked for, and an operator needs
+ * to be told which.
+ */
+export type OpsAccountDisableResult =
+  | 'no-such-account'
+  | {
+      readonly changed: boolean;
+      readonly username: string;
+      readonly isOwner: boolean;
+      /** The state AFTER the write. */
+      readonly disabled: boolean;
+      /** A live lockout (ADR 0029) the operator should know about. */
+      readonly lockedUntil: number | null;
+      /** Enabled owner accounts remaining AFTER the write. */
+      readonly enabledOwnersRemaining: number;
+    };
+
+/** What `account delete` did. */
+export type OpsAccountDeleteResult =
+  | 'no-such-account'
+  | {
+      readonly username: string;
+      readonly accountId: string;
+      readonly wasOwner: boolean;
+      readonly tokensRevoked: number;
+      readonly codesDeleted: number;
+      /** Enabled owner accounts remaining AFTER the delete. */
+      readonly enabledOwnersRemaining: number;
+      /**
+       * Every account row remaining AFTER the delete. `bootstrap reissue`
+       * refuses while ANY row exists — not while any enabled owner exists —
+       * so the ownerless warning cannot be written from the owner count
+       * alone (ruling M3b-R9).
+       */
+      readonly accountsRemaining: number;
+    };
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -1028,6 +1078,41 @@ export interface OpsInstance {
   mcpRevokeToken(tokenId: string): number | undefined;
   /** Deletes the client and everything issued to it; returns the number of tokens revoked, or undefined if no such client. */
   mcpRevokeClient(clientId: string): number | undefined;
+  /**
+   * Every dashboard account, oldest first, as `account list` renders it
+   * (ADR 0045 D6).
+   *
+   * On `OpsInstance` for the same reason `reissueBootstrapToken` is:
+   * `dashboard_accounts` is instance-level (ADR 0027), so there is no guild
+   * to scope by. Field by field rather than a re-export: the row carries a
+   * `passwordHash` the operator surface must never see, so the shape names
+   * exactly what crosses the boundary.
+   */
+  accountList(): readonly OpsAccount[];
+  /**
+   * Disables or re-enables one dashboard account by username (ADR 0045 D6).
+   *
+   * Instance-level like `accountList` above — the account predates any guild
+   * choice. Takes a username rather than an id because that is what an
+   * operator types; resolves it inside. `'no-such-account'` is a usage
+   * answer for a mistyped name, distinct from `changed: false` for an
+   * account already in the requested state. `lockedUntil` is the lockout
+   * the row already carried (ADR 0029 is orthogonal to disablement and is
+   * neither cleared nor set here); `enabledOwnersRemaining` is read after
+   * the write so the command can warn before the daemon goes ownerless.
+   */
+  accountSetDisabled(username: string, disabled: boolean): OpsAccountDisableResult;
+  /**
+   * Deletes one dashboard account by username, revoking its tokens and
+   * consent codes in the same transaction (ADR 0045 D6).
+   *
+   * Instance-level like `accountList` above. `'no-such-account'` is the
+   * usage answer for a mistyped name. The counts are the repository's own
+   * — how many live tokens were revoked and how many codes removed — and
+   * `enabledOwnersRemaining` is read after the delete, the same ownerless
+   * warning `accountSetDisabled` carries.
+   */
+  accountDelete(username: string): OpsAccountDeleteResult;
 }
 
 export interface OpsBackupOutcome {

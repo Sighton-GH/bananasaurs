@@ -116,6 +116,9 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   mcpTokens: unstubbed('mcpTokens'),
   mcpRevokeToken: unstubbed('mcpRevokeToken'),
   mcpRevokeClient: unstubbed('mcpRevokeClient'),
+  accountList: unstubbed('accountList'),
+  accountSetDisabled: unstubbed('accountSetDisabled'),
+  accountDelete: unstubbed('accountDelete'),
   ...over,
 });
 

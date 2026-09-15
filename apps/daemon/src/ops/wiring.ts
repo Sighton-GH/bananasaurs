@@ -840,6 +840,80 @@ export interface OpsInstanceDeps {
 }
 
 /**
+ * Dashboard-account operators (ADR 0045 D6), split out of `opsInstanceFor`
+ * below.
+ *
+ * `opsInstanceFor` requires a `Config` and a live discord.js `Client` and has
+ * no test anywhere in the tree; the account mapping needs neither. A separate
+ * factory is what makes "no password hash crosses this boundary" a cheap test
+ * — `accountOpsFor` over a migrated test database — rather than an expensive
+ * one.
+ */
+export const accountOpsFor = (
+  instanceScope: InstanceScope,
+  now: () => number,
+): Pick<OpsInstance, 'accountList' | 'accountSetDisabled' | 'accountDelete'> => ({
+  // Field by field, never a spread: the row carries a `passwordHash` that
+  // must not cross this boundary (`ports.ts` may not import
+  // `@bananasaurs/storage`, ADR 0014, so the shape names what crosses).
+  accountList: () =>
+    accountRepo.listAccounts(instanceScope).map((row) => ({
+      accountId: row.accountId,
+      username: row.username,
+      isOwner: row.isOwner,
+      disabled: row.disabled,
+      lockedUntil: row.lockedUntil,
+      createdAt: row.createdAt,
+    })),
+  accountSetDisabled: (username, disabled) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    // Unreachable under the current synchronous single-writer model: nothing
+    // is awaited between the lookup above and this write, and better-sqlite3
+    // runs the whole handler on one writer, so the row cannot disappear in
+    // between. Kept because the port must answer something for the
+    // found-then-gone case, and a successful lookup followed by no matched
+    // row is a race, not a usage mistake — the same answer the delete branch
+    // below gives, deliberately.
+    if (!accountRepo.setAccountDisabled(instanceScope, { accountId: row.accountId, disabled })) {
+      return 'no-such-account';
+    }
+    return {
+      changed: row.disabled !== disabled,
+      username: row.username,
+      isOwner: row.isOwner,
+      disabled,
+      lockedUntil: row.lockedUntil,
+      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+    };
+  },
+  accountDelete: (username) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    const result = accountRepo.deleteAccount(instanceScope, {
+      accountId: row.accountId,
+      now: now(),
+    });
+    // Unreachable under the current synchronous single-writer model: nothing
+    // is awaited between the lookup above and this delete, and better-sqlite3
+    // runs the whole handler on one writer, so the row cannot disappear in
+    // between. Kept because the port must answer something for the
+    // found-then-gone case, and a successful lookup followed by
+    // `deleted: false` is a race, not a usage mistake.
+    if (!result.deleted) return 'no-such-account';
+    return {
+      username: row.username,
+      accountId: row.accountId,
+      wasOwner: row.isOwner,
+      tokensRevoked: result.tokensRevoked,
+      codesDeleted: result.codesDeleted,
+      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+      accountsRemaining: accountRepo.countAccounts(instanceScope),
+    };
+  },
+});
+
+/**
  * Process-level facts for `status` and `doctor`.
  *
  * `gateway()` is a function rather than a snapshot because it is read at
@@ -979,4 +1053,5 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     if (oauthRepo.findClient(deps.instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(deps.instanceScope, clientId, deps.now());
   },
+  ...accountOpsFor(deps.instanceScope, deps.now),
 });

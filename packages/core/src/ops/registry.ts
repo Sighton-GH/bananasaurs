@@ -19,7 +19,13 @@ import {
   automodSignoffCommand,
   automodVerdictCommand,
 } from './commands/automod.js';
-import { accountGrantCommand } from './commands/account.js';
+import {
+  accountDeleteCommand,
+  accountDisableCommand,
+  accountEnableCommand,
+  accountGrantCommand,
+  accountListCommand,
+} from './commands/account.js';
 import { backupListCommand, backupNowCommand } from './commands/backup.js';
 import { bootstrapReissueCommand } from './commands/bootstrap.js';
 import {
@@ -113,5 +119,9 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   bootstrapReissueCommand,
   // The ADR 0028 grant path: granting a dashboard account a capability.
   // Authorised by the socket like everything here.
+  accountListCommand,
+  accountDisableCommand,
+  accountEnableCommand,
+  accountDeleteCommand,
   accountGrantCommand,
 ];

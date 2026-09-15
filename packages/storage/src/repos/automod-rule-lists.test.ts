@@ -223,6 +223,9 @@ const instance: OpsInstance = {
   mcpTokens: notNeeded('mcpTokens'),
   mcpRevokeToken: notNeeded('mcpRevokeToken'),
   mcpRevokeClient: notNeeded('mcpRevokeClient'),
+  accountList: notNeeded('accountList'),
+  accountSetDisabled: notNeeded('accountSetDisabled'),
+  accountDelete: notNeeded('accountDelete'),
 };
 
 const actor: Actor = { type: 'operator_cli', id: undefined, roleIds: [], unixUserClaimed: 'test' };
