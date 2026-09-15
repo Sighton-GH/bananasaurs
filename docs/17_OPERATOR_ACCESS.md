@@ -121,6 +121,8 @@ Three things about it are deliberate:
   the dashboard. If there is no owner left at all, delete the account rows
   deliberately and then run this.
 
+`bootstrap reissue` refuses while any dashboard account exists, so reaching the empty state it needs is itself a deliberate act — and that act now has a supported command: `bananasaurs account delete <username> --confirm`, which revokes the account's OAuth tokens in the same transaction instead of leaving raw row deletes to the operator. That is the path the refusal message already names, so the manual and the tool agree.
+
 ### Rules every command follows
 
 - Guild-scoped, like every other data path.
