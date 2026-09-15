@@ -844,3 +844,156 @@ every test and false in every restore. The whole-branch brief asked "what
 happens on a database that already has rows?" explicitly, and that single
 question found a migration bug that could not have been fixed after it
 shipped. Ask it of every migration from here.
+
+## Slice M3 — the OAuth 2.1 authorization server
+
+Branch `oc/m3-oauth` from `78fb00e`. **Not run lean** by the owner's
+instruction: a plan review, seven per-task reviews, five fix rounds, an Opus
+whole-branch review, a fix wave and a final scoped re-review. **ADR 0045
+written first**, then amended twice — once before the plan and once at the
+close, because both amendments were forced by facts the design did not have.
+Rulings PR-90..PR-134.
+
+### The ADR was wrong before a line was written
+
+A read-only research dispatch plus the controller's own reading of the tree
+found four claims the design's §5 asserted that the code did not support
+(Amendment 1):
+
+- **PR-90** — `policy.ts` holds no origin or CSRF rules at all; they live in
+  `server.ts`.
+- **PR-91** — the dashboard's CSRF is a **custom request header** matched
+  against the session token. An HTML form cannot send one, and the consent
+  page has no session to draw from, so it needed its own protection: a
+  single-use pending-authorization row with a nonce, validated before
+  anything renders. That added a fourth table.
+- **PR-92 — the hole that mattered.** `account_capabilities` is keyed
+  `(guild_id, account_id, capability)`, so `mcp.authorize` cannot be held
+  instance-wide; but tokens are instance-level by D3. Left alone, an account
+  granted the capability in guild A would mint a token M4 could point at
+  **guild B** — a cross-guild leak arriving through the authorization layer
+  rather than through a query. Ruling: the reachable guild set is never
+  stored and never frozen; it is computed live at each call from the
+  approving account's current grants.
+- **PR-93** — `mcp.authorize` did not exist and did not typecheck.
+
+### The plan review found three Criticals before any code
+
+**NEEDS-REWORK**, and the reviewer executed rather than argued — it read
+`originMatchesHost`, checked `ipOf` for `trustProxy`, and verified the
+journal timestamp itself.
+
+- **PR-94** — a code replayed after a rotation would not have killed the
+  live tokens: only the first pair carried `issued_from_code_hash`. Every
+  rotation now inherits it.
+- **PR-95** — `verifyBearer` never looked at the account, so ADR 0045 D6's
+  promise was false: a disabled owner's access token would keep working for
+  an hour and its refresh for thirty days.
+- **PR-96** — the consent form called `verifyPassword` directly, inheriting
+  none of `login`'s dummy-hash timing, lockout-without-verify, disabled
+  handling or failed-attempt recording: **an unthrottled password oracle
+  that bypassed lockout**, sitting beside the front door it undercut. Task 4
+  step 0 extracts `verifyAccountCredentials` so both paths share one
+  implementation.
+
+Eight Importants were accepted and two findings **rejected with reasons**:
+consent phishing is inherent to RFC 7591 and already mitigated, earning one
+line of page copy rather than a redesign; and `originMatchesHost` passing an
+absent `Origin` is deliberate and load-bearing for non-browser callers.
+
+### Task log
+
+Seven tasks, each verified by the controller re-running the gates and
+breaking the new guard:
+
+| Guard neutralised | Failures |
+| --- | --- |
+| a seventh name added to `INSTANCE_LEVEL` | 1 — the exact-six tripwire |
+| the recursive CTE in `revokeTokenChain` | 1 |
+| PKCE `secretsMatch` | 1 — refusal (c) |
+| the `usedAt` replay cascade | 2 — refusal (b) and PR-94 |
+| refusal (f)'s capability check | 1 |
+| `originMatchesHost` on the consent POST | 1 |
+| a root-level form parser re-added | 1 — the login-CSRF guard |
+| `account.disabled` in `verifyAccessToken` | 3 — across both layers |
+| a real `Map` cache injected into `requireBearer` | 3 — including the named test |
+| `token_type: 'Bearer'` → `'bearer-ish'` | 1 — the SDK's own parser |
+
+Notable rulings along the way. **PR-120**: the Task 4 review's first *Minor*
+was escalated to Important by the controller — the form parser was on the
+root Fastify instance, so `POST /api/login` began parsing form bodies, and
+since that route has no origin check, no CSRF token, and **issues the
+session cookie**, while a cross-origin HTML form can send form-encoded
+bodies with no CORS preflight and never JSON, a root-level parser converts
+an unreachable route into **login CSRF**. The review measured the status
+change without naming the consequence. **PR-124**: a `GuildScope` cast to an
+`InstanceScope` — runtime-safe, but it fabricated the very type the
+codebase guards, and the file being edited already stated the rule at
+`:843-850`. Root cause was the controller's own brief, whose Files list left
+no honest way to obtain a real instance scope. **PR-121**: the Task 5 brief
+predicted a planted leak would fail the log-scan test; it did not, because
+`token` is a Pino `redact` path — the implementer reported the contradiction
+instead of forcing a failure.
+
+### Whole-branch review (Opus, `docs/reports/m3-whole-branch-review.md`)
+
+66 tool uses, 13m08s, six probes against a real database.
+**SHIP-WITH-FIXES**, two Criticals, both confirmed by the controller before
+the fix wave and probed after it.
+
+- **PR-126 (Critical) — revoking the capability did not end the session.**
+  `refreshTokens` re-checked account existence and `disabled` but never
+  `mcp.authorize`. PR-92 says minting requires the capability; **rotation
+  mints**. So the refresh chain renewed itself for thirty rolling days. The
+  aggravating fact the reviewer established by search: **nothing in this
+  tree can disable or delete a dashboard account** — no route, no CLI
+  command, no repository function — so the capability grant is the only
+  lever an operator has, and it did not work. Fixed at the route layer,
+  where guilds are visible (PR-98); the provider exposes only
+  `accountForRefreshToken`, a hash-and-read with no other logic, so the two
+  layers cannot drift.
+- **PR-127 (Critical) — a replayed refresh token spared the token most
+  likely leaked.** The replay branch walked `parent_token_id` downward, but
+  both rows of the first pair carry `parentTokenId: null`, so the sibling
+  access token was never a descendant and survived the leak signal. Exactly
+  the hazard PR-118 had already fixed for `revokeByValue`. One line: lineage
+  instead of chain.
+- **PR-128 (Important)** — `touchToken` on the bearer success path is a
+  write, so under `BANANASAURS_READONLY` a **valid** token got 503 and an
+  invalid one 401: an oracle, and the guard unusable in precisely the mode
+  M4's read tools need. Now best-effort.
+- **PR-129 (Important)** — `mcp revoke` killed one row, leaving a leaked
+  access token's sibling refresh free to mint a replacement immediately.
+- **PR-130 (Minor, from Check E)** — with `MCP_PUBLIC_URL` unset the SPA
+  fallback answered **200** for every OAuth path; the 404 test passes only
+  because no test adds the static handler. The same shape as M2's Critical:
+  an assertion true in every test and false in every daemon.
+- Also: **PR-122** confirmed and sized (zero `safeLogFields` call sites in
+  `packages/http`, pre-existing, every field M3 logs today allowlisted);
+  `purgeExpired` had no caller; the consent page was thin.
+
+### Fix wave and close-out
+
+One dispatch, nine items, nine commits (`3097d88..2e4293c`). The implementer
+watched items 1–3 failing first and quoted the failure text. Controller
+probes: reverting the lineage call to the chain call fails exactly the named
+lineage test; neutralising the route guard fails exactly the named
+capability test. The final scoped re-review returned **ALL ADDRESSED**,
+having executed the two-rotation replay itself — exchange, refresh, refresh,
+replay the original code — and confirmed **all six rows revoked**.
+
+Residual carried forward. **PR-134**: a replay arriving *after* the
+capability was revoked hits the route guard first, so the lineage cascade
+does not run — not load-bearing, because the refusal already prevents any
+mint and PR-92 deliberately does not revoke on grant loss. **PR-131**:
+`revokeTokenChain` is kept, because `revokeByValue`'s access-token branch
+calls it legitimately. **PR-132**: `mcp revoke` on an already-revoked id is
+now idempotent rather than an error.
+
+What M3 teaches that M1 and M2 did not: **a promise in an ADR is not a
+guarantee until something fails without it.** D6 said "revoking the account
+revokes every token it approved" from the first draft, and it was false in
+two directions at once — nothing could revoke an account, and the lever that
+did exist did not stop a rotation. Neither gap is visible in a diff; both
+required asking what an operator would actually reach for. Ask that of every
+promise an ADR makes from here.
