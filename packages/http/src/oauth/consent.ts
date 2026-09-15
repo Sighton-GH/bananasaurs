@@ -47,7 +47,10 @@ const SCOPE_DESCRIPTIONS: Readonly<Record<string, string>> = {
 
 export const renderConsentPage = (view: ConsentView): string => {
   const scopes = view.scopes
-    .map((scope) => `<li>${esc(scope)} — ${esc(SCOPE_DESCRIPTIONS[scope] ?? 'unknown permission')}</li>`)
+    .map(
+      (scope) =>
+        `<li>${esc(scope)} — ${esc(SCOPE_DESCRIPTIONS[scope] ?? 'unknown permission')}</li>`,
+    )
     .join('');
   const error = view.error === undefined ? '' : errorLine(view.error);
   return (

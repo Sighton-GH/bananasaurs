@@ -203,7 +203,9 @@ describe('mcp revoke', () => {
     const h = harness({ mcpRevokeToken: () => 1 });
     const response = await h.run('mcp revoke', { tokenId: 'tok_abc' });
     expect(response.ok).toBe(true);
-    expect(response.ok && response.text).toBe('revoked token tok_abc and 1 token(s) in its lineage');
+    expect(response.ok && response.text).toBe(
+      'revoked token tok_abc and 1 token(s) in its lineage',
+    );
     expect(h.audit).toHaveLength(1);
     expect(h.audit[0]).toMatchObject({
       action: 'mcp.token.revoked',
@@ -220,7 +222,9 @@ describe('mcp revoke', () => {
     const h = harness({ mcpRevokeToken: () => 2 });
     const response = await h.run('mcp revoke', { tokenId: 'tok_abc' });
     expect(response.ok).toBe(true);
-    expect(response.ok && response.text).toBe('revoked token tok_abc and 2 token(s) in its lineage');
+    expect(response.ok && response.text).toBe(
+      'revoked token tok_abc and 2 token(s) in its lineage',
+    );
     expect(response.ok && response.data).toMatchObject({ tokenId: 'tok_abc', tokensRevoked: 2 });
     expect(h.audit).toHaveLength(1);
     expect(h.audit[0]).toMatchObject({

@@ -143,7 +143,11 @@ export const beginAuthorization = (
     ok: true,
     requestId,
     nonce,
-    client: { clientId: client.clientId, clientName: client.clientName, createdAt: client.createdAt },
+    client: {
+      clientId: client.clientId,
+      clientName: client.clientName,
+      createdAt: client.createdAt,
+    },
     redirectUriHost: new URL(input.redirectUri).host,
     scopes,
   };

@@ -674,7 +674,9 @@ describe('verifyAccessToken', () => {
       tokenId: issued.accessTokenId,
       scopes: ['bananasaurs:read'],
     });
-    expect(oauthRepo.findTokenById(t.scopes.instance(), issued.accessTokenId)?.lastUsedAt).toBeNull();
+    expect(
+      oauthRepo.findTokenById(t.scopes.instance(), issued.accessTokenId)?.lastUsedAt,
+    ).toBeNull();
   });
 
   it('reports unknown for a token that was never minted', () => {
