@@ -842,6 +842,59 @@ two commits were found there and verified by re-running the gates, which is
 the second time this session that committing per step has turned a lost
 session into a non-event.
 
+### D55 — the worktree was never isolated: cross-package types resolved to `main`
+
+The most consequential tooling finding so far, and it had been true for every
+slice built with this plugin.
+
+`oc-task` symlinks the base checkout's `node_modules` into the worktree. npm
+workspaces link each workspace package **relatively** —
+`node_modules/@bananasaurs/storage -> ../../packages/storage` — and a relative
+link resolves against the link's *real* path, not the path you reached it
+through. So from inside the worktree, `@bananasaurs/storage` resolved to
+**`/home/bryan/projects/bananasaurs/packages/storage`**: the main checkout's
+copy, not the branch's.
+
+The consequence: for anything crossing a package boundary, worktree
+typechecks were reading **main's built `dist`**, not the branch's source. It
+surfaced on M3c as a typecheck error insisting a function the branch had just
+added did not exist — with the base checkout's absolute path right there in
+the message, which is what gave it away:
+
+```
+apps/daemon/src/ops/wiring.ts(938,37): error TS2551: Property
+'revokeAllTokensForAccount' does not exist on type 'typeof
+import("/home/bryan/projects/bananasaurs/packages/storage/dist/repos/oauth")'
+```
+
+**Why it never bit before.** The controller re-runs the gates on `main` after
+every merge, which rebuilds main's `dist` with the merged code. So each
+slice's worktree saw the *previous* slice's types — correct, because the
+previous slice was merged — and the current slice's own cross-package changes
+were the only blind spot. M3b added an `OpsInstance` member and passed in the
+worktree only because the post-merge gate run on main had already rebuilt
+main's dist from an earlier branch. **The post-merge verification on `main`
+is what has actually been protecting this project, not the worktree gates.**
+That was luck dressed as process, and it is worth saying plainly.
+
+**The fix is a real install per worktree**, not a cleverer link:
+
+```
+unlink node_modules && npm install
+```
+
+which also gives the worktree its own `packages/dashboard/node_modules` and
+so retires D52's copy hack entirely — and removes D52's write-through hazard
+at the same time, because nothing in the worktree points at the base checkout
+any more. `oc-task --no-link-node-modules` exists for this; it should
+probably be the default, with the link as the opt-in for people who want the
+speed and have no workspace packages.
+
+**What to carry forward.** A worktree that shares `node_modules` with its
+parent is not isolated, whatever the directory listing suggests. And the
+diagnostic that solved it was reading the *path* in the error rather than the
+message — the type was not missing, it was being looked up somewhere else.
+
 ## What worked well
 
 (appended as observed)

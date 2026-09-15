@@ -391,3 +391,69 @@ route is a 401 with the RFC 9728 challenge. What it does not close is the
 gap Amendment 2 hands to M4 and this slice does not touch: an account that
 merely loses its capability keeps a verifying access token with an **empty**
 reachable guild set until it expires. **M4 must still refuse on empty.**
+
+---
+
+## Amendment 4 — 2026-09-15, Slice M3c: D6 gets a rotation, not just a pause
+
+Amendment 3 gave D6 a trigger. Reviewing it found the trigger was the wrong
+shape for the job the manual advertised. `account disable` writes one column;
+both guards are live re-reads, so everything stops **while** the account is
+disabled and `account enable` hands every credential back intact. That is the
+correct behaviour — it is what proves nothing is cached, and two tests assert
+it deliberately — but `docs/17` called `disable` the lever for a compromised
+account, and for that a pause is not a rotation. The owner's call, 2026-09-15:
+ship the rotation.
+
+**A3-5 — `account revoke-credentials` is the rotation, and it is a separate
+command from `disable` on purpose.** It revokes every live dashboard session
+and every live OAuth token for one account and leaves `disabled` untouched.
+`disable` pauses, `revoke-credentials` rotates, and both together mean locked
+out *and* rotated — one meaning per command, which is A3-4's principle.
+Folding revocation into `disable` would also have falsified the two
+`bearer.test.ts` tests that prove the guards cache nothing, and those are
+load-bearing for M4's read tools. Cost if wrong: an operator responding to a
+compromise types two commands instead of one.
+
+**A3-6 — revocation is by `account_id`, which makes lineage-versus-descent
+moot for tokens and does not cover every credential.** ADR 0044 obligation 2
+requires every new revocation surface to choose lineage over descent
+deliberately. Here the predicate is the account, a strict superset of both, so
+the hazard PR-127 names — a walk that spares the sibling minted beside the
+token you revoked — cannot arise. `oauth_tokens.account_id` is `NOT NULL`,
+indexed, and copied on every mint path, so nothing an account owns escapes it.
+
+**What the review found that this reasoning missed, and it is the thing worth
+remembering:** "every token the account owns" is not "every credential the
+account owns." An **unexchanged authorization code** is a token that has not
+been minted yet. `exchangeCode` gates on the code's expiry and on
+`approver.disabled` — the one column this command deliberately does not touch
+— so for up to the code's five-minute TTL after the operator is told every
+live token is gone, a leaked code still mints a fresh access and refresh pair.
+`deleteAccount` already deletes codes by account id for exactly this reason;
+`revoke-credentials` did not, because the ruling was written about tokens and
+then applied to a credential class it never considered. **The sweep now
+deletes authorization codes too, and reports the count**, the way
+`account delete` does. Confirmed by running the real `exchangeCode` after a
+real revoke before the fix: it returned a new refresh token and left two live
+tokens on the account.
+
+**A3-7 — a revoke must not rewrite history.** The token half of the sweep
+carries `revoked_at IS NULL`; the session half did not, so re-running the
+command set `revoked_at` on already-revoked and expired rows, returned them in
+the count, and **overwrote the timestamp recording when the attacker's session
+actually ended with the time of the operator's own second command.** An
+incident timeline is the thing an operator reconstructs afterwards, and a
+revocation command that quietly edits it is worse than one that reports
+nothing. Both halves now guard on "still live", and both report only what they
+actually ended.
+
+**What this still does not give the operator.** No password rotation:
+`accountRepo.setPasswordHash` remains with no production caller, so an
+attacker who knows the password signs in again after a revoke and gets fresh
+credentials. `account disable` or `account delete` is the answer to that, and
+`docs/17` says so. A password-reset command needs a delivery story for the new
+secret, which is its own decision and is not taken here. And the sweep is over
+the **guild allowlist**: a dashboard session in a guild since dropped from
+`BANANASAURS_GUILD_ALLOWLIST` is not swept and still authenticates, though
+every data route then fails closed.

@@ -79,20 +79,25 @@ Three findings worth carrying. ADR 0045's D6 promised that revoking a dashboard 
 
 **Phase 4b — the MCP operator server — decided 2026-09-12, not yet started.** The owner wants his own Claude clients (Claude Code, the desktop app, claude.ai) to read the club server — channels, roles, members, archived messages, cases, audit — and post to allowlisted channels, over a Cloudflare Tunnel at `bananasaurs.sighton.ca` with OAuth 2.1. That needs an archive, so **R3-1 archive ingestion and R3-2 FTS5 search are pulled forward** from Release 3 into the observe window. Six slices M1–M6, **after Slices 7–9 and before 10–12**; three ADRs 0044–0046; one new dependency (`@modelcontextprotocol/sdk` 1.30.0, MIT). Read-mostly with one write tool; no moderation tools. Design: `docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md` (DRAFT — the owner's six decisions are its §2, the five still open are its §11). Slice plan: `docs/superpowers/plans/2026-09-12-mcp-operator-server-plan.md` (DRAFT). ADR 0046 (accepted 2026-09-13) records the pull-forward and turns the `/mydata`/`/forgetme` precondition into a check: the club guild may not be added to `BANANASAURS_ARCHIVE_GUILDS` until they ship.
 
-**Open question for the owner, from M3b's whole-branch review (2026-09-15).**
-`account disable` is documented as the ADR 0045 D6 lever for a compromised
-account, and it is a **pause, not a rotation**: both guards are live
-re-reads, so everything stops while the account is disabled and `account
-enable` hands every credential back intact — a stolen session cookie
-authenticates again, a stolen refresh chain mints a fresh thirty-day pair.
-The branch's own tests assert that, correctly: it is what proves nothing is
-cached. `sessionRepo.revokeAllForAccount` and `accountRepo.setPasswordHash`
-both exist, are tested, and have **zero production callers**. The question:
-ship `bananasaurs account revoke-sessions <username> --confirm`, and/or a
-password reset, over those? It is small. It is not in this slice because
-adding it changes what an authorization control does, which is an owner
-decision, and M3b's brief named three commands. Until it ships, `account
-delete` is the only irreversible remedy, and `docs/17` says exactly that.
+**Answered, 2026-09-15 — the rotation command shipped as Slice M3c.** M3b's
+whole-branch review found that `account disable` is a **pause, not a
+rotation**: both guards are live re-reads, so everything stops while the
+account is disabled and `account enable` hands every credential back intact.
+The owner's call was to ship the rotation, and
+`bananasaurs account revoke-credentials <username> --confirm` now revokes
+every live dashboard session, every live OAuth token and every unexchanged
+authorization code for one account while leaving `disabled` alone — so
+`disable` pauses, `revoke-credentials` rotates, and both together mean locked
+out *and* rotated. ADR 0045 **Amendment 4** records it (A3-5, A3-6, A3-7).
+`sessionRepo.revokeAllForAccount` now has its first production caller;
+**`accountRepo.setPasswordHash` still has none**, so there is still no
+password rotation — an attacker who knows the password signs in again after a
+revoke and gets fresh credentials, and `account disable` or `account delete`
+is the answer to that. A password-reset command needs a delivery story for
+the new secret and is not taken here. One more limit worth knowing: the sweep
+is over the **guild allowlist**, so a dashboard session in a guild since
+dropped from `BANANASAURS_GUILD_ALLOWLIST` is not swept and still
+authenticates, though every data route then fails closed.
 
 **Owner decisions — 2026-09-14, at M3's close.** Four answers given at the end of the M3 session, recorded here so they are not re-asked.
 
