@@ -8,6 +8,7 @@
     { "path": "../../packages/core" },
     { "path": "../../packages/discord" },
     { "path": "../../packages/http" },
+    { "path": "../../packages/mcp" },
     { "path": "../../packages/storage" },
     { "path": "../../packages/testkit" }
   ]
