@@ -136,8 +136,8 @@ const hiddenInput = (html: string, name: string): string => {
   return match[1];
 };
 
-/** A real read-scope token through the full flow: register, authorize, approve, exchange. */
-const mintToken = async (): Promise<string> => {
+/** A real token through the full flow: register, authorize, approve, exchange. */
+const mintToken = async (scope = 'bananasaurs:read'): Promise<string> => {
   const registered = await app.inject({
     method: 'POST',
     url: '/oauth/register',
@@ -149,7 +149,7 @@ const mintToken = async (): Promise<string> => {
   const verifier = generateToken();
   const page = await app.inject({
     method: 'GET',
-    url: authorizeQuery({ client_id: clientId, code_challenge: s256(verifier) }),
+    url: authorizeQuery({ client_id: clientId, code_challenge: s256(verifier), scope }),
   });
   expect(page.statusCode).toBe(200);
   const approval = await app.inject({
@@ -224,6 +224,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
+    expect(names).toHaveLength(11);
     expect(names).toEqual([
       'get_health',
       'search_messages',
@@ -240,6 +241,41 @@ describe('/mcp behind the bearer guard', () => {
     expect(names).not.toContain('send_message');
   });
 
+  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees no tools', async () => {
+    // Through the real authorize/consent/exchange flow, not a hand-built
+    // principal: this defect is invisible to a test that constructs the
+    // principal itself, which is the exact shape of the three "works in
+    // tests, broken in the daemon" defects this slice already found.
+    //
+    // The SDK installs its `tools/list` handler lazily on the first `tool()`
+    // registration (`setToolRequestHandlers` in
+    // `node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js`), so
+    // the send-only server — nothing registered — answers Method-not-found
+    // rather than an empty array: there is no list at all for `send_message`'s
+    // siblings to appear in.
+    const accessToken = await mintToken('bananasaurs:send');
+    const response = await toolsList(accessToken);
+    expect(response.statusCode).toBe(200);
+    const bodies = sseData(response.body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const frame = bodies[0] as { error?: { code?: number; message?: string } };
+    expect(frame.error?.code).toBe(-32601);
+  });
+
+  it('(ruling M4-D17) a send-only token sees no overview resource either', async () => {
+    const accessToken = await mintToken('bananasaurs:send');
+    const response = await mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 3, method: 'resources/templates/list', params: {} },
+      accessToken,
+    );
+    expect(response.statusCode).toBe(200);
+    const bodies = sseData(response.body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const frame = bodies[0] as { error?: { code?: number; message?: string } };
+    expect(frame.error?.code).toBe(-32601);
+  });
+
   it('advertises the overview resource template and nothing else', async () => {
     const accessToken = await mintToken();
     const response = await mcpPost(
@@ -251,6 +287,8 @@ describe('/mcp behind the bearer guard', () => {
     const bodies = sseData(response.body);
     expect(bodies.length).toBeGreaterThan(0);
     expect(JSON.stringify(bodies[0])).toContain('bananasaurs://guild/{guildId}/overview');
+    const result = bodies[0] as { result?: { resourceTemplates?: unknown[] } };
+    expect(result.result?.resourceTemplates).toHaveLength(1);
   });
 
   it('(ADR 0044 obligation 1) refuses get_health once mcp.authorize is revoked everywhere', async () => {

@@ -55,6 +55,7 @@ let port: McpArchivePort;
 const principalWith = (...guilds: readonly GuildId[]): McpPrincipal => ({
   accountId: 'acct_00000000000000000000000000000000',
   reachableGuilds: guilds,
+  scopes: ['bananasaurs:read'],
 });
 
 const seedChannel = (guild: GuildId, channelId: string): void => {

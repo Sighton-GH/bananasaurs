@@ -5,11 +5,28 @@ import { parseGuildId, type GuildId } from '@bananasaurs/core';
  * Declared here rather than imported because the eslint boundary forbids
  * importing `@bananasaurs/http` (ADR 0044 §4) — and structural typing means
  * Task 3 can hand a real `BearerPrincipal` to these functions unchanged.
+ * `scopes` is another instance of the same reason: `readonly OAuthScope[]`
+ * is structurally assignable to `readonly string[]`, so a real
+ * `BearerPrincipal` still passes unchanged while this package never imports
+ * the OAuth vocabulary.
  */
 export interface McpPrincipal {
   readonly accountId: string;
   readonly reachableGuilds: readonly GuildId[];
+  /** The OAuth scopes this token carries. */
+  readonly scopes: readonly string[];
 }
+
+/**
+ * The read scope every tool in this package requires (ruling M4-D17). A token
+ * carrying only `bananasaurs:send` cannot see any tool in `tools/list` at
+ * all — the tools are filtered out of the advertised set at registration,
+ * not merely refused on call.
+ */
+export const MCP_READ_SCOPE = 'bananasaurs:read';
+
+export const hasReadScope = (principal: McpPrincipal): boolean =>
+  principal.scopes.includes(MCP_READ_SCOPE);
 
 /**
  * The single refusal every tool returns, whatever the reason. Empty set,

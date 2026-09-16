@@ -1,5 +1,7 @@
 export {
   GUILD_REFUSAL_MESSAGE,
+  MCP_READ_SCOPE,
+  hasReadScope,
   requireAnyReachableGuild,
   requireReachableGuild,
   type GuildOutcome,

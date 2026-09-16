@@ -60,7 +60,7 @@ import {
   OVERVIEW_RESOURCE_URI_TEMPLATE,
   readOverviewResource,
 } from './resources/overview.js';
-import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
+import { GUILD_REFUSAL_MESSAGE, hasReadScope, type McpPrincipal } from './scope.js';
 
 /**
  * The MCP server Task 3 mounts at `/mcp`.
@@ -109,6 +109,13 @@ export interface McpServerDeps {
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
+  // Ruling M4-D17: the scope check happens at registration, not at call
+  // time. A token without `bananasaurs:read` gets a server with an empty
+  // tool list and no resource — it cannot see `send_message`'s siblings in
+  // `tools/list` at all. Every current tool is a read tool, including
+  // `get_health`, so the rule is uniform; M5 adds `send_message` under
+  // `bananasaurs:send`.
+  if (!hasReadScope(deps.principal)) return server;
   server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, () => {
     const outcome = getHealthText(deps.principal, deps.health);
     if (!outcome.ok) {

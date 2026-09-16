@@ -41,6 +41,7 @@ const GUILD_B = parseGuildId('222222222222222222');
 const principalWith = (...guilds: readonly GuildId[]): McpPrincipal => ({
   accountId: 'acct_00000000000000000000000000000000',
   reachableGuilds: guilds,
+  scopes: ['bananasaurs:read'],
 });
 
 const stubHealth = (): McpHealthPort => ({

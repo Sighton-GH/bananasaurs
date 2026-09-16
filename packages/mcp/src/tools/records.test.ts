@@ -44,6 +44,7 @@ const CASE_B = 'bbbbbbbb-0000-4000-8000-bbbbbbbbbbbb';
 const principalWith = (...guilds: readonly GuildId[]): McpPrincipal => ({
   accountId: 'acct_00000000000000000000000000000000',
   reachableGuilds: guilds,
+  scopes: ['bananasaurs:read'],
 });
 
 const caseSummary = (caseId: string, memberId: string): McpModCaseSummary => ({

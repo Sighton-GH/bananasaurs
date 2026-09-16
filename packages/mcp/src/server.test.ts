@@ -53,9 +53,13 @@ const stubPort = (): McpHealthPort => ({
   ],
 });
 
-const principalWith = (reachableGuilds: McpPrincipal['reachableGuilds']): McpPrincipal => ({
+const principalWith = (
+  reachableGuilds: McpPrincipal['reachableGuilds'],
+  scopes: McpPrincipal['scopes'] = ['bananasaurs:read'],
+): McpPrincipal => ({
   accountId: 'acct_test',
   reachableGuilds,
+  scopes,
 });
 
 /** Minimal archive port: this file pins `get_health`, never the archive tools. */
@@ -139,6 +143,7 @@ describe('createMcpServer', () => {
     const { client, close } = await connectPair(principalWith([GUILD]));
     try {
       const list = await client.listTools();
+      expect(list.tools).toHaveLength(11);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
@@ -152,6 +157,25 @@ describe('createMcpServer', () => {
         LIST_AUDIT_EVENTS_TOOL_NAME,
         GET_SERVER_OVERVIEW_TOOL_NAME,
       ]);
+      const resources = await client.listResourceTemplates();
+      expect(resources.resourceTemplates).toHaveLength(1);
+    } finally {
+      await close();
+    }
+  });
+
+  it('(ruling M4-D17) a send-only principal gets a server with no tools and no resource', async () => {
+    const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
+    try {
+      // The SDK installs its `tools/list` and `resources/templates/list`
+      // handlers lazily on the first `tool()` / `registerResource()` call
+      // (`setToolRequestHandlers` / `setResourceRequestHandlers` in
+      // `node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js`,
+      // both private), so a server with nothing registered answers
+      // Method-not-found rather than an empty array — there is no list at
+      // all for `send_message`'s siblings to appear in.
+      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
+      await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
     } finally {
       await close();
     }
