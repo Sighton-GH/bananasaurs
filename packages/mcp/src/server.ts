@@ -44,13 +44,13 @@ export interface McpServerDeps {
   /** The daemon's per-request projection of `OpsInstance`/`OpsPorts`. */
   readonly health: McpHealthPort;
   /**
-   * The daemon's per-request archive port (Task 4b). Optional so a server
-   * built without archive access — including the health-only servers in
-   * `server.test.ts` — keeps the `get_health`-only listing it asserts: the
-   * daemon always provides it, and the archive tools are registered exactly
-   * when it is present. There is no other way to obtain these tools.
+   * The daemon's per-request archive port (Task 4b). Required so a caller
+   * that forgets it fails at construction time rather than silently serving
+   * fewer tools: the archive tools are always registered, and there is no
+   * other way to obtain them. The daemon always provides it (see
+   * `archivePortFor` in `apps/daemon/src/mcp/wiring.ts`).
    */
-  readonly archive?: McpArchivePort | undefined;
+  readonly archive: McpArchivePort;
 }
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
@@ -67,56 +67,54 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   // throw, so this only fires on something the tool layer did not foresee —
   // which still answers as a refusal rather than faulting the request.
   const archive = deps.archive;
-  if (archive !== undefined) {
-    server.tool(
-      SEARCH_MESSAGES_TOOL_NAME,
-      SEARCH_MESSAGES_TOOL_DESCRIPTION,
-      searchMessagesParams,
-      (args) => {
-        try {
-          const outcome = searchMessagesText(deps.principal, archive, args);
-          if (!outcome.ok) {
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          }
-          return { content: [{ type: 'text' as const, text: outcome.text }] };
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
-        }
-      },
-    );
-    server.tool(
-      READ_CHANNEL_HISTORY_TOOL_NAME,
-      READ_CHANNEL_HISTORY_TOOL_DESCRIPTION,
-      readChannelHistoryParams,
-      (args) => {
-        try {
-          const outcome = readChannelHistoryText(deps.principal, archive, args);
-          if (!outcome.ok) {
-            return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
-          }
-          return { content: [{ type: 'text' as const, text: outcome.text }] };
-        } catch {
-          return {
-            content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
-            isError: true,
-          };
-        }
-      },
-    );
-    server.tool(GET_MESSAGE_TOOL_NAME, GET_MESSAGE_TOOL_DESCRIPTION, getMessageParams, (args) => {
+  server.tool(
+    SEARCH_MESSAGES_TOOL_NAME,
+    SEARCH_MESSAGES_TOOL_DESCRIPTION,
+    searchMessagesParams,
+    (args) => {
       try {
-        const outcome = getMessageText(deps.principal, archive, args);
+        const outcome = searchMessagesText(deps.principal, archive, args);
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
         return { content: [{ type: 'text' as const, text: outcome.text }] };
       } catch {
-        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
       }
-    });
-  }
+    },
+  );
+  server.tool(
+    READ_CHANNEL_HISTORY_TOOL_NAME,
+    READ_CHANNEL_HISTORY_TOOL_DESCRIPTION,
+    readChannelHistoryParams,
+    (args) => {
+      try {
+        const outcome = readChannelHistoryText(deps.principal, archive, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return { content: [{ type: 'text' as const, text: outcome.text }] };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    },
+  );
+  server.tool(GET_MESSAGE_TOOL_NAME, GET_MESSAGE_TOOL_DESCRIPTION, getMessageParams, (args) => {
+    try {
+      const outcome = getMessageText(deps.principal, archive, args);
+      if (!outcome.ok) {
+        return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+      }
+      return { content: [{ type: 'text' as const, text: outcome.text }] };
+    } catch {
+      return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+    }
+  });
   return server;
 };

@@ -5,6 +5,12 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
 import { createMcpServer } from './server.js';
+import {
+  GET_MESSAGE_TOOL_NAME,
+  READ_CHANNEL_HISTORY_TOOL_NAME,
+  SEARCH_MESSAGES_TOOL_NAME,
+  type McpArchivePort,
+} from './tools/archive.js';
 import { GET_HEALTH_TOOL_NAME, getHealthText, type McpHealthPort } from './tools/health.js';
 
 /**
@@ -39,12 +45,20 @@ const principalWith = (reachableGuilds: McpPrincipal['reachableGuilds']): McpPri
   reachableGuilds,
 });
 
+/** Minimal archive port: this file pins `get_health`, never the archive tools. */
+const stubArchive = (): McpArchivePort => ({
+  listArchiveChannelIds: () => [],
+  searchMessages: () => ({ total: 0, hits: [] }),
+  findMessage: () => undefined,
+  listChannelHistory: () => [],
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
-  const server = createMcpServer({ principal, health: stubPort() });
+  const server = createMcpServer({ principal, health: stubPort(), archive: stubArchive() });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   return {
@@ -84,11 +98,16 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists get_health and nothing else', async () => {
+  it('lists get_health alongside the archive tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD]));
     try {
       const list = await client.listTools();
-      expect(list.tools.map((tool) => tool.name)).toEqual([GET_HEALTH_TOOL_NAME]);
+      expect(list.tools.map((tool) => tool.name)).toEqual([
+        GET_HEALTH_TOOL_NAME,
+        SEARCH_MESSAGES_TOOL_NAME,
+        READ_CHANNEL_HISTORY_TOOL_NAME,
+        GET_MESSAGE_TOOL_NAME,
+      ]);
     } finally {
       await close();
     }
