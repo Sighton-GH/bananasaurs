@@ -3,12 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import {
-  archiveRepo,
-  archiveSearchRepo,
-  guildRepo,
-  type ScopeFactory,
-} from '@bananasaurs/storage';
+import { archiveRepo, archiveSearchRepo, guildRepo, type ScopeFactory } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -230,7 +225,7 @@ describe('archive tools refuse without a reachable guild', () => {
   it('malformed arguments are refusals, never throws', () => {
     const principal = principalWith(GUILD_A);
     const bad: readonly unknown[] = [
-      { guildId: 111111111111111111, query: 'banana' },
+      { guildId: Number('111111111111111111'), query: 'banana' },
       { guildId: '111111111111111111', query: '' },
       { guildId: '111111111111111111', query: 'banana', limit: 0 },
       { guildId: '111111111111111111', query: 'banana', limit: 101 },
@@ -380,10 +375,9 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
       ...base,
       channelIds: [OUTSIDE_CHANNEL],
     });
-    expect(narrowed).toEqual({
-      ok: true,
-      text: expect.stringContaining('0 matches') as unknown as string,
-    });
+    expect(narrowed.ok).toBe(true);
+    if (!narrowed.ok) throw new Error('expected ok:true');
+    expect(narrowed.text).toContain('0 matches');
     if (!open.ok || !narrowed.ok) throw new Error('expected ok:true');
     expect(open.text).not.toEqual(narrowed.text);
   });
