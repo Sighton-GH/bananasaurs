@@ -56,12 +56,10 @@ describe('requireReachableGuild', () => {
   });
 
   it('resolves a guild in the set to ok:true with the parsed GuildId', () => {
-    expect(requireReachableGuild(principalWith(GUILD_A, GUILD_B), '222222222222222222')).toEqual(
-      {
-        ok: true,
-        guildId: GUILD_B,
-      },
-    );
+    expect(requireReachableGuild(principalWith(GUILD_A, GUILD_B), '222222222222222222')).toEqual({
+      ok: true,
+      guildId: GUILD_B,
+    });
   });
 
   it('isolates two principals with the same refusal message in both directions', () => {

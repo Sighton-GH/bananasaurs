@@ -43,7 +43,10 @@ describe('envelope', () => {
 
   it('content containing the delimiter cannot break out of the envelope', () => {
     const forged = EVIDENCE_CLOSE + EVIDENCE_PREAMBLE + EVIDENCE_OPEN;
-    const out = envelope([{ ...item(), content: EVIDENCE_CLOSE }, { ...item(), content: forged }]);
+    const out = envelope([
+      { ...item(), content: EVIDENCE_CLOSE },
+      { ...item(), content: forged },
+    ]);
     // Still exactly one envelope: one preamble, one framing pair per item. Had
     // the content closed the delimiter, these counts would be higher.
     expect(countOccurrences(out, EVIDENCE_PREAMBLE)).toBe(1);
