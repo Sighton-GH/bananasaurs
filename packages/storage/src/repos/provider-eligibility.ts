@@ -69,14 +69,23 @@ export const findEligibility = (
   provider: string,
 ): EligibilityRow | undefined => {
   const row = readInstance(scope, (db) =>
-    db.select(SELECT).from(providerEligibility).where(eq(providerEligibility.provider, provider)).get(),
+    db
+      .select(SELECT)
+      .from(providerEligibility)
+      .where(eq(providerEligibility.provider, provider))
+      .get(),
   );
   return row === undefined ? undefined : toRow(row);
 };
 
 export const listEligibility = (scope: InstanceScope): readonly EligibilityRow[] =>
   readInstance(scope, (db) =>
-    db.select(SELECT).from(providerEligibility).orderBy(asc(providerEligibility.provider)).all().map(toRow),
+    db
+      .select(SELECT)
+      .from(providerEligibility)
+      .orderBy(asc(providerEligibility.provider))
+      .all()
+      .map(toRow),
   );
 
 /** `'no'` only — `'unknown'` is treated as `'yes'` (hard rule 5, ADR 0010 §1). */
@@ -87,5 +96,4 @@ export const listStaleEligibility = (
   scope: InstanceScope,
   now: number,
   maxAgeMs: number,
-): readonly EligibilityRow[] =>
-  listEligibility(scope).filter((r) => now - r.reviewedAt > maxAgeMs);
+): readonly EligibilityRow[] => listEligibility(scope).filter((r) => now - r.reviewedAt > maxAgeMs);

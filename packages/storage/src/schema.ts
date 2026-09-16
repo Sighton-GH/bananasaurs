@@ -1669,10 +1669,10 @@ export const providerEligibility = sqliteTable(
     reviewedAt: integer('reviewed_at').notNull(),
   },
   (t) => [
-    check('provider_eligibility_trains_on_input', sql`${t.trainsOnInput} IN ('no','yes','unknown')`),
     check(
-      'provider_eligibility_production_use_allowed_bool',
-      boolCheck(t.productionUseAllowed),
+      'provider_eligibility_trains_on_input',
+      sql`${t.trainsOnInput} IN ('no','yes','unknown')`,
     ),
+    check('provider_eligibility_production_use_allowed_bool', boolCheck(t.productionUseAllowed)),
   ],
 );
