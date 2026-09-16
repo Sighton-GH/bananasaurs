@@ -75,38 +75,44 @@ Three findings worth carrying. ADR 0045's D6 promised that revoking a dashboard 
 
 **Slice M3b — dashboard account disable, enable, delete — merged to the working branch 2026-09-15** (no ADR; ADR 0045 Amendment 3). Four operator commands — `account list`, `account disable`, `account enable`, `account delete` — over four repository functions — `setAccountDisabled`, `deleteAccount`, `countEnabledOwners`, `listAccounts` — wired through `OpsAccount` with the writes behind `--confirm`. `deleteAccount` revokes the account's live OAuth tokens and deletes its unexchanged authorization codes in the **same transaction** as the account row delete. That revoke is not a redundant belt over `verifyAccessToken`'s `account-gone` check — it is what actually refuses the next request, because it lands first and the account-lookup branch never executes. Two things fell out of breaking the guards rather than reading them, and A3-2 was corrected to match: the `account-gone` branch is unreachable through `deleteAccount` and is pinned instead by a test that deletes the row with raw SQL, and removing that branch is a **500, not a bypass** — `verifyAccessToken` reads `.disabled` off `undefined` and throws. The in-transaction revoke earns its place for the reason A3-2 always gave: `oauth_tokens.account_id` carries no foreign key, so without it `mcp tokens` would keep printing dead tokens as live for up to thirty days. Neither `disable` nor `delete` guards the last owner (A3-3): a disable is undone with `enable`, and deleting the last account is the recovery path `bootstrap reissue` documents, so a guard would make that recovery unreachable — both warn instead. **3,001 tests across 157 files**, gates clean. **ADR 0045 D6 now has a trigger at both ends** — revoking the capability stops the next mint, disabling or deleting the account stops the current one on the very next request, proven by five tests driving the real OAuth routes — while the obligation M3 handed M4 is **unchanged**: `requireBearer` still returns 200 with an empty reachable guild set for an account that merely lost its capability, so every M4 tool must refuse on empty and intersect against it. Known gap, with the owner: `disable` is a pause, not a rotation — re-enabling restores every session and token intact, and no command in this release rotates a password or ends sessions without deleting the account. Merged and green; nothing in this slice has run against the live daemon.
 
-**PAUSED 2026-09-15 — Slice M3c is built, reviewed, and NOT merged.** The
-branch `oc/m3c-revoke-credentials` holds five commits (`410e937..22fbfc6`)
-and is green in its worktree — typecheck 0, lint 0, 157 files / **3,013
-tests** — but its Opus whole-branch review returned **SHIP-WITH-FIXES with
-three Important findings**, and one of them is a real hole rather than a
-tidiness point: **an unexchanged OAuth authorization code survives
-`revoke-credentials`**, because `exchangeCode` gates on the code's expiry and
-on `approver.disabled`, the one column that command deliberately does not
-touch. For up to the 300 s code TTL after the operator is told every live
-credential is gone, a leaked code still mints a fresh access and refresh
-pair. Reproduced by running the real `exchangeCode` after a real revoke. The
-other two: the session half of the sweep had no `revoked_at IS NULL` guard
-and so overwrote the timestamp recording when an attacker's session actually
-ended, and `docs/17` still says "four `account` commands" when there are five.
+**Slice M3c — `account revoke-credentials` — merged to `main` 2026-09-16**
+(no ADR; ADR 0045 **Amendment 4**, A3-5/A3-6/A3-7). The rotation M3b's review
+showed was missing: `disable` writes one column and both guards are live
+re-reads, so everything stops *while* an account is disabled and `enable`
+hands every credential back intact — correct, and what proves nothing is
+cached, but not a rotation. `bananasaurs account revoke-credentials
+<username> --confirm` ends every live dashboard session across every guild
+the daemon serves, revokes every live OAuth token, and deletes every
+unexchanged authorization code, leaving `disabled` alone. So disable pauses,
+revoke-credentials rotates, both together mean locked out *and* rotated.
+**3,018 tests across 157 files**, gates clean on the merge.
 
-**Do not merge this branch until those are fixed.** The fix brief is written
-and specifies all of them with the exact changes and tests:
-`.oc-runs/m3c-revoke-credentials/fix-brief.md`. ADR 0045 **Amendment 4**
-already records the decisions, including the correction that "every token the
-account owns" is not "every credential the account owns" — ruling M3c-R2 was
-right about tokens and was applied to a credential class it never considered.
+The finding worth carrying forward, because it corrected a ruling made in
+this repository three days earlier: **"every token the account owns" is not
+"every credential the account owns."** Ruling M3c-R2 said revoking by
+`account_id` covers every lineage, which is true of tokens and was applied to
+a credential class it never considered. An unexchanged authorization code is
+a token that has not been minted yet, and `exchangeCode` gates on the code's
+expiry and on `approver.disabled` — the one column this command deliberately
+does not touch — so for up to the 300 s TTL after the operator was told every
+credential was gone, a leaked code still minted a fresh pair. Reproduced by
+running the real `exchangeCode` after a real revoke, and now pinned by an
+end-to-end test through the real OAuth routes with the clock unmoved, so its
+refusal proves the revoke and not expiry. Gutting the code deletion makes
+that test fail with `expected 200 to be 400`. Two more Important findings
+went with it: a session sweep with no `revoked_at IS NULL` guard, which
+**overwrote the timestamp recording when an attacker's session actually
+ended** with the time of the operator's own second command; and `docs/17`
+saying "four `account` commands" when there are five — the M3b finding
+replayed for the command added after it was fixed.
 
-Work stopped because the **opencode free tier is exhausted** (owner
-confirmed). Three consecutive dispatches of that one fix brief failed — rate
-limit, then the host's memory watchdog, then a 420 s stall — losing nothing,
-because every step commits. `docs/reports/opencode-plugin-evaluation.md` D55
-records the other thing this session found: **worktrees were never isolated**,
-since npm's relative workspace links resolved through `oc-task`'s shared
-`node_modules` symlink back into `main`, so every worktree typecheck has been
-reading main's built `dist` for cross-package imports. The post-merge gate run
-on `main` is what has actually been protecting this project. Fixed with a real
-`npm install` per worktree.
+**Still not rotated: the password.** `accountRepo.setPasswordHash` has no
+production caller, so an attacker who knows the password signs in again after
+a revoke and gets fresh credentials; `account disable` or `account delete` is
+the answer, and `docs/17` says so. And the sweep is over the guild allowlist,
+so a dashboard session in a guild since dropped from
+`BANANASAURS_GUILD_ALLOWLIST` is not swept, though every data route then
+fails closed.
 
 **Next action: Slice M4 — the MCP server and the read tools** (`docs/superpowers/plans/2026-09-12-mcp-operator-server-plan.md`, "Slice M4"). **ADR 0044 is written and accepted (2026-09-14, commit 9c08d69)**, so M4's gate is clear: it amends ADR 0013 §2 by *replacing* the "any bridge that takes a Discord message, sends it to Claude Code, and returns the result to Discord" bullet rather than reasoning past it — the replacement prohibits any path whose trigger is a club member's action or a Discord event, and says plainly that the trigger is a rule the owner keeps and not a control the daemon holds. ADR 0013's credential bullet and `CLAUDE.md` rule 9 are untouched. ADR 0044 also carries the full cost accounting for the SDK promotion the owner accepted, §8.4's training-eligibility row as an M4 deliverable, and three obligations the promotion itself adds (no non-test import of the SDK's Express/Hono/auth-router modules, `npm ls --omit=dev` recorded either side, version pinned). **M4 inherits three obligations from M3, all recorded in ADR 0045 Amendment 2:** `requireBearer` returns 200 with an *empty* reachable guild set, so every tool must refuse on empty and intersect against it — a tool that takes no guild would otherwise be reachable by an account holding no grant anywhere; promoting the SDK to a runtime dependency pulls Express 5, Hono, `cors`, `express-rate-limit`, `ajv` and `eventsource` into the production closure, which M3 deliberately avoided, so ADR 0044 should say what that buys; and any new revocation surface must choose lineage over chain deliberately. **M4 also carries two things forward from M3b**: the parked Minor that `audit_events.guild_id` is `NOT NULL`, so an instance-level account write is audited into whichever guild `--guild` named (pre-existing with `bootstrap reissue`, but M3b routes the most security-significant instance-level write through it); and the open question below. Then M5 (not run lean), M6, then Slices 10–12. The flip-day decision in `docs/reports/release2-slice-6-handoff.md` is taken — by hand, done on both guilds on 2026-09-12 (see "Release 2 observe window" above); the club's floor elapses 2026-09-27T02:49:57.656Z. The handoff still carries the obligations binding and the owner actions outstanding; the running record and every ruling taken so far are in `docs/reports/release2-slices-1-6-ledger.md` and `docs/reports/release2-slices-7-12-ledger.md`. `docs/reports/README.md` says which kind of document is which. The whole remaining plan for Release 2, plus a Release 3 roadmap, is in `docs/superpowers/specs/2026-09-01-release-2-completion-and-release-3-roadmap-design.md`: twelve slices in five phases plus Phase 4b (below), seventeen recorded decisions, and the three findings that reorder the release. Its ADR table now runs 0038–0048, plus 0049 (the FTS5 index) and 0045 (the OAuth server).
 
