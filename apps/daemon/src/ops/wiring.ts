@@ -1116,9 +1116,16 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
   // about the daemon, not a guild — so this reads `deps.instanceScope`
   // directly. Field by field: the row carries an `evidenceUrl` that must
   // never be logged (Pino allowlist), so only the provider, the verdict and
-  // the review date cross this boundary. `'unknown'` warns as `'not-no'`
-  // (`isEligible` is `'no'`-only, hard rule 5), so the not-`'no'` verdict
-  // outranks staleness: a row that is both warns once, as `'not-no'`.
+  // the review date cross this boundary.
+  //
+  // One warning per row, ordered most serious first: `'unknown'` warns as
+  // `'not-no'` (`isEligible` is `'no'`-only, hard rule 5), so the not-`'no'`
+  // verdict outranks everything — a row that both trains on input and
+  // disallows production use warns once, as `'not-no'`, never as merely
+  // `'not-production'`. `not-production` (ruling M4-D21: half of ADR 0010
+  // §2's gate, the NIM free-tier case) outranks staleness: a row whose review
+  // is merely old is a promise nobody recently verified, while a row that
+  // disallows production use is a promise that does not cover this daemon.
   providerEligibilityWarnings: (nowMs): ReturnType<OpsInstance['providerEligibilityWarnings']> => {
     // The element type via the port itself, not a second copy of the shape:
     // core's index does not re-export every member shape (cf. `OpsMcpClient`,
@@ -1129,6 +1136,13 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
         warnings.push({
           provider: row.provider,
           reason: 'not-no',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (!row.productionUseAllowed) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-production',
           trainsOnInput: row.trainsOnInput,
           reviewedAt: row.reviewedAt,
         });

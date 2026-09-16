@@ -144,7 +144,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       // an operator finds that out — the review date rides along as ISO so
       // the warning says when the promise was last checked.
       eligibilityWarnings.length === 0
-        ? 'training eligibility: every provider verified'
+        ? 'training eligibility    every provider verified'
         : `training eligibility    ${String(eligibilityWarnings.length)} provider(s) need review:\n` +
             eligibilityWarnings
               .map((w) => `            ${w.provider}  ${w.reason}  reviewed ${iso(w.reviewedAt)}`)

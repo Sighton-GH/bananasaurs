@@ -467,7 +467,7 @@ export interface OpsMcpToken {
  */
 export interface OpsEligibilityWarning {
   readonly provider: string;
-  readonly reason: 'stale' | 'not-no';
+  readonly reason: 'not-no' | 'stale' | 'not-production';
   readonly trainsOnInput: string;
   readonly reviewedAt: number;
 }

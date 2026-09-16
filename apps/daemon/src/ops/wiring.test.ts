@@ -553,6 +553,12 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
       .run(value, provider);
   };
 
+  const setProductionUseAllowed = (provider: string, value: number): void => {
+    t.raw
+      .prepare(`UPDATE provider_eligibility SET production_use_allowed = ? WHERE provider = ?`)
+      .run(value, provider);
+  };
+
   it("warns 'stale' for a row reviewed 91 days before now, and nothing for 89 days", () => {
     setReviewedAt(SEEDED, NOW - 91 * DAY_MS);
     expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
@@ -591,6 +597,34 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
 
     setTrainsOnInput(SEEDED, 'no');
     expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+  });
+
+  it("warns 'not-production' for a row with production_use_allowed = 0", () => {
+    setProductionUseAllowed(SEEDED, 0);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
+      {
+        provider: SEEDED,
+        reason: 'not-production',
+        trainsOnInput: 'no',
+        reviewedAt: 1789344000000,
+      },
+    ]);
+
+    setProductionUseAllowed(SEEDED, 1);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+  });
+
+  it("reports 'not-no' for a row that is both not-'no' and not-production", () => {
+    setTrainsOnInput(SEEDED, 'yes');
+    setProductionUseAllowed(SEEDED, 0);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
+      {
+        provider: SEEDED,
+        reason: 'not-no',
+        trainsOnInput: 'yes',
+        reviewedAt: 1789344000000,
+      },
+    ]);
   });
 });
 

@@ -437,8 +437,33 @@ describe('bananasaurs doctor', () => {
     const res = await drive(doctorCommand, healthy, {}, { providerEligibilityWarnings: () => [] });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('training eligibility: every provider verified');
+    expect(res.text).toContain('training eligibility    every provider verified');
     expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('fails doctor on a not-production eligibility warning', async () => {
+    const reviewedAt = NOW - 24 * 60 * 60 * 1000;
+    const res = await drive(
+      doctorCommand,
+      healthy,
+      {},
+      {
+        providerEligibilityWarnings: () => [
+          {
+            provider: 'anthropic-consumer-mcp',
+            reason: 'not-production',
+            trainsOnInput: 'no',
+            reviewedAt,
+          },
+        ],
+      },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('anthropic-consumer-mcp');
+    expect(res.text).toContain('not-production');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: false });
   });
 
   it('names each warned provider with its reason and ISO review date, and fails the check', async () => {

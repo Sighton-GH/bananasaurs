@@ -609,7 +609,10 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   },
   // Canonical implementation: `providerEligibilityWarnings` in
   // `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the
-  // test database, field by field so no `evidenceUrl` crosses.
+  // test database, field by field so no `evidenceUrl` crosses. One warning
+  // per row, most serious first: `not-no` before `not-production` before
+  // `stale` — a row that both trains on input and disallows production use
+  // warns once, as `not-no`.
   providerEligibilityWarnings: (nowMs) => {
     const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
     for (const row of eligibilityRepo.listEligibility(instanceScope)) {
@@ -617,6 +620,13 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
         warnings.push({
           provider: row.provider,
           reason: 'not-no',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (!row.productionUseAllowed) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-production',
           trainsOnInput: row.trainsOnInput,
           reviewedAt: row.reviewedAt,
         });
