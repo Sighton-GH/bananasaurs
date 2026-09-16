@@ -230,28 +230,56 @@ order of magnitude, and a decision record that understates its own cost by
 that much is the thing "verify, do not assert" exists to catch. It was caught
 by running `npm ls` rather than by re-reading the ADR.
 
-**The number that actually bounds the risk is zero, and it is a different
-number.** Eighty-four packages are *installed*; the question that matters is
-how many are *loaded into the daemon*, and the answer was measured the same
-day, two ways:
+**The number that actually bounds the risk is one, not eighty-two — and the
+first two attempts to state it were both wrong.** Packages are *installed*;
+the question that matters is how many are *loaded into the daemon*. Measured
+by loading the two SDK server modules M4 uses in a real Node process and
+scanning the module cache for each heavy package by its `node_modules`
+directory:
 
-- **Statically.** The five modules M4 imports — `server/mcp.js`,
-  `server/index.js`, `server/webStandardStreamableHttp.js`, `types.js`,
-  `shared/protocol.js` — import **none** of `express`, `hono`, `cors`,
-  `express-rate-limit`, `ajv`, `cross-spawn`, `eventsource` or `jose`. They
-  reach `zod` (already a production dependency here) and
-  `zod-to-json-schema`, and nothing else outside the SDK.
-- **At runtime.** Loading both server modules in a real Node process and then
-  probing the module cache for those eight packages returns **none**.
+| package | loaded? |
+|---|---|
+| `express`, `hono`, `cors`, `express-rate-limit` | no |
+| `cross-spawn`, `eventsource`, `jose` | no |
+| **`ajv`** | **yes** — 126 modules, from `node_modules/@modelcontextprotocol/sdk/node_modules/ajv` |
 
-So the production closure grows by 84 packages on disk and in `npm audit`
-output, and the daemon's process grows by two. The heavy half of this SDK is
-the Express/Hono auth-router and the stdio *client* transport — precisely the
-parts approach A (ADR 0045 D5) rejected on other grounds — and rejecting them
-turns out to keep them out of memory as well as out of the request path.
+**Why the earlier "zero" was wrong, and it is the same mistake three times.**
+The first probe asked `require.resolve('ajv')` from the repo root and looked
+that path up in the cache. From the root, `ajv` resolves to the **hoisted
+6.15.0** that `eslint` brings in — which is indeed never loaded. The copy the
+SDK actually loads is **ajv 8, nested under the SDK's own `node_modules`**, a
+different path and therefore a different cache key. So the probe asked about
+a package nobody loads and correctly answered "no". Hoisted-versus-nested
+`ajv` has now produced three errors in this one section: the package count
+(84 instead of 82), the "zero loaded" claim here, and a guard that could not
+fire for the one package it most needed to watch. Each was caught by running
+something; none was visible by reading.
+
+**Why `ajv` loading is accepted.** The concern this section exists to bound
+was a **second HTTP stack and a process spawner** in the daemon's process:
+`express`, `hono`, `cors`, `express-rate-limit`, `cross-spawn`. All five stay
+out, along with `eventsource` and `jose`, and that is the property worth
+having. `ajv` is a different risk class — a JSON Schema validator doing pure
+computation, with no network, no child processes and no filesystem writes.
+The SDK uses it to validate tool schemas; it is, as this section already
+says, the SDK's internal business. **Bananasaurs' own boundaries are still
+Zod** (hard rule 3), including the arguments of every incoming tool call,
+which M4 parses with Zod before touching anything — so `ajv` is not the thing
+standing between a caller and a repository.
+
+What it costs: `ajv` has a CVE history, and a CVE there is now *in the
+process* rather than audit noise. That is the honest trade, and it is
+smaller than the one this section opened by describing.
+
+So the production closure grows by 82 packages on disk and in `npm audit`
+output, and the daemon's process grows by `zod-to-json-schema`, `ajv` and
+`ajv`'s own small tree. The heavy half of this SDK is the Express/Hono
+auth-router and the stdio *client* transport — precisely the parts approach A
+(ADR 0045 D5) rejected on other grounds — and rejecting them keeps them out
+of memory as well as out of the request path.
 
 That is the correct framing of the cost, and it is materially smaller than
-"84 packages in production" implies: **a CVE in `express` is audit noise to
+"82 packages in production" implies: **a CVE in `express` is audit noise to
 triage, not an exposure in the running daemon.** It is also a property that
 can silently stop being true the first time someone imports `mcpAuthRouter`,
 which is why obligation 1 below is a runtime assertion and not a code review
@@ -312,12 +340,20 @@ supply-chain surface is the cheaper of the two.
    modules.** The imports M4 adds are the server, the Streamable HTTP
    transport, and the protocol types — nothing else. This is asserted **at
    runtime, not by grepping imports**: a test loads the MCP server module and
-   probes Node's module cache for `express`, `hono`, `cors`,
-   `express-rate-limit`, `ajv`, `cross-spawn`, `eventsource` and `jose`,
-   failing if any is present. A static import scan would pass while a
-   transitive import three modules deep pulled Express in; the property worth
-   defending is what ends up in the process, so that is what the test
-   measures.
+   scans Node's module cache for `express`, `hono`, `cors`,
+   `express-rate-limit`, `cross-spawn`, `eventsource` and `jose`, failing if
+   any is present. A static import scan would pass while a transitive import
+   three modules deep pulled Express in; the property worth defending is what
+   ends up in the process, so that is what the test measures.
+
+   Two details the first version of this test got wrong, both worth keeping:
+   it must match cache keys **by `node_modules` directory** rather than by a
+   single resolved path, because a nested copy has a different path and would
+   otherwise be a silent false negative; and it asserts `ajv` **is** loaded
+   rather than omitting it, so that the exception above is pinned by the
+   suite instead of living only in this paragraph. If a future SDK stops
+   loading `ajv`, that test fails and someone reads this section again, which
+   is the correct outcome.
 2. **The count is recorded and watched.** Measured before the promotion on
    2026-09-15 and again after it on 2026-09-16, both with
    `npm ls --omit=dev --all --parseable | sed 's|.*/node_modules/||' | sort -u`:
