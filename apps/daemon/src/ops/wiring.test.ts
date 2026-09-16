@@ -593,3 +593,39 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
     expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
   });
 });
+
+describe('providerReview (ruling M4-D20)', () => {
+  const SEEDED = 'anthropic-consumer-mcp';
+
+  const instanceOps = () =>
+    opsInstanceFor({
+      config: { BANANASAURS_READONLY: false, BANANASAURS_ENV: 'test' } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    });
+
+  it('writes reviewed_at and returns the confirmed claims with the previous date', () => {
+    const result = instanceOps().providerReview(SEEDED);
+    expect(result).toEqual({
+      provider: SEEDED,
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://claude.ai/settings/data-privacy-controls',
+      productionUseAllowed: true,
+      reviewedAt: NOW,
+      previouslyReviewedAt: 1789344000000,
+    });
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+  });
+
+  it("answers 'no-such-provider' for an unknown provider", () => {
+    expect(instanceOps().providerReview('no-such-provider')).toBe('no-such-provider');
+  });
+});

@@ -1143,5 +1143,24 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     }
     return warnings;
   },
+  // Ruling M4-D20: read first so the result carries the confirmed claims and
+  // the previous review date, then write `reviewed_at` and nothing else.
+  // Field by field, the same reason `providerEligibilityWarnings` above maps
+  // field by field — except `evidenceUrl`, which the command prints back and
+  // therefore must cross here.
+  providerReview: (provider): ReturnType<OpsInstance['providerReview']> => {
+    const row = eligibilityRepo.findEligibility(deps.instanceScope, provider);
+    if (row === undefined) return 'no-such-provider';
+    const now = deps.now();
+    eligibilityRepo.recordEligibilityReview(deps.instanceScope, { provider, now });
+    return {
+      provider: row.provider,
+      trainsOnInput: row.trainsOnInput,
+      evidenceUrl: row.evidenceUrl,
+      productionUseAllowed: row.productionUseAllowed,
+      reviewedAt: now,
+      previouslyReviewedAt: row.reviewedAt,
+    };
+  },
   ...accountOpsFor(deps.instanceScope, deps.guildScopes, deps.now),
 });

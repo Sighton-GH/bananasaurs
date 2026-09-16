@@ -472,6 +472,18 @@ export interface OpsEligibilityWarning {
   readonly reviewedAt: number;
 }
 
+export interface OpsProviderReview {
+  readonly provider: string;
+  /** What the operator has just confirmed is still true. */
+  readonly trainsOnInput: 'no' | 'yes' | 'unknown';
+  readonly evidenceUrl: string;
+  readonly productionUseAllowed: boolean;
+  /** The review timestamp just written. */
+  readonly reviewedAt: number;
+  /** The timestamp this row carried before. */
+  readonly previouslyReviewedAt: number;
+}
+
 /** One dashboard account, as the operator CLI shows it. Never a hash. */
 export interface OpsAccount {
   readonly accountId: string;
@@ -1117,6 +1129,14 @@ export interface OpsInstance {
    * own tick, so the finding is read at request time, not at startup.
    */
   providerEligibilityWarnings(nowMs: number): readonly OpsEligibilityWarning[];
+  /**
+   * Records an operator's re-verification of a provider's eligibility row
+   * (ruling M4-D20). `'no-such-provider'` when the provider is unknown.
+   *
+   * Instance-level, like `providerEligibilityWarnings` beside it: a provider is
+   * a fact about the daemon, not a guild.
+   */
+  providerReview(provider: string): OpsProviderReview | 'no-such-provider';
   /**
    * Every dashboard account, oldest first, as `account list` renders it
    * (ADR 0045 D6).

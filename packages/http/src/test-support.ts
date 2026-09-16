@@ -631,6 +631,22 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
     }
     return warnings;
   },
+  // Ruling M4-D20: read first so the result carries the confirmed claims and
+  // the previous review date, then write `reviewed_at` and nothing else.
+  providerReview: (provider) => {
+    const row = eligibilityRepo.findEligibility(instanceScope, provider);
+    if (row === undefined) return 'no-such-provider';
+    const at = now();
+    eligibilityRepo.recordEligibilityReview(instanceScope, { provider, now: at });
+    return {
+      provider: row.provider,
+      trainsOnInput: row.trainsOnInput,
+      evidenceUrl: row.evidenceUrl,
+      productionUseAllowed: row.productionUseAllowed,
+      reviewedAt: at,
+      previouslyReviewedAt: row.reviewedAt,
+    };
+  },
   // Canonical implementation: `accountOpsFor` in `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the test database, field by field so no `passwordHash` crosses.
   accountList: () =>
     accountRepo.listAccounts(instanceScope).map((row) => ({
