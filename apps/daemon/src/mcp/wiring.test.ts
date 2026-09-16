@@ -25,8 +25,9 @@ import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/tes
  * `testPortsFor`/`testInstanceFor` come in by relative path rather than the
  * `@bananasaurs/http/test-support` subpath: vitest aliases
  * `@bananasaurs/http` to the package index, so the subpath would resolve
- * under it and break. There is likewise no `@bananasaurs/mcp` alias, so this
- * test reads the package through its built `dist` until one is added.
+ * under it and break. `@bananasaurs/mcp` likewise resolves through the
+ * vitest source alias (see vitest.config.ts), so this test reads the
+ * package's source, never its built `dist`.
  */
 
 const GUILD_A = parseGuildId('111111111111111111');
