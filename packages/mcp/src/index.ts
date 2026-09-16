@@ -1,3 +1,16 @@
-// Task 1 placeholder. Tasks 2 (the scope helper and the evidence envelope)
-// and 3 (the MCP server and its wiring) fill this module.
-export const MCP_PACKAGE_PLACEHOLDER = 'mcp' as const;
+export {
+  GUILD_REFUSAL_MESSAGE,
+  requireAnyReachableGuild,
+  requireReachableGuild,
+  type GuildOutcome,
+  type GuildRefusal,
+  type GuildResolved,
+  type McpPrincipal,
+} from './scope.js';
+export {
+  EVIDENCE_CLOSE,
+  EVIDENCE_OPEN,
+  EVIDENCE_PREAMBLE,
+  envelope,
+  type EvidenceItem,
+} from './envelope.js';
