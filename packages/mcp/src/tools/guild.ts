@@ -66,8 +66,7 @@ export const MEMBER_DEFAULT_LIMIT = 25;
 export const MEMBER_LIMIT_MAX = 100;
 
 export type GuildToolOutcome =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly message: string };
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
 /**
  * Plain-data projections — the whole reason `packages/mcp` needs no
@@ -174,7 +173,9 @@ export const listMembersParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   limit: z
     .number()
-    .describe(`Max members, default ${String(MEMBER_DEFAULT_LIMIT)}, capped at ${String(MEMBER_LIMIT_MAX)}.`)
+    .describe(
+      `Max members, default ${String(MEMBER_DEFAULT_LIMIT)}, capped at ${String(MEMBER_LIMIT_MAX)}.`,
+    )
     .optional(),
   after: z.string().describe('Page after this member id (the previous next cursor).').optional(),
 };
@@ -210,8 +211,7 @@ const channelToEvidenceItem = (guildId: GuildId, channel: McpGuildChannel): Evid
   ].join('\n'),
 });
 
-const toHexColor = (color: number): string =>
-  `#${color.toString(16).padStart(6, '0').slice(-6)}`;
+const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
 
 const roleToEvidenceItem = (guildId: GuildId, role: McpGuildRole): EvidenceItem => ({
   authorId: guildId,
@@ -298,8 +298,7 @@ const listMembersInner = async (
     result.nextCursor === undefined
       ? 'End of list.'
       : `Next cursor: ${result.nextCursor} (pass as after to continue).`;
-  const head =
-    `Members in guild ${gate.guildId}: showing ${String(items.length)} ${noun}. ${cursor}`;
+  const head = `Members in guild ${gate.guildId}: showing ${String(items.length)} ${noun}. ${cursor}`;
   return { ok: true, text: `${head}\n\n${envelope(items)}` };
 };
 

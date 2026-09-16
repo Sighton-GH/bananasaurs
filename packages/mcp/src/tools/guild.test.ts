@@ -53,9 +53,15 @@ const stubHealth = (): McpHealthPort => ({
 });
 
 const fakePort = (): McpGuildPort & {
-  readonly seenMemberInput: { readonly limit: number | undefined; readonly after: string | undefined }[];
+  readonly seenMemberInput: {
+    readonly limit: number | undefined;
+    readonly after: string | undefined;
+  }[];
 } => {
-  const seenMemberInput: { readonly limit: number | undefined; readonly after: string | undefined }[] = [];
+  const seenMemberInput: {
+    readonly limit: number | undefined;
+    readonly after: string | undefined;
+  }[] = [];
   return {
     seenMemberInput,
     listChannels: () => [
@@ -176,16 +182,12 @@ describe('guild tools refuse without a reachable guild', () => {
         message: GUILD_REFUSAL_MESSAGE,
       });
     }
-    expect(() =>
-      listChannelsText(principal, port, { guildId: 'not-a-snowflake' }),
-    ).not.toThrow();
+    expect(() => listChannelsText(principal, port, { guildId: 'not-a-snowflake' })).not.toThrow();
     expect(listChannelsText(principal, port, { guildId: 'not-a-snowflake' })).toEqual({
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,
     });
-    expect(() =>
-      listRolesText(principal, port, { guildId: 'not-a-snowflake' }),
-    ).not.toThrow();
+    expect(() => listRolesText(principal, port, { guildId: 'not-a-snowflake' })).not.toThrow();
     expect(listRolesText(principal, port, { guildId: 'not-a-snowflake' })).toEqual({
       ok: false,
       message: GUILD_REFUSAL_MESSAGE,

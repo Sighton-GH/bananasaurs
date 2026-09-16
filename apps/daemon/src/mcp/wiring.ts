@@ -156,55 +156,59 @@ export const guildPortFor = (client: Client | undefined, deps: HttpDeps): McpGui
       const names = new Map(
         [...guild.channels.cache.values()].map((channel) => [channel.id, channel.name] as const),
       );
-      return [...guild.channels.cache.values()]
-        // Threads are transient conversations, not channels: an operator
-        // asking "what channels exist" means the room list, and a thread
-        // that archived away would otherwise flicker in and out of answers.
-        .filter((channel) => !channel.isThread())
-        .map((channel) => {
-          const parentId =
-            'parentId' in channel && typeof channel.parentId === 'string'
-              ? channel.parentId
-              : undefined;
-          const topic =
-            'topic' in channel && typeof channel.topic === 'string' ? channel.topic : undefined;
-          return {
-            id: channel.id,
-            name: channel.name,
-            type: ChannelType[channel.type] ?? `unknown(${String(channel.type)})`,
-            parentId,
-            parentName: parentId === undefined ? undefined : names.get(parentId),
-            topic,
-            archiveEnabled: enabled.has(channel.id),
-          };
-        })
-        .sort((a, b) => {
-          const positionOf = (id: string): number => {
-            const channel = guild.channels.cache.get(id);
-            if (channel === undefined) return 0;
-            return 'position' in channel && typeof channel.position === 'number'
-              ? channel.position
-              : 0;
-          };
-          return positionOf(a.id) - positionOf(b.id) || (a.id < b.id ? -1 : 1);
-        });
+      return (
+        [...guild.channels.cache.values()]
+          // Threads are transient conversations, not channels: an operator
+          // asking "what channels exist" means the room list, and a thread
+          // that archived away would otherwise flicker in and out of answers.
+          .filter((channel) => !channel.isThread())
+          .map((channel) => {
+            const parentId =
+              'parentId' in channel && typeof channel.parentId === 'string'
+                ? channel.parentId
+                : undefined;
+            const topic =
+              'topic' in channel && typeof channel.topic === 'string' ? channel.topic : undefined;
+            return {
+              id: channel.id,
+              name: channel.name,
+              type: ChannelType[channel.type] ?? `unknown(${String(channel.type)})`,
+              parentId,
+              parentName: parentId === undefined ? undefined : names.get(parentId),
+              topic,
+              archiveEnabled: enabled.has(channel.id),
+            };
+          })
+          .sort((a, b) => {
+            const positionOf = (id: string): number => {
+              const channel = guild.channels.cache.get(id);
+              if (channel === undefined) return 0;
+              return 'position' in channel && typeof channel.position === 'number'
+                ? channel.position
+                : 0;
+            };
+            return positionOf(a.id) - positionOf(b.id) || (a.id < b.id ? -1 : 1);
+          })
+      );
     },
     listRoles: (guildId) => {
       const guild = requireGuild(guildId);
       const scope = deps.scopes.forGuild(guildId);
-      return [...guild.roles.cache.values()]
-        // `@everyone` is the guild itself wearing a role id: every member
-        // holds it, so listing it answers nothing and a managed flag on it
-        // is meaningless. The port drops it; the tool says so in its header.
-        .filter((role) => role.id !== guild.id)
-        .map((role) => ({
-          id: role.id,
-          name: role.name,
-          position: role.position,
-          color: role.color,
-          managedByBananasaurs: roleRepo.isAllowlisted(scope, role.id),
-        }))
-        .sort((a, b) => b.position - a.position || (a.id < b.id ? -1 : 1));
+      return (
+        [...guild.roles.cache.values()]
+          // `@everyone` is the guild itself wearing a role id: every member
+          // holds it, so listing it answers nothing and a managed flag on it
+          // is meaningless. The port drops it; the tool says so in its header.
+          .filter((role) => role.id !== guild.id)
+          .map((role) => ({
+            id: role.id,
+            name: role.name,
+            position: role.position,
+            color: role.color,
+            managedByBananasaurs: roleRepo.isAllowlisted(scope, role.id),
+          }))
+          .sort((a, b) => b.position - a.position || (a.id < b.id ? -1 : 1))
+      );
     },
     listMembers: async (guildId, input) => {
       const guild = requireGuild(guildId);
@@ -303,7 +307,7 @@ export const registerMcpRoutes = (
    * live client through the dashboard composition is a follow-up; the port,
    * the tools and their tests are complete without it.
    */
-  client?: Client | undefined,
+  client?: Client,
 ): void => {
   app.all(MCP_ROUTE_PATH, async (request, reply) => {
     // The opt-in, in the shape of `registerOAuthRoutes`' early return

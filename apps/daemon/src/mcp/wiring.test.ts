@@ -4,14 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import {
-  ChannelType,
-  Client,
-  Collection,
-  type Guild,
-  type GuildMember,
-  type GuildMemberManager,
-} from 'discord.js';
+import { ChannelType, Client, Collection, type Guild, type GuildMember } from 'discord.js';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
   openMigratedTestDatabase,
@@ -552,13 +545,13 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
     const memberListCalls: unknown[] = [];
     const guild = client.guilds.cache.get(GUILD_A);
     if (guild === undefined) throw new Error('fake guild did not land in the cache');
-    guild.members.list = (async (options?: unknown) => {
+    guild.members.list = async (options?: unknown) => {
       memberListCalls.push(options);
       return new Collection([
         [REST_MEMBER_A, restMember(REST_MEMBER_A, 'rest-ana')],
         [REST_MEMBER_B, restMember(REST_MEMBER_B, 'rest-bo')],
       ]);
-    }) as GuildMemberManager['list'];
+    };
     return { client, memberListCalls };
   };
 
