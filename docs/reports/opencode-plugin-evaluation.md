@@ -958,6 +958,39 @@ Every kill lost nothing, because every step commits. That is now the fifth
 time this session that "commit per step" has turned a dead session into a
 non-event.
 
+## D58 — the gates were green in the worktree and red on `main`
+
+Slice M4 merged with typecheck, lint and test all passing in the worktree,
+and typecheck failed the moment it landed on `main`:
+`Cannot find module '@bananasaurs/mcp'`. The cause was not the merge. M4 adds
+a new workspace package, and `main`'s `node_modules/@bananasaurs/` had been
+installed before that package existed, so its symlink was never created.
+`npm install` fixed it in one command.
+
+Two things worth keeping:
+
+- **The test gate could not catch this.** `vitest.config.ts` carries a source
+  alias for `@bananasaurs/mcp` — added deliberately in Task 3, so the suite
+  reads the package's source rather than a git-ignored `dist` — which meant
+  169 files and 3,174 tests passed while `tsc` could not resolve the package
+  at all. A green suite is not evidence that a package resolves. The three
+  gates are not redundant with each other, and this is the sharpest example
+  of it the project has produced.
+- It is the inverse of the Task 3 defect, where `@bananasaurs/mcp` resolved
+  *to* a git-ignored `dist` that a fresh clone would not have, and a cousin
+  of D55, where worktree package links resolved into `main`'s packages. All
+  three have one root: **a workspace link is state on disk, not a fact in the
+  repository**, and nothing in the gates asserts that the state matches the
+  repository. The standing rule that follows: after merging a branch that
+  adds a package, run `npm install` before believing any gate.
+
+Generalising past npm: the delegation tooling gives each run an isolated
+worktree, which is what makes parallel work safe — and the same isolation is
+what lets an environment difference hide until merge. Verification in the
+worktree is necessary and is not sufficient. The controller re-runs the gates
+on the integration branch after merging, which is how this was caught within
+a minute of landing rather than by the next slice.
+
 ## What worked well
 
 (appended as observed)
