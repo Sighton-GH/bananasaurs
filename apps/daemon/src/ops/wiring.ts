@@ -949,10 +949,7 @@ export const accountOpsFor = (
     // ADR 0045 Amendment 4 A3-6: an unexchanged code is a token that has not
     // been minted yet, and `exchangeCode` cannot see a token revocation — so
     // the sweep deletes the account's codes too, the way `accountDelete` does.
-    const codesDeleted = oauthRepo.deleteAuthorizationCodesForAccount(
-      instanceScope,
-      row.accountId,
-    );
+    const codesDeleted = oauthRepo.deleteAuthorizationCodesForAccount(instanceScope, row.accountId);
     // Re-read AFTER the writes, never the pre-write row: the row above is
     // stale by construction once anything has been written, and `disabled` is
     // exactly what this command must not touch — the read proves it did not.

@@ -524,7 +524,7 @@ export const revokeTokensForClient = (
   });
 
 /**
- * Revokes every live token of one account (ADR 0045 Amendment 3 A3-5).
+ * Revokes every live token of one account (ADR 0045 Amendment 4 A3-5).
  *
  * The predicate is the ACCOUNT, which is a strict superset of both lineage
  * and chain, so the "choose lineage over descent" obligation ADR 0044 places
