@@ -8,7 +8,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, archiveRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { generateToken, hashPassword } from '@bananasaurs/http';
 import { GUILD_REFUSAL_MESSAGE } from '@bananasaurs/mcp';
@@ -209,7 +209,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(response.json()).toEqual({ error: 'invalid_token' });
   });
 
-  it('answers a valid read-scope token with tools/list containing only get_health', async () => {
+  it('answers a valid read-scope token with tools/list containing health plus the archive tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -217,7 +217,12 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toEqual(['get_health']);
+    expect(names).toEqual([
+      'get_health',
+      'search_messages',
+      'read_channel_history',
+      'get_message',
+    ]);
     expect(names).not.toContain('send_message');
   });
 
@@ -244,8 +249,166 @@ describe('/mcp behind the bearer guard', () => {
   });
 });
 
-describe('/mcp with MCP_PUBLIC_URL unset', () => {
-  it('answers 404 on /mcp while the SPA fallback still serves unknown paths', async () => {
+/**
+ * Task 4b, daemon side: the two-guild test through the real stack. An account
+ * reaching guilds A and B searches B and sees only B's rows; a guild the bot
+ * is not in is a refusal, not an empty result — an empty result says "nothing
+ * matched", a refusal says "not yours", and conflating them leaks whether a
+ * guild has content.
+ */
+describe('/mcp archive tools across two guilds', () => {
+  const GUILD_C = parseGuildId('333333333333333333');
+  const CHANNEL = '555555555555555555';
+  const MEMBER = '666666666666666666';
+  const MESSAGE_A = '777777777777777777';
+  const MESSAGE_B = '888888888888888888';
+
+  const seedArchive = (): void => {
+    for (const guild of [GUILD_A, GUILD_B] as const) {
+      archiveRepo.enableChannel(t.scopes.forGuild(guild), {
+        channelId: CHANNEL,
+        attachmentPolicy: 'none',
+        now: clock,
+      });
+    }
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: MESSAGE_A,
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: 'alpha plans for the guild A picnic',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_B), {
+      messageId: MESSAGE_B,
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: 'beta plans for the guild B picnic',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError?: boolean; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  it('search_messages for guild B returns only guild B rows', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    seedArchive();
+    const accessToken = await mintToken();
+
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: '222222222222222222',
+          query: 'picnic',
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('beta plans');
+    expect(found.text).not.toContain('alpha plans');
+
+    // Same channel id, other guild's row is invisible even by exact query.
+    const cross = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: '222222222222222222',
+          query: 'alpha',
+        })
+      ).body,
+    );
+    expect(cross.isError).not.toBe(true);
+    expect(cross.text).toContain('0 matches');
+
+    // get_message is guild-partitioned too: A's id through B is not-found,
+    // answered plainly — never A's content.
+    const missing = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '222222222222222222',
+          messageId: MESSAGE_A,
+        })
+      ).body,
+    );
+    expect(missing.isError).not.toBe(true);
+    expect(missing.text).not.toContain('alpha plans');
+
+    // read_channel_history for B's channel shows B's row only.
+    const history = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '222222222222222222',
+          channelId: CHANNEL,
+        })
+      ).body,
+    );
+    expect(history.isError).not.toBe(true);
+    expect(history.text).toContain('beta plans');
+    expect(history.text).not.toContain('alpha plans');
+  });
+
+  it('a guild the bot is not in is a refusal, never an empty result', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    seedArchive();
+    const accessToken = await mintToken();
+
+    const refused = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: GUILD_C,
+          query: 'picnic',
+        })
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toBe(GUILD_REFUSAL_MESSAGE);
+
+    // The distinction the test exists for: a reachable guild with no match
+    // answers ok with a count, not a refusal.
+    const empty = callText(
+      (
+        await mcpCall(accessToken, 'search_messages', {
+          guildId: '222222222222222222',
+          query: 'zucchini-no-match-anywhere',
+        })
+      ).body,
+    );
+    expect(empty.isError).not.toBe(true);
+    expect(empty.text).toContain('0 matches');
+    expect(empty.text).not.toBe(GUILD_REFUSAL_MESSAGE);
+  });
+});
+
+describe('/mcp with MCP_PUBLIC_URL unset', () => {  it('answers 404 on /mcp while the SPA fallback still serves unknown paths', async () => {
     const bare = buildDashboardApp({ ...deps, mcpPublicUrl: undefined });
     try {
       const accessToken = await mintToken();
