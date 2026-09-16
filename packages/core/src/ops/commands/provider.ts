@@ -1,9 +1,5 @@
 import { z } from 'zod';
-import {
-  defineCommand,
-  type OpsContext,
-  type OpsWriteResult,
-} from '../dispatch.js';
+import { defineCommand, type OpsContext, type OpsWriteResult } from '../dispatch.js';
 
 /**
  * `bananasaurs provider review <provider> --confirm` (ruling M4-D20).

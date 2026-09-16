@@ -16,9 +16,7 @@ interface Harness {
   readonly calls: string[];
 }
 
-const harness = (
-  review: (provider: string) => OpsProviderReview | 'no-such-provider',
-): Harness => {
+const harness = (review: (provider: string) => OpsProviderReview | 'no-such-provider'): Harness => {
   const audit: OpsAuditWrite[] = [];
   const calls: string[] = [];
   const dispatcher = createDispatcher({
@@ -48,9 +46,7 @@ const harness = (
   };
 };
 
-const reviewed = (
-  over: Partial<OpsProviderReview> = {},
-): OpsProviderReview => ({
+const reviewed = (over: Partial<OpsProviderReview> = {}): OpsProviderReview => ({
   provider: 'anthropic-consumer-mcp',
   trainsOnInput: 'no',
   evidenceUrl: 'https://claude.ai/settings/data-privacy-controls',

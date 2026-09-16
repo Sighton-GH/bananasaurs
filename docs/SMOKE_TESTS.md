@@ -93,13 +93,17 @@ the actual running daemon and its actual `./data/bananasaurs.db`.
    sudo systemctl start bananasaurs
    bananasaurs doctor
    ```
-   Confirm: the daemon starts cleanly, `doctor` reports `ok`, every panel and
-   role from before the restore is still correct (the backup was taken
-   *after* those changes, so nothing should be lost), and the audit trail is
-   continuous up to the restore point. After `npm run restore`, run
-   `bananasaurs archive reindex --confirm` for each archive-enabled guild. A
-   restored database's FTS index is rebuilt from the restored rows, so
-   `doctor` will say `ARCHIVE INDEX STALE` until it is.
+    Confirm: the daemon starts cleanly, `doctor` reports `ok`, every panel and
+    role from before the restore is still correct (the backup was taken
+    *after* those changes, so nothing should be lost), and the audit trail is
+    continuous up to the restore point. After `npm run restore`, run
+    `bananasaurs archive reindex --confirm` for each archive-enabled guild. A
+    restored database's FTS index is rebuilt from the restored rows, so
+    `doctor` will say `ARCHIVE INDEX STALE` until it is. If `doctor` instead
+    fails with `no such table: provider_eligibility`, the restored database
+    predates that table's migration — the startup check only verifies the
+    `guilds` table exists, so a restored-but-unmigrated database still starts.
+    The answer is `npm run db:migrate`, then `doctor` again.
 5. **Confirm the pre-restore file survived.** `<db-path>.pre-restore-<ts>`
    should exist next to the live database — the restore moves the old file
    aside rather than deleting it, so it is recoverable if step 4 itself goes

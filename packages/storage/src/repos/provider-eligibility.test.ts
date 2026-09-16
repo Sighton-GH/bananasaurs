@@ -131,9 +131,9 @@ describe('recordEligibilityReview (ruling M4-D20)', () => {
     expect(
       listStaleEligibility(instance, now, ELIGIBILITY_REVIEW_MAX_AGE_MS).map((r) => r.provider),
     ).toContain('anthropic-consumer-mcp');
-    expect(
-      recordEligibilityReview(instance, { provider: 'anthropic-consumer-mcp', now }),
-    ).toBe(true);
+    expect(recordEligibilityReview(instance, { provider: 'anthropic-consumer-mcp', now })).toBe(
+      true,
+    );
     expect(
       listStaleEligibility(instance, now, ELIGIBILITY_REVIEW_MAX_AGE_MS).map((r) => r.provider),
     ).not.toContain('anthropic-consumer-mcp');

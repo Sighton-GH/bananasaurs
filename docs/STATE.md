@@ -1,6 +1,6 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-09-14 (Slice M3 merged to the working branch).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-09-16 (M4 fix wave B: `provider review`, `not-production` warning).
 
 ---
 
@@ -180,6 +180,8 @@ authenticates, though every data route then fails closed.
 6. **Audit trail doesn't record refusals — answered for moderation, still open for role effects.** ADR 0035 made the deliberate decision for the new subsystem: a refused moderation action is written to `mod_case_events` with its reason, because "the bot tried to timeout the owner and correctly couldn't" is exactly what a human reading case history needs. The Release 1 behaviour is unchanged and still stands — a role-effect refusal is a `logger.warn` and nothing else (`packages/core/src/effects/gateway.ts:199-215`). That asymmetry is now a recorded choice rather than an oversight, but whether role effects should match moderation is still undecided.
 
 7. **The false-positive thresholds are set but untested** — 5% of reviewed matches for delete-only rules, zero for rules that feed the escalation counter, a 20-match minimum sample, and a fixture-pass-plus-sign-off path below it (owner decision, 2026-09-01). These are defensible starting points, not measurements. If `caps` or `duplicate_message` fails its bar in the first observe window, the intended response is to narrow the rule or make it delete-only — **not** to move the bar.
+
+8. **Training-eligibility review due 2026-12-13 (noted 2026-09-16).** The `provider_eligibility` row was reviewed 2026-09-14; `doctor` warns once that check is more than 90 days old, so the first re-verification falls due 2026-12-13 — cleared with `bananasaurs provider review anthropic-consumer-mcp --confirm`, which writes the review date, not the row's claims.
 
 ## Decisions made in conversation, now recorded in the repo
 
