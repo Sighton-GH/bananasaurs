@@ -116,6 +116,10 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   mcpTokens: unstubbed('mcpTokens'),
   mcpRevokeToken: unstubbed('mcpRevokeToken'),
   mcpRevokeClient: unstubbed('mcpRevokeClient'),
+  // All-clear by default, because `doctor` always reads it: a test that wants
+  // an eligibility warning has to say so, so a stale provider is never
+  // something a fixture arranged by accident.
+  providerEligibilityWarnings: () => [],
   accountList: unstubbed('accountList'),
   accountSetDisabled: unstubbed('accountSetDisabled'),
   accountDelete: unstubbed('accountDelete'),

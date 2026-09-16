@@ -7,6 +7,7 @@ import {
   automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
+  eligibilityRepo,
   enforcementGateRepo,
   guildRepo,
   jobRepo,
@@ -22,6 +23,7 @@ import {
   archiveBackfillDedupeKey,
   JOB_KINDS,
   type OpsInstance,
+  type OpsEligibilityWarning,
   type OpsPorts,
 } from '@bananasaurs/core';
 
@@ -605,6 +607,30 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   mcpRevokeClient: (clientId) => {
     if (oauthRepo.findClient(instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(instanceScope, clientId, now());
+  },
+  // Canonical implementation: `providerEligibilityWarnings` in
+  // `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the
+  // test database, field by field so no `evidenceUrl` crosses.
+  providerEligibilityWarnings: (nowMs) => {
+    const warnings: OpsEligibilityWarning[] = [];
+    for (const row of eligibilityRepo.listEligibility(instanceScope)) {
+      if (!eligibilityRepo.isEligible(row)) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-no',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (nowMs - row.reviewedAt > eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'stale',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      }
+    }
+    return warnings;
   },
   // Canonical implementation: `accountOpsFor` in `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the test database, field by field so no `passwordHash` crosses.
   accountList: () =>

@@ -223,6 +223,7 @@ const instance: OpsInstance = {
   mcpTokens: notNeeded('mcpTokens'),
   mcpRevokeToken: notNeeded('mcpRevokeToken'),
   mcpRevokeClient: notNeeded('mcpRevokeClient'),
+  providerEligibilityWarnings: notNeeded('providerEligibilityWarnings'),
   accountList: notNeeded('accountList'),
   accountSetDisabled: notNeeded('accountSetDisabled'),
   accountDelete: notNeeded('accountDelete'),

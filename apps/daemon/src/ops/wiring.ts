@@ -9,6 +9,7 @@ import {
   undoDedupeKey,
   type Config,
   type OpsInstance,
+  type OpsEligibilityWarning,
   type OpsPorts,
   type OpsSettingChange,
 } from '@bananasaurs/core';
@@ -22,6 +23,7 @@ import {
   automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
+  eligibilityRepo,
   enforcementGateRepo,
   guildRepo,
   jobRepo,
@@ -1109,6 +1111,35 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
   mcpRevokeClient: (clientId) => {
     if (oauthRepo.findClient(deps.instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(deps.instanceScope, clientId, deps.now());
+  },
+  // ADR 0044 §7: the training-eligibility control behind hard rule 5.
+  // Instance-level, the same reason `mcpClients` is — a provider is a fact
+  // about the daemon, not a guild — so this reads `deps.instanceScope`
+  // directly. Field by field: the row carries an `evidenceUrl` that must
+  // never be logged (Pino allowlist), so only the provider, the verdict and
+  // the review date cross this boundary. `'unknown'` warns as `'not-no'`
+  // (`isEligible` is `'no'`-only, hard rule 5), so the not-`'no'` verdict
+  // outranks staleness: a row that is both warns once, as `'not-no'`.
+  providerEligibilityWarnings: (nowMs): readonly OpsEligibilityWarning[] => {
+    const warnings: OpsEligibilityWarning[] = [];
+    for (const row of eligibilityRepo.listEligibility(deps.instanceScope)) {
+      if (!eligibilityRepo.isEligible(row)) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-no',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (nowMs - row.reviewedAt > eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'stale',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      }
+    }
+    return warnings;
   },
   ...accountOpsFor(deps.instanceScope, deps.guildScopes, deps.now),
 });

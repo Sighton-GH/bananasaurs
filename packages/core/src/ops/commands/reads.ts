@@ -50,6 +50,10 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     const observePastWindow = ctx.ports.listAutomodRulesObservingPastWindowWithBacklog(ctx.now());
     const unreadableArchiveChannels = ctx.ports.listUnreadableArchiveChannels();
     const archiveIndex = ctx.ports.archiveIndexHealth();
+    // ADR 0044 §7's instance-level check: the odd one out in this command —
+    // every other finding is guild-scoped, but a provider is a fact about the
+    // daemon, so this reads `ctx.instance` like `mcpClients` does.
+    const eligibilityWarnings = ctx.instance.providerEligibilityWarnings(ctx.now());
 
     const lines = [report.text, ''];
     lines.push(
@@ -134,11 +138,26 @@ export const doctorCommand = defineCommand<Record<string, never>>({
             `${String(archiveIndex.rows)} archived — run 'archive reindex --confirm'`,
     );
 
+    lines.push(
+      // ADR 0044 §7: a stale or not-`'no'` eligibility row is a promise
+      // `PRIVACY.md` makes that nobody recently verified. `doctor` is where
+      // an operator finds that out — the review date rides along as ISO so
+      // the warning says when the promise was last checked.
+      eligibilityWarnings.length === 0
+        ? 'training eligibility: every provider verified'
+        : `training eligibility    ${String(eligibilityWarnings.length)} provider(s) need review:\n` +
+            eligibilityWarnings
+              .map((w) => `            ${w.provider}  ${w.reason}  reviewed ${iso(w.reviewedAt)}`)
+              .join('\n'),
+    );
+
     // The gateway half already decides `ok`; the eight guild-scoped findings
     // here are just as capable of making a panel, an enforce-mode rule, or an
     // automod rule that never gets as far as matching — silently do nothing,
     // so they count the same way rather than being printed as decoration
-    // under a green header.
+    // under a green header. The eligibility finding above it counts too: a
+    // stale promise about training is a silent breach of `PRIVACY.md`, not a
+    // footnote.
     const ok =
       report.ok &&
       stale.length === 0 &&
@@ -148,7 +167,8 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       badCutoverState.length === 0 &&
       observePastWindow.length === 0 &&
       unreadableArchiveChannels.length === 0 &&
-      archiveIndex.indexed === archiveIndex.rows;
+      archiveIndex.indexed === archiveIndex.rows &&
+      eligibilityWarnings.length === 0;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
     return {
@@ -185,6 +205,12 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           reason: c.reason,
         })),
         archiveIndexHealth: { indexed: archiveIndex.indexed, rows: archiveIndex.rows },
+        providerEligibilityWarnings: eligibilityWarnings.map((w) => ({
+          provider: w.provider,
+          reason: w.reason,
+          trainsOnInput: w.trainsOnInput,
+          reviewedAt: w.reviewedAt,
+        })),
       },
     };
   },
