@@ -5,10 +5,12 @@ import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
   createMcpServer,
+  type McpArchivePort,
   type McpGuildHealth,
   type McpHealthPort,
   type McpPrincipal,
 } from '@bananasaurs/mcp';
+import { archiveRepo, archiveSearchRepo } from '@bananasaurs/storage';
 
 /**
  * The owner's MCP read surface (slice M4), mounted at `/mcp` by the daemon's
@@ -70,6 +72,49 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
     guilds,
   };
 };
+
+/**
+ * The `McpArchivePort` behind the three archive tools, field by field like
+ * `healthPortFor` above. Each method turns the already-resolved `GuildId`
+ * into a `GuildScope` per call and reads through the archive repositories —
+ * nothing here writes, and M4 is read-only. The visibility set is built in
+ * the tool layer from `listArchiveChannelIds` (every archive-enabled channel
+ * in the guild); the caller's `channelIds` only ever narrows within it.
+ * Nothing here logs: message content must never reach a log line (rule 4).
+ */
+const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
+  listArchiveChannelIds: (guildId) =>
+    archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
+  searchMessages: (guildId, input) => {
+    const result = archiveSearchRepo.searchMessages(deps.scopes.forGuild(guildId), {
+      query: input.query,
+      visibility: input.visibility,
+      ...(input.channelIds !== undefined ? { channelIds: input.channelIds } : {}),
+      ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
+      ...(input.before !== undefined ? { before: input.before } : {}),
+      ...(input.after !== undefined ? { after: input.after } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    });
+    return {
+      total: result.total,
+      hits: result.hits.map((hit) => ({
+        messageId: hit.messageId,
+        channelId: hit.channelId,
+        authorId: hit.authorId,
+        createdAt: hit.createdAt,
+        excerpt: hit.excerpt,
+      })),
+    };
+  },
+  findMessage: (guildId, messageId) =>
+    archiveRepo.findMessage(deps.scopes.forGuild(guildId), messageId),
+  listChannelHistory: (guildId, input) =>
+    archiveRepo.listChannelHistory(deps.scopes.forGuild(guildId), {
+      channelId: input.channelId,
+      ...(input.beforeMessageId !== undefined ? { beforeMessageId: input.beforeMessageId } : {}),
+      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    }),
+});
 
 /** Hop-by-hop headers that must not survive the Fastify → Web conversion. */
 const DROPPED_REQUEST_HEADERS = new Set([
@@ -175,7 +220,11 @@ export const registerMcpRoutes = (app: FastifyInstance, deps: HttpDeps): void =>
      * registration) per request. For one operator and one read tool, that is
      * the right trade.
      */
-    const server = createMcpServer({ principal, health: healthPortFor(principal, deps) });
+    const server = createMcpServer({
+      principal,
+      health: healthPortFor(principal, deps),
+      archive: archivePortFor(deps),
+    });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one
     // hook covers both. `close` on the raw reply fires after the streamed

@@ -6,9 +6,12 @@ import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import {
   archiveRepo,
   archiveSearchRepo,
+  guildRepo,
+  type ScopeFactory,
+} from '@bananasaurs/storage';
+import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
-  type ScopeFactory,
 } from '@bananasaurs/storage/test-support';
 import { archiveRepo as archiveRepoIndex } from '@bananasaurs/storage';
 import {
@@ -27,9 +30,9 @@ import {
   EVIDENCE_OPEN,
   EVIDENCE_PREAMBLE,
   GUILD_REFUSAL_MESSAGE,
-} from './index.js';
-import { createMcpServer } from './server.js';
-import type { McpHealthPort } from './tools/health.js';
+} from '../index.js';
+import { createMcpServer } from '../server.js';
+import type { McpHealthPort } from './health.js';
 
 /**
  * Task 4b, tool layer: `search_messages`, `read_channel_history` and
@@ -88,6 +91,8 @@ const textOf = (outcome: { readonly ok: boolean; readonly text?: string }): stri
 
 beforeEach(() => {
   t = openMigratedTestDatabase();
+  guildRepo.upsertGuild(t.scopes.forGuild(GUILD_A), { name: 'guild a', now: 1000 });
+  guildRepo.upsertGuild(t.scopes.forGuild(GUILD_B), { name: 'guild b', now: 1000 });
   const scopes: ScopeFactory = t.scopes;
   port = {
     listArchiveChannelIds: (guildId) =>
@@ -119,9 +124,7 @@ beforeEach(() => {
     listChannelHistory: (guildId, input) =>
       archiveRepo.listChannelHistory(scopes.forGuild(guildId), {
         channelId: input.channelId,
-        ...(input.beforeMessageId !== undefined
-          ? { beforeMessageId: input.beforeMessageId }
-          : {}),
+        ...(input.beforeMessageId !== undefined ? { beforeMessageId: input.beforeMessageId } : {}),
         ...(input.limit !== undefined ? { limit: input.limit } : {}),
       }),
   };
@@ -179,32 +182,30 @@ describe('archive tools refuse without a reachable guild', () => {
     return getMessageText(principal, port, args);
   };
 
-  it.each([
-    [SEARCH_MESSAGES_TOOL_NAME],
-    [READ_CHANNEL_HISTORY_TOOL_NAME],
-    [GET_MESSAGE_TOOL_NAME],
-  ])('%s refuses an unreachable guild with the shared refusal', (name) => {
-    const call = calls.find((c) => c.name === name);
-    if (call === undefined) throw new Error('unknown tool');
-    // Reachable set holds the *other* guild: well-formed, simply not ours.
-    expect(run(name, principalWith(GUILD_B), call.args)).toEqual({
-      ok: false,
-      message: GUILD_REFUSAL_MESSAGE,
-    });
-  });
+  it.each([[SEARCH_MESSAGES_TOOL_NAME], [READ_CHANNEL_HISTORY_TOOL_NAME], [GET_MESSAGE_TOOL_NAME]])(
+    '%s refuses an unreachable guild with the shared refusal',
+    (name) => {
+      const call = calls.find((c) => c.name === name);
+      if (call === undefined) throw new Error('unknown tool');
+      // Reachable set holds the *other* guild: well-formed, simply not ours.
+      expect(run(name, principalWith(GUILD_B), call.args)).toEqual({
+        ok: false,
+        message: GUILD_REFUSAL_MESSAGE,
+      });
+    },
+  );
 
-  it.each([
-    [SEARCH_MESSAGES_TOOL_NAME],
-    [READ_CHANNEL_HISTORY_TOOL_NAME],
-    [GET_MESSAGE_TOOL_NAME],
-  ])('%s refuses an empty reachable set with the same refusal', (name) => {
-    const call = calls.find((c) => c.name === name);
-    if (call === undefined) throw new Error('unknown tool');
-    expect(run(name, principalWith(), call.args)).toEqual({
-      ok: false,
-      message: GUILD_REFUSAL_MESSAGE,
-    });
-  });
+  it.each([[SEARCH_MESSAGES_TOOL_NAME], [READ_CHANNEL_HISTORY_TOOL_NAME], [GET_MESSAGE_TOOL_NAME]])(
+    '%s refuses an empty reachable set with the same refusal',
+    (name) => {
+      const call = calls.find((c) => c.name === name);
+      if (call === undefined) throw new Error('unknown tool');
+      expect(run(name, principalWith(), call.args)).toEqual({
+        ok: false,
+        message: GUILD_REFUSAL_MESSAGE,
+      });
+    },
+  );
 
   it('the refusal is identical whether the guild is unreachable or malformed', () => {
     const malformed = searchMessagesText(principalWith(GUILD_A, GUILD_B), port, {
@@ -275,12 +276,17 @@ describe('every content-bearing result carries the envelope preamble', () => {
     expect(text).toContain(EVIDENCE_PREAMBLE);
     const preambleAt = text.indexOf(EVIDENCE_PREAMBLE);
     const openAt = text.indexOf(EVIDENCE_OPEN);
-    const memberAt = text.indexOf('announce pineapple');
+    // FTS5 `snippet()` marks the match with `[`/`]` — the literal member text
+    // `announce pineapple` arrives as `announce [pineapple]`, brackets kept
+    // verbatim as match highlights inside the envelope framing.
+    const memberAt = text.indexOf('announce');
+    const highlightAt = text.indexOf('[pineapple]');
     const closeAt = text.indexOf(EVIDENCE_CLOSE);
     expect(preambleAt).toBeGreaterThanOrEqual(0);
     expect(openAt).toBeGreaterThan(preambleAt);
     expect(memberAt).toBeGreaterThan(openAt);
-    expect(closeAt).toBeGreaterThan(memberAt);
+    expect(highlightAt).toBeGreaterThan(memberAt);
+    expect(closeAt).toBeGreaterThan(highlightAt);
   });
 
   it('read_channel_history frames every message', () => {

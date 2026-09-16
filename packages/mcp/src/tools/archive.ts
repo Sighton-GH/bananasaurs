@@ -53,8 +53,7 @@ export const ARCHIVE_PURGED_MARKER =
 export const ARCHIVE_NO_TEXT_MARKER = '[no text content was archived for this message]';
 
 export type ArchiveOutcome =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly message: string };
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
 type ArchiveMessage = archiveRepo.ArchiveMessage;
 
@@ -103,10 +102,7 @@ export interface McpArchivePort {
     guildId: GuildId,
     input: McpArchiveSearchInput,
   ) => McpArchiveSearchResult;
-  readonly findMessage: (
-    guildId: GuildId,
-    messageId: string,
-  ) => ArchiveMessage | undefined;
+  readonly findMessage: (guildId: GuildId, messageId: string) => ArchiveMessage | undefined;
   readonly listChannelHistory: (
     guildId: GuildId,
     input: McpChannelHistoryInput,
@@ -155,14 +151,20 @@ export const searchMessagesParams = {
   authorId: z.string().describe('Only messages by this author.').optional(),
   before: z.number().describe('Only messages created before this unix-ms timestamp.').optional(),
   after: z.number().describe('Only messages created after this unix-ms timestamp.').optional(),
-  limit: z.number().describe(`Max hits, 1..${String(SEARCH_LIMIT_MAX)}.`).optional(),
+  limit: z
+    .number()
+    .describe(`Max hits, 1..${String(SEARCH_LIMIT_MAX)}.`)
+    .optional(),
 };
 
 export const readChannelHistoryParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   channelId: z.string().describe('Archive-enabled channel to read.'),
   beforeMessageId: z.string().describe('Page backwards from this message id.').optional(),
-  limit: z.number().describe(`Max messages, 1..${String(SEARCH_LIMIT_MAX)}.`).optional(),
+  limit: z
+    .number()
+    .describe(`Max messages, 1..${String(SEARCH_LIMIT_MAX)}.`)
+    .optional(),
 };
 
 export const getMessageParams = {
@@ -225,21 +227,19 @@ const searchMessagesInner = (
     ...(input.after !== undefined ? { after: input.after } : {}),
     ...(input.limit !== undefined ? { limit: input.limit } : {}),
   });
-  const items = result.hits.map(
-    (hit): EvidenceItem => ({
-      authorId: hit.authorId ?? '(unknown author)',
-      channelId: hit.channelId,
-      messageId: hit.messageId,
-      timestamp: new Date(hit.createdAt).toISOString(),
-      // The `[`/`]` markers around the match come from FTS5 `snippet()`,
-      // not from the member: they are match highlights, kept verbatim so the
-      // client can see why the row matched. The envelope escapes its own
-      // framing markers in every interpolated field, so a member typing
-      // brackets — or the exact envelope delimiters — still cannot forge a
-      // frame; brackets were never the framing mechanism.
-      content: hit.excerpt,
-    }),
-  );
+  const items = result.hits.map((hit): EvidenceItem => ({
+    authorId: hit.authorId ?? '(unknown author)',
+    channelId: hit.channelId,
+    messageId: hit.messageId,
+    timestamp: new Date(hit.createdAt).toISOString(),
+    // The `[`/`]` markers around the match come from FTS5 `snippet()`,
+    // not from the member: they are match highlights, kept verbatim so the
+    // client can see why the row matched. The envelope escapes its own
+    // framing markers in every interpolated field, so a member typing
+    // brackets — or the exact envelope delimiters — still cannot forge a
+    // frame; brackets were never the framing mechanism.
+    content: hit.excerpt,
+  }));
   const noun = result.total === 1 ? 'match' : 'matches';
   const head =
     `Archive search in guild ${gate.guildId}: ` +

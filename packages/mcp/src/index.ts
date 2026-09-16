@@ -29,3 +29,22 @@ export {
   createMcpServer,
   type McpServerDeps,
 } from './server.js';
+export {
+  ARCHIVE_NO_TEXT_MARKER,
+  ARCHIVE_PURGED_MARKER,
+  GET_MESSAGE_TOOL_DESCRIPTION,
+  GET_MESSAGE_TOOL_NAME,
+  getMessageText,
+  READ_CHANNEL_HISTORY_TOOL_DESCRIPTION,
+  READ_CHANNEL_HISTORY_TOOL_NAME,
+  readChannelHistoryText,
+  SEARCH_MESSAGES_TOOL_DESCRIPTION,
+  SEARCH_MESSAGES_TOOL_NAME,
+  searchMessagesText,
+  type ArchiveOutcome,
+  type McpArchivePort,
+  type McpArchiveSearchHit,
+  type McpArchiveSearchInput,
+  type McpArchiveSearchResult,
+  type McpChannelHistoryInput,
+} from './tools/archive.js';

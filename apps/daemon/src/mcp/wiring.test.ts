@@ -217,12 +217,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toEqual([
-      'get_health',
-      'search_messages',
-      'read_channel_history',
-      'get_message',
-    ]);
+    expect(names).toEqual(['get_health', 'search_messages', 'read_channel_history', 'get_message']);
     expect(names).not.toContain('send_message');
   });
 
@@ -300,7 +295,7 @@ describe('/mcp archive tools across two guilds', () => {
 
   const callText = (
     body: string,
-  ): { readonly isError?: boolean; readonly text: string } => {
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
     const bodies = sseData(body);
     expect(bodies.length).toBeGreaterThan(0);
     const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
@@ -408,7 +403,8 @@ describe('/mcp archive tools across two guilds', () => {
   });
 });
 
-describe('/mcp with MCP_PUBLIC_URL unset', () => {  it('answers 404 on /mcp while the SPA fallback still serves unknown paths', async () => {
+describe('/mcp with MCP_PUBLIC_URL unset', () => {
+  it('answers 404 on /mcp while the SPA fallback still serves unknown paths', async () => {
     const bare = buildDashboardApp({ ...deps, mcpPublicUrl: undefined });
     try {
       const accessToken = await mintToken();
