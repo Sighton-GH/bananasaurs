@@ -469,4 +469,73 @@ describe('ADR 0045 D6: revoking the account revokes what it approved (M3b)', () 
     expect(after.json()).toEqual({ error: 'invalid_token' });
     expect(accountRepo.findAccountById(t.scopes.instance(), ACCOUNT)?.disabled).toBe(false);
   });
+
+  it('a pre-revoke authorization code cannot be exchanged after revoke-credentials (M3c fix wave)', async () => {
+    // Drive the flow up to the approval redirect and stop: an issued but
+    // unexchanged code, the credential class the first revoke-credentials
+    // sweep never saw (ADR 0045 Amendment 4 A3-6).
+    const registered = await app.inject({
+      method: 'POST',
+      url: '/oauth/register',
+      payload: { client_name: 'test client', redirect_uris: [REDIRECT] },
+    });
+    expect(registered.statusCode).toBe(201);
+    const clientId = registered.json<{ client_id: string }>().client_id;
+
+    const verifier = generateToken();
+    const page = await app.inject({
+      method: 'GET',
+      url: authorizeQuery({ client_id: clientId, code_challenge: s256(verifier) }),
+    });
+    expect(page.statusCode).toBe(200);
+    const approval = await app.inject({
+      method: 'POST',
+      url: '/oauth/authorize',
+      headers: formHeaders,
+      payload: formBody({
+        requestId: hiddenInput(page.body, 'requestId'),
+        nonce: hiddenInput(page.body, 'nonce'),
+        username: 'owner',
+        password: PASSWORD,
+        decision: 'approve',
+      }),
+    });
+    expect(approval.statusCode).toBe(302);
+    const location = approval.headers.location;
+    if (typeof location !== 'string') throw new Error('approve did not redirect');
+    const code = new URL(location).searchParams.get('code');
+    if (code === null) throw new Error('redirect carried no code');
+
+    // Premise first: the code row exists before the revoke.
+    expect(oauthRepo.findAuthorizationCode(t.scopes.instance(), hashToken(code))).toBeDefined();
+    const liveTokens = (): number =>
+      oauthRepo
+        .listTokens(t.scopes.instance())
+        .filter((row) => row.accountId === ACCOUNT && row.revokedAt === null).length;
+    const liveBefore = liveTokens();
+
+    // The revoke, the way the daemon does it — and the clock does NOT move:
+    // the code is seconds old against its 300 s TTL, so a refusal proves the
+    // revoke and not expiry.
+    oauthRepo.revokeAllTokensForAccount(t.scopes.instance(), { accountId: ACCOUNT, now: clock });
+    oauthRepo.deleteAuthorizationCodesForAccount(t.scopes.instance(), ACCOUNT);
+
+    const exchange = await app.inject({
+      method: 'POST',
+      url: '/oauth/token',
+      headers: formHeaders,
+      payload: formBody({
+        grant_type: 'authorization_code',
+        code,
+        client_id: clientId,
+        redirect_uri: REDIRECT,
+        code_verifier: verifier,
+      }),
+    });
+    expect(exchange.statusCode).toBe(400);
+    expect(exchange.json()).toMatchObject({ error: 'invalid_grant' });
+
+    // The refusal minted nothing: no new token row for the account.
+    expect(liveTokens()).toBe(liveBefore);
+  });
 });
