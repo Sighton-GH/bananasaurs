@@ -29,10 +29,11 @@ export type GuildOutcome = GuildRefusal | GuildResolved;
  * is the single place that conversion happens, so every tool refuses the
  * same way.
  *
- * Refuses when `principal.reachableGuilds` is empty — the ADR 0044 §4
- * obligation-1 case, where a token stays valid for up to an hour after the
- * account lost `mcp.authorize` everywhere — when the id is malformed, and
- * when the parsed id is not in the reachable set.
+ * Refuses when the id is malformed and when the parsed id is not in the
+ * reachable set. An empty `principal.reachableGuilds` therefore refuses
+ * every id as a consequence of that same membership check — the ADR 0044
+ * §4 obligation-1 case, where a token stays valid for up to an hour after
+ * the account lost `mcp.authorize` everywhere — not as a separate refusal.
  *
  * There is deliberately NO separate allowlist check here (ruling M4-D5):
  * `reachableGuilds` is built by filtering `deps.guildIds` in
