@@ -318,7 +318,10 @@ const getModCaseInner = (
   // `safeNotFoundCaseId` above rather than out raw.
   const summary = port.findCase(gate.guildId, parsed.data.caseId);
   if (summary === undefined) {
-    return { ok: true, text: `No mod case ${safeNotFoundCaseId(parsed.data.caseId)} in guild ${gate.guildId}.` };
+    return {
+      ok: true,
+      text: `No mod case ${safeNotFoundCaseId(parsed.data.caseId)} in guild ${gate.guildId}.`,
+    };
   }
   const events = port.listCaseEvents(gate.guildId, parsed.data.caseId);
   const items = events.map(eventToEvidenceItem);

@@ -9,7 +9,6 @@ import {
   undoDedupeKey,
   type Config,
   type OpsInstance,
-  type OpsEligibilityWarning,
   type OpsPorts,
   type OpsSettingChange,
 } from '@bananasaurs/core';
@@ -1120,8 +1119,11 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
   // the review date cross this boundary. `'unknown'` warns as `'not-no'`
   // (`isEligible` is `'no'`-only, hard rule 5), so the not-`'no'` verdict
   // outranks staleness: a row that is both warns once, as `'not-no'`.
-  providerEligibilityWarnings: (nowMs): readonly OpsEligibilityWarning[] => {
-    const warnings: OpsEligibilityWarning[] = [];
+  providerEligibilityWarnings: (nowMs): ReturnType<OpsInstance['providerEligibilityWarnings']> => {
+    // The element type via the port itself, not a second copy of the shape:
+    // core's index does not re-export every member shape (cf. `OpsMcpClient`,
+    // likewise structural here), and this file must not reach past the root.
+    const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
     for (const row of eligibilityRepo.listEligibility(deps.instanceScope)) {
       if (!eligibilityRepo.isEligible(row)) {
         warnings.push({

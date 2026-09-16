@@ -23,7 +23,6 @@ import {
   archiveBackfillDedupeKey,
   JOB_KINDS,
   type OpsInstance,
-  type OpsEligibilityWarning,
   type OpsPorts,
 } from '@bananasaurs/core';
 
@@ -612,7 +611,7 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   // `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the
   // test database, field by field so no `evidenceUrl` crosses.
   providerEligibilityWarnings: (nowMs) => {
-    const warnings: OpsEligibilityWarning[] = [];
+    const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
     for (const row of eligibilityRepo.listEligibility(instanceScope)) {
       if (!eligibilityRepo.isEligible(row)) {
         warnings.push({
