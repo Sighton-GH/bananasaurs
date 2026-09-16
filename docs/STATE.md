@@ -114,31 +114,41 @@ so a dashboard session in a guild since dropped from
 `BANANASAURS_GUILD_ALLOWLIST` is not swept, though every data route then
 fails closed.
 
-**Slice M4 in progress — Tasks 1, 2 and 3 done, on the branch, not merged.**
-`oc/m4-mcp-read-tools` is twenty-seven commits and green (typecheck 0, lint
-0, 162 files / **3,044 tests**, verified green with `packages/mcp/dist`
-absent). It holds `packages/mcp` with the SDK as a pinned runtime dependency,
-an eslint boundary block, a runtime-surface guard, the two primitives every
-tool needs (`requireReachableGuild` / `requireAnyReachableGuild` and the
-evidence envelope), and **the server itself, mounted at `/mcp` behind the
-OAuth bearer guard with `get_health` as its one tool** — stateless transport,
-one server per request, and the tool refusing on an empty reachable guild set
-through the real stack, with the capability genuinely revoked rather than an
-empty array built by hand. **It stays unmerged until the archive tools land
-(Task 4).** Task 4's brief is written and ready at
-`.oc-runs/m4-mcp-read-tools/task-4-brief.md`, with its step 0 already done;
-Tasks 5–8 still need briefs. Paused because the opencode free tier hit
-`FreeUsageLimitError` twenty-two minutes after its reset — Task 3's run alone
-was 27 minutes.
+**Slice M4 in progress — Tasks 1–6 and 7a done, on the branch, not merged;
+one task left.** `oc/m4-mcp-read-tools` is fifty-two commits and green
+(typecheck 0, lint 0, 167 files / **3,139 tests**, verified green with
+`packages/mcp/dist` absent). It now holds the whole read surface: the server
+at `/mcp` behind the bearer guard; `get_health`; the three archive tools
+(`search_messages`, `read_channel_history`, `get_message`) with a visibility
+set built from archive-enabled channels that a caller argument can narrow but
+never widen, and purged content returned as tombstones; the three
+Discord-cache tools (`list_channels`, `list_roles`, `list_members` — the last
+a REST fetch, never the 50-entry member cache, which would have silently
+truncated the club guild); the four records tools and the overview resource,
+sharing one card builder and guarded independently; and the
+`provider_eligibility` table with its seeded row — `trains_on_input: 'no'`,
+reviewed 2026-09-14, the date the owner confirmed it — and the `PRIVACY.md`
+row in the same commit as the migration. **What remains is Task 7b**: the
+`doctor` warning past 90 days as an `OpsInstance` member, plus two Minors.
+Then the whole-branch review and the merge.
 
-Task 3 also found and closed a **merge blocker of the PR-130 shape**: no
-`@bananasaurs/mcp` alias in `vitest.config.ts`, so the package resolved to its
-git-ignored `dist/` and a fresh clone running the gate command would have
-failed with `Failed to resolve entry for package "@bananasaurs/mcp"`. Green in
-every local environment, red in a clean one. The implementer flagged it,
-correctly declined to fix it because the files were outside its brief, and
-the fix round's acceptance criterion was the inverse of the controller's
-probe: the suite must be green with **no build artifact present**. It is.
+Paused because the opencode provider **stalled** — 500 s of silence with a
+155-byte log, the shape that has preceded each `FreeUsageLimitError` — after
+the host's memory watchdog had killed Task 7 four times at `tsc --build
+--force`. Nothing was lost to any of them; every step commits.
+
+Two findings from this stretch worth carrying. **Three "works in tests,
+broken in the daemon" defects shared one cause**: the tests construct the
+composition themselves and can supply what production does not — the
+git-ignored `dist/` a fresh clone lacks, an archive port made optional, a
+discord.js client made optional. Each was caught by an implementer stopping
+at its file boundary and flagging, not by a gate; the fixes made each thing
+**required** so the compiler refuses the daemon without it, and each
+proof-test goes through the real `buildDashboardApp`. And **`message_id` is
+TEXT**, so `ORDER BY message_id` was a string sort — chronological only for
+equal-length snowflakes, which Discord crossed in mid-2022 and the backfill
+reaches; now ordered by digit count then value (ruling M4-D9), pinned by a
+mixed-length test watched failing first.
 
 **ADR 0044 was corrected three times during Task 1 alone, all from one root
 cause, and the implementer found two of them.** The SDK promotion was
