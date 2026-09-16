@@ -10,7 +10,6 @@ import {
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import { SEARCH_LIMIT_MAX } from './archive-search.js';
 import { findCase } from './automod-admin.js';
 
 /**
@@ -58,6 +57,12 @@ export interface UpsertMessageInput {
 
 export const ARCHIVE_DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const ARCHIVE_CASE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * The shared read limit cap: defined here in the lower layer (which
+ * `archive-search.ts` already depends on) so the import points one way.
+ */
+export const SEARCH_LIMIT_MAX = 100;
 
 const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChannel => ({
   channelId: row.channelId,
