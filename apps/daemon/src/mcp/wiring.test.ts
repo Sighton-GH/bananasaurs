@@ -629,7 +629,12 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       id,
       user: { id, username },
       displayName: `${username}-display`,
-      roles: { cache: new Collection([[ROLE_MANAGED, undefined]]) },
+      // The real `GuildMemberRoleManager.cache` unconditionally inserts the
+      // guild-id (@everyone) role first
+      // (`node_modules/discord.js/src/managers/GuildMemberRoleManager.js`),
+      // so the fake carries it too — the port must drop it, matching the
+      // `list_roles` rule that hides `@everyone`.
+      roles: { cache: new Collection([[GUILD_A, undefined], [ROLE_MANAGED, undefined]]) },
       joinedAt: new Date('2024-05-01T00:00:00.000Z'),
     }) as unknown as GuildMember;
 
@@ -783,6 +788,10 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain('rest-ana');
       expect(found.text).toContain('rest-bo');
       expect(found.text).not.toContain('cached-una');
+      // The @everyone guild-id role the manager inserts into every member's
+      // cache is dropped by the port, matching `list_roles`: the roles line
+      // names only the real role, never the guild id.
+      expect(found.text).toContain(`roles: ${ROLE_MANAGED}`);
       // Paginated REST fetch, not a cache read: `cache: false` pinned on the
       // exact options object the port passed to discord.js.
       expect(memberListCalls).toHaveLength(1);

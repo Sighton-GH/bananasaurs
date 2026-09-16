@@ -293,7 +293,15 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
           id: member.id,
           username: member.user.username,
           displayName: member.displayName,
-          roleIds: [...member.roles.cache.keys()].sort(),
+          // `GuildMemberRoleManager.cache` unconditionally inserts the
+          // guild-id (@everyone) role before walking `_roles`
+          // (`cache.set(this.guild.id, this.guild.roles.everyone)` in
+          // `node_modules/discord.js/src/managers/GuildMemberRoleManager.js`),
+          // so the raw key set always contains the guild id — which
+          // `list_roles` deliberately hides. Dropped here to match that rule,
+          // so an operator never sees a role id on a member that appears
+          // nowhere in `list_roles` and has no name anywhere in the toolset.
+          roleIds: [...member.roles.cache.keys()].filter((id) => id !== guildId).sort(),
           // Projected field by field: no presence, no activity, no status —
           // there is nowhere for such a field to hide because each field is
           // named here rather than spread from the discord.js object.

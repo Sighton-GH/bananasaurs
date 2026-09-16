@@ -75,7 +75,13 @@ export interface DashboardAppDeps {
   readonly now: () => number;
   readonly guildIds: readonly string[];
   readonly readonly: boolean;
-  readonly mcpPublicUrl: string | undefined;
+  /**
+   * Optional (rather than `string | undefined` required), matching
+   * `HttpDeps.mcpPublicUrl`: the same test-literal rationale applies, and the
+   * same modifier on both sides is what lets `startDashboardApi` spread its
+   * `httpDeps` into `buildDashboardApp` instead of rebuilding the fields.
+   */
+  readonly mcpPublicUrl?: string | undefined;
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
   readonly distDir: string;
@@ -183,15 +189,11 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     );
   }
 
+  // The eight config-derived fields are the `httpDeps` literal above — spread,
+  // not rebuilt — so a ninth field added to one reaches the other: two
+  // independent literals with the same values would diverge silently.
   const app = buildDashboardApp({
-    scopes: deps.scopes,
-    logger: deps.logger,
-    now: deps.now,
-    guildIds: deps.config.BANANASAURS_GUILD_ALLOWLIST,
-    readonly: deps.config.BANANASAURS_READONLY,
-    mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
-    portsFor: deps.portsFor,
-    instance: deps.instance,
+    ...httpDeps,
     distDir: DASHBOARD_DIST,
     client: deps.client,
   });
