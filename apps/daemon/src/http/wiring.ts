@@ -4,6 +4,7 @@ import type { FastifyInstance } from 'fastify';
 import {
   safeLogFields,
   type Config,
+  type GuildId,
   type Logger,
   type OpsInstance,
   type OpsPorts,
@@ -19,6 +20,7 @@ import {
   registerWriteRoutes,
   type HttpDeps,
 } from '@bananasaurs/http';
+import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
 
 /**
@@ -57,6 +59,61 @@ export interface DashboardApi {
   readonly url: string;
   close(): Promise<void>;
 }
+
+/**
+ * Everything `buildDashboardApp` needs: the `HttpDeps` fields plus the
+ * dashboard `dist` directory. A separate interface rather than
+ * `DashboardApiDeps` so tests can build the app without a full `Config` —
+ * and so the `distDir` under test is a fixture directory, which is what lets
+ * the MCP opt-in test prove the SPA fallback was registered (ruling PR-130).
+ */
+export interface DashboardAppDeps {
+  readonly scopes: ScopeFactory;
+  readonly logger: Logger;
+  readonly now: () => number;
+  readonly guildIds: readonly GuildId[];
+  readonly readonly: boolean;
+  readonly mcpPublicUrl: string | undefined;
+  readonly portsFor: (scope: GuildScope) => OpsPorts;
+  readonly instance: OpsInstance;
+  readonly distDir: string;
+}
+
+/**
+ * Builds the dashboard Fastify app without listening: the same `createServer`
+ * call, the same `registerRoutes` callback and the same static-asset
+ * registration production serves. Exported so the MCP wiring test goes
+ * through the real composition rather than a copy of it.
+ */
+export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
+  const httpDeps: HttpDeps = {
+    scopes: deps.scopes,
+    now: deps.now,
+    guildIds: deps.guildIds,
+    logger: deps.logger,
+    readonly: deps.readonly,
+    portsFor: deps.portsFor,
+    instance: deps.instance,
+    mcpPublicUrl: deps.mcpPublicUrl,
+  };
+  const app = createServer({
+    deps: httpDeps,
+    // One hook, two registrations — `createServer`'s own doc comment on
+    // `registerRoutes` says a route module cannot be written without the
+    // guard it is handed, so both calls go through the same parameter rather
+    // than either becoming a second hook.
+    registerRoutes: (instance, guard, routeDeps) => {
+      registerReadRoutes(instance, guard, routeDeps);
+      registerWriteRoutes(instance, guard, routeDeps);
+      registerAutomodRoutes(instance, guard, routeDeps);
+      registerCaseRoutes(instance, guard, routeDeps);
+      registerOAuthRoutes(instance, guard, routeDeps);
+      registerMcpRoutes(instance, routeDeps);
+    },
+  });
+  registerStaticAssets(app, deps.distDir);
+  return app;
+};
 
 /**
  * Prints the first-run setup banner, exactly as `docs/19` §6.10 step 1 spells it.
@@ -120,21 +177,17 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     );
   }
 
-  const app = createServer({
-    deps: httpDeps,
-    // One hook, two registrations — `createServer`'s own doc comment on
-    // `registerRoutes` says a route module cannot be written without the
-    // guard it is handed, so both calls go through the same parameter rather
-    // than either becoming a second hook.
-    registerRoutes: (instance, guard, routeDeps) => {
-      registerReadRoutes(instance, guard, routeDeps);
-      registerWriteRoutes(instance, guard, routeDeps);
-      registerAutomodRoutes(instance, guard, routeDeps);
-      registerCaseRoutes(instance, guard, routeDeps);
-      registerOAuthRoutes(instance, guard, routeDeps);
-    },
+  const app = buildDashboardApp({
+    scopes: deps.scopes,
+    logger: deps.logger,
+    now: deps.now,
+    guildIds: deps.config.BANANASAURS_GUILD_ALLOWLIST,
+    readonly: deps.config.BANANASAURS_READONLY,
+    mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
+    portsFor: deps.portsFor,
+    instance: deps.instance,
+    distDir: DASHBOARD_DIST,
   });
-  registerStaticAssets(app, DASHBOARD_DIST);
 
   const host = deps.config.DASHBOARD_BIND;
   await app.listen({ host, port: deps.config.DASHBOARD_PORT });
