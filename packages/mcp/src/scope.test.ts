@@ -17,10 +17,16 @@ const principalWith = (...guilds: readonly GuildId[]): McpPrincipal => ({
 
 describe('requireReachableGuild', () => {
   it('obligation 1 (ADR 0044 §4): an empty reachable set refuses even a well-formed guild', () => {
-    expect(requireReachableGuild(principalWith(), '111111111111111111')).toEqual({
-      ok: false,
-      message: GUILD_REFUSAL_MESSAGE,
-    });
+    for (const requestedGuildId of [
+      '111111111111111111',
+      '222222222222222222',
+      'not-a-snowflake',
+    ]) {
+      expect(requireReachableGuild(principalWith(), requestedGuildId)).toEqual({
+        ok: false,
+        message: GUILD_REFUSAL_MESSAGE,
+      });
+    }
   });
 
   it('refuses a well-formed guild id outside the reachable set', () => {
