@@ -643,6 +643,46 @@ describe('listChannelHistory', () => {
     ).toEqual([]);
   });
 
+  it('mixed-length ids order numerically and page across the length boundary', () => {
+    // 18-digit ids predate 19-digit ids numerically, but '9…' > '1…' lexically.
+    const mixed = [
+      '900000000000000001',
+      '999999999999999999',
+      '1000000000000000000',
+      '1100000000000000000',
+    ];
+    enable(a, CHANNEL_A);
+    for (const [i, messageId] of mixed.entries()) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: MEMBER,
+        content: `message ${String(i)}`,
+        createdAt: 2000 + i,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    const expected = [...mixed]
+      .sort((x, y) => (x.length === y.length ? (x < y ? -1 : 1) : x.length - y.length))
+      .reverse();
+    expect(listChannelHistory(a, { channelId: CHANNEL_A }).map((m) => m.messageId)).toEqual(
+      expected,
+    );
+    const page1 = listChannelHistory(a, { channelId: CHANNEL_A, limit: 2 });
+    expect(page1.map((m) => m.messageId)).toEqual(expected.slice(0, 2));
+    const cursor = page1[page1.length - 1];
+    if (cursor === undefined) throw new Error('expected a non-empty page');
+    const page2 = listChannelHistory(a, {
+      channelId: CHANNEL_A,
+      beforeMessageId: cursor.messageId,
+      limit: 2,
+    });
+    expect(page2.map((m) => m.messageId)).toEqual(expected.slice(2, 4));
+    const seen = [...page1, ...page2].map((m) => m.messageId);
+    expect(new Set(seen).size).toBe(4);
+  });
+
   it('a channel not in archive_channels returns [], never a throw', () => {
     // The repository does NOT permit rows for a never-enabled channel: the
     // (guild_id, channel_id) foreign key refuses the insert (`SqliteError:
