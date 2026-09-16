@@ -64,6 +64,20 @@ const boundaryRules = [
     ),
   },
   {
+    files: ['packages/mcp/**/*.ts'],
+    rules: ban(
+      [REST_PORT, REST_MESSAGE],
+      [
+        DISCORD_JS,
+        'packages/mcp reaches Discord through core/effects like everything else — and M4 is read-only, so there is no send path here at all (ADR 0044, design §4).',
+      ],
+      [
+        ['@bananasaurs/http', '@bananasaurs/http/*'],
+        'packages/mcp authorizes with OAuth bearer tokens (ADR 0045), never the dashboard session cookie or local accounts: it has its own authorization boundary and shares only the Fastify instance (ADR 0044, design §4).',
+      ],
+    ),
+  },
+  {
     files: ['packages/cli/**/*.ts'],
     rules: ban(
       [REST_PORT, REST_MESSAGE],
