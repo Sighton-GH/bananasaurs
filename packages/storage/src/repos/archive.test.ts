@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import type { GuildScope } from '../scope.js';
 import {
   archiveAttachments,
+  archiveChannels,
   archiveMessageEdits,
   archiveMessages,
   modCaseEvents,
@@ -579,7 +580,7 @@ describe('findMessage', () => {
 
 describe('listChannelHistory', () => {
   /** Same-length numeric ids, so lexicographic order matches snowflake order. */
-  const historyId = (n: number): string => String(700000000000000000 + n);
+  const historyId = (n: number): string => String(700000000000000000n + BigInt(n));
 
   const seedHistory = (scope: GuildScope, channelId: string, n: number, start = 1): string[] => {
     enable(scope, channelId);
@@ -638,19 +639,23 @@ describe('listChannelHistory', () => {
   });
 
   it('a channel not in archive_channels returns [], never a throw', () => {
-    // `upsertMessage` enforces nothing beyond guild scope (the ingest vetoes
-    // live in the subscriber), so rows can exist for a never-enabled channel.
-    const messageId = historyId(1);
-    upsertMessage(a, {
-      messageId,
-      channelId: CHANNEL_B,
-      authorId: MEMBER,
-      content: 'row without a channel row',
-      createdAt: 2000,
-      editedAt: undefined,
-      attachments: [],
-    });
+    // The repository does NOT permit rows for a never-enabled channel: the
+    // (guild_id, channel_id) foreign key refuses the insert (`SqliteError:
+    // FOREIGN KEY constraint failed`). So the orphan state — message rows
+    // whose channel row is gone — is built by enabling, seeding, then deleting
+    // the channel row with FK enforcement off (`disableChannel` would cascade
+    // the messages away and prove nothing).
+    seedHistory(a, CHANNEL_B, 3);
+    t.db.run(sql`PRAGMA foreign_keys = OFF`);
+    t.db
+      .delete(archiveChannels)
+      .where(and(eq(archiveChannels.guildId, a.guildId), eq(archiveChannels.channelId, CHANNEL_B)))
+      .run();
+    t.db.run(sql`PRAGMA foreign_keys = ON`);
     expect(isChannelEnabled(a, CHANNEL_B)).toBe(false);
+    // The rows are still there — the [] below is the visibility guard, not an
+    // absence of rows.
+    expect(countMessages(a, CHANNEL_B)).toBe(3);
     expect(listChannelHistory(a, { channelId: CHANNEL_B })).toEqual([]);
     expect(listChannelHistory(a, { channelId: '999999999999999999' })).toEqual([]);
   });
