@@ -613,16 +613,21 @@ describe('listChannelHistory', () => {
   });
 
   it('beforeMessageId pages backwards without overlap or gaps', () => {
+    const lastMessageId = (messages: readonly { readonly messageId: string }[]): string => {
+      const last = messages[messages.length - 1];
+      if (last === undefined) throw new Error('expected a non-empty page');
+      return last.messageId;
+    };
     const ids = seedHistory(a, CHANNEL_A, 7);
     const page1 = listChannelHistory(a, { channelId: CHANNEL_A, limit: 3 });
     const page2 = listChannelHistory(a, {
       channelId: CHANNEL_A,
-      beforeMessageId: page1[page1.length - 1]?.messageId,
+      beforeMessageId: lastMessageId(page1),
       limit: 3,
     });
     const page3 = listChannelHistory(a, {
       channelId: CHANNEL_A,
-      beforeMessageId: page2[page2.length - 1]?.messageId,
+      beforeMessageId: lastMessageId(page2),
       limit: 3,
     });
     const seen = [...page1, ...page2, ...page3].map((m) => m.messageId);
@@ -632,7 +637,7 @@ describe('listChannelHistory', () => {
     expect(
       listChannelHistory(a, {
         channelId: CHANNEL_A,
-        beforeMessageId: page3[page3.length - 1]?.messageId,
+        beforeMessageId: lastMessageId(page3),
         limit: 3,
       }),
     ).toEqual([]);
@@ -691,12 +696,14 @@ describe('listChannelHistory', () => {
 
   it('a purged message is returned as a tombstone, not omitted', () => {
     const ids = seedHistory(a, CHANNEL_A, 3);
+    const purgedId = ids[1];
+    if (purgedId === undefined) throw new Error('seedHistory returned fewer than 2 ids');
     const deletedAt = 10_000;
-    expect(recordDelete(a, { messageId: ids[1], deletedAt })).toBe('recorded');
+    expect(recordDelete(a, { messageId: purgedId, deletedAt })).toBe('recorded');
     expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS)).toBe(1);
     const history = listChannelHistory(a, { channelId: CHANNEL_A });
     expect(history.map((m) => m.messageId)).toEqual([ids[2], ids[1], ids[0]]);
-    const tombstone = history.find((m) => m.messageId === ids[1]);
+    const tombstone = history.find((m) => m.messageId === purgedId);
     expect(tombstone?.content).toBeNull();
     expect(tombstone?.contentPurgedAt).toBe(deletedAt + ARCHIVE_DEFAULT_RETENTION_MS);
     expect(tombstone).toMatchObject({
