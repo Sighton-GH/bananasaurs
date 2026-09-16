@@ -7,6 +7,7 @@ import {
   automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
+  eligibilityRepo,
   enforcementGateRepo,
   guildRepo,
   jobRepo,
@@ -605,6 +606,56 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   mcpRevokeClient: (clientId) => {
     if (oauthRepo.findClient(instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(instanceScope, clientId, now());
+  },
+  // Canonical implementation: `providerEligibilityWarnings` in
+  // `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the
+  // test database, field by field so no `evidenceUrl` crosses. One warning
+  // per row, most serious first: `not-no` before `not-production` before
+  // `stale` — a row that both trains on input and disallows production use
+  // warns once, as `not-no`.
+  providerEligibilityWarnings: (nowMs) => {
+    const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
+    for (const row of eligibilityRepo.listEligibility(instanceScope)) {
+      if (!eligibilityRepo.isEligible(row)) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-no',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (!row.productionUseAllowed) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-production',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (nowMs - row.reviewedAt > eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'stale',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      }
+    }
+    return warnings;
+  },
+  // Ruling M4-D20: read first so the result carries the confirmed claims and
+  // the previous review date, then write `reviewed_at` and nothing else.
+  providerReview: (provider) => {
+    const row = eligibilityRepo.findEligibility(instanceScope, provider);
+    if (row === undefined) return 'no-such-provider';
+    const at = now();
+    eligibilityRepo.recordEligibilityReview(instanceScope, { provider, now: at });
+    return {
+      provider: row.provider,
+      trainsOnInput: row.trainsOnInput,
+      evidenceUrl: row.evidenceUrl,
+      productionUseAllowed: row.productionUseAllowed,
+      reviewedAt: at,
+      previouslyReviewedAt: row.reviewedAt,
+    };
   },
   // Canonical implementation: `accountOpsFor` in `apps/daemon/src/ops/wiring.ts`; this is the same mapping against the test database, field by field so no `passwordHash` crosses.
   accountList: () =>

@@ -23,6 +23,9 @@ export default defineConfig({
       '@bananasaurs/storage': src('./packages/storage/src/index.ts'),
       '@bananasaurs/http': src('./packages/http/src/index.ts'),
       '@bananasaurs/testkit': src('./packages/testkit/src/index.ts'),
+      // The newest package goes last, like its neighbours: no subpath
+      // entries exist for it, so there is no prefix ordering to preserve.
+      '@bananasaurs/mcp': src('./packages/mcp/src/index.ts'),
     },
   },
   test: {

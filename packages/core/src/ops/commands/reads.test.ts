@@ -433,6 +433,65 @@ describe('bananasaurs doctor', () => {
     expect(res.data).toMatchObject({ ok: true });
   });
 
+  it('reports every provider verified when no eligibility warning is due', async () => {
+    const res = await drive(doctorCommand, healthy, {}, { providerEligibilityWarnings: () => [] });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('training eligibility    every provider verified');
+    expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('fails doctor on a not-production eligibility warning', async () => {
+    const reviewedAt = NOW - 24 * 60 * 60 * 1000;
+    const res = await drive(
+      doctorCommand,
+      healthy,
+      {},
+      {
+        providerEligibilityWarnings: () => [
+          {
+            provider: 'anthropic-consumer-mcp',
+            reason: 'not-production',
+            trainsOnInput: 'no',
+            reviewedAt,
+          },
+        ],
+      },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('anthropic-consumer-mcp');
+    expect(res.text).toContain('not-production');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('names each warned provider with its reason and ISO review date, and fails the check', async () => {
+    const reviewedAt = NOW - 91 * 24 * 60 * 60 * 1000;
+    const res = await drive(
+      doctorCommand,
+      healthy,
+      {},
+      {
+        providerEligibilityWarnings: () => [
+          {
+            provider: 'anthropic-consumer-mcp',
+            reason: 'stale',
+            trainsOnInput: 'no',
+            reviewedAt,
+          },
+        ],
+      },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('anthropic-consumer-mcp');
+    expect(res.text).toContain('stale');
+    expect(res.text).toContain(new Date(reviewedAt).toISOString().slice(0, 10));
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
   it('fails when the gateway half fails, and says so', async () => {
     const res = await drive(
       doctorCommand,

@@ -1,6 +1,6 @@
 # Bananasaurs — Privacy Policy
 
-**Last updated:** 2026-08-22
+**Last updated:** 2026-09-16
 **Applies to:** the Bananasaurs bot running in `<SERVER NAME>`
 **Operator:** `<OWNER NAME / CONTACT>`
 
@@ -85,6 +85,7 @@ Bananasaurs only uses providers whose terms state they **do not train models on 
 | Archived messages linked to a moderation case | Content kept until the case closes, then 90 days |
 | Archived messages the owner marked preserved | Kept indefinitely; the audit log records who preserved it and when |
 | Attachments on archived messages | File name, type and size only; no file contents are downloaded |
+| The record that Claude — the AI tool the owner uses to read the server — is set not to train on your messages | The owner re-checks that account setting by hand; the bot warns when the check is more than 90 days old, or when the record says the tool does train on input |
 
 Current settings are shown by `/privacy`. If they change, this policy is updated and the change is announced in the server.
 

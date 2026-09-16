@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, inArray, isNotNull, isNull } from 'drizzle-orm';
+import { asc, count, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../db.js';
 import {
   archiveAttachments,
@@ -57,6 +57,12 @@ export interface UpsertMessageInput {
 
 export const ARCHIVE_DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 export const ARCHIVE_CASE_RETENTION_MS = 90 * 24 * 60 * 60 * 1000;
+
+/**
+ * The shared read limit cap: defined here in the lower layer (which
+ * `archive-search.ts` already depends on) so the import points one way.
+ */
+export const SEARCH_LIMIT_MAX = 100;
 
 const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChannel => ({
   channelId: row.channelId,
@@ -493,4 +499,69 @@ export const findMessage = (scope: GuildScope, messageId: string): ArchiveMessag
       .where(scope.only(archiveMessages, eq(archiveMessages.messageId, messageId)))
       .get();
     return row === undefined ? undefined : toArchiveMessage(row);
+  });
+
+const LIST_CHANNEL_HISTORY_LIMIT_DEFAULT = 20;
+
+/**
+ * One channel's archived messages, newest first (Ruling M4-D3).
+ *
+ * Newest first means ordered numerically by `message_id` descending.
+ * Discord snowflakes are time-ordered as numbers, not as strings, so the
+ * query orders by digit count then value (`length(message_id) DESC,
+ * message_id DESC`): that is numeric order for digit strings without an
+ * integer cast, which would overflow at 20 digits (SQLite integers are
+ * signed 64-bit). The `beforeMessageId` cursor uses the same comparison —
+ * fewer digits, or the same length and lexically below — so paging stays
+ * stable across the length boundary.
+ *
+ * The same visibility rule `searchMessages` enforces: the visible set is the
+ * guild's archive-enabled channels, built here from `archive_channels` —
+ * never from caller input. A channel not in `archive_channels` returns an
+ * empty list, not an error, so the call cannot reveal whether the channel
+ * exists. A purged message is returned as its tombstone (`content: null`,
+ * metadata intact), never omitted.
+ *
+ * `limit` is capped at `SEARCH_LIMIT_MAX` (100), reused rather than
+ * re-numbered. An absent, non-finite, or zero-or-negative limit is treated as
+ * the default (20); a fractional limit is floored.
+ */
+export const listChannelHistory = (
+  scope: GuildScope,
+  input: {
+    readonly channelId: string;
+    readonly beforeMessageId?: string;
+    readonly limit?: number;
+  },
+): readonly ArchiveMessage[] =>
+  read(scope, (db) => {
+    const channel = db
+      .select({ channelId: archiveChannels.channelId })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
+      .get();
+    if (channel === undefined) return [];
+
+    const wanted = input.limit;
+    const limit =
+      wanted === undefined || !Number.isFinite(wanted) || Math.floor(wanted) <= 0
+        ? LIST_CHANNEL_HISTORY_LIMIT_DEFAULT
+        : Math.min(Math.floor(wanted), SEARCH_LIMIT_MAX);
+
+    return db
+      .select()
+      .from(archiveMessages)
+      .where(
+        scope.only(
+          archiveMessages,
+          eq(archiveMessages.channelId, input.channelId),
+          input.beforeMessageId === undefined
+            ? undefined
+            : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
+        ),
+      )
+      .orderBy(sql`length(${archiveMessages.messageId}) DESC`, desc(archiveMessages.messageId))
+      .limit(limit)
+      .all()
+      .map(toArchiveMessage);
   });

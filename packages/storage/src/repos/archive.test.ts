@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { and, asc, eq } from 'drizzle-orm';
+import { and, asc, eq, sql } from 'drizzle-orm';
 import { parseGuildId } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import type { GuildScope } from '../scope.js';
 import {
   archiveAttachments,
+  archiveChannels,
   archiveMessageEdits,
   archiveMessages,
   modCaseEvents,
@@ -23,6 +24,7 @@ import {
   findMessage,
   isChannelEnabled,
   linkToCase,
+  listChannelHistory,
   listChannels,
   markPreserve,
   recordBulkDelete,
@@ -31,6 +33,7 @@ import {
   setBackfillCursor,
   upsertMessage,
 } from './archive.js';
+import { SEARCH_LIMIT_MAX } from './archive-search.js';
 
 /**
  * The archive repository against the real migrations.
@@ -572,5 +575,196 @@ describe('findMessage', () => {
     expect(tombstone?.messageId).toBe(messageId);
     expect(tombstone?.content).toBeNull();
     expect(tombstone?.contentPurgedAt).toBe(deletedAt + ARCHIVE_DEFAULT_RETENTION_MS);
+  });
+});
+
+describe('listChannelHistory', () => {
+  /** Same-length numeric ids, so lexicographic order matches snowflake order. */
+  const historyId = (n: number): string => String(700000000000000000n + BigInt(n));
+
+  const seedHistory = (scope: GuildScope, channelId: string, n: number, start = 1): string[] => {
+    enable(scope, channelId);
+    const ids: string[] = [];
+    for (let i = start; i < start + n; i += 1) {
+      const messageId = historyId(i);
+      upsertMessage(scope, {
+        messageId,
+        channelId,
+        authorId: MEMBER,
+        content: `message ${String(i)}`,
+        createdAt: 2000 + i,
+        editedAt: undefined,
+        attachments: [],
+      });
+      ids.push(messageId);
+    }
+    return ids;
+  };
+
+  it('returns a channel messages newest first, respecting limit', () => {
+    const ids = seedHistory(a, CHANNEL_A, 5);
+    const expected = [...ids].reverse();
+    expect(listChannelHistory(a, { channelId: CHANNEL_A }).map((m) => m.messageId)).toEqual(
+      expected,
+    );
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, limit: 3 }).map((m) => m.messageId),
+    ).toEqual(expected.slice(0, 3));
+  });
+
+  it('beforeMessageId pages backwards without overlap or gaps', () => {
+    const lastMessageId = (messages: readonly { readonly messageId: string }[]): string => {
+      const last = messages[messages.length - 1];
+      if (last === undefined) throw new Error('expected a non-empty page');
+      return last.messageId;
+    };
+    const ids = seedHistory(a, CHANNEL_A, 7);
+    const page1 = listChannelHistory(a, { channelId: CHANNEL_A, limit: 3 });
+    const page2 = listChannelHistory(a, {
+      channelId: CHANNEL_A,
+      beforeMessageId: lastMessageId(page1),
+      limit: 3,
+    });
+    const page3 = listChannelHistory(a, {
+      channelId: CHANNEL_A,
+      beforeMessageId: lastMessageId(page2),
+      limit: 3,
+    });
+    const seen = [...page1, ...page2, ...page3].map((m) => m.messageId);
+    expect(seen).toHaveLength(7);
+    expect(new Set(seen).size).toBe(7);
+    expect(seen).toEqual([...ids].reverse());
+    expect(
+      listChannelHistory(a, {
+        channelId: CHANNEL_A,
+        beforeMessageId: lastMessageId(page3),
+        limit: 3,
+      }),
+    ).toEqual([]);
+  });
+
+  it('mixed-length ids order numerically and page across the length boundary', () => {
+    // 18-digit ids predate 19-digit ids numerically, but '9…' > '1…' lexically.
+    const mixed = [
+      '900000000000000001',
+      '999999999999999999',
+      '1000000000000000000',
+      '1100000000000000000',
+    ];
+    enable(a, CHANNEL_A);
+    for (const [i, messageId] of mixed.entries()) {
+      upsertMessage(a, {
+        messageId,
+        channelId: CHANNEL_A,
+        authorId: MEMBER,
+        content: `message ${String(i)}`,
+        createdAt: 2000 + i,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    const expected = [...mixed]
+      .sort((x, y) => (x.length === y.length ? (x < y ? -1 : 1) : x.length - y.length))
+      .reverse();
+    expect(listChannelHistory(a, { channelId: CHANNEL_A }).map((m) => m.messageId)).toEqual(
+      expected,
+    );
+    const page1 = listChannelHistory(a, { channelId: CHANNEL_A, limit: 2 });
+    expect(page1.map((m) => m.messageId)).toEqual(expected.slice(0, 2));
+    const cursor = page1[page1.length - 1];
+    if (cursor === undefined) throw new Error('expected a non-empty page');
+    const page2 = listChannelHistory(a, {
+      channelId: CHANNEL_A,
+      beforeMessageId: cursor.messageId,
+      limit: 2,
+    });
+    expect(page2.map((m) => m.messageId)).toEqual(expected.slice(2, 4));
+    const seen = [...page1, ...page2].map((m) => m.messageId);
+    expect(new Set(seen).size).toBe(4);
+  });
+
+  it('a channel not in archive_channels returns [], never a throw', () => {
+    // The repository does NOT permit rows for a never-enabled channel: the
+    // (guild_id, channel_id) foreign key refuses the insert (`SqliteError:
+    // FOREIGN KEY constraint failed`). So the orphan state — message rows
+    // whose channel row is gone — is built by enabling, seeding, then deleting
+    // the channel row with FK enforcement off (`disableChannel` would cascade
+    // the messages away and prove nothing).
+    seedHistory(a, CHANNEL_B, 3);
+    t.db.run(sql`PRAGMA foreign_keys = OFF`);
+    t.db
+      .delete(archiveChannels)
+      .where(and(eq(archiveChannels.guildId, a.guildId), eq(archiveChannels.channelId, CHANNEL_B)))
+      .run();
+    t.db.run(sql`PRAGMA foreign_keys = ON`);
+    expect(isChannelEnabled(a, CHANNEL_B)).toBe(false);
+    // The rows are still there — the [] below is the visibility guard, not an
+    // absence of rows.
+    expect(countMessages(a, CHANNEL_B)).toBe(3);
+    expect(listChannelHistory(a, { channelId: CHANNEL_B })).toEqual([]);
+    expect(listChannelHistory(a, { channelId: '999999999999999999' })).toEqual([]);
+  });
+
+  it('two guilds: guild A never sees guild B rows for the same channel id', () => {
+    seedHistory(a, CHANNEL_A, 3, 1);
+    seedHistory(b, CHANNEL_A, 3, 100);
+    expect(listChannelHistory(a, { channelId: CHANNEL_A }).map((m) => m.messageId)).toEqual([
+      historyId(3),
+      historyId(2),
+      historyId(1),
+    ]);
+    expect(listChannelHistory(b, { channelId: CHANNEL_A }).map((m) => m.messageId)).toEqual([
+      historyId(102),
+      historyId(101),
+      historyId(100),
+    ]);
+  });
+
+  it('a limit above SEARCH_LIMIT_MAX is capped; 0 or negative means the default', () => {
+    expect(SEARCH_LIMIT_MAX).toBe(100);
+    seedHistory(a, CHANNEL_A, SEARCH_LIMIT_MAX + 5);
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, limit: SEARCH_LIMIT_MAX + 1000 }),
+    ).toHaveLength(SEARCH_LIMIT_MAX);
+    const def = listChannelHistory(a, { channelId: CHANNEL_A });
+    for (const limit of [0, -1, -100]) {
+      expect(
+        listChannelHistory(a, { channelId: CHANNEL_A, limit }).map((m) => m.messageId),
+      ).toEqual(def.map((m) => m.messageId));
+    }
+  });
+
+  it('fractional limits floor; non-finite limits mean the default', () => {
+    const ids = seedHistory(a, CHANNEL_A, 5);
+    const expected = [...ids].reverse();
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, limit: 2.9 }).map((m) => m.messageId),
+    ).toEqual(expected.slice(0, 2));
+    const def = listChannelHistory(a, { channelId: CHANNEL_A });
+    expect(def.map((m) => m.messageId)).toEqual(expected);
+    for (const limit of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        listChannelHistory(a, { channelId: CHANNEL_A, limit }).map((m) => m.messageId),
+      ).toEqual(def.map((m) => m.messageId));
+    }
+  });
+
+  it('a purged message is returned as a tombstone, not omitted', () => {
+    const ids = seedHistory(a, CHANNEL_A, 3);
+    const purgedId = ids[1];
+    if (purgedId === undefined) throw new Error('seedHistory returned fewer than 2 ids');
+    const deletedAt = 10_000;
+    expect(recordDelete(a, { messageId: purgedId, deletedAt })).toBe('recorded');
+    expect(expireContent(a, deletedAt + ARCHIVE_DEFAULT_RETENTION_MS)).toBe(1);
+    const history = listChannelHistory(a, { channelId: CHANNEL_A });
+    expect(history.map((m) => m.messageId)).toEqual([ids[2], ids[1], ids[0]]);
+    const tombstone = history.find((m) => m.messageId === purgedId);
+    expect(tombstone?.content).toBeNull();
+    expect(tombstone?.contentPurgedAt).toBe(deletedAt + ARCHIVE_DEFAULT_RETENTION_MS);
+    expect(tombstone).toMatchObject({
+      channelId: CHANNEL_A,
+      authorId: MEMBER,
+      retentionClass: 'default',
+    });
   });
 });

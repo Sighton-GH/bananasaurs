@@ -22,6 +22,7 @@ import {
   automodRuleListsRepo,
   automodRuleRepo,
   effectRepo,
+  eligibilityRepo,
   enforcementGateRepo,
   guildRepo,
   jobRepo,
@@ -1109,6 +1110,71 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
   mcpRevokeClient: (clientId) => {
     if (oauthRepo.findClient(deps.instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(deps.instanceScope, clientId, deps.now());
+  },
+  // ADR 0044 §7: the training-eligibility control behind hard rule 5.
+  // Instance-level, the same reason `mcpClients` is — a provider is a fact
+  // about the daemon, not a guild — so this reads `deps.instanceScope`
+  // directly. Field by field: the row carries an `evidenceUrl` that must
+  // never be logged (Pino allowlist), so only the provider, the verdict and
+  // the review date cross this boundary.
+  //
+  // One warning per row, ordered most serious first: `'unknown'` warns as
+  // `'not-no'` (`isEligible` is `'no'`-only, hard rule 5), so the not-`'no'`
+  // verdict outranks everything — a row that both trains on input and
+  // disallows production use warns once, as `'not-no'`, never as merely
+  // `'not-production'`. `not-production` (ruling M4-D21: half of ADR 0010
+  // §2's gate, the NIM free-tier case) outranks staleness: a row whose review
+  // is merely old is a promise nobody recently verified, while a row that
+  // disallows production use is a promise that does not cover this daemon.
+  providerEligibilityWarnings: (nowMs): ReturnType<OpsInstance['providerEligibilityWarnings']> => {
+    // The element type via the port itself, not a second copy of the shape:
+    // core's index does not re-export every member shape (cf. `OpsMcpClient`,
+    // likewise structural here), and this file must not reach past the root.
+    const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
+    for (const row of eligibilityRepo.listEligibility(deps.instanceScope)) {
+      if (!eligibilityRepo.isEligible(row)) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-no',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (!row.productionUseAllowed) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'not-production',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      } else if (nowMs - row.reviewedAt > eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS) {
+        warnings.push({
+          provider: row.provider,
+          reason: 'stale',
+          trainsOnInput: row.trainsOnInput,
+          reviewedAt: row.reviewedAt,
+        });
+      }
+    }
+    return warnings;
+  },
+  // Ruling M4-D20: read first so the result carries the confirmed claims and
+  // the previous review date, then write `reviewed_at` and nothing else.
+  // Field by field, the same reason `providerEligibilityWarnings` above maps
+  // field by field — except `evidenceUrl`, which the command prints back and
+  // therefore must cross here.
+  providerReview: (provider): ReturnType<OpsInstance['providerReview']> => {
+    const row = eligibilityRepo.findEligibility(deps.instanceScope, provider);
+    if (row === undefined) return 'no-such-provider';
+    const now = deps.now();
+    eligibilityRepo.recordEligibilityReview(deps.instanceScope, { provider, now });
+    return {
+      provider: row.provider,
+      trainsOnInput: row.trainsOnInput,
+      evidenceUrl: row.evidenceUrl,
+      productionUseAllowed: row.productionUseAllowed,
+      reviewedAt: now,
+      previouslyReviewedAt: row.reviewedAt,
+    };
   },
   ...accountOpsFor(deps.instanceScope, deps.guildScopes, deps.now),
 });

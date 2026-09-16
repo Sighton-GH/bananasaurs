@@ -1651,3 +1651,28 @@ export const capabilityGrants = sqliteTable(
     check('capability_grants_principal_id_snowflake', snowflakeCheck(t.principalId)),
   ],
 );
+
+/**
+ * Training-eligibility record (ADR 0044 §7, ADR 0010 §1). Instance-level
+ * (ADR 0027): a provider is a fact about the daemon, not a guild — the same
+ * reason `bootstrap_tokens` and `oauth_clients` carry no `guild_id`.
+ */
+export const providerEligibility = sqliteTable(
+  'provider_eligibility',
+  {
+    provider: text('provider').primaryKey(),
+    trainsOnInput: text('trains_on_input').notNull(),
+    /** The settings page / clause cited as evidence. */
+    evidenceUrl: text('evidence_url').notNull(),
+    productionUseAllowed: integer('production_use_allowed').notNull(),
+    /** Epoch-ms the evidence was last verified. */
+    reviewedAt: integer('reviewed_at').notNull(),
+  },
+  (t) => [
+    check(
+      'provider_eligibility_trains_on_input',
+      sql`${t.trainsOnInput} IN ('no','yes','unknown')`,
+    ),
+    check('provider_eligibility_production_use_allowed_bool', boolCheck(t.productionUseAllowed)),
+  ],
+);

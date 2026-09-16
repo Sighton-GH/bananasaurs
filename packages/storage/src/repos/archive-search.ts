@@ -3,6 +3,9 @@ import { sql } from 'drizzle-orm';
 import type { Db } from '../db.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
+import { SEARCH_LIMIT_MAX } from './archive.js';
+
+export { SEARCH_LIMIT_MAX };
 
 /**
  * Full-text search over the archive (ADR 0049, Slice M2 Task 3).
@@ -39,7 +42,6 @@ export interface SearchResult {
 
 export const SEARCH_SNIPPET_OPEN = '[';
 export const SEARCH_SNIPPET_CLOSE = ']';
-export const SEARCH_LIMIT_MAX = 100;
 /**
  * The largest visibility set a search binds: one `?` placeholder per channel,
  * well under SQLite's 32766-variable limit. Above it the function throws

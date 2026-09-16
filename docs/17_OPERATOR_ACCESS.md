@@ -75,7 +75,23 @@ bananasaurs mcp clients                      # registered OAuth clients (no clie
 bananasaurs mcp tokens                       # every token row, live or revoked — ids only
 bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
 bananasaurs mcp revoke-client <client-id> --confirm
+bananasaurs provider review <provider> --confirm
+                                              # records that the owner re-checked the
+                                              # training-eligibility row as it stands — it
+                                              # writes the review date, not the row's claims
 ```
+
+**Scopes, when you connect a client (slice M4).** The consent page offers two:
+`bananasaurs:read` — read messages, cases and server settings — and
+`bananasaurs:send`, which is reserved for the write tool slice M5 adds and
+today grants nothing. Approve **`bananasaurs:read`**. The tools are filtered
+at registration rather than refused on call, so a token holding only
+`bananasaurs:send` connects successfully and then answers
+`-32601 Method not found` to `tools/list` and to every other method: with no
+tool registered, the MCP SDK never installs those handlers at all. That is
+the intended security behaviour and not a broken server, but several MCP
+clients report it as one — so if a freshly connected client says the server
+has no methods, check which scope was approved before checking anything else.
 
 The five `account` commands act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
 

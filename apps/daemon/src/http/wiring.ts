@@ -1,6 +1,7 @@
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
+import type { Client } from 'discord.js';
 import {
   safeLogFields,
   type Config,
@@ -19,6 +20,7 @@ import {
   registerWriteRoutes,
   type HttpDeps,
 } from '@bananasaurs/http';
+import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
 
 /**
@@ -50,6 +52,8 @@ export interface DashboardApiDeps {
   /** The daemon's seam into per-guild ports (`apps/daemon/src/runtime/daemon.ts`). */
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
+  /** The gateway client, for the MCP guild tools (ruling M4-D12). */
+  readonly client: Client;
 }
 
 export interface DashboardApi {
@@ -57,6 +61,71 @@ export interface DashboardApi {
   readonly url: string;
   close(): Promise<void>;
 }
+
+/**
+ * Everything `buildDashboardApp` needs: the `HttpDeps` fields plus the
+ * dashboard `dist` directory. A separate interface rather than
+ * `DashboardApiDeps` so tests can build the app without a full `Config` —
+ * and so the `distDir` under test is a fixture directory, which is what lets
+ * the MCP opt-in test prove the SPA fallback was registered (ruling PR-130).
+ */
+export interface DashboardAppDeps {
+  readonly scopes: ScopeFactory;
+  readonly logger: Logger;
+  readonly now: () => number;
+  readonly guildIds: readonly string[];
+  readonly readonly: boolean;
+  /**
+   * Optional (rather than `string | undefined` required), matching
+   * `HttpDeps.mcpPublicUrl`: the same test-literal rationale applies, and the
+   * same modifier on both sides is what lets `startDashboardApi` spread its
+   * `httpDeps` into `buildDashboardApp` instead of rebuilding the fields.
+   */
+  readonly mcpPublicUrl?: string | undefined;
+  readonly portsFor: (scope: GuildScope) => OpsPorts;
+  readonly instance: OpsInstance;
+  readonly distDir: string;
+  /** The gateway client, for the MCP guild tools (ruling M4-D12). */
+  readonly client: Client;
+}
+
+/**
+ * Builds the dashboard Fastify app without listening: the same `createServer`
+ * call, the same `registerRoutes` callback and the same static-asset
+ * registration production serves. Exported so the MCP wiring test goes
+ * through the real composition rather than a copy of it.
+ */
+export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
+  const httpDeps: HttpDeps = {
+    scopes: deps.scopes,
+    now: deps.now,
+    guildIds: deps.guildIds,
+    logger: deps.logger,
+    readonly: deps.readonly,
+    portsFor: deps.portsFor,
+    instance: deps.instance,
+    mcpPublicUrl: deps.mcpPublicUrl,
+  };
+  const app = createServer({
+    deps: httpDeps,
+    // One hook, two registrations — `createServer`'s own doc comment on
+    // `registerRoutes` says a route module cannot be written without the
+    // guard it is handed, so every session-guarded route goes through the
+    // same parameter rather than any becoming a second hook. The MCP route
+    // below is the exception that proves it: bearer-authenticated, so it
+    // takes the deps and not the guard.
+    registerRoutes: (instance, guard, routeDeps) => {
+      registerReadRoutes(instance, guard, routeDeps);
+      registerWriteRoutes(instance, guard, routeDeps);
+      registerAutomodRoutes(instance, guard, routeDeps);
+      registerCaseRoutes(instance, guard, routeDeps);
+      registerOAuthRoutes(instance, guard, routeDeps);
+      registerMcpRoutes(instance, routeDeps, deps.client);
+    },
+  });
+  registerStaticAssets(app, deps.distDir);
+  return app;
+};
 
 /**
  * Prints the first-run setup banner, exactly as `docs/19` §6.10 step 1 spells it.
@@ -120,21 +189,14 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     );
   }
 
-  const app = createServer({
-    deps: httpDeps,
-    // One hook, two registrations — `createServer`'s own doc comment on
-    // `registerRoutes` says a route module cannot be written without the
-    // guard it is handed, so both calls go through the same parameter rather
-    // than either becoming a second hook.
-    registerRoutes: (instance, guard, routeDeps) => {
-      registerReadRoutes(instance, guard, routeDeps);
-      registerWriteRoutes(instance, guard, routeDeps);
-      registerAutomodRoutes(instance, guard, routeDeps);
-      registerCaseRoutes(instance, guard, routeDeps);
-      registerOAuthRoutes(instance, guard, routeDeps);
-    },
+  // The eight config-derived fields are the `httpDeps` literal above — spread,
+  // not rebuilt — so a ninth field added to one reaches the other: two
+  // independent literals with the same values would diverge silently.
+  const app = buildDashboardApp({
+    ...httpDeps,
+    distDir: DASHBOARD_DIST,
+    client: deps.client,
   });
-  registerStaticAssets(app, DASHBOARD_DIST);
 
   const host = deps.config.DASHBOARD_BIND;
   await app.listen({ host, port: deps.config.DASHBOARD_PORT });

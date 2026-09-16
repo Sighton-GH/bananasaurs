@@ -212,6 +212,7 @@ async function main(): Promise<void> {
       now: () => Date.now(),
       portsFor: daemon.portsFor,
       instance: daemon.instance,
+      client,
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and
