@@ -71,13 +71,14 @@ describe('envelope', () => {
       .slice(1)
       .map((part) => part.slice(0, part.indexOf(EVIDENCE_CLOSE)));
     expect(bodies).toHaveLength(2);
+    const [firstBody = '', secondBody = ''] = bodies;
     for (const body of bodies) {
       expect(body).not.toContain(EVIDENCE_OPEN);
       expect(body).not.toContain(EVIDENCE_CLOSE);
       expect(body).not.toContain(EVIDENCE_PREAMBLE);
     }
-    expect(isSubsequence(EVIDENCE_CLOSE, bodies[0])).toBe(true);
-    expect(isSubsequence(forged, bodies[1])).toBe(true);
+    expect(isSubsequence(EVIDENCE_CLOSE, firstBody)).toBe(true);
+    expect(isSubsequence(forged, secondBody)).toBe(true);
   });
 
   it('metadata containing a marker cannot forge framing', () => {
