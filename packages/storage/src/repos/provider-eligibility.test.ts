@@ -10,6 +10,7 @@ import {
   isEligible,
   listEligibility,
   listStaleEligibility,
+  recordEligibilityReview,
   type EligibilityRow,
 } from './provider-eligibility.js';
 
@@ -98,6 +99,44 @@ describe('the migration-seeded row (ruling M4-D16)', () => {
       productionUseAllowed: true,
       reviewedAt: CONFIRMED_AT,
     });
+  });
+});
+
+describe('recordEligibilityReview (ruling M4-D20)', () => {
+  it('moves reviewed_at and leaves every other column untouched', () => {
+    const before = findEligibility(instance, 'anthropic-consumer-mcp');
+    expect(before).toBeDefined();
+    const now = CONFIRMED_AT + 10 * DAY_MS;
+    expect(recordEligibilityReview(instance, { provider: 'anthropic-consumer-mcp', now })).toBe(
+      true,
+    );
+    const after = findEligibility(instance, 'anthropic-consumer-mcp');
+    expect(after).toBeDefined();
+    expect(after?.reviewedAt).toBe(now);
+    expect(after?.trainsOnInput).toBe(before?.trainsOnInput);
+    expect(after?.evidenceUrl).toBe(before?.evidenceUrl);
+    expect(after?.productionUseAllowed).toBe(before?.productionUseAllowed);
+    expect(after?.provider).toBe(before?.provider);
+  });
+
+  it('returns false and writes nothing for an unknown provider', () => {
+    const now = CONFIRMED_AT + 10 * DAY_MS;
+    expect(recordEligibilityReview(instance, { provider: 'no-such-provider', now })).toBe(false);
+    expect(findEligibility(instance, 'no-such-provider')).toBeUndefined();
+    expect(findEligibility(instance, 'anthropic-consumer-mcp')?.reviewedAt).toBe(CONFIRMED_AT);
+  });
+
+  it('a row reviewed now is no longer stale at the same clock', () => {
+    const now = CONFIRMED_AT + 100 * DAY_MS;
+    expect(
+      listStaleEligibility(instance, now, ELIGIBILITY_REVIEW_MAX_AGE_MS).map((r) => r.provider),
+    ).toContain('anthropic-consumer-mcp');
+    expect(
+      recordEligibilityReview(instance, { provider: 'anthropic-consumer-mcp', now }),
+    ).toBe(true);
+    expect(
+      listStaleEligibility(instance, now, ELIGIBILITY_REVIEW_MAX_AGE_MS).map((r) => r.provider),
+    ).not.toContain('anthropic-consumer-mcp');
   });
 });
 

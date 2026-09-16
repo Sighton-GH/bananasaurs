@@ -1,6 +1,6 @@
 import { asc, eq } from 'drizzle-orm';
 import type { InstanceScope } from '../scope.js';
-import { readInstance } from '../write.js';
+import { readInstance, writeInstance } from '../write.js';
 import { providerEligibility } from '../schema.js';
 
 /**
@@ -10,8 +10,13 @@ import { providerEligibility } from '../schema.js';
  * daemon, not a guild. The `InstanceScope` first parameter is what says so —
  * these functions cannot accept a `GuildScope`.
  *
- * There is deliberately no writer: the row is seeded by the migration
- * (ruling M4-D16), and changing it later is a new migration, not an edit.
+ * The row's *claims* — `trains_on_input`, `evidence_url`,
+ * `production_use_allowed` — are seeded by the migration (ruling M4-D16),
+ * and changing one is still a new migration, not an edit, so the deployed
+ * schema and `PRIVACY.md` move together. The *review date* is different: a
+ * promise whose only remedy is editing SQL is the wrong shape to leave in a
+ * privacy policy, so `bananasaurs provider review` writes `reviewed_at` via
+ * `recordEligibilityReview` below (ruling M4-D20) — and nothing else.
  */
 
 export interface EligibilityRow {
@@ -90,6 +95,28 @@ export const listEligibility = (scope: InstanceScope): readonly EligibilityRow[]
 
 /** `'no'` only — `'unknown'` is treated as `'yes'` (hard rule 5, ADR 0010 §1). */
 export const isEligible = (row: EligibilityRow): boolean => row.trainsOnInput === 'no';
+
+/**
+ * Records that a human re-checked this provider's row and found it still
+ * accurate: writes `reviewed_at` and nothing else (ruling M4-D20). The row's
+ * claims — `trains_on_input`, `evidence_url`, `production_use_allowed` — are
+ * statements about the outside world and are still changed by a migration,
+ * so the deployed schema and `PRIVACY.md` move together.
+ *
+ * Returns `false` when there is no such provider.
+ */
+export const recordEligibilityReview = (
+  scope: InstanceScope,
+  input: { provider: string; now: number },
+): boolean =>
+  writeInstance(scope, ({ db }) => {
+    const result = db
+      .update(providerEligibility)
+      .set({ reviewedAt: input.now })
+      .where(eq(providerEligibility.provider, input.provider))
+      .run();
+    return result.changes === 1;
+  });
 
 /** Rows whose `reviewedAt` is older than `maxAgeMs` before `now`, for `doctor` (Task 7b). */
 export const listStaleEligibility = (
