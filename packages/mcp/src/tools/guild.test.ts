@@ -108,6 +108,7 @@ const fakePort = (): McpGuildPort & {
         nextCursor: '777777777777777777',
       });
     },
+    memberCount: () => 210,
   };
 };
 
@@ -255,6 +256,7 @@ describe('list_members carries no presence, status or activity (sentinel)', () =
       listChannels: () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [smuggled], nextCursor: smuggled.id }),
+      memberCount: () => 1,
     };
     const text = textOf(
       await listMembersText(principalWith(GUILD_A), port, {
@@ -310,6 +312,7 @@ describe('list_members paging and failure behaviour', () => {
       listChannels: () => [],
       listRoles: () => [],
       listMembers: () => Promise.reject(new Error('rate limited')),
+      memberCount: () => 0,
     };
     await expect(
       listMembersText(principalWith(GUILD_A), port, { guildId: '111111111111111111' }),
@@ -323,6 +326,7 @@ describe('list_members paging and failure behaviour', () => {
       },
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
+      memberCount: () => 0,
     };
     expect(() =>
       listChannelsText(principalWith(GUILD_A), port, { guildId: '111111111111111111' }),
@@ -366,6 +370,7 @@ describe('a display name containing the envelope closing marker cannot break fra
           ],
           nextCursor: '777777777777777777',
         }),
+      memberCount: () => 1,
     };
     const text = textOf(
       await listMembersText(principalWith(GUILD_A), port, {
@@ -397,6 +402,14 @@ describe('guild tools on the MCP server', () => {
         listChannelHistory: () => [],
       },
       guild: port,
+      records: {
+        listRecentCases: () => [],
+        findCase: () => undefined,
+        listCaseEvents: () => [],
+        tailAudit: () => [],
+        listRules: () => [],
+        listPanels: () => [],
+      },
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -409,7 +422,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all seven tools and still no send_message', async () => {
+  it('lists all eleven tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -421,6 +434,10 @@ describe('guild tools on the MCP server', () => {
         LIST_CHANNELS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
+        'list_mod_cases',
+        'get_mod_case',
+        'list_audit_events',
+        'get_server_overview',
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

@@ -129,6 +129,14 @@ export interface McpGuildPort {
     guildId: GuildId,
     input: McpListMembersInput,
   ) => Promise<McpListMembersResult>;
+  /**
+   * The gateway-kept member total (`guild.memberCount`) — a scalar Discord
+   * keeps accurate. Deliberately NOT derived from any listing: the member
+   * cache is capped at 50 entries and a paged REST listing is a sample, so
+   * either would silently undercount the club's 210 members (ruling M4-D10).
+   * The overview card reads this; nothing here counts a listing.
+   */
+  readonly memberCount: (guildId: GuildId) => number;
 }
 
 /**

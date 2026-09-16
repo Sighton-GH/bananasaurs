@@ -199,7 +199,9 @@ export const listModCasesParams = {
   guildId: z.string().describe('Guild id; must be reachable by the caller.'),
   limit: z
     .number()
-    .describe(`Max cases, 1..${String(MOD_CASES_LIMIT_MAX)}, default ${String(MOD_CASES_DEFAULT_LIMIT)}.`)
+    .describe(
+      `Max cases, 1..${String(MOD_CASES_LIMIT_MAX)}, default ${String(MOD_CASES_DEFAULT_LIMIT)}.`,
+    )
     .optional(),
 };
 
@@ -244,9 +246,7 @@ const eventToEvidenceItem = (event: McpCaseEventView): EvidenceItem => ({
     `member: ${event.memberId}`,
     `category: ${event.matchedCategory}`,
     `action: ${event.actionTaken}`,
-    ...(event.escalationAction !== undefined
-      ? [`escalation: ${event.escalationAction}`]
-      : []),
+    ...(event.escalationAction !== undefined ? [`escalation: ${event.escalationAction}`] : []),
     ...(event.refusalReason !== undefined ? [`refusal: ${event.refusalReason}`] : []),
     `matched text: ${event.matchedSnippet}`,
   ].join('\n'),
@@ -287,7 +287,8 @@ const listModCasesInner = (
   const items = summaries.map((summary) => caseToEvidenceItem(gate.guildId, summary));
   const noun = items.length === 1 ? 'case' : 'cases';
   const head =
-    `Mod cases in guild ${gate.guildId}: ` + `showing ${String(items.length)} ${noun} (newest first).`;
+    `Mod cases in guild ${gate.guildId}: ` +
+    `showing ${String(items.length)} ${noun} (newest first).`;
   return { ok: true, text: `${head}\n\n${envelope(items)}` };
 };
 

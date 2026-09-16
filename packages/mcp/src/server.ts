@@ -1,4 +1,4 @@
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { McpServer, ResourceTemplate } from '@modelcontextprotocol/sdk/server/mcp.js';
 import {
   GET_HEALTH_TOOL_DESCRIPTION,
   GET_HEALTH_TOOL_NAME,
@@ -35,6 +35,31 @@ import {
   listRolesText,
   type McpGuildPort,
 } from './tools/guild.js';
+import {
+  GET_MOD_CASE_TOOL_DESCRIPTION,
+  GET_MOD_CASE_TOOL_NAME,
+  GET_SERVER_OVERVIEW_TOOL_DESCRIPTION,
+  GET_SERVER_OVERVIEW_TOOL_NAME,
+  getModCaseParams,
+  getModCaseText,
+  getServerOverviewParams,
+  getServerOverviewText,
+  LIST_AUDIT_EVENTS_TOOL_DESCRIPTION,
+  LIST_AUDIT_EVENTS_TOOL_NAME,
+  LIST_MOD_CASES_TOOL_DESCRIPTION,
+  LIST_MOD_CASES_TOOL_NAME,
+  listAuditEventsParams,
+  listAuditEventsText,
+  listModCasesParams,
+  listModCasesText,
+  type McpRecordsPort,
+} from './tools/records.js';
+import {
+  OVERVIEW_RESOURCE_DESCRIPTION,
+  OVERVIEW_RESOURCE_NAME,
+  OVERVIEW_RESOURCE_URI_TEMPLATE,
+  readOverviewResource,
+} from './resources/overview.js';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
 
 /**
@@ -73,6 +98,13 @@ export interface McpServerDeps {
    * refusals dressed as a working toolset.
    */
   readonly guild: McpGuildPort;
+  /**
+   * The daemon's per-request records port (Task 6): cases, audit, panels and
+   * rules. Required for the same reason `archive` is: the four records tools
+   * and the overview resource are always registered, and a missing port must
+   * fail at construction, not serve refusals dressed as a working toolset.
+   */
+  readonly records: McpRecordsPort;
 }
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
@@ -186,6 +218,91 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
           isError: true,
         };
       }
+    },
+  );
+  const records = deps.records;
+  server.tool(
+    LIST_MOD_CASES_TOOL_NAME,
+    LIST_MOD_CASES_TOOL_DESCRIPTION,
+    listModCasesParams,
+    (args) => {
+      try {
+        const outcome = listModCasesText(deps.principal, records, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return { content: [{ type: 'text' as const, text: outcome.text }] };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    },
+  );
+  server.tool(GET_MOD_CASE_TOOL_NAME, GET_MOD_CASE_TOOL_DESCRIPTION, getModCaseParams, (args) => {
+    try {
+      const outcome = getModCaseText(deps.principal, records, args);
+      if (!outcome.ok) {
+        return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+      }
+      return { content: [{ type: 'text' as const, text: outcome.text }] };
+    } catch {
+      return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+    }
+  });
+  server.tool(
+    LIST_AUDIT_EVENTS_TOOL_NAME,
+    LIST_AUDIT_EVENTS_TOOL_DESCRIPTION,
+    listAuditEventsParams,
+    (args) => {
+      try {
+        const outcome = listAuditEventsText(deps.principal, records, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return { content: [{ type: 'text' as const, text: outcome.text }] };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    },
+  );
+  server.tool(
+    GET_SERVER_OVERVIEW_TOOL_NAME,
+    GET_SERVER_OVERVIEW_TOOL_DESCRIPTION,
+    getServerOverviewParams,
+    (args) => {
+      try {
+        const outcome = getServerOverviewText(deps.principal, guild, records, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return { content: [{ type: 'text' as const, text: outcome.text }] };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    },
+  );
+  // The overview resource (ruling M4-D13): the same card as
+  // `get_server_overview` through a second door. The `{guildId}` template
+  // variable is untrusted input exactly like a tool argument — it goes
+  // through `requireReachableGuild` inside `readOverviewResource`, the
+  // resource's own guard — and a refused outcome is thrown so the client
+  // sees the shared message, mirroring the tool's `isError` refusal.
+  server.registerResource(
+    OVERVIEW_RESOURCE_NAME,
+    new ResourceTemplate(OVERVIEW_RESOURCE_URI_TEMPLATE, { list: undefined }),
+    { description: OVERVIEW_RESOURCE_DESCRIPTION, mimeType: 'text/plain' },
+    (uri, variables) => {
+      const outcome = readOverviewResource(deps.principal, guild, records, variables.guildId ?? '');
+      if (!outcome.ok) throw new Error(outcome.message);
+      return { contents: [{ uri: uri.href, mimeType: 'text/plain', text: outcome.text }] };
     },
   );
   return server;

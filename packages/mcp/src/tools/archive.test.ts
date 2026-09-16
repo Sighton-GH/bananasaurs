@@ -29,6 +29,7 @@ import {
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
 import type { McpGuildPort } from './guild.js';
+import type { McpRecordsPort } from './records.js';
 
 /**
  * Task 4b, tool layer: `search_messages`, `read_channel_history` and
@@ -456,8 +457,25 @@ describe('archive tools on the MCP server', () => {
       listChannels: () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
+      memberCount: () => 0,
     };
-    const server = createMcpServer({ principal, health: stubHealth(), archive: port, guild });
+    // Minimal records port: this file pins the archive tools, never the
+    // records tools. Required on `McpServerDeps` since Task 6, same reason.
+    const records: McpRecordsPort = {
+      listRecentCases: () => [],
+      findCase: () => undefined,
+      listCaseEvents: () => [],
+      tailAudit: () => [],
+      listRules: () => [],
+      listPanels: () => [],
+    };
+    const server = createMcpServer({
+      principal,
+      health: stubHealth(),
+      archive: port,
+      guild,
+      records,
+    });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
     return {
@@ -469,15 +487,22 @@ describe('archive tools on the MCP server', () => {
     };
   };
 
-  it('lists get_health plus the archive and guild tools, and no send_message', async () => {
+  it('lists get_health plus the archive, guild and records tools, and no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
       const list = await client.listTools();
-      // Seven since Task 5: the guild tools register alongside the archive
-      // ones (the guild stub above answers empty, which is all this file
-      // needs — the guild tools' own behaviour is pinned in guild.test.ts).
+      // Eleven since Task 6: the records tools register alongside the archive
+      // and guild ones (the guild and records stubs above answer empty, which
+      // is all this file needs — their own behaviour is pinned in guild.test.ts
+      // and records.test.ts).
       const { LIST_CHANNELS_TOOL_NAME, LIST_MEMBERS_TOOL_NAME, LIST_ROLES_TOOL_NAME } =
         await import('./guild.js');
+      const {
+        LIST_MOD_CASES_TOOL_NAME,
+        GET_MOD_CASE_TOOL_NAME,
+        LIST_AUDIT_EVENTS_TOOL_NAME,
+        GET_SERVER_OVERVIEW_TOOL_NAME,
+      } = await import('./records.js');
       expect(list.tools.map((tool) => tool.name)).toEqual([
         'get_health',
         SEARCH_MESSAGES_TOOL_NAME,
@@ -486,6 +511,10 @@ describe('archive tools on the MCP server', () => {
         LIST_CHANNELS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
+        LIST_MOD_CASES_TOOL_NAME,
+        GET_MOD_CASE_TOOL_NAME,
+        LIST_AUDIT_EVENTS_TOOL_NAME,
+        GET_SERVER_OVERVIEW_TOOL_NAME,
       ]);
       expect(list.tools.map((tool) => tool.name)).not.toContain('send_message');
     } finally {

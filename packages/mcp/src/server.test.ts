@@ -13,6 +13,13 @@ import {
 } from './tools/archive.js';
 import { GET_HEALTH_TOOL_NAME, getHealthText, type McpHealthPort } from './tools/health.js';
 import {
+  GET_MOD_CASE_TOOL_NAME,
+  GET_SERVER_OVERVIEW_TOOL_NAME,
+  LIST_AUDIT_EVENTS_TOOL_NAME,
+  LIST_MOD_CASES_TOOL_NAME,
+  type McpRecordsPort,
+} from './tools/records.js';
+import {
   LIST_CHANNELS_TOOL_NAME,
   LIST_MEMBERS_TOOL_NAME,
   LIST_ROLES_TOOL_NAME,
@@ -64,6 +71,17 @@ const stubGuild = (): McpGuildPort => ({
   listChannels: () => [],
   listRoles: () => [],
   listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
+  memberCount: () => 0,
+});
+
+/** Minimal records port: this file pins `get_health`, never the records tools. */
+const stubRecords = (): McpRecordsPort => ({
+  listRecentCases: () => [],
+  findCase: () => undefined,
+  listCaseEvents: () => [],
+  tailAudit: () => [],
+  listRules: () => [],
+  listPanels: () => [],
 });
 
 /** One connected client/server pair over the in-memory transport. */
@@ -76,6 +94,7 @@ const connectPair = async (
     health: stubPort(),
     archive: stubArchive(),
     guild: stubGuild(),
+    records: stubRecords(),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -128,6 +147,10 @@ describe('createMcpServer', () => {
         LIST_CHANNELS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
+        LIST_MOD_CASES_TOOL_NAME,
+        GET_MOD_CASE_TOOL_NAME,
+        LIST_AUDIT_EVENTS_TOOL_NAME,
+        GET_SERVER_OVERVIEW_TOOL_NAME,
       ]);
     } finally {
       await close();

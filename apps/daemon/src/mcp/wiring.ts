@@ -12,8 +12,17 @@ import {
   type McpGuildPort,
   type McpHealthPort,
   type McpPrincipal,
+  type McpRecordsPort,
 } from '@bananasaurs/mcp';
-import { archiveRepo, archiveSearchRepo, roleRepo } from '@bananasaurs/storage';
+import {
+  archiveRepo,
+  archiveSearchRepo,
+  automodAdminRepo,
+  effectRepo,
+  modCaseRepo,
+  panelRepo,
+  roleRepo,
+} from '@bananasaurs/storage';
 
 /**
  * The owner's MCP read surface (slice M4), mounted at `/mcp` by the daemon's
@@ -232,8 +241,100 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
       const last = members[members.length - 1];
       return { members, nextCursor: last === undefined ? undefined : last.id };
     },
+    // The gateway scalar, not the cache size (ruling M4-D10): the 50-entry
+    // `GuildMemberManager` cap makes `members.cache.size` silently wrong on
+    // any guild over 50 members, while `memberCount` is what the gateway
+    // keeps accurate. The overview card reads this; nothing here counts a
+    // listing. A guild missing from the cache throws the shared refusal, the
+    // same as every other method here.
+    memberCount: (guildId) => requireGuild(guildId).memberCount,
   };
 };
+
+/**
+ * The `McpRecordsPort` behind the four records tools and the overview
+ * resource, field by field like `healthPortFor` above. Each method turns the
+ * already-resolved `GuildId` into a `GuildScope` per call and reads through
+ * the moderation and audit repositories — nothing here writes, and M4 is
+ * read-only. Reader calls only: the repositories' state-changing functions
+ * are never referenced here, let alone called (ruling M4-D14). Nothing here
+ * logs: snippets, reasons and payloads must never reach a log line (rule 4).
+ */
+const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
+  listRecentCases: (guildId, input) =>
+    automodAdminRepo
+      .listRecentCases(deps.scopes.forGuild(guildId), { limit: input.limit })
+      .map((row) => ({
+        caseId: row.caseId,
+        memberId: row.memberId,
+        openedAt: row.openedAt,
+        violationCount: row.violationCount,
+        escalationTier: row.escalationTier,
+        status: row.status,
+      })),
+  findCase: (guildId, caseId) => {
+    const found = automodAdminRepo.findCase(deps.scopes.forGuild(guildId), caseId);
+    if (found === undefined) return undefined;
+    return {
+      caseId: found.caseId,
+      memberId: found.memberId,
+      openedAt: found.openedAt,
+      violationCount: found.violationCount,
+      escalationTier: found.escalationTier,
+      status: found.status,
+    };
+  },
+  listCaseEvents: (guildId, caseId) =>
+    modCaseRepo.listCaseEvents(deps.scopes.forGuild(guildId), caseId).map((event) => ({
+      eventId: event.eventId,
+      ruleId: event.ruleId,
+      memberId: event.memberId,
+      at: event.at,
+      matchedCategory: event.matchedCategory,
+      matchedSnippet: event.matchedSnippet,
+      actionTaken: event.actionTaken,
+      escalationAction: event.escalationAction,
+      refusalReason: event.refusalReason,
+      actorId: event.actorId,
+    })),
+  tailAudit: (guildId, input) =>
+    effectRepo
+      .tailAudit(deps.scopes.forGuild(guildId), {
+        limit: input.limit,
+        ...(input.sinceMs !== undefined ? { sinceMs: input.sinceMs } : {}),
+      })
+      .map((row) => ({
+        auditId: row.auditId,
+        at: row.at,
+        actorType: row.actorType,
+        actorId: row.actorId,
+        actorUnixUserClaimed: row.actorUnixUserClaimed,
+        via: row.via,
+        action: row.action,
+        subjectType: row.subjectType,
+        subjectId: row.subjectId,
+        batchId: row.batchId,
+        before: row.before,
+        after: row.after,
+        // The columns are SQLite integers; the port speaks booleans, so the
+        // conversion happens once here rather than in every renderer.
+        dryRun: row.dryRun === 1,
+        inferred: row.inferred === 1,
+      })),
+  // Reading `mod_rules`, not touching it: the counts the card renders come
+  // from this read, and no writer is referenced here (ruling M4-D14).
+  listRules: (guildId) =>
+    automodAdminRepo.listRules(deps.scopes.forGuild(guildId)).map((rule) => ({
+      ruleId: rule.ruleId,
+      name: rule.name,
+      mode: rule.mode,
+      enabled: rule.enabled,
+    })),
+  listPanels: (guildId) =>
+    panelRepo.listPanels(deps.scopes.forGuild(guildId)).map((panel) => ({
+      panelId: panel.panelId,
+    })),
+});
 
 /** Hop-by-hop headers that must not survive the Fastify → Web conversion. */
 const DROPPED_REQUEST_HEADERS = new Set([
@@ -349,6 +450,7 @@ export const registerMcpRoutes = (
       health: healthPortFor(principal, deps),
       archive: archivePortFor(deps),
       guild: guildPortFor(client, deps),
+      records: recordsPortFor(deps),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

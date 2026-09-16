@@ -5,18 +5,15 @@ import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/s
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from '../scope.js';
 import { createMcpServer } from '../server.js';
-import type { McpHealthPort } from './health.js';
-import type { McpArchivePort } from './archive.js';
+import type { McpHealthPort } from '../tools/health.js';
+import type { McpArchivePort } from '../tools/archive.js';
 import {
   GET_SERVER_OVERVIEW_TOOL_NAME,
   getServerOverviewText,
   type McpRecordsPort,
-} from './records.js';
-import type { McpGuildPort } from './guild.js';
-import {
-  OVERVIEW_RESOURCE_URI_TEMPLATE,
-  readOverviewResource,
-} from './overview.js';
+} from '../tools/records.js';
+import type { McpGuildPort } from '../tools/guild.js';
+import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './overview.js';
 
 /**
  * Task 6 (absorbing Task 8), resource side: `bananasaurs://guild/{guildId}/overview`
@@ -114,9 +111,10 @@ const resourceTextOf = (result: ReadResourceResult): string => {
   expect(result.contents).toHaveLength(1);
   const block = result.contents[0];
   expect(block?.mimeType).toBe('text/plain');
-  const text = block?.text;
+  if (block === undefined || !('text' in block)) throw new Error('expected a text resource');
+  const text = block.text;
   expect(typeof text).toBe('string');
-  return text as string;
+  return text;
 };
 
 describe('overview resource guard', () => {
@@ -145,9 +143,9 @@ describe('overview resource guard', () => {
   it('answers its own guild through the same check the tool uses', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A));
     try {
-      const result = (await client.readResource({
+      const result = await client.readResource({
         uri: 'bananasaurs://guild/111111111111111111/overview',
-      })) as ReadResourceResult;
+      });
       expect(resourceTextOf(result)).toContain('210');
     } finally {
       await close();
@@ -167,9 +165,9 @@ describe('resource and tool serve the same card', () => {
     if (!tool.ok) throw new Error('expected ok:true');
     const { client, close } = await connectPair(principal);
     try {
-      const result = (await client.readResource({
+      const result = await client.readResource({
         uri: 'bananasaurs://guild/111111111111111111/overview',
-      })) as ReadResourceResult;
+      });
       expect(resourceTextOf(result)).toBe(tool.text);
     } finally {
       await close();
