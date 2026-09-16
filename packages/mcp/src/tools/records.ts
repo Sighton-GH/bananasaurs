@@ -292,6 +292,16 @@ const listModCasesInner = (
   return { ok: true, text: `${head}\n\n${envelope(items)}` };
 };
 
+/**
+ * The not-found reply is unenveloped, so an echoed `caseId` is caller input
+ * on its way to a model context. Bound it to plausible id characters
+ * (UUIDs are hex and dashes) at a fixed length, so instruction text cannot
+ * ride along. (`archive.ts` needs no equivalent: `get_message` refuses a
+ * malformed snowflake before it ever echoes one.)
+ */
+const safeNotFoundCaseId = (caseId: string): string =>
+  caseId.replace(/[^A-Za-z0-9-]/g, '').slice(0, 64) || 'unknown';
+
 const getModCaseInner = (
   principal: McpPrincipal,
   port: McpRecordsPort,
@@ -304,9 +314,11 @@ const getModCaseInner = (
   // `findCase` is guild-scoped, so another guild's id reads as not-found —
   // the same answer as a nonexistent id, which is what keeps this from being
   // a cross-guild existence oracle.
+  // The not-found reply below is unenveloped, so the echoed id goes through
+  // `safeNotFoundCaseId` above rather than out raw.
   const summary = port.findCase(gate.guildId, parsed.data.caseId);
   if (summary === undefined) {
-    return { ok: true, text: `No mod case ${parsed.data.caseId} in guild ${gate.guildId}.` };
+    return { ok: true, text: `No mod case ${safeNotFoundCaseId(parsed.data.caseId)} in guild ${gate.guildId}.` };
   }
   const events = port.listCaseEvents(gate.guildId, parsed.data.caseId);
   const items = events.map(eventToEvidenceItem);
