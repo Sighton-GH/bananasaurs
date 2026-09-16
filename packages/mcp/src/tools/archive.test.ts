@@ -402,6 +402,42 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
     expect(visibleOnly.text).toContain(CHANNEL_1);
     expect(visibleOnly.text).toContain('1 match');
   });
+
+  it('rows orphaned from archive_channels stay invisible even when named directly', () => {
+    // A channel with message rows but no archive_channels row: built by
+    // enabling, seeding, then deleting the channel row with FK enforcement
+    // off (`disableChannel` would cascade the messages away and prove
+    // nothing). Naming it in `channelIds` must still contribute nothing —
+    // this is the probe that catches a visibility set built from caller
+    // input, where the outside-channel test above cannot (that channel has
+    // no rows at all, so even a widened set answers empty).
+    const ORPHAN = '777777777777777771';
+    const ORPHAN_MSG = '666666666666666671';
+    seedChannel(GUILD_A, ORPHAN);
+    seedMessage(GUILD_A, {
+      messageId: ORPHAN_MSG,
+      channelId: ORPHAN,
+      content: 'quince jelly secret recipe',
+      createdAt: 1_700_000_000_500,
+    });
+    t.raw.exec('PRAGMA foreign_keys = OFF');
+    t.raw
+      .prepare('DELETE FROM archive_channels WHERE guild_id = ? AND channel_id = ?')
+      .run('111111111111111111', ORPHAN);
+    t.raw.exec('PRAGMA foreign_keys = ON');
+
+    const open = searchMessagesText(principal(), port, {
+      ...base,
+      query: 'quince',
+    });
+    expect(open).toEqual({ ok: true, text: expect.stringContaining('0 matches') });
+    const named = searchMessagesText(principal(), port, {
+      ...base,
+      query: 'quince',
+      channelIds: [ORPHAN],
+    });
+    expect(named).toEqual({ ok: true, text: expect.stringContaining('0 matches') });
+  });
 });
 
 describe('archive tools on the MCP server', () => {
