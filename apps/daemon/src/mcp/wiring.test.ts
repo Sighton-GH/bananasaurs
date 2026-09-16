@@ -5,14 +5,24 @@ import { createHash } from 'node:crypto';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import {
+  ChannelType,
+  Client,
+  Collection,
+  type Guild,
+  type GuildMember,
+  type GuildMemberManager,
+} from 'discord.js';
+import { buildClientOptions } from '@bananasaurs/discord';
+import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, archiveRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, archiveRepo, authzRepo, guildRepo, roleRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
-import { generateToken, hashPassword } from '@bananasaurs/http';
+import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import { GUILD_REFUSAL_MESSAGE } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
+import { guildPortFor, registerMcpRoutes } from './wiring.js';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -209,7 +219,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(response.json()).toEqual({ error: 'invalid_token' });
   });
 
-  it('answers a valid read-scope token with tools/list containing health plus the archive tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all seven tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -217,7 +227,15 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toEqual(['get_health', 'search_messages', 'read_channel_history', 'get_message']);
+    expect(names).toEqual([
+      'get_health',
+      'search_messages',
+      'read_channel_history',
+      'get_message',
+      'list_channels',
+      'list_roles',
+      'list_members',
+    ]);
     expect(names).not.toContain('send_message');
   });
 
@@ -422,5 +440,289 @@ describe('/mcp with MCP_PUBLIC_URL unset', () => {
     } finally {
       await bare.close();
     }
+  });
+});
+
+/**
+ * Task 5, daemon side: the three Discord-cache tools through the real stack —
+ * Fastify + `registerMcpRoutes` + `createMcpServer` + the real `guildPortFor`
+ * — against a fake discord.js guild built the way
+ * `apps/daemon/src/ops/wiring.test.ts` builds one (a real `Client` that never
+ * logged in, guilds injected through `guilds._add`).
+ *
+ * The load-bearing assertion is the `list_members` one: the member sitting in
+ * `members.cache` must NOT come back, only the two the stubbed `members.list`
+ * returns. That is ruling M4-D10 — the 50-entry `GuildMemberManager` cap
+ * (`packages/discord/src/client.ts`) would otherwise silently truncate the
+ * club's 210 members, so the port is a paginated REST fetch with
+ * `cache: false`, never a cache read.
+ */
+describe('/mcp guild tools over a fake discord.js guild', () => {
+  const BOT = '123456789012345678';
+  const CATEGORY = '311111111111111111';
+  const PLANNING = '322222222222222222';
+  const LOUNGE = '333333333333333333';
+  const ROLE_MANAGED = '344444444444444444';
+  const ROLE_PLAIN = '355555555555555555';
+  const CACHED_MEMBER = '366666666666666666';
+  const REST_MEMBER_A = '377777777777777777';
+  const REST_MEMBER_B = '388888888888888888';
+
+  interface DiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+    users: { _add: (data: object) => unknown };
+  }
+  const internals = (c: Client): DiscordInternals => c as unknown as DiscordInternals;
+
+  /** A member shaped like the real thing, for the stubbed `members.list`. */
+  const restMember = (id: string, username: string): GuildMember =>
+    ({
+      id,
+      user: { id, username },
+      displayName: `${username}-display`,
+      roles: { cache: new Collection([[ROLE_MANAGED, undefined]]) },
+      joinedAt: new Date('2024-05-01T00:00:00.000Z'),
+    }) as unknown as GuildMember;
+
+  const buildDiscordClient = (): {
+    client: Client;
+    memberListCalls: unknown[];
+  } => {
+    const client = new Client(buildClientOptions(() => BOT));
+    const mutable = client as unknown as { user: unknown };
+    mutable.user = internals(client).users._add({
+      id: BOT,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
+    internals(client).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'club',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: PLANNING,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 1,
+          parent_id: CATEGORY,
+          topic: 'plan the picnic',
+          permission_overwrites: [],
+        },
+        {
+          id: LOUNGE,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildVoice,
+          name: 'lounge',
+          position: 2,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [
+        { id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false },
+        {
+          id: ROLE_MANAGED,
+          name: 'organizer',
+          position: 3,
+          permissions: '0',
+          managed: false,
+          color: 0,
+        },
+        { id: ROLE_PLAIN, name: 'member', position: 1, permissions: '0', managed: false, color: 0 },
+      ],
+      members: [
+        {
+          user: { id: CACHED_MEMBER, username: 'cached-una', discriminator: '0' },
+          roles: [ROLE_PLAIN],
+          joined_at: '2024-01-01T00:00:00.000Z',
+        },
+      ],
+      emojis: [],
+      unavailable: false,
+    });
+    const memberListCalls: unknown[] = [];
+    const guild = client.guilds.cache.get(GUILD_A);
+    if (guild === undefined) throw new Error('fake guild did not land in the cache');
+    guild.members.list = (async (options?: unknown) => {
+      memberListCalls.push(options);
+      return new Collection([
+        [REST_MEMBER_A, restMember(REST_MEMBER_A, 'rest-ana')],
+        [REST_MEMBER_B, restMember(REST_MEMBER_B, 'rest-bo')],
+      ]);
+    }) as GuildMemberManager['list'];
+    return { client, memberListCalls };
+  };
+
+  /** The same `createServer` call production uses, with the fake client. */
+  const buildGuildApp = (discordClient: Client): FastifyInstance =>
+    createServer({
+      deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
+      registerRoutes: (instance, _guard, routeDeps) => {
+        registerMcpRoutes(instance, routeDeps, discordClient);
+      },
+    });
+
+  const guildCall = (
+    target: FastifyInstance,
+    accessToken: string,
+    name: string,
+    args: Record<string, unknown>,
+  ) =>
+    target.inject({
+      method: 'POST',
+      url: '/mcp',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        authorization: `Bearer ${accessToken}`,
+      },
+      payload: JSON.stringify({
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name, arguments: args },
+      }),
+    });
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const seedStorage = (): void => {
+    archiveRepo.enableChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: PLANNING,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    roleRepo.allowlistRole(t.scopes.forGuild(GUILD_A), ROLE_MANAGED);
+  };
+
+  it('list_members calls members.list, not members.cache', async () => {
+    seedStorage();
+    const { client: discordClient, memberListCalls } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_members', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      // The two the stubbed REST fetch returned come back; the member sitting
+      // in the 50-entry cache does not — a cache read would answer the
+      // opposite set, which is exactly the silent truncation M4-D10 forbids.
+      expect(found.text).toContain('rest-ana');
+      expect(found.text).toContain('rest-bo');
+      expect(found.text).not.toContain('cached-una');
+      // Paginated REST fetch, not a cache read: `cache: false` pinned on the
+      // exact options object the port passed to discord.js.
+      expect(memberListCalls).toHaveLength(1);
+      const options = memberListCalls[0] as Record<string, unknown>;
+      expect(options['cache']).toBe(false);
+      expect(options['limit']).toBe(25);
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('list_channels marks archive scope from storage', async () => {
+    seedStorage();
+    const { client: discordClient } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_channels', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('planning');
+      expect(found.text).toContain('lounge');
+      expect(found.text).toContain('club');
+      expect(found.text).toContain('archive-enabled: yes');
+      expect(found.text).toContain('archive-enabled: no');
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('list_roles reports managed-by-Bananasaurs and excludes @everyone', async () => {
+    seedStorage();
+    const { client: discordClient } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_roles', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('organizer');
+      expect(found.text).toContain('member');
+      expect(found.text).toContain('managed-by-bananasaurs: yes');
+      expect(found.text).toContain('managed-by-bananasaurs: no');
+      expect(found.text).not.toContain('@everyone');
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('a guild missing from the cache is a refusal, not a throw', async () => {
+    seedStorage();
+    const { client: discordClient } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      // Guild B is reachable (grant added) but the bot never READY'd it here,
+      // so no guild object sits in the cache — the same answer as having left.
+      authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+        accountId: ACCOUNT,
+        capability: 'mcp.authorize',
+        grantedBy: 'test',
+        now: clock,
+      });
+      const accessToken = await mintToken();
+      const refused = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_channels', {
+            guildId: '222222222222222222',
+          })
+        ).body,
+      );
+      expect(refused.isError).toBe(true);
+      expect(refused.text).toBe(GUILD_REFUSAL_MESSAGE);
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('guildPortFor refuses without a client, like a guild never READY', () => {
+    const port = guildPortFor(undefined, deps);
+    expect(() => port.listChannels(GUILD_A)).toThrow();
   });
 });

@@ -12,6 +12,12 @@ import {
   type McpArchivePort,
 } from './tools/archive.js';
 import { GET_HEALTH_TOOL_NAME, getHealthText, type McpHealthPort } from './tools/health.js';
+import {
+  LIST_CHANNELS_TOOL_NAME,
+  LIST_MEMBERS_TOOL_NAME,
+  LIST_ROLES_TOOL_NAME,
+  type McpGuildPort,
+} from './tools/guild.js';
 
 /**
  * Task 3, `packages/mcp` side: `get_health` exercised through a real MCP
@@ -53,12 +59,24 @@ const stubArchive = (): McpArchivePort => ({
   listChannelHistory: () => [],
 });
 
+/** Minimal guild port: this file pins `get_health`, never the guild tools. */
+const stubGuild = (): McpGuildPort => ({
+  listChannels: () => [],
+  listRoles: () => [],
+  listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
-  const server = createMcpServer({ principal, health: stubPort(), archive: stubArchive() });
+  const server = createMcpServer({
+    principal,
+    health: stubPort(),
+    archive: stubArchive(),
+    guild: stubGuild(),
+  });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
   return {
@@ -98,7 +116,7 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists get_health alongside the archive tools', async () => {
+  it('lists get_health alongside the archive and guild tools', async () => {
     const { client, close } = await connectPair(principalWith([GUILD]));
     try {
       const list = await client.listTools();
@@ -107,6 +125,9 @@ describe('createMcpServer', () => {
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
+        LIST_CHANNELS_TOOL_NAME,
+        LIST_ROLES_TOOL_NAME,
+        LIST_MEMBERS_TOOL_NAME,
       ]);
     } finally {
       await close();
