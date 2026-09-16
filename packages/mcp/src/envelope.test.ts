@@ -19,6 +19,16 @@ const item = (overrides?: Partial<EvidenceItem>): EvidenceItem => ({
 const countOccurrences = (haystack: string, needle: string): number =>
   needle.length === 0 ? 0 : haystack.split(needle).length - 1;
 
+/** True when every char of `small` appears in `big` in order (escaping only inserts). */
+const isSubsequence = (small: string, big: string): boolean => {
+  let matched = 0;
+  for (const ch of big) {
+    if (ch === small[matched]) matched += 1;
+    if (matched === small.length) return true;
+  }
+  return small.length === 0;
+};
+
 describe('envelope', () => {
   it('emits the preamble exactly once, before any item', () => {
     const out = envelope([item(), item({ content: 'second message' })]);
@@ -52,13 +62,22 @@ describe('envelope', () => {
     expect(countOccurrences(out, EVIDENCE_PREAMBLE)).toBe(1);
     expect(countOccurrences(out, EVIDENCE_OPEN)).toBe(2);
     expect(countOccurrences(out, EVIDENCE_CLOSE)).toBe(2);
-    // The forged text is preserved inside an item rather than framing one:
-    // stripping the documented escape separator recovers it verbatim.
-    const firstOpen = out.indexOf(EVIDENCE_OPEN);
-    const firstClose = out.indexOf(EVIDENCE_CLOSE);
-    const firstBody = out.slice(firstOpen + EVIDENCE_OPEN.length, firstClose);
-    expect(firstBody.replaceAll('\u200b', '')).toContain(EVIDENCE_CLOSE);
-    expect(out.replaceAll('\u200b', '')).toContain(forged);
+    // Structural property, stated without reference to the escape mechanism:
+    // each item body holds no exact marker (so nothing inside frames), yet
+    // the forged text survives as a subsequence (escaping only inserts, so
+    // the original chars remain in order and recoverable).
+    const bodies = out
+      .split(EVIDENCE_OPEN)
+      .slice(1)
+      .map((part) => part.slice(0, part.indexOf(EVIDENCE_CLOSE)));
+    expect(bodies).toHaveLength(2);
+    for (const body of bodies) {
+      expect(body).not.toContain(EVIDENCE_OPEN);
+      expect(body).not.toContain(EVIDENCE_CLOSE);
+      expect(body).not.toContain(EVIDENCE_PREAMBLE);
+    }
+    expect(isSubsequence(EVIDENCE_CLOSE, bodies[0])).toBe(true);
+    expect(isSubsequence(forged, bodies[1])).toBe(true);
   });
 
   it('metadata containing a marker cannot forge framing', () => {
