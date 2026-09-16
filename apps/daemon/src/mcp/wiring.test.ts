@@ -216,7 +216,7 @@ describe('/mcp behind the bearer guard', () => {
     expect(response.json()).toEqual({ error: 'invalid_token' });
   });
 
-  it('answers a valid read-scope token with tools/list containing all seven tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all eleven tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -232,8 +232,25 @@ describe('/mcp behind the bearer guard', () => {
       'list_channels',
       'list_roles',
       'list_members',
+      'list_mod_cases',
+      'get_mod_case',
+      'list_audit_events',
+      'get_server_overview',
     ]);
     expect(names).not.toContain('send_message');
+  });
+
+  it('advertises the overview resource template and nothing else', async () => {
+    const accessToken = await mintToken();
+    const response = await mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 3, method: 'resources/templates/list', params: {} },
+      accessToken,
+    );
+    expect(response.statusCode).toBe(200);
+    const bodies = sseData(response.body);
+    expect(bodies.length).toBeGreaterThan(0);
+    expect(JSON.stringify(bodies[0])).toContain('bananasaurs://guild/{guildId}/overview');
   });
 
   it('(ADR 0044 obligation 1) refuses get_health once mcp.authorize is revoked everywhere', async () => {
