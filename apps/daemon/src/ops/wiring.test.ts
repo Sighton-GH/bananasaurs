@@ -7,6 +7,7 @@ import {
   archiveRepo,
   guildRepo,
   oauthRepo,
+  sessionRepo,
   type GuildScope,
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
@@ -184,7 +185,7 @@ describe('listUnreadableArchiveChannels', () => {
 
 describe('accountOpsFor', () => {
   const instance = () => t.scopes.instance();
-  const ops = () => accountOpsFor(instance(), () => NOW);
+  const ops = () => accountOpsFor(instance(), [], () => NOW);
 
   const seedAccount = (
     accountId: string,
@@ -356,5 +357,161 @@ describe('accountOpsFor', () => {
 
     const result = ops().accountDelete('del-one');
     expect(result).toMatchObject({ username: 'del-one', enabledOwnersRemaining: 1 });
+  });
+});
+
+describe('accountRevokeCredentials (M3c)', () => {
+  const GUILD_2 = parseGuildId('311111111111111111');
+  const instance = () => t.scopes.instance();
+  const guildB = () => t.scopes.forGuild(GUILD_2);
+
+  const seedAccount = (
+    accountId: string,
+    username: string,
+    over: { isOwner?: boolean; now?: number; passwordHash?: string } = {},
+  ): void => {
+    accountRepo.createAccount(instance(), {
+      accountId,
+      username,
+      passwordHash: over.passwordHash ?? '$argon2id$fake',
+      isOwner: over.isOwner ?? false,
+      now: over.now ?? NOW,
+    });
+  };
+
+  const openSession = (scope: GuildScope, sessionIdHash: string, accountId: string): void => {
+    sessionRepo.createSession(scope, {
+      sessionIdHash,
+      accountId,
+      createdAt: NOW,
+      expiresAt: NOW + 12 * 3_600_000,
+      reauthAt: NOW,
+      ip: '127.0.0.1',
+    });
+  };
+
+  beforeEach(() => {
+    guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
+  });
+
+  const ops = () => accountOpsFor(instance(), [scope, guildB()], () => NOW);
+
+  it('revokes sessions in every guild and reports guildsTouched', () => {
+    seedAccount('acct_alice00000000000000000000000001', 'alice');
+    openSession(scope, 'a'.repeat(64), 'acct_alice00000000000000000000000001');
+    openSession(guildB(), 'b'.repeat(64), 'acct_alice00000000000000000000000001');
+
+    const result = ops().accountRevokeCredentials('alice');
+
+    expect(result).toMatchObject({
+      username: 'alice',
+      accountId: 'acct_alice00000000000000000000000001',
+      sessionsRevoked: 2,
+      guildsTouched: 2,
+      stillEnabled: true,
+    });
+    expect(sessionRepo.findSessionByHash(instance(), 'a'.repeat(64))?.revokedAt).toBe(NOW);
+    expect(sessionRepo.findSessionByHash(instance(), 'b'.repeat(64))?.revokedAt).toBe(NOW);
+  });
+
+  it('does not revoke another account sessions in either guild', () => {
+    seedAccount('acct_alice00000000000000000000000002', 'alice');
+    seedAccount('acct_bob0000000000000000000000000002', 'bob');
+    openSession(scope, 'c'.repeat(64), 'acct_alice00000000000000000000000002');
+    openSession(scope, 'd'.repeat(64), 'acct_bob0000000000000000000000000002');
+    openSession(guildB(), 'e'.repeat(64), 'acct_bob0000000000000000000000000002');
+
+    const result = ops().accountRevokeCredentials('alice');
+
+    expect(result).toMatchObject({ sessionsRevoked: 1, guildsTouched: 2 });
+    expect(sessionRepo.findSessionByHash(instance(), 'd'.repeat(64))?.revokedAt).toBeNull();
+    expect(sessionRepo.findSessionByHash(instance(), 'e'.repeat(64))?.revokedAt).toBeNull();
+  });
+
+  it('leaves disabled untouched: enabled stays enabled, disabled stays disabled', () => {
+    seedAccount('acct_enabled0000000000000000000000001', 'enabled-one');
+    seedAccount('acct_disabled000000000000000000000001', 'disabled-one');
+    accountRepo.setAccountDisabled(instance(), {
+      accountId: 'acct_disabled000000000000000000000001',
+      disabled: true,
+    });
+
+    expect(ops().accountRevokeCredentials('enabled-one')).toMatchObject({ stillEnabled: true });
+    expect(accountRepo.findAccountByUsername(instance(), 'enabled-one')?.disabled).toBe(false);
+
+    expect(ops().accountRevokeCredentials('disabled-one')).toMatchObject({ stillEnabled: false });
+    expect(accountRepo.findAccountByUsername(instance(), 'disabled-one')?.disabled).toBe(true);
+  });
+
+  it('returns no-such-account for an unknown username and revokes nothing', () => {
+    seedAccount('acct_keeper0000000000000000000000003', 'keeper');
+    openSession(scope, 'f'.repeat(64), 'acct_keeper0000000000000000000000003');
+
+    expect(ops().accountRevokeCredentials('nobody')).toBe('no-such-account');
+    expect(sessionRepo.findSessionByHash(instance(), 'f'.repeat(64))?.revokedAt).toBeNull();
+  });
+
+  it('revokes the account tokens and counts them', () => {
+    seedAccount('acct_tokenholder000000000000000000001', 'holder');
+    oauthRepo.createClient(instance(), {
+      clientId: 'client-1',
+      clientName: 'name of client-1',
+      redirectUris: ['https://example.test/cb'],
+      createdAt: NOW,
+      createdByAccountId: null,
+      registrationSource: 'dynamic',
+    });
+    oauthRepo.createToken(instance(), {
+      tokenId: 'holder-token',
+      tokenHash: 'hash-holder-token',
+      kind: 'access',
+      clientId: 'client-1',
+      accountId: 'acct_tokenholder000000000000000000001',
+      scopes: ['bananasaurs:read'],
+      createdAt: NOW,
+      expiresAt: NOW + 100_000,
+      parentTokenId: null,
+      issuedFromCodeHash: 'code-holder',
+    });
+
+    const result = ops().accountRevokeCredentials('holder');
+
+    expect(result).toMatchObject({ tokensRevoked: 1, stillEnabled: true });
+    expect(oauthRepo.findTokenById(instance(), 'holder-token')?.revokedAt).toBe(NOW);
+  });
+
+  it('deletes the account unexchanged codes, counts them, and leaves another account codes alone', () => {
+    seedAccount('acct_codeholder0000000000000000000001', 'code-holder');
+    seedAccount('acct_codeother00000000000000000000001', 'code-other');
+    oauthRepo.createClient(instance(), {
+      clientId: 'client-1',
+      clientName: 'name of client-1',
+      redirectUris: ['https://example.test/cb'],
+      createdAt: NOW,
+      createdByAccountId: null,
+      registrationSource: 'dynamic',
+    });
+    const seedCode = (codeHash: string, accountId: string): void => {
+      oauthRepo.createAuthorizationCode(instance(), {
+        codeHash,
+        clientId: 'client-1',
+        accountId,
+        scopes: ['bananasaurs:read'],
+        codeChallenge: 'challenge',
+        redirectUri: 'https://example.test/cb',
+        createdAt: NOW,
+        expiresAt: NOW + 300_000,
+      });
+    };
+    seedCode('code-holder-1', 'acct_codeholder0000000000000000000001');
+    seedCode('code-holder-2', 'acct_codeholder0000000000000000000001');
+    seedCode('code-other-1', 'acct_codeother00000000000000000000001');
+
+    const result = ops().accountRevokeCredentials('code-holder');
+
+    expect(result).toMatchObject({ codesDeleted: 2, stillEnabled: true });
+    expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-1')).toBeUndefined();
+    expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-2')).toBeUndefined();
+    expect(oauthRepo.findAuthorizationCode(instance(), 'code-other-1')).toBeDefined();
   });
 });

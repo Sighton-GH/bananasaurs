@@ -524,6 +524,58 @@ export const revokeTokensForClient = (
   });
 
 /**
+ * Revokes every live token of one account (ADR 0045 Amendment 4 A3-5).
+ *
+ * The predicate is the ACCOUNT, which is a strict superset of both lineage
+ * and chain, so the "choose lineage over descent" obligation ADR 0044 places
+ * on a new revocation surface does not arise — the hazard PR-127 names, a
+ * walk that spares the sibling token minted beside the one you revoked,
+ * cannot happen when every token the account owns is in scope. An
+ * already-revoked row keeps its earlier `revokedAt`: the `isNull` guard means
+ * a second sweep reports only what was still live.
+ *
+ * `deleteAccount` in `accounts.ts` runs the same statement inline and must
+ * NOT be changed to call this: it needs the write inside its own transaction
+ * and `writeInstance` does not nest.
+ */
+export const revokeAllTokensForAccount = (
+  scope: InstanceScope,
+  input: { accountId: string; now: number },
+): number =>
+  writeInstance(scope, ({ db }) => {
+    const result = db
+      .update(oauthTokens)
+      .set({ revokedAt: input.now })
+      .where(and(eq(oauthTokens.accountId, input.accountId), isNull(oauthTokens.revokedAt)))
+      .run();
+    return result.changes;
+  });
+
+/**
+ * Deletes every authorization code one account consented to (ADR 0045 Amendment 4 A3-6).
+ *
+ * A code is an unminted token: `exchangeCode` gates only on the code's own
+ * expiry and on `approver.disabled`, so revoking the account's live tokens
+ * cannot stop a leaked code from minting a fresh pair. The sweep that ends
+ * "every credential the account owns" must therefore delete its codes too.
+ *
+ * `deleteAccount` in `accounts.ts` runs the same statement inline and must
+ * NOT be changed to call this: it needs the delete inside its own transaction
+ * and `writeInstance` does not nest.
+ */
+export const deleteAuthorizationCodesForAccount = (
+  scope: InstanceScope,
+  accountId: string,
+): number =>
+  writeInstance(scope, ({ db }) => {
+    const result = db
+      .delete(oauthAuthorizationCodes)
+      .where(eq(oauthAuthorizationCodes.accountId, accountId))
+      .run();
+    return result.changes;
+  });
+
+/**
  * Ruling PR-99: revokes `rootTokenId` and every unrevoked descendant reached
  * by following `parent_token_id` downward. Returns the count. A recursive
  * CTE is the right tool; the chain is short.

@@ -1,4 +1,4 @@
-import { eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import type { GuildScope, InstanceScope } from '../scope.js';
 import { read, readInstance, write } from '../write.js';
 import { dashboardSessions } from '../schema.js';
@@ -113,7 +113,14 @@ export const revokeSession = (
     return result.changes === 1;
   });
 
-/** Revokes every live session for one account, for a password change or a lockout. */
+/**
+ * Revokes every LIVE session for one account, for a password change or a lockout.
+ *
+ * Only rows with `revoked_at IS NULL` are touched (ADR 0045 Amendment 4 A3-7):
+ * an already-revoked row keeps the timestamp recording when its session
+ * actually ended, so re-running a revoke mid-incident neither rewrites the
+ * timeline nor reports a session it did not end.
+ */
 export const revokeAllForAccount = (
   scope: GuildScope,
   input: { accountId: string; now: number },
@@ -122,7 +129,15 @@ export const revokeAllForAccount = (
     const result = db
       .update(dashboardSessions)
       .set({ revokedAt: input.now })
-      .where(scope.only(dashboardSessions, eq(dashboardSessions.accountId, input.accountId)))
+      .where(
+        scope.only(
+          dashboardSessions,
+          and(
+            eq(dashboardSessions.accountId, input.accountId),
+            isNull(dashboardSessions.revokedAt),
+          ),
+        ),
+      )
       .run();
     return result.changes;
   });

@@ -226,6 +226,7 @@ const instance: OpsInstance = {
   accountList: notNeeded('accountList'),
   accountSetDisabled: notNeeded('accountSetDisabled'),
   accountDelete: notNeeded('accountDelete'),
+  accountRevokeCredentials: notNeeded('accountRevokeCredentials'),
 };
 
 const actor: Actor = { type: 'operator_cli', id: undefined, roleIds: [], unixUserClaimed: 'test' };

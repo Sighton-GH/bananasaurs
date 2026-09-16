@@ -32,6 +32,7 @@ import {
   oauthRepo,
   panelRepo,
   roleRepo,
+  sessionRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -833,6 +834,8 @@ export interface OpsInstanceDeps {
    * type says so, so this cannot be quietly used for a guild-scoped query.
    */
   readonly instanceScope: InstanceScope;
+  /** Every guild this daemon serves, because `dashboard_sessions` is guild-partitioned (M3c-R3). */
+  readonly guildScopes: readonly GuildScope[];
   /** Injected, like every clock in this tree. Slice 13e found the bug. */
   readonly now: () => number;
   /** `backup now` and `backup list` (ADR 0034, slice 16). */
@@ -851,8 +854,12 @@ export interface OpsInstanceDeps {
  */
 export const accountOpsFor = (
   instanceScope: InstanceScope,
+  guildScopes: readonly GuildScope[],
   now: () => number,
-): Pick<OpsInstance, 'accountList' | 'accountSetDisabled' | 'accountDelete'> => ({
+): Pick<
+  OpsInstance,
+  'accountList' | 'accountSetDisabled' | 'accountDelete' | 'accountRevokeCredentials'
+> => ({
   // Field by field, never a spread: the row carries a `passwordHash` that
   // must not cross this boundary (`ports.ts` may not import
   // `@bananasaurs/storage`, ADR 0014, so the shape names what crosses).
@@ -909,6 +916,56 @@ export const accountOpsFor = (
       codesDeleted: result.codesDeleted,
       enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
       accountsRemaining: accountRepo.countAccounts(instanceScope),
+    };
+  },
+  /**
+   * The session half of the sweep covers the guild allowlist and nothing else:
+   * `guildScopes` comes from `BANANASAURS_GUILD_ALLOWLIST`, so a dashboard
+   * session in a guild since dropped from the allowlist is never swept and
+   * still authenticates. The token and code halves are instance-level and have
+   * no such boundary.
+   */
+  accountRevokeCredentials: (username) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    // One timestamp for every write in this call: the sessions and the tokens
+    // die at the same instant, so the audit row names one moment, not a span.
+    const at = now();
+    // Separate transactions, not one (M3c-R4): the session revoke is a
+    // guild-scoped write per guild and the token revoke and code delete are
+    // instance-level, and `writeInstance` does not nest — so a crash between
+    // them is a state a retry fixes, not a state one transaction prevents.
+    let sessionsRevoked = 0;
+    for (const guildScope of guildScopes) {
+      sessionsRevoked += sessionRepo.revokeAllForAccount(guildScope, {
+        accountId: row.accountId,
+        now: at,
+      });
+    }
+    const tokensRevoked = oauthRepo.revokeAllTokensForAccount(instanceScope, {
+      accountId: row.accountId,
+      now: at,
+    });
+    // ADR 0045 Amendment 4 A3-6: an unexchanged code is a token that has not
+    // been minted yet, and `exchangeCode` cannot see a token revocation — so
+    // the sweep deletes the account's codes too, the way `accountDelete` does.
+    const codesDeleted = oauthRepo.deleteAuthorizationCodesForAccount(instanceScope, row.accountId);
+    // Re-read AFTER the writes, never the pre-write row: the row above is
+    // stale by construction once anything has been written, and `disabled` is
+    // exactly what this command must not touch — the read proves it did not.
+    const reread = accountRepo.findAccountById(instanceScope, row.accountId);
+    // Unreachable under the current synchronous single-writer model, the same
+    // found-then-gone race the two branches above answer with
+    // 'no-such-account' — and the same answer here, deliberately.
+    if (reread === undefined) return 'no-such-account';
+    return {
+      username: row.username,
+      accountId: row.accountId,
+      sessionsRevoked,
+      tokensRevoked,
+      codesDeleted,
+      guildsTouched: guildScopes.length,
+      stillEnabled: !reread.disabled,
     };
   },
 });
@@ -1053,5 +1110,5 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     if (oauthRepo.findClient(deps.instanceScope, clientId) === undefined) return undefined;
     return oauthRepo.deleteClient(deps.instanceScope, clientId, deps.now());
   },
-  ...accountOpsFor(deps.instanceScope, deps.now),
+  ...accountOpsFor(deps.instanceScope, deps.guildScopes, deps.now),
 });

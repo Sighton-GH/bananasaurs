@@ -8,6 +8,7 @@ import {
   createPendingAuthorization,
   createToken,
   deleteClient,
+  deleteAuthorizationCodesForAccount,
   findAuthorizationCode,
   findClient,
   findTokenByHash,
@@ -16,6 +17,7 @@ import {
   listTokens,
   markAuthorizationCodeUsed,
   purgeExpired,
+  revokeAllTokensForAccount,
   revokeToken,
   revokeTokenChain,
   revokeTokensForClient,
@@ -45,11 +47,16 @@ const seedClient = (clientId = 'client-1', createdAt = 1000): void =>
     registrationSource: 'dynamic',
   });
 
-const seedCode = (codeHash = 'code-1', clientId = 'client-1', expiresAt = 60_000): void =>
+const seedCode = (
+  codeHash = 'code-1',
+  clientId = 'client-1',
+  expiresAt = 60_000,
+  accountId = 'acct-1',
+): void =>
   createAuthorizationCode(instance, {
     codeHash,
     clientId,
-    accountId: 'acct-1',
+    accountId,
     scopes: ['bananasaurs:read'],
     codeChallenge: 'challenge-1',
     redirectUri: 'https://example.test/cb',
@@ -528,5 +535,82 @@ describe('tokens', () => {
     expect(findTokenById(instance, gone.refreshId)).toBeUndefined();
     expect(findTokenById(instance, revokedLive.accessId)?.revokedAt).toBe(6000);
     expect(findTokenById(instance, expiredLive.accessId)?.revokedAt).toBeNull();
+  });
+});
+
+describe('revokeAllTokensForAccount (M3c)', () => {
+  beforeEach(() => {
+    seedClient();
+  });
+
+  const seedTokenFor = (tokenId: string, accountId: string, codeHash = `code-${tokenId}`): void =>
+    createToken(instance, {
+      tokenId,
+      tokenHash: `hash-${tokenId}`,
+      kind: 'access',
+      clientId: 'client-1',
+      accountId,
+      scopes: ['bananasaurs:read'],
+      createdAt: 1000,
+      expiresAt: 100_000,
+      parentTokenId: null,
+      issuedFromCodeHash: codeHash,
+    });
+
+  it('revokes every live token of the account and leaves an already-revoked row timestamp untouched', () => {
+    seedTokenFor('tok-a', 'acct-1');
+    seedTokenFor('tok-b', 'acct-1');
+    seedTokenFor('tok-c', 'acct-1');
+    // Revoked earlier by another path: the bulk revoke must not rewrite it.
+    expect(revokeToken(instance, 'tok-a', 4000)).toBe(1);
+
+    expect(revokeAllTokensForAccount(instance, { accountId: 'acct-1', now: 5000 })).toBe(2);
+
+    expect(findTokenById(instance, 'tok-a')?.revokedAt).toBe(4000);
+    expect(findTokenById(instance, 'tok-b')?.revokedAt).toBe(5000);
+    expect(findTokenById(instance, 'tok-c')?.revokedAt).toBe(5000);
+    // A second sweep finds nothing live.
+    expect(revokeAllTokensForAccount(instance, { accountId: 'acct-1', now: 6000 })).toBe(0);
+  });
+
+  it('does not touch another account tokens', () => {
+    seedTokenFor('tok-mine', 'acct-1');
+    seedTokenFor('tok-theirs', 'acct-2');
+
+    expect(revokeAllTokensForAccount(instance, { accountId: 'acct-1', now: 5000 })).toBe(1);
+
+    expect(findTokenById(instance, 'tok-mine')?.revokedAt).toBe(5000);
+    expect(findTokenById(instance, 'tok-theirs')?.revokedAt).toBeNull();
+  });
+});
+
+describe('deleteAuthorizationCodesForAccount (M3c fix wave)', () => {
+  beforeEach(() => {
+    seedClient();
+  });
+
+  it('deletes the account codes, counts them, and leaves another account codes alone', () => {
+    seedCode('code-mine-1', 'client-1', 60_000, 'acct-1');
+    seedCode('code-mine-2', 'client-1', 60_000, 'acct-1');
+    seedCode('code-theirs', 'client-1', 60_000, 'acct-2');
+
+    expect(deleteAuthorizationCodesForAccount(instance, 'acct-1')).toBe(2);
+
+    expect(findAuthorizationCode(instance, 'code-mine-1')).toBeUndefined();
+    expect(findAuthorizationCode(instance, 'code-mine-2')).toBeUndefined();
+    expect(findAuthorizationCode(instance, 'code-theirs')).toBeDefined();
+  });
+
+  it('removes the row, so a later exchange finds no code to mint from', () => {
+    // Repository-level proof of the finding: `exchangeCode`
+    // (`packages/http/src/oauth/provider.ts`) reads the code row by hash first
+    // and refuses an unknown code with `invalid_grant`, gating otherwise only
+    // on expiry and `approver.disabled` — so a deleted row cannot mint. The
+    // end-to-end version (exchange after revoke fails) belongs in
+    // `bearer.test.ts` and was left for the controller.
+    seedCode('code-doomed', 'client-1', 60_000, 'acct-1');
+
+    expect(deleteAuthorizationCodesForAccount(instance, 'acct-1')).toBe(1);
+    expect(findAuthorizationCode(instance, 'code-doomed')).toBeUndefined();
   });
 });

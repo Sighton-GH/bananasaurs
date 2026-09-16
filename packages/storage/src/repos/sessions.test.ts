@@ -141,6 +141,18 @@ describe('revocation is immediate, which is why sessions are DB-backed', () => {
     expect(revokeAllForAccount(a, { accountId: ACCOUNT, now: 2000 })).toBe(1);
     expect(findSessionByHash(instance, HASH_B)?.revokedAt).toBeNull();
   });
+
+  it('revokes only live sessions: an already-revoked row keeps its timestamp and is not counted', () => {
+    // ADR 0045 Amendment 4 A3-7: a revoke must not rewrite history. The first
+    // session ended at 2000 (an ordinary logout); the sweep at 9000 must leave
+    // that timestamp alone and report only the session it actually ended.
+    open(a, HASH);
+    open(a, HASH_B);
+    expect(revokeSession(a, { sessionIdHash: HASH, now: 2000 })).toBe(true);
+    expect(revokeAllForAccount(a, { accountId: ACCOUNT, now: 9000 })).toBe(1);
+    expect(findSessionByHash(instance, HASH)?.revokedAt).toBe(2000);
+    expect(findSessionByHash(instance, HASH_B)?.revokedAt).toBe(9000);
+  });
 });
 
 describe('re-authentication refreshes reauth_at and nothing else (ADR 0029)', () => {

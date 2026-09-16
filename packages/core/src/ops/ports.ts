@@ -508,6 +508,22 @@ export type OpsAccountDeleteResult =
       readonly accountsRemaining: number;
     };
 
+/** What `account revoke-credentials` did. */
+export type OpsAccountRevokeResult =
+  | 'no-such-account'
+  | {
+      readonly username: string;
+      readonly accountId: string;
+      readonly sessionsRevoked: number;
+      readonly tokensRevoked: number;
+      /** Unexchanged authorization codes deleted — an unminted token mints after a revoke (ADR 0045 Amendment 4 A3-6). */
+      readonly codesDeleted: number;
+      /** How many guilds' session tables were swept (M3c-R3). */
+      readonly guildsTouched: number;
+      /** `disabled` inverted, read AFTER the writes: this is a rotation, not a lockout. */
+      readonly stillEnabled: boolean;
+    };
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -1113,6 +1129,19 @@ export interface OpsInstance {
    * warning `accountSetDisabled` carries.
    */
   accountDelete(username: string): OpsAccountDeleteResult;
+  /**
+   * Revokes every live dashboard session and every live OAuth token for one
+   * dashboard account by username, WITHOUT disabling it (M3c).
+   *
+   * Instance-wide in effect: `dashboard_sessions` is guild-partitioned, so
+   * the implementation sweeps every guild scope the daemon serves, while
+   * `oauth_tokens` is instance-level (ADR 0027). `disable` pauses,
+   * `revoke-credentials` rotates — both together mean locked out *and*
+   * rotated (M3c-R1). `'no-such-account'` is the usage answer for a mistyped
+   * name. `stillEnabled` is read after the writes, so the command reports
+   * what the account is, not what it was.
+   */
+  accountRevokeCredentials(username: string): OpsAccountRevokeResult;
 }
 
 export interface OpsBackupOutcome {
