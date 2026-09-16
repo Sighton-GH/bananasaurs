@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
-import { archiveSearchRepo, type archiveRepo } from '@bananasaurs/storage';
+import { archiveSearchRepo } from '@bananasaurs/storage';
 import {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
@@ -60,7 +60,31 @@ export const ARCHIVE_NO_TEXT_MARKER = '[no text content was archived for this me
 export type ArchiveOutcome =
   { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
-type ArchiveMessage = archiveRepo.ArchiveMessage;
+/**
+ * The archived message as this package needs it: six fields, named here,
+ * rather than the storage row type passed through whole. (The row type is
+ * not named anywhere in this file on purpose — the test at the bottom of
+ * `archive.test.ts` asserts its absence as text.)
+ *
+ * The whole-branch review found this port was the one port that carried a
+ * storage row type across the package boundary while its three neighbours
+ * projected field by field — `retentionClass`, `caseId`, `deletedAt` and
+ * `editedAt` arrived in `packages/mcp` and were read by nothing. Nothing
+ * leaked, because `toEvidenceItem` below names what it prints; the point of
+ * projecting is that a column added to `archive_messages` later cannot
+ * arrive here for free. That property is the reason the other three ports
+ * were shaped this way, and this is the correction of ruling M4-D2, which
+ * described the inconsistency as a direct storage call — it never was one.
+ */
+export interface McpArchiveMessage {
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly authorId: string | undefined;
+  readonly content: string | null;
+  readonly createdAt: number;
+  /** Distinguishes a purged message from an attachment-only one — see the two markers above. */
+  readonly contentPurgedAt: number | undefined;
+}
 
 export interface McpArchiveSearchInput {
   readonly query: string;
@@ -107,11 +131,11 @@ export interface McpArchivePort {
     guildId: GuildId,
     input: McpArchiveSearchInput,
   ) => McpArchiveSearchResult;
-  readonly findMessage: (guildId: GuildId, messageId: string) => ArchiveMessage | undefined;
+  readonly findMessage: (guildId: GuildId, messageId: string) => McpArchiveMessage | undefined;
   readonly listChannelHistory: (
     guildId: GuildId,
     input: McpChannelHistoryInput,
-  ) => readonly ArchiveMessage[];
+  ) => readonly McpArchiveMessage[];
 }
 
 /**
@@ -197,7 +221,7 @@ const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
   }
 };
 
-const toEvidenceItem = (message: ArchiveMessage): EvidenceItem => ({
+const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => ({
   authorId: message.authorId ?? '(unknown author)',
   channelId: message.channelId,
   messageId: message.messageId,

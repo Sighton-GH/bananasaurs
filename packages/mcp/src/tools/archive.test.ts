@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -588,5 +589,26 @@ describe('archive tools on the MCP server', () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe('the archive port projects rather than passing a storage row through', () => {
+  it('names no storage row type: the port speaks McpArchiveMessage', () => {
+    // The whole-branch review's third Minor, and the correction of ruling
+    // M4-D2. This module may import `archiveSearchRepo` for its two limit
+    // constants — those are numbers, not a shape — but it must not name
+    // `archiveRepo.ArchiveMessage`, because a port typed by the storage row
+    // carries every future column of `archive_messages` into this package
+    // for free. Its three neighbouring ports project field by field; this
+    // one was the exception.
+    //
+    // A text assertion rather than a type one on purpose: TypeScript accepts
+    // a value with extra properties wherever the narrower type is expected,
+    // so a port that returned the full row would still typecheck. Only the
+    // absence of the name is checkable, and only the daemon's
+    // `toMcpArchiveMessage` actually strips the fields.
+    const source = readFileSync(new URL('./archive.ts', import.meta.url), 'utf8');
+    expect(source).not.toContain('archiveRepo');
+    expect(source).toContain('McpArchiveMessage');
   });
 });

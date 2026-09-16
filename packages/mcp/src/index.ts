@@ -46,6 +46,7 @@ export {
   SEARCH_MESSAGES_TOOL_NAME,
   searchMessagesText,
   type ArchiveOutcome,
+  type McpArchiveMessage,
   type McpArchivePort,
   type McpArchiveSearchHit,
   type McpArchiveSearchInput,

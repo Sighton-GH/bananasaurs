@@ -7,6 +7,7 @@ import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/
 import {
   createMcpServer,
   GUILD_REFUSAL_MESSAGE,
+  type McpArchiveMessage,
   type McpArchivePort,
   type McpGuildHealth,
   type McpGuildPort,
@@ -132,6 +133,22 @@ const loggedCallAsync = async <T>(
 };
 
 /**
+ * Projects the archive row to the six fields `packages/mcp` reads, field by
+ * field like every other port here. `retentionClass`, `caseId`, `deletedAt`
+ * and `editedAt` stop at this boundary: they were crossing it and being read
+ * by nothing, and the point of naming each field is that a column added to
+ * `archive_messages` later cannot arrive in the MCP package for free.
+ */
+const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage => ({
+  messageId: row.messageId,
+  channelId: row.channelId,
+  authorId: row.authorId,
+  content: row.content,
+  createdAt: row.createdAt,
+  contentPurgedAt: row.contentPurgedAt,
+});
+
+/**
  * The `McpArchivePort` behind the three archive tools, field by field like
  * `healthPortFor` above. Each method turns the already-resolved `GuildId`
  * into a `GuildScope` per call and reads through the archive repositories —
@@ -169,16 +186,21 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
       };
     }),
   findMessage: (guildId, messageId) =>
-    loggedCall(deps.logger, 'findMessage', () =>
-      archiveRepo.findMessage(deps.scopes.forGuild(guildId), messageId),
-    ),
+    loggedCall(deps.logger, 'findMessage', () => {
+      const row = archiveRepo.findMessage(deps.scopes.forGuild(guildId), messageId);
+      return row === undefined ? undefined : toMcpArchiveMessage(row);
+    }),
   listChannelHistory: (guildId, input) =>
     loggedCall(deps.logger, 'listChannelHistory', () =>
-      archiveRepo.listChannelHistory(deps.scopes.forGuild(guildId), {
-        channelId: input.channelId,
-        ...(input.beforeMessageId !== undefined ? { beforeMessageId: input.beforeMessageId } : {}),
-        ...(input.limit !== undefined ? { limit: input.limit } : {}),
-      }),
+      archiveRepo
+        .listChannelHistory(deps.scopes.forGuild(guildId), {
+          channelId: input.channelId,
+          ...(input.beforeMessageId !== undefined
+            ? { beforeMessageId: input.beforeMessageId }
+            : {}),
+          ...(input.limit !== undefined ? { limit: input.limit } : {}),
+        })
+        .map(toMcpArchiveMessage),
     ),
 });
 
