@@ -13,8 +13,13 @@
 
 /**
  * The minimum an archive tool in Task 4 has for one retrieved message: the
- * ids that locate it, when it was sent, and the member-written text. Ids
- * and timestamps are system-generated; `content` is the untrusted field.
+ * ids that locate it, when it was sent, and the member-written text. Today
+ * the ids and timestamp are system-generated (Discord snowflakes and a
+ * timestamp) and only `content` is member-written — but the envelope below
+ * is the shared primitive every content-bearing tool in Tasks 4–6 will use,
+ * and a future item type may carry member-controlled text in a metadata
+ * field (design §3 has `list_members` returning display names), so every
+ * interpolated field is escaped, not just `content`.
  */
 export interface EvidenceItem {
   readonly authorId: string;
@@ -35,13 +40,13 @@ export const EVIDENCE_OPEN = '<<<DISCORD-EVIDENCE-BEGIN>>>';
 export const EVIDENCE_CLOSE = '<<<DISCORD-EVIDENCE-END>>>';
 /**
  * The separator broken into the middle of every marker occurrence found in
- * item content. Zero-width space: invisible in rendering, so the preserved
- * text still reads exactly as the member wrote it, but the byte sequence no
- * longer equals the framing marker — a scan for the exact delimiter finds
- * only frame boundaries the helper itself emitted. Named here so the test
- * can state the property it proves; content is escaped by splitting on the
- * exact marker and joining with the broken form, never by hoping the marker
- * will not appear.
+ * interpolated item text. Zero-width space: invisible in rendering, so the
+ * preserved text still reads exactly as the member wrote it, but the byte
+ * sequence no longer equals the framing marker — a scan for the exact
+ * delimiter finds only frame boundaries the helper itself emitted. Named here
+ * so the test can state the property it proves; text is escaped by splitting
+ * on the exact marker and joining with the broken form, never by hoping the
+ * marker will not appear.
  */
 const ESCAPE_SEPARATOR = '\u200b';
 
@@ -64,6 +69,15 @@ const breakMarker = (text: string, marker: string): string => {
  * per item — and nowhere else. A forged "second envelope" inside content
  * survives only in broken form: still readable, incapable of framing.
  *
+ * Every interpolated field is escaped — ids, timestamp, and content alike —
+ * even though escaping a string of digits is a no-op today. The envelope is
+ * the shared primitive every content-bearing tool in Tasks 4–6 will use,
+ * and a future item type may carry member-controlled text in a metadata
+ * field (design §3 has `list_members` returning display names, which a
+ * member controls). Escaping only `content` would rest the framing guarantee
+ * on the unseen invariant that metadata can never contain a marker; escaping
+ * everything deletes that invariant instead of documenting it.
+ *
  * Two limits, stated rather than implied. First, this is a mitigation, not
  * a control (ADR 0044 §6): it marks the boundary for a client that honours
  * it; nothing here can stop a client from obeying retrieved text anyway.
@@ -78,10 +92,10 @@ const escapeEvidenceText = (text: string): string =>
 const formatItem = (entry: EvidenceItem, index: number, total: number): string =>
   [
     `[evidence ${index + 1} of ${total}]`,
-    `author: ${entry.authorId}`,
-    `channel: ${entry.channelId}`,
-    `message: ${entry.messageId}`,
-    `at: ${entry.timestamp}`,
+    `author: ${escapeEvidenceText(entry.authorId)}`,
+    `channel: ${escapeEvidenceText(entry.channelId)}`,
+    `message: ${escapeEvidenceText(entry.messageId)}`,
+    `at: ${escapeEvidenceText(entry.timestamp)}`,
     EVIDENCE_OPEN,
     escapeEvidenceText(entry.content),
     EVIDENCE_CLOSE,
