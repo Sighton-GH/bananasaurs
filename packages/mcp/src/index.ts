@@ -1,5 +1,6 @@
 export {
   GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
   MCP_READ_SCOPE,
   hasReadScope,
   requireAnyReachableGuild,

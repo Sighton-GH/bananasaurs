@@ -1,7 +1,7 @@
 import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
-import { safeLogFields, type GuildId } from '@bananasaurs/core';
+import { safeLogFields, type GuildId, type Logger } from '@bananasaurs/core';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
@@ -86,46 +86,100 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
 };
 
 /**
+ * The step-2 trace (ruling M4-D18). Every port method below runs inside one
+ * of these wrappers, so a repository or cache fault leaves one error line
+ * before the throw reaches the tool layer — which answers the shared refusal
+ * and swallows the throw, while the route's `catch` only fires on a
+ * transport fault. Without this line the operator has no trace to contradict
+ * a "guild unknown or unreachable" report caused by a stale FTS index or a
+ * missing intent. Rethrown after logging: the tool layer still refuses.
+ *
+ * Allowlisted fields only (CLAUDE.md rule 4): `component`, `reason`, `err`.
+ * `safeLogFields` (`packages/core/src/obs/logger.ts`) permits no `tool`
+ * field, so the port method name goes in `reason`. Never a token, a session
+ * id, message content, a member name, a snippet, or an audit payload.
+ */
+const logPortFailure = (logger: Logger, reason: string, err: unknown): never => {
+  logger.error(
+    safeLogFields({
+      component: 'mcp',
+      reason,
+      err: err instanceof Error ? err.message : 'mcp port failed',
+    }),
+    'mcp port failed',
+  );
+  throw err;
+};
+
+const loggedCall = <T>(logger: Logger, reason: string, call: () => T): T => {
+  try {
+    return call();
+  } catch (err) {
+    return logPortFailure(logger, reason, err);
+  }
+};
+
+const loggedCallAsync = async <T>(
+  logger: Logger,
+  reason: string,
+  call: () => Promise<T>,
+): Promise<T> => {
+  try {
+    return await call();
+  } catch (err) {
+    return logPortFailure(logger, reason, err);
+  }
+};
+
+/**
  * The `McpArchivePort` behind the three archive tools, field by field like
  * `healthPortFor` above. Each method turns the already-resolved `GuildId`
  * into a `GuildScope` per call and reads through the archive repositories —
  * nothing here writes, and M4 is read-only. The visibility set is built in
  * the tool layer from `listArchiveChannelIds` (every archive-enabled channel
  * in the guild); the caller's `channelIds` only ever narrows within it.
- * Nothing here logs: message content must never reach a log line (rule 4).
+ * A fault leaves one allowlisted-fields error line via `loggedCall` above,
+ * never message content (rule 4).
  */
 const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
   listArchiveChannelIds: (guildId) =>
-    archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
-  searchMessages: (guildId, input) => {
-    const result = archiveSearchRepo.searchMessages(deps.scopes.forGuild(guildId), {
-      query: input.query,
-      visibility: input.visibility,
-      ...(input.channelIds !== undefined ? { channelIds: input.channelIds } : {}),
-      ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
-      ...(input.before !== undefined ? { before: input.before } : {}),
-      ...(input.after !== undefined ? { after: input.after } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
-    });
-    return {
-      total: result.total,
-      hits: result.hits.map((hit) => ({
-        messageId: hit.messageId,
-        channelId: hit.channelId,
-        authorId: hit.authorId,
-        createdAt: hit.createdAt,
-        excerpt: hit.excerpt,
-      })),
-    };
-  },
-  findMessage: (guildId, messageId) =>
-    archiveRepo.findMessage(deps.scopes.forGuild(guildId), messageId),
-  listChannelHistory: (guildId, input) =>
-    archiveRepo.listChannelHistory(deps.scopes.forGuild(guildId), {
-      channelId: input.channelId,
-      ...(input.beforeMessageId !== undefined ? { beforeMessageId: input.beforeMessageId } : {}),
-      ...(input.limit !== undefined ? { limit: input.limit } : {}),
+    loggedCall(deps.logger, 'listArchiveChannelIds', () =>
+      archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
+    ),
+  searchMessages: (guildId, input) =>
+    loggedCall(deps.logger, 'searchMessages', () => {
+      const result = archiveSearchRepo.searchMessages(deps.scopes.forGuild(guildId), {
+        query: input.query,
+        visibility: input.visibility,
+        ...(input.channelIds !== undefined ? { channelIds: input.channelIds } : {}),
+        ...(input.authorId !== undefined ? { authorId: input.authorId } : {}),
+        ...(input.before !== undefined ? { before: input.before } : {}),
+        ...(input.after !== undefined ? { after: input.after } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      });
+      return {
+        total: result.total,
+        hits: result.hits.map((hit) => ({
+          messageId: hit.messageId,
+          channelId: hit.channelId,
+          authorId: hit.authorId,
+          createdAt: hit.createdAt,
+          excerpt: hit.excerpt,
+        })),
+      };
     }),
+  findMessage: (guildId, messageId) =>
+    loggedCall(deps.logger, 'findMessage', () =>
+      archiveRepo.findMessage(deps.scopes.forGuild(guildId), messageId),
+    ),
+  listChannelHistory: (guildId, input) =>
+    loggedCall(deps.logger, 'listChannelHistory', () =>
+      archiveRepo.listChannelHistory(deps.scopes.forGuild(guildId), {
+        channelId: input.channelId,
+        ...(input.beforeMessageId !== undefined ? { beforeMessageId: input.beforeMessageId } : {}),
+        ...(input.limit !== undefined ? { limit: input.limit } : {}),
+      }),
+    ),
 });
 
 /**
@@ -147,8 +201,8 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
  * A guild missing from the cache (not READY, or left) throws with the shared
  * refusal message — the tool layer turns every port throw into that same
  * refusal, so absence reads as "not yours", never as an error and never as
- * an empty list. Nothing here logs: member names must never reach a log line
- * (rule 4).
+ * an empty list. A fault leaves one allowlisted-fields error line via
+ * `loggedCall` above, never a member name (rule 4).
  */
 export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
   const requireGuild = (guildId: GuildId): Guild => {
@@ -157,97 +211,105 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
     return guild;
   };
   return {
-    listChannels: (guildId) => {
-      const guild = requireGuild(guildId);
-      const enabled = new Set(
-        archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
-      );
-      const names = new Map(
-        [...guild.channels.cache.values()].map((channel) => [channel.id, channel.name] as const),
-      );
-      return (
-        [...guild.channels.cache.values()]
-          // Threads are transient conversations, not channels: an operator
-          // asking "what channels exist" means the room list, and a thread
-          // that archived away would otherwise flicker in and out of answers.
-          .filter((channel) => !channel.isThread())
-          .map((channel) => {
-            const parentId =
-              'parentId' in channel && typeof channel.parentId === 'string'
-                ? channel.parentId
-                : undefined;
-            const topic =
-              'topic' in channel && typeof channel.topic === 'string' ? channel.topic : undefined;
-            return {
-              id: channel.id,
-              name: channel.name,
-              type: ChannelType[channel.type] ?? `unknown(${String(channel.type)})`,
-              parentId,
-              parentName: parentId === undefined ? undefined : names.get(parentId),
-              topic,
-              archiveEnabled: enabled.has(channel.id),
-            };
-          })
-          .sort((a, b) => {
-            const positionOf = (id: string): number => {
-              const channel = guild.channels.cache.get(id);
-              if (channel === undefined) return 0;
-              return 'position' in channel && typeof channel.position === 'number'
-                ? channel.position
-                : 0;
-            };
-            return positionOf(a.id) - positionOf(b.id) || (a.id < b.id ? -1 : 1);
-          })
-      );
-    },
-    listRoles: (guildId) => {
-      const guild = requireGuild(guildId);
-      const scope = deps.scopes.forGuild(guildId);
-      return (
-        [...guild.roles.cache.values()]
-          // `@everyone` is the guild itself wearing a role id: every member
-          // holds it, so listing it answers nothing and a managed flag on it
-          // is meaningless. The port drops it; the tool says so in its header.
-          .filter((role) => role.id !== guild.id)
-          .map((role) => ({
-            id: role.id,
-            name: role.name,
-            position: role.position,
-            color: role.color,
-            managedByBananasaurs: roleRepo.isAllowlisted(scope, role.id),
-          }))
-          .sort((a, b) => b.position - a.position || (a.id < b.id ? -1 : 1))
-      );
-    },
-    listMembers: async (guildId, input) => {
-      const guild = requireGuild(guildId);
-      const page = await guild.members.list({
-        limit: input.limit,
-        ...(input.after !== undefined ? { after: input.after } : {}),
-        // Not a cache read (ruling M4-D10): paginated REST, and `false` so
-        // the listing does not churn the 50-entry member cache either.
-        cache: false,
-      });
-      const members = [...page.values()].map((member) => ({
-        id: member.id,
-        username: member.user.username,
-        displayName: member.displayName,
-        roleIds: [...member.roles.cache.keys()].sort(),
-        // Projected field by field: no presence, no activity, no status —
-        // there is nowhere for such a field to hide because each field is
-        // named here rather than spread from the discord.js object.
-        joinedAt: member.joinedAt?.getTime(),
-      }));
-      const last = members[members.length - 1];
-      return { members, nextCursor: last === undefined ? undefined : last.id };
-    },
+    listChannels: (guildId) =>
+      loggedCall(deps.logger, 'listChannels', () => {
+        const guild = requireGuild(guildId);
+        const enabled = new Set(
+          archiveRepo
+            .listChannels(deps.scopes.forGuild(guildId))
+            .map((channel) => channel.channelId),
+        );
+        const names = new Map(
+          [...guild.channels.cache.values()].map((channel) => [channel.id, channel.name] as const),
+        );
+        return (
+          [...guild.channels.cache.values()]
+            // Threads are transient conversations, not channels: an operator
+            // asking "what channels exist" means the room list, and a thread
+            // that archived away would otherwise flicker in and out of answers.
+            .filter((channel) => !channel.isThread())
+            .map((channel) => {
+              const parentId =
+                'parentId' in channel && typeof channel.parentId === 'string'
+                  ? channel.parentId
+                  : undefined;
+              const topic =
+                'topic' in channel && typeof channel.topic === 'string'
+                  ? channel.topic
+                  : undefined;
+              return {
+                id: channel.id,
+                name: channel.name,
+                type: ChannelType[channel.type] ?? `unknown(${String(channel.type)})`,
+                parentId,
+                parentName: parentId === undefined ? undefined : names.get(parentId),
+                topic,
+                archiveEnabled: enabled.has(channel.id),
+              };
+            })
+            .sort((a, b) => {
+              const positionOf = (id: string): number => {
+                const channel = guild.channels.cache.get(id);
+                if (channel === undefined) return 0;
+                return 'position' in channel && typeof channel.position === 'number'
+                  ? channel.position
+                  : 0;
+              };
+              return positionOf(a.id) - positionOf(b.id) || (a.id < b.id ? -1 : 1);
+            })
+        );
+      }),
+    listRoles: (guildId) =>
+      loggedCall(deps.logger, 'listRoles', () => {
+        const guild = requireGuild(guildId);
+        const scope = deps.scopes.forGuild(guildId);
+        return (
+          [...guild.roles.cache.values()]
+            // `@everyone` is the guild itself wearing a role id: every member
+            // holds it, so listing it answers nothing and a managed flag on it
+            // is meaningless. The port drops it; the tool says so in its header.
+            .filter((role) => role.id !== guild.id)
+            .map((role) => ({
+              id: role.id,
+              name: role.name,
+              position: role.position,
+              color: role.color,
+              managedByBananasaurs: roleRepo.isAllowlisted(scope, role.id),
+            }))
+            .sort((a, b) => b.position - a.position || (a.id < b.id ? -1 : 1))
+        );
+      }),
+    listMembers: async (guildId, input) =>
+      loggedCallAsync(deps.logger, 'listMembers', async () => {
+        const guild = requireGuild(guildId);
+        const page = await guild.members.list({
+          limit: input.limit,
+          ...(input.after !== undefined ? { after: input.after } : {}),
+          // Not a cache read (ruling M4-D10): paginated REST, and `false` so
+          // the listing does not churn the 50-entry member cache either.
+          cache: false,
+        });
+        const members = [...page.values()].map((member) => ({
+          id: member.id,
+          username: member.user.username,
+          displayName: member.displayName,
+          roleIds: [...member.roles.cache.keys()].sort(),
+          // Projected field by field: no presence, no activity, no status —
+          // there is nowhere for such a field to hide because each field is
+          // named here rather than spread from the discord.js object.
+          joinedAt: member.joinedAt?.getTime(),
+        }));
+        const last = members[members.length - 1];
+        return { members, nextCursor: last === undefined ? undefined : last.id };
+      }),
     // The gateway scalar, not the cache size (ruling M4-D10): the 50-entry
     // `GuildMemberManager` cap makes `members.cache.size` silently wrong on
     // any guild over 50 members, while `memberCount` is what the gateway
     // keeps accurate. The overview card reads this; nothing here counts a
     // listing. A guild missing from the cache throws the shared refusal, the
     // same as every other method here.
-    memberCount: (guildId) => requireGuild(guildId).memberCount,
+    memberCount: (guildId) =>
+      loggedCall(deps.logger, 'memberCount', () => requireGuild(guildId).memberCount),
   };
 };
 
@@ -257,83 +319,95 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
  * already-resolved `GuildId` into a `GuildScope` per call and reads through
  * the moderation and audit repositories — nothing here writes, and M4 is
  * read-only. Reader calls only: the repositories' state-changing functions
- * are never referenced here, let alone called (ruling M4-D14). Nothing here
- * logs: snippets, reasons and payloads must never reach a log line (rule 4).
+ * are never referenced here, let alone called (ruling M4-D14). A fault
+ * leaves one allowlisted-fields error line via `loggedCall` above, never a
+ * snippet, a reason or a payload (rule 4).
  */
 const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
   listRecentCases: (guildId, input) =>
-    automodAdminRepo
-      .listRecentCases(deps.scopes.forGuild(guildId), { limit: input.limit })
-      .map((row) => ({
-        caseId: row.caseId,
-        memberId: row.memberId,
-        openedAt: row.openedAt,
-        violationCount: row.violationCount,
-        escalationTier: row.escalationTier,
-        status: row.status,
-      })),
-  findCase: (guildId, caseId) => {
-    const found = automodAdminRepo.findCase(deps.scopes.forGuild(guildId), caseId);
-    if (found === undefined) return undefined;
-    return {
-      caseId: found.caseId,
-      memberId: found.memberId,
-      openedAt: found.openedAt,
-      violationCount: found.violationCount,
-      escalationTier: found.escalationTier,
-      status: found.status,
-    };
-  },
+    loggedCall(deps.logger, 'listRecentCases', () =>
+      automodAdminRepo
+        .listRecentCases(deps.scopes.forGuild(guildId), { limit: input.limit })
+        .map((row) => ({
+          caseId: row.caseId,
+          memberId: row.memberId,
+          openedAt: row.openedAt,
+          violationCount: row.violationCount,
+          escalationTier: row.escalationTier,
+          status: row.status,
+        })),
+    ),
+  findCase: (guildId, caseId) =>
+    loggedCall(deps.logger, 'findCase', () => {
+      const found = automodAdminRepo.findCase(deps.scopes.forGuild(guildId), caseId);
+      if (found === undefined) return undefined;
+      return {
+        caseId: found.caseId,
+        memberId: found.memberId,
+        openedAt: found.openedAt,
+        violationCount: found.violationCount,
+        escalationTier: found.escalationTier,
+        status: found.status,
+      };
+    }),
   listCaseEvents: (guildId, caseId) =>
-    modCaseRepo.listCaseEvents(deps.scopes.forGuild(guildId), caseId).map((event) => ({
-      eventId: event.eventId,
-      ruleId: event.ruleId,
-      memberId: event.memberId,
-      at: event.at,
-      matchedCategory: event.matchedCategory,
-      matchedSnippet: event.matchedSnippet,
-      actionTaken: event.actionTaken,
-      escalationAction: event.escalationAction,
-      refusalReason: event.refusalReason,
-      actorId: event.actorId,
-    })),
-  tailAudit: (guildId, input) =>
-    effectRepo
-      .tailAudit(deps.scopes.forGuild(guildId), {
-        limit: input.limit,
-        ...(input.sinceMs !== undefined ? { sinceMs: input.sinceMs } : {}),
-      })
-      .map((row) => ({
-        auditId: row.auditId,
-        at: row.at,
-        actorType: row.actorType,
-        actorId: row.actorId,
-        actorUnixUserClaimed: row.actorUnixUserClaimed,
-        via: row.via,
-        action: row.action,
-        subjectType: row.subjectType,
-        subjectId: row.subjectId,
-        batchId: row.batchId,
-        before: row.before,
-        after: row.after,
-        // The columns are SQLite integers; the port speaks booleans, so the
-        // conversion happens once here rather than in every renderer.
-        dryRun: row.dryRun === 1,
-        inferred: row.inferred === 1,
+    loggedCall(deps.logger, 'listCaseEvents', () =>
+      modCaseRepo.listCaseEvents(deps.scopes.forGuild(guildId), caseId).map((event) => ({
+        eventId: event.eventId,
+        ruleId: event.ruleId,
+        memberId: event.memberId,
+        at: event.at,
+        matchedCategory: event.matchedCategory,
+        matchedSnippet: event.matchedSnippet,
+        actionTaken: event.actionTaken,
+        escalationAction: event.escalationAction,
+        refusalReason: event.refusalReason,
+        actorId: event.actorId,
       })),
+    ),
+  tailAudit: (guildId, input) =>
+    loggedCall(deps.logger, 'tailAudit', () =>
+      effectRepo
+        .tailAudit(deps.scopes.forGuild(guildId), {
+          limit: input.limit,
+          ...(input.sinceMs !== undefined ? { sinceMs: input.sinceMs } : {}),
+        })
+        .map((row) => ({
+          auditId: row.auditId,
+          at: row.at,
+          actorType: row.actorType,
+          actorId: row.actorId,
+          actorUnixUserClaimed: row.actorUnixUserClaimed,
+          via: row.via,
+          action: row.action,
+          subjectType: row.subjectType,
+          subjectId: row.subjectId,
+          batchId: row.batchId,
+          before: row.before,
+          after: row.after,
+          // The columns are SQLite integers; the port speaks booleans, so the
+          // conversion happens once here rather than in every renderer.
+          dryRun: row.dryRun === 1,
+          inferred: row.inferred === 1,
+        })),
+    ),
   // Reading `mod_rules`, not touching it: the counts the card renders come
   // from this read, and no writer is referenced here (ruling M4-D14).
   listRules: (guildId) =>
-    automodAdminRepo.listRules(deps.scopes.forGuild(guildId)).map((rule) => ({
-      ruleId: rule.ruleId,
-      name: rule.name,
-      mode: rule.mode,
-      enabled: rule.enabled,
-    })),
+    loggedCall(deps.logger, 'listRules', () =>
+      automodAdminRepo.listRules(deps.scopes.forGuild(guildId)).map((rule) => ({
+        ruleId: rule.ruleId,
+        name: rule.name,
+        mode: rule.mode,
+        enabled: rule.enabled,
+      })),
+    ),
   listPanels: (guildId) =>
-    panelRepo.listPanels(deps.scopes.forGuild(guildId)).map((panel) => ({
-      panelId: panel.panelId,
-    })),
+    loggedCall(deps.logger, 'listPanels', () =>
+      panelRepo.listPanels(deps.scopes.forGuild(guildId)).map((panel) => ({
+        panelId: panel.panelId,
+      })),
+    ),
 });
 
 /** Hop-by-hop headers that must not survive the Fastify → Web conversion. */

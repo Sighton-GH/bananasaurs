@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
-import { GUILD_REFUSAL_MESSAGE, requireReachableGuild, type McpPrincipal } from '../scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
+  requireReachableGuild,
+  type McpPrincipal,
+} from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 
 /**
@@ -140,13 +145,14 @@ export interface McpGuildPort {
 }
 
 /**
- * Zod schemas are the boundary (hard rule 3). Every failure — wrong wire
- * type, out-of-range limit, malformed snowflake — is a refusal with the
- * shared message, never a throw: distinct errors would be an oracle, and a
- * throw would leave the handler contract to the transport. `limit` has no
- * Zod maximum on purpose: an over-large page is clamped to
- * `MEMBER_LIMIT_MAX`, not refused — refusing it would turn a generous client
- * default into an error the operator has to think about.
+ * Zod schemas are the boundary (hard rule 3). A parse failure — wrong wire
+ * type, malformed cursor — is the argument-fault message (ruling M4-D18),
+ * never a throw: the parse runs before the guild gate below, so it has
+ * consulted nothing about which guilds exist. The guild gate itself, and a
+ * throw out of the port, stay the shared refusal. `limit` has no Zod maximum
+ * on purpose: an over-large page is clamped to `MEMBER_LIMIT_MAX`, not
+ * refused — refusing it would turn a generous client default into an error
+ * the operator has to think about.
  */
 const channelsArgsSchema = z.object({
   guildId: z.string(),
@@ -166,7 +172,8 @@ const membersArgsSchema = z.object({
  * The loose wire shapes registered with the MCP server. Deliberately without
  * refinements: this documents the wire types for clients while the strict
  * schemas above stay the single boundary — everything the transport accepts
- * but the boundary rejects still ends as the shared refusal from the handler,
+ * but the boundary rejects still ends as the argument-fault message from the
+ * handler (a guild the caller cannot reach ends as the shared refusal),
  * which also try/catches so no input can throw out of the tool.
  */
 export const listChannelsParams = {
@@ -189,6 +196,11 @@ export const listMembersParams = {
 };
 
 const refuse = (): GuildToolOutcome => ({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+
+const refuseInvalidArgs = (): GuildToolOutcome => ({
+  ok: false,
+  message: INVALID_ARGUMENTS_MESSAGE,
+});
 
 /** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
 const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
@@ -249,7 +261,7 @@ const listChannelsInner = (
   rawArgs: unknown,
 ): GuildToolOutcome => {
   const parsed = channelsArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   // The guild gate. `requireReachableGuild` parses the id itself and refuses
   // malformed and unreachable identically — the membership check below it is
   // the whole guard, so removing this call answers any guild's channels.
@@ -271,7 +283,7 @@ const listRolesInner = (
   rawArgs: unknown,
 ): GuildToolOutcome => {
   const parsed = rolesArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   const roles = port.listRoles(gate.guildId);
@@ -290,11 +302,12 @@ const listMembersInner = async (
   rawArgs: unknown,
 ): Promise<GuildToolOutcome> => {
   const parsed = membersArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
-  // `after` is a cursor, not a filter: a malformed one is a refusal, the
-  // same as a malformed guild id — never a fetch with a guessed cursor.
-  if (input.after !== undefined && !idsAreWellFormed([input.after])) return refuse();
+  // `after` is a cursor, not a filter: a malformed one is the argument-fault
+  // message, the same as any other parse failure — never a fetch with a
+  // guessed cursor.
+  if (input.after !== undefined && !idsAreWellFormed([input.after])) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, input.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   // Clamped, not refused: see the schema comment above.
@@ -311,9 +324,10 @@ const listMembersInner = async (
 };
 
 /**
- * Never throws: a malformed argument is the shared refusal, and anything
- * unexpected (a port fault, which cannot carry member content outward from
- * here) is the same refusal rather than an exception out of the handler.
+ * Never throws: a malformed argument is the argument-fault message, and
+ * anything unexpected (a port fault, which cannot carry member content
+ * outward from here) is the shared refusal rather than an exception out of
+ * the handler. The two messages are deliberately different (ruling M4-D18).
  */
 export const listChannelsText = (
   principal: McpPrincipal,

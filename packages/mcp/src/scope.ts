@@ -36,6 +36,18 @@ export const hasReadScope = (principal: McpPrincipal): boolean =>
  */
 export const GUILD_REFUSAL_MESSAGE = 'Unknown or unreachable guild.';
 
+/**
+ * The argument-fault answer (ruling M4-D18), distinct from the guild refusal
+ * above. The single refusal exists so that an empty reachable set, a
+ * malformed guild id and an unreachable guild id are indistinguishable to
+ * the caller — that oracle argument is real and it stands. It does not
+ * cover argument validation, because the Zod parse runs *before*
+ * `requireReachableGuild` in every tool: a refusal returned there has
+ * consulted nothing about which guilds exist, so naming it as an argument
+ * fault leaks no membership fact and is not an oracle.
+ */
+export const INVALID_ARGUMENTS_MESSAGE = 'Invalid arguments for this tool.';
+
 export type GuildRefusal = { readonly ok: false; readonly message: string };
 export type GuildResolved = { readonly ok: true; readonly guildId: GuildId };
 export type GuildOutcome = GuildRefusal | GuildResolved;

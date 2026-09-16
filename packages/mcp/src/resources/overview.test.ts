@@ -3,7 +3,7 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from '../scope.js';
+import { GUILD_REFUSAL_MESSAGE, INVALID_ARGUMENTS_MESSAGE, type McpPrincipal } from '../scope.js';
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from '../tools/health.js';
 import type { McpArchivePort } from '../tools/archive.js';
@@ -139,6 +139,22 @@ describe('overview resource guard', () => {
     } finally {
       await close();
     }
+  });
+
+  it('a non-string template variable is an argument fault, never the shared refusal (ruling M4-D18)', () => {
+    const principal = principalWith(GUILD_A);
+    // The shape check runs before the guild gate, so it has consulted
+    // nothing about which guilds exist — naming it leaks no membership fact.
+    for (const raw of [undefined, 42, { guildId: '111111111111111111' }]) {
+      expect(readOverviewResource(principal, stubGuild(), stubRecords(), raw)).toEqual({
+        ok: false,
+        message: INVALID_ARGUMENTS_MESSAGE,
+      });
+    }
+    // While a string that is simply not ours stays the shared refusal.
+    expect(
+      readOverviewResource(principal, stubGuild(), stubRecords(), '222222222222222222'),
+    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
   });
 
   it('answers its own guild through the same check the tool uses', async () => {

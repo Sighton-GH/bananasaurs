@@ -1,6 +1,11 @@
 import { z } from 'zod';
 import type { GuildId } from '@bananasaurs/core';
-import { GUILD_REFUSAL_MESSAGE, requireReachableGuild, type McpPrincipal } from '../scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
+  requireReachableGuild,
+  type McpPrincipal,
+} from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 import { buildOverviewCard } from '../resources/overview.js';
 import type { McpGuildPort } from './guild.js';
@@ -160,13 +165,14 @@ export interface McpRecordsPort {
 }
 
 /**
- * Zod schemas are the boundary (hard rule 3). Every failure — wrong wire
- * type, out-of-range limit, malformed guild id — is a refusal with the
- * shared message, never a throw: distinct errors would be an oracle, and a
- * throw would leave the handler contract to the transport. `caseId` is a
- * UUID, not a snowflake, so it is checked for shape only (a non-empty
- * string); anything it names that is not this guild's case reads as
- * not-found, which keeps this from being a cross-guild existence oracle.
+ * Zod schemas are the boundary (hard rule 3). A parse failure — wrong wire
+ * type, out-of-range limit, malformed guild id — is the argument-fault
+ * message (ruling M4-D18), never a throw: the parse runs before the guild
+ * gate below, so it has consulted nothing about which guilds exist. The
+ * guild gate itself, and a throw out of the port, stay the shared refusal.
+ * `caseId` is a UUID, not a snowflake, so it is checked for shape only (a
+ * non-empty string); anything it names that is not this guild's case reads
+ * as not-found, which keeps this from being a cross-guild existence oracle.
  */
 const modCasesArgsSchema = z.object({
   guildId: z.string(),
@@ -192,7 +198,8 @@ const overviewArgsSchema = z.object({
  * The loose wire shapes registered with the MCP server. Deliberately without
  * refinements: this documents the wire types for clients while the strict
  * schemas above stay the single boundary — everything the transport accepts
- * but the boundary rejects still ends as the shared refusal from the handler,
+ * but the boundary rejects still ends as the argument-fault message from the
+ * handler (a guild the caller cannot reach ends as the shared refusal),
  * which also try/catches so no input can throw out of the tool.
  */
 export const listModCasesParams = {
@@ -224,6 +231,11 @@ export const getServerOverviewParams = {
 };
 
 const refuse = (): RecordsOutcome => ({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+
+const refuseInvalidArgs = (): RecordsOutcome => ({
+  ok: false,
+  message: INVALID_ARGUMENTS_MESSAGE,
+});
 
 const caseToEvidenceItem = (guildId: GuildId, summary: McpModCaseSummary): EvidenceItem => ({
   authorId: summary.memberId,
@@ -275,7 +287,7 @@ const listModCasesInner = (
   rawArgs: unknown,
 ): RecordsOutcome => {
   const parsed = modCasesArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   // The guild gate. `requireReachableGuild` parses the id itself and refuses
   // malformed and unreachable identically — the membership check below it is
   // the whole guard, so removing this call answers any guild's cases.
@@ -308,7 +320,7 @@ const getModCaseInner = (
   rawArgs: unknown,
 ): RecordsOutcome => {
   const parsed = modCaseArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   // `findCase` is guild-scoped, so another guild's id reads as not-found —
@@ -341,7 +353,7 @@ const listAuditEventsInner = (
   rawArgs: unknown,
 ): RecordsOutcome => {
   const parsed = auditArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   const rows = port.tailAudit(gate.guildId, {
@@ -363,7 +375,7 @@ const getServerOverviewInner = (
   rawArgs: unknown,
 ): RecordsOutcome => {
   const parsed = overviewArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   // The guild gate — this tool's own, independent of the resource's identical
   // one in `readOverviewResource` (ruling M4-D13). Removing this call answers
   // any guild's card through the tool door while the resource door stays shut.
@@ -386,9 +398,10 @@ const getServerOverviewInner = (
 };
 
 /**
- * Never throws: a malformed argument is the shared refusal, and anything
- * unexpected (a port fault, which cannot carry member content outward from
- * here) is the same refusal rather than an exception out of the handler.
+ * Never throws: a malformed argument is the argument-fault message, and
+ * anything unexpected (a port fault, which cannot carry member content
+ * outward from here) is the shared refusal rather than an exception out of
+ * the handler. The two messages are deliberately different (ruling M4-D18).
  */
 export const listModCasesText = (
   principal: McpPrincipal,

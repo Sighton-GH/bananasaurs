@@ -1,7 +1,12 @@
 import { z } from 'zod';
 import { parseSnowflakeId, type GuildId } from '@bananasaurs/core';
 import { archiveSearchRepo, type archiveRepo } from '@bananasaurs/storage';
-import { GUILD_REFUSAL_MESSAGE, requireReachableGuild, type McpPrincipal } from '../scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
+  requireReachableGuild,
+  type McpPrincipal,
+} from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 
 /**
@@ -110,10 +115,12 @@ export interface McpArchivePort {
 }
 
 /**
- * Zod schemas are the boundary (hard rule 3). Every failure — wrong wire
- * type, empty query, out-of-range limit, malformed snowflake — is a refusal
- * with the shared message, never a throw: distinct errors would be an oracle,
- * and a throw would leave the handler contract to the transport.
+ * Zod schemas are the boundary (hard rule 3). A parse failure — wrong wire
+ * type, empty query, out-of-range limit, malformed snowflake — is the
+ * argument-fault message (ruling M4-D18), never a throw: the parse runs
+ * before the guild gate below, so it has consulted nothing about which
+ * guilds exist and naming it leaks no membership fact. A throw out of the
+ * port, and the guild gate itself, stay the shared refusal.
  */
 const searchArgsSchema = z.object({
   guildId: z.string(),
@@ -141,7 +148,8 @@ const messageArgsSchema = z.object({
  * The loose wire shapes registered with the MCP server. Deliberately without
  * refinements: this documents the wire types for clients while the strict
  * schemas above stay the single boundary — everything the transport accepts
- * but the boundary rejects still ends as the shared refusal from the handler,
+ * but the boundary rejects still ends as the argument-fault message from the
+ * handler (a guild the caller cannot reach ends as the shared refusal),
  * which also try/catches so no input can throw out of the tool.
  */
 export const searchMessagesParams = {
@@ -174,6 +182,11 @@ export const getMessageParams = {
 
 const refuse = (): ArchiveOutcome => ({ ok: false, message: GUILD_REFUSAL_MESSAGE });
 
+const refuseInvalidArgs = (): ArchiveOutcome => ({
+  ok: false,
+  message: INVALID_ARGUMENTS_MESSAGE,
+});
+
 /** Every id validated by the core parsers; a malformed one is a refusal, never a throw. */
 const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
   try {
@@ -200,12 +213,12 @@ const searchMessagesInner = (
   rawArgs: unknown,
 ): ArchiveOutcome => {
   const parsed = searchArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
   const idFields: unknown[] = [...(input.channelIds ?? [])];
   if (input.authorId !== undefined) idFields.push(input.authorId);
   if (!idsAreWellFormed(idFields)) {
-    return refuse();
+    return refuseInvalidArgs();
   }
   // The guild gate. `requireReachableGuild` parses the id itself and refuses
   // malformed and unreachable identically — the membership check below it is
@@ -253,7 +266,7 @@ const readChannelHistoryInner = (
   rawArgs: unknown,
 ): ArchiveOutcome => {
   const parsed = historyArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
   if (
     !idsAreWellFormed(
@@ -262,7 +275,7 @@ const readChannelHistoryInner = (
         : [input.channelId, input.beforeMessageId],
     )
   ) {
-    return refuse();
+    return refuseInvalidArgs();
   }
   const gate = requireReachableGuild(principal, input.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
@@ -288,9 +301,9 @@ const getMessageInner = (
   rawArgs: unknown,
 ): ArchiveOutcome => {
   const parsed = messageArgsSchema.safeParse(rawArgs);
-  if (!parsed.success) return refuse();
+  if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
-  if (!idsAreWellFormed([input.messageId])) return refuse();
+  if (!idsAreWellFormed([input.messageId])) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, input.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
   // `findMessage` is guild-scoped, so another guild's id reads as not-found —
@@ -304,9 +317,12 @@ const getMessageInner = (
 };
 
 /**
- * Never throws: a malformed argument is the shared refusal, and anything
- * unexpected (a repository fault, which cannot carry member content outward
- * from here) is the same refusal rather than an exception out of the handler.
+ * Never throws: a malformed argument is the argument-fault message, and
+ * anything unexpected (a repository fault, which cannot carry member content
+ * outward from here) is the shared refusal rather than an exception out of
+ * the handler. The two messages are deliberately different (ruling M4-D18):
+ * the parse precedes the guild gate, so the argument fault consulted nothing
+ * about which guilds exist.
  */
 export const searchMessagesText = (
   principal: McpPrincipal,

@@ -25,6 +25,7 @@ import {
   EVIDENCE_OPEN,
   EVIDENCE_PREAMBLE,
   GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
 } from '../index.js';
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
@@ -225,13 +226,14 @@ describe('archive tools refuse without a reachable guild', () => {
     expect(unreachable).toEqual(empty);
   });
 
-  it('malformed arguments are refusals, never throws', () => {
+  it('malformed arguments are argument faults, never throws (ruling M4-D18)', () => {
     const principal = principalWith(GUILD_A);
     const bad: readonly unknown[] = [
       { guildId: Number('111111111111111111'), query: 'banana' },
       { guildId: '111111111111111111', query: '' },
       { guildId: '111111111111111111', query: 'banana', limit: 0 },
       { guildId: '111111111111111111', query: 'banana', limit: 101 },
+      { guildId: '111111111111111111', query: 'x'.repeat(600) },
       { guildId: '111111111111111111', query: 'banana', limit: 1.5 },
       { guildId: '111111111111111111', query: 'banana', channelIds: ['nope'] },
       { guildId: '111111111111111111', query: 'banana', authorId: 'nope' },
@@ -240,7 +242,7 @@ describe('archive tools refuse without a reachable guild', () => {
       expect(() => searchMessagesText(principal, port, args)).not.toThrow();
       expect(searchMessagesText(principal, port, args)).toEqual({
         ok: false,
-        message: GUILD_REFUSAL_MESSAGE,
+        message: INVALID_ARGUMENTS_MESSAGE,
       });
     }
     expect(() =>
@@ -254,12 +256,46 @@ describe('archive tools refuse without a reachable guild', () => {
         guildId: '111111111111111111',
         channelId: 'nope',
       }),
-    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(() =>
       getMessageText(principal, port, { guildId: '111111111111111111', messageId: 'nope' }),
     ).not.toThrow();
     expect(
       getMessageText(principal, port, { guildId: '111111111111111111', messageId: 'nope' }),
+    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+  });
+
+  it('a throwing port is still the shared refusal, never the argument message', () => {
+    const throwing: McpArchivePort = {
+      ...port,
+      searchMessages: () => {
+        throw new Error('fts index corrupt');
+      },
+      listChannelHistory: () => {
+        throw new Error('database corrupt');
+      },
+      findMessage: () => {
+        throw new Error('database corrupt');
+      },
+    };
+    const principal = principalWith(GUILD_A);
+    expect(
+      searchMessagesText(principal, throwing, {
+        guildId: '111111111111111111',
+        query: 'banana',
+      }),
+    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(
+      readChannelHistoryText(principal, throwing, {
+        guildId: '111111111111111111',
+        channelId: CHANNEL_1,
+      }),
+    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(
+      getMessageText(principal, throwing, {
+        guildId: '111111111111111111',
+        messageId: '666666666666666661',
+      }),
     ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
   });
 });

@@ -1,5 +1,10 @@
 import type { GuildId } from '@bananasaurs/core';
-import { GUILD_REFUSAL_MESSAGE, requireReachableGuild, type McpPrincipal } from '../scope.js';
+import {
+  GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
+  requireReachableGuild,
+  type McpPrincipal,
+} from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 import type { McpGuildChannel, McpGuildPort, McpGuildRole } from '../tools/guild.js';
 import type { McpOverviewPanel, McpOverviewRule, McpRecordsPort } from '../tools/records.js';
@@ -139,11 +144,12 @@ export const buildOverviewCard = (input: OverviewCardInput): string => {
 
 /**
  * Read the overview for the guild named in the resource URI. Never throws:
- * a malformed template variable is the shared refusal, and anything
- * unexpected (a port fault) is the same refusal rather than an exception out
- * of the handler — the server turns a refused outcome into a thrown error at
- * the registration boundary, so the client sees the shared message either
- * way.
+ * a malformed template variable is the argument-fault message (ruling
+ * M4-D18 — the shape check below runs before the guild gate, so it has
+ * consulted nothing about which guilds exist), and anything unexpected (a
+ * port fault) is the shared refusal rather than an exception out of the
+ * handler — the server turns a refused outcome into a thrown error at the
+ * registration boundary, so the client sees the message either way.
  */
 export const readOverviewResource = (
   principal: McpPrincipal,
@@ -153,7 +159,7 @@ export const readOverviewResource = (
 ): OverviewOutcome => {
   try {
     if (typeof rawGuildId !== 'string') {
-      return { ok: false, message: GUILD_REFUSAL_MESSAGE };
+      return { ok: false, message: INVALID_ARGUMENTS_MESSAGE };
     }
     // The resource's own guard (ruling M4-D13): identical to the tool's, and
     // deliberately not shared with it — removing this call must open exactly

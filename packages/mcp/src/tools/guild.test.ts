@@ -8,6 +8,7 @@ import {
   EVIDENCE_OPEN,
   EVIDENCE_PREAMBLE,
   GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
 } from '../index.js';
 import { createMcpServer } from '../server.js';
 import type { McpHealthPort } from './health.js';
@@ -168,22 +169,35 @@ describe('guild tools refuse without a reachable guild', () => {
     expect(unreachable).toEqual(empty);
   });
 
-  it('malformed member arguments are refusals, never throws', async () => {
+  it('malformed member arguments are argument faults, never throws (ruling M4-D18)', async () => {
     const port = fakePort();
     const principal = principalWith(GUILD_A);
+    // An over-cap `limit` is deliberately NOT here: `list_members` clamps it
+    // to 100 rather than refusing (pinned by 'caps limit at 100' below), so
+    // there is no over-cap argument fault on this tool.
     const bad: readonly unknown[] = [
       { guildId: '111111111111111111', limit: 0 },
       { guildId: '111111111111111111', limit: 1.5 },
       { guildId: '111111111111111111', limit: 'many' },
       { guildId: '111111111111111111', after: 'not-a-snowflake' },
-      { guildId: 'not-a-snowflake', limit: 10 },
     ];
     for (const args of bad) {
       await expect(listMembersText(principal, port, args)).resolves.toEqual({
         ok: false,
-        message: GUILD_REFUSAL_MESSAGE,
+        message: INVALID_ARGUMENTS_MESSAGE,
       });
     }
+  });
+
+  it('a malformed guild id is still the shared refusal, not the argument message', async () => {
+    const port = fakePort();
+    const principal = principalWith(GUILD_A);
+    // `guildId` passes the Zod shape (it is a string) and is rejected by the
+    // guild gate instead — which has consulted the reachable set, so the
+    // single refusal stands here.
+    await expect(
+      listMembersText(principal, port, { guildId: 'not-a-snowflake', limit: 10 }),
+    ).resolves.toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
     expect(() => listChannelsText(principal, port, { guildId: 'not-a-snowflake' })).not.toThrow();
     expect(listChannelsText(principal, port, { guildId: 'not-a-snowflake' })).toEqual({
       ok: false,

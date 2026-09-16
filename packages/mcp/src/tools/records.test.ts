@@ -1,7 +1,12 @@
 import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
-import { EVIDENCE_CLOSE, EVIDENCE_PREAMBLE, GUILD_REFUSAL_MESSAGE } from '../index.js';
+import {
+  EVIDENCE_CLOSE,
+  EVIDENCE_PREAMBLE,
+  GUILD_REFUSAL_MESSAGE,
+  INVALID_ARGUMENTS_MESSAGE,
+} from '../index.js';
 import {
   GET_MOD_CASE_TOOL_NAME,
   GET_SERVER_OVERVIEW_TOOL_NAME,
@@ -278,7 +283,7 @@ describe('records tools refuse without a reachable guild', () => {
     expect(unreachable).toEqual(empty);
   });
 
-  it('malformed arguments are refusals, never throws', () => {
+  it('malformed arguments are argument faults, never throws (ruling M4-D18)', () => {
     const records = fakeRecordsPort();
     const principal = principalWith(GUILD_A);
     const bad: readonly unknown[] = [
@@ -286,14 +291,21 @@ describe('records tools refuse without a reachable guild', () => {
       { guildId: '111111111111111111', limit: 101 },
       { guildId: '111111111111111111', limit: 1.5 },
       { guildId: '111111111111111111', caseId: CASE_A, limit: 'many' },
+      { guildId: '111111111111111111', limit: 101, sinceMs: 1_700_000_000_000 },
     ];
     for (const args of bad) {
       expect(() => listModCasesText(principal, records, args)).not.toThrow();
       expect(listModCasesText(principal, records, args)).toEqual({
         ok: false,
-        message: GUILD_REFUSAL_MESSAGE,
+        message: INVALID_ARGUMENTS_MESSAGE,
       });
     }
+    expect(
+      listAuditEventsText(principal, records, {
+        guildId: '111111111111111111',
+        limit: 500,
+      }),
+    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
     expect(() =>
       listAuditEventsText(principal, records, {
         guildId: '111111111111111111',
@@ -305,12 +317,33 @@ describe('records tools refuse without a reachable guild', () => {
         guildId: '111111111111111111',
         sinceMs: 'yesterday',
       }),
+    ).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    // `guildId` passes the Zod shape (it is a string) and is rejected by the
+    // guild gate instead — the single refusal stands here.
+    expect(() =>
+      getModCaseText(principal, records, { guildId: 'not-a-snowflake', caseId: CASE_A }),
+    ).not.toThrow();
+    expect(
+      getModCaseText(principal, records, { guildId: 'not-a-snowflake', caseId: CASE_A }),
     ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    expect(() =>
-      getModCaseText(principal, records, { guildId: 'not-a-snowflake', caseId: CASE_A }),
-    ).not.toThrow();
+  });
+
+  it('a throwing port is still the shared refusal, never the argument message', () => {
+    const throwing: McpRecordsPort = {
+      ...fakeRecordsPort(),
+      listRecentCases: () => {
+        throw new Error('database corrupt');
+      },
+      tailAudit: () => {
+        throw new Error('database corrupt');
+      },
+    };
+    const principal = principalWith(GUILD_A);
     expect(
-      getModCaseText(principal, records, { guildId: 'not-a-snowflake', caseId: CASE_A }),
+      listModCasesText(principal, throwing, { guildId: '111111111111111111' }),
+    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(
+      listAuditEventsText(principal, throwing, { guildId: '111111111111111111' }),
     ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
   });
 });

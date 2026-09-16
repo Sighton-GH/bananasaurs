@@ -137,8 +137,11 @@ const hiddenInput = (html: string, name: string): string => {
 };
 
 /** A real token through the full flow: register, authorize, approve, exchange. */
-const mintToken = async (scope = 'bananasaurs:read'): Promise<string> => {
-  const registered = await app.inject({
+const mintToken = async (
+  scope = 'bananasaurs:read',
+  target: FastifyInstance = app,
+): Promise<string> => {
+  const registered = await target.inject({
     method: 'POST',
     url: '/oauth/register',
     payload: { client_name: 'test client', redirect_uris: [REDIRECT] },
@@ -147,12 +150,12 @@ const mintToken = async (scope = 'bananasaurs:read'): Promise<string> => {
   const clientId = registered.json<{ client_id: string }>().client_id;
 
   const verifier = generateToken();
-  const page = await app.inject({
+  const page = await target.inject({
     method: 'GET',
     url: authorizeQuery({ client_id: clientId, code_challenge: s256(verifier), scope }),
   });
   expect(page.statusCode).toBe(200);
-  const approval = await app.inject({
+  const approval = await target.inject({
     method: 'POST',
     url: '/oauth/authorize',
     headers: formHeaders,
@@ -170,7 +173,7 @@ const mintToken = async (scope = 'bananasaurs:read'): Promise<string> => {
   const code = new URL(location).searchParams.get('code');
   if (code === null) throw new Error('redirect carried no code');
 
-  const exchanged = await app.inject({
+  const exchanged = await target.inject({
     method: 'POST',
     url: '/oauth/token',
     headers: formHeaders,
@@ -311,6 +314,100 @@ describe('/mcp behind the bearer guard', () => {
     const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
     expect(result?.isError).toBe(true);
     expect(JSON.stringify(result?.content)).toContain(GUILD_REFUSAL_MESSAGE);
+  });
+});
+
+/**
+ * Ruling M4-D18, daemon side: a repository fault behind a port leaves one
+ * error log line with allowlisted fields only. The tool layer answers the
+ * shared refusal and swallows the throw, and the route's `catch` only fires
+ * on a transport fault — so without the port's own line the operator has no
+ * trace to contradict a "guild unknown or unreachable" report.
+ *
+ * The fault is a dropped FTS table: rows remain while the index is gone,
+ * which is the stale-after-restore shape from the brief, and
+ * `archive-search.ts` rethrows `no such table` rather than answering empty.
+ */
+describe('a repository fault behind an mcp port leaves an operator trace', () => {
+  const CHANNEL = '555555555555555555';
+  const MEMBER = '666666666666666666';
+  const MESSAGE = '777777777777777777';
+  /** Distinctive member-written text: must appear nowhere in the log output. */
+  const SECRET_CONTENT = 'picnic-probe-content-that-must-never-reach-logs-zz9';
+
+  it('search_messages on a missing FTS index refuses, and logs once with allowlisted fields only', async () => {
+    const captured: Array<{ readonly fields: unknown; readonly msg: string }> = [];
+    const captureLogger = {
+      info() {},
+      warn() {},
+      error(fields: unknown, msg: string) {
+        captured.push({ fields, msg });
+      },
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as never;
+    const logApp = buildDashboardApp({ ...deps, logger: captureLogger });
+    try {
+      const accessToken = await mintToken('bananasaurs:read', logApp);
+      archiveRepo.enableChannel(t.scopes.forGuild(GUILD_A), {
+        channelId: CHANNEL,
+        attachmentPolicy: 'none',
+        now: clock,
+      });
+      archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+        messageId: MESSAGE,
+        channelId: CHANNEL,
+        authorId: MEMBER,
+        content: SECRET_CONTENT,
+        createdAt: clock,
+        editedAt: undefined,
+        attachments: [],
+      });
+      // The index is gone while the rows remain.
+      t.raw.exec('DROP TABLE archive_messages_fts');
+
+      const response = await mcpPost(
+        logApp,
+        {
+          jsonrpc: '2.0',
+          id: 1,
+          method: 'tools/call',
+          params: {
+            name: 'search_messages',
+            arguments: { guildId: '111111111111111111', query: 'picnic' },
+          },
+        },
+        accessToken,
+      );
+      expect(response.statusCode).toBe(200);
+      const bodies = sseData(response.body);
+      expect(bodies.length).toBeGreaterThan(0);
+      const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+      const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+      // The caller still gets the shared refusal, never the fault.
+      expect(result?.isError).toBe(true);
+      expect(blocks).toHaveLength(1);
+      expect(blocks?.[0]?.text).toBe(GUILD_REFUSAL_MESSAGE);
+
+      // ...but the operator gets exactly one error line naming the port
+      // method, carrying the store's message and nothing else.
+      const portLines = captured.filter((line) => line.msg === 'mcp port failed');
+      expect(portLines).toHaveLength(1);
+      const fields = portLines[0]?.fields as Record<string, unknown>;
+      expect(fields['component']).toBe('mcp');
+      expect(fields['reason']).toBe('searchMessages');
+      expect(typeof fields['err']).toBe('string');
+      expect(fields['err']).toContain('no such table');
+      // The absence assertion, not only the presence one: no message content,
+      // no token value, anywhere in what the logger received.
+      const dump = JSON.stringify(captured);
+      expect(dump).not.toContain(SECRET_CONTENT);
+      expect(dump).not.toContain(accessToken);
+      expect(dump).not.toContain(MEMBER);
+    } finally {
+      await logApp.close();
+    }
   });
 });
 
