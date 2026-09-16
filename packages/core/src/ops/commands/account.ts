@@ -306,9 +306,10 @@ export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof acco
     }
 
     const lines = [
-      `revoked ${String(outcome.sessionsRevoked)} dashboard session(s) and ` +
-        `${String(outcome.tokensRevoked)} OAuth token(s) for ${outcome.username} across ` +
-        `${String(outcome.guildsTouched)} guild(s)`,
+      `revoked ${String(outcome.sessionsRevoked)} dashboard session(s), ` +
+        `${String(outcome.tokensRevoked)} OAuth token(s) and ` +
+        `${String(outcome.codesDeleted)} unexchanged authorization code(s) for ` +
+        `${outcome.username} across ${String(outcome.guildsTouched)} guild(s)`,
       outcome.stillEnabled
         ? `${outcome.username} is still enabled and can sign in again with its existing password. ` +
           `To stop it signing in at all, use \`account disable\`; to remove it, \`account delete\`.`
@@ -322,6 +323,7 @@ export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof acco
         accountId: outcome.accountId,
         sessionsRevoked: outcome.sessionsRevoked,
         tokensRevoked: outcome.tokensRevoked,
+        codesDeleted: outcome.codesDeleted,
         guildsTouched: outcome.guildsTouched,
         stillEnabled: outcome.stillEnabled,
       },
@@ -333,6 +335,7 @@ export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof acco
         after: {
           sessionsRevoked: outcome.sessionsRevoked,
           tokensRevoked: outcome.tokensRevoked,
+          codesDeleted: outcome.codesDeleted,
           guildsTouched: outcome.guildsTouched,
         },
       },

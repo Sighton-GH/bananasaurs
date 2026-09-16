@@ -516,6 +516,8 @@ export type OpsAccountRevokeResult =
       readonly accountId: string;
       readonly sessionsRevoked: number;
       readonly tokensRevoked: number;
+      /** Unexchanged authorization codes deleted — an unminted token mints after a revoke (A3-6). */
+      readonly codesDeleted: number;
       /** How many guilds' session tables were swept (M3c-R3). */
       readonly guildsTouched: number;
       /** `disabled` inverted, read AFTER the writes: this is a rotation, not a lockout. */

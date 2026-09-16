@@ -273,6 +273,7 @@ describe('account lifecycle --confirm gate (test 1)', () => {
         accountId: 'acc-1',
         sessionsRevoked: 2,
         tokensRevoked: 3,
+        codesDeleted: 1,
         guildsTouched: 2,
         stillEnabled: true,
       }),
@@ -708,6 +709,7 @@ describe('account revoke-credentials (M3c)', () => {
         accountId: 'acc-1',
         sessionsRevoked: 2,
         tokensRevoked: 3,
+        codesDeleted: 1,
         guildsTouched: 2,
         stillEnabled: true,
       }),
@@ -715,7 +717,8 @@ describe('account revoke-credentials (M3c)', () => {
     const response = await h.run('account revoke-credentials', { username: 'alice' });
     expect(response.ok).toBe(true);
     expect(response.ok && response.text).toContain(
-      'revoked 2 dashboard session(s) and 3 OAuth token(s) for alice across 2 guild(s)',
+      'revoked 2 dashboard session(s), 3 OAuth token(s) and 1 unexchanged authorization code(s) ' +
+        'for alice across 2 guild(s)',
     );
     expect(response.ok && response.text).toContain(
       'alice is still enabled and can sign in again with its existing password. ' +
@@ -726,6 +729,7 @@ describe('account revoke-credentials (M3c)', () => {
       accountId: 'acc-1',
       sessionsRevoked: 2,
       tokensRevoked: 3,
+      codesDeleted: 1,
       guildsTouched: 2,
       stillEnabled: true,
     });
@@ -735,7 +739,7 @@ describe('account revoke-credentials (M3c)', () => {
       subjectType: 'account',
       subjectId: 'alice',
       before: {},
-      after: { sessionsRevoked: 2, tokensRevoked: 3, guildsTouched: 2 },
+      after: { sessionsRevoked: 2, tokensRevoked: 3, codesDeleted: 1, guildsTouched: 2 },
     });
   });
 
@@ -746,6 +750,7 @@ describe('account revoke-credentials (M3c)', () => {
         accountId: 'acc-1',
         sessionsRevoked: 1,
         tokensRevoked: 1,
+        codesDeleted: 0,
         guildsTouched: 2,
         stillEnabled: false,
       }),
@@ -753,7 +758,8 @@ describe('account revoke-credentials (M3c)', () => {
     const response = await h.run('account revoke-credentials', { username: 'alice' });
     expect(response.ok).toBe(true);
     expect(response.ok && response.text).toContain(
-      'revoked 1 dashboard session(s) and 1 OAuth token(s) for alice across 2 guild(s)',
+      'revoked 1 dashboard session(s), 1 OAuth token(s) and 0 unexchanged authorization code(s) ' +
+        'for alice across 2 guild(s)',
     );
     expect(response.ok && response.text).toContain(
       'alice is disabled, so it cannot sign in regardless; ' +

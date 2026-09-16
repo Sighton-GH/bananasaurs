@@ -479,4 +479,39 @@ describe('accountRevokeCredentials (M3c)', () => {
     expect(result).toMatchObject({ tokensRevoked: 1, stillEnabled: true });
     expect(oauthRepo.findTokenById(instance(), 'holder-token')?.revokedAt).toBe(NOW);
   });
+
+  it('deletes the account unexchanged codes, counts them, and leaves another account codes alone', () => {
+    seedAccount('acct_codeholder0000000000000000000001', 'code-holder');
+    seedAccount('acct_codeother00000000000000000000001', 'code-other');
+    oauthRepo.createClient(instance(), {
+      clientId: 'client-1',
+      clientName: 'name of client-1',
+      redirectUris: ['https://example.test/cb'],
+      createdAt: NOW,
+      createdByAccountId: null,
+      registrationSource: 'dynamic',
+    });
+    const seedCode = (codeHash: string, accountId: string): void => {
+      oauthRepo.createAuthorizationCode(instance(), {
+        codeHash,
+        clientId: 'client-1',
+        accountId,
+        scopes: ['bananasaurs:read'],
+        codeChallenge: 'challenge',
+        redirectUri: 'https://example.test/cb',
+        createdAt: NOW,
+        expiresAt: NOW + 300_000,
+      });
+    };
+    seedCode('code-holder-1', 'acct_codeholder0000000000000000000001');
+    seedCode('code-holder-2', 'acct_codeholder0000000000000000000001');
+    seedCode('code-other-1', 'acct_codeother00000000000000000000001');
+
+    const result = ops().accountRevokeCredentials('code-holder');
+
+    expect(result).toMatchObject({ codesDeleted: 2, stillEnabled: true });
+    expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-1')).toBeUndefined();
+    expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-2')).toBeUndefined();
+    expect(oauthRepo.findAuthorizationCode(instance(), 'code-other-1')).toBeDefined();
+  });
 });

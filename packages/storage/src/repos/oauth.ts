@@ -552,6 +552,30 @@ export const revokeAllTokensForAccount = (
   });
 
 /**
+ * Deletes every authorization code one account consented to (ADR 0045 Amendment 4 A3-6).
+ *
+ * A code is an unminted token: `exchangeCode` gates only on the code's own
+ * expiry and on `approver.disabled`, so revoking the account's live tokens
+ * cannot stop a leaked code from minting a fresh pair. The sweep that ends
+ * "every credential the account owns" must therefore delete its codes too.
+ *
+ * `deleteAccount` in `accounts.ts` runs the same statement inline and must
+ * NOT be changed to call this: it needs the delete inside its own transaction
+ * and `writeInstance` does not nest.
+ */
+export const deleteAuthorizationCodesForAccount = (
+  scope: InstanceScope,
+  accountId: string,
+): number =>
+  writeInstance(scope, ({ db }) => {
+    const result = db
+      .delete(oauthAuthorizationCodes)
+      .where(eq(oauthAuthorizationCodes.accountId, accountId))
+      .run();
+    return result.changes;
+  });
+
+/**
  * Ruling PR-99: revokes `rootTokenId` and every unrevoked descendant reached
  * by following `parent_token_id` downward. Returns the count. A recursive
  * CTE is the right tool; the chain is short.
