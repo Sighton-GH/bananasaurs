@@ -290,7 +290,7 @@ export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof acco
   name: 'account revoke-credentials',
   write: true,
   summary:
-    'revoke every live dashboard session and OAuth token for an account, without disabling it',
+    'revoke every live dashboard session, OAuth token and authorization code, without disabling it',
   positional: [{ name: 'username', required: true, describe: 'the dashboard account username' }],
   args: accountNameArgs,
 
