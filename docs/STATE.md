@@ -114,16 +114,31 @@ so a dashboard session in a guild since dropped from
 `BANANASAURS_GUILD_ALLOWLIST` is not swept, though every data route then
 fails closed.
 
-**Slice M4 in progress — Tasks 1 and 2 done, on the branch, not merged.**
-`oc/m4-mcp-read-tools` is twenty commits and green (typecheck 0, lint 0, 160
-files / **3,035 tests**). It holds `packages/mcp` with the SDK promoted to a
-pinned runtime dependency, an eslint boundary block, a runtime-surface guard,
-and the two primitives every tool needs: `requireReachableGuild` /
-`requireAnyReachableGuild` (ADR 0044 obligation 1) and the evidence envelope.
-**It stays unmerged until Task 3 lands** — a package with primitives and no
-server is coherent but incomplete. Task 3's brief is written and ready at
-`.oc-runs/m4-mcp-read-tools/task-3-brief.md`; Tasks 4–8 still need briefs.
-Paused because the opencode free tier is exhausted again.
+**Slice M4 in progress — Tasks 1, 2 and 3 done, on the branch, not merged.**
+`oc/m4-mcp-read-tools` is twenty-seven commits and green (typecheck 0, lint
+0, 162 files / **3,044 tests**, verified green with `packages/mcp/dist`
+absent). It holds `packages/mcp` with the SDK as a pinned runtime dependency,
+an eslint boundary block, a runtime-surface guard, the two primitives every
+tool needs (`requireReachableGuild` / `requireAnyReachableGuild` and the
+evidence envelope), and **the server itself, mounted at `/mcp` behind the
+OAuth bearer guard with `get_health` as its one tool** — stateless transport,
+one server per request, and the tool refusing on an empty reachable guild set
+through the real stack, with the capability genuinely revoked rather than an
+empty array built by hand. **It stays unmerged until the archive tools land
+(Task 4).** Task 4's brief is written and ready at
+`.oc-runs/m4-mcp-read-tools/task-4-brief.md`, with its step 0 already done;
+Tasks 5–8 still need briefs. Paused because the opencode free tier hit
+`FreeUsageLimitError` twenty-two minutes after its reset — Task 3's run alone
+was 27 minutes.
+
+Task 3 also found and closed a **merge blocker of the PR-130 shape**: no
+`@bananasaurs/mcp` alias in `vitest.config.ts`, so the package resolved to its
+git-ignored `dist/` and a fresh clone running the gate command would have
+failed with `Failed to resolve entry for package "@bananasaurs/mcp"`. Green in
+every local environment, red in a clean one. The implementer flagged it,
+correctly declined to fix it because the files were outside its brief, and
+the fix round's acceptance criterion was the inverse of the controller's
+probe: the suite must be green with **no build artifact present**. It is.
 
 **ADR 0044 was corrected three times during Task 1 alone, all from one root
 cause, and the implementer found two of them.** The SDK promotion was
