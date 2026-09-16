@@ -15,7 +15,7 @@ import { parseGuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import { GUILD_REFUSAL_MESSAGE } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
-import { guildPortFor, registerMcpRoutes } from './wiring.js';
+import { registerMcpRoutes } from './wiring.js';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -74,6 +74,10 @@ beforeEach(async () => {
     portsFor: (scope) => testPortsFor(scope, () => clock),
     instance: testInstanceFor(t.scopes.instance(), () => clock),
     distDir: dir,
+    // A client that never logged in, like `ops/wiring.test.ts`: enough for
+    // every test that does not exercise guild tools, which build their own
+    // client with guilds injected below.
+    client: new Client(buildClientOptions(() => '123456789012345678')),
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD_A), { name: 'guild a', now: clock });
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD_B), { name: 'guild b', now: clock });
@@ -715,10 +719,5 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
     } finally {
       await guildApp.close();
     }
-  });
-
-  it('guildPortFor refuses without a client, like a guild never READY', () => {
-    const port = guildPortFor(undefined, deps);
-    expect(() => port.listChannels(GUILD_A)).toThrow();
   });
 });

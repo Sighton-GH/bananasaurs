@@ -141,9 +141,9 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
  * an empty list. Nothing here logs: member names must never reach a log line
  * (rule 4).
  */
-export const guildPortFor = (client: Client | undefined, deps: HttpDeps): McpGuildPort => {
+export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
   const requireGuild = (guildId: GuildId): Guild => {
-    const guild = client?.guilds.cache.get(guildId);
+    const guild = client.guilds.cache.get(guildId);
     if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
     return guild;
   };
@@ -298,16 +298,8 @@ const sendWebResponse = (reply: FastifyReply, response: Response): FastifyReply 
 export const registerMcpRoutes = (
   app: FastifyInstance,
   deps: HttpDeps,
-  /**
-   * The gateway client, for the three Discord-cache tools. Optional so the
-   * existing composition (`apps/daemon/src/http/wiring.ts`, which holds no
-   * client) keeps compiling: without it the guild port throws on every call
-   * and the tools refuse with the shared message — the same answer as a
-   * guild that never READY'd, never an empty list or a throw. Threading the
-   * live client through the dashboard composition is a follow-up; the port,
-   * the tools and their tests are complete without it.
-   */
-  client?: Client,
+  /** Required (ruling M4-D12): an optional client would serve three tools that silently always refuse. */
+  client: Client,
 ): void => {
   app.all(MCP_ROUTE_PATH, async (request, reply) => {
     // The opt-in, in the shape of `registerOAuthRoutes`' early return

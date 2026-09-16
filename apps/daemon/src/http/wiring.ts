@@ -1,6 +1,7 @@
 import process from 'node:process';
 import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
+import type { Client } from 'discord.js';
 import {
   safeLogFields,
   type Config,
@@ -51,6 +52,8 @@ export interface DashboardApiDeps {
   /** The daemon's seam into per-guild ports (`apps/daemon/src/runtime/daemon.ts`). */
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
+  /** The gateway client, for the MCP guild tools (ruling M4-D12). */
+  readonly client: Client;
 }
 
 export interface DashboardApi {
@@ -76,6 +79,8 @@ export interface DashboardAppDeps {
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
   readonly distDir: string;
+  /** The gateway client, for the MCP guild tools (ruling M4-D12). */
+  readonly client: Client;
 }
 
 /**
@@ -109,7 +114,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       registerAutomodRoutes(instance, guard, routeDeps);
       registerCaseRoutes(instance, guard, routeDeps);
       registerOAuthRoutes(instance, guard, routeDeps);
-      registerMcpRoutes(instance, routeDeps);
+      registerMcpRoutes(instance, routeDeps, deps.client);
     },
   });
   registerStaticAssets(app, deps.distDir);
@@ -188,6 +193,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     portsFor: deps.portsFor,
     instance: deps.instance,
     distDir: DASHBOARD_DIST,
+    client: deps.client,
   });
 
   const host = deps.config.DASHBOARD_BIND;
