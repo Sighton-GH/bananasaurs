@@ -693,6 +693,31 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
     }
   });
 
+  it('production wiring serves list_channels: buildDashboardApp with a client returns data', async () => {
+    seedStorage();
+    const { client: discordClient } = buildDiscordClient();
+    // The real composition — `index.ts` hands its live client to
+    // `startDashboardApi`, which hands it to `buildDashboardApp`, which hands
+    // it to `registerMcpRoutes`. Before the M4-D12 threading this call
+    // refused with the shared message because no client ever arrived.
+    const composed = buildDashboardApp({ ...deps, client: discordClient });
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(composed, accessToken, 'list_channels', {
+            guildId: '111111111111111111',
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain('planning');
+      expect(found.text).toContain('lounge');
+    } finally {
+      await composed.close();
+    }
+  });
+
   it('a guild missing from the cache is a refusal, not a throw', async () => {
     seedStorage();
     const { client: discordClient } = buildDiscordClient();
