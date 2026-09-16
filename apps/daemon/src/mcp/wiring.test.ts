@@ -178,11 +178,7 @@ const mintToken = async (): Promise<string> => {
   return exchanged.json<{ access_token: string }>().access_token;
 };
 
-const mcpPost = (
-  target: FastifyInstance,
-  body: unknown,
-  accessToken: string | undefined,
-): ReturnType<FastifyInstance['inject']> =>
+const mcpPost = (target: FastifyInstance, body: unknown, accessToken: string | undefined) =>
   target.inject({
     method: 'POST',
     url: '/mcp',
@@ -201,7 +197,7 @@ const sseData = (body: string): unknown[] =>
     .filter((line) => line.startsWith('data: '))
     .map((line) => JSON.parse(line.slice('data: '.length)) as unknown);
 
-const toolsList = (accessToken: string | undefined): ReturnType<FastifyInstance['inject']> =>
+const toolsList = (accessToken: string | undefined) =>
   mcpPost(app, { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }, accessToken);
 
 describe('/mcp behind the bearer guard', () => {
@@ -218,8 +214,10 @@ describe('/mcp behind the bearer guard', () => {
     expect(response.statusCode).toBe(200);
     const bodies = sseData(response.body);
     expect(bodies.length).toBeGreaterThan(0);
-    const result = (bodies[0] as { result?: { tools?: Array<{ name: string }> } }).result;
-    expect(result?.tools?.map((tool) => tool.name)).toEqual(['get_health']);
+    const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
+    const names = result.result?.tools?.map((tool) => tool.name);
+    expect(names).toEqual(['get_health']);
+    expect(names).not.toContain('send_message');
   });
 
   it('(ADR 0044 obligation 1) refuses get_health once mcp.authorize is revoked everywhere', async () => {

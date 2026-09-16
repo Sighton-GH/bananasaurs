@@ -5,11 +5,7 @@ import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
 import { createMcpServer } from './server.js';
-import {
-  GET_HEALTH_TOOL_NAME,
-  getHealthText,
-  type McpHealthPort,
-} from './tools/health.js';
+import { GET_HEALTH_TOOL_NAME, getHealthText, type McpHealthPort } from './tools/health.js';
 
 /**
  * Task 3, `packages/mcp` side: `get_health` exercised through a real MCP
@@ -38,9 +34,10 @@ const stubPort = (): McpHealthPort => ({
   ],
 });
 
-const principalWith = (
-  reachableGuilds: McpPrincipal['reachableGuilds'],
-): McpPrincipal => ({ accountId: 'acct_test', reachableGuilds });
+const principalWith = (reachableGuilds: McpPrincipal['reachableGuilds']): McpPrincipal => ({
+  accountId: 'acct_test',
+  reachableGuilds,
+});
 
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (

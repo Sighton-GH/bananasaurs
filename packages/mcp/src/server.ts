@@ -32,7 +32,7 @@ export interface McpServerDeps {
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
-  server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, async () => {
+  server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, () => {
     const outcome = getHealthText(deps.principal, deps.health);
     if (!outcome.ok) {
       return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };

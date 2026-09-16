@@ -61,7 +61,11 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
     startedAtMs: deps.instance.startedAtMs,
     readonly: deps.instance.readonly,
     env: deps.instance.env,
-    gateway: { connected: gateway.connected, pingMs: gateway.pingMs, guildCount: gateway.guildCount },
+    gateway: {
+      connected: gateway.connected,
+      pingMs: gateway.pingMs,
+      guildCount: gateway.guildCount,
+    },
     now: deps.now,
     guilds,
   };
@@ -96,11 +100,15 @@ const toWebRequest = (request: FastifyRequest): Request => {
     }
   }
   const body = request.body;
-  if (body === undefined || body === null || request.method === 'GET' || request.method === 'HEAD') {
+  if (
+    body === undefined ||
+    body === null ||
+    request.method === 'GET' ||
+    request.method === 'HEAD'
+  ) {
     return new Request(url, { method: request.method, headers });
   }
-  const raw =
-    typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body);
+  const raw = typeof body === 'string' || body instanceof Uint8Array ? body : JSON.stringify(body);
   if (!headers.has('content-type')) headers.set('content-type', 'application/json');
   return new Request(url, { method: request.method, headers, body: raw });
 };

@@ -60,8 +60,7 @@ export interface McpHealthPort {
 }
 
 export type HealthOutcome =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly message: string };
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
 /**
  * No `envelope()` around the result. The envelope marks *retrieved* content —
@@ -92,24 +91,24 @@ export const renderHealth = (port: McpHealthPort): string => {
       if (guild.safety.killswitch) paused.push('kill switch on');
       if (guild.safety.dryRun) paused.push('dry run on');
       if (guild.safety.breakerOpen) {
-        const reason = guild.safety.breakerReason === null ? '' : ` (${guild.safety.breakerReason})`;
+        const reason =
+          guild.safety.breakerReason === null ? '' : ` (${guild.safety.breakerReason})`;
         paused.push(`breaker tripped${reason}`);
       }
       const state = paused.length === 0 ? 'role changes enabled' : `paused (${paused.join(', ')})`;
       lines.push(`guild ${guild.guildId} (${name}): ${state}`);
     }
     const jobs = Object.entries(guild.jobCounts);
-    const jobText = jobs.length === 0 ? 'none' : jobs.map(([st, n]) => `${st}=${String(n)}`).join(' ');
-    const lagText = guild.schedulerLagMs === 0 ? 'none' : `${humaniseDuration(guild.schedulerLagMs)} behind`;
+    const jobText =
+      jobs.length === 0 ? 'none' : jobs.map(([st, n]) => `${st}=${String(n)}`).join(' ');
+    const lagText =
+      guild.schedulerLagMs === 0 ? 'none' : `${humaniseDuration(guild.schedulerLagMs)} behind`;
     lines.push(`  jobs: ${jobText}; scheduler lag: ${lagText}`);
   }
   return lines.join('\n');
 };
 
-export const getHealthText = (
-  principal: McpPrincipal,
-  port: McpHealthPort,
-): HealthOutcome => {
+export const getHealthText = (principal: McpPrincipal, port: McpHealthPort): HealthOutcome => {
   // ADR 0044 §4 obligation 1. `requireBearer` answers 200 with an empty
   // reachable set for a token minted before `mcp.authorize` was revoked;
   // this tool takes no guild, so this call is the whole guard. Removing it

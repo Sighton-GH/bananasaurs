@@ -4,7 +4,6 @@ import type { FastifyInstance } from 'fastify';
 import {
   safeLogFields,
   type Config,
-  type GuildId,
   type Logger,
   type OpsInstance,
   type OpsPorts,
@@ -71,7 +70,7 @@ export interface DashboardAppDeps {
   readonly scopes: ScopeFactory;
   readonly logger: Logger;
   readonly now: () => number;
-  readonly guildIds: readonly GuildId[];
+  readonly guildIds: readonly string[];
   readonly readonly: boolean;
   readonly mcpPublicUrl: string | undefined;
   readonly portsFor: (scope: GuildScope) => OpsPorts;
@@ -100,8 +99,10 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     deps: httpDeps,
     // One hook, two registrations — `createServer`'s own doc comment on
     // `registerRoutes` says a route module cannot be written without the
-    // guard it is handed, so both calls go through the same parameter rather
-    // than either becoming a second hook.
+    // guard it is handed, so every session-guarded route goes through the
+    // same parameter rather than any becoming a second hook. The MCP route
+    // below is the exception that proves it: bearer-authenticated, so it
+    // takes the deps and not the guard.
     registerRoutes: (instance, guard, routeDeps) => {
       registerReadRoutes(instance, guard, routeDeps);
       registerWriteRoutes(instance, guard, routeDeps);
