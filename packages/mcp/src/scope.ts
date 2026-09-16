@@ -29,10 +29,12 @@ export const hasReadScope = (principal: McpPrincipal): boolean =>
   principal.scopes.includes(MCP_READ_SCOPE);
 
 /**
- * The single refusal every tool returns, whatever the reason. Empty set,
- * malformed id, and unreachable id are indistinguishable to the caller on
- * purpose: distinct messages would be an oracle telling someone which guilds
- * exist and which they *nearly* have access to.
+ * The refusal every tool returns for a guild it cannot resolve, whatever the
+ * underlying reason. Empty set, malformed id, and unreachable id are
+ * indistinguishable to the caller on purpose: distinct messages would be an
+ * oracle telling someone which guilds exist and which they *nearly* have
+ * access to. Argument-shape failures are answered separately (ruling M4-D18,
+ * below) because the parse precedes the guild resolution.
  */
 export const GUILD_REFUSAL_MESSAGE = 'Unknown or unreachable guild.';
 

@@ -634,7 +634,12 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       // (`node_modules/discord.js/src/managers/GuildMemberRoleManager.js`),
       // so the fake carries it too — the port must drop it, matching the
       // `list_roles` rule that hides `@everyone`.
-      roles: { cache: new Collection([[GUILD_A, undefined], [ROLE_MANAGED, undefined]]) },
+      roles: {
+        cache: new Collection([
+          [GUILD_A, undefined],
+          [ROLE_MANAGED, undefined],
+        ]),
+      },
       joinedAt: new Date('2024-05-01T00:00:00.000Z'),
     }) as unknown as GuildMember;
 

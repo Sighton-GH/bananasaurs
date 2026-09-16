@@ -339,12 +339,14 @@ describe('records tools refuse without a reachable guild', () => {
       },
     };
     const principal = principalWith(GUILD_A);
-    expect(
-      listModCasesText(principal, throwing, { guildId: '111111111111111111' }),
-    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
-    expect(
-      listAuditEventsText(principal, throwing, { guildId: '111111111111111111' }),
-    ).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+    expect(listModCasesText(principal, throwing, { guildId: '111111111111111111' })).toEqual({
+      ok: false,
+      message: GUILD_REFUSAL_MESSAGE,
+    });
+    expect(listAuditEventsText(principal, throwing, { guildId: '111111111111111111' })).toEqual({
+      ok: false,
+      message: GUILD_REFUSAL_MESSAGE,
+    });
   });
 });
 

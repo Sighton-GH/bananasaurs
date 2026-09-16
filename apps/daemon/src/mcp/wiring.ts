@@ -234,9 +234,7 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
                   ? channel.parentId
                   : undefined;
               const topic =
-                'topic' in channel && typeof channel.topic === 'string'
-                  ? channel.topic
-                  : undefined;
+                'topic' in channel && typeof channel.topic === 'string' ? channel.topic : undefined;
               return {
                 id: channel.id,
                 name: channel.name,
