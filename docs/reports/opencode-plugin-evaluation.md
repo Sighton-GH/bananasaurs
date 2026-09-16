@@ -895,6 +895,69 @@ parent is not isolated, whatever the directory listing suggests. And the
 diagnostic that solved it was reading the *path* in the error rather than the
 message — the type was not missing, it was being looked up somewhere else.
 
+### D56 — M4: eight tasks, nine escalations, and every one was right
+
+Slice M4 ran eight tasks (two of them split into halves) on muse-spark-1.3.
+**Nine dispatches stopped to ask rather than guess, and the controller
+ruled the implementer right every time.** The list is worth having in one
+place because it is the strongest evidence yet that the `# Files` boundary
+and the "stop and report" instruction produce findings, not friction:
+
+- Task 1: the brief said to expect a 256-package closure and stop if
+  different; it measured 254, verified the SDK was unmoved, and flagged. The
+  brief was wrong (hoisted `ajv` 6 counted where nested `ajv` 8 loads).
+- Task 1 fix: told to remove a guard and watch a test go red, it reported
+  the suite **stayed green** — the probe could not fire for `ajv`. Then the
+  fixed probe proved `ajv` *does* load, falsifying the ADR's headline. It
+  left the suite red and asked rather than dropping `ajv` to make it pass.
+- Task 2: same shape — removing the empty-set branch changed nothing
+  because membership subsumed it. Reported `Tests 10 passed (10)` instead of
+  manufacturing a red. Ruling M4-D6.
+- Task 3: flagged that `@bananasaurs/mcp` resolved to its git-ignored
+  `dist/` — a fresh clone would fail the gates — and declined to edit the
+  four config files outside its list. A merge blocker, caught before merge.
+- Task 4b: widened `archive.test.ts` to keep the gates green when a port
+  became required, and disclosed it.
+- Task 5: flagged that the guild tools **refuse in production** because the
+  daemon held no client, and stopped at the boundary of `http/wiring.ts`.
+- Task 7b: judged `archive.ts` did not need the same echo-bounding fix as
+  `records.ts` because the snowflake is validated before echo — and the
+  reviewer confirmed it.
+
+**The lesson is about the brief, not the model.** Every one of these was a
+place where the controller's brief was wrong or incomplete, and the model
+found it by doing exactly what the brief said and reporting the result
+honestly. A brief that says "stop and report" and a `# Files` list that is
+enforced at merge are what turn "the model noticed something" into "the
+controller learned something".
+
+### D57 — the host memory watchdog is spike-triggered and hits `tsc --build`
+
+Task 7 was killed **four times** with 12–14 GB free. Every kill landed at
+the same point: `npm run typecheck` (`tsc --build --force` across the
+monorepo) running inside the opencode process tree during the verification
+step — or, on read-heavy briefs, during the initial file reads. The harness
+message says "low on memory"; the numbers say it is reacting to the growth
+rate of the background job's subtree, not to headroom, and it applies only
+to jobs run with `run_in_background`.
+
+What worked: **run the dispatch in the foreground.** The 600 s foreground
+limit is shorter than most implement runs, so the harness backgrounds the
+job at that point — but by then the read-heavy phase is over, and on 7b the
+backgrounded remainder was not killed. On 7a it was killed at typecheck
+after every real commit had landed, and the controller finished the tail
+(one formatting commit, the guard probes, the gates) the same way it had
+for M3c's rate-limited run.
+
+What also worked: **splitting**. Task 7's combined brief named fifteen files
+and the model read them all up front; 7a and 7b each named a third as many.
+Worth generalising: a `# Files` list over about ten entries is a signal to
+split before dispatching, not after the first kill.
+
+Every kill lost nothing, because every step commits. That is now the fifth
+time this session that "commit per step" has turned a dead session into a
+non-event.
+
 ## What worked well
 
 (appended as observed)
