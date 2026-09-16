@@ -48,3 +48,23 @@ export {
   type McpArchiveSearchResult,
   type McpChannelHistoryInput,
 } from './tools/archive.js';
+export {
+  LIST_CHANNELS_TOOL_DESCRIPTION,
+  LIST_CHANNELS_TOOL_NAME,
+  LIST_MEMBERS_TOOL_DESCRIPTION,
+  LIST_MEMBERS_TOOL_NAME,
+  LIST_ROLES_TOOL_DESCRIPTION,
+  LIST_ROLES_TOOL_NAME,
+  MEMBER_DEFAULT_LIMIT,
+  MEMBER_LIMIT_MAX,
+  listChannelsText,
+  listMembersText,
+  listRolesText,
+  type GuildToolOutcome,
+  type McpGuildChannel,
+  type McpGuildMember,
+  type McpGuildPort,
+  type McpGuildRole,
+  type McpListMembersInput,
+  type McpListMembersResult,
+} from './tools/guild.js';

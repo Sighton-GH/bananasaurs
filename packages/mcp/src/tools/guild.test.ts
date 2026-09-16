@@ -87,7 +87,7 @@ const fakePort = (): McpGuildPort & {
         managedByBananasaurs: true,
       },
     ],
-    listMembers: (guildId, input) => {
+    listMembers: (_guildId, input) => {
       seenMemberInput.push({ limit: input.limit, after: input.after });
       return Promise.resolve({
         members: [
@@ -203,12 +203,17 @@ describe('every guild result carries the envelope preamble', () => {
     expect(text).toContain(EVIDENCE_PREAMBLE);
     const preambleAt = text.indexOf(EVIDENCE_PREAMBLE);
     const openAt = text.indexOf(EVIDENCE_OPEN);
-    const memberAt = text.indexOf('planning');
+    // The name rides in the escaped locator block before the delimiters; the
+    // topic is the member-written detail framed inside them. Both are past
+    // the preamble, and the framed detail closes after it opens.
+    const nameAt = text.indexOf('planning');
+    const detailAt = text.indexOf('plan the picnic');
     const closeAt = text.indexOf(EVIDENCE_CLOSE);
     expect(preambleAt).toBeGreaterThanOrEqual(0);
+    expect(nameAt).toBeGreaterThan(preambleAt);
     expect(openAt).toBeGreaterThan(preambleAt);
-    expect(memberAt).toBeGreaterThan(openAt);
-    expect(closeAt).toBeGreaterThan(memberAt);
+    expect(detailAt).toBeGreaterThan(openAt);
+    expect(closeAt).toBeGreaterThan(detailAt);
   });
 
   it('list_roles frames role names', () => {

@@ -687,7 +687,10 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain('member');
       expect(found.text).toContain('managed-by-bananasaurs: yes');
       expect(found.text).toContain('managed-by-bananasaurs: no');
-      expect(found.text).not.toContain('@everyone');
+      // The header names the exclusion honestly; no *row* carries the
+      // @everyone name — the port dropped the guild-id role upstream.
+      expect(found.text).toContain('@everyone excluded');
+      expect(found.text).not.toContain('message: @everyone');
     } finally {
       await guildApp.close();
     }

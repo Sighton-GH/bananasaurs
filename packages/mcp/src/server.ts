@@ -20,6 +20,21 @@ import {
   searchMessagesText,
   type McpArchivePort,
 } from './tools/archive.js';
+import {
+  LIST_CHANNELS_TOOL_DESCRIPTION,
+  LIST_CHANNELS_TOOL_NAME,
+  LIST_MEMBERS_TOOL_DESCRIPTION,
+  LIST_MEMBERS_TOOL_NAME,
+  LIST_ROLES_TOOL_DESCRIPTION,
+  LIST_ROLES_TOOL_NAME,
+  listChannelsParams,
+  listChannelsText,
+  listMembersParams,
+  listMembersText,
+  listRolesParams,
+  listRolesText,
+  type McpGuildPort,
+} from './tools/guild.js';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
 
 /**
@@ -51,6 +66,13 @@ export interface McpServerDeps {
    * `archivePortFor` in `apps/daemon/src/mcp/wiring.ts`).
    */
   readonly archive: McpArchivePort;
+  /**
+   * The daemon's per-request guild port (Task 5). Required for the same
+   * reason `archive` is: the three Discord-cache tools are always
+   * registered, and a missing port must fail at construction, not serve
+   * refusals dressed as a working toolset.
+   */
+  readonly guild: McpGuildPort;
 }
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
@@ -116,5 +138,55 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
     }
   });
+  const guild = deps.guild;
+  server.tool(
+    LIST_CHANNELS_TOOL_NAME,
+    LIST_CHANNELS_TOOL_DESCRIPTION,
+    listChannelsParams,
+    (args) => {
+      try {
+        const outcome = listChannelsText(deps.principal, guild, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return { content: [{ type: 'text' as const, text: outcome.text }] };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    },
+  );
+  server.tool(LIST_ROLES_TOOL_NAME, LIST_ROLES_TOOL_DESCRIPTION, listRolesParams, (args) => {
+    try {
+      const outcome = listRolesText(deps.principal, guild, args);
+      if (!outcome.ok) {
+        return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+      }
+      return { content: [{ type: 'text' as const, text: outcome.text }] };
+    } catch {
+      return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
+    }
+  });
+  server.tool(
+    LIST_MEMBERS_TOOL_NAME,
+    LIST_MEMBERS_TOOL_DESCRIPTION,
+    listMembersParams,
+    async (args) => {
+      try {
+        const outcome = await listMembersText(deps.principal, guild, args);
+        if (!outcome.ok) {
+          return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+        }
+        return { content: [{ type: 'text' as const, text: outcome.text }] };
+      } catch {
+        return {
+          content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+          isError: true,
+        };
+      }
+    },
+  );
   return server;
 };
