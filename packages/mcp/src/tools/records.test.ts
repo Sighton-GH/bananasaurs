@@ -366,11 +366,17 @@ describe('get_mod_case frames the member-written snippet', () => {
       guildId: '111111111111111111',
       caseId: 'cccccccc-0000-4000-8000-cccccccccccc',
     });
-    expect(crossGuild).toEqual(neverExisted);
     expect(crossGuild.ok).toBe(true);
-    if (!crossGuild.ok) throw new Error('expected ok:true');
-    expect(crossGuild.text).toContain('No mod case');
+    expect(neverExisted.ok).toBe(true);
+    if (!crossGuild.ok || !neverExisted.ok) throw new Error('expected ok:true');
+    // The same not-found shape `get_message` uses — the requested id echoed,
+    // the guild named — whether the id never existed or belongs to another
+    // guild. Never a refusal, and never the other guild's row.
+    for (const text of [crossGuild.text, neverExisted.text]) {
+      expect(text).toMatch(/^No mod case \S+ in guild 111111111111111111\.$/);
+    }
     expect(crossGuild.text).toContain(CASE_B);
+    expect(crossGuild.text).not.toContain(MEMBER_B);
   });
 });
 
