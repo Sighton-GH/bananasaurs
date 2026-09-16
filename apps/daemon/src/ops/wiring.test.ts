@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ChannelType, Client, PermissionsBitField, type Guild } from 'discord.js';
-import { parseGuildId } from '@bananasaurs/core';
+import { parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
   accountRepo,
@@ -12,7 +12,7 @@ import {
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
-import { accountOpsFor, opsPortsFor } from './wiring.js';
+import { accountOpsFor, opsInstanceFor, opsPortsFor } from './wiring.js';
 
 /**
  * `doctor`'s archive check: `listUnreadableArchiveChannels`
@@ -513,5 +513,83 @@ describe('accountRevokeCredentials (M3c)', () => {
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-1')).toBeUndefined();
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-2')).toBeUndefined();
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-other-1')).toBeDefined();
+  });
+});
+
+describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
+  // Instance-level like `mcpClients`: the eligibility row is a fact about the
+  // daemon, not a guild — so this goes through `opsInstanceFor` against the
+  // real migrated database (whose migration seeds one `no` row), with the
+  // review clock passed as `nowMs`, the same injected-clock shape as `now`.
+  // Raw SQL updates the row because the repository is deliberately read-only
+  // (ruling M4-D16: changing it later is a new migration, not an edit).
+  const DAY_MS = 24 * 60 * 60 * 1000;
+  const SEEDED = 'anthropic-consumer-mcp';
+
+  const instanceOps = () =>
+    opsInstanceFor({
+      config: { BANANASAURS_READONLY: false, BANANASAURS_ENV: 'test' } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    });
+
+  const setReviewedAt = (provider: string, reviewedAt: number): void => {
+    t.raw
+      .prepare(`UPDATE provider_eligibility SET reviewed_at = ? WHERE provider = ?`)
+      .run(reviewedAt, provider);
+  };
+
+  const setTrainsOnInput = (provider: string, value: string): void => {
+    t.raw
+      .prepare(`UPDATE provider_eligibility SET trains_on_input = ? WHERE provider = ?`)
+      .run(value, provider);
+  };
+
+  it("warns 'stale' for a row reviewed 91 days before now, and nothing for 89 days", () => {
+    setReviewedAt(SEEDED, NOW - 91 * DAY_MS);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
+      {
+        provider: SEEDED,
+        reason: 'stale',
+        trainsOnInput: 'no',
+        reviewedAt: NOW - 91 * DAY_MS,
+      },
+    ]);
+
+    setReviewedAt(SEEDED, NOW - 89 * DAY_MS);
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
+  });
+
+  it("warns 'not-no' for 'unknown' and for 'yes' — 'unknown' is visibly treated as 'yes'", () => {
+    setTrainsOnInput(SEEDED, 'unknown');
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
+      {
+        provider: SEEDED,
+        reason: 'not-no',
+        trainsOnInput: 'unknown',
+        reviewedAt: 1789344000000,
+      },
+    ]);
+
+    setTrainsOnInput(SEEDED, 'yes');
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
+      {
+        provider: SEEDED,
+        reason: 'not-no',
+        trainsOnInput: 'yes',
+        reviewedAt: 1789344000000,
+      },
+    ]);
+
+    setTrainsOnInput(SEEDED, 'no');
+    expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([]);
   });
 });
