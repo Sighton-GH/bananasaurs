@@ -918,6 +918,13 @@ export const accountOpsFor = (
       accountsRemaining: accountRepo.countAccounts(instanceScope),
     };
   },
+  /**
+   * The session half of the sweep covers the guild allowlist and nothing else:
+   * `guildScopes` comes from `BANANASAURS_GUILD_ALLOWLIST`, so a dashboard
+   * session in a guild since dropped from the allowlist is never swept and
+   * still authenticates. The token and code halves are instance-level and have
+   * no such boundary.
+   */
   accountRevokeCredentials: (username) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
     if (row === undefined) return 'no-such-account';
