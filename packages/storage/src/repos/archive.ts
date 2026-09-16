@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, inArray, isNotNull, isNull, lt } from 'drizzle-orm';
+import { asc, count, desc, eq, inArray, isNotNull, isNull, sql } from 'drizzle-orm';
 import type { Db } from '../db.js';
 import {
   archiveAttachments,
@@ -501,10 +501,14 @@ const LIST_CHANNEL_HISTORY_LIMIT_DEFAULT = 20;
 /**
  * One channel's archived messages, newest first (Ruling M4-D3).
  *
- * Newest first means ordered by `message_id` descending. Discord snowflakes
- * are time-ordered, so that is also chronological order, and it is what makes
- * `beforeMessageId` a stable cursor: every row with an id below the cursor,
- * newest first.
+ * Newest first means ordered numerically by `message_id` descending.
+ * Discord snowflakes are time-ordered as numbers, not as strings, so the
+ * query orders by digit count then value (`length(message_id) DESC,
+ * message_id DESC`): that is numeric order for digit strings without an
+ * integer cast, which would overflow at 20 digits (SQLite integers are
+ * signed 64-bit). The `beforeMessageId` cursor uses the same comparison —
+ * fewer digits, or the same length and lexically below — so paging stays
+ * stable across the length boundary.
  *
  * The same visibility rule `searchMessages` enforces: the visible set is the
  * guild's archive-enabled channels, built here from `archive_channels` —
@@ -548,10 +552,10 @@ export const listChannelHistory = (
           eq(archiveMessages.channelId, input.channelId),
           input.beforeMessageId === undefined
             ? undefined
-            : lt(archiveMessages.messageId, input.beforeMessageId),
+            : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
         ),
       )
-      .orderBy(desc(archiveMessages.messageId))
+      .orderBy(sql`length(${archiveMessages.messageId}) DESC`, desc(archiveMessages.messageId))
       .limit(limit)
       .all()
       .map(toArchiveMessage);
