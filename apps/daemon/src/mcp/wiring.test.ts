@@ -223,6 +223,52 @@ describe('/mcp behind the bearer guard', () => {
     expect(response.json()).toEqual({ error: 'invalid_token' });
   });
 
+  it('builds no per-guild health snapshot for a request that does not ask for one', async () => {
+    // `healthPortFor` runs a `portsFor` and four port reads for every guild
+    // in the caller's reachable set. The daemon builds one port per request,
+    // before it knows which tool the request will call, so anything eager in
+    // there is paid for by `tools/list`, by `search_messages`, and by a
+    // token holding no read scope at all — which registers no tools and can
+    // never reach `get_health`. The port's `gateway()` and `guilds()` are
+    // therefore calls, not values, and this is what says so.
+    let portsForCalls = 0;
+    const counted = buildDashboardApp({
+      ...deps,
+      portsFor: (scope) => {
+        portsForCalls += 1;
+        return testPortsFor(scope, () => clock);
+      },
+    });
+    try {
+      const accessToken = await mintToken('bananasaurs:read', counted);
+
+      const listed = await mcpPost(
+        counted,
+        { jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} },
+        accessToken,
+      );
+      expect(listed.statusCode).toBe(200);
+      expect(portsForCalls).toBe(0);
+
+      // And the same port does still produce the report when asked, so this
+      // is laziness and not a tool that quietly stopped reading anything.
+      const health = await mcpPost(
+        counted,
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'get_health', arguments: {} },
+        },
+        accessToken,
+      );
+      expect(health.statusCode).toBe(200);
+      expect(portsForCalls).toBeGreaterThan(0);
+    } finally {
+      await counted.close();
+    }
+  });
+
   it('answers a valid read-scope token with tools/list containing all eleven tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);

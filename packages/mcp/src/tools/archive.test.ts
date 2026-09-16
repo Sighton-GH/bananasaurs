@@ -479,9 +479,9 @@ describe('archive tools on the MCP server', () => {
     startedAtMs: 1_700_000_000_000,
     readonly: false,
     env: 'test',
-    gateway: { connected: true, pingMs: 42, guildCount: 1 },
+    gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
     now: () => 1_700_000_000_000 + 3_661_000,
-    guilds: [],
+    guilds: () => [],
   });
 
   const connectPair = async (

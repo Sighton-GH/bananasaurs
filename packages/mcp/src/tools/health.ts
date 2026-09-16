@@ -41,23 +41,33 @@ export interface McpGuildHealth {
 }
 
 /**
- * The narrow port `get_health` needs. Instance-level facts as snapshot
- * values, plus one entry per guild in the caller's reachable set — the daemon
- * builds the snapshot per request from the already-authenticated principal,
- * so an emptied reachable set yields an empty `guilds` rather than stale data.
+ * The narrow port `get_health` needs. Three cheap instance-level constants as
+ * values, and everything that costs something behind a call.
+ *
+ * `gateway()` and `guilds()` are functions rather than precomputed snapshots
+ * on purpose. The daemon builds one port per request, before it knows which
+ * tool the request will call, and `guilds()` does a `portsFor` plus four port
+ * reads for every guild in the caller's reachable set. As values, every
+ * `tools/list`, every `search_messages` and every request from a token that
+ * registers no tools at all paid for a health snapshot nobody read. As
+ * functions, only `get_health` pays.
+ *
+ * Reading them at call time also makes the report fresher than the request,
+ * which is the direction a health readout should err in.
  */
 export interface McpHealthPort {
   readonly startedAtMs: number;
   readonly readonly: boolean;
   readonly env: string;
-  readonly gateway: {
+  gateway(): {
     readonly connected: boolean;
     readonly pingMs: number | undefined;
     readonly guildCount: number;
   };
   /** Injected, like every clock in this tree. Never `Date.now()` here. */
   now(): number;
-  readonly guilds: readonly McpGuildHealth[];
+  /** One entry per guild in the caller's reachable set; an emptied set yields an empty list. */
+  guilds(): readonly McpGuildHealth[];
 }
 
 export type HealthOutcome =
@@ -80,12 +90,15 @@ export const renderHealth = (port: McpHealthPort): string => {
   lines.push(
     `Bananasaurs health (env ${port.env}, uptime ${humaniseDuration(Math.max(0, port.now() - port.startedAtMs))}, readonly ${port.readonly ? 'on' : 'off'})`,
   );
+  // Each read once: two calls, not six, so the readout cannot describe two
+  // different moments in one paragraph.
+  const gateway = port.gateway();
   lines.push(
-    port.gateway.connected
-      ? `gateway: connected (${port.gateway.pingMs === undefined ? 'no heartbeat yet' : `${String(port.gateway.pingMs)}ms`}, ${String(port.gateway.guildCount)} guilds)`
+    gateway.connected
+      ? `gateway: connected (${gateway.pingMs === undefined ? 'no heartbeat yet' : `${String(gateway.pingMs)}ms`}, ${String(gateway.guildCount)} guilds)`
       : 'gateway: not connected',
   );
-  for (const guild of port.guilds) {
+  for (const guild of port.guilds()) {
     // Member-controlled (ruling M4-D19): escaped so a guild name carrying
     // the exact envelope delimiters cannot forge a frame in the operator's
     // model context.

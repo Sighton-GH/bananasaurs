@@ -47,44 +47,52 @@ export const MCP_ROUTE_PATH = '/mcp';
  * guild argument — and an emptied reachable set yields an empty list, which
  * is what `get_health` refuses on (ADR 0044 §4 obligation 1).
  */
-const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort => {
-  const nowMs = deps.now();
-  const gateway = deps.instance.gateway();
-  const guilds: McpGuildHealth[] = principal.reachableGuilds.map((guildId) => {
-    const ports = deps.portsFor(deps.scopes.forGuild(guildId));
-    const safety = ports.safetyState();
-    const dueAtMs = ports.oldestDueJobAtMs(nowMs);
+const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort => ({
+  startedAtMs: deps.instance.startedAtMs,
+  readonly: deps.instance.readonly,
+  env: deps.instance.env,
+  now: deps.now,
+  gateway: () => {
+    const gateway = deps.instance.gateway();
     return {
-      guildId,
-      guildName: ports.guildName(),
-      safety:
-        safety === undefined
-          ? undefined
-          : {
-              killswitch: safety.killswitch,
-              dryRun: safety.dryRun,
-              breakerOpen: safety.breakerOpen,
-              breakerReason: safety.breakerReason,
-            },
-      jobCounts: ports.jobCounts(),
-      // Clamped at zero so a clock that moved backwards reports "not behind"
-      // rather than a negative lag — the same rule `/status` follows.
-      schedulerLagMs: dueAtMs === undefined ? 0 : Math.max(0, nowMs - dueAtMs),
-    };
-  });
-  return {
-    startedAtMs: deps.instance.startedAtMs,
-    readonly: deps.instance.readonly,
-    env: deps.instance.env,
-    gateway: {
       connected: gateway.connected,
       pingMs: gateway.pingMs,
       guildCount: gateway.guildCount,
-    },
-    now: deps.now,
-    guilds,
-  };
-};
+    };
+  },
+  // Read when `get_health` asks, not when the port is built: this runs a
+  // `portsFor` and four port reads per reachable guild, and the daemon
+  // constructs one port per request before it knows which tool the request
+  // will call. As a precomputed value every `tools/list` and every
+  // `search_messages` paid for a snapshot nobody read — and so did every
+  // request from a token holding no read scope, which registers no tools at
+  // all.
+  guilds: (): readonly McpGuildHealth[] => {
+    const nowMs = deps.now();
+    return principal.reachableGuilds.map((guildId) => {
+      const ports = deps.portsFor(deps.scopes.forGuild(guildId));
+      const safety = ports.safetyState();
+      const dueAtMs = ports.oldestDueJobAtMs(nowMs);
+      return {
+        guildId,
+        guildName: ports.guildName(),
+        safety:
+          safety === undefined
+            ? undefined
+            : {
+                killswitch: safety.killswitch,
+                dryRun: safety.dryRun,
+                breakerOpen: safety.breakerOpen,
+                breakerReason: safety.breakerReason,
+              },
+        jobCounts: ports.jobCounts(),
+        // Clamped at zero so a clock that moved backwards reports "not behind"
+        // rather than a negative lag — the same rule `/status` follows.
+        schedulerLagMs: dueAtMs === undefined ? 0 : Math.max(0, nowMs - dueAtMs),
+      };
+    });
+  },
+});
 
 /**
  * The step-2 trace (ruling M4-D18). Every port method below runs inside one
@@ -99,13 +107,31 @@ const healthPortFor = (principal: McpPrincipal, deps: HttpDeps): McpHealthPort =
  * `safeLogFields` (`packages/core/src/obs/logger.ts`) permits no `tool`
  * field, so the port method name goes in `reason`. Never a token, a session
  * id, message content, a member name, a snippet, or an audit payload.
+ *
+ * `err` is the one free-text field in that allowlist — deliberately, because
+ * stomping it once hid the real error on every job failure
+ * (`docs/reports/WP5-slice-6-live-test.md` finding 2), and the helper must
+ * keep that behaviour for its other callers. But it is free text, and these
+ * eleven call sites are the first to put a *caller-influenced* failure into
+ * it: SQLite and FTS5 both quote the offending fragment back, so a search
+ * query can end up in the message. That is the operator's own typing rather
+ * than a member's words, so it is not a rule-4 breach — but it is unbounded,
+ * and an unbounded free-text field reached from a network request is worth
+ * capping rather than trusting. One line of a log is enough to diagnose a
+ * stale index or a missing intent, which is all this line exists for.
  */
+const ERR_MESSAGE_MAX = 200;
+
 const logPortFailure = (logger: Logger, reason: string, err: unknown): never => {
+  const message = err instanceof Error ? err.message : 'mcp port failed';
   logger.error(
     safeLogFields({
       component: 'mcp',
       reason,
-      err: err instanceof Error ? err.message : 'mcp port failed',
+      err:
+        message.length > ERR_MESSAGE_MAX
+          ? `${message.slice(0, ERR_MESSAGE_MAX)}… (truncated)`
+          : message,
     }),
     'mcp port failed',
   );
