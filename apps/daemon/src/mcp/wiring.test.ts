@@ -13,7 +13,11 @@ import {
 import { accountRepo, archiveRepo, authzRepo, guildRepo, roleRepo } from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
-import { GUILD_REFUSAL_MESSAGE } from '@bananasaurs/mcp';
+import {
+  ARCHIVE_NO_TEXT_MARKER,
+  ARCHIVE_PURGED_MARKER,
+  GUILD_REFUSAL_MESSAGE,
+} from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
@@ -567,6 +571,74 @@ describe('/mcp archive tools across two guilds', () => {
     expect(empty.isError).not.toBe(true);
     expect(empty.text).toContain('0 matches');
     expect(empty.text).not.toBe(GUILD_REFUSAL_MESSAGE);
+  });
+
+  it('(ruling M4-D8) a really-purged message is a tombstone, an attachment-only one is not', async () => {
+    // Through the real repository, not a fake port. Both markers depend on
+    // `contentPurgedAt !== undefined`, and both rows carry `content: null` —
+    // so the only thing separating "purged under retention" from "never had
+    // text" is that `archiveRepo`'s row constructor normalises SQL `null` to
+    // `undefined`. The fix-wave tail put a projection between that
+    // constructor and the renderer (`toMcpArchiveMessage` in `wiring.ts`),
+    // and a `null` surviving it would label every attachment-only message as
+    // purged. Nothing else on the branch crosses that boundary with a real
+    // row, which is why this test drives the daemon rather than a stub.
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
+      accountId: ACCOUNT,
+      capability: 'mcp.authorize',
+      grantedBy: 'test',
+      now: clock,
+    });
+    seedArchive();
+    const scope = t.scopes.forGuild(GUILD_B);
+
+    // An attachment-only message: content null from the start, never purged.
+    const ATTACHMENT_ONLY = '333333333333333333';
+    archiveRepo.upsertMessage(scope, {
+      messageId: ATTACHMENT_ONLY,
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: undefined,
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+
+    // MESSAGE_B, purged for real: deleted, then past the default retention
+    // window, then `expireContent` — the same path the retention job runs.
+    expect(archiveRepo.recordDelete(scope, { messageId: MESSAGE_B, deletedAt: clock })).toBe(
+      'recorded',
+    );
+    const afterRetention = clock + archiveRepo.ARCHIVE_DEFAULT_RETENTION_MS + 1;
+    expect(archiveRepo.expireContent(scope, afterRetention)).toBe(1);
+
+    const accessToken = await mintToken();
+
+    const purged = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '222222222222222222',
+          messageId: MESSAGE_B,
+        })
+      ).body,
+    );
+    expect(purged.isError).not.toBe(true);
+    expect(purged.text).toContain(ARCHIVE_PURGED_MARKER);
+    expect(purged.text).not.toContain(ARCHIVE_NO_TEXT_MARKER);
+    // The content is gone, not merely unlabelled.
+    expect(purged.text).not.toContain('beta plans');
+
+    const noText = callText(
+      (
+        await mcpCall(accessToken, 'get_message', {
+          guildId: '222222222222222222',
+          messageId: ATTACHMENT_ONLY,
+        })
+      ).body,
+    );
+    expect(noText.isError).not.toBe(true);
+    expect(noText.text).toContain(ARCHIVE_NO_TEXT_MARKER);
+    expect(noText.text).not.toContain(ARCHIVE_PURGED_MARKER);
   });
 });
 
