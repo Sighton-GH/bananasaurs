@@ -319,11 +319,32 @@ supply-chain surface is the cheaper of the two.
    defending is what ends up in the process, so that is what the test
    measures.
 2. **The count is recorded and watched.** Measured before the promotion on
-   2026-09-15: **172 packages** in the production closure, one direct
-   production dependency (`@node-rs/argon2`). The post-promotion count goes in
-   the M4 ledger beside it, and the expected value is **256**. A number that
-   comes back materially different from 256 means the SDK's own dependencies
-   moved, and that is worth reading before merging rather than after.
+   2026-09-15 and again after it on 2026-09-16, both with
+   `npm ls --omit=dev --all --parseable | sed 's|.*/node_modules/||' | sort -u`:
+
+   | | before | after |
+   |---|---|---|
+   | lines reported | 172 | 255 |
+   | real packages (the root path line is not one) | **171** | **254** |
+
+   The SDK therefore adds **82 packages** — itself plus 81 dependencies — and
+   `@bananasaurs/mcp`, this slice's own new workspace package, accounts for
+   the remaining one. **A post-promotion count materially different from 254
+   means the SDK's own dependencies moved**, and is worth reading before
+   merging rather than after.
+
+   **Correction to the figure this section carried on 2026-09-15.** It said
+   84 packages and a post-promotion total of 256. The list was built by
+   walking the SDK's dependencies through `node_modules` and diffing against
+   the production closure, and that walk followed the **hoisted `ajv`
+   6.15.0** — present for eslint, a devDependency — rather than the `ajv 8`
+   the SDK actually resolves. So it counted `uri-js`, `punycode` and
+   `fast-json-stable-stringify`, which are ajv 6's dependencies and are not
+   in the real tree. The other 81 were right. The error is small and the
+   conclusion is unchanged, but it is the second time in this section that a
+   number derived by reasoning over a package manifest has been wrong where a
+   number derived by running `npm ls` was right, and that is the part worth
+   remembering.
 3. **The version is pinned** (`@modelcontextprotocol/sdk` 1.30.0, MIT) and
    moves only on a deliberate bump, because a transitive HTTP server's patch
    level is now a production fact.
