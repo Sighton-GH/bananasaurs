@@ -45,9 +45,9 @@ export const requireReachableGuild = (
   principal: McpPrincipal,
   requestedGuildId: string,
 ): GuildOutcome => {
-  if (principal.reachableGuilds.length === 0) {
-    return { ok: false, message: GUILD_REFUSAL_MESSAGE };
-  }
+  // No empty-set early return here (ruling M4-D6): [].includes() is always
+  // false so the membership check below already refuses every id; the
+  // empty-set property (ADR 0044 obligation 1) is pinned by the named test, not a branch.
   let parsed: GuildId;
   try {
     parsed = parseGuildId(requestedGuildId);
