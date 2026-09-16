@@ -1,5 +1,6 @@
 import { humaniseDuration, type GuildId } from '@bananasaurs/core';
 import { requireAnyReachableGuild, type McpPrincipal } from '../scope.js';
+import { escapeEvidenceText } from '../envelope.js';
 
 /**
  * `get_health` — the one tool Task 3 ships, chosen because it takes no
@@ -66,9 +67,13 @@ export type HealthOutcome =
  * No `envelope()` around the result. The envelope marks *retrieved* content —
  * member-written Discord text that must be labelled as evidence, never
  * instructions (CLAUDE.md rule 3). Every line here is process-generated
- * (uptime, gateway state, job counts, safety flags); no member controls any
- * of it, so there is nothing to delimit and a preamble would teach the client
- * to distrust its own operator's health readout.
+ * (uptime, gateway state, job counts, safety flags) except the guild name,
+ * which is member-controlled — anyone with Manage Server can set it, and the
+ * daemon copies `guild.name` straight from the gateway — so the name goes
+ * through the envelope's escaper while the rest stays unenveloped: a
+ * preamble would teach the client to distrust its own operator's health
+ * readout, and escaping the one member-controlled field is the narrower fix
+ * (ruling M4-D19).
  */
 export const renderHealth = (port: McpHealthPort): string => {
   const lines: string[] = [];
@@ -81,7 +86,11 @@ export const renderHealth = (port: McpHealthPort): string => {
       : 'gateway: not connected',
   );
   for (const guild of port.guilds) {
-    const name = guild.guildName ?? '(name not yet known)';
+    // Member-controlled (ruling M4-D19): escaped so a guild name carrying
+    // the exact envelope delimiters cannot forge a frame in the operator's
+    // model context.
+    const name =
+      guild.guildName === undefined ? '(name not yet known)' : escapeEvidenceText(guild.guildName);
     if (guild.safety === undefined) {
       lines.push(
         `guild ${guild.guildId} (${name}): no settings row — an operator needs to look at that`,

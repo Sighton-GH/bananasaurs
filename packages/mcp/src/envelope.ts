@@ -86,7 +86,7 @@ const breakMarker = (text: string, marker: string): string => {
  * the output — but it still cannot produce the exact framing byte sequence,
  * because any exact occurrence they type is broken again on the way out.
  */
-const escapeEvidenceText = (text: string): string =>
+export const escapeEvidenceText = (text: string): string =>
   breakMarker(breakMarker(breakMarker(text, EVIDENCE_CLOSE), EVIDENCE_OPEN), EVIDENCE_PREAMBLE);
 
 const formatItem = (entry: EvidenceItem, index: number, total: number): string =>

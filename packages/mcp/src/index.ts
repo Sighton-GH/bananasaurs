@@ -15,6 +15,7 @@ export {
   EVIDENCE_OPEN,
   EVIDENCE_PREAMBLE,
   envelope,
+  escapeEvidenceText,
   type EvidenceItem,
 } from './envelope.js';
 export {
