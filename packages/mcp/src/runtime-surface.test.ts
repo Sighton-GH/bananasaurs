@@ -81,9 +81,7 @@ describe('MCP SDK runtime surface (ADR 0044 §8)', () => {
     const ajvPaths = loadedFrom(req.cache, 'ajv');
     expect(ajvPaths.length).toBeGreaterThan(0);
     expect(
-      ajvPaths.some((p) =>
-        p.includes('/node_modules/@modelcontextprotocol/sdk/node_modules/ajv/'),
-      ),
+      ajvPaths.some((p) => p.includes('/node_modules/@modelcontextprotocol/sdk/node_modules/ajv/')),
     ).toBe(true);
   });
 });
