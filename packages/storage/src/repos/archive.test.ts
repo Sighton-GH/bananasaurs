@@ -734,6 +734,21 @@ describe('listChannelHistory', () => {
     }
   });
 
+  it('fractional limits floor; non-finite limits mean the default', () => {
+    const ids = seedHistory(a, CHANNEL_A, 5);
+    const expected = [...ids].reverse();
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, limit: 2.9 }).map((m) => m.messageId),
+    ).toEqual(expected.slice(0, 2));
+    const def = listChannelHistory(a, { channelId: CHANNEL_A });
+    expect(def.map((m) => m.messageId)).toEqual(expected);
+    for (const limit of [Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(
+        listChannelHistory(a, { channelId: CHANNEL_A, limit }).map((m) => m.messageId),
+      ).toEqual(def.map((m) => m.messageId));
+    }
+  });
+
   it('a purged message is returned as a tombstone, not omitted', () => {
     const ids = seedHistory(a, CHANNEL_A, 3);
     const purgedId = ids[1];
