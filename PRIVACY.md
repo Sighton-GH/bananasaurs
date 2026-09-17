@@ -69,6 +69,23 @@ Bananasaurs only uses providers whose terms state they **do not train models on 
 - **Moderators:** moderation records, according to what the owner has granted them
 - **The server owner:** the admin dashboard, which requires a separate login the owner creates. Having Administrator in Discord does **not** grant dashboard access
 
+## Messages the bot posts on the owner's behalf
+
+The owner can connect their own AI client to Bananasaurs and ask it to post a
+message to this server. When that happens:
+
+- It can only post in channels the owner has explicitly allowed. It cannot
+  post in a channel that is not on that list, and it cannot send you a DM.
+- Mentions in those messages never ping anyone — `@everyone`, `@here`, role
+  and user mentions are all switched off before the message is sent.
+- Every such message is recorded: which channel, when, and which credential
+  was used. The owner can list them at any time.
+- The message is posted by the bot, under the bot's name, like any other bot
+  message. Nothing is posted as you or attributed to you.
+
+The trigger is always the owner typing a request in their own client. Nothing
+a member says can cause the bot to post one of these.
+
 ## How long it is kept
 
 | What | How long |

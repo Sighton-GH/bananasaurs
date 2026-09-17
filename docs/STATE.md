@@ -4,6 +4,31 @@
 
 ---
 
+**Slice M5 — `send_message`, the allowlist and audit — built 2026-09-16**, on
+`oc/m5-send-message`. The MCP connector can post to allowlisted channels
+only, ten per guild per rolling hour, mentions suppressed, idempotent, every
+send in `mcp_sends` and in the audit trail as `actor_type='mcp_operator'`.
+`packages/core/src/effects/gateway.ts` is byte-identical to its pre-slice
+state: the send path is a sibling module (`message-gateway.ts`), which is
+ruling M5-D1 and exists so the moderation chokepoint cannot regress while the
+observe window runs.
+
+Two findings worth carrying forward:
+
+- **`allowedMentions` is set in exactly one place in the tree** — the MCP send
+  path. Every other message the bot sends (panels, log messages) still goes
+  out with Discord's default, which parses every mention in the content.
+  Nothing currently posts member-supplied text through those paths, so this is
+  a latent gap rather than a live bug, and closing it means changing what
+  panel posts do — which is why M5 did not (ruling M5-D2). Worth doing once
+  the observe window closes.
+- **drizzle-kit 0.31.10 emits an invalid `CREATE INDEX` when it rebuilds a
+  table carrying a sort-ordered index** (ruling M5-D7). It bit the
+  `audit_events` rebuild in migration 0023 and will bite every future one.
+  The correction is one line, and the schema-invariants proof now asserts the
+  index survives the rebuild, not only the rows.
+
+
 ## Where the build is
 
 **Release 1 is done — 2026-08-30.** All six work packages (`docs/20_AUTONOMOUS_EXECUTION.md`) and all sixteen slices are built, merged to `main`, and green: WP1 (skeleton, fake Discord harness), WP2 (schema, event pipeline, safety core), WP3 (role panels, adoption, reconciliation), WP4 (logging module), WP5 (Discord adapter, role panels live-tested, operator CLI, dashboard, slash commands), WP6 (backup, restore, doctor hardening). 1,638 tests, `typecheck` and `lint` clean. Every box in `docs/SMOKE_TESTS.md` is checked, including sections B and C which needed a live test guild and real data — see `docs/reports/release1-smoke-tests-live-run.md` for the full account (two real dashboard bugs found and fixed live, and a confirmed anti-nuke safety property). Detailed per-slice history lives in `docs/SESSION_LOG.md` (append-only) and `docs/reports/`; this file only tracks where things stand now.
