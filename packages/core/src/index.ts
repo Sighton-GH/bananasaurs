@@ -489,6 +489,8 @@ export type {
   OpsRetryOutcome,
   OpsRuleMode,
   OpsSafetyState,
+  OpsSendAllowlistEntry,
+  OpsSendRecord,
   OpsUndoableCount,
   OpsVerdictCounts,
 } from './ops/ports.js';

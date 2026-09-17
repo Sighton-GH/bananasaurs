@@ -113,15 +113,15 @@ export interface McpServerDeps {
    */
   readonly records: McpRecordsPort;
   /**
-   * The daemon's per-request send port (slice M5, Task 4). Optional — unlike
-   * the four ports above — because Task 4 wires the real gateway after this
-   * task lands: until then the daemon cannot provide one, and a required
-   * member would fail the daemon's own construction. `send_message` is
-   * registered only when a port is present *and* the principal carries the
-   * send scope; a send-scoped token against a port-less server gets the same
-   * empty tool list a scopeless token gets today.
+   * The daemon's per-request send port (slice M5, Task 4). Required like the
+   * four ports above: the daemon always provides it (see `sendPortFor` in
+   * `apps/daemon/src/mcp/wiring.ts`), and a missing port must fail at
+   * construction, not serve a `send_message` that always refuses (ruling
+   * M5-D11 — the M4-D12 defect with a new name). Required means the port is
+   * always present, not that the tool is always advertised: `send_message`
+   * still registers only when the principal carries the send scope.
    */
-  readonly send?: McpSendPort | undefined;
+  readonly send: McpSendPort;
 }
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
@@ -133,7 +133,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
   // `send_message`. M5 adds the second half: `send_message` registers only
   // under the send scope, independently of the read-scope block, so a token
   // with both scopes gets all twelve.
-  if (hasSendScope(deps.principal) && deps.send !== undefined) {
+  if (hasSendScope(deps.principal)) {
     const send = deps.send;
     server.tool(
       SEND_MESSAGE_TOOL_NAME,

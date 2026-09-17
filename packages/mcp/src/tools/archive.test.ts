@@ -513,6 +513,8 @@ describe('archive tools on the MCP server', () => {
       archive: port,
       guild,
       records,
+      // Required since M5 Task 4; never called by the archive tools pinned here.
+      send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
