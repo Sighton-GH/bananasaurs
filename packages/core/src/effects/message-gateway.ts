@@ -42,6 +42,18 @@ import { safeLogFields, type Logger } from '../obs/logger.js';
  * a shared helper. Extraction would mean editing the moderation chokepoint to
  * call it, which is the one thing that ruling exists to avoid. Once the
  * observe window closes, extracting them is the cleanup to do.
+ *
+ * NOTE (M5-D12): this gateway respects the circuit breaker but must never
+ * trip it — deliberately asymmetric with `gateway.ts`, where a rate-cap
+ * overflow trips the breaker (`gateway.ts:280`). The breaker is guild-wide
+ * and shared with the moderation effect path: if an MCP send hitting its
+ * ten-per-hour cap opened it, the owner's Claude client — or anything
+ * driving that client — would hold a lever that pauses moderation effects
+ * for the entire guild. That is the MCP surface reaching into moderation,
+ * which this design says it must never be, and the lever would stay
+ * available for the whole of an observe window. So this module refuses when
+ * the breaker is open and calls nothing that opens it. Do not "fix" the
+ * asymmetry by adding a trip on the rate-cap path.
  */
 
 export interface MessageIntent {

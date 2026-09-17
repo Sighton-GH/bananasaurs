@@ -218,6 +218,8 @@ interface Harness {
   nowMs: { value: number };
   deps: () => MessageGatewayDeps;
   setState(patch: Partial<SafetyState>): void;
+  /** Every reason the gateway passed to `tripBreaker` — must stay empty (M5-D12). */
+  trips: string[];
 }
 
 const build = (
@@ -243,6 +245,7 @@ const build = (
   const guildKnown = opts.guildKnown ?? true;
   const allowed = new Set<string>(opts.allowedChannels ?? [CHANNEL]);
   const inGuild = new Set<string>(opts.guildChannels ?? [CHANNEL, OTHER_CHANNEL]);
+  const trips: string[] = [];
 
   const deps = (): MessageGatewayDeps => ({
     guildId: GUILD,
@@ -253,7 +256,14 @@ const build = (
       read: () => (guildKnown ? { ...state } : undefined),
       isChannelAllowed: (channelId) => allowed.has(channelId),
       isChannelInGuild: (channelId) => inGuild.has(channelId),
-    },
+      // The role gateway's state carries `tripBreaker` and calls it on
+      // rate-cap overflow (`gateway.ts:280`); this gateway's does not. The
+      // spy sits on the same shape so the test below fails if anyone threads
+      // a trip through here (M5-D12).
+      tripBreaker: (reason: string) => {
+        trips.push(reason);
+      },
+    } as MessageGatewayDeps['state'],
     sends: {
       find: (key) => ledger.find(key),
       claim: (input) => ledger.claim(input),
@@ -280,6 +290,7 @@ const build = (
     setState(patch) {
       Object.assign(state, patch);
     },
+    trips,
   };
 };
 
@@ -341,6 +352,39 @@ describe('sendMessageEffect', () => {
 
     expect(outcome).toEqual({ status: 'refused', reason: 'breaker-open' });
     expect(h.discord.callsFor('sendMessage')).toHaveLength(0);
+  });
+
+  it('never trips the circuit breaker, including on the rate-cap path (M5-D12)', async () => {
+    // Deliberately asymmetric with `gateway.ts:280`, where a rate-cap
+    // overflow trips the breaker: the breaker is guild-wide and shared with
+    // the moderation effect path, so an MCP send hitting its cap must refuse
+    // without opening it — otherwise the MCP surface would hold a lever that
+    // pauses moderation for the entire guild.
+    const h = build();
+    for (let i = 0; i < RATE_LIMIT; i += 1) {
+      const outcome = await sendMessageEffect(
+        h.deps(),
+        intent({ idempotencyKey: `key-notrip-${i}`, content: `no-trip message ${i}` }),
+      );
+      expect(outcome.status).toBe('sent');
+    }
+    const capped = await sendMessageEffect(
+      h.deps(),
+      intent({ idempotencyKey: 'key-notrip-cap', content: 'no-trip over the cap' }),
+    );
+    expect(capped).toEqual({ status: 'refused', reason: 'rate-cap' });
+
+    // A plain send and a breaker-open refusal trip nothing either.
+    h.nowMs.value += HOUR_MS + 1;
+    const sent = await sendMessageEffect(
+      h.deps(),
+      intent({ idempotencyKey: 'key-notrip-ok', content: 'no-trip after the window' }),
+    );
+    expect(sent.status).toBe('sent');
+    h.setState({ breakerOpen: true });
+    await sendMessageEffect(h.deps(), intent({ idempotencyKey: 'key-notrip-open' }));
+
+    expect(h.trips).toHaveLength(0);
   });
 
   it('refuses the eleventh send in the hour; the tenth succeeds', async () => {
