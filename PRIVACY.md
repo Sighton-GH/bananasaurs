@@ -102,6 +102,7 @@ a member says can cause the bot to post one of these.
 | Archived messages linked to a moderation case | Content kept until the case closes, then 90 days |
 | Archived messages the owner marked preserved | Kept indefinitely; the audit log records who preserved it and when |
 | Attachments on archived messages | File name, type and size only; no file contents are downloaded |
+| The record of each message the bot posted on the owner's behalf | Kept indefinitely. It holds the channel, the time, which credential sent it, and a fingerprint of the text — **not the message itself**. It is what stops a retry posting the same message twice, and what lets the owner list what was posted; the message you can read is the one in the channel |
 | The record that Claude — the AI tool the owner uses to read the server — is set not to train on your messages | Kept for as long as the tool is in use. The owner re-checks that account setting by hand, and the bot warns when the check is more than 90 days old, when the record says the tool does train on input, or when it says the tool is not approved for this use |
 
 Current settings are shown by `/privacy`. If they change, this policy is updated and the change is announced in the server.

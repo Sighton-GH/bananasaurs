@@ -29,18 +29,29 @@ import {
  * and the `failed` code (a detail for the daemon's logs, not the model).
  *
  * On ruling M5-D6 (a DM channel id refused before the allowlist): **the
- * ruling was retracted** after this tool was written, and there is no DM
- * branch here on purpose. A DM channel id is a well-formed snowflake —
- * Discord encodes no channel-type bits in the id — and this layer's only
- * channel-type source would be a port lookup the `McpSendPort` shape below
- * does not provide. A DM id therefore reaches the gateway, where it is
- * refused as `channel-not-allowlisted` (it can never be on a guild-scoped
- * allowlist); the partition invariant still holds because every call carries
- * the resolved `GuildId` — and `isChannelAllowed` takes its scope from that
- * resolved guild rather than from the channel, so asking it about a DM id is
- * a well-formed question whose answer is simply no. A DM can never be in
- * `mcp_send_allowlist`, because rows there are written per guild, so the
- * allowlist is where this safety property belongs.
+ * ruling was retracted, and its retraction was then partly wrong too.** This
+ * layer still has no DM branch, and cannot: a DM channel id is a well-formed
+ * snowflake, Discord encodes no channel-type bits in an id, and the
+ * `McpSendPort` shape below exposes no channel-type lookup.
+ *
+ * What the retraction claimed — that a DM "can never be in
+ * `mcp_send_allowlist`, because rows there are written per guild" — is
+ * false, and the M5 whole-branch review proved it by driving the code: rows
+ * are written *under* a guild, and nothing made them *of* it. An
+ * allowlisted DM id posted to the DM.
+ *
+ * What actually enforces it, both checked against the guild's own channel
+ * cache rather than inferred from an id:
+ *
+ *   - `bananasaurs mcp allow-channel` refuses a channel that is not a
+ *     text channel of that guild (`allowSendChannel`, daemon ops wiring), so
+ *     the row cannot be written in the first place;
+ *   - the send path checks guild membership again before posting, because
+ *     the allowlist is data and a row predating that validation must not be
+ *     able to reach outside the guild.
+ *
+ * Do not reconstruct the "written per guild" argument from the schema. It
+ * reads convincingly and it is wrong.
  */
 
 /** The 2000-character Discord limit, and ADR 0044 §4's cap. */
