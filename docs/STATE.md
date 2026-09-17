@@ -29,6 +29,38 @@ Two findings worth carrying forward:
   index survives the rebuild, not only the rows.
 
 
+**Incident 2026-09-17 — the daemon crash-looped for about a day, and the
+observe window collected nothing while it did.** `SqliteError: no such table:
+archive_channels`, thrown by the archive expiry timer, 15,234 restarts. The
+database was simply behind the code. Three things are worth keeping:
+
+- **`assertMigrated` was too weak and is now fixed.** It asked only whether
+  `guilds` existed, which proves the database has *a* schema and never that
+  the schema matches this build — so the process started cleanly and died
+  later at whatever query first touched a missing table. The M4 whole-branch
+  review predicted this exact failure and it was recorded as "worth a line in
+  the restore runbook"; it was worth a fix. It now compares
+  `drizzle/meta/_journal.json` against `__drizzle_migrations` and refuses to
+  start with the number of missing migrations and the command to run.
+- **The systemd unit runs this checkout's `dist/`.** `npm run typecheck` and
+  `npm run build` both run `tsc --build`, which rewrites `dist/` — so routine
+  verification updates the code a live service executes. The unit calls
+  itself a test unit on a dev checkout, so the coupling is deliberate, but it
+  means *the gates are a deployment*. Until that is separated, treat any
+  build on this box as a deploy: migrate before restarting.
+- **A no-emit typecheck is not a valid gate after a merge that adds
+  cross-package exports.** `tsc -p tsconfig.all.json` checks sources against
+  sibling packages' built `.d.ts`, so with a stale `dist/` it reported 38
+  phantom errors for symbols that exist in source. Same root as D58: the
+  gates depend on build state on disk, not only on the repository.
+
+Also found by `doctor` on recovery, unrelated to the crash: both guilds are
+missing `BanMembers` and `ManageMessages`, and the club guild is also missing
+`UseApplicationCommands` (so slash commands do not work there). Not urgent
+under observe + dry run; `ManageMessages` is needed before enforce. The club
+guild is now **246 members**, not the 210 the design documents quote.
+
+
 ## Where the build is
 
 **Release 1 is done — 2026-08-30.** All six work packages (`docs/20_AUTONOMOUS_EXECUTION.md`) and all sixteen slices are built, merged to `main`, and green: WP1 (skeleton, fake Discord harness), WP2 (schema, event pipeline, safety core), WP3 (role panels, adoption, reconciliation), WP4 (logging module), WP5 (Discord adapter, role panels live-tested, operator CLI, dashboard, slash commands), WP6 (backup, restore, doctor hardening). 1,638 tests, `typecheck` and `lint` clean. Every box in `docs/SMOKE_TESTS.md` is checked, including sections B and C which needed a live test guild and real data — see `docs/reports/release1-smoke-tests-live-run.md` for the full account (two real dashboard bugs found and fixed live, and a confirmed anti-nuke safety property). Detailed per-slice history lives in `docs/SESSION_LOG.md` (append-only) and `docs/reports/`; this file only tracks where things stand now.
