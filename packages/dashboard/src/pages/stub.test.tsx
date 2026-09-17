@@ -27,7 +27,13 @@ describe('StubPage', () => {
   it('renders availableToday when set', () => {
     const note =
       'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.';
-    render(<StubPage title="Search" purpose="Full-text search over the archive, with citations." availableToday={note} />);
+    render(
+      <StubPage
+        title="Search"
+        purpose="Full-text search over the archive, with citations."
+        availableToday={note}
+      />,
+    );
     expect(screen.getByText(note)).toBeTruthy();
     expect(screen.getByText(NOT_BUILT)).toBeTruthy();
   });
@@ -39,11 +45,8 @@ describe('StubPage', () => {
   });
 
   it('makes no fetch', () => {
-    const mock = vi.fn(
-      () =>
-        Promise.resolve(
-          new Response('{}', { headers: { 'content-type': 'application/json' } }),
-        ) as Promise<Response>,
+    const mock = vi.fn(() =>
+      Promise.resolve(new Response('{}', { headers: { 'content-type': 'application/json' } })),
     );
     vi.stubGlobal('fetch', mock);
     render(<StubPage title="Archive" purpose="A purpose." />);
