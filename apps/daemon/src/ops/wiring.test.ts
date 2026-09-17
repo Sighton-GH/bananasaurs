@@ -193,9 +193,7 @@ describe('allowSendChannel (C2 allow-time)', () => {
     opsPortsFor(scope, t.scopes.instance(), operations, () => NOW, client, true);
 
   it('allows a text channel of the guild', () => {
-    expect(sendPorts().allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe(
-      'allowed',
-    );
+    expect(sendPorts().allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe('allowed');
     expect(mcpSendRepo.isChannelAllowed(scope, CLEAN)).toBe(true);
   });
 

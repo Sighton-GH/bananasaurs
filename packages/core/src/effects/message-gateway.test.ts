@@ -224,7 +224,7 @@ const build = (
   opts: {
     guildKnown?: boolean;
     allowedChannels?: readonly (typeof CHANNEL)[];
-    guildChannels?: readonly (typeof CHANNEL | typeof OTHER_CHANNEL)[];
+    guildChannels?: readonly string[];
   } = {},
 ): Harness => {
   const state: SafetyState = { killswitch: false, breakerOpen: false, dryRun: false };
