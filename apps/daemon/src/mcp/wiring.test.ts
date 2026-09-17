@@ -307,6 +307,44 @@ describe('/mcp behind the bearer guard', () => {
     expect(names).not.toContain('send_message');
   });
 
+  it('(M6) a read-scope token calling send_message answers -32602 and never reaches the port', async () => {
+    // Through the real composition with a real minted read-scope token:
+    // `send_message` never registers without the send scope, so the call
+    // fails as unknown-tool before any port exists to reach. Pinned here
+    // because the probe verified it but no test held it.
+    const accessToken = await mintToken();
+    const response = await mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'send_message',
+          arguments: {
+            guildId: '111111111111111111',
+            channelId: '444444444444444444',
+            content: 'm6-probe-content',
+            idempotencyKey: 'm6-k1',
+          },
+        },
+      },
+      accessToken,
+    );
+    expect(response.statusCode).toBe(200);
+    const bodies = sseData(response.body);
+    expect(bodies.length).toBeGreaterThan(0);
+    // The transport surfaces the unknown tool as an isError result whose
+    // text carries the -32602 code — not as a top-level JSON-RPC error
+    // frame — and the send port is never reached.
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    expect(result?.isError).toBe(true);
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.text).toContain('-32602');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
   it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees send_message and nothing else', async () => {
     // Through the real authorize/consent/exchange flow, not a hand-built
     // principal: this defect is invisible to a test that constructs the
