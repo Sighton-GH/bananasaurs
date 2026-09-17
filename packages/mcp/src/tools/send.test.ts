@@ -183,6 +183,7 @@ describe('send_message argument boundary (hard rule 3)', () => {
 describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
   const ALL_REFUSALS: readonly McpSendRefusal[] = [
     'channel-not-allowlisted',
+    'channel-not-in-guild',
     'killswitch',
     'breaker-open',
     'rate-cap',
@@ -206,6 +207,7 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
 
   it.each([
     ['channel-not-allowlisted', 'allowlist'],
+    ['channel-not-in-guild', 'will not help'],
     ['killswitch', 'kill switch'],
     ['breaker-open', 'breaker'],
     ['rate-cap', 'hour'],

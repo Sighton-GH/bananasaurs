@@ -88,6 +88,7 @@ export type McpSendOutcome =
 
 export type McpSendRefusal =
   | 'channel-not-allowlisted'
+  | 'channel-not-in-guild'
   | 'killswitch'
   | 'breaker-open'
   | 'rate-cap'
@@ -168,6 +169,19 @@ const refusalText = (guildId: GuildId, channelId: string, reason: McpSendRefusal
         `Channel ${channelId} in guild ${guildId} is not on the send allowlist, ` +
         'so nothing was posted. The owner can allow it with ' +
         `\`bananasaurs mcp allow-channel ${channelId} --confirm\`, then retry this call.`
+      );
+    case 'channel-not-in-guild':
+      // Its own text, not the allowlist text (N3): this channel is absent
+      // from the guild's channel cache, so `mcp allow-channel` would refuse
+      // the same id — pointing the model at that command sends the operator
+      // round a circle, most likely in the seconds after a restart before
+      // READY. Allowlisting will not help; waiting (or checking the id) will.
+      return (
+        `Channel ${channelId} in guild ${guildId} is not a channel this guild's bot can see, ` +
+        'so nothing was posted. Allowlisting it will not help: ' +
+        `\`bananasaurs mcp allow-channel ${channelId} --confirm\` would refuse the same id. ` +
+        'If the channel was already allowlisted, the bot may not see it yet ' +
+        '(for example right after a restart) — wait a moment and retry this call.'
       );
     case 'killswitch':
       return (

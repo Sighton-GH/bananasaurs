@@ -598,13 +598,11 @@ const sendPortFor = (
           return { status: 'replayed', messageId: outcome.messageId };
         case 'refused':
           if (outcome.reason === 'guild-unknown') throw new Error(GUILD_REFUSAL_MESSAGE);
-          // The gateway's `channel-not-in-guild` is its own reason, but this
-          // package's `McpSendRefusal` vocabulary is frozen: the model hears
-          // `channel-not-allowlisted`, whose text already tells it to ask the
-          // owner to allowlist and retry. Never the content, never a throw.
-          if (outcome.reason === 'channel-not-in-guild') {
-            return { status: 'refused', reason: 'channel-not-allowlisted' };
-          }
+          // The gateway's reasons map one to one onto this package's
+          // `McpSendRefusal` — including `channel-not-in-guild`, which keeps
+          // its own text (N3) rather than borrowing the allowlist text, so the
+          // model is not pointed at a command that would refuse the same id.
+          // Never the content, never a throw.
           return { status: 'refused', reason: outcome.reason };
         case 'failed':
           return { status: 'failed' };

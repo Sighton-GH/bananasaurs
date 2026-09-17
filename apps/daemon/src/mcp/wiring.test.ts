@@ -603,8 +603,10 @@ describe('/mcp send_message through the real composition', () => {
   it('an allowlisted row outside the guild is refused and Discord is never called (C2 send-time)', async () => {
     // The stale-row shape: a row written before allow-time validation (or by
     // a future path) for a channel in no guild's cache. The gateway refuses
-    // with its own reason; the model hears the allowlist text, and the
-    // Discord port is never reached.
+    // with its own reason and the model hears the not-in-guild text — never
+    // the allowlist text, which would point the operator at `mcp
+    // allow-channel`, a command that refuses the same id — and the Discord
+    // port is never reached.
     allow();
     mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
       channelId: OUTSIDE_CHANNEL,
@@ -622,7 +624,9 @@ describe('/mcp send_message through the real composition', () => {
       ).body,
     );
     expect(refused.isError).toBe(true);
-    expect(refused.text).toContain('not on the send allowlist');
+    expect(refused.text).toContain("is not a channel this guild's bot can see");
+    expect(refused.text).toContain('will not help');
+    expect(refused.text).not.toContain('not on the send allowlist');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
     expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-outside')).toBeUndefined();
   });
