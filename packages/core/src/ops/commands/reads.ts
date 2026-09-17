@@ -39,7 +39,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
   write: false,
   summary: 'intents, permissions, role hierarchy, stale panels',
   args: z.object({}),
-  run(ctx: OpsContext): OpsCommandResult {
+  async run(ctx: OpsContext): Promise<OpsCommandResult> {
     const report = ctx.instance.doctor();
     const panels = ctx.ports.listPanels();
     const stale = panels.filter((p) => p.status !== 'enabled');
@@ -54,6 +54,10 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     // every other finding is guild-scoped, but a provider is a fact about the
     // daemon, so this reads `ctx.instance` like `mcpClients` does.
     const eligibilityWarnings = ctx.instance.providerEligibilityWarnings(ctx.now());
+    // Ruling M6-D1's probe: the bot's own public hostname in both directions.
+    // Awaited beside `doctor()` above — an exposed dashboard is a silent
+    // breach of the exposure decision, not decoration under a green header.
+    const surface = await ctx.instance.probePublicSurface();
 
     const lines = [report.text, ''];
     lines.push(
@@ -157,7 +161,9 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     // so they count the same way rather than being printed as decoration
     // under a green header. The eligibility finding above it counts too: a
     // stale promise about training is a silent breach of `PRIVACY.md`, not a
-    // footnote.
+    // footnote. And the public-surface probe counts most of all: an exposed
+    // dashboard is a silent breach of the whole exposure decision.
+    lines.push(surface.text);
     const ok =
       report.ok &&
       stale.length === 0 &&
@@ -168,7 +174,8 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       observePastWindow.length === 0 &&
       unreadableArchiveChannels.length === 0 &&
       archiveIndex.indexed === archiveIndex.rows &&
-      eligibilityWarnings.length === 0;
+      eligibilityWarnings.length === 0 &&
+      surface.ok;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
     return {
@@ -211,6 +218,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           trainsOnInput: w.trainsOnInput,
           reviewedAt: w.reviewedAt,
         })),
+        publicSurface: surface.data,
       },
     };
   },

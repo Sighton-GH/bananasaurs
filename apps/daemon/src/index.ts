@@ -19,6 +19,10 @@ import { announceCommands } from './runtime/commands.js';
 import { startDashboardApi, type DashboardApi } from './http/wiring.js';
 import { createDaemon } from './runtime/daemon.js';
 import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
+import {
+  formatPublicSurface,
+  probePublicSurface as runPublicSurfaceProbe,
+} from './runtime/public-surface.js';
 
 /**
  * The process.
@@ -177,9 +181,20 @@ async function bindSocketOrFail(config: Config, log: Logger): Promise<OpsSocketS
 async function runDoctor(config: Config, log: Logger): Promise<never> {
   const client = createDiscordClient(() => client.user?.id);
   client.once(Events.ClientReady, () => {
-    const report = buildDoctorReport(client, config);
-    process.stdout.write(`${formatDoctorReport(report)}\n`);
-    void client.destroy().then(() => process.exit(report.ok ? 0 : 1));
+    void (async () => {
+      const report = buildDoctorReport(client, config);
+      // Ruling M6-D1, the same probe the `doctor` command runs: the public
+      // hostname in both directions, behind `MCP_PUBLIC_URL` and with the
+      // global fetch. An exposed dashboard fails the exit code on its own.
+      const surface = await runPublicSurfaceProbe({
+        publicUrl: config.MCP_PUBLIC_URL,
+        fetch: globalThis.fetch,
+      });
+      process.stdout.write(`${formatDoctorReport(report)}\n${formatPublicSurface(surface)}\n`);
+      const ok = report.ok && surface.ok;
+      await client.destroy();
+      process.exit(ok ? 0 : 1);
+    })();
   });
 
   try {
