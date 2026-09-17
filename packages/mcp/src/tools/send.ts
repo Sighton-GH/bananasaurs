@@ -236,13 +236,20 @@ const sendMessageInner = async (
             `nothing new was posted to channel ${input.channelId}.`,
         };
       }
+      // No message id was stored under this key: either the first attempt's
+      // response was lost, or a concurrent duplicate call re-read before
+      // `recordMessageId` ran. Either way the message may or may not have
+      // been posted, so report honestly rather than repairing: check the
+      // channel, and retry — if at all — with this same key. Never suggest a
+      // fresh key here: probe F2 showed a fresh key 61 s later posts again.
       return {
         ok: true,
         text:
-          'Already recorded under this idempotency key, but the first attempt stored no message id: ' +
-          `nothing new was posted. Check channel ${input.channelId} for the message; ` +
-          'if it is absent, send again with a fresh key ' +
-          '(and, within a minute of identical text, vary the text or wait).',
+          'Already recorded under this idempotency key, but the first attempt stored no message id, ' +
+          `so the message may or may not have been posted to channel ${input.channelId}: ` +
+          'nothing new was posted by this call. ' +
+          `Check channel ${input.channelId} for the message before retrying, ` +
+          'and if you retry, reuse this same idempotency key — never a fresh one.',
       };
     case 'refused':
       return { ok: false, message: refusalText(gate.guildId, input.channelId, outcome.reason) };

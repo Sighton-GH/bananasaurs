@@ -212,11 +212,38 @@ describe('send_message happy path', () => {
     expect(text.toLowerCase()).not.toContain('fail');
   });
 
-  it('replayed without a message id is still ok:true', async () => {
+  it('replayed without a message id says to check the channel and reuse the key, never a fresh one', async () => {
+    // I4: probe F2 showed a fresh key 61 s later posts again, so this text
+    // must contain nothing that would produce a second send.
     const port = fakeSendPort({ status: 'replayed', messageId: undefined });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
     expect(outcome.ok).toBe(true);
-    expect(textOf(outcome)).toContain('othing new was posted');
+    const text = textOf(outcome);
+    expect(text).toContain('othing new was posted');
+    expect(text).toContain('may or may not have been posted');
+    expect(text).toContain(`Check channel ${CHANNEL}`);
+    expect(text).toContain('reuse this same idempotency key');
+    expect(text).not.toContain('fresh key');
+  });
+
+  it('replayed with and without an id render differently', async () => {
+    const withId = textOf(
+      await sendMessageText(
+        principalWith([GUILD_A]),
+        fakeSendPort({ status: 'replayed', messageId: '444444444444444444' }),
+        validArgs(),
+      ),
+    );
+    const withoutId = textOf(
+      await sendMessageText(
+        principalWith([GUILD_A]),
+        fakeSendPort({ status: 'replayed', messageId: undefined }),
+        validArgs(),
+      ),
+    );
+    expect(withId).toContain('444444444444444444');
+    expect(withoutId).not.toContain('444444444444444444');
+    expect(withId).not.toBe(withoutId);
   });
 
   it('failed says the result is unknown and reuses the key, never claims nothing was posted', async () => {
