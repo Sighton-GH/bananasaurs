@@ -18,9 +18,7 @@ export interface AllowlistedChannel {
   readonly addedAt: number;
 }
 
-const toAllowlistedChannel = (
-  row: typeof mcpSendAllowlist.$inferSelect,
-): AllowlistedChannel => ({
+const toAllowlistedChannel = (row: typeof mcpSendAllowlist.$inferSelect): AllowlistedChannel => ({
   channelId: row.channelId,
   addedByAccountId: row.addedByAccountId,
   addedAt: row.addedAt,
@@ -193,8 +191,7 @@ export const listSends = (
         ),
       )
       .orderBy(desc(mcpSends.sentAt), asc(mcpSends.idempotencyKey));
-    const rows =
-      input.limit === undefined ? base.all() : base.limit(input.limit).all();
+    const rows = input.limit === undefined ? base.all() : base.limit(input.limit).all();
     return rows.map(toSendRow);
   });
 
