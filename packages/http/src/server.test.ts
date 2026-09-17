@@ -96,10 +96,7 @@ const cookieFrom = (header: string | string[] | undefined): string => {
   return raw.split(';')[0] ?? '';
 };
 
-const signIn = async (
-  target = app,
-  headers: Record<string, string> = {},
-): Promise<LoggedIn> => {
+const signIn = async (target = app, headers: Record<string, string> = {}): Promise<LoggedIn> => {
   const response = await target.inject({
     method: 'POST',
     url: '/api/login',
