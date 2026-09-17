@@ -306,6 +306,31 @@ with a new name. Task 4's Files list is widened to
 those; it is the file that wires moderation, and nothing about moderation may
 change in it.
 
+**M5-D12 — the message gateway respects the breaker but never trips it, and
+that asymmetry is deliberate.** The whole-branch review flagged it as an
+undocumented difference from the role gateway, which trips the breaker when
+its rate cap overflows (`gateway.ts:280`). It should be documented, not
+removed.
+
+The circuit breaker is **guild-wide and shared with the moderation effect
+path**. If an MCP send hitting its ten-per-hour cap tripped it, the owner's
+Claude client — or anything driving that client — would hold a lever that
+pauses moderation effects for the entire guild. That is an MCP surface
+reaching into moderation, which is the one thing this whole design says it
+must never be (ADR 0044, design §12), and it would be a lever available
+during an observe window.
+
+So: the send path **refuses** when the breaker is open, because a guild in
+trouble should not be posting; it never **opens** it, because a chatty
+operator is not a runaway effect loop and must not be able to quiet the
+moderation path. The role gateway's trip is right for the role gateway, where
+cap overflow means a reaction storm or a convergence bug — a genuine runaway.
+
+This is the one place where M5-D1's "same layered shape" duplication is
+deliberately *not* equivalent, and the gateway's doc comment must say so, or
+someone will later "fix" the inconsistency and hand the MCP surface a
+moderation control.
+
 ## Global constraints (copy verbatim into every brief)
 
 1. **Do not touch** `mod_rules`, `setRuleMode`, `packages/core/src/mod/`,
