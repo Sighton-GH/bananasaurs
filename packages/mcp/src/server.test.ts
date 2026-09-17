@@ -92,7 +92,7 @@ const stubRecords = (): McpRecordsPort => ({
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
-  send?: McpSendPort | undefined,
+  send?: McpSendPort,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
   const server = createMcpServer({

@@ -93,7 +93,7 @@ describe('send_message guild gate (CLAUDE.md rule 2)', () => {
     ['empty reachable set', '111111111111111111', []],
   ])('%s is the shared refusal and the port was never called', async (_label, guildId, guilds) => {
     const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
-    const outcome = await sendMessageText(principalWith(guilds as GuildId[]), port, {
+    const outcome = await sendMessageText(principalWith(guilds), port, {
       ...validArgs(),
       guildId,
     });
@@ -125,7 +125,10 @@ describe('send_message argument boundary (hard rule 3)', () => {
   it.each([
     ['content over 2000 characters', { ...validArgs(), content: 'x'.repeat(SEND_CONTENT_MAX + 1) }],
     ['empty content', { ...validArgs(), content: '' }],
-    ['missing idempotency key', { guildId: '111111111111111111', channelId: CHANNEL, content: 'hi' }],
+    [
+      'missing idempotency key',
+      { guildId: '111111111111111111', channelId: CHANNEL, content: 'hi' },
+    ],
     ['malformed channel id', { ...validArgs(), channelId: 'not-a-channel' }],
     ['missing guild id', { channelId: CHANNEL, content: 'hi', idempotencyKey: 'k' }],
     ['non-string content', { ...validArgs(), content: 42 }],
@@ -352,7 +355,9 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
   });
 
   it('a token with both scopes sees twelve tools', async () => {
-    const names = await toolNamesOf(principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']));
+    const names = await toolNamesOf(
+      principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
+    );
     expect(names).toHaveLength(12);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });

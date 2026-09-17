@@ -67,12 +67,7 @@ import {
   sendMessageText,
   type McpSendPort,
 } from './tools/send.js';
-import {
-  GUILD_REFUSAL_MESSAGE,
-  hasReadScope,
-  hasSendScope,
-  type McpPrincipal,
-} from './scope.js';
+import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
 /**
  * The MCP server Task 3 mounts at `/mcp`.

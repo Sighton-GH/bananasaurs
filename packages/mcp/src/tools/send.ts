@@ -80,8 +80,7 @@ export type McpSendRefusal =
   | 'duplicate-content-recently';
 
 export type SendOutcomeText =
-  | { readonly ok: true; readonly text: string }
-  | { readonly ok: false; readonly message: string };
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
 
 /**
  * Zod schemas are the boundary (hard rule 3). A parse failure — wrong wire
@@ -237,9 +236,9 @@ const sendMessageInner = async (
         ok: true,
         text:
           'Already recorded under this idempotency key, but the first attempt stored no message id: ' +
-            `nothing new was posted. Check channel ${input.channelId} for the message; ` +
-            'if it is absent, send again with a fresh key ' +
-            '(and, within a minute of identical text, vary the text or wait).',
+          `nothing new was posted. Check channel ${input.channelId} for the message; ` +
+          'if it is absent, send again with a fresh key ' +
+          '(and, within a minute of identical text, vary the text or wait).',
       };
     case 'refused':
       return { ok: false, message: refusalText(gate.guildId, input.channelId, outcome.reason) };
