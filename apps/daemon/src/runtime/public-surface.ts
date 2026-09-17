@@ -138,10 +138,7 @@ const probeRow = async (
     return { path, expects, outcome: 'origin-unreachable', observed: observed() };
   }
 
-  const outcome =
-    expects === 'access'
-      ? classifyDashboardPath(path)
-      : classifyMachinePath(path);
+  const outcome = expects === 'access' ? classifyDashboardPath(path) : classifyMachinePath(path);
   return { path, expects, outcome, observed: observed() };
 
   function observed(): PublicSurfaceRow['observed'] {
