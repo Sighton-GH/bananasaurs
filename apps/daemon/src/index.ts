@@ -213,6 +213,7 @@ async function main(): Promise<void> {
       portsFor: daemon.portsFor,
       instance: daemon.instance,
       client,
+      discord,
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and
