@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   DEFAULT_PROBE_TIMEOUT_MS,
   formatPublicSurface,
@@ -55,6 +55,14 @@ const fakeFetch = (
   return fetch;
 };
 
+/** What Cloudflare Access actually sends when it answers 403: it signs it. */
+const ACCESS_FORBIDDEN: FakeResponse = {
+  status: 403,
+  headers: { 'www-authenticate': 'Cloudflare-Access realm="sighton.cloudflareaccess.com"' },
+};
+/** A 403 from anything else — a WAF, a bot challenge, the app. Not Access. */
+const BARE_FORBIDDEN: FakeResponse = { status: 403 };
+
 const ACCESS_REDIRECT: FakeResponse = {
   status: 302,
   headers: { location: 'https://login.example.cloudflareaccess.com/cdn-cgi/access/login' },
@@ -66,7 +74,7 @@ const responseFor = (report: PublicSurfaceReport, path: string) =>
 /** The all-clear edge: Access in front of the dashboard, the app behind the machine paths. */
 const cleanTable = (): Record<string, FakeResponse> => ({
   '/': ACCESS_REDIRECT,
-  '/api/session': { status: 403 },
+  '/api/session': ACCESS_FORBIDDEN,
   '/oauth/authorize': ACCESS_REDIRECT,
   '/.well-known/oauth-authorization-server': {
     status: 200,
@@ -89,8 +97,84 @@ describe('probePublicSurface', () => {
       throw new Error('must not fetch when there is no public URL');
     };
     const report = await probePublicSurface({ publicUrl: undefined, fetch });
-    expect(report).toEqual({ probed: false, ok: true, rows: [] });
+    expect(report).toEqual({ probed: false, skipped: 'unset', ok: true, rows: [] });
     expect(seen).toEqual([]);
+  });
+
+  it('probes nothing and is ok when MCP_PUBLIC_URL is a loopback address (review M-3)', async () => {
+    // A dev setting. There is no tunnel and no Access in front of 127.0.0.1,
+    // so every dashboard row would read `exposed` forever, and a permanently
+    // red doctor teaches the operator to ignore red.
+    for (const base of ['http://127.0.0.1:8787', 'http://localhost:8787', 'http://[::1]:8787']) {
+      let called = false;
+      const fetch: FetchLike = () => {
+        called = true;
+        throw new Error('must not fetch a loopback public URL');
+      };
+      const report = await probePublicSurface({ publicUrl: base, fetch });
+      expect(report).toEqual({ probed: false, skipped: 'loopback', ok: true, rows: [] });
+      expect(called).toBe(false);
+    }
+    expect(
+      formatPublicSurface({ probed: false, skipped: 'loopback', ok: true, rows: [] }),
+    ).toContain('loopback');
+  });
+
+  it('shares one budget across the rows, so a slow edge cannot exceed it (review I-2)', async () => {
+    // Five rows at five seconds each is twenty-five, inside the CLI's thirty-
+    // second socket timeout before doctor's own reads are counted. With a
+    // budget, the rows that cannot be reached in time are `unreachable`
+    // without a fetch, and the whole probe is bounded by the budget.
+    let clock = 0;
+    const urls: string[] = [];
+    const fetch: FetchLike = (url, init) => {
+      urls.push(url);
+      // Each fetch "takes" the whole of whatever timeout it was given. The
+      // patched `AbortSignal.timeout` below hands back an already-aborted
+      // signal, so check `aborted` first — a listener attached after the
+      // abort never fires, and a promise that never settles here would leak
+      // the patch into the next test.
+      return new Promise((_resolve, reject) => {
+        if (init.signal.aborted) {
+          reject(new Error('aborted'));
+          return;
+        }
+        init.signal.addEventListener('abort', () => reject(new Error('aborted')));
+      });
+    };
+    // Advance the fake clock by the per-row timeout on each call, so the
+    // budget drains: 4 s budget, 5 s per-row timeout → row 1 gets 4 s, then
+    // nothing is left for rows 2–5.
+    const now = () => clock;
+    // `vi.spyOn` rather than assigning the static: the lint rule about
+    // unbound methods is right that `AbortSignal.timeout` is one, and a spy
+    // restores itself even if an assertion throws before the `finally`.
+    const spy = vi.spyOn(AbortSignal, 'timeout').mockImplementation((ms: number) => {
+      clock += ms;
+      const c = new AbortController();
+      c.abort();
+      return c.signal;
+    });
+    try {
+      const report = await probePublicSurface({
+        publicUrl: BASE,
+        fetch,
+        timeoutMs: 5_000,
+        budgetMs: 4_000,
+        now,
+      });
+      expect(urls).toHaveLength(1); // only the first row was ever fetched
+      expect(report.rows.map((r) => r.outcome)).toEqual([
+        'unreachable',
+        'unreachable',
+        'unreachable',
+        'unreachable',
+        'unreachable',
+      ]);
+      expect(clock).toBeLessThanOrEqual(4_000); // never past the budget
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it('probes nothing and is ok when MCP_PUBLIC_URL is the empty string', async () => {
@@ -171,10 +255,19 @@ describe('probePublicSurface', () => {
       expect(responseFor(report, '/')?.outcome).toBe('ok');
     });
 
-    it('is ok on a 403, which is the safe direction for a dashboard path', async () => {
+    it('is ok on an Access-signed 403, and unexpected on a bare one (review I-1)', async () => {
+      // A bare 403 used to count as protected. A WAF or bot-challenge 403 from
+      // anything at all would then have read as "Access is in front" with no
+      // policy there. Access signs its answers; require the signature.
+      const bare = await probePublicSurface({
+        publicUrl: BASE,
+        fetch: fakeFetch([], { ...cleanTable(), '/': BARE_FORBIDDEN }),
+      });
+      expect(responseFor(bare, '/')?.outcome).toBe('unexpected');
+      expect(bare.ok).toBe(false);
       const report = await probePublicSurface({
         publicUrl: BASE,
-        fetch: fakeFetch([], { ...cleanTable(), '/': { status: 403 } }),
+        fetch: fakeFetch([], { ...cleanTable(), '/': ACCESS_FORBIDDEN }),
       });
       expect(responseFor(report, '/')?.outcome).toBe('ok');
     });
@@ -207,7 +300,7 @@ describe('probePublicSurface', () => {
 
       const forbidden = await probePublicSurface({
         publicUrl: BASE,
-        fetch: fakeFetch([], { ...cleanTable(), '/api/session': { status: 403 } }),
+        fetch: fakeFetch([], { ...cleanTable(), '/api/session': ACCESS_FORBIDDEN }),
       });
       expect(responseFor(forbidden, '/api/session')?.outcome).toBe('ok');
     });
@@ -256,7 +349,7 @@ describe('probePublicSurface', () => {
 
       const forbidden = await probePublicSurface({
         publicUrl: BASE,
-        fetch: fakeFetch([], { ...cleanTable(), '/oauth/authorize': { status: 403 } }),
+        fetch: fakeFetch([], { ...cleanTable(), '/oauth/authorize': ACCESS_FORBIDDEN }),
       });
       expect(responseFor(forbidden, '/oauth/authorize')?.outcome).toBe('ok');
     });
@@ -321,7 +414,7 @@ describe('probePublicSurface', () => {
         publicUrl: BASE,
         fetch: fakeFetch([], {
           ...cleanTable(),
-          '/.well-known/oauth-authorization-server': { status: 403 },
+          '/.well-known/oauth-authorization-server': ACCESS_FORBIDDEN,
         }),
       });
       expect(responseFor(report, '/.well-known/oauth-authorization-server')?.outcome).toBe(
@@ -371,7 +464,7 @@ describe('probePublicSurface', () => {
     it('is blocked-by-access on a 403', async () => {
       const report = await probePublicSurface({
         publicUrl: BASE,
-        fetch: fakeFetch([], { ...cleanTable(), '/mcp': { status: 403 } }),
+        fetch: fakeFetch([], { ...cleanTable(), '/mcp': ACCESS_FORBIDDEN }),
       });
       expect(responseFor(report, '/mcp')?.outcome).toBe('blocked-by-access');
       expect(report.ok).toBe(false);
