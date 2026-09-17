@@ -28,15 +28,19 @@ import {
  * one, except `guild-unknown` (the guild gate above already answered that)
  * and the `failed` code (a detail for the daemon's logs, not the model).
  *
- * On ruling M5-D6 (a DM channel id refused before the allowlist): there is
- * no DM branch here on purpose. A DM channel id is a well-formed snowflake —
+ * On ruling M5-D6 (a DM channel id refused before the allowlist): **the
+ * ruling was retracted** after this tool was written, and there is no DM
+ * branch here on purpose. A DM channel id is a well-formed snowflake —
  * Discord encodes no channel-type bits in the id — and this layer's only
  * channel-type source would be a port lookup the `McpSendPort` shape below
  * does not provide. A DM id therefore reaches the gateway, where it is
  * refused as `channel-not-allowlisted` (it can never be on a guild-scoped
  * allowlist); the partition invariant still holds because every call carries
- * the resolved `GuildId`. Recognising a DM earlier needs a design ruling,
- * escalated in the Task 3 report rather than guessed here.
+ * the resolved `GuildId` — and `isChannelAllowed` takes its scope from that
+ * resolved guild rather than from the channel, so asking it about a DM id is
+ * a well-formed question whose answer is simply no. A DM can never be in
+ * `mcp_send_allowlist`, because rows there are written per guild, so the
+ * allowlist is where this safety property belongs.
  */
 
 /** The 2000-character Discord limit, and ADR 0044 §4's cap. */
