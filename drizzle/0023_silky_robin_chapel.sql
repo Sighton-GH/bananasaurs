@@ -56,4 +56,4 @@ INSERT INTO `__new_audit_events`("audit_id", "guild_id", "at", "actor_type", "ac
 DROP TABLE `audit_events`;--> statement-breakpoint
 ALTER TABLE `__new_audit_events` RENAME TO `audit_events`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;--> statement-breakpoint
-CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,`"at" desc`);
+CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,"at" desc);

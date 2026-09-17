@@ -128,6 +128,44 @@ rebuilt table; the migration is proved to apply on top of a database holding
 real audit rows, with a test asserting the row count and one row's full
 contents survive; and `docs/SMOKE_TESTS.md`'s restore drill gains the note.
 
+**M5-D7 — drizzle-kit mis-quotes a sort-ordered index on the rebuild path,
+and the one line is corrected rather than the schema.** Task 1 escalated
+instead of working around it, which was right. `db:generate` emitted
+
+```sql
+CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,`"at" desc`);
+```
+
+and applying it fails with `no such column: "at" desc`: the whole sort
+expression has been wrapped in backticks as if it were one identifier. The
+same generator, from the *same snapshot entry*, emits the correct form on the
+create path — `0000` ships
+`` CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,"at" desc); ``.
+Verified: `0000_snapshot.json` and `0023_snapshot.json` record this index
+identically, character for character, so the schema has not changed it. Only
+the SQL emitter differs between its create path and its rebuild path
+(drizzle-kit 0.31.10). `audit_tail` is the only `desc()` index in the schema,
+which is why no previous rebuild ever hit it.
+
+The correction is that one line, made byte-identical to the shipped `0000`
+line. It is transcription of the generator's own correct output for the
+snapshot entry it already holds, not a hand-written migration, and constraint
+6 is about nobody inventing SQL — which this does not do.
+
+The alternatives are both worse. Dropping `desc()` from the index changes a
+shipped index on the busiest table in the database to dodge a tool bug, while
+two guilds are being observed. Bumping drizzle-kit is a dependency change
+that would re-render every generated artifact in the project for the same
+reason.
+
+Verified after correcting: the migration applies, both new tables exist, and
+`sqlite_master` reports `audit_tail` after the rebuild as
+`` CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,"at" desc) `` —
+the definition that was there before. **This will recur on every future
+rebuild of `audit_events`**, so the next person to widen a CHECK on it should
+expect to make the same correction, and the rebuild proof in Task 1 step 5
+must assert the index is present and correct afterwards, not only the rows.
+
 **M5-D6 — the tool refuses a DM channel id before it consults the
 allowlist.** The plan asks for this ordering explicitly and it is worth
 saying why, because it looks backwards: a DM channel can never be on a
