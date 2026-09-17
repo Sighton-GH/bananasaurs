@@ -549,9 +549,7 @@ const sendPortFor = (
                   clientId: principal.clientId,
                   tokenId: record.tokenId,
                   outcome: record.outcome,
-                  ...(record.messageId !== undefined
-                    ? { messageId: record.messageId }
-                    : {}),
+                  ...(record.messageId !== undefined ? { messageId: record.messageId } : {}),
                 },
                 dryRun: record.dryRun,
               });

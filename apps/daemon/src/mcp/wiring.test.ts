@@ -10,7 +10,15 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, archiveRepo, authzRepo, effectRepo, guildRepo, mcpSendRepo, roleRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  archiveRepo,
+  authzRepo,
+  effectRepo,
+  guildRepo,
+  mcpSendRepo,
+  roleRepo,
+} from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -407,7 +415,12 @@ describe('/mcp send_message through the real composition', () => {
   const sendCall = (accessToken: string, args: Record<string, unknown>) =>
     mcpPost(
       app,
-      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'send_message', arguments: args } },
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'send_message', arguments: args },
+      },
       accessToken,
     );
 
@@ -480,15 +493,17 @@ describe('/mcp send_message through the real composition', () => {
     const accessToken = await mintToken('bananasaurs:send');
 
     const refused = callText(
-      (await sendCall(accessToken, sendArgs({ channelId: OTHER_CHANNEL, idempotencyKey: 'send-k2' })))
-        .body,
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: OTHER_CHANNEL, idempotencyKey: 'send-k2' }),
+        )
+      ).body,
     );
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('not on the send allowlist');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
-    expect(
-      mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-k2'),
-    ).toBeUndefined();
+    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-k2')).toBeUndefined();
   });
 
   it('the same idempotency key twice sends once and answers the second as a replay', async () => {
