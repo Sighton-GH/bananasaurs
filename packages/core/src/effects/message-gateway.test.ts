@@ -227,7 +227,7 @@ const build = (
   const audits: unknown[] = [];
   const chunks: string[] = [];
   const sink = new Writable({
-    write(chunk, _encoding, callback) {
+    write(chunk: Buffer | string, _encoding, callback) {
       chunks.push(chunk.toString());
       callback();
     },
