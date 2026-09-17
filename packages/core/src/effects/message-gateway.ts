@@ -12,20 +12,30 @@ import { safeLogFields, type Logger } from '../obs/logger.js';
  * put the moderation chokepoint at risk while two guilds are being observed.
  * Same layered shape, message-specific layers:
  *
- *   1. allowlist        mcp_send_allowlist                   -> refuse
- *   2. kill switch      guilds.killswitch                    -> refuse
- *   3. circuit breaker  guilds.breaker_state = 'open'        -> refuse
- *   4. rate cap         ten per guild per rolling hour       -> refuse
- *   5. idempotency      claim before the REST call           -> replay / refuse
- *   6. dry run          guilds.dry_run -> record, no REST call
- *   7. execute          the single REST call, allowedMentions forced empty
- *   8. record           outcome, message id, audit row
+ *   1. allowlist                     -> refuse
+ *   2. kill switch                   -> refuse
+ *   3. circuit breaker               -> refuse
+ *   4. idempotency read              -> replay, or refuse on collision (M5-D3)
+ *   5. identical-content window      -> refuse (M5-D8 layer B)
+ *   6. rate cap                      -> refuse   [new sends only]
+ *   7. idempotency claim             -> INSERT OR IGNORE
+ *   8. dry run                       -> record, no REST call
+ *   9. execute                       -> the single REST call
+ *  10. record                        -> outcome, message id, audit row
  *
  * The order is not arbitrary. Cheap local refusals come before anything that
- * costs a REST call; the rate cap comes before the claim so a refused send
- * never reserves an idempotency key; and the idempotency claim comes before
- * the call so a crash between them cannot double-send — the failure direction
- * is a replayed retry, never two messages (hard rule 6).
+ * costs a REST call; and the idempotency read comes before the rate cap
+ * because a replay is not a send (ruling M5-D9). A replay costs no Discord
+ * call and consumes no capacity — it is an answer about something that
+ * already happened, so it must not depend on present conditions. With the cap
+ * ahead of the ledger read, a client retrying an already-succeeded send would
+ * be told `rate-cap` once the hour filled: told its message failed while the
+ * message sat in the channel, which is M5-D3's trap from the other direction.
+ * The cap still binds every genuinely new send, because a replay returns the
+ * stored result and sends nothing — so do not "tidy" the cheap check back to
+ * the front. The claim stays immediately before the dry run and the call,
+ * which is the property that makes a crash between claim and call safe;
+ * moving it earlier would be a different mistake.
  *
  * NOTE (M5-D1): the three safety reads above — kill switch, breaker, dry-run
  * — are deliberately duplicated from `gateway.ts` rather than extracted into
@@ -198,22 +208,13 @@ export const sendMessageEffect = async (
   if (state.killswitch) return refuse('killswitch');
   if (state.breakerOpen) return refuse('breaker-open');
 
-  // --- 4. rate cap ---------------------------------------------------------
-  // Durable (ruling M5-D4): counted from `mcp_sends` rows, never an
-  // in-memory bucket, so a restart does not hand out ten more. Counted:
-  // accepted sends (`sent` and `dry_run` rows). Not counted: refusals —
-  // otherwise a client hammering a non-allowlisted channel would lock the
-  // owner out of the channels they can post to.
-  if (deps.sends.countSince(now - MESSAGE_SEND_RATE_WINDOW_MS) >= MESSAGE_SEND_RATE_LIMIT) {
-    return refuse('rate-cap');
-  }
-
-  // --- 5. idempotency ------------------------------------------------------
-  // Layer A (M5-D8): the explicit key. Three outcomes (M5-D3) — key absent
-  // means send; key present with a matching hash means replay the first
-  // result and send nothing; key present with a different hash means refuse,
-  // because a client told its message was sent when it never was is the
-  // failure this design is against.
+  // --- 4, 5. idempotency read + identical-content window ------------------
+  // Layer A (M5-D8): the explicit key, read before anything that depends on
+  // present conditions (M5-D9). Three outcomes (M5-D3) — key absent means
+  // continue toward a send; key present with a matching hash means replay the
+  // first result and send nothing; key present with a different hash means
+  // refuse, because a client told its message was sent when it never was is
+  // the failure this design is against.
   const existing = deps.sends.find(intent.idempotencyKey);
   if (existing !== undefined) {
     if (existing.contentHash === contentHash) {
@@ -222,14 +223,28 @@ export const sendMessageEffect = async (
     return refuse('duplicate-key-different-content');
   }
   // Layer B (M5-D8): identical content to this channel inside sixty seconds
-  // is a refusal whatever the key says. Checked before the claim so it costs
-  // no key and no row.
+  // is a refusal whatever the key says. Checked before the cap and the claim
+  // so it costs no capacity, no key and no row.
   if (
     deps.sends.findRecentByContent(contentHash, intent.channelId, now - DUPLICATE_CONTENT_WINDOW_MS)
   ) {
     return refuse('duplicate-content-recently');
   }
-  // The claim, before the REST call, deliberately (hard rule 6). If the
+
+  // --- 6. rate cap ---------------------------------------------------------
+  // Durable (ruling M5-D4): counted from `mcp_sends` rows, never an
+  // in-memory bucket, so a restart does not hand out ten more. Counted:
+  // accepted sends (`sent` and `dry_run` rows). Not counted: refusals —
+  // otherwise a client hammering a non-allowlisted channel would lock the
+  // owner out of the channels they can post to. And not consulted for
+  // replays at all: those returned above, because a replay is not a send
+  // (M5-D9) — only genuinely new sends reach this line.
+  if (deps.sends.countSince(now - MESSAGE_SEND_RATE_WINDOW_MS) >= MESSAGE_SEND_RATE_LIMIT) {
+    return refuse('rate-cap');
+  }
+
+  // --- 7. idempotency claim -------------------------------------------------
+  // Before the REST call, deliberately (hard rule 6). If the
   // process dies between the claim and the call, the row is already there
   // and a retry replays it — the failure direction that does not
   // double-send. A lost race on one key re-reads to decide replay (hash
@@ -250,7 +265,7 @@ export const sendMessageEffect = async (
     return refuse('duplicate-key-different-content');
   }
 
-  // --- 6. dry run ----------------------------------------------------------
+  // --- 8. dry run ----------------------------------------------------------
   // Recorded, not sent: the ledger row already exists (claimed above with
   // `dry_run`), so a dry-run send still costs rate-cap room — letting it be
   // free would make the cap depend on a safety toggle (M5-D4).
@@ -278,7 +293,7 @@ export const sendMessageEffect = async (
     return { status: 'dry-run' };
   }
 
-  // --- 7. execute -----------------------------------------------------------
+  // --- 9. execute -----------------------------------------------------------
   // The single REST call in the system that posts on the owner's behalf.
   // `allowedMentions` is forced empty here (M5-D2): nothing else in the tree
   // sets it, so absent would mean Discord's default — parse everything,
@@ -310,7 +325,7 @@ export const sendMessageEffect = async (
     return { status: 'failed', code };
   }
 
-  // --- 8. record ------------------------------------------------------------
+  // --- 10. record ------------------------------------------------------------
   deps.sends.recordMessageId({ idempotencyKey: intent.idempotencyKey, messageId });
   deps.audit.record({
     channelId: intent.channelId,
