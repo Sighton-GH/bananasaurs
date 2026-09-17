@@ -227,7 +227,31 @@ incoming tool call's arguments. The test now asserts `ajv` **is** loaded and
 that it comes from the SDK's nested copy, so the exception is pinned by the
 suite rather than by a paragraph.
 
-**Next action: Slice M4 — the MCP server and the read tools** (`docs/superpowers/plans/2026-09-12-mcp-operator-server-plan.md`, "Slice M4"). **ADR 0044 is written and accepted (2026-09-14, commit 9c08d69)**, so M4's gate is clear: it amends ADR 0013 §2 by *replacing* the "any bridge that takes a Discord message, sends it to Claude Code, and returns the result to Discord" bullet rather than reasoning past it — the replacement prohibits any path whose trigger is a club member's action or a Discord event, and says plainly that the trigger is a rule the owner keeps and not a control the daemon holds. ADR 0013's credential bullet and `CLAUDE.md` rule 9 are untouched. ADR 0044 also carries the full cost accounting for the SDK promotion the owner accepted, §8.4's training-eligibility row as an M4 deliverable, and three obligations the promotion itself adds (no non-test import of the SDK's Express/Hono/auth-router modules, `npm ls --omit=dev` recorded either side, version pinned). **M4 inherits three obligations from M3, all recorded in ADR 0045 Amendment 2:** `requireBearer` returns 200 with an *empty* reachable guild set, so every tool must refuse on empty and intersect against it — a tool that takes no guild would otherwise be reachable by an account holding no grant anywhere; promoting the SDK to a runtime dependency pulls Express 5, Hono, `cors`, `express-rate-limit`, `ajv` and `eventsource` into the production closure, which M3 deliberately avoided, so ADR 0044 should say what that buys; and any new revocation surface must choose lineage over chain deliberately. **M4 also carries two things forward from M3b**: the parked Minor that `audit_events.guild_id` is `NOT NULL`, so an instance-level account write is audited into whichever guild `--guild` named (pre-existing with `bootstrap reissue`, but M3b routes the most security-significant instance-level write through it); and the open question below. Then M5 (not run lean), M6, then Slices 10–12. The flip-day decision in `docs/reports/release2-slice-6-handoff.md` is taken — by hand, done on both guilds on 2026-09-12 (see "Release 2 observe window" above); the club's floor elapses 2026-09-27T02:49:57.656Z. The handoff still carries the obligations binding and the owner actions outstanding; the running record and every ruling taken so far are in `docs/reports/release2-slices-1-6-ledger.md` and `docs/reports/release2-slices-7-12-ledger.md`. `docs/reports/README.md` says which kind of document is which. The whole remaining plan for Release 2, plus a Release 3 roadmap, is in `docs/superpowers/specs/2026-09-01-release-2-completion-and-release-3-roadmap-design.md`: twelve slices in five phases plus Phase 4b (below), seventeen recorded decisions, and the three findings that reorder the release. Its ADR table now runs 0038–0048, plus 0049 (the FTS5 index) and 0045 (the OAuth server).
+**Next action: Slice 11 — driving the cutover state machine — needs the
+owner's go-ahead before any code is written, and Slice M6's live run needs
+the owner's Cloudflare Bypass application.** As of 2026-09-17, M4, M5, M6
+(code side) and Slice 10 are all merged; `main` is at 175 files / 3,352
+tests, verified in an isolated worktree because a build on this box is a
+deployment (see the 2026-09-17 incident above). The daemon is up on both
+guilds on the pre-M6 build; the next `npm run build && sudo systemctl
+restart bananasaurs` deploys M6's `doctor` probe and the `Secure` cookie —
+no migration is pending, so no stop → migrate → start is needed for that one.
+
+What M6 still owes is the live run (`docs/SMOKE_TESTS.md` Section D), and it
+is blocked on one owner action: the Cloudflare Access **Bypass** application
+on the six machine paths (`docs/17` §2.4). Today every path on the public
+hostname answers with an Access redirect — the probe run by hand reports both
+machine rows `blocked-by-access`, which is the too-wide state the probe
+exists to catch, and the connector cannot work until it is fixed.
+
+Slice 11 is the first slice permitted to give `setRuleMode` a production
+caller, "and only under owner decision" (`docs/reports/release2-slices-7-12-ledger.md`).
+The club's floor elapses 2026-09-27T02:49:57.656Z. Nothing in code can move
+`cutover_state` or reach `mode = 'enforce'` today, which is the safest state
+available; building the driver early puts a `--confirm`-gated command that
+*can* on the live daemon before the floor. The controller has asked rather
+than decided. Then Slice 12, the gate sign-off, which is wall-clock-gated on
+the floor regardless.
 
 **Phase 4b — the MCP operator server — decided 2026-09-12, not yet started.** The owner wants his own Claude clients (Claude Code, the desktop app, claude.ai) to read the club server — channels, roles, members, archived messages, cases, audit — and post to allowlisted channels, over a Cloudflare Tunnel at `bananasaurs.sighton.ca` with OAuth 2.1. That needs an archive, so **R3-1 archive ingestion and R3-2 FTS5 search are pulled forward** from Release 3 into the observe window. Six slices M1–M6, **after Slices 7–9 and before 10–12**; three ADRs 0044–0046; one new dependency (`@modelcontextprotocol/sdk` 1.30.0, MIT). Read-mostly with one write tool; no moderation tools. Design: `docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md` (DRAFT — the owner's six decisions are its §2, the five still open are its §11). Slice plan: `docs/superpowers/plans/2026-09-12-mcp-operator-server-plan.md` (DRAFT). ADR 0046 (accepted 2026-09-13) records the pull-forward and turns the `/mydata`/`/forgetme` precondition into a check: the club guild may not be added to `BANANASAURS_ARCHIVE_GUILDS` until they ship.
 
