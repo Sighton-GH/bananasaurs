@@ -1032,6 +1032,40 @@ came back with concrete options and a recommendation, not "what should I
 do?" — which is what made each one a five-minute ruling rather than an
 investigation.
 
+## D60 — the review found what the plan assumed away; the branch hold made it cheap
+
+Slice 11 is the slice that ends an observe window. Its plan said the
+dashboard "stays read-only" for the cutover, and the brief, the STATE
+paragraph and the whole design of the attestation rested on there being one
+path to `enforce`. There were two. Slice 8 had already wired the dashboard's
+mode dialog to `setRuleMode` with `'enforce'` in its schema — on `main`,
+merged, and described in `docs/STATE.md` as "their first production
+callers" in a paragraph the controller had not re-read. The database gate
+held on that path; the attestation did not exist on it at all.
+
+Two things made this cheap rather than a flip-day incident:
+
+- **The owner chose to build on a held branch.** Asked whether to build
+  Slice 11 before the floor, the owner picked "build now, don't merge until
+  the floor". So the review, the fix wave and the re-review all happened on
+  code that could not reach the live daemon, with ten days in hand. Had the
+  same question been answered "build and merge", the second path would have
+  been found the same way — but with the first path already live.
+- **The reviewer was told to assume a third path before concluding
+  none.** It grepped every caller of `setRuleMode` and the two ports, and
+  drove the dashboard route through the real Fastify app against a rule
+  that would pass the gate. The fix's own break-it then produced the
+  decisive failure: with the route's refusal removed, that request returned
+  `200`. The route's refusal is the only thing there, and now a test says
+  so.
+
+The controller's error count for the day: S10-D1's rationale (a guard that
+could not fail), S11-D3 (attesting to disabling a rule that does not exist,
+and letting `--no-legacy` contradict a recorded ref), S11-D6 (a state that
+never existed), and M6-D1's "at startup". Every one was caught by an
+implementer or reviewer that was told to stop, or to assume the worst,
+rather than proceed. The pattern from D59 holds at the third slice.
+
 ## What worked well
 
 (appended as observed)
