@@ -69,14 +69,23 @@ invariant the database cannot actually enforce, because the legacy rule's
 real state lives in another bot. The audit trail is the record. Release 3
 may add the column once the window is closed.
 
-**S11-D3 — `cutover` requires `legacy_rule_ref` to be set.** A rule with no
-legacy reference is either a genuinely new rule (nothing to disable — say
-so with a different flag, `--no-legacy`, which is also recorded) or a rule
-whose owner has not written down what it replaces, which ADR 0042 §1 calls
-"the question nobody will be able to answer from memory in two weeks". The
-command refuses and says which, rather than enforcing over an unanswered
-question. `automod set legacy-ref` (or the existing edit path, whichever
-exists — the brief checks) is how it gets set.
+**S11-D3 — `cutover` requires exactly one of two attestations, and they
+must agree with the row.** Corrected after review (I-2, M-4). The two flags
+are the owner stating one of two facts:
+
+- `--legacy-disabled` — "this rule replaces `legacy_rule_ref`, and I have
+  disabled that rule in the other bot." Requires `legacy_rule_ref` to be
+  non-null; refused otherwise, pointing at `automod legacy-ref`.
+- `--no-legacy` — "this rule replaces nothing; there is nothing to
+  disable." Requires `legacy_rule_ref` to be **null**; refused otherwise,
+  because a recorded ref with `--no-legacy` is the owner contradicting the
+  row, and the first draft let it through and wrote an audit row saying
+  both things at once.
+
+Exactly one flag; both or neither is refused before any port call. The first
+draft required `--legacy-disabled` alongside `--no-legacy`, which is attesting
+to disabling a rule that does not exist — that was wrong. Either flag is
+the attestation, and the audit row records which.
 
 **S11-D4 — every refusal from `enforcementEligibility` renders in the
 operator's words.** The gate returns four structured refusals
@@ -95,10 +104,27 @@ reset (PR-27: "a rule pulled back from enforcement has to earn a fresh
 window"); the output says the floor now elapses on a new date, and prints
 it.
 
-**S11-D6 — the dashboard's cutover board stays read-only.** It already
-displays the state (Slice 8). Driving the transition from a browser is a
-larger surface — CSRF, reauth, a button that ends an observe window — and
-"under owner decision, not a timer" is satisfied by the CLI. Not this slice.
+**S11-D6 — the dashboard cannot move a rule to `enforce`; that is the CLI's
+alone, because the CLI is where the attestation lives.** Corrected after
+review (I-1): the first draft said "the dashboard's cutover board stays
+read-only", which described a state that did not exist. Slice 8 already
+wired `POST /api/automod/rules/:ruleId/mode` to `setRuleMode` with `'enforce'`
+in its schema, and the rule page offers an `enforce` radio whenever the gate
+would pass. So `setRuleMode` has had a production caller since Slice 8 —
+`docs/STATE.md`'s "no production caller" was written before it merged — and
+that path reaches `enforce` with **no attestation and no legacy-ref check**.
+The database gate holds on it, so this is not a hole in ADR 0042; it is a
+hole in S11-D2, which only means anything if there is one path.
+
+So: the route refuses `mode: 'enforce'` with `409 { error: 'use-cli' }` and
+a message naming `automod cutover`; the dialog disables the radio and says
+why; the other modes are unchanged, because pausing or observing from the
+dashboard is not the transition that ends an observe window. This is a
+restriction on the held branch, not a widening, and it lands with the rest
+of the slice after the floor. ADR 0042 §3 predicted exactly this shape —
+"placing the check at the write path means every future caller inherits
+it" — and it was right about the gate and silent about the attestation,
+because the attestation did not exist yet.
 
 **S11-D7 — one rule per command, one transaction per rule.** "One rule at a
 time, atomic" (roadmap). Every command takes exactly one `ruleId`;
