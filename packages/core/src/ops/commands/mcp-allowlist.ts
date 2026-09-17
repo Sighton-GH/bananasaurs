@@ -200,15 +200,31 @@ export const mcpSendsCommand = defineCommand<z.infer<typeof sendsArgs>>({
         data: [],
       };
     }
+    // N4: the ledger's outcome CHECK admits only `sent` and `dry_run`, so the
+    // claim written before the Discord call stays `sent` when the call throws
+    // — the `failed` outcome lives only in the audit trail. A `sent` row with
+    // no message id must not render as a plain success: no migration, just
+    // honest text and a note saying what the row means.
+    const unconfirmed = rows.some((row) => row.outcome === 'sent' && row.messageId === undefined);
+    const lines = rows.map((row) => {
+      const outcome =
+        row.outcome === 'sent' && row.messageId === undefined
+          ? 'sent (no message id recorded)'
+          : row.outcome;
+      return (
+        `${iso(row.sentAt)}  ${outcome}  channel ${row.channelId}  ` +
+        `token ${row.tokenId}` +
+        `${row.messageId === undefined ? '' : `  message ${row.messageId}`}`
+      );
+    });
+    if (unconfirmed) {
+      lines.push(
+        "A 'sent (no message id recorded)' row means the Discord call did not return a message id, " +
+          'so the message may or may not have posted.',
+      );
+    }
     return {
-      text: rows
-        .map(
-          (row) =>
-            `${iso(row.sentAt)}  ${row.outcome}  channel ${row.channelId}  ` +
-            `token ${row.tokenId}` +
-            `${row.messageId === undefined ? '' : `  message ${row.messageId}`}`,
-        )
-        .join('\n'),
+      text: lines.join('\n'),
       data: rows.map((row) => ({
         channelId: row.channelId,
         messageId: row.messageId ?? null,
