@@ -752,3 +752,34 @@ describe('providerReview (ruling M4-D20)', () => {
     expect(instanceOps().providerReview('no-such-provider')).toBe('no-such-provider');
   });
 });
+
+describe('probePublicSurface (ruling M6-D1)', () => {
+  const instanceOps = (config: Partial<Config>) =>
+    opsInstanceFor({
+      config: {
+        BANANASAURS_READONLY: false,
+        BANANASAURS_ENV: 'test',
+        ...config,
+      } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    });
+
+  it('probes nothing and is ok when MCP_PUBLIC_URL is unset — no fetch, no failure', async () => {
+    // The short-circuit happens before any `fetch`, so this reaches no
+    // network even though the implementation holds the global fetch: a daemon
+    // that has not opted into the tunnel has no surface to check.
+    const report = await instanceOps({}).probePublicSurface();
+    expect(report.probed).toBe(false);
+    expect(report.ok).toBe(true);
+    expect(report.text).toBe('public surface    not probed (MCP_PUBLIC_URL unset)');
+  });
+});
