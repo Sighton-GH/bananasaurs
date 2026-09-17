@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 import { renderWithSession, stubFetch } from '../test-support.js';
+import { NOT_BUILT } from '../pages/stub.js';
 import { NAV } from './routes.js';
 import { Shell } from './Shell.js';
 
@@ -83,5 +84,47 @@ describe('Shell', () => {
     const call = mock.mock.calls.find((c) => (c[0] as string) === '/api/logout');
     expect(call).toBeTruthy();
     expect((call![1] as RequestInit).method).toBe('POST');
+  });
+
+  it.each([
+    ['/archive', 'Archive'],
+    ['/search', 'Search'],
+    ['/resources', 'Resources'],
+    ['/providers', 'Providers'],
+    ['/memory', 'Memory'],
+    ['/ai', 'AI workspace'],
+    ['/proposals', 'Proposals'],
+  ])('renders NOT_BUILT at the %s stub titled %s', async (path, title) => {
+    renderAt(path);
+    expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
+    expect(await screen.findByText(NOT_BUILT)).toBeTruthy();
+  });
+
+  it.each([['/archive'], ['/search']])(
+    'the %s stub says where the feature lives today (S10-D3)',
+    async (path) => {
+      renderAt(path);
+      expect(
+        await screen.findByText(
+          'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.',
+        ),
+      ).toBeTruthy();
+    },
+  );
+
+  it('the Planned nav group lists exactly the seven stub labels', async () => {
+    renderAt('/');
+    const nav = screen.getByRole('navigation', { name: 'Planned' });
+    const labels = Array.from(nav.querySelectorAll('a')).map((a) => a.textContent);
+    expect(labels).toEqual([
+      'Archive',
+      'Search',
+      'Resources',
+      'Providers',
+      'Memory',
+      'AI workspace',
+      'Proposals',
+    ]);
+    expect(labels).toEqual(NAV.filter((n) => n.status === 'stub').map((n) => n.label));
   });
 });

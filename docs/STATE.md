@@ -60,6 +60,8 @@ missing `BanMembers` and `ManageMessages`, and the club guild is also missing
 under observe + dry run; `ManageMessages` is needed before enforce. The club
 guild is now **246 members**, not the 210 the design documents quote.
 
+**Slice 10 — seven Release 3 route stubs — landed 2026-09-17** on `oc/slice-10-stubs` (Archive, Search, Resources, Providers, Memory, AI workspace, Proposals — each a `StubPage` stating the feature does not exist yet; Archive and Search remain stubs by the 2026-09-12 amendment, CLI/MCP-only in Release 2).
+
 
 ## Where the build is
 

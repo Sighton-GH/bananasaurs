@@ -21,4 +21,11 @@ export const NAV: readonly NavEntry[] = [
   { path: '/review', label: 'Review', status: 'built' },
   { path: '/cases', label: 'Cases', status: 'built' },
   { path: '/cutover', label: 'Cutover', status: 'built' },
+  { path: '/archive', label: 'Archive', status: 'stub' },
+  { path: '/search', label: 'Search', status: 'stub' },
+  { path: '/resources', label: 'Resources', status: 'stub' },
+  { path: '/providers', label: 'Providers', status: 'stub' },
+  { path: '/memory', label: 'Memory', status: 'stub' },
+  { path: '/ai', label: 'AI workspace', status: 'stub' },
+  { path: '/proposals', label: 'Proposals', status: 'stub' },
 ];
