@@ -200,6 +200,15 @@ const sendMessageInner = async (
   const parsed = sendArgsSchema.safeParse(rawArgs);
   if (!parsed.success) return refuseInvalidArgs();
   const input = parsed.data;
+  // M8: trim before anything else. Whitespace-only content would otherwise
+  // sail through the length check, claim a ledger row and burn a rate-cap
+  // slot, then fail at Discord. Empty-after-trim is an argument fault, so it
+  // is refused here — before the guild gate, the port call, and therefore
+  // before anything is claimed. The sent content is the trimmed string:
+  // leading and trailing whitespace is meaningless to Discord, and the hash,
+  // the ledger and the REST call must all agree on what was actually posted.
+  const content = input.content.trim();
+  if (content === '') return refuseInvalidArgs();
   if (!idsAreWellFormed([input.channelId])) return refuseInvalidArgs();
   // The guild gate. `requireReachableGuild` parses the id itself and refuses
   // malformed and unreachable identically — the membership check below it is
@@ -208,7 +217,7 @@ const sendMessageInner = async (
   if (!gate.ok) return { ok: false, message: gate.message };
   const outcome = await port.send(gate.guildId, {
     channelId: input.channelId,
-    content: input.content,
+    content,
     idempotencyKey: input.idempotencyKey,
   });
   switch (outcome.status) {

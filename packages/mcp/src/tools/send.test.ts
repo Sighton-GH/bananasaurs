@@ -148,6 +148,36 @@ describe('send_message argument boundary (hard rule 3)', () => {
     expect(port.calls).toBe(1);
     expect(textOf(outcome)).toContain('444444444444444444');
   });
+
+  it('whitespace-only content is an argument fault and the port was never called', async () => {
+    // M8: refused before anything is claimed — the port never runs, so no
+    // ledger row, no rate-cap slot, no Discord call.
+    const port = fakeSendPort({ status: 'sent', messageId: '444444444444444444' });
+    for (const content of ['   ', '\n\t  ', ' \n ']) {
+      const outcome = await sendMessageText(principalWith([GUILD_A]), port, {
+        ...validArgs(),
+        content,
+      });
+      expect(outcome).toEqual({ ok: false, message: INVALID_ARGUMENTS_MESSAGE });
+    }
+    expect(port.calls).toBe(0);
+  });
+
+  it('content with meaningful internal whitespace is sent with edges trimmed and interior intact', async () => {
+    let seen: string | undefined;
+    const port: McpSendPort = {
+      send: (_guildId, input) => {
+        seen = input.content;
+        return Promise.resolve({ status: 'sent', messageId: '444444444444444444' });
+      },
+    };
+    const outcome = await sendMessageText(principalWith([GUILD_A]), port, {
+      ...validArgs(),
+      content: '  hello   world\nnewline  ',
+    });
+    expect(outcome.ok).toBe(true);
+    expect(seen).toBe('hello   world\nnewline');
+  });
 });
 
 describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
