@@ -3,7 +3,9 @@ import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import {
   GUILD_REFUSAL_MESSAGE,
   hasReadScope,
+  hasSendScope,
   MCP_READ_SCOPE,
+  MCP_SEND_SCOPE,
   requireAnyReachableGuild,
   requireReachableGuild,
   type McpPrincipal,
@@ -111,5 +113,23 @@ describe('hasReadScope (ruling M4-D17)', () => {
   it('refuses a send-only principal and one with no scopes', () => {
     expect(hasReadScope(withScopes('bananasaurs:send'))).toBe(false);
     expect(hasReadScope(withScopes())).toBe(false);
+  });
+});
+
+describe('hasSendScope (slice M5, the send half of M4-D17)', () => {
+  const withScopes = (...scopes: readonly string[]): McpPrincipal => ({
+    accountId: 'acct_00000000000000000000000000000000',
+    reachableGuilds: [GUILD_A],
+    scopes,
+  });
+
+  it('accepts a principal carrying the send scope', () => {
+    expect(hasSendScope(withScopes(MCP_SEND_SCOPE))).toBe(true);
+    expect(hasSendScope(withScopes(MCP_READ_SCOPE, MCP_SEND_SCOPE))).toBe(true);
+  });
+
+  it('refuses a read-only principal and one with no scopes', () => {
+    expect(hasSendScope(withScopes(MCP_READ_SCOPE))).toBe(false);
+    expect(hasSendScope(withScopes())).toBe(false);
   });
 });
