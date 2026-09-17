@@ -1,4 +1,6 @@
+import { readFileSync } from 'node:fs';
 import process from 'node:process';
+import { fileURLToPath } from 'node:url';
 import { Events } from 'discord.js';
 import {
   ConfigError,
@@ -59,13 +61,70 @@ function assertMigrated(opened: OpenedDatabase, dbPath: string): void {
   const table = opened.raw
     .prepare(`SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'guilds'`)
     .get();
-  if (table !== undefined) return;
+  if (table === undefined) {
+    opened.close();
+    fail(
+      `The database at ${dbPath} has no schema.\n\n  Run: npm run build && npm run db:migrate`,
+      EXIT_CONFIG,
+    );
+    return;
+  }
+
+  // A database that is merely *behind* its code used to start successfully and
+  // then die at whatever query first touched a table it did not have. That is
+  // how a missing `archive_channels` became a 15,000-restart crash loop on the
+  // archive expiry timer instead of one legible line at startup, with the bot
+  // off Discord for a day. Checking `guilds` proved the database had *a*
+  // schema; it never proved the schema matched this build.
+  const expected = expectedMigrationCount();
+  if (expected === undefined) return;
+  const applied = appliedMigrationCount(opened);
+  if (applied >= expected) return;
 
   opened.close();
   fail(
-    `The database at ${dbPath} has no schema.\n\n  Run: npm run build && npm run db:migrate`,
+    `The database at ${dbPath} is ${String(expected - applied)} migration(s) behind this build ` +
+      `(${String(applied)} applied, ${String(expected)} expected).\n\n` +
+      `  Stop the daemon, then run: npm run build && npm run db:migrate`,
     EXIT_CONFIG,
   );
+}
+
+/**
+ * `drizzle/meta/_journal.json` is the authoritative list of migrations for
+ * this build — drizzle-kit writes it, and `runMigrations` applies exactly what
+ * it names. Resolved from this module's own URL rather than `process.cwd()`,
+ * the convention `DASHBOARD_DIST` already uses, so it works whether the daemon
+ * is running from `src/` under `npm run dev` or from `dist/` under systemd:
+ * both sit at the same depth under the repo root.
+ *
+ * `undefined` when the folder is not there to read. A packaging arrangement
+ * that ships no migrations folder is not something to refuse to boot over —
+ * this check exists to catch a database behind its code, not to require a
+ * particular layout.
+ */
+function expectedMigrationCount(): number | undefined {
+  try {
+    const journalPath = fileURLToPath(
+      new URL('../../../drizzle/meta/_journal.json', import.meta.url),
+    );
+    const parsed: unknown = JSON.parse(readFileSync(journalPath, 'utf8'));
+    const entries = (parsed as { entries?: unknown }).entries;
+    return Array.isArray(entries) ? entries.length : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** Zero when drizzle's bookkeeping table does not exist yet, which is itself "behind". */
+function appliedMigrationCount(opened: OpenedDatabase): number {
+  try {
+    const row = opened.raw.prepare(`SELECT COUNT(*) AS n FROM __drizzle_migrations`).get() as
+      { n?: number } | undefined;
+    return typeof row?.n === 'number' ? row.n : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function openOrFail(config: Config, log: Logger): OpenedDatabase {
