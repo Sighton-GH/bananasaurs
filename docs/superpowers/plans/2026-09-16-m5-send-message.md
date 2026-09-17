@@ -166,14 +166,32 @@ rebuild of `audit_events`**, so the next person to widen a CHECK on it should
 expect to make the same correction, and the rebuild proof in Task 1 step 5
 must assert the index is present and correct afterwards, not only the rows.
 
-**M5-D6 — the tool refuses a DM channel id before it consults the
-allowlist.** The plan asks for this ordering explicitly and it is worth
-saying why, because it looks backwards: a DM channel can never be on a
-guild-scoped allowlist, so the allowlist would refuse it anyway. The reason
-is that the allowlist lookup is guild-scoped and a DM has no guild — checking
-it first means asking a guild-partitioned table about a row that cannot have
-a partition key. Refusing on channel type first keeps the partition
-invariant clean (CLAUDE.md rule 2).
+**M5-D6 — RETRACTED. The tool cannot refuse a DM channel id before the
+allowlist, and it does not need to.** Task 3 escalated instead of faking
+compliance, and the ruling was wrong in both of its halves.
+
+The premise was wrong: a Discord snowflake encodes a timestamp, a worker id,
+a process id and an increment, and **no channel type**. Nothing about the
+shape of an id distinguishes a DM channel from a guild channel, so a
+tool-layer pre-check would have to ask Discord — a REST call or a cache
+lookup, ahead of a cheap local refusal, to learn something the next line
+already establishes.
+
+The rationale was also wrong, which is the part worth recording. M5-D6 said
+consulting the allowlist first "means asking a guild-partitioned table about
+a row that cannot have a partition key". It does not:
+`isChannelAllowed(scope, channelId)` takes its scope from the **resolved
+guild**, not from the channel. The question it asks is "is this channel id in
+guild G's allowlist?", which is well-formed for any string at all, and the
+answer for a DM id is simply no. I reasoned about the partition key from the
+argument list instead of from the signature.
+
+What holds without the ruling: a DM channel can never appear in
+`mcp_send_allowlist`, because rows there are written by
+`bananasaurs mcp allow-channel` against a guild. So a DM id is refused as
+`channel-not-allowlisted` — always, with no path to a send. The safety
+property M5-D6 was reaching for is enforced by the allowlist itself, which is
+where it belonged.
 
 **M5-D8 — the idempotency key is required from the caller, and a second,
 short-window guard catches the case where the caller changes it.** Hard rule
