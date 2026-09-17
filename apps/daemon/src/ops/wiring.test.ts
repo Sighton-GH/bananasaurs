@@ -14,6 +14,10 @@ import {
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
 import { accountOpsFor, opsInstanceFor, opsPortsFor } from './wiring.js';
+// By relative path rather than the `@bananasaurs/http/test-support` subpath:
+// vitest aliases `@bananasaurs/http` to the package index, so the subpath
+// would resolve under it and break (see `mcp/wiring.test.ts`).
+import { testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
  * `doctor`'s archive check: `listUnreadableArchiveChannels`
@@ -239,6 +243,32 @@ describe('allowSendChannel (C2 allow-time)', () => {
       'no-such-channel',
     );
     expect(mcpSendRepo.isChannelAllowed(scope, UNKNOWN)).toBe(false);
+  });
+
+  it('names the N2 gap: test-support writes the row the daemon refuses', () => {
+    // N2. `testPortsFor` (`packages/http/src/test-support.ts`) implements the
+    // same `OpsPorts` interface with no guild-membership check: it may not
+    // import a Discord client (ADR 0014), and no dashboard route reaches
+    // `allowSendChannel`, so an injected channel set would be machinery with
+    // no caller — a default-allow set would be theater, a default-deny one
+    // would break the real-repo behaviour the route tests rely on. The gap is
+    // pinned here instead of closed there: the DM-shaped id the daemon's
+    // implementation refuses is allowed by test-support, and the send-time
+    // check (C2) is what contains any such row before it can reach Discord.
+    //
+    // Production uses the daemon's implementation: `runtime/daemon.ts`'s
+    // `contextFor` builds `opsPortsFor` with the live client, while
+    // `testPortsFor` is imported only by tests.
+    const httpPorts = testPortsFor(scope, () => NOW);
+    expect(httpPorts.allowSendChannel({ channelId: DM_SHAPED, accountId: 'tester' })).toBe(
+      'allowed',
+    );
+    expect(mcpSendRepo.isChannelAllowed(scope, DM_SHAPED)).toBe(true);
+    // The daemon's check runs before any read of the row, so the row written
+    // above changes nothing about its answer.
+    expect(sendPorts().allowSendChannel({ channelId: DM_SHAPED, accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
   });
 });
 
