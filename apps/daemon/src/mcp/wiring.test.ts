@@ -400,10 +400,54 @@ describe('/mcp behind the bearer guard', () => {
 describe('/mcp send_message through the real composition', () => {
   const CHANNEL = '444444444444444444';
   const OTHER_CHANNEL = '455555555555555555';
+  /** Allowlisted but in no guild's channel cache: the stale-row shape C2 is about. */
+  const OUTSIDE_CHANNEL = '477777777777777777';
   /** Distinctive text: must reach Discord, must never reach the audit row. */
   const CONTENT = 'picnic-probe-send-content-that-must-never-reach-audit-zz9';
 
+  interface SendDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  /**
+   * The send-time guild check reads the live client's cache, so the composed
+   * app's client needs guild A with its channels — injected the way the guild
+   * tools tests below inject theirs. `OTHER_CHANNEL` stays unallowlisted on
+   * purpose: its refusal still comes from the allowlist, not the cache.
+   */
+  const seedSendGuild = (): void => {
+    const internals = deps.client as unknown as SendDiscordInternals;
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: OTHER_CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'lounge',
+          position: 1,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+  };
+
   const allow = (): void => {
+    seedSendGuild();
     mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
       channelId: CHANNEL,
       addedByAccountId: ACCOUNT,
@@ -516,6 +560,33 @@ describe('/mcp send_message through the real composition', () => {
     expect(second.isError).not.toBe(true);
     expect(second.text).toContain('Already sent under this idempotency key');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(1);
+  });
+
+  it('an allowlisted row outside the guild is refused and Discord is never called (C2 send-time)', async () => {
+    // The stale-row shape: a row written before allow-time validation (or by
+    // a future path) for a channel in no guild's cache. The gateway refuses
+    // with its own reason; the model hears the allowlist text, and the
+    // Discord port is never reached.
+    allow();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: OUTSIDE_CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+
+    const refused = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: OUTSIDE_CHANNEL, idempotencyKey: 'send-outside' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not on the send allowlist');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-outside')).toBeUndefined();
   });
 });
 

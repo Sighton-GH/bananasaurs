@@ -224,6 +224,7 @@ const build = (
   opts: {
     guildKnown?: boolean;
     allowedChannels?: readonly (typeof CHANNEL)[];
+    guildChannels?: readonly (typeof CHANNEL | typeof OTHER_CHANNEL)[];
   } = {},
 ): Harness => {
   const state: SafetyState = { killswitch: false, breakerOpen: false, dryRun: false };
@@ -241,6 +242,7 @@ const build = (
   const nowMs = { value: 1_700_000_000_000 };
   const guildKnown = opts.guildKnown ?? true;
   const allowed = new Set<string>(opts.allowedChannels ?? [CHANNEL]);
+  const inGuild = new Set<string>(opts.guildChannels ?? [CHANNEL, OTHER_CHANNEL]);
 
   const deps = (): MessageGatewayDeps => ({
     guildId: GUILD,
@@ -250,6 +252,7 @@ const build = (
     state: {
       read: () => (guildKnown ? { ...state } : undefined),
       isChannelAllowed: (channelId) => allowed.has(channelId),
+      isChannelInGuild: (channelId) => inGuild.has(channelId),
     },
     sends: {
       find: (key) => ledger.find(key),
@@ -297,6 +300,20 @@ describe('sendMessageEffect', () => {
     );
 
     expect(outcome).toEqual({ status: 'refused', reason: 'channel-not-allowlisted' });
+    expect(h.discord.callsFor('sendMessage')).toHaveLength(0);
+  });
+
+  it('refuses an allowlisted channel that is not in the guild and never calls Discord (C2 send-time)', async () => {
+    // The allowlist is data: a row written before allow-time validation
+    // existed must not be able to post outside the guild. A DM-shaped id
+    // holding a row lands here, with its own reason, never at the REST call.
+    const h = build({ allowedChannels: [OTHER_CHANNEL], guildChannels: [CHANNEL] });
+    const outcome = await sendMessageEffect(
+      h.deps(),
+      intent({ channelId: OTHER_CHANNEL, idempotencyKey: 'key-outside' }),
+    );
+
+    expect(outcome).toEqual({ status: 'refused', reason: 'channel-not-in-guild' });
     expect(h.discord.callsFor('sendMessage')).toHaveLength(0);
   });
 

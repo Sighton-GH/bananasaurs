@@ -56,6 +56,7 @@ export interface MessageIntent {
 export type MessageRefusalReason =
   | 'guild-unknown'
   | 'channel-not-allowlisted'
+  | 'channel-not-in-guild'
   | 'killswitch'
   | 'breaker-open'
   | 'rate-cap'
@@ -120,6 +121,14 @@ export interface MessageGatewayDeps {
   readonly state: {
     read(): SafetyStateForSend | undefined;
     isChannelAllowed(channelId: SnowflakeId): boolean;
+    /**
+     * Whether the channel is a text-capable channel of this guild (C2
+     * send-time defence in depth). The allowlist is data: a row written
+     * before allow-time validation existed, or by a future path, must not be
+     * able to post outside the guild. Checked alongside the allowlist, with
+     * its own refusal reason.
+     */
+    isChannelInGuild(channelId: SnowflakeId): boolean;
   };
 
   readonly sends: {
@@ -201,6 +210,12 @@ export const sendMessageEffect = async (
   // first so nothing else — not even a safety-state read — runs for a
   // channel the owner never allowed.
   if (!deps.state.isChannelAllowed(intent.channelId)) return refuse('channel-not-allowlisted');
+
+  // --- 1b. guild membership (C2 send-time defence in depth) -----------------
+  // The allowlist is data, and a row written before allow-time validation
+  // existed must not be able to post outside the guild. A DM-shaped id that
+  // somehow holds a row lands here, never at the REST call.
+  if (!deps.state.isChannelInGuild(intent.channelId)) return refuse('channel-not-in-guild');
 
   // --- 2, 3. kill switch and breaker --------------------------------------
   const state = deps.state.read();

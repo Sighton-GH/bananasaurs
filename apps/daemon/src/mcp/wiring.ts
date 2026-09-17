@@ -475,6 +475,24 @@ const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
 });
 
 /**
+ * Whether the channel is a text-capable channel of this guild (C2 send-time).
+ *
+ * Answered from `client.guilds.cache` — already in memory, nothing to fetch
+ * — the same style `apps/daemon/src/ops/wiring.ts`'s allow-time check uses.
+ * A guild absent from the cache (not yet READY, or left) answers false:
+ * failing closed, because this check exists to contain rows the allow-time
+ * check never saw. Threads are excluded like the allow-time check: a thread
+ * id is not a channel an owner allowlists.
+ */
+const isSendChannelInGuild = (client: Client, guildId: GuildId, channelId: string): boolean => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) return false;
+  const channel = guild.channels.cache.get(channelId);
+  if (channel === undefined) return false;
+  return channel.isTextBased() && !channel.isThread();
+};
+
+/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -493,6 +511,13 @@ const sendPortFor = (
   principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
   deps: HttpDeps,
   discord: DiscordPort,
+  /**
+   * The same live client the guild tools read (C2 send-time defence in
+   * depth): the gateway's `isChannelInGuild` is answered from
+   * `client.guilds.cache`, so a stale allowlist row for a channel outside
+   * the guild is refused before any Discord call.
+   */
+  client: Client,
 ): McpSendPort => ({
   send: (guildId, input) =>
     loggedCallAsync(deps.logger, 'sendMessage', async () => {
@@ -510,6 +535,7 @@ const sendPortFor = (
             // port's projection.
             read: () => guildRepo.readSafetyState(scope),
             isChannelAllowed: (channelId) => mcpSendRepo.isChannelAllowed(scope, channelId),
+            isChannelInGuild: (channelId) => isSendChannelInGuild(client, guildId, channelId),
           },
           sends: {
             find: (idempotencyKey) => mcpSendRepo.findSend(scope, idempotencyKey),
@@ -572,6 +598,13 @@ const sendPortFor = (
           return { status: 'replayed', messageId: outcome.messageId };
         case 'refused':
           if (outcome.reason === 'guild-unknown') throw new Error(GUILD_REFUSAL_MESSAGE);
+          // The gateway's `channel-not-in-guild` is its own reason, but this
+          // package's `McpSendRefusal` vocabulary is frozen: the model hears
+          // `channel-not-allowlisted`, whose text already tells it to ask the
+          // owner to allowlist and retry. Never the content, never a throw.
+          if (outcome.reason === 'channel-not-in-guild') {
+            return { status: 'refused', reason: 'channel-not-allowlisted' };
+          }
           return { status: 'refused', reason: outcome.reason };
         case 'failed':
           return { status: 'failed' };
@@ -700,7 +733,7 @@ export const registerMcpRoutes = (
       archive: archivePortFor(deps),
       guild: guildPortFor(client, deps),
       records: recordsPortFor(deps),
-      send: sendPortFor(principal, deps, discord),
+      send: sendPortFor(principal, deps, discord, client),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one
