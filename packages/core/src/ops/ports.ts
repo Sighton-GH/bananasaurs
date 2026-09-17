@@ -996,8 +996,16 @@ export interface OpsPorts {
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
 
   // --- mcp send allowlist (slice M5, ADR 0044 §4) ------------------------------
-  /** ADR 0044 §4: the channels this guild's MCP connector may post to. */
-  allowSendChannel(input: { channelId: string; accountId: string }): boolean;
+  /**
+   * What `mcp allow-channel` did.
+   *
+   * Three outcomes, not a boolean: the operator needs to hear which of
+   * "allowed", "already allowed" or "no such channel in this guild"
+   * happened. `'no-such-channel'` is the allow-time half of C2 — a snowflake
+   * that is not a text-capable channel of this guild (including a DM-shaped
+   * id) is refused before any row is written.
+   */
+  allowSendChannel(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
   disallowSendChannel(channelId: string): boolean;
   listSendAllowlist(): readonly OpsSendAllowlistEntry[];
   listSends(input: {
@@ -1005,6 +1013,9 @@ export interface OpsPorts {
     limit?: number | undefined;
   }): readonly OpsSendRecord[];
 }
+
+/** What `mcp allow-channel` did: allowed, already allowed, or refused. */
+export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';
 
 export interface OpsSendAllowlistEntry {
   readonly channelId: string;

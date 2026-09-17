@@ -41,12 +41,29 @@ export const mcpAllowChannelCommand = defineCommand<z.infer<typeof allowChannelA
   args: allowChannelArgs,
 
   run(ctx: OpsContext, args): OpsWriteResult {
-    const added = ctx.ports.allowSendChannel({
+    const outcome = ctx.ports.allowSendChannel({
       channelId: args.channelId,
       accountId: ctx.actor.unixUserClaimed ?? 'operator_cli',
     });
 
-    if (!added) {
+    if (outcome === 'no-such-channel') {
+      // A usage answer, not a fault — but a write command must return an
+      // audit record (the type enforces it), so the row says what happened:
+      // the id is not a text channel of this guild, and nothing changed. A
+      // DM-shaped id lands here: a DM is never in the guild's channel cache.
+      return {
+        text: `channel ${args.channelId} is not a text channel of this guild; nothing changed`,
+        data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
+        audit: {
+          action: 'mcp.send_channel.allowed',
+          subjectType: 'mcp_send_channel',
+          subjectId: args.channelId,
+          after: { outcome: 'no-such-channel', channelId: args.channelId },
+        },
+      };
+    }
+
+    if (outcome === 'already-allowed') {
       // A usage answer, not a fault — but a write command must return an
       // audit record (the type enforces it), so the row says what happened:
       // the channel was already allowlisted, and nothing changed.

@@ -491,12 +491,17 @@ export const testPortsFor = (
   // Slice M5 (ADR 0044 §4): the MCP send allowlist and send ledger, the same
   // real-repo behaviour `apps/daemon/src/ops/wiring.ts` wires. `now()` is this
   // composition root's clock, the same reasoning `recordMatchVerdict` gives.
-  allowSendChannel: (input) =>
-    mcpSendRepo.allowChannel(scope, {
+  // No guild-membership check here: this package may not import a Discord
+  // client (ADR 0014), and no dashboard route under test reaches this member —
+  // the check lives in the daemon's `opsPortsFor`, which owns the client.
+  allowSendChannel: (input) => {
+    const added = mcpSendRepo.allowChannel(scope, {
       channelId: input.channelId,
       addedByAccountId: input.accountId,
       now: now(),
-    }),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
   disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
   listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
   listSends: (input) =>

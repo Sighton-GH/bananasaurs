@@ -84,7 +84,7 @@ describe('mcp allow-channel', () => {
     const h = harness({
       allowSendChannel: (input) => {
         seen.push({ channelId: input.channelId, accountId: input.accountId });
-        return true;
+        return 'allowed';
       },
     });
     const response = await h.run('mcp allow-channel', { channelId: CHANNEL });
@@ -109,7 +109,7 @@ describe('mcp allow-channel', () => {
   });
 
   it('an already-allowlisted channel is a usage answer with an audit row, not a fault', async () => {
-    const h = harness({ allowSendChannel: () => false });
+    const h = harness({ allowSendChannel: () => 'already-allowed' });
     const response = await h.run('mcp allow-channel', { channelId: CHANNEL });
     expect(response.ok).toBe(true);
     expect(response.ok && response.text).toContain('already allowlisted');
@@ -125,7 +125,7 @@ describe('mcp allow-channel', () => {
     const h = harness({
       allowSendChannel: () => {
         calls += 1;
-        return true;
+        return 'allowed';
       },
     });
     const response = await h.run('mcp allow-channel', { channelId: CHANNEL }, false);
@@ -136,10 +136,32 @@ describe('mcp allow-channel', () => {
   });
 
   it('refuses a non-snowflake channel id', async () => {
-    const h = harness({ allowSendChannel: () => true });
+    const h = harness({ allowSendChannel: () => 'allowed' });
     const response = await h.run('mcp allow-channel', { channelId: 'not-a-channel' });
     expect(response.ok).toBe(false);
     expect(response.ok === false && response.code).toBe('bad-request');
+  });
+
+  it('a channel that is not in the guild is a usage answer naming the guild, with an audit row', async () => {
+    // The port refused before any write; the command says plainly that the id
+    // is not a text channel of this guild. A DM-shaped id lands here: it is a
+    // well-formed snowflake the guild cache simply does not contain.
+    const h = harness({ allowSendChannel: () => 'no-such-channel' });
+    const response = await h.run('mcp allow-channel', { channelId: '700000000000000001' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('not a text channel of this guild');
+    expect(response.ok && response.data).toMatchObject({
+      ok: false,
+      reason: 'no-such-channel',
+      channelId: '700000000000000001',
+    });
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'mcp.send_channel.allowed',
+      subjectType: 'mcp_send_channel',
+      subjectId: '700000000000000001',
+      after: { outcome: 'no-such-channel' },
+    });
   });
 });
 
