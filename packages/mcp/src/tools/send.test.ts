@@ -219,11 +219,14 @@ describe('send_message happy path', () => {
     expect(textOf(outcome)).toContain('othing new was posted');
   });
 
-  it('failed says the send did not happen', async () => {
+  it('failed says the result is unknown and reuses the key, never claims nothing was posted', async () => {
     const port = fakeSendPort({ status: 'failed' });
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
     expect(outcome.ok).toBe(false);
-    expect(messageOf(outcome)).toContain('did not happen');
+    const message = messageOf(outcome);
+    expect(message).toContain('may or may not have been posted');
+    expect(message).toContain('same idempotency key');
+    expect(message).not.toContain('nothing was posted');
   });
 
   it('a throwing port is the shared refusal, never an exception', async () => {

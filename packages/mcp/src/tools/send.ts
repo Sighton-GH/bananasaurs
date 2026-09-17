@@ -247,12 +247,18 @@ const sendMessageInner = async (
     case 'refused':
       return { ok: false, message: refusalText(gate.guildId, input.channelId, outcome.reason) };
     case 'failed':
+      // The Discord call failed with an unknown result: Discord may have
+      // accepted the POST and the response been lost, so this must not claim
+      // nothing was posted — nobody knows that. Check-then-retry with the
+      // same key, never a fresh one (a fresh key on a lost response posts
+      // twice, which is probe F2's shape from the other direction).
       return {
         ok: false,
         message:
-          `The send did not happen: the Discord call for channel ${input.channelId} ` +
-          `in guild ${gate.guildId} failed and nothing was posted. ` +
-          'It is safe to retry with the same idempotency key.',
+          `The Discord call for channel ${input.channelId} ` +
+          `in guild ${gate.guildId} failed with an unknown result: the message ` +
+          `may or may not have been posted. Check the channel before retrying, ` +
+          'and retry with the same idempotency key — never a fresh one.',
       };
   }
 };

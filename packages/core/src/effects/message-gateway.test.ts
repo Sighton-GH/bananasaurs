@@ -498,6 +498,26 @@ describe('sendMessageEffect', () => {
     expect(h.discord.callsFor('sendMessage')).toHaveLength(1);
   });
 
+  it('a throwing REST call writes exactly one failed audit row and no content', async () => {
+    // I3: the case that matters is Discord accepting the POST and the
+    // response being lost — the message is in the channel and the audit trail
+    // must still say an attempt happened, without claiming nothing was
+    // posted (nobody knows that).
+    const h = build();
+    const secret = 'failed-audit-content-probe-7e1c-unique';
+    h.discord.failNext(new Error('socket hang up'));
+    const failed = await sendMessageEffect(
+      h.deps(),
+      intent({ content: secret, idempotencyKey: 'key-fail-audit' }),
+    );
+
+    expect(failed).toEqual({ status: 'failed', code: 'Error' });
+    expect(h.audits).toHaveLength(1);
+    expect(h.audits[0]).toMatchObject({ channelId: CHANNEL, outcome: 'failed' });
+    expect(h.audits[0]).not.toHaveProperty('content');
+    expect(JSON.stringify(h.audits[0])).not.toContain(secret);
+  });
+
   it('never writes message content to any log line', async () => {
     const h = build();
     const secret = 'quarterly-planning-notes-9f3a-unique';

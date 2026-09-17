@@ -322,8 +322,19 @@ export const sendMessageEffect = async (
     messageId = ref.messageId;
   } catch (err) {
     // The ledger still holds the claim (outcome `sent`, no message id), so a
-    // retry with the same key replays instead of double-sending.
+    // retry with the same key replays instead of double-sending. The failure
+    // that matters here is not a rejected POST but a lost response: Discord
+    // may have accepted the POST, so the audit row records the attempt as
+    // `failed` without claiming nothing was posted — nobody knows that.
     const code = err instanceof Error ? err.name : 'UnknownError';
+    deps.audit.record({
+      channelId: intent.channelId,
+      tokenId: intent.tokenId,
+      outcome: 'failed',
+      messageId: undefined,
+      dryRun: false,
+      atMs: deps.now(),
+    });
     deps.logger.error(
       safeLogFields({
         component: 'message-effects',
