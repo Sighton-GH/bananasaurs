@@ -457,3 +457,69 @@ secret, which is its own decision and is not taken here. And the sweep is over
 the **guild allowlist**: a dashboard session in a guild since dropped from
 `BANANASAURS_GUILD_ALLOWLIST` is not swept and still authenticates, though
 every data route then fails closed.
+
+## Amendment 5 — 2026-09-17, Slice M6: the dashboard is published, behind Access
+
+**Owner decision, 2026-09-17.** `bananasaurs.sighton.ca` publishes the
+**dashboard as well as the MCP surface**, behind a Cloudflare Access policy.
+The original M6 scope published only `/mcp`, `/oauth/*` and the two
+well-known documents and answered everything else with a `404` at the edge;
+the dashboard stayed loopback-only, reached by `ssh -L` or Tailscale, because
+"`0.0.0.0` would put a password form holding the kill switch on the LAN"
+(`docs/17` §2). The owner wanted the dashboard on the same hostname, and this
+amendment records what that changes and what it does not.
+
+**A5-1 — the bind does not widen, and the reason `docs/17` gave still
+holds.** `cloudflared` connects to `127.0.0.1:8787` from the same machine.
+`DASHBOARD_BIND` still refuses anything but loopback, and the schema test that
+enforces it is untouched. Nothing on the LAN can reach the dashboard that
+could not before. What changes is that traffic arriving through the tunnel is
+indistinguishable, at the origin, from a request on the box — which is the
+next point.
+
+**A5-2 — Cloudflare Access is the entire security boundary for the dashboard
+paths, and the daemon cannot see whether it is there.** The ingress forwards
+the whole origin (M6-D4), so the login form, the session cookie and the kill
+switch are reachable from the internet by anyone Access lets through. A
+policy that is too narrow exposes them; a policy that is too wide breaks the
+connector, because Claude's client has no browser and no Access cookie. The
+daemon has no way to observe the policy from inside. So `doctor` probes the
+public hostname from outside, in both directions (M6-D1): the dashboard paths
+must answer as Access and must not answer as the app; the machine paths must
+answer as the app and must not answer as Access. Either failure is
+`PROBLEMS FOUND`. This is the one new outbound destination this slice adds
+(hard rule 8), and it is the daemon's own `MCP_PUBLIC_URL`.
+
+**A5-3 — the Access layout is one identity policy on the hostname and one
+Bypass policy on exactly six paths.** `/mcp`, `/oauth/token`,
+`/oauth/register`, `/oauth/revoke`, `/.well-known/oauth-authorization-server`
+and `/.well-known/oauth-protected-resource` — every path a client reaches
+with no browser, each already guarded by a bearer token or PKCE (D1–D8 above).
+`/oauth/authorize` is deliberately **not** bypassed: it is the only OAuth path
+a human loads in a browser, and it inherits the identity policy, so the
+consent page now sits behind Access *and* the dashboard password. The
+dashboard itself gains the same two layers.
+
+**A5-4 — the session cookie is `Secure` when the request arrived over HTTPS,
+and only then.** ADR 0029 omitted `Secure` because both documented remote
+paths delivered the dashboard as plain `http` on localhost. That reasoning was
+true and is now incomplete: there is a third path, over HTTPS. `trustProxy`
+stays off (M6-D3), so the scheme is read from `X-Forwarded-Proto` for this
+one decision. A loopback client never sends the header, so `ssh -L` and
+Tailscale are unchanged; a client that spoofs it on plain `http` gets a cookie
+the browser drops and a login that bounces, which widens nothing. ADR 0029
+carries its own amendment.
+
+**A5-5 — `originMatchesHost` is not touched, and must not be.** It compares
+the `Origin` header's host to the `Host` header by equality, and
+`cloudflared` forwards the original `Host` by default. So the consent POST
+works through the tunnel unchanged — provided the ingress never sets
+`originRequest.httpHostHeader`. If the live run finds the consent POST
+refused, the fault is in the tunnel configuration, and the fix is there, not
+in the CSRF check.
+
+**What this does not give.** Real client IPs in the session row — every
+request arrives from `127.0.0.1` with `trustProxy` off — and rate limiting on
+`/oauth/token` that is keyed by anything but one global bucket, which was
+already the case and which `packages/http/src/routes/oauth.ts` records.
+Cloudflare's own rate limiting sits in front of both. Neither is changed here.
