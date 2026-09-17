@@ -265,6 +265,47 @@ wrote a concurrent probe, and that one did fail — two REST calls for one key.
 A guard that cannot fail is not a guard, and this one had my name on it. The
 concurrency probe is now a committed test rather than a throwaway.
 
+**M5-D10 — the audit row is `via='http'`, not `via='mcp'`. No second rebuild
+of `audit_events`.** Task 4 found that the plan's own Task 4 description was
+unshippable: the `audit_events_via` CHECK is
+`via IS NULL OR via IN ('ssh','http','gateway')`, and `OpsContext.via` is
+typed `'ssh' | 'http'` in core, so `'mcp'` fails both the database and the
+compiler.
+
+The fix is not a migration. `via` is a **transport** vocabulary — `ssh` is the
+CLI over its socket, `http` is the dashboard API, `gateway` is a Discord
+event — and an MCP tool call arrives over HTTP, on the same Fastify app, on a
+route registered beside the dashboard's own. `'http'` is literally true here
+rather than a convenient approximation.
+
+Nothing is lost by it, because the distinguishing field already exists:
+`actor_type='mcp_operator'` is what an operator filters on, and it is
+unambiguous. Adding `'mcp'` to `via` would encode the same fact twice, in the
+column that describes how the request arrived rather than who made it.
+
+What it costs to do otherwise is the real argument. `'mcp'` means a second
+CHECK widening on `audit_events`, which means a second table rebuild — the
+step this plan already calls the riskiest thing in the slice — while two
+guilds are being observed, plus re-applying the M5-D7 index correction by
+hand. That is a meaningful risk for a field that answers no question
+`actor_type` does not already answer.
+
+**M5-D11 — the `DiscordPort` is threaded to the MCP wiring, and it is
+required.** The daemon builds the port in `runtime/daemon.ts`; the HTTP
+wiring currently carries only the raw discord.js `Client`, threaded for the
+guild tools by ruling M4-D12. The message gateway needs the port, not the
+client.
+
+Thread it the same way M4-D12 threaded the client — `index.ts` →
+`startDashboardApi` → `buildDashboardApp` → `registerMcpRoutes` — and make it
+a **required** parameter for the same reason: an optional port would give a
+`send_message` that registers and always fails, which is the M4-D12 defect
+with a new name. Task 4's Files list is widened to
+`apps/daemon/src/http/wiring.ts`, `apps/daemon/src/index.ts` and
+`apps/daemon/src/runtime/daemon.ts` — **threading only** in the last of
+those; it is the file that wires moderation, and nothing about moderation may
+change in it.
+
 ## Global constraints (copy verbatim into every brief)
 
 1. **Do not touch** `mod_rules`, `setRuleMode`, `packages/core/src/mod/`,
