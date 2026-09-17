@@ -208,6 +208,45 @@ wait or vary the text, so the operator is never left guessing. That is the
 direction to err in when the alternative is double-posting to a 210-member
 server.
 
+**M5-D9 — the idempotency check comes before the rate cap. M5-D1's layer
+order was wrong and Task 2 caught it.** As written, the cap was layer 4 and
+the ledger read was layer 5, so a client retrying a send that had already
+succeeded — the timed-out-and-retried case M5-D8 is entirely about — would be
+told `rate-cap` once the hour filled. Told its message failed, when the
+message was sitting in the channel. That is exactly the trap M5-D3 was
+written to prevent, reached from the other direction, and I put it in the
+plan myself.
+
+A replay is not a send. It costs no Discord call and consumes no capacity; it
+is an answer about something that already happened, and it must not depend on
+present conditions. So the corrected order is:
+
+```
+1. allowlist                     -> refuse
+2. kill switch                   -> refuse
+3. circuit breaker               -> refuse
+4. idempotency read              -> replay, or refuse on collision (M5-D3)
+5. identical-content window      -> refuse (M5-D8 layer B)
+6. rate cap                      -> refuse   [new sends only]
+7. idempotency claim             -> INSERT OR IGNORE
+8. dry run                       -> record, no REST call
+9. execute                       -> the single REST call
+10. record                       -> outcome, message id, audit row
+```
+
+The cap still binds every genuinely new send, because a replay returns the
+stored result and sends nothing. The claim stays immediately before the dry
+run and the call, which is the property that makes a crash between claim and
+call safe — moving it earlier would be a different mistake.
+
+**Also from Task 2, and worth more than the reorder: the break-it I specified
+for "claim before the REST call" was decorative.** Neutralising it and
+running the sequential replay test still passed, because in the sequential
+case the claim precedes the *second* call either way. The implementer noticed,
+wrote a concurrent probe, and that one did fail — two REST calls for one key.
+A guard that cannot fail is not a guard, and this one had my name on it. The
+concurrency probe is now a committed test rather than a throwaway.
+
 ## Global constraints (copy verbatim into every brief)
 
 1. **Do not touch** `mod_rules`, `setRuleMode`, `packages/core/src/mod/`,
