@@ -175,6 +175,39 @@ it first means asking a guild-partitioned table about a row that cannot have
 a partition key. Refusing on channel type first keeps the partition
 invariant clean (CLAUDE.md rule 2).
 
+**M5-D8 — the idempotency key is required from the caller, and a second,
+short-window guard catches the case where the caller changes it.** Hard rule
+6 wants a durable key with a UNIQUE constraint, and Task 1 built that. But
+the rule was written for gateway events, which replay with the *same*
+identity. This caller is a language model: when a `tools/call` times out and
+the client retries, it regenerates the arguments, and a regenerated random
+idempotency key defeats the constraint completely. The ledger would faithfully
+record two sends under two keys, and the channel would have the message
+twice.
+
+So two layers, and the second is the one that actually saves the owner:
+
+- **Layer A — the explicit key.** Required, Zod-validated, `UNIQUE (guild_id,
+  idempotency_key)`. Exact replay protection, and what M5-D3's three outcomes
+  are about. The tool description must tell the model in plain words to reuse
+  the same value when retrying, because that is the only way this layer ever
+  works.
+- **Layer B — identical content, same channel, within 60 seconds is a
+  refusal**, whatever the key says. This is the retry-with-a-new-key case,
+  and it is cheap: `mcp_sends` already stores the content hash and is already
+  indexed by guild and time.
+
+Sixty seconds, not the full hour: layer B must not become a permanent ban on
+ever posting the same text twice. "Standup in 5 minutes" is a message the
+owner may legitimately send again tomorrow, and a `content_hash` row living
+forever would refuse it.
+
+Cost if wrong: posting the same text to the same channel twice inside a
+minute, deliberately, is refused. The refusal says exactly that and says to
+wait or vary the text, so the operator is never left guessing. That is the
+direction to err in when the alternative is double-posting to a 210-member
+server.
+
 ## Global constraints (copy verbatim into every brief)
 
 1. **Do not touch** `mod_rules`, `setRuleMode`, `packages/core/src/mod/`,
