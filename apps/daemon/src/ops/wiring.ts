@@ -43,6 +43,10 @@ import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
 import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
+import {
+  formatPublicSurface,
+  probePublicSurface as runPublicSurfaceProbe,
+} from '../runtime/public-surface.js';
 import type { GuildOperations } from '../runtime/guild.js';
 
 /**
@@ -1045,6 +1049,38 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       return {
         ok: false,
         text: `doctor could not read the client: ${err instanceof Error ? err.message : String(err)}`,
+        data: null,
+      };
+    }
+  },
+  /**
+   * Ruling M6-D1's probe, behind `MCP_PUBLIC_URL` and with the global fetch.
+   *
+   * The one new outbound destination hard rule 8 names: the daemon's own
+   * public URL, built from that base and nothing else. Unset means unprobed
+   * and ok — a daemon that has not opted into the tunnel has no surface to
+   * check. A probe that throws (a `fetch` the platform refuses to build, not
+   * a network error, which the probe itself classifies) is reported as a
+   * finding rather than thrown: a diagnostic that can take down the socket
+   * handler is worse than no diagnostic, the same reason `doctor()` wraps.
+   */
+  probePublicSurface: async () => {
+    try {
+      const report = await runPublicSurfaceProbe({
+        publicUrl: deps.config.MCP_PUBLIC_URL,
+        fetch: globalThis.fetch,
+      });
+      return {
+        probed: report.probed,
+        ok: report.ok,
+        text: formatPublicSurface(report),
+        data: JSON.parse(JSON.stringify(report.rows)) as never,
+      };
+    } catch (err) {
+      return {
+        probed: true,
+        ok: false,
+        text: `public surface    probe failed: ${err instanceof Error ? err.message : String(err)}`,
         data: null,
       };
     }

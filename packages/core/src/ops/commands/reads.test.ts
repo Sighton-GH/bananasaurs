@@ -758,4 +758,45 @@ describe('bananasaurs doctor', () => {
     if (!res.ok) return;
     expect(res.text).toContain('could not read the client');
   });
+
+  it('turns a green doctor into PROBLEMS FOUND on an exposed dashboard row alone', async () => {
+    // Ruling M6-D1: an exposed dashboard is a silent breach of the exposure
+    // decision, not decoration under a green header — so the probe's `ok`
+    // joins the conjunction, and one exposed row fails the whole command even
+    // when every other half is clean.
+    const res = await drive(
+      doctorCommand,
+      healthy,
+      {},
+      {
+        probePublicSurface: () =>
+          Promise.resolve({
+            probed: true,
+            ok: false,
+            text: 'public surface    /: expected Access, observed status 200, text/html — exposed\npublic surface    1 problem(s)',
+            data: [
+              {
+                path: '/',
+                expects: 'access',
+                outcome: 'exposed',
+                observed: { status: 200, contentType: 'text/html', locationHost: null },
+              },
+            ],
+          }),
+      },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('exposed');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('reports the public surface as not probed when MCP_PUBLIC_URL is unset', async () => {
+    const res = await drive(doctorCommand, healthy);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('public surface    not probed (MCP_PUBLIC_URL unset)');
+    expect(res.data).toMatchObject({ ok: true });
+  });
 });

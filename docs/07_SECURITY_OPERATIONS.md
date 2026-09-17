@@ -32,6 +32,14 @@ Discord content, fetched web pages, resource repositories, attachments, model ou
 - LAN: bind deliberately; do not assume a private subnet is trusted.
 - Tailscale: preferred remote administrative path with identity-aware access where available.
 - Cloudflare Tunnel: acceptable when protected by Cloudflare Access; never publish the owner dashboard unauthenticated.
+  - **In force since 2026-09-17** (ADR 0045 Amendment 5): `bananasaurs.sighton.ca`
+    publishes the dashboard and the MCP surface through a remotely-managed
+    tunnel. One Access application with an identity policy on the hostname;
+    one with a Bypass policy on exactly the six machine paths the connector
+    needs (`/mcp`, the three token paths, the two well-known documents).
+    `/oauth/authorize` is not bypassed. `doctor` probes all five classes of
+    path from outside and reports `PROBLEMS FOUND` if the dashboard answers
+    without Access or a machine path answers with it — `docs/17` §2.4.
 - TLS and proxy headers must be configured intentionally.
 
 ## Deployment and recovery

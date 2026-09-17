@@ -144,12 +144,15 @@ describe('mcp allow-channel', () => {
 
   it('a channel that is not in the guild is a usage answer naming the guild, with an audit row', async () => {
     // The port refused before any write; the command says plainly that the id
-    // is not a text channel of this guild. A DM-shaped id lands here: it is a
-    // well-formed snowflake the guild cache simply does not contain.
+    // is not a channel of this guild the bot can post text into. A DM-shaped
+    // id lands here: it is a well-formed snowflake the guild cache simply does
+    // not contain.
     const h = harness({ allowSendChannel: () => 'no-such-channel' });
     const response = await h.run('mcp allow-channel', { channelId: '700000000000000001' });
     expect(response.ok).toBe(true);
-    expect(response.ok && response.text).toContain('not a text channel of this guild');
+    expect(response.ok && response.text).toContain(
+      'not a channel of this guild the bot can post text into',
+    );
     expect(response.ok && response.data).toMatchObject({
       ok: false,
       reason: 'no-such-channel',
@@ -284,6 +287,54 @@ describe('mcp sends', () => {
     expect(response.text).toContain('message 555555555555555555');
     expect(response.text).not.toContain(content);
     expect(JSON.stringify(response.data)).not.toContain(content);
+  });
+
+  it('renders a sent row with a message id as a plain sent, with no note', async () => {
+    const h = harness({ listSends: () => [send()] });
+    const response = await h.run('mcp sends');
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    expect(response.text).toContain('sent');
+    expect(response.text).toContain('message 555555555555555555');
+    expect(response.text).not.toContain('no message id recorded');
+  });
+
+  it('never renders a sent row with no message id as a plain sent (N4)', async () => {
+    // The ledger CHECK admits only `sent` and `dry_run`, so a Discord call
+    // that threw leaves a `sent` row with a null message id. Rendering that
+    // as `sent` reads as a success; the honest text says what is known.
+    const h = harness({ listSends: () => [send({ messageId: undefined })] });
+    const response = await h.run('mcp sends');
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    const rowLines = response.text.split('\n').filter((line) => line.includes('channel '));
+    expect(rowLines).toHaveLength(1);
+    expect(rowLines[0]).toContain('sent (no message id recorded)');
+    expect(response.text).toContain('did not return a message id');
+    expect(response.text).toContain('may or may not have posted');
+    // The stored row is untouched: this is a rendering fix, not a migration.
+    expect(response.data).toEqual([
+      {
+        channelId: CHANNEL,
+        messageId: null,
+        tokenId: 'tok_0123456789abcdef0123456789abcdef',
+        sentAt: NOW - 1_000,
+        outcome: 'sent',
+      },
+    ]);
+  });
+
+  it('leaves a dry_run row without a message id alone, with no note', async () => {
+    // A dry run never calls Discord, so a missing message id is expected —
+    // the note fires only for `sent` rows.
+    const h = harness({
+      listSends: () => [send({ outcome: 'dry_run', messageId: undefined })],
+    });
+    const response = await h.run('mcp sends');
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    expect(response.text).toContain('dry_run');
+    expect(response.text).not.toContain('no message id recorded');
   });
 
   it('turns --since into an absolute timestamp against the context clock', async () => {

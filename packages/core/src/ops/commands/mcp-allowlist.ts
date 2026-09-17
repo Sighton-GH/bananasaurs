@@ -49,10 +49,11 @@ export const mcpAllowChannelCommand = defineCommand<z.infer<typeof allowChannelA
     if (outcome === 'no-such-channel') {
       // A usage answer, not a fault — but a write command must return an
       // audit record (the type enforces it), so the row says what happened:
-      // the id is not a text channel of this guild, and nothing changed. A
-      // DM-shaped id lands here: a DM is never in the guild's channel cache.
+      // the id is not a channel of this guild the bot can post text into,
+      // and nothing changed. A DM-shaped id lands here: a DM is never in the
+      // guild's channel cache.
       return {
-        text: `channel ${args.channelId} is not a text channel of this guild; nothing changed`,
+        text: `channel ${args.channelId} is not a channel of this guild the bot can post text into; nothing changed`,
         data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
         audit: {
           action: 'mcp.send_channel.allowed',
@@ -199,15 +200,31 @@ export const mcpSendsCommand = defineCommand<z.infer<typeof sendsArgs>>({
         data: [],
       };
     }
+    // N4: the ledger's outcome CHECK admits only `sent` and `dry_run`, so the
+    // claim written before the Discord call stays `sent` when the call throws
+    // — the `failed` outcome lives only in the audit trail. A `sent` row with
+    // no message id must not render as a plain success: no migration, just
+    // honest text and a note saying what the row means.
+    const unconfirmed = rows.some((row) => row.outcome === 'sent' && row.messageId === undefined);
+    const lines = rows.map((row) => {
+      const outcome =
+        row.outcome === 'sent' && row.messageId === undefined
+          ? 'sent (no message id recorded)'
+          : row.outcome;
+      return (
+        `${iso(row.sentAt)}  ${outcome}  channel ${row.channelId}  ` +
+        `token ${row.tokenId}` +
+        `${row.messageId === undefined ? '' : `  message ${row.messageId}`}`
+      );
+    });
+    if (unconfirmed) {
+      lines.push(
+        "A 'sent (no message id recorded)' row means the Discord call did not return a message id, " +
+          'so the message may or may not have posted.',
+      );
+    }
     return {
-      text: rows
-        .map(
-          (row) =>
-            `${iso(row.sentAt)}  ${row.outcome}  channel ${row.channelId}  ` +
-            `token ${row.tokenId}` +
-            `${row.messageId === undefined ? '' : `  message ${row.messageId}`}`,
-        )
-        .join('\n'),
+      text: lines.join('\n'),
       data: rows.map((row) => ({
         channelId: row.channelId,
         messageId: row.messageId ?? null,

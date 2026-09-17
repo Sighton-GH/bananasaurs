@@ -1092,6 +1092,23 @@ export interface OpsDoctorReport {
   readonly data: JsonValue;
 }
 
+/**
+ * `doctor`'s public-surface half (ruling M6-D1), already rendered by the
+ * daemon that owns the public URL.
+ *
+ * Re-declared here rather than imported from `apps/daemon` (ADR 0014), the
+ * same reason every shape above is re-declared: the rows carry status,
+ * content type and `Location` host only, so there is no body here to leak —
+ * and the daemon's wiring maps its own report onto this field by field.
+ */
+export interface OpsPublicSurfaceReport {
+  /** False when MCP_PUBLIC_URL is unset: nothing was probed and ok is true. */
+  readonly probed: boolean;
+  readonly ok: boolean;
+  readonly text: string;
+  readonly data: JsonValue;
+}
+
 export interface OpsInstance {
   /** `Date.now()` at process start, for uptime. */
   readonly startedAtMs: number;
@@ -1105,6 +1122,16 @@ export interface OpsInstance {
    * reached from here (ADR 0014). The guild-scoped half is on `OpsPorts`.
    */
   doctor(): OpsDoctorReport;
+  /**
+   * The public-surface probe (ruling M6-D1): the bot's own `MCP_PUBLIC_URL`
+   * fetched in both directions, dashboard paths against Access and machine
+   * paths against the app.
+   *
+   * Instance-level beside `doctor()`: the public URL is a fact about the
+   * daemon, not a guild. Async where `doctor()` is synchronous, because a
+   * fetch is not — five sequential HTTPS round trips behind a short timeout.
+   */
+  probePublicSurface(): Promise<OpsPublicSurfaceReport>;
   /**
    * The configuration with every secret already replaced by `<redacted>`.
    *

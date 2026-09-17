@@ -35,6 +35,20 @@ Tailscale — deliver it to the browser as `http://127.0.0.1:<port>`. A `Secure`
 cookie would simply never be stored, and the failure mode is a login that
 appears to succeed and then bounces back to the login page.
 
+### Amendment 2026-09-17 (slice M6): `Secure` behind the tunnel
+
+The dashboard is now published a third way: at `https://bananasaurs.sighton.ca`
+through Cloudflare Tunnel, behind Cloudflare Access. On that path the browser
+speaks HTTPS, so the session cookie is now marked `Secure` — but only when the
+request carries `X-Forwarded-Proto: https`, read directly from that header.
+`request.protocol` cannot decide it, because `trustProxy` stays off (the OAuth
+rate limiter already reasons on that basis). A direct loopback client (`ssh -L`,
+Tailscale) never sends the header, so those cookies stay non-`Secure` and keep
+working exactly as before. A client that spoofs the header over plain HTTP gets
+a `Secure` cookie the browser drops, and the login bounces — the safe direction
+to fail. The logout clear follows the same rule, or it would not remove a
+`Secure` cookie.
+
 ### Lifetime: absolute, twelve hours, no sliding renewal
 
 `expires_at = created_at + 12h`, fixed at creation and never extended.

@@ -123,6 +123,50 @@ the actual running daemon and its actual `./data/bananasaurs.db`.
 
 ---
 
+## Section D — the MCP connector over the tunnel (slice M6, not yet run)
+
+Run from a client **off the LAN** — a laptop on mobile data, or the desktop
+app somewhere else — so the tunnel and Access are actually in the path.
+Record the run in `docs/reports/mcp-m6-live-run.md` in the style of
+`release1-smoke-tests-live-run.md`, including what `Host` and `Origin`
+arrived as on the consent POST (`docs/17` §2.4 says why).
+
+1. **`doctor` first.** `bananasaurs doctor` over SSH. The `public surface`
+   block must be `ok` on all five rows before anything else is attempted —
+   if `/mcp` or the well-known document shows `blocked-by-access`, the
+   Bypass application is missing and nothing below can work.
+2. **Allowlist one test channel.** `bananasaurs mcp allow-channel <id>
+   --confirm` on the dev guild, then `mcp allowlist` shows it.
+3. **Add the connector** in the Claude desktop app:
+   `https://bananasaurs.sighton.ca/mcp`. The browser opens on
+   `/oauth/authorize`; Access asks for the owner's identity first, then the
+   consent page asks for the dashboard password. Approve
+   `bananasaurs:read` **and** `bananasaurs:send`.
+4. **Every read tool, once.** `get_health`, `list_channels`, `list_roles`,
+   `list_members` (paginate past 100), `search_messages`,
+   `read_channel_history`, `get_message`, `list_mod_cases`, `get_mod_case`,
+   `list_audit_events`, and the overview resource. Each answer arrives
+   inside the evidence envelope.
+5. **One send that works.** `send_message` to the allowlisted channel with
+   content containing `@everyone`. Confirm in Discord: the message is there,
+   **nobody was pinged**, and `bananasaurs mcp sends` lists it with a message
+   id.
+6. **One send that is refused.** The same call to a channel that is not
+   allowlisted. Confirm the refusal names the allowlist, nothing was posted,
+   and `mcp sends` did not gain a row.
+7. **The retry.** Repeat step 5's call with the **same** `idempotencyKey`.
+   Confirm it answers as a replay and Discord has exactly one message.
+8. **Revoke and watch it fail.** `bananasaurs mcp tokens`, then
+   `mcp revoke <token-id> --confirm`. The very next tool call from the
+   connector must fail with a `401`.
+9. **claude.ai connector**, one read tool. **Claude Code**,
+   `claude mcp add --transport http bananasaurs https://bananasaurs.sighton.ca/mcp`,
+   one read tool.
+10. **`doctor` again.** Still `ok` on the public surface; the eligibility row
+    still fresh.
+
+- [ ] Steps 1–10 recorded with timestamps in `docs/reports/mcp-m6-live-run.md`.
+
 ## Sign-off
 
 **Release 1 is done — 2026-08-30.** Every box above is checked, run against

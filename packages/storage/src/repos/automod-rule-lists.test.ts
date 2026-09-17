@@ -219,6 +219,13 @@ const instance: OpsInstance = {
   env: 'test',
   gateway: () => ({ connected: true, pingMs: undefined, guildCount: 1 }),
   doctor: () => ({ ok: true, text: 'not used by this test', data: null }),
+  probePublicSurface: () =>
+    Promise.resolve({
+      probed: false,
+      ok: true,
+      text: 'public surface    not probed (MCP_PUBLIC_URL unset)',
+      data: null,
+    }),
   redactedConfig: () => ({}),
   reissueBootstrapToken: () => ({ ok: false, reason: 'readonly' }),
   backupNow: notNeeded('backupNow'),

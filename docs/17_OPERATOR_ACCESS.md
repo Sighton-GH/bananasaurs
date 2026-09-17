@@ -244,6 +244,89 @@ sudo tailscale up
 
 Do not expose SSH or the dashboard to the public internet directly. `docs/07` covers this; Tailscale is the answer.
 
+### 2.4 The public hostname: `bananasaurs.sighton.ca` (slice M6)
+
+The owner decided on 2026-09-17 that the public hostname serves **both** the
+MCP surface and the dashboard, behind Cloudflare Access (ADR 0045 Amendment
+5). Everything below follows from one fact: **Access is the entire security
+boundary for the dashboard paths.** The tunnel forwards the whole origin, the
+bind is still loopback, and nothing in the daemon can see whether the Access
+policy is there — so `doctor` checks from outside.
+
+**The tunnel is remotely managed.** `cloudflared service install <token>`
+was used, so `cloudflared` runs `tunnel run --token …` and there is **no
+local `config.yml`**; the route from the hostname to `http://localhost:8787`
+lives in Zero Trust → Networks → Tunnels → Public Hostname. Two things about
+that route:
+
+- The origin service is `http://localhost:8787` (or whatever
+  `DASHBOARD_PORT` is). Not `https`; the origin is plain HTTP on loopback.
+- **Do not set an HTTP Host header override** on the route. `originMatchesHost`
+  compares the browser's `Origin` host to the `Host` header by equality, and
+  `cloudflared` forwards the original `Host` by default — so the consent POST
+  and every dashboard write work through the tunnel unchanged. If a rewrite
+  is ever set there, they fail, and the fix is to remove the rewrite, never
+  to loosen the CSRF check.
+
+**Access: two applications.** Cloudflare matches the more specific path
+first, so:
+
+1. **The dashboard** — a Self-hosted application on `bananasaurs.sighton.ca`
+   (the bare hostname), policy **Allow**, include the owner's identity. This
+   covers `/`, `/api/*`, `/bootstrap` and `/oauth/authorize`. The last one
+   is deliberate: the consent page is the one OAuth path a human loads in a
+   browser, so it sits behind Access *and* the dashboard password.
+2. **The machine endpoints** — one Self-hosted application listing exactly
+   these six paths as its domains, policy **Bypass**, include **Everyone**:
+
+   ```
+   bananasaurs.sighton.ca/mcp
+   bananasaurs.sighton.ca/oauth/token
+   bananasaurs.sighton.ca/oauth/register
+   bananasaurs.sighton.ca/oauth/revoke
+   bananasaurs.sighton.ca/.well-known/oauth-authorization-server
+   bananasaurs.sighton.ca/.well-known/oauth-protected-resource
+   ```
+
+   Every one of these is reached by a client with no browser and no Access
+   cookie, and every one is already guarded — bearer token on `/mcp`, PKCE
+   and the client id on the token paths, nothing sensitive in the two
+   documents. Access in front of any of them breaks the connector with an
+   error that looks nothing like its cause.
+
+**`doctor` verifies both directions.** With `MCP_PUBLIC_URL` set, `doctor`
+fetches five paths on the public hostname and reports `PROBLEMS FOUND` if
+any is wrong:
+
+| Path | Must be | If it is not |
+|---|---|---|
+| `/`, `/api/session`, `/oauth/authorize` | an Access redirect | **the dashboard is exposed** |
+| `/.well-known/oauth-authorization-server` | the JSON document | the connector cannot work |
+| `/mcp` | `401` with the bearer challenge | the connector cannot work |
+
+Run it after any change to the Access applications. It is the only on-box
+check of a configuration that lives entirely in Cloudflare's dashboard.
+
+**The tunnel token.** `cloudflared service install` writes the token into
+`ExecStart` in `/etc/systemd/system/cloudflared.service`, and unit files are
+world-readable. On a single-user box that is a low risk; the fix is still
+cheap and worth doing:
+
+```bash
+sudo install -m 0600 /dev/null /etc/cloudflared/tunnel.env
+# put  TUNNEL_TOKEN=<the token>  in it, then in the unit:
+#   EnvironmentFile=/etc/cloudflared/tunnel.env
+#   ExecStart=/usr/bin/cloudflared --no-autoupdate tunnel run --token ${TUNNEL_TOKEN}
+sudo systemctl daemon-reload && sudo systemctl restart cloudflared
+```
+
+**Session cookies over the tunnel.** The dashboard session cookie is
+`Secure` when the request arrived with `X-Forwarded-Proto: https` — which
+the tunnel sets and a loopback client never does — so `ssh -L` and Tailscale
+are unchanged (ADR 0029, amended). `trustProxy` stays off: every request
+still looks like `127.0.0.1` to the daemon, which is why the session row's
+IP column is not meaningful through the tunnel.
+
 ---
 
 ## 3. Claude Code on the host
@@ -372,6 +455,13 @@ Concrete versions of the mistake, so they are recognisable when an agent propose
 Every one of those puts subscription credentials inside a service that serves other people. The last two are the tempting ones because they feel indirect — a human is in the loop, or the output is "just data." The credential is still doing the work for members, so they are still out.
 
 Discord-facing AI goes through the provider layer: NVIDIA NIM now, a paid key at production (ADR 0010).
+
+**And the line ADR 0044 adds.** The MCP server is permitted *because* its
+output goes to the owner's own client and its one write is owner-instructed
+and allowlisted. A tool that took a member's question, asked Claude, and
+posted the answer would still be the prohibited bridge — the transport
+changed, the rule did not. The trigger must be the owner's keystroke in the
+owner's client, and the bot cannot verify that; it is a rule the owner keeps.
 
 ---
 

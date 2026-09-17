@@ -14,6 +14,10 @@ import {
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
 import { accountOpsFor, opsInstanceFor, opsPortsFor } from './wiring.js';
+// By relative path rather than the `@bananasaurs/http/test-support` subpath:
+// vitest aliases `@bananasaurs/http` to the package index, so the subpath
+// would resolve under it and break (see `mcp/wiring.test.ts`).
+import { testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
  * `doctor`'s archive check: `listUnreadableArchiveChannels`
@@ -37,6 +41,8 @@ const MISSING = '611111111111111111';
 const NO_VIEW = '622222222222222222';
 const NO_HISTORY = '633333333333333333';
 const CLEAN = '644444444444444444';
+/** A voice channel of the guild: accepted (ruling M6-D6), not refused. */
+const VOICE = '655555555555555555';
 
 const NOW = 1_700_000_000_000;
 
@@ -113,6 +119,17 @@ beforeEach(() => {
         { id: BOT_ROLE, deny: String(PermissionsBitField.Flags.ReadMessageHistory) },
       ]),
       channelPayload(CLEAN, []),
+      // A voice channel's text chat: discord.js reports it as text-based
+      // (BaseGuildVoiceChannel carries a GuildMessageManager), so the
+      // allow-time check accepts it (ruling M6-D6).
+      {
+        id: VOICE,
+        guild_id: GUILD,
+        type: ChannelType.GuildVoice,
+        name: `channel-${VOICE}`,
+        position: 3,
+        permission_overwrites: [],
+      },
     ],
     roles: [
       { id: GUILD, name: '@everyone', position: 0, permissions: '0', managed: false },
@@ -197,6 +214,15 @@ describe('allowSendChannel (C2 allow-time)', () => {
     expect(mcpSendRepo.isChannelAllowed(scope, CLEAN)).toBe(true);
   });
 
+  it('accepts a voice channel of the guild: the check means text-capable, not text-only (M6-D6)', () => {
+    // Pinned rather than incidental: discord.js reports voice and stage
+    // channels as `isTextBased()` because they carry a `messages` manager, so
+    // `isTextChannelOfGuild` accepts them. In-guild and owner-opted-in per
+    // channel, so posting to the voice channel's text chat is legitimate.
+    expect(sendPorts().allowSendChannel({ channelId: VOICE, accountId: 'tester' })).toBe('allowed');
+    expect(mcpSendRepo.isChannelAllowed(scope, VOICE)).toBe(true);
+  });
+
   it('reports already-allowed on a repeat without duplicating the row', () => {
     const ports = sendPorts();
     expect(ports.allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe('allowed');
@@ -217,6 +243,32 @@ describe('allowSendChannel (C2 allow-time)', () => {
       'no-such-channel',
     );
     expect(mcpSendRepo.isChannelAllowed(scope, UNKNOWN)).toBe(false);
+  });
+
+  it('names the N2 gap: test-support writes the row the daemon refuses', () => {
+    // N2. `testPortsFor` (`packages/http/src/test-support.ts`) implements the
+    // same `OpsPorts` interface with no guild-membership check: it may not
+    // import a Discord client (ADR 0014), and no dashboard route reaches
+    // `allowSendChannel`, so an injected channel set would be machinery with
+    // no caller — a default-allow set would be theater, a default-deny one
+    // would break the real-repo behaviour the route tests rely on. The gap is
+    // pinned here instead of closed there: the DM-shaped id the daemon's
+    // implementation refuses is allowed by test-support, and the send-time
+    // check (C2) is what contains any such row before it can reach Discord.
+    //
+    // Production uses the daemon's implementation: `runtime/daemon.ts`'s
+    // `contextFor` builds `opsPortsFor` with the live client, while
+    // `testPortsFor` is imported only by tests.
+    const httpPorts = testPortsFor(scope, () => NOW);
+    expect(httpPorts.allowSendChannel({ channelId: DM_SHAPED, accountId: 'tester' })).toBe(
+      'allowed',
+    );
+    expect(mcpSendRepo.isChannelAllowed(scope, DM_SHAPED)).toBe(true);
+    // The daemon's check runs before any read of the row, so the row written
+    // above changes nothing about its answer.
+    expect(sendPorts().allowSendChannel({ channelId: DM_SHAPED, accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
   });
 });
 
@@ -698,5 +750,36 @@ describe('providerReview (ruling M4-D20)', () => {
 
   it("answers 'no-such-provider' for an unknown provider", () => {
     expect(instanceOps().providerReview('no-such-provider')).toBe('no-such-provider');
+  });
+});
+
+describe('probePublicSurface (ruling M6-D1)', () => {
+  const instanceOps = (config: Partial<Config>) =>
+    opsInstanceFor({
+      config: {
+        BANANASAURS_READONLY: false,
+        BANANASAURS_ENV: 'test',
+        ...config,
+      } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    });
+
+  it('probes nothing and is ok when MCP_PUBLIC_URL is unset — no fetch, no failure', async () => {
+    // The short-circuit happens before any `fetch`, so this reaches no
+    // network even though the implementation holds the global fetch: a daemon
+    // that has not opted into the tunnel has no surface to check.
+    const report = await instanceOps({}).probePublicSurface();
+    expect(report.probed).toBe(false);
+    expect(report.ok).toBe(true);
+    expect(report.text).toBe('public surface    not probed (MCP_PUBLIC_URL unset)');
   });
 });

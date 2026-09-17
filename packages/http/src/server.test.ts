@@ -96,10 +96,11 @@ const cookieFrom = (header: string | string[] | undefined): string => {
   return raw.split(';')[0] ?? '';
 };
 
-const signIn = async (target = app): Promise<LoggedIn> => {
+const signIn = async (target = app, headers: Record<string, string> = {}): Promise<LoggedIn> => {
   const response = await target.inject({
     method: 'POST',
     url: '/api/login',
+    headers,
     payload: { username: 'owner', password: PASSWORD },
   });
   const body = response.json<{ csrfToken: string }>();
@@ -137,15 +138,60 @@ describe('login sets a session cookie with the right attributes (ADR 0029)', () 
     expect(String(response.headers['set-cookie'])).toContain('SameSite=Lax');
   });
 
-  it('does not mark the cookie Secure, because the bind is loopback http', async () => {
-    // ADR 0029. A Secure cookie would never be stored over `ssh -L`, and the
-    // failure would look like a login that succeeds and then bounces.
+  it('does not mark the cookie Secure on a direct request, because the bind is loopback http', async () => {
+    // ADR 0029, amended by M6-D2. No `X-Forwarded-Proto` header means a direct
+    // loopback client (`ssh -L`, Tailscale): a Secure cookie would never be
+    // stored there, and the failure would look like a login that succeeds and
+    // then bounces.
     const response = await app.inject({
       method: 'POST',
       url: '/api/login',
       payload: { username: 'owner', password: PASSWORD },
     });
     expect(String(response.headers['set-cookie'])).not.toContain('Secure');
+  });
+
+  it('marks the cookie Secure when the request arrived over HTTPS (M6-D2)', async () => {
+    // The tunnel path: cloudflared connects to 127.0.0.1:8787 over plain
+    // http, so `request.protocol` is always `http` (trustProxy stays off,
+    // M6-D3) and only `X-Forwarded-Proto: https` says the browser used HTTPS.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/login',
+      headers: { 'x-forwarded-proto': 'https' },
+      payload: { username: 'owner', password: PASSWORD },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(String(response.headers['set-cookie'])).toContain('; Secure;');
+  });
+
+  it('the logout clear matches the set: no Secure on a direct request', async () => {
+    const { cookie, csrf } = await signIn();
+    const out = await app.inject({
+      method: 'POST',
+      url: '/api/logout',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+    });
+    expect(out.statusCode).toBe(200);
+    const cleared = String(out.headers['set-cookie']);
+    expect(cleared).toContain('Max-Age=0');
+    expect(cleared).not.toContain('Secure');
+  });
+
+  it('the logout clear matches the set: Secure when the request arrived over HTTPS', async () => {
+    // A clear without `Secure` does not remove a `Secure` cookie, so without
+    // this the HTTPS logout would leave the session cookie in the browser.
+    const fwd = { 'x-forwarded-proto': 'https' };
+    const { cookie, csrf } = await signIn(app, fwd);
+    const out = await app.inject({
+      method: 'POST',
+      url: '/api/logout',
+      headers: { cookie, [CSRF_HEADER]: csrf, ...fwd },
+    });
+    expect(out.statusCode).toBe(200);
+    const cleared = String(out.headers['set-cookie']);
+    expect(cleared).toContain('Max-Age=0');
+    expect(cleared).toContain('; Secure;');
   });
 
   it('bounds the cookie by the session lifetime', async () => {
