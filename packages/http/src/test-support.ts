@@ -12,6 +12,7 @@ import {
   guildRepo,
   jobRepo,
   loggingRepo,
+  mcpSendRepo,
   modCaseRepo,
   modMatchReviewRepo,
   oauthRepo,
@@ -487,6 +488,24 @@ export const testPortsFor = (
     };
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
+  // Slice M5 (ADR 0044 §4): the MCP send allowlist and send ledger, the same
+  // real-repo behaviour `apps/daemon/src/ops/wiring.ts` wires. `now()` is this
+  // composition root's clock, the same reasoning `recordMatchVerdict` gives.
+  // No guild-membership check here: this package may not import a Discord
+  // client (ADR 0014), and no dashboard route under test reaches this member —
+  // the check lives in the daemon's `opsPortsFor`, which owns the client.
+  allowSendChannel: (input) => {
+    const added = mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
+  listSends: (input) =>
+    mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
   // ADR 0028 / ADR 0045 (ruling PR-102): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires, with the account lookup running
   // through `opts.instanceScope`.

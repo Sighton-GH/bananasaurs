@@ -28,6 +28,7 @@ import {
   jobRepo,
   listBackups,
   loggingRepo,
+  mcpSendRepo,
   modCaseRepo,
   modMatchReviewRepo,
   oauthRepo,
@@ -537,6 +538,31 @@ export const opsPortsFor = (
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
 
+  // Slice M5 (ADR 0044 §4): the channels this guild's MCP connector may post
+  // to, and the ledger of what it posted. The clock is this composition
+  // root's, not the command's, the same reasoning `recordMatchVerdict` gives.
+  //
+  // The guild-membership check is the allow-time half of C2: a row is written
+  // *under* a guild, which never made it *of* that guild, so the write path
+  // refuses anything that is not a text-capable channel of this guild before
+  // the repository sees it. A DM-shaped id is simply absent from the guild's
+  // channel cache and lands in `no-such-channel`.
+  allowSendChannel: (input) => {
+    if (!isTextChannelOfGuild(client, scope.guildId, input.channelId)) {
+      return 'no-such-channel';
+    }
+    const added = mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
+  listSends: (input) =>
+    mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
+
   // ADR 0028 / ADR 0045 (ruling PR-102): grant a dashboard account a
   // capability in this guild. `findAccountByUsername` is instance-level while
   // this port is guild-scoped, so the account lookup runs through the
@@ -674,6 +700,26 @@ const jobRow = (job: {
   lastError: job.lastError,
   dedupeKey: job.dedupeKey,
 });
+
+/**
+ * Whether the id names a text-capable channel of this guild (C2 allow-time).
+ *
+ * A live check against `client.guilds.cache`, the same "already in memory,
+ * nothing to fetch" style `keywordFilterRulesMissingManageMessages` below
+ * uses — allowlisting happens once per channel with a human present, so the
+ * cache is the right source and no REST call is needed. A guild absent from
+ * the cache (not yet READY, or left) answers false: failing closed, because
+ * an allowlist row written without validation is exactly what the send-time
+ * check exists to contain. Threads are excluded like below: a thread id is
+ * not a channel an owner allowlists.
+ */
+const isTextChannelOfGuild = (client: Client, guildId: string, channelId: string): boolean => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) return false;
+  const channel = guild.channels.cache.get(channelId);
+  if (channel === undefined) return false;
+  return channel.isTextBased() && !channel.isThread();
+};
 
 /**
  * `doctor`'s automod half: for every enabled, enforce-mode `keyword_filter`

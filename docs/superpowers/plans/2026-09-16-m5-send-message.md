@@ -128,14 +128,208 @@ rebuilt table; the migration is proved to apply on top of a database holding
 real audit rows, with a test asserting the row count and one row's full
 contents survive; and `docs/SMOKE_TESTS.md`'s restore drill gains the note.
 
-**M5-D6 — the tool refuses a DM channel id before it consults the
-allowlist.** The plan asks for this ordering explicitly and it is worth
-saying why, because it looks backwards: a DM channel can never be on a
-guild-scoped allowlist, so the allowlist would refuse it anyway. The reason
-is that the allowlist lookup is guild-scoped and a DM has no guild — checking
-it first means asking a guild-partitioned table about a row that cannot have
-a partition key. Refusing on channel type first keeps the partition
-invariant clean (CLAUDE.md rule 2).
+**M5-D7 — drizzle-kit mis-quotes a sort-ordered index on the rebuild path,
+and the one line is corrected rather than the schema.** Task 1 escalated
+instead of working around it, which was right. `db:generate` emitted
+
+```sql
+CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,`"at" desc`);
+```
+
+and applying it fails with `no such column: "at" desc`: the whole sort
+expression has been wrapped in backticks as if it were one identifier. The
+same generator, from the *same snapshot entry*, emits the correct form on the
+create path — `0000` ships
+`` CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,"at" desc); ``.
+Verified: `0000_snapshot.json` and `0023_snapshot.json` record this index
+identically, character for character, so the schema has not changed it. Only
+the SQL emitter differs between its create path and its rebuild path
+(drizzle-kit 0.31.10). `audit_tail` is the only `desc()` index in the schema,
+which is why no previous rebuild ever hit it.
+
+The correction is that one line, made byte-identical to the shipped `0000`
+line. It is transcription of the generator's own correct output for the
+snapshot entry it already holds, not a hand-written migration, and constraint
+6 is about nobody inventing SQL — which this does not do.
+
+The alternatives are both worse. Dropping `desc()` from the index changes a
+shipped index on the busiest table in the database to dodge a tool bug, while
+two guilds are being observed. Bumping drizzle-kit is a dependency change
+that would re-render every generated artifact in the project for the same
+reason.
+
+Verified after correcting: the migration applies, both new tables exist, and
+`sqlite_master` reports `audit_tail` after the rebuild as
+`` CREATE INDEX `audit_tail` ON `audit_events` (`guild_id`,"at" desc) `` —
+the definition that was there before. **This will recur on every future
+rebuild of `audit_events`**, so the next person to widen a CHECK on it should
+expect to make the same correction, and the rebuild proof in Task 1 step 5
+must assert the index is present and correct afterwards, not only the rows.
+
+**M5-D6 — RETRACTED. The tool cannot refuse a DM channel id before the
+allowlist, and it does not need to.** Task 3 escalated instead of faking
+compliance, and the ruling was wrong in both of its halves.
+
+The premise was wrong: a Discord snowflake encodes a timestamp, a worker id,
+a process id and an increment, and **no channel type**. Nothing about the
+shape of an id distinguishes a DM channel from a guild channel, so a
+tool-layer pre-check would have to ask Discord — a REST call or a cache
+lookup, ahead of a cheap local refusal, to learn something the next line
+already establishes.
+
+The rationale was also wrong, which is the part worth recording. M5-D6 said
+consulting the allowlist first "means asking a guild-partitioned table about
+a row that cannot have a partition key". It does not:
+`isChannelAllowed(scope, channelId)` takes its scope from the **resolved
+guild**, not from the channel. The question it asks is "is this channel id in
+guild G's allowlist?", which is well-formed for any string at all, and the
+answer for a DM id is simply no. I reasoned about the partition key from the
+argument list instead of from the signature.
+
+What holds without the ruling: a DM channel can never appear in
+`mcp_send_allowlist`, because rows there are written by
+`bananasaurs mcp allow-channel` against a guild. So a DM id is refused as
+`channel-not-allowlisted` — always, with no path to a send. The safety
+property M5-D6 was reaching for is enforced by the allowlist itself, which is
+where it belonged.
+
+**M5-D8 — the idempotency key is required from the caller, and a second,
+short-window guard catches the case where the caller changes it.** Hard rule
+6 wants a durable key with a UNIQUE constraint, and Task 1 built that. But
+the rule was written for gateway events, which replay with the *same*
+identity. This caller is a language model: when a `tools/call` times out and
+the client retries, it regenerates the arguments, and a regenerated random
+idempotency key defeats the constraint completely. The ledger would faithfully
+record two sends under two keys, and the channel would have the message
+twice.
+
+So two layers, and the second is the one that actually saves the owner:
+
+- **Layer A — the explicit key.** Required, Zod-validated, `UNIQUE (guild_id,
+  idempotency_key)`. Exact replay protection, and what M5-D3's three outcomes
+  are about. The tool description must tell the model in plain words to reuse
+  the same value when retrying, because that is the only way this layer ever
+  works.
+- **Layer B — identical content, same channel, within 60 seconds is a
+  refusal**, whatever the key says. This is the retry-with-a-new-key case,
+  and it is cheap: `mcp_sends` already stores the content hash and is already
+  indexed by guild and time.
+
+Sixty seconds, not the full hour: layer B must not become a permanent ban on
+ever posting the same text twice. "Standup in 5 minutes" is a message the
+owner may legitimately send again tomorrow, and a `content_hash` row living
+forever would refuse it.
+
+Cost if wrong: posting the same text to the same channel twice inside a
+minute, deliberately, is refused. The refusal says exactly that and says to
+wait or vary the text, so the operator is never left guessing. That is the
+direction to err in when the alternative is double-posting to a 210-member
+server.
+
+**M5-D9 — the idempotency check comes before the rate cap. M5-D1's layer
+order was wrong and Task 2 caught it.** As written, the cap was layer 4 and
+the ledger read was layer 5, so a client retrying a send that had already
+succeeded — the timed-out-and-retried case M5-D8 is entirely about — would be
+told `rate-cap` once the hour filled. Told its message failed, when the
+message was sitting in the channel. That is exactly the trap M5-D3 was
+written to prevent, reached from the other direction, and I put it in the
+plan myself.
+
+A replay is not a send. It costs no Discord call and consumes no capacity; it
+is an answer about something that already happened, and it must not depend on
+present conditions. So the corrected order is:
+
+```
+1. allowlist                     -> refuse
+2. kill switch                   -> refuse
+3. circuit breaker               -> refuse
+4. idempotency read              -> replay, or refuse on collision (M5-D3)
+5. identical-content window      -> refuse (M5-D8 layer B)
+6. rate cap                      -> refuse   [new sends only]
+7. idempotency claim             -> INSERT OR IGNORE
+8. dry run                       -> record, no REST call
+9. execute                       -> the single REST call
+10. record                       -> outcome, message id, audit row
+```
+
+The cap still binds every genuinely new send, because a replay returns the
+stored result and sends nothing. The claim stays immediately before the dry
+run and the call, which is the property that makes a crash between claim and
+call safe — moving it earlier would be a different mistake.
+
+**Also from Task 2, and worth more than the reorder: the break-it I specified
+for "claim before the REST call" was decorative.** Neutralising it and
+running the sequential replay test still passed, because in the sequential
+case the claim precedes the *second* call either way. The implementer noticed,
+wrote a concurrent probe, and that one did fail — two REST calls for one key.
+A guard that cannot fail is not a guard, and this one had my name on it. The
+concurrency probe is now a committed test rather than a throwaway.
+
+**M5-D10 — the audit row is `via='http'`, not `via='mcp'`. No second rebuild
+of `audit_events`.** Task 4 found that the plan's own Task 4 description was
+unshippable: the `audit_events_via` CHECK is
+`via IS NULL OR via IN ('ssh','http','gateway')`, and `OpsContext.via` is
+typed `'ssh' | 'http'` in core, so `'mcp'` fails both the database and the
+compiler.
+
+The fix is not a migration. `via` is a **transport** vocabulary — `ssh` is the
+CLI over its socket, `http` is the dashboard API, `gateway` is a Discord
+event — and an MCP tool call arrives over HTTP, on the same Fastify app, on a
+route registered beside the dashboard's own. `'http'` is literally true here
+rather than a convenient approximation.
+
+Nothing is lost by it, because the distinguishing field already exists:
+`actor_type='mcp_operator'` is what an operator filters on, and it is
+unambiguous. Adding `'mcp'` to `via` would encode the same fact twice, in the
+column that describes how the request arrived rather than who made it.
+
+What it costs to do otherwise is the real argument. `'mcp'` means a second
+CHECK widening on `audit_events`, which means a second table rebuild — the
+step this plan already calls the riskiest thing in the slice — while two
+guilds are being observed, plus re-applying the M5-D7 index correction by
+hand. That is a meaningful risk for a field that answers no question
+`actor_type` does not already answer.
+
+**M5-D11 — the `DiscordPort` is threaded to the MCP wiring, and it is
+required.** The daemon builds the port in `runtime/daemon.ts`; the HTTP
+wiring currently carries only the raw discord.js `Client`, threaded for the
+guild tools by ruling M4-D12. The message gateway needs the port, not the
+client.
+
+Thread it the same way M4-D12 threaded the client — `index.ts` →
+`startDashboardApi` → `buildDashboardApp` → `registerMcpRoutes` — and make it
+a **required** parameter for the same reason: an optional port would give a
+`send_message` that registers and always fails, which is the M4-D12 defect
+with a new name. Task 4's Files list is widened to
+`apps/daemon/src/http/wiring.ts`, `apps/daemon/src/index.ts` and
+`apps/daemon/src/runtime/daemon.ts` — **threading only** in the last of
+those; it is the file that wires moderation, and nothing about moderation may
+change in it.
+
+**M5-D12 — the message gateway respects the breaker but never trips it, and
+that asymmetry is deliberate.** The whole-branch review flagged it as an
+undocumented difference from the role gateway, which trips the breaker when
+its rate cap overflows (`gateway.ts:280`). It should be documented, not
+removed.
+
+The circuit breaker is **guild-wide and shared with the moderation effect
+path**. If an MCP send hitting its ten-per-hour cap tripped it, the owner's
+Claude client — or anything driving that client — would hold a lever that
+pauses moderation effects for the entire guild. That is an MCP surface
+reaching into moderation, which is the one thing this whole design says it
+must never be (ADR 0044, design §12), and it would be a lever available
+during an observe window.
+
+So: the send path **refuses** when the breaker is open, because a guild in
+trouble should not be posting; it never **opens** it, because a chatty
+operator is not a runaway effect loop and must not be able to quiet the
+moderation path. The role gateway's trip is right for the role gateway, where
+cap overflow means a reaction storm or a convergence bug — a genuine runaway.
+
+This is the one place where M5-D1's "same layered shape" duplication is
+deliberately *not* equivalent, and the gateway's doc comment must say so, or
+someone will later "fix" the inconsistency and hand the MCP surface a
+moderation control.
 
 ## Global constraints (copy verbatim into every brief)
 

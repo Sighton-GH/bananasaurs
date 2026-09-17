@@ -6,6 +6,8 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { parseGuildId, RULE_KINDS } from '@bananasaurs/core';
+import { SQL, StringChunk } from 'drizzle-orm';
+import { getTableConfig } from 'drizzle-orm/sqlite-core';
 import * as schema from './schema.js';
 import { runMigrations } from './db.js';
 import { createRule, type RuleKind } from './repos/automod-rules.js';
@@ -440,6 +442,223 @@ describe('mod_rules.config migration (0010/0011) carries child-table rows throug
     expect(exemption).toEqual({ exempt_type: 'role', exempt_id: ROLE_ID });
 
     raw.close();
+  });
+});
+
+/**
+ * M5-D5: `audit_events.actor_type` gains `'mcp_operator'` by rebuild (0023),
+ * proved the same way as the 0010/0011 precedent above and for the same
+ * reason: `openMigratedTestDatabase()` creates `audit_events` once, already
+ * in its final shape, so 0023's rebuild statements never run against data
+ * there. This migrates to 0022 (the last migration before M5 Task 1), seeds
+ * three audit rows across three actor types with every nullable column set
+ * somewhere and null somewhere, then applies the real 0023 and reads the rows
+ * back with raw SQL, independent of any repo layer.
+ *
+ * 0023 is also the first rebuild of a table carrying a sort-ordered index
+ * (`audit_tail … ("at" desc)`): drizzle-kit 0.31.10's rebuild path misquotes
+ * it as `` `"at" desc` `` (ruling M5-D7), so the proof covers the index and
+ * not only the rows.
+ */
+describe('the audit actor_type widening migration (0023, M5-D5) carries audit rows through the rebuild', () => {
+  const GUILD_ID = '111111111111111111';
+
+  const AUDIT_COLUMNS =
+    'audit_id, guild_id, at, actor_type, actor_id, actor_unix_user_claimed, ' +
+    'via, action, subject_type, subject_id, batch_id, `before`, `after`, dry_run, inferred';
+
+  /**
+   * A database migrated to 0022 and seeded with three audit rows: the state
+   * 0023's rebuild has to carry through. Shared by the survival proof and the
+   * CHECK-direction assertions so the two cannot drift into testing different
+   * data.
+   */
+  const seedAt0022 = (): {
+    raw: Database.Database;
+    db: BetterSQLite3Database<typeof schema>;
+  } => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+
+    // The last migration before M5 Task 1: `audit_events.actor_type` admits
+    // six values and `mcp_sends` / `mcp_send_allowlist` do not exist yet.
+    runMigrations(raw, db, migrationsFolderUpTo(22));
+
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(GUILD_ID);
+    // Row 1: every nullable column set except the CLI-claimed user.
+    raw
+      .prepare(
+        `INSERT INTO audit_events (guild_id, at, actor_type, actor_id, actor_unix_user_claimed,
+          via, action, subject_type, subject_id, batch_id, \`before\`, \`after\`, dry_run, inferred)
+         VALUES (?, 1000, 'member', '333333333333333333', NULL,
+          'gateway', 'message.delete', 'message', '444444444444444444', 'batch-1',
+          '{"count":1}', '{"count":2}', 1, 0)`,
+      )
+      .run(GUILD_ID);
+    // Row 2: the sparse shape — `via` and every payload column NULL.
+    raw
+      .prepare(
+        `INSERT INTO audit_events (guild_id, at, actor_type, actor_id, actor_unix_user_claimed,
+          via, action, subject_type, subject_id, batch_id, \`before\`, \`after\`, dry_run, inferred)
+         VALUES (?, 2000, 'dashboard', 'acct-1', NULL,
+          NULL, 'role.grant', 'member', NULL, NULL, NULL, NULL, 0, 1)`,
+      )
+      .run(GUILD_ID);
+    // Row 3: the CLI shape — no Discord actor, claimed unix user instead.
+    raw
+      .prepare(
+        `INSERT INTO audit_events (guild_id, at, actor_type, actor_id, actor_unix_user_claimed,
+          via, action, subject_type, subject_id, batch_id, \`before\`, \`after\`, dry_run, inferred)
+         VALUES (?, 3000, 'operator_cli', NULL, 'bryan',
+          'ssh', 'mcp.allow_channel', 'channel', '555555555555555555', NULL, NULL, NULL, 0, 0)`,
+      )
+      .run(GUILD_ID);
+
+    return { raw, db };
+  };
+
+  it('keeps every audit row, with audit_id intact, across the rebuild', () => {
+    const { raw, db } = seedAt0022();
+
+    const before = raw.prepare(`SELECT ${AUDIT_COLUMNS} FROM audit_events ORDER BY audit_id`).all();
+
+    // Applies exactly 0023 against the data just inserted — migrations 0-22
+    // are already recorded as applied. Through `runMigrations`, the exact
+    // call this guard exists to prove is safe here.
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const after = raw.prepare(`SELECT ${AUDIT_COLUMNS} FROM audit_events ORDER BY audit_id`).all();
+    expect(after).toEqual(before);
+    expect(after).toEqual([
+      {
+        audit_id: 1,
+        guild_id: GUILD_ID,
+        at: 1000,
+        actor_type: 'member',
+        actor_id: '333333333333333333',
+        actor_unix_user_claimed: null,
+        via: 'gateway',
+        action: 'message.delete',
+        subject_type: 'message',
+        subject_id: '444444444444444444',
+        batch_id: 'batch-1',
+        before: '{"count":1}',
+        after: '{"count":2}',
+        dry_run: 1,
+        inferred: 0,
+      },
+      {
+        audit_id: 2,
+        guild_id: GUILD_ID,
+        at: 2000,
+        actor_type: 'dashboard',
+        actor_id: 'acct-1',
+        actor_unix_user_claimed: null,
+        via: null,
+        action: 'role.grant',
+        subject_type: 'member',
+        subject_id: null,
+        batch_id: null,
+        before: null,
+        after: null,
+        dry_run: 0,
+        inferred: 1,
+      },
+      {
+        audit_id: 3,
+        guild_id: GUILD_ID,
+        at: 3000,
+        actor_type: 'operator_cli',
+        actor_id: null,
+        actor_unix_user_claimed: 'bryan',
+        via: 'ssh',
+        action: 'mcp.allow_channel',
+        subject_type: 'channel',
+        subject_id: '555555555555555555',
+        batch_id: null,
+        before: null,
+        after: null,
+        dry_run: 0,
+        inferred: 0,
+      },
+    ]);
+
+    raw.close();
+  });
+
+  it('accepts mcp_operator and still rejects a value it should not', () => {
+    const { raw, db } = seedAt0022();
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    // The widened CHECK admits the new actor type (both directions: the
+    // rejection below proves the acceptance above is the CHECK's doing and
+    // not a missing constraint).
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO audit_events (guild_id, at, actor_type, action, subject_type)
+           VALUES (?, 4000, 'mcp_operator', 'message.send', 'message')`,
+        )
+        .run(GUILD_ID),
+    ).not.toThrow();
+    expect(() =>
+      raw
+        .prepare(
+          `INSERT INTO audit_events (guild_id, at, actor_type, action, subject_type)
+           VALUES (?, 4000, 'nonsense', 'message.send', 'message')`,
+        )
+        .run(GUILD_ID),
+    ).toThrow();
+
+    raw.close();
+  });
+
+  it('keeps audit_tail present and sort-ordered after the rebuild', () => {
+    const { raw, db } = seedAt0022();
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const rebuilt = raw
+      .prepare(`SELECT sql FROM sqlite_master WHERE type = 'index' AND name = 'audit_tail'`)
+      .get() as { sql: string } | undefined;
+    // Ruling M5-D7: drizzle-kit 0.31.10's rebuild path misquotes this as
+    // `"at" desc` wrapped in backticks, a single nonexistent column. The
+    // corrected migration carries 0000's rendering byte-identically.
+    expect(rebuilt?.sql).toContain('"at" desc');
+
+    raw.close();
+  });
+
+  /**
+   * The schema-side half of the CHECK widening: `schema.ts` itself defines
+   * `'mcp_operator'` in `audit_events_actor_type`, rendered here from the
+   * table definition rather than asserted from the migrated database. The
+   * migrated database cannot see `schema.ts` — a widening removed there
+   * would still pass every assertion above against the frozen `drizzle/`
+   * folder, so without this the definition could drift silently out of step
+   * with the migration that shipped it.
+   */
+  it('schema.ts still defines the widened audit_events_actor_type CHECK', () => {
+    // The literal SQL fragments inside a CHECK's template, collected
+    // recursively (a fragment may nest inside a nested `sql` piece). Columns
+    // and params are skipped — only the written literal can name the value.
+    const literals = (value: SQL): string[] => {
+      const out: string[] = [];
+      const walk = (chunk: unknown): void => {
+        if (typeof chunk === 'string') out.push(chunk);
+        else if (chunk instanceof StringChunk) out.push(...chunk.value);
+        else if (chunk instanceof SQL) for (const nested of chunk.queryChunks) walk(nested);
+      };
+      for (const chunk of value.queryChunks) walk(chunk);
+      return out;
+    };
+    const actorType = getTableConfig(schema.auditEvents).checks.find(
+      (c) => c.name === 'audit_events_actor_type',
+    );
+    expect(actorType).toBeDefined();
+    expect(literals(actorType!.value).join('')).toContain(`'mcp_operator'`);
   });
 });
 

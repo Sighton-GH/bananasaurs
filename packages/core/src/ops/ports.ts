@@ -994,6 +994,42 @@ export interface OpsPorts {
     readonly capability: Capability;
     readonly grantedBy: string;
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
+
+  // --- mcp send allowlist (slice M5, ADR 0044 §4) ------------------------------
+  /**
+   * What `mcp allow-channel` did.
+   *
+   * Three outcomes, not a boolean: the operator needs to hear which of
+   * "allowed", "already allowed" or "no such channel in this guild"
+   * happened. `'no-such-channel'` is the allow-time half of C2 — a snowflake
+   * that is not a text-capable channel of this guild (including a DM-shaped
+   * id) is refused before any row is written.
+   */
+  allowSendChannel(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
+  disallowSendChannel(channelId: string): boolean;
+  listSendAllowlist(): readonly OpsSendAllowlistEntry[];
+  listSends(input: {
+    sinceMs?: number | undefined;
+    limit?: number | undefined;
+  }): readonly OpsSendRecord[];
+}
+
+/** What `mcp allow-channel` did: allowed, already allowed, or refused. */
+export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';
+
+export interface OpsSendAllowlistEntry {
+  readonly channelId: string;
+  readonly addedByAccountId: string;
+  readonly addedAt: number;
+}
+
+/** Projected field by field. No content: it is not this surface's business. */
+export interface OpsSendRecord {
+  readonly channelId: string;
+  readonly messageId: string | undefined;
+  readonly tokenId: string;
+  readonly sentAt: number;
+  readonly outcome: 'sent' | 'dry_run';
 }
 
 /** A job this command queued, or the one already pending that absorbed it. */

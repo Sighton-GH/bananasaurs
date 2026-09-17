@@ -1,7 +1,14 @@
 import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
-import { safeLogFields, type GuildId, type Logger } from '@bananasaurs/core';
+import {
+  parseSnowflakeId,
+  safeLogFields,
+  sendMessageEffect,
+  type DiscordPort,
+  type GuildId,
+  type Logger,
+} from '@bananasaurs/core';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
@@ -14,12 +21,15 @@ import {
   type McpHealthPort,
   type McpPrincipal,
   type McpRecordsPort,
+  type McpSendPort,
 } from '@bananasaurs/mcp';
 import {
   archiveRepo,
   archiveSearchRepo,
   automodAdminRepo,
   effectRepo,
+  guildRepo,
+  mcpSendRepo,
   modCaseRepo,
   panelRepo,
   roleRepo,
@@ -464,6 +474,144 @@ const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
     ),
 });
 
+/**
+ * Whether the channel is a text-capable channel of this guild (C2 send-time).
+ *
+ * Answered from `client.guilds.cache` — already in memory, nothing to fetch
+ * — the same style `apps/daemon/src/ops/wiring.ts`'s allow-time check uses.
+ * A guild absent from the cache (not yet READY, or left) answers false:
+ * failing closed, because this check exists to contain rows the allow-time
+ * check never saw. Threads are excluded like the allow-time check: a thread
+ * id is not a channel an owner allowlists.
+ */
+const isSendChannelInGuild = (client: Client, guildId: GuildId, channelId: string): boolean => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) return false;
+  const channel = guild.channels.cache.get(channelId);
+  if (channel === undefined) return false;
+  return channel.isTextBased() && !channel.isThread();
+};
+
+/**
+ * The `McpSendPort` behind `send_message` (slice M5), field by field like
+ * `healthPortFor` above. It builds the `MessageGatewayDeps` the
+ * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
+ * needs — safety state and the allowlist, the `mcp_sends` ledger, and the
+ * audit write — over the real repositories, and calls the effect. The
+ * gateway's `MessageOutcome` is mapped onto the tool's `McpSendOutcome`
+ * explicitly: `guild-unknown` throws the shared refusal (the tool layer turns
+ * every port throw into it, and a missing guild row reads as "not yours"),
+ * and the `failed` code stays in the daemon's logs rather than reaching the
+ * model. A fault leaves one allowlisted-fields error line via
+ * `loggedCallAsync` above — never message content (rule 4): the channel id
+ * and the outcome name what happened, and the content lives only in
+ * `mcp_sends` and in Discord.
+ */
+const sendPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+  discord: DiscordPort,
+  /**
+   * The same live client the guild tools read (C2 send-time defence in
+   * depth): the gateway's `isChannelInGuild` is answered from
+   * `client.guilds.cache`, so a stale allowlist row for a channel outside
+   * the guild is refused before any Discord call.
+   */
+  client: Client,
+): McpSendPort => ({
+  send: (guildId, input) =>
+    loggedCallAsync(deps.logger, 'sendMessage', async () => {
+      const scope = deps.scopes.forGuild(guildId);
+      const outcome = await sendMessageEffect(
+        {
+          guildId,
+          discord,
+          logger: deps.logger,
+          now: deps.now,
+          state: {
+            // `readSafetyState` carries more than the send needs; the gateway
+            // declares the narrow shape it reads, so extra columns cannot
+            // leak across this boundary the way they did before the archive
+            // port's projection.
+            read: () => guildRepo.readSafetyState(scope),
+            isChannelAllowed: (channelId) => mcpSendRepo.isChannelAllowed(scope, channelId),
+            isChannelInGuild: (channelId) => isSendChannelInGuild(client, guildId, channelId),
+          },
+          sends: {
+            find: (idempotencyKey) => mcpSendRepo.findSend(scope, idempotencyKey),
+            claim: (claim) => mcpSendRepo.claimSend(scope, claim),
+            recordMessageId: (record) => {
+              mcpSendRepo.recordSentMessageId(scope, record);
+            },
+            countSince: (sinceMs) => mcpSendRepo.countSendsSince(scope, sinceMs),
+            // No repository function (Task 1 needed none): the window is
+            // sixty seconds, so the bounded `listSends({ sinceMs })` read
+            // plus an in-memory match is the whole query.
+            findRecentByContent: (contentHash, channelId, sinceMs) =>
+              mcpSendRepo
+                .listSends(scope, { sinceMs })
+                .some((row) => row.contentHash === contentHash && row.channelId === channelId),
+          },
+          audit: {
+            record: (record) => {
+              effectRepo.recordAudit(scope, {
+                at: record.atMs,
+                actorType: 'mcp_operator',
+                actorId: record.tokenId,
+                // Ruling M5-D10: `via` is the transport vocabulary — this
+                // call arrived over HTTP on the dashboard's own Fastify app
+                // — and `actor_type` is the identity. Do not "fix" this to
+                // `'mcp'`: the CHECK forbids it, and the actor type already
+                // answers who made the call.
+                via: 'http',
+                action: 'mcp.message.sent',
+                subjectType: 'channel',
+                subjectId: record.channelId,
+                before: undefined,
+                // The channel, the credential and the outcome — never the
+                // content (rule 4). Content lives in `mcp_sends` and in
+                // Discord.
+                after: {
+                  clientId: principal.clientId,
+                  tokenId: record.tokenId,
+                  outcome: record.outcome,
+                  ...(record.messageId !== undefined ? { messageId: record.messageId } : {}),
+                },
+                dryRun: record.dryRun,
+              });
+            },
+          },
+        },
+        {
+          channelId: parseSnowflakeId(input.channelId),
+          content: input.content,
+          idempotencyKey: input.idempotencyKey,
+          tokenId: principal.tokenId,
+        },
+      );
+      switch (outcome.status) {
+        case 'sent':
+          return { status: 'sent', messageId: outcome.messageId };
+        case 'dry-run':
+          return { status: 'dry-run' };
+        case 'replayed':
+          return { status: 'replayed', messageId: outcome.messageId };
+        case 'refused':
+          if (outcome.reason === 'guild-unknown') throw new Error(GUILD_REFUSAL_MESSAGE);
+          // The gateway's `channel-not-in-guild` is its own reason, but this
+          // package's `McpSendRefusal` vocabulary is frozen: the model hears
+          // `channel-not-allowlisted`, whose text already tells it to ask the
+          // owner to allowlist and retry. Never the content, never a throw.
+          if (outcome.reason === 'channel-not-in-guild') {
+            return { status: 'refused', reason: 'channel-not-allowlisted' };
+          }
+          return { status: 'refused', reason: outcome.reason };
+        case 'failed':
+          return { status: 'failed' };
+      }
+    }),
+});
+
 /** Hop-by-hop headers that must not survive the Fastify → Web conversion. */
 const DROPPED_REQUEST_HEADERS = new Set([
   'host',
@@ -529,6 +677,12 @@ export const registerMcpRoutes = (
   deps: HttpDeps,
   /** Required (ruling M4-D12): an optional client would serve three tools that silently always refuse. */
   client: Client,
+  /**
+   * Required (ruling M5-D11): the message gateway behind `send_message`
+   * needs the port, not the client, and an optional port would serve a
+   * `send_message` that registers and always fails.
+   */
+  discord: DiscordPort,
 ): void => {
   app.all(MCP_ROUTE_PATH, async (request, reply) => {
     // The opt-in, in the shape of `registerOAuthRoutes`' early return
@@ -579,6 +733,7 @@ export const registerMcpRoutes = (
       archive: archivePortFor(deps),
       guild: guildPortFor(client, deps),
       records: recordsPortFor(deps),
+      send: sendPortFor(principal, deps, discord, client),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

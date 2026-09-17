@@ -75,11 +75,41 @@ bananasaurs mcp clients                      # registered OAuth clients (no clie
 bananasaurs mcp tokens                       # every token row, live or revoked — ids only
 bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
 bananasaurs mcp revoke-client <client-id> --confirm
+bananasaurs mcp allow-channel <channel-id> --confirm
+                                             # lets the connector post here. Nothing is
+                                             # allowlisted by default, and the allowlist is
+                                             # the only thing that decides where it can post
+bananasaurs mcp disallow-channel <channel-id> --confirm
+bananasaurs mcp allowlist                    # the channels the connector may post to
+bananasaurs mcp sends [--since <duration>]   # every send, with channel, outcome and token id
 bananasaurs provider review <provider> --confirm
                                               # records that the owner re-checked the
                                               # training-eligibility row as it stands — it
                                               # writes the review date, not the row's claims
 ```
+
+**The send tool, and what bounds it (slice M5).** `send_message` posts one
+message to one channel, and every bound on it is checked by the daemon, not
+by the client:
+
+- **The allowlist decides where.** Nothing is allowlisted by default, so a
+  freshly connected connector can post nowhere at all until
+  `mcp allow-channel` says otherwise. A channel that is not on it — including
+  a DM, which can never be on it — is refused before any Discord call.
+- **Mentions never ping.** The send sets `allowed_mentions` to the empty set,
+  so `@everyone`, `@here`, role and user mentions in the text are inert. This
+  is the one place in the tree that sets it; ordinary bot messages do not.
+- **Ten per guild per rolling hour**, counted from the durable ledger rather
+  than memory, so a restart does not hand out ten more.
+- **The kill switch, the breaker and dry run all apply.** With dry run on the
+  send is recorded and not posted, which is the safe way to rehearse one.
+- **Retries are safe if the client reuses its idempotency key**, and the
+  daemon guards the case where it does not: identical text to the same
+  channel inside sixty seconds is refused whatever the key says.
+
+`mcp sends` shows what was posted, with the channel and the token that did
+it. The message text is not in the audit trail — it is in `mcp_sends` and in
+Discord, which is where a member can see it too.
 
 **Scopes, when you connect a client (slice M4).** The consent page offers two:
 `bananasaurs:read` — read messages, cases and server settings — and

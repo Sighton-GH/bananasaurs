@@ -92,6 +92,14 @@ export interface OutgoingMessage {
   content?: string | undefined;
   embeds?: readonly unknown[] | undefined;
   components?: readonly unknown[] | undefined;
+  /**
+   * Discord's allowed_mentions. Absent means Discord's default, which parses
+   * every mention in the content — so the MCP send path always sets
+   * `{ parse: [] }` (ruling M5-D2). Not defaulted here: changing what panel
+   * posts and log messages do is a behaviour change, and two guilds are
+   * being observed.
+   */
+  allowedMentions?: { readonly parse: readonly [] } | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */

@@ -440,6 +440,13 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     ...(message.content === undefined ? {} : { content: message.content }),
     ...(message.embeds === undefined ? {} : { embeds: message.embeds }),
     ...(message.components === undefined ? {} : { components: message.components }),
+    // camelCase on the port, snake_case on the wire: a spread of
+    // `allowedMentions` would still be broken. Opt-in only — the MCP send path
+    // is the sole caller that sets it, and a default here would change what
+    // panel posts and log messages send.
+    ...(message.allowedMentions === undefined
+      ? {}
+      : { allowed_mentions: { parse: [...message.allowedMentions.parse] } }),
   };
 }
 

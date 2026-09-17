@@ -96,6 +96,8 @@ const connectPair = async (
     archive: stubArchive(),
     guild: stubGuild(),
     records: stubRecords(),
+    // Required since M5 Task 4; never called by the resource pinned here.
+    send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

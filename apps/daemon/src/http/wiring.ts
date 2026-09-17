@@ -5,6 +5,7 @@ import type { Client } from 'discord.js';
 import {
   safeLogFields,
   type Config,
+  type DiscordPort,
   type Logger,
   type OpsInstance,
   type OpsPorts,
@@ -54,6 +55,14 @@ export interface DashboardApiDeps {
   readonly instance: OpsInstance;
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
+  /**
+   * The Discord REST port, for the MCP send tool (ruling M5-D11).
+   *
+   * Required for the same reason `client` is: the message gateway behind
+   * `send_message` needs the port, not the client, and an optional port
+   * would serve a `send_message` that registers and always fails.
+   */
+  readonly discord: DiscordPort;
 }
 
 export interface DashboardApi {
@@ -87,6 +96,14 @@ export interface DashboardAppDeps {
   readonly distDir: string;
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
+  /**
+   * The Discord REST port, for the MCP send tool (ruling M5-D11).
+   *
+   * Required for the same reason `client` is: the message gateway behind
+   * `send_message` needs the port, not the client, and an optional port
+   * would serve a `send_message` that registers and always fails.
+   */
+  readonly discord: DiscordPort;
 }
 
 /**
@@ -120,7 +137,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       registerAutomodRoutes(instance, guard, routeDeps);
       registerCaseRoutes(instance, guard, routeDeps);
       registerOAuthRoutes(instance, guard, routeDeps);
-      registerMcpRoutes(instance, routeDeps, deps.client);
+      registerMcpRoutes(instance, routeDeps, deps.client, deps.discord);
     },
   });
   registerStaticAssets(app, deps.distDir);
@@ -196,6 +213,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     ...httpDeps,
     distDir: DASHBOARD_DIST,
     client: deps.client,
+    discord: deps.discord,
   });
 
   const host = deps.config.DASHBOARD_BIND;

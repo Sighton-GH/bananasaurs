@@ -36,6 +36,12 @@ import {
   mcpRevokeCommand,
   mcpTokensCommand,
 } from './commands/mcp.js';
+import {
+  mcpAllowChannelCommand,
+  mcpAllowlistCommand,
+  mcpDisallowChannelCommand,
+  mcpSendsCommand,
+} from './commands/mcp-allowlist.js';
 import { killswitchCommand } from './commands/killswitch.js';
 import {
   auditTailCommand,
@@ -80,6 +86,8 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   automodReviewCommand,
   archiveStatusCommand,
   archiveSearchCommand,
+  mcpAllowlistCommand,
+  mcpSendsCommand,
 
   // Writes. Each needs `--confirm` and each records an audit row; the
   // dispatcher enforces both, so the ordering here is for `--help` only.
@@ -106,6 +114,8 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpTokensCommand,
   mcpRevokeCommand,
   mcpRevokeClientCommand,
+  mcpAllowChannelCommand,
+  mcpDisallowChannelCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).

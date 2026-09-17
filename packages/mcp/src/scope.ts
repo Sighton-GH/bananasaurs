@@ -29,6 +29,18 @@ export const hasReadScope = (principal: McpPrincipal): boolean =>
   principal.scopes.includes(MCP_READ_SCOPE);
 
 /**
+ * The send scope `send_message` requires (slice M5, the send half of ruling
+ * M4-D17). A token carrying only `bananasaurs:read` cannot see
+ * `send_message` in `tools/list` at all — filtered out of the advertised set
+ * at registration, not merely refused on call — and a send-only token
+ * likewise cannot see the eleven read tools.
+ */
+export const MCP_SEND_SCOPE = 'bananasaurs:send';
+
+export const hasSendScope = (principal: McpPrincipal): boolean =>
+  principal.scopes.includes(MCP_SEND_SCOPE);
+
+/**
  * The refusal every tool returns for a guild it cannot resolve, whatever the
  * underlying reason. Empty set, malformed id, and unreachable id are
  * indistinguishable to the caller on purpose: distinct messages would be an

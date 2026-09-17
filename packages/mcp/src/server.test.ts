@@ -25,6 +25,7 @@ import {
   LIST_ROLES_TOOL_NAME,
   type McpGuildPort,
 } from './tools/guild.js';
+import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 
 /**
  * Task 3, `packages/mcp` side: `get_health` exercised through a real MCP
@@ -88,9 +89,15 @@ const stubRecords = (): McpRecordsPort => ({
   listPanels: () => [],
 });
 
+/** Minimal send port: this file pins registration, never the send itself. */
+const stubSend = (): McpSendPort => ({
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+});
+
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
+  send: McpSendPort = stubSend(),
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
   const server = createMcpServer({
@@ -99,6 +106,7 @@ const connectPair = async (
     archive: stubArchive(),
     guild: stubGuild(),
     records: stubRecords(),
+    send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -139,12 +147,15 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists get_health alongside the archive and guild tools', async () => {
-    const { client, close } = await connectPair(principalWith([GUILD]));
+  it('lists send_message first, alongside the eleven read tools', async () => {
+    const { client, close } = await connectPair(
+      principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
+    );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(11);
+      expect(list.tools).toHaveLength(12);
       expect(list.tools.map((tool) => tool.name)).toEqual([
+        SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
         SEARCH_MESSAGES_TOOL_NAME,
         READ_CHANNEL_HISTORY_TOOL_NAME,
@@ -164,18 +175,31 @@ describe('createMcpServer', () => {
     }
   });
 
-  it('(ruling M4-D17) a send-only principal gets a server with no tools and no resource', async () => {
+  it('(ruling M4-D17) a send-only principal gets send_message and nothing else', async () => {
     const { client, close } = await connectPair(principalWith([GUILD], ['bananasaurs:send']));
     try {
-      // The SDK installs its `tools/list` and `resources/templates/list`
-      // handlers lazily on the first `tool()` / `registerResource()` call
-      // (`setToolRequestHandlers` / `setResourceRequestHandlers` in
-      // `node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js`,
-      // both private), so a server with nothing registered answers
-      // Method-not-found rather than an empty array — there is no list at
-      // all for `send_message`'s siblings to appear in.
-      await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
+      // `send_message` registers under the send scope independently of the
+      // read-scope block, so a send-only server lists exactly one tool — and
+      // still no resource, which stays behind the read scope.
+      const list = await client.listTools();
+      expect(list.tools.map((tool) => tool.name)).toEqual([SEND_MESSAGE_TOOL_NAME]);
+      // The SDK installs its `resources/templates/list` handler lazily on the
+      // first `registerResource()` call, so a server with no resource answers
+      // Method-not-found rather than an empty array.
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('(slice M5) a read-only principal never sees send_message', async () => {
+    // Required (ruling M5-D11) means the port is always present, not that the
+    // tool is always advertised: without the send scope there is no
+    // `send_message`, even with the port threaded through.
+    const { client, close } = await connectPair(principalWith([GUILD]));
+    try {
+      const list = await client.listTools();
+      expect(list.tools.map((tool) => tool.name)).not.toContain(SEND_MESSAGE_TOOL_NAME);
     } finally {
       await close();
     }

@@ -425,6 +425,8 @@ describe('guild tools on the MCP server', () => {
         listRules: () => [],
         listPanels: () => [],
       },
+      // Required since M5 Task 4; never called by the guild tools pinned here.
+      send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

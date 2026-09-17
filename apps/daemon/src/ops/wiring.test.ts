@@ -6,6 +6,7 @@ import {
   accountRepo,
   archiveRepo,
   guildRepo,
+  mcpSendRepo,
   oauthRepo,
   sessionRepo,
   type GuildScope,
@@ -180,6 +181,42 @@ describe('listUnreadableArchiveChannels', () => {
       { channelId: NO_VIEW, reason: 'no-view' },
       { channelId: NO_HISTORY, reason: 'no-history' },
     ]);
+  });
+});
+
+describe('allowSendChannel (C2 allow-time)', () => {
+  /** A snowflake in no guild's channel cache: the DM shape C2 is about. */
+  const DM_SHAPED = '700000000000000001';
+  const UNKNOWN = '799999999999999999';
+
+  const sendPorts = () =>
+    opsPortsFor(scope, t.scopes.instance(), operations, () => NOW, client, true);
+
+  it('allows a text channel of the guild', () => {
+    expect(sendPorts().allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe('allowed');
+    expect(mcpSendRepo.isChannelAllowed(scope, CLEAN)).toBe(true);
+  });
+
+  it('reports already-allowed on a repeat without duplicating the row', () => {
+    const ports = sendPorts();
+    expect(ports.allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe('allowed');
+    expect(ports.allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe(
+      'already-allowed',
+    );
+  });
+
+  it('refuses a DM-shaped id and writes no row', () => {
+    expect(sendPorts().allowSendChannel({ channelId: DM_SHAPED, accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
+    expect(mcpSendRepo.isChannelAllowed(scope, DM_SHAPED)).toBe(false);
+  });
+
+  it('refuses an unknown channel id and writes no row', () => {
+    expect(sendPorts().allowSendChannel({ channelId: UNKNOWN, accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
+    expect(mcpSendRepo.isChannelAllowed(scope, UNKNOWN)).toBe(false);
   });
 });
 

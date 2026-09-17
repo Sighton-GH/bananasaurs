@@ -183,6 +183,20 @@ export {
   type SafetyState,
 } from './effects/gateway.js';
 export {
+  contentHashFor,
+  DUPLICATE_CONTENT_WINDOW_MS,
+  MESSAGE_SEND_RATE_LIMIT,
+  MESSAGE_SEND_RATE_WINDOW_MS,
+  sendMessageEffect,
+  type MessageAuditInput,
+  type MessageGatewayDeps,
+  type MessageIntent,
+  type MessageOutcome,
+  type MessageRefusalReason,
+  type SafetyStateForSend,
+  type SendLedgerRow,
+} from './effects/message-gateway.js';
+export {
   inverseOf,
   undoBatch,
   type UndoableEffect,
@@ -475,6 +489,8 @@ export type {
   OpsRetryOutcome,
   OpsRuleMode,
   OpsSafetyState,
+  OpsSendAllowlistEntry,
+  OpsSendRecord,
   OpsUndoableCount,
   OpsVerdictCounts,
 } from './ops/ports.js';

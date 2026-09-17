@@ -10,7 +10,15 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, archiveRepo, authzRepo, guildRepo, roleRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  archiveRepo,
+  authzRepo,
+  effectRepo,
+  guildRepo,
+  mcpSendRepo,
+  roleRepo,
+} from '@bananasaurs/storage';
 import { parseGuildId } from '@bananasaurs/core';
 import { createServer, generateToken, hashPassword } from '@bananasaurs/http';
 import {
@@ -20,6 +28,7 @@ import {
 } from '@bananasaurs/mcp';
 import { buildDashboardApp, type DashboardAppDeps } from '../http/wiring.js';
 import { registerMcpRoutes } from './wiring.js';
+import { FakeDiscord } from '@bananasaurs/testkit';
 import { testInstanceFor, testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -49,6 +58,7 @@ const CHALLENGE = `Bearer resource_metadata="${PUBLIC_URL}/.well-known/oauth-pro
 let t: MigratedTestDatabase;
 let clock: number;
 let deps: DashboardAppDeps;
+let fakeDiscord: FakeDiscord;
 let app: FastifyInstance;
 let dir: string;
 
@@ -82,6 +92,9 @@ beforeEach(async () => {
     // every test that does not exercise guild tools, which build their own
     // client with guilds injected below.
     client: new Client(buildClientOptions(() => '123456789012345678')),
+    // The Discord REST port behind `send_message` (ruling M5-D11): the fake
+    // the composed send tests assert against, rebuilt per test like the app.
+    discord: (fakeDiscord = new FakeDiscord({ guildId: GUILD_A })),
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD_A), { name: 'guild a', now: clock });
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD_B), { name: 'guild b', now: clock });
@@ -294,25 +307,60 @@ describe('/mcp behind the bearer guard', () => {
     expect(names).not.toContain('send_message');
   });
 
-  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees no tools', async () => {
+  it('(M6) a read-scope token calling send_message answers -32602 and never reaches the port', async () => {
+    // Through the real composition with a real minted read-scope token:
+    // `send_message` never registers without the send scope, so the call
+    // fails as unknown-tool before any port exists to reach. Pinned here
+    // because the probe verified it but no test held it.
+    const accessToken = await mintToken();
+    const response = await mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 2,
+        method: 'tools/call',
+        params: {
+          name: 'send_message',
+          arguments: {
+            guildId: '111111111111111111',
+            channelId: '444444444444444444',
+            content: 'm6-probe-content',
+            idempotencyKey: 'm6-k1',
+          },
+        },
+      },
+      accessToken,
+    );
+    expect(response.statusCode).toBe(200);
+    const bodies = sseData(response.body);
+    expect(bodies.length).toBeGreaterThan(0);
+    // The transport surfaces the unknown tool as an isError result whose
+    // text carries the -32602 code — not as a top-level JSON-RPC error
+    // frame — and the send port is never reached.
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    expect(result?.isError).toBe(true);
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.text).toContain('-32602');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('(ruling M4-D17) a send-only token minted through the real OAuth flow sees send_message and nothing else', async () => {
     // Through the real authorize/consent/exchange flow, not a hand-built
     // principal: this defect is invisible to a test that constructs the
     // principal itself, which is the exact shape of the three "works in
     // tests, broken in the daemon" defects this slice already found.
     //
-    // The SDK installs its `tools/list` handler lazily on the first `tool()`
-    // registration (`setToolRequestHandlers` in
-    // `node_modules/@modelcontextprotocol/sdk/dist/esm/server/mcp.js`), so
-    // the send-only server — nothing registered — answers Method-not-found
-    // rather than an empty array: there is no list at all for `send_message`'s
-    // siblings to appear in.
+    // Since M5 Task 4 the daemon always threads the real send port (ruling
+    // M5-D11), so a send-scoped token lists exactly `send_message` — the
+    // eleven read tools stay behind the read scope it does not carry.
     const accessToken = await mintToken('bananasaurs:send');
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
     const bodies = sseData(response.body);
     expect(bodies.length).toBeGreaterThan(0);
-    const frame = bodies[0] as { error?: { code?: number; message?: string } };
-    expect(frame.error?.code).toBe(-32601);
+    const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
+    expect(result.result?.tools?.map((tool) => tool.name)).toEqual(['send_message']);
   });
 
   it('(ruling M4-D17) a send-only token sees no overview resource either', async () => {
@@ -364,6 +412,219 @@ describe('/mcp behind the bearer guard', () => {
     const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
     expect(result?.isError).toBe(true);
     expect(JSON.stringify(result?.content)).toContain(GUILD_REFUSAL_MESSAGE);
+  });
+});
+
+/**
+ * Slice M5 Task 4, daemon side: `send_message` through the real stack —
+ * Fastify + `registerMcpRoutes` + `createMcpServer` + the real `sendPortFor`
+ * over the real repositories and the fake Discord port — with tokens minted
+ * through the real OAuth flow.
+ *
+ * What this proves that a unit test could not: that the daemon actually
+ * threads the port (ruling M5-D11) rather than a test supplying it by hand,
+ * that a non-allowlisted channel is refused with no Discord call, that the
+ * idempotency key survives the trip, and that the audit row lands with the
+ * channel and never the content.
+ *
+ * Setup reaches past `buildDashboardApp` in two places, both the same kind
+ * of seeding the archive tests already do: the allowlist row (written the
+ * way `bananasaurs mcp allow-channel` writes it, through the same
+ * repository — there is no operator-socket path in this app to drive
+ * instead) and dry-run off (guilds default to dry-run on, under which a
+ * send records without ever calling Discord). Neither is behaviour under
+ * test.
+ */
+describe('/mcp send_message through the real composition', () => {
+  const CHANNEL = '444444444444444444';
+  const OTHER_CHANNEL = '455555555555555555';
+  /** Allowlisted but in no guild's channel cache: the stale-row shape C2 is about. */
+  const OUTSIDE_CHANNEL = '477777777777777777';
+  /** Distinctive text: must reach Discord, must never reach the audit row. */
+  const CONTENT = 'picnic-probe-send-content-that-must-never-reach-audit-zz9';
+
+  interface SendDiscordInternals {
+    guilds: { _add: (data: object) => Guild };
+  }
+
+  /**
+   * The send-time guild check reads the live client's cache, so the composed
+   * app's client needs guild A with its channels — injected the way the guild
+   * tools tests below inject theirs. `OTHER_CHANNEL` stays unallowlisted on
+   * purpose: its refusal still comes from the allowlist, not the cache.
+   */
+  const seedSendGuild = (): void => {
+    const internals = deps.client as unknown as SendDiscordInternals;
+    internals.guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'planning',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: OTHER_CHANNEL,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildText,
+          name: 'lounge',
+          position: 1,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+  };
+
+  const allow = (): void => {
+    seedSendGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+  };
+
+  const sendCall = (accessToken: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      {
+        jsonrpc: '2.0',
+        id: 1,
+        method: 'tools/call',
+        params: { name: 'send_message', arguments: args },
+      },
+      accessToken,
+    );
+
+  const callText = (
+    body: string,
+  ): { readonly isError: boolean | undefined; readonly text: string } => {
+    const bodies = sseData(body);
+    expect(bodies.length).toBeGreaterThan(0);
+    const result = (bodies[0] as { result?: { isError?: boolean; content?: unknown } }).result;
+    const blocks = result?.content as ReadonlyArray<{ type: string; text: string }> | undefined;
+    expect(blocks).toHaveLength(1);
+    expect(blocks?.[0]?.type).toBe('text');
+    return { isError: result?.isError, text: blocks?.[0]?.text ?? '' };
+  };
+
+  const sendArgs = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    guildId: '111111111111111111',
+    channelId: CHANNEL,
+    content: CONTENT,
+    idempotencyKey: 'send-k1',
+    ...over,
+  });
+
+  it('an allowlisted channel sends exactly once, with mentions suppressed', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+
+    const found = callText((await sendCall(accessToken, sendArgs())).body);
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('Sent message');
+    expect(found.text).toContain(CHANNEL);
+
+    // Exactly one Discord call, carrying the forced-empty mentions: nothing
+    // else in the tree sets `allowedMentions`, so absent would mean Discord's
+    // default of parsing everything, including @everyone.
+    const calls = fakeDiscord.restCalls('sendMessage');
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.args[0]).toBe(GUILD_A);
+    expect(calls[0]?.args[1]).toBe(CHANNEL);
+    expect(calls[0]?.args[2]).toEqual({ content: CONTENT, allowedMentions: { parse: [] } });
+
+    // The ledger row lands with the Discord message id.
+    const row = mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-k1');
+    expect(row?.outcome).toBe('sent');
+    expect(row?.channelId).toBe(CHANNEL);
+    expect(row?.messageId).toBeDefined();
+
+    // The audit row carries the channel, the credential and the outcome —
+    // never the content (rule 4).
+    const trail = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 });
+    const audit = trail.find((entry) => entry.action === 'mcp.message.sent');
+    expect(audit).toBeDefined();
+    expect(audit?.actorType).toBe('mcp_operator');
+    // Ruling M5-D10: `via` is the transport — this call arrived over HTTP on
+    // the dashboard's own Fastify app — and `actor_type` is the identity.
+    expect(audit?.via).toBe('http');
+    expect(audit?.subjectType).toBe('channel');
+    expect(audit?.subjectId).toBe(CHANNEL);
+    const after = JSON.parse(audit?.after ?? '{}') as Record<string, unknown>;
+    expect(after['outcome']).toBe('sent');
+    expect(after['clientId']).toMatch(/^cli_/);
+    expect(after['tokenId']).toMatch(/^tok_/);
+    expect(audit?.actorId).toBe(after['tokenId']);
+    // The absence assertion, not only the presence one.
+    expect(JSON.stringify(trail)).not.toContain(CONTENT);
+  });
+
+  it('a non-allowlisted channel is refused and Discord is never called', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+
+    const refused = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: OTHER_CHANNEL, idempotencyKey: 'send-k2' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not on the send allowlist');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-k2')).toBeUndefined();
+  });
+
+  it('the same idempotency key twice sends once and answers the second as a replay', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+
+    const first = callText((await sendCall(accessToken, sendArgs())).body);
+    expect(first.isError).not.toBe(true);
+    const second = callText((await sendCall(accessToken, sendArgs())).body);
+    expect(second.isError).not.toBe(true);
+    expect(second.text).toContain('Already sent under this idempotency key');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(1);
+  });
+
+  it('an allowlisted row outside the guild is refused and Discord is never called (C2 send-time)', async () => {
+    // The stale-row shape: a row written before allow-time validation (or by
+    // a future path) for a channel in no guild's cache. The gateway refuses
+    // with its own reason; the model hears the allowlist text, and the
+    // Discord port is never reached.
+    allow();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: OUTSIDE_CHANNEL,
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    const accessToken = await mintToken('bananasaurs:send');
+
+    const refused = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: OUTSIDE_CHANNEL, idempotencyKey: 'send-outside' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not on the send allowlist');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'send-outside')).toBeUndefined();
   });
 });
 
@@ -844,7 +1105,14 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
     createServer({
       deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
       registerRoutes: (instance, _guard, routeDeps) => {
-        registerMcpRoutes(instance, routeDeps, discordClient);
+        // A port that is never called by the guild tools pinned here — but
+        // required (ruling M5-D11), so it is threaded even so.
+        registerMcpRoutes(
+          instance,
+          routeDeps,
+          discordClient,
+          new FakeDiscord({ guildId: GUILD_A }),
+        );
       },
     });
 
