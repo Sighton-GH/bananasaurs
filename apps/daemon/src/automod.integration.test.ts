@@ -434,6 +434,15 @@ describe('automod, end to end on the fake gateway', () => {
       env: 'test',
       gateway: notUsedByDoctorInstance('gateway'),
       doctor: () => ({ ok: true, text: 'gateway: ok', data: null }),
+      // All-clear, not "not used": `doctor` reads this member on every run,
+      // and this test's subject is the unusable automod rule, not the tunnel.
+      probePublicSurface: () =>
+        Promise.resolve({
+          probed: false,
+          ok: true,
+          text: 'public surface    not probed (MCP_PUBLIC_URL unset)',
+          data: null,
+        }),
       redactedConfig: notUsedByDoctorInstance('redactedConfig'),
       reissueBootstrapToken: notUsedByDoctorInstance('reissueBootstrapToken'),
       backupNow: notUsedByDoctorInstance('backupNow'),

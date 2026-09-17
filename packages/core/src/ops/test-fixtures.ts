@@ -109,6 +109,18 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   env: 'development',
   gateway: () => ({ connected: true, pingMs: 42, guildCount: 1 }),
   doctor: () => ({ ok: true, text: 'doctor: ok', data: null }),
+  // Unprobed by default, because `doctor` always reads it: a test that wants
+  // a public-surface finding has to say so, so an exposed dashboard is never
+  // something a fixture arranged by accident. The text matches
+  // `formatPublicSurface`'s not-probed line, which lives in `apps/daemon` and
+  // cannot be imported here (ADR 0014).
+  probePublicSurface: () =>
+    Promise.resolve({
+      probed: false,
+      ok: true,
+      text: 'public surface    not probed (MCP_PUBLIC_URL unset)',
+      data: null,
+    }),
   redactedConfig: () => ({ BANANASAURS_DRY_RUN: false, DISCORD_BOT_TOKEN: '<redacted>' }),
   // Refuses by default, which is the state a provisioned instance is in. A
   // test that wants the token has to say so, so `bootstrap reissue` succeeding

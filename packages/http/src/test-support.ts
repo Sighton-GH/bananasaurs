@@ -584,6 +584,13 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   readonly: false,
   env: 'test',
   doctor: () => ({ ok: true, text: 'not used by the dashboard routes under test', data: null }),
+  probePublicSurface: () =>
+    Promise.resolve({
+      probed: false,
+      ok: true,
+      text: 'public surface    not probed (MCP_PUBLIC_URL unset)',
+      data: null,
+    }),
   redactedConfig: () => ({}),
   gateway: () => ({ connected: true, pingMs: undefined, guildCount: 1 }),
   reissueBootstrapToken: () => {
