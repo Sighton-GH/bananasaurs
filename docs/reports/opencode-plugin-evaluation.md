@@ -991,6 +991,47 @@ worktree is necessary and is not sufficient. The controller re-runs the gates
 on the integration branch after merging, which is how this was caught within
 a minute of landing rather than by the next slice.
 
+## D59 — four controller errors in one slice, all caught by "stop and report"
+
+Slice M5 is the strongest evidence yet for the one instruction that costs
+nothing: *if anything is ambiguous, contradictory or missing, stop and report
+rather than guess.* Four of the eleven rulings the controller wrote for M5
+were wrong, and the implementer found every one of them:
+
+1. **The layer order** put the rate cap ahead of the idempotency read, so a
+   client retrying a send that had already succeeded would be told
+   `rate-cap` once the hour filled — told its message failed while the
+   message sat in the channel.
+2. **A ruling that was unimplementable**: refuse a DM channel id before the
+   allowlist. A Discord snowflake carries no channel type, so no id shape
+   distinguishes a DM. The implementer reported it instead of writing a test
+   that faked compliance, which is what it would have taken to tick the box.
+3. **A ruling that failed the database and the compiler**: `via='mcp'` on the
+   audit row, against a CHECK admitting only `ssh`/`http`/`gateway` and a
+   type of `'ssh' | 'http'`.
+4. **A break-it that could not fail.** The controller specified neutralising
+   "the claim precedes the REST call" and running the replay test — which
+   stays green either way, because sequentially the claim precedes the second
+   call regardless. The implementer noticed, wrote a concurrent probe, and
+   *that* failed with two REST calls for one key.
+
+The fourth is the most interesting, because it is the failure mode the whole
+"break every guard" discipline exists to prevent, committed by the person
+enforcing the discipline. Twenty-odd decorative guards have now been found on
+this project; this is the first one authored by the controller in the same
+breath as demanding the practice.
+
+What generalises: the value is not in the model catching the controller out.
+It is that **an instruction to stop is cheaper than a review round**. Each of
+these cost one round trip and a ruling; finding them in the whole-branch
+review would have cost a fix wave, and finding the first one in production
+would have cost the owner a message posted twice to a 210-member server.
+
+The counterpart finding is that escalations must be *answerable*. All four
+came back with concrete options and a recommendation, not "what should I
+do?" — which is what made each one a five-minute ruling rather than an
+investigation.
+
 ## What worked well
 
 (appended as observed)
