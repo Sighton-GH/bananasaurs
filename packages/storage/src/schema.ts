@@ -530,7 +530,7 @@ export const auditEvents = sqliteTable(
     check('audit_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check(
       'audit_events_actor_type',
-      sql`${t.actorType} IN ('member','owner','operator_cli','dashboard','system','doctor')`,
+      sql`${t.actorType} IN ('member','owner','operator_cli','dashboard','system','doctor','mcp_operator')`,
     ),
     check('audit_events_via', sql`${t.via} IS NULL OR ${t.via} IN ('ssh','http','gateway')`),
     check('audit_events_dry_run_bool', boolCheck(t.dryRun)),
@@ -1649,6 +1649,63 @@ export const capabilityGrants = sqliteTable(
     }).onDelete('cascade'),
     check('capability_grants_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('capability_grants_principal_id_snowflake', snowflakeCheck(t.principalId)),
+  ],
+);
+
+/**
+ * The channels the owner has allowed the MCP connector to post into (slice
+ * M5, ruling M5-D1 layer 1). The allowlist is per guild: the primary key
+ * leads with `guild_id`, so the same channel id in two guilds is two rows.
+ */
+export const mcpSendAllowlist = sqliteTable(
+  'mcp_send_allowlist',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    /** The dashboard account that allowed it — an account id, not a snowflake. */
+    addedByAccountId: text('added_by_account_id').notNull(),
+    addedAt: integer('added_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.channelId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('mcp_send_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_send_allowlist_channel_id_snowflake', snowflakeCheck(t.channelId)),
+  ],
+);
+
+/**
+ * One row per accepted send, and the idempotency ledger (slice M5, hard
+ * rule 6).
+ *
+ * `content_hash` is the hash of `(channel_id, content)` (ruling M5-D3): a
+ * retried key with a matching hash is a replay, with a differing hash a
+ * refusal. `message_id` is NULL for `dry_run` rows and filled in by
+ * `recordSentMessageId` once the Discord REST call returns. `token_id` is the
+ * opaque `tok_…` row id, never a token value (ADR 0045 D8). The UNIQUE on
+ * `(guild_id, idempotency_key)` is what makes double execution impossible;
+ * `sent_at` carries the index the rolling-hour count (ruling M5-D4) reads.
+ */
+export const mcpSends = sqliteTable(
+  'mcp_sends',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    idempotencyKey: text('idempotency_key').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    contentHash: text('content_hash').notNull(),
+    messageId: snowflake('message_id'),
+    tokenId: text('token_id').notNull(),
+    sentAt: integer('sent_at').notNull(),
+    outcome: text('outcome').notNull(),
+  },
+  (t) => [
+    unique('mcp_sends_idempotency_once').on(t.guildId, t.idempotencyKey),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    index('mcp_sends_recent').on(t.guildId, t.sentAt),
+    check('mcp_sends_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('mcp_sends_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('mcp_sends_message_id_snowflake', nullableSnowflakeCheck(t.messageId)),
+    check('mcp_sends_outcome', sql`${t.outcome} IN ('sent','dry_run')`),
   ],
 );
 
