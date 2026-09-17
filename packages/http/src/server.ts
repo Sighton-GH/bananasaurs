@@ -90,20 +90,54 @@ const READONLY_BODY = {
     'clean, or restart without BANANASAURS_READONLY.',
 } as const;
 
-const setSessionCookie = (reply: FastifyReply, token: string, expiresAt: number, now: number) => {
+/**
+ * Whether the request arrived over HTTPS, read directly from
+ * `X-Forwarded-Proto` (M6-D2).
+ *
+ * `request.protocol` cannot decide it: `trustProxy` is off and stays off
+ * (M6-D3 — `routes/oauth.ts:140` already reasons about the rate limiter on
+ * that basis), so it is always `http`. Only this one header is read, and
+ * nothing authorises on it — it decides one cookie attribute, in the
+ * direction that fails safe (see `setSessionCookie`).
+ */
+const forwardedProtoIsHttps = (request: FastifyRequest): boolean => {
+  const proto = request.headers['x-forwarded-proto'];
+  const first = Array.isArray(proto) ? proto[0] : proto;
+  return first !== undefined && first.trim().toLowerCase() === 'https';
+};
+
+const setSessionCookie = (
+  request: FastifyRequest,
+  reply: FastifyReply,
+  token: string,
+  expiresAt: number,
+  now: number,
+) => {
   const maxAgeSeconds = Math.max(0, Math.floor((expiresAt - now) / 1000));
-  // `Secure` is deliberately absent (ADR 0029): the server is loopback-bound and
-  // both documented remote paths deliver it as plain http on localhost, so a
-  // Secure cookie would never be stored and the login would appear to succeed
-  // and then bounce.
+  // `Secure` iff the request arrived over HTTPS (M6-D2, amending ADR 0029):
+  // the dashboard is now also published at an HTTPS origin through the
+  // tunnel, and a session cookie on a public HTTPS dashboard without `Secure`
+  // is basic hygiene missing. A direct loopback client (`ssh -L`, Tailscale)
+  // never sends the header, so those paths keep working exactly as before. A
+  // client that spoofs it on plain `http://127.0.0.1` gets a `Secure` cookie
+  // the browser drops and a login that bounces — a self-inflicted nuisance
+  // that widens nothing, which is the direction to fail in.
+  const secure = forwardedProtoIsHttps(request) ? ' Secure;' : '';
   reply.header(
     'set-cookie',
-    `${SESSION_COOKIE}=${token}; HttpOnly; SameSite=Lax; Path=/; Max-Age=${String(maxAgeSeconds)}`,
+    `${SESSION_COOKIE}=${token}; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=${String(maxAgeSeconds)}`,
   );
 };
 
-const clearSessionCookie = (reply: FastifyReply) => {
-  reply.header('set-cookie', `${SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0`);
+const clearSessionCookie = (request: FastifyRequest, reply: FastifyReply) => {
+  // The same rule as the set, or the clear does not match it: a clear without
+  // `Secure` does not remove a `Secure` cookie, so a logout over HTTPS would
+  // leave the session cookie sitting in the browser.
+  const secure = forwardedProtoIsHttps(request) ? ' Secure;' : '';
+  reply.header(
+    'set-cookie',
+    `${SESSION_COOKIE}=; HttpOnly;${secure} SameSite=Lax; Path=/; Max-Age=0`,
+  );
 };
 
 /**
@@ -236,7 +270,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
       if (session === undefined) {
         // The cookie is cleared on every rejection, so a revoked or expired
         // session stops being re-sent on every subsequent request.
-        clearSessionCookie(reply);
+        clearSessionCookie(request, reply);
         void reply.status(401).send({ error: 'unauthenticated' });
         return undefined;
       }
@@ -303,7 +337,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
       return reply.status(status).send({ error: result.reason });
     }
 
-    setSessionCookie(reply, result.token, result.expiresAt, deps.now());
+    setSessionCookie(request, reply, result.token, result.expiresAt, deps.now());
     return reply.status(200).send({
       accountId: result.accountId,
       guildId: result.guildId,
@@ -318,7 +352,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     logout(deps, session);
-    clearSessionCookie(reply);
+    clearSessionCookie(request, reply);
     return reply.status(200).send({ ok: true });
   });
 
@@ -361,7 +395,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
       const result = await bootstrap(deps, { ...parsed.data, ip: ipOf(request) });
       if (!result.ok) return reply.status(400).send({ error: result.reason });
 
-      setSessionCookie(reply, result.token, result.expiresAt, deps.now());
+      setSessionCookie(request, reply, result.token, result.expiresAt, deps.now());
       return reply.status(200).send({
         accountId: result.accountId,
         guildId: result.guildId,
