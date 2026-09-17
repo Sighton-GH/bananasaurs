@@ -37,6 +37,8 @@ const MISSING = '611111111111111111';
 const NO_VIEW = '622222222222222222';
 const NO_HISTORY = '633333333333333333';
 const CLEAN = '644444444444444444';
+/** A voice channel of the guild: accepted (ruling M6-D6), not refused. */
+const VOICE = '655555555555555555';
 
 const NOW = 1_700_000_000_000;
 
@@ -113,6 +115,17 @@ beforeEach(() => {
         { id: BOT_ROLE, deny: String(PermissionsBitField.Flags.ReadMessageHistory) },
       ]),
       channelPayload(CLEAN, []),
+      // A voice channel's text chat: discord.js reports it as text-based
+      // (BaseGuildVoiceChannel carries a GuildMessageManager), so the
+      // allow-time check accepts it (ruling M6-D6).
+      {
+        id: VOICE,
+        guild_id: GUILD,
+        type: ChannelType.GuildVoice,
+        name: `channel-${VOICE}`,
+        position: 3,
+        permission_overwrites: [],
+      },
     ],
     roles: [
       { id: GUILD, name: '@everyone', position: 0, permissions: '0', managed: false },
@@ -195,6 +208,15 @@ describe('allowSendChannel (C2 allow-time)', () => {
   it('allows a text channel of the guild', () => {
     expect(sendPorts().allowSendChannel({ channelId: CLEAN, accountId: 'tester' })).toBe('allowed');
     expect(mcpSendRepo.isChannelAllowed(scope, CLEAN)).toBe(true);
+  });
+
+  it('accepts a voice channel of the guild: the check means text-capable, not text-only (M6-D6)', () => {
+    // Pinned rather than incidental: discord.js reports voice and stage
+    // channels as `isTextBased()` because they carry a `messages` manager, so
+    // `isTextChannelOfGuild` accepts them. In-guild and owner-opted-in per
+    // channel, so posting to the voice channel's text chat is legitimate.
+    expect(sendPorts().allowSendChannel({ channelId: VOICE, accountId: 'tester' })).toBe('allowed');
+    expect(mcpSendRepo.isChannelAllowed(scope, VOICE)).toBe(true);
   });
 
   it('reports already-allowed on a repeat without duplicating the row', () => {

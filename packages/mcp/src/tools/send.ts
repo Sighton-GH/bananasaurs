@@ -43,9 +43,9 @@ import {
  * What actually enforces it, both checked against the guild's own channel
  * cache rather than inferred from an id:
  *
- *   - `bananasaurs mcp allow-channel` refuses a channel that is not a
- *     text channel of that guild (`allowSendChannel`, daemon ops wiring), so
- *     the row cannot be written in the first place;
+  *   - `bananasaurs mcp allow-channel` refuses anything that is not a
+  *     channel of that guild the bot can post text into (`allowSendChannel`,
+  *     daemon ops wiring), so the row cannot be written in the first place;
  *   - the send path checks guild membership again before posting, because
  *     the allowlist is data and a row predating that validation must not be
  *     able to reach outside the guild.

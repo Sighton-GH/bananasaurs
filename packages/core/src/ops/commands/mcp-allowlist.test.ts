@@ -144,12 +144,15 @@ describe('mcp allow-channel', () => {
 
   it('a channel that is not in the guild is a usage answer naming the guild, with an audit row', async () => {
     // The port refused before any write; the command says plainly that the id
-    // is not a text channel of this guild. A DM-shaped id lands here: it is a
-    // well-formed snowflake the guild cache simply does not contain.
+    // is not a channel of this guild the bot can post text into. A DM-shaped
+    // id lands here: it is a well-formed snowflake the guild cache simply does
+    // not contain.
     const h = harness({ allowSendChannel: () => 'no-such-channel' });
     const response = await h.run('mcp allow-channel', { channelId: '700000000000000001' });
     expect(response.ok).toBe(true);
-    expect(response.ok && response.text).toContain('not a text channel of this guild');
+    expect(response.ok && response.text).toContain(
+      'not a channel of this guild the bot can post text into',
+    );
     expect(response.ok && response.data).toMatchObject({
       ok: false,
       reason: 'no-such-channel',

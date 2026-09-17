@@ -49,10 +49,11 @@ export const mcpAllowChannelCommand = defineCommand<z.infer<typeof allowChannelA
     if (outcome === 'no-such-channel') {
       // A usage answer, not a fault — but a write command must return an
       // audit record (the type enforces it), so the row says what happened:
-      // the id is not a text channel of this guild, and nothing changed. A
-      // DM-shaped id lands here: a DM is never in the guild's channel cache.
+      // the id is not a channel of this guild the bot can post text into,
+      // and nothing changed. A DM-shaped id lands here: a DM is never in the
+      // guild's channel cache.
       return {
-        text: `channel ${args.channelId} is not a text channel of this guild; nothing changed`,
+        text: `channel ${args.channelId} is not a channel of this guild the bot can post text into; nothing changed`,
         data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
         audit: {
           action: 'mcp.send_channel.allowed',
