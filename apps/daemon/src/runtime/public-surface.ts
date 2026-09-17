@@ -232,6 +232,28 @@ const hasIssuer = (body: string): boolean => {
   }
 };
 
+/** The operator-facing rendering. Plain text, and never a body. */
 export function formatPublicSurface(report: PublicSurfaceReport): string {
-  return '';
+  if (!report.probed) return 'public surface    not probed (MCP_PUBLIC_URL unset)';
+  const lines = report.rows.map(
+    (row) =>
+      `public surface    ${row.path}: ` +
+      `expected ${row.expects === 'access' ? 'Access' : 'the app'}, ` +
+      `observed ${describeObserved(row)} — ${row.outcome}`,
+  );
+  const problems = report.rows.filter((row) => row.outcome !== 'ok').length;
+  lines.push(
+    problems === 0 ? 'public surface    ok' : `public surface    ${String(problems)} problem(s)`,
+  );
+  return lines.join('\n');
 }
+
+/** Status, content type and `Location` host — the only three facts a row keeps. */
+const describeObserved = (row: PublicSurfaceRow): string => {
+  const { status, contentType, locationHost } = row.observed;
+  if (status === undefined) return 'no response (unreachable)';
+  const parts = [`status ${String(status)}`];
+  if (contentType !== undefined) parts.push(contentType);
+  if (locationHost !== undefined) parts.push(`location ${locationHost}`);
+  return parts.join(', ');
+};
