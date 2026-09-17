@@ -55,9 +55,11 @@ finding, and all of them make `doctor` report `PROBLEMS FOUND`, because a
 dashboard reachable without Access is a silent breach of the whole exposure
 decision, not a footnote.
 
-**Cost if wrong:** one HTTPS round trip to the bot's own hostname at
-startup and on every `doctor`, and a `PROBLEMS FOUND` when the tunnel is
-down — which is correct.
+**Cost if wrong:** five HTTPS requests to the bot's own hostname, under one
+ten-second budget, on every `doctor` — the operator command and `--doctor`
+mode; the on-ready report in `runtime/daemon.ts` does not probe (review
+M-4 corrected the first draft's "at startup") — and a `PROBLEMS FOUND` when
+the tunnel is down, which is correct.
 
 **M6-D2 — the session cookie is `Secure` when the request arrived over HTTPS,
 decided from `X-Forwarded-Proto` alone, and ADR 0029 is amended.** ADR 0029

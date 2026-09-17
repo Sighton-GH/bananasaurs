@@ -20,12 +20,23 @@ The two stubs say so.
 ## Rulings
 
 **S10-D1 — stubs render in their own rail group, not among the built
-entries.** `Shell.test.tsx` asserts "the rail lists every built NAV entry
-and no others", and that assertion is worth keeping exactly as it is: it is
-the test that would catch a stub being promoted by accident. So the rail
-gains a second `<nav aria-label="Planned">` below the first, listing only
-`status: 'stub'` entries, visually muted, headed "Release 3". The existing
-nav is untouched and its test is untouched.
+entries.** The rail gains a second `<nav aria-label="Planned">` below the
+first, listing only `status: 'stub'` entries, visually muted, headed
+"Release 3". The existing `<nav aria-label="Areas">` filters to
+`status: 'built'` explicitly, so a stub can never appear there by accident.
+
+**Corrected after implementation.** The first draft said the existing test
+"the rail lists every built NAV entry and no others" was the guard that would
+catch a stub being promoted to `'built'`, and that keeping it unchanged was
+the point. That was wrong, and the implementer proved it by breaking it:
+the test computes its expectation from `NAV` at runtime
+(`NAV.filter(n => n.status === 'built')`), exactly like the rail it checks,
+so a promoted stub moves both sides together and the test stays green. What
+actually catches a promotion is the **new** "Planned lists exactly the seven"
+test, which asserts seven literal labels. Hardcoding nine labels into the old
+test would have caught it too, but would fight ADR 0043 D3 ("navigation is
+data") for no gain. The ruling's *design* stands; its stated rationale was a
+guard I had not watched fail.
 
 **S10-D2 — one `StubPage` component, seven one-line facts.** Not seven
 hand-written pages. Each stub is `StubPage` with a title, one sentence saying
