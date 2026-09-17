@@ -96,6 +96,10 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   archiveSearch: unstubbed('archiveSearch'),
   archiveReindex: unstubbed('archiveReindex'),
   grantAccountCapability: unstubbed('grantAccountCapability'),
+  allowSendChannel: unstubbed('allowSendChannel'),
+  disallowSendChannel: unstubbed('disallowSendChannel'),
+  listSendAllowlist: unstubbed('listSendAllowlist'),
+  listSends: unstubbed('listSends'),
   ...over,
 });
 

@@ -28,6 +28,7 @@ import {
   jobRepo,
   listBackups,
   loggingRepo,
+  mcpSendRepo,
   modCaseRepo,
   modMatchReviewRepo,
   oauthRepo,
@@ -536,6 +537,20 @@ export const opsPortsFor = (
     };
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
+
+  // Slice M5 (ADR 0044 §4): the channels this guild's MCP connector may post
+  // to, and the ledger of what it posted. The clock is this composition
+  // root's, not the command's, the same reasoning `recordMatchVerdict` gives.
+  allowSendChannel: (input) =>
+    mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      now: now(),
+    }),
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
+  listSends: (input) =>
+    mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
 
   // ADR 0028 / ADR 0045 (ruling PR-102): grant a dashboard account a
   // capability in this guild. `findAccountByUsername` is instance-level while

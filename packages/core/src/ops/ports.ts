@@ -994,6 +994,31 @@ export interface OpsPorts {
     readonly capability: Capability;
     readonly grantedBy: string;
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
+
+  // --- mcp send allowlist (slice M5, ADR 0044 §4) ------------------------------
+  /** ADR 0044 §4: the channels this guild's MCP connector may post to. */
+  allowSendChannel(input: { channelId: string; accountId: string }): boolean;
+  disallowSendChannel(channelId: string): boolean;
+  listSendAllowlist(): readonly OpsSendAllowlistEntry[];
+  listSends(input: {
+    sinceMs?: number | undefined;
+    limit?: number | undefined;
+  }): readonly OpsSendRecord[];
+}
+
+export interface OpsSendAllowlistEntry {
+  readonly channelId: string;
+  readonly addedByAccountId: string;
+  readonly addedAt: number;
+}
+
+/** Projected field by field. No content: it is not this surface's business. */
+export interface OpsSendRecord {
+  readonly channelId: string;
+  readonly messageId: string | undefined;
+  readonly tokenId: string;
+  readonly sentAt: number;
+  readonly outcome: 'sent' | 'dry_run';
 }
 
 /** A job this command queued, or the one already pending that absorbed it. */

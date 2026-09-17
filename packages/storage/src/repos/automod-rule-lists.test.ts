@@ -207,6 +207,10 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   archiveSearch: notNeeded('archiveSearch'),
   archiveReindex: notNeeded('archiveReindex'),
   grantAccountCapability: notNeeded('grantAccountCapability'),
+  allowSendChannel: notNeeded('allowSendChannel'),
+  disallowSendChannel: notNeeded('disallowSendChannel'),
+  listSendAllowlist: notNeeded('listSendAllowlist'),
+  listSends: notNeeded('listSends'),
 });
 
 const instance: OpsInstance = {
