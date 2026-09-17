@@ -372,6 +372,35 @@ describe('messages and reactions', () => {
     expect(last(requests).body).toMatchObject({ content: 'hello' });
   });
 
+  it('carries allowedMentions to the wire as snake_case allowed_mentions (C1)', async () => {
+    // Asserted on the wire body, not on the OutgoingMessage: the adapter once
+    // dropped this field, and a fake-port assertion one layer up could not see
+    // it. `@everyone` content without this key pings the whole guild.
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: '@everyone hello club',
+      allowedMentions: { parse: [] },
+    });
+    expect(last(requests).body).toMatchObject({
+      content: '@everyone hello club',
+      allowed_mentions: { parse: [] },
+    });
+  });
+
+  it('sends no allowed_mentions key at all when the message does not set it (M5-D2)', async () => {
+    // Opt-in: panel posts and log messages never set `allowedMentions`, and a
+    // default here would change what they send while two guilds are observed.
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, { content: 'hello' });
+    expect(last(requests).body).toMatchObject({ content: 'hello' });
+    expect(last(requests).body).not.toHaveProperty('allowed_mentions');
+    expect(last(requests).body).not.toHaveProperty('allowedMentions');
+  });
+
   it('edits a message in place', async () => {
     const { port, requests } = harness([{ status: 200, body: { id: MESSAGE } }]);
     await port.editMessage(GUILD, { channelId: CHANNEL, messageId: MESSAGE }, { content: 'new' });
