@@ -12,6 +12,7 @@ import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
+import { StubPage } from '../pages/stub.js';
 import { Button } from '../ui/Button.js';
 import { HealthProvider, useHealth } from './health.js';
 import { NAV } from './routes.js';
@@ -34,26 +35,51 @@ function GuildIdentity() {
 function Rail() {
   const [location] = useLocation();
   return (
-    <nav aria-label="Areas" className="flex-1 py-2">
-      <ul>
-        {NAV.map((entry) => {
-          const active = location === entry.path;
-          return (
-            <li key={entry.path}>
-              <Link
-                href={entry.path}
-                aria-current={active ? 'page' : undefined}
-                className={`block px-4 py-1.5 text-sm ${active ? 'bg-panel text-ink' : 'text-ink-muted hover:text-ink'}`}
-              >
-                {entry.label}
-              </Link>
-            </li>
-          );
-        })}
-      </ul>
-    </nav>
+    <>
+      <nav aria-label="Areas" className="flex-1 py-2">
+        <ul>
+          {NAV.filter((entry) => entry.status === 'built').map((entry) => {
+            const active = location === entry.path;
+            return (
+              <li key={entry.path}>
+                <Link
+                  href={entry.path}
+                  aria-current={active ? 'page' : undefined}
+                  className={`block px-4 py-1.5 text-sm ${active ? 'bg-panel text-ink' : 'text-ink-muted hover:text-ink'}`}
+                >
+                  {entry.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+      <nav aria-label="Planned" className="border-t border-line py-2">
+        <p className="px-4 py-1 text-xs text-ink-muted">Release 3</p>
+        <ul>
+          {NAV.filter((entry) => entry.status === 'stub').map((entry) => {
+            const active = location === entry.path;
+            return (
+              <li key={entry.path}>
+                <Link
+                  href={entry.path}
+                  aria-current={active ? 'page' : undefined}
+                  className={`block px-4 py-1.5 text-sm ${active ? 'bg-panel text-ink' : 'text-ink-muted'}`}
+                >
+                  {entry.label}
+                </Link>
+              </li>
+            );
+          })}
+        </ul>
+      </nav>
+    </>
   );
 }
+
+/** Ruling S10-D3: Archive and Search live in Release 2 as CLI/MCP only; the pages arrive with Release 3. */
+const ARCHIVE_SEARCH_TODAY =
+  'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.';
 
 function Pages() {
   return (
@@ -70,6 +96,64 @@ function Pages() {
       <Route path="/cases/:caseId" component={CasePage} />
       <Route path="/members/:memberId" component={MemberPage} />
       <Route path="/cutover" component={CutoverPage} />
+      <Route path="/archive">
+        {() => (
+          <StubPage
+            title="Archive"
+            purpose="Every message from the channels the owner enabled, kept under the retention policy."
+            availableToday={ARCHIVE_SEARCH_TODAY}
+          />
+        )}
+      </Route>
+      <Route path="/search">
+        {() => (
+          <StubPage
+            title="Search"
+            purpose="Full-text search over the archive, with citations."
+            availableToday={ARCHIVE_SEARCH_TODAY}
+          />
+        )}
+      </Route>
+      <Route path="/resources">
+        {() => (
+          <StubPage
+            title="Resources"
+            purpose="Files, links and notes the club keeps, findable from Discord."
+          />
+        )}
+      </Route>
+      <Route path="/providers">
+        {() => (
+          <StubPage
+            title="Providers"
+            purpose="Which AI providers are configured, their eligibility and their cost."
+          />
+        )}
+      </Route>
+      <Route path="/memory">
+        {() => (
+          <StubPage
+            title="Memory"
+            purpose="What the assistant remembers about the server, and how to correct it."
+          />
+        )}
+      </Route>
+      <Route path="/ai">
+        {() => (
+          <StubPage
+            title="AI workspace"
+            purpose="Where the owner drafts and reviews AI-assisted actions before they run."
+          />
+        )}
+      </Route>
+      <Route path="/proposals">
+        {() => (
+          <StubPage
+            title="Proposals"
+            purpose="Changes the assistant proposes, waiting for a person to approve."
+          />
+        )}
+      </Route>
       <Route component={NotFoundPage} />
     </Switch>
   );
