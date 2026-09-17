@@ -46,6 +46,8 @@ interface FakeCall {
 class MinimalSendDiscord implements DiscordPort {
   calls: FakeCall[] = [];
   sentMessages: OutgoingMessage[] = [];
+  /** Simulated network latency, for the concurrency probe below. */
+  sendDelayMs = 0;
   private nextFailure: Error | undefined;
   private idSeq = 0;
 
@@ -66,6 +68,9 @@ class MinimalSendDiscord implements DiscordPort {
     message: OutgoingMessage,
   ): Promise<DiscordMessageRef> {
     this.record('sendMessage', [guildId, channelId, message]);
+    if (this.sendDelayMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, this.sendDelayMs));
+    }
     if (this.nextFailure !== undefined) {
       const err = this.nextFailure;
       this.nextFailure = undefined;
@@ -337,6 +342,59 @@ describe('sendMessageEffect', () => {
 
     expect(eleventh).toEqual({ status: 'refused', reason: 'rate-cap' });
     expect(h.discord.callsFor('sendMessage')).toHaveLength(RATE_LIMIT);
+  });
+
+  it('replays an already-claimed key under a full rate cap; a new key is still refused', async () => {
+    // M5-D9: a replay is not a send — it costs no Discord call and consumes
+    // no capacity, so it must not depend on present conditions. With the cap
+    // ahead of the ledger read, this replay came back `rate-cap`: told its
+    // message failed while the message was sitting in the channel (M5-D3's
+    // trap from the other direction). Both directions asserted, or the test
+    // proves only that the cap was removed.
+    const h = build();
+    const first = await sendMessageEffect(
+      h.deps(),
+      intent({ idempotencyKey: 'key-pinned', content: 'pinned message' }),
+    );
+    expect(first.status).toBe('sent');
+    for (let i = 0; i < RATE_LIMIT - 1; i += 1) {
+      const outcome = await sendMessageEffect(
+        h.deps(),
+        intent({ idempotencyKey: `key-fill-${i}`, content: `fill message ${i}` }),
+      );
+      expect(outcome.status).toBe('sent');
+    }
+
+    const replay = await sendMessageEffect(
+      h.deps(),
+      intent({ idempotencyKey: 'key-pinned', content: 'pinned message' }),
+    );
+    expect(replay.status).toBe('replayed');
+
+    const fresh = await sendMessageEffect(
+      h.deps(),
+      intent({ idempotencyKey: 'key-pinned-new', content: 'a genuinely new message' }),
+    );
+    expect(fresh).toEqual({ status: 'refused', reason: 'rate-cap' });
+    expect(h.discord.callsFor('sendMessage')).toHaveLength(RATE_LIMIT);
+  });
+
+  it('concurrent sends under one key reach Discord exactly once: the claim precedes the call', async () => {
+    // The sequential replay test cannot catch a claim moved after the REST
+    // call — sequentially, the first call's post-call claim is already in
+    // place when the retry reads, so it still replays. Only concurrent
+    // invocations overlap between the read and the claim, which is why this
+    // test starts both together and awaits both together. One must send and
+    // the other must replay the first's row; exactly one REST call in total.
+    const h = build();
+    h.discord.sendDelayMs = 20;
+    const [first, second] = await Promise.all([
+      sendMessageEffect(h.deps(), intent({ idempotencyKey: 'key-race' })),
+      sendMessageEffect(h.deps(), intent({ idempotencyKey: 'key-race' })),
+    ]);
+
+    expect([first.status, second.status].sort()).toEqual(['replayed', 'sent']);
+    expect(h.discord.callsFor('sendMessage')).toHaveLength(1);
   });
 
   it('replays the same key with the same content: one Discord call in total', async () => {
