@@ -25,6 +25,7 @@ import {
   LIST_ROLES_TOOL_NAME,
   type McpGuildPort,
 } from './tools/guild.js';
+import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
 
 /**
  * Task 3, `packages/mcp` side: `get_health` exercised through a real MCP
@@ -91,6 +92,7 @@ const stubRecords = (): McpRecordsPort => ({
 /** One connected client/server pair over the in-memory transport. */
 const connectPair = async (
   principal: McpPrincipal,
+  send?: McpSendPort | undefined,
 ): Promise<{ client: Client; close: () => Promise<void> }> => {
   const client = new Client({ name: 'mcp-test-client', version: '0.0.0' });
   const server = createMcpServer({
@@ -99,6 +101,7 @@ const connectPair = async (
     archive: stubArchive(),
     guild: stubGuild(),
     records: stubRecords(),
+    ...(send !== undefined ? { send } : {}),
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
@@ -176,6 +179,25 @@ describe('createMcpServer', () => {
       // all for `send_message`'s siblings to appear in.
       await expect(client.listTools()).rejects.toMatchObject({ code: -32601 });
       await expect(client.listResourceTemplates()).rejects.toMatchObject({ code: -32601 });
+    } finally {
+      await close();
+    }
+  });
+
+  it('(slice M5) scope alone does not conjure the tool: both scopes but no send port serve eleven', async () => {
+    // The daemon gains the real send port in Task 4; until then a server
+    // built without one serves the read set even to a send-scoped token, and
+    // `send_message` appears nowhere. The with-port matrix (read→11,
+    // send→1, both→12) is pinned in `tools/send.test.ts`.
+    const { client, close } = await connectPair(
+      principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
+    );
+    try {
+      const list = await client.listTools();
+      expect(list.tools).toHaveLength(11);
+      expect(list.tools.map((tool) => tool.name)).not.toContain(SEND_MESSAGE_TOOL_NAME);
+      const resources = await client.listResourceTemplates();
+      expect(resources.resourceTemplates).toHaveLength(1);
     } finally {
       await close();
     }

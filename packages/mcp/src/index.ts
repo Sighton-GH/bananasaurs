@@ -2,7 +2,9 @@ export {
   GUILD_REFUSAL_MESSAGE,
   INVALID_ARGUMENTS_MESSAGE,
   MCP_READ_SCOPE,
+  MCP_SEND_SCOPE,
   hasReadScope,
+  hasSendScope,
   requireAnyReachableGuild,
   requireReachableGuild,
   type GuildOutcome,
@@ -107,3 +109,13 @@ export {
   type OverviewCardInput,
   type OverviewOutcome,
 } from './resources/overview.js';
+export {
+  SEND_CONTENT_MAX,
+  SEND_MESSAGE_TOOL_DESCRIPTION,
+  SEND_MESSAGE_TOOL_NAME,
+  sendMessageText,
+  type McpSendOutcome,
+  type McpSendPort,
+  type McpSendRefusal,
+  type SendOutcomeText,
+} from './tools/send.js';
