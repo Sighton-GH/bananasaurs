@@ -523,3 +523,57 @@ request arrives from `127.0.0.1` with `trustProxy` off — and rate limiting on
 `/oauth/token` that is keyed by anything but one global bucket, which was
 already the case and which `packages/http/src/routes/oauth.ts` records.
 Cloudflare's own rate limiting sits in front of both. Neither is changed here.
+
+## Amendment 6 — 2026-09-19, Slice 13: the password gap closes, and a worse one is found beside it
+
+Amendment 4 ended by naming what it did not give the operator: "No password
+rotation: `accountRepo.setPasswordHash` remains with no production caller, so
+an attacker who knows the password signs in again after a revoke". That gap
+was closed on 2026-09-19, for the ordinary reason — the owner forgot the
+password and the only recovery was deleting the account.
+
+**A6-1 — `account set-password` generates the password; it does not accept
+one.** Bootstrap's precedent (`docs/19` §6.10 step 1): the secret goes to this
+operator's terminal and is never stored. A password passed as an argument
+lands in shell history, in `ps` output while the command runs, and in terminal
+scrollback. Generating removes all three, and the operator pastes it into a
+password manager — which is what should have happened the first time.
+
+**A6-2 — setting a password revokes that account's dashboard sessions and not
+its OAuth tokens.** A session is trust derived from the password, so a change
+must end the others. A token is bound to the account, not the password, and
+`account revoke-credentials` (Amendment 4) already exists for the operator who
+wants both. Each command keeps one meaning, which is A3-4.
+
+**A6-3 — the recovery this replaces was worse than it looked, and the cost was
+about to rise.** Before this, a forgotten password meant `account delete` then
+re-bootstrap, and `account delete` revokes every OAuth token and authorization
+code the account approved (A3-1). On 2026-09-19 that cost nothing because no
+connector had ever been registered. After M6's live run it would have taken
+the MCP connector down with it. The gap was cheapest to close on exactly the
+day it was found, which is not a general rule but was true here.
+
+**A6-4 — and the thing beside it: one account, many guilds.** Closing the
+password gap meant deleting and re-creating the owner account, which revealed
+that the dashboard could not serve a two-guild instance at all. `login`
+refuses with `guild-required` when an account reaches more than one guild and
+the request does not name which — correctly, since "picking the first of
+several would silently log someone into the wrong server" — but the login page
+posted only a username and a password. The owner was signed in *only* because
+`bootstrap` issues its session directly, bypassing `login`; one logout would
+have made the dashboard unreachable until the account was deleted again.
+
+So the refusal now carries the choices, computed **after** `checkPassword`
+succeeds so that no response to someone who cannot log in changes shape; and
+`POST /api/session/guild` re-scopes a live session, guarded by
+`hasGuildAccess` on the target. Re-scoping rather than issuing a new session
+keeps one session per sign-in, which is what `account revoke-credentials`
+counts.
+
+**What this still does not give.** A second dashboard account: `bootstrap`
+refuses while any account exists and nothing else creates one, so
+`account grant-guild` and `account revoke-guild` — added in the same slice —
+can only ever restrict or restore the single owner's access. Multi-account
+support is Release 3's, and until then the owner remains a single point of
+failure for the dashboard, recoverable only through `bootstrap reissue` after
+a deliberate deletion.
