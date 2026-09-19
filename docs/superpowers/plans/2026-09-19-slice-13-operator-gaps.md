@@ -5,21 +5,49 @@
 and ADR 0045 Amendment 4 (which *records* the password gap) already decide
 the shapes. Amendment 6 to ADR 0045 records that the gaps are closed.
 
-All three were found in one sitting on 2026-09-19, by the owner trying to log
-in. None was found by a test, a review, or a plan, because each is a *missing*
-thing and every existing test asserts about things that exist.
+All of these were found in one sitting on 2026-09-19, by the owner trying to
+log in and then asking why he was in the wrong guild. None was found by a
+test, a review or a plan, because each is a *missing* thing and every existing
+test asserts about things that exist — and the first one I then diagnosed
+wrongly twice before reading the enclosing loop.
 
 ## The three
 
-**1. No account can reach the second guild.** `bootstrap` grants guild access
-to `deps.guildIds[0]` and only that (`packages/http/src/auth.ts:455`).
-`hasGuildAccess` gates every session (`:105`). `grantGuildAccess` has **one**
-production caller — that bootstrap line — and no CLI command, no route, no
-dashboard switcher. So on this instance the owner's account reaches
-`Bananasaurs dev` and the club guild (246 members, the guild the whole
-Release 2 gate is written against) **has never been reachable from the
-dashboard by anybody**. This is the most consequential of the three and it is
-first.
+**1. CORRECTED — access was never the problem; *switching* is.** The first
+draft of this plan said bootstrap grants guild access to `guildIds[0]` only,
+and that the club guild "has never been reachable from the dashboard by
+anybody". **That was wrong.** `packages/http/src/auth.ts:453` is a loop —
+`for (const id of deps.guildIds)` — granting access *and* every capability in
+**every** guild the instance serves. I read the `grantGuildAccess` call on
+line 455 without its enclosing loop and inverted the finding. The owner's
+account has had access to both guilds since the moment it was created.
+
+What is actually broken is everything after the grant:
+
+- **`login` refuses when an account can reach more than one guild and the
+  request does not name which** (`auth.ts:263`): `guild-required`. That
+  refusal is deliberate and right — "picking the first of several would
+  silently log someone into the wrong server". But
+  `packages/dashboard/src/pages/login.tsx:29` posts
+  `{ username, password }` and nothing else, and its error handling names
+  only `locked-out` and `read-only`. **So on a two-guild instance the login
+  form cannot succeed.**
+- **The only reason the owner is logged in at all is that `bootstrap` issues
+  a session directly**, bound to `guildIds[0]`, bypassing `login` entirely.
+  **One logout and the dashboard becomes unreachable** until someone deletes
+  the account and re-bootstraps.
+- **A session's guild is fixed when the session is created.** There is no
+  endpoint and no control that changes it, so there is no switching between
+  guilds even once logged in — which is what the owner asked for and what an
+  instance serving two guilds obviously needs.
+
+`account grant-guild` / `revoke-guild` are still worth having and are kept,
+with their justification corrected: they cannot make a guild *reachable* that
+bootstrap did not already grant, because today exactly one account can exist
+(`bootstrap` refuses while any account exists) and it holds every guild. What
+they are for is the inverse — **restricting** an account to fewer guilds, and
+restoring access afterwards. That is a modest, real use, and it is not the
+urgent one.
 
 **2. No password reset.** `setPasswordHash` still has no production caller
 (ADR 0045 Amendment 4 records it). The recovery for a forgotten password is
