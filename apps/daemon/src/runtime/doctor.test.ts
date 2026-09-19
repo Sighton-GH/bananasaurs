@@ -461,6 +461,74 @@ describe('archive guilds (ADR 0046 D1)', () => {
   });
 });
 
+describe('dashboard access (S13-D5)', () => {
+  // The account reads need a database the gateway-half report must never
+  // open (`index.ts` runs it against a live daemon), so the caller computes
+  // `dashboardAccess` over the account tables and passes it in; call sites
+  // that cannot (startup, doctor mode) omit it and the finding is skipped.
+  const withDashboardAccess = (dashboardAccess: {
+    readonly enabledAccounts: number;
+    readonly unreachableGuilds: readonly string[];
+    readonly liveBootstrapTokens: number;
+  }) => buildDoctorReport(client, config(), Date.now(), dashboardAccess);
+
+  it('is ok when an enabled account reaches every allowlisted guild', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = withDashboardAccess({
+      enabledAccounts: 1,
+      unreachableGuilds: [],
+      liveBootstrapTokens: 0,
+    });
+
+    expect(report.dashboardAccess).toMatchObject({ enabledAccounts: 1, liveBootstrapTokens: 0 });
+    expect(report.ok).toBe(true);
+  });
+
+  it('fails when an allowlisted guild no enabled account can reach', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = withDashboardAccess({
+      enabledAccounts: 1,
+      unreachableGuilds: [ABSENT_GUILD],
+      liveBootstrapTokens: 0,
+    });
+
+    expect(report.dashboardAccess?.unreachableGuilds).toEqual([ABSENT_GUILD]);
+    expect(report.ok).toBe(false);
+  });
+
+  it('stays ok with zero accounts while a bootstrap token is live: setup pending, not broken', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = withDashboardAccess({
+      enabledAccounts: 0,
+      unreachableGuilds: [],
+      liveBootstrapTokens: 1,
+    });
+
+    expect(report.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 1 });
+    expect(report.ok).toBe(true);
+  });
+
+  it('fails with zero accounts and no live bootstrap token: nobody can sign in', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = withDashboardAccess({
+      enabledAccounts: 0,
+      unreachableGuilds: [],
+      liveBootstrapTokens: 0,
+    });
+
+    expect(report.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 0 });
+    expect(report.ok).toBe(false);
+  });
+
+  it('skips the finding when the caller passes no dashboard data', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    const report = buildDoctorReport(client, config());
+
+    expect(report.dashboardAccess).toBeUndefined();
+    expect(report.ok).toBe(true);
+  });
+});
+
 describe('the printed report', () => {
   it('is legible and carries no secret', () => {
     addGuild(GUILD, String(REQUIRED_PERMISSIONS));
