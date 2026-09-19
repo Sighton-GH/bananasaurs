@@ -1081,14 +1081,14 @@ describe('account set-password (S13-D3/D4)', () => {
     // Zod strips unknown keys, so a `password` in raw socket args never
     // reaches `run`: the port is called with the username alone, the printed
     // secret is the generated one, and the smuggled value appears nowhere.
-    const h = accountHarness({ accountSetPassword: stubbed('generated-not-hunter2') });
+    const h = accountHarness({ accountSetPassword: stubbed('generated-secret-abc123') });
     const response = await h.run('account set-password', {
       username: 'alice',
       password: 'hunter2',
     });
     expect(response.ok).toBe(true);
     expect(h.setPasswordCalls).toEqual(['alice']);
-    expect(response.ok && response.text).toContain('generated-not-hunter2');
+    expect(response.ok && response.text).toContain('generated-secret-abc123');
     expect(response.ok && response.text).not.toContain('hunter2');
     if (response.ok) {
       expect(JSON.stringify(response.data)).not.toContain('hunter2');
