@@ -1,4 +1,4 @@
-import { accountRepo, sessionRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
+import { accountRepo, guildRepo, sessionRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
 import {
   CAPABILITIES,
   parseAccountId,
@@ -204,6 +204,47 @@ export type LoginFailure =
   /** More than one guild is reachable and the request named none, or named a bad one. */
   | 'guild-required';
 
+export interface GuildChoice {
+  readonly guildId: string;
+  readonly name: string | undefined;
+}
+
+/**
+ * The guilds an account can reach on this instance, with display names, in
+ * configuration order.
+ *
+ * The one place that pairs the access rows with names, so `login`'s refusal
+ * and `GET /api/session` cannot disagree about what the account reaches. It
+ * costs no new query beyond what `login` already ran: the access list plus one
+ * guild-row read per reachable guild, all after the password verified.
+ */
+export const listGuildChoices = (deps: AuthDeps, accountId: string): GuildChoice[] => {
+  const accessible = new Set(
+    accountRepo.listAccessibleGuilds(deps.scopes.instance(), accountId),
+  );
+  const out: GuildChoice[] = [];
+  for (const id of deps.guildIds) {
+    if (!accessible.has(id)) continue;
+    out.push({ guildId: id, name: guildNameOf(deps, id) });
+  }
+  return out;
+};
+
+/**
+ * A guild's display name, or undefined when the guild row was never written.
+ *
+ * Never throws: a configured guild id that fails to parse must not turn a
+ * login into a 500. The worst case is a choice without a name, which the
+ * dashboard renders as the id.
+ */
+const guildNameOf = (deps: AuthDeps, guildId: string): string | undefined => {
+  try {
+    return guildRepo.findGuild(deps.scopes.forGuild(parseGuildId(guildId)))?.name;
+  } catch {
+    return undefined;
+  }
+};
+
 export type LoginResult =
   | {
       readonly ok: true;
@@ -214,7 +255,13 @@ export type LoginResult =
       readonly guildId: GuildId;
       readonly expiresAt: number;
     }
-  | { readonly ok: false; readonly reason: LoginFailure };
+  | { readonly ok: false; readonly reason: 'invalid-credentials' | 'locked-out' | 'no-guild-access' }
+  | {
+      readonly ok: false;
+      readonly reason: 'guild-required';
+      /** Only on this reason, only after the password verified. */
+      readonly choices: readonly GuildChoice[];
+    };
 
 /**
  * Verifies a password and issues a session.
@@ -240,7 +287,6 @@ export const login = async (
     ip: string | null;
   },
 ): Promise<LoginResult> => {
-  const instance = deps.scopes.instance();
   const now = deps.now();
   const checked = await verifyAccountCredentials(deps, {
     username: input.username,
@@ -250,9 +296,10 @@ export const login = async (
   if (!checked.ok) return checked;
   const account = checked.account;
 
-  const reachable = accountRepo
-    .listAccessibleGuilds(instance, account.accountId)
-    .filter((guildId) => deps.guildIds.includes(guildId));
+  // Computed after `checkPassword` succeeded, so carrying it on the refusal
+  // below costs no new query and leaks nothing new (S13-D6): an account holder
+  // learning which guilds their own account reaches is not a disclosure.
+  const reachable = listGuildChoices(deps, account.accountId);
 
   if (reachable.length === 0) return { ok: false, reason: 'no-guild-access' };
 
@@ -260,9 +307,11 @@ export const login = async (
   // Picking the first of several would silently log someone into the wrong
   // server, which is the same refusal `resolveGuild` makes on the operator
   // socket.
-  const chosen = input.guildId ?? (reachable.length === 1 ? reachable[0] : undefined);
-  if (chosen === undefined || !reachable.includes(chosen)) {
-    return { ok: false, reason: 'guild-required' };
+  const first = reachable[0];
+  const inferred = reachable.length === 1 && first !== undefined ? first.guildId : undefined;
+  const chosen = input.guildId ?? inferred;
+  if (chosen === undefined || !reachable.some((guild) => guild.guildId === chosen)) {
+    return { ok: false, reason: 'guild-required', choices: reachable };
   }
 
   const guildId = parseGuildId(chosen);

@@ -172,3 +172,42 @@ export const listSessionsForAccount = (
       .where(scope.only(dashboardSessions, eq(dashboardSessions.accountId, accountId)))
       .all(),
   );
+
+/**
+ * Re-scopes a live session to another guild (S13-D7: the row moves, so no new
+ * session is issued and the cookie and CSRF derivation survive the switch).
+ *
+ * This is an UPDATE of `guild_id` under the CURRENT scope, not a
+ * delete-and-insert. The `WHERE` still carries `scope.only(...)` for the
+ * guild the row lives in now, so the read side stays governed exactly like
+ * `revokeSession`'s; the `SET` moves the row into the target partition in the
+ * same statement, preserving the primary key the token hash, the cookie and
+ * every revocation query address the row by. A delete-and-insert would take
+ * two statements to do what one does, and would briefly leave the session
+ * addressed by nothing.
+ *
+ * False when the row is gone or already revoked. `now` is accepted for
+ * call-site symmetry but stamps nothing: the row carries no `updated_at`, and
+ * touching `expires_at` would shift the absolute lifetime ADR 0029 forbids
+ * shifting.
+ */
+export const setSessionGuild = (
+  scope: GuildScope,
+  input: { sessionIdHash: string; guildId: string; now: number },
+): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(dashboardSessions)
+      .set({ guildId: input.guildId })
+      .where(
+        scope.only(
+          dashboardSessions,
+          and(
+            eq(dashboardSessions.sessionId, input.sessionIdHash),
+            isNull(dashboardSessions.revokedAt),
+          ),
+        ),
+      )
+      .run();
+    return result.changes === 1;
+  });

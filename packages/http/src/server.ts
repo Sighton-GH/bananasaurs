@@ -1,10 +1,12 @@
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import type { Logger, OpsInstance, OpsPorts } from '@bananasaurs/core';
-import type { GuildScope } from '@bananasaurs/storage';
+import { parseGuildId } from '@bananasaurs/core';
+import { accountRepo, sessionRepo, type GuildScope } from '@bananasaurs/storage';
 import {
   authenticate,
   bootstrap,
   bootstrapIsArmed,
+  listGuildChoices,
   login,
   logout,
   reauthenticate,
@@ -12,7 +14,14 @@ import {
   type AuthDeps,
   type SessionContext,
 } from './auth.js';
-import { bootstrapBodySchema, loginBodySchema, reauthBodySchema, POLICY } from './policy.js';
+import {
+  bootstrapBodySchema,
+  loginBodySchema,
+  reauthBodySchema,
+  sessionGuildBodySchema,
+  POLICY,
+} from './policy.js';
+import { dashboardAuditBase } from './routes/audit-base.js';
 import { secretsMatch } from './secrets.js';
 
 /**
@@ -310,10 +319,15 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (!result.ok) {
       return reply.status(200).send({ authenticated: false, reason: result.reason });
     }
+    // S13-D9: the switcher lists only what the account reaches, from the
+    // server — never from a client-side list of the allowlist.
+    const reachableGuilds = listGuildChoices(deps, result.session.accountId);
     return reply.status(200).send({
       authenticated: true,
       accountId: result.session.accountId,
       guildId: result.session.guildId,
+      guildName: reachableGuilds.find((guild) => guild.guildId === result.session.guildId)?.name,
+      reachableGuilds,
       csrfToken: result.session.csrfToken,
       expiresAt: result.session.expiresAt,
       reauthFresh: reauthIsFresh(result.session, deps.now()),
@@ -329,6 +343,12 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
 
     const result = await login(deps, { ...parsed.data, ip: ipOf(request) });
     if (!result.ok) {
+      // S13-D6: the guild list rides on the refusal the server already
+      // computed after the password verified — and only there. Every other
+      // failure answers exactly as before, with no `choices` key at all.
+      if (result.reason === 'guild-required') {
+        return reply.status(401).send({ error: result.reason, choices: result.choices });
+      }
       // One status and one body for every credential failure. `locked-out` is
       // named because telling someone their account is locked is useful and
       // reveals nothing they could not learn by waiting; the wrong-username and
@@ -354,6 +374,75 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     logout(deps, session);
     clearSessionCookie(request, reply);
     return reply.status(200).send({ ok: true });
+  });
+
+  /**
+   * Re-scopes the current session to another guild the account can reach
+   * (S13-D7/D8/D9). The session row moves partition; no new session is
+   * issued, so the CSRF token and the cookie are unchanged and the page does
+   * not re-authenticate to move.
+   *
+   * `requireFresh`-free but capability-free too, deliberately: this changes
+   * which guild the operator is *looking at*, and every subsequent write
+   * still runs its own capability and freshness checks in the new scope.
+   * Authenticated with CSRF, like every other POST, and audited.
+   */
+  app.post('/api/session/guild', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+
+    const parsed = sessionGuildBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    // The target scope is built from the request body but trusted only after
+    // `hasGuildAccess` confirms the account reaches it — this route is the one
+    // place a session changes partition, so the check is on the target scope,
+    // before the write. A malformed id parses to nothing and is refused the
+    // same way as an unreachable one: no oracle.
+    let target: GuildScope | undefined;
+    try {
+      target = deps.scopes.forGuild(parseGuildId(parsed.data.guildId));
+    } catch {
+      target = undefined;
+    }
+    if (
+      target === undefined ||
+      !deps.guildIds.includes(parsed.data.guildId) ||
+      !accountRepo.hasGuildAccess(target, session.accountId)
+    ) {
+      return reply.status(403).send({ error: 'no-guild-access' });
+    }
+
+    // Already there: a 200 with no write and no audit row. Moving A to A and
+    // auditing "from A to A" would be noise, and there is no state change to
+    // protect or record.
+    if (target.guildId === session.guildId) {
+      return reply.status(200).send({ guildId: target.guildId });
+    }
+
+    const moved = sessionRepo.setSessionGuild(session.scope, {
+      sessionIdHash: session.sessionIdHash,
+      guildId: target.guildId,
+      now: deps.now(),
+    });
+    if (!moved) {
+      // The row went away between `authenticate` and this write — a concurrent
+      // logout or revocation. The session is over, so say so.
+      clearSessionCookie(request, reply);
+      return reply.status(401).send({ error: 'unauthenticated' });
+    }
+
+    // Audited in the guild the session now lives in, naming both ends.
+    deps.portsFor(target).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'session.guild_switched',
+      subjectType: 'session',
+      subjectId: session.accountId,
+      before: { guildId: session.guildId },
+      after: { guildId: target.guildId },
+    });
+
+    return reply.status(200).send({ guildId: target.guildId });
   });
 
   app.post('/api/reauth', async (request, reply) => {
