@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
-import { renderWithSession, stubFetch } from '../test-support.js';
+import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { NOT_BUILT } from '../pages/stub.js';
 import { NAV } from './routes.js';
 import { Shell } from './Shell.js';
@@ -84,6 +84,60 @@ describe('Shell', () => {
     const call = mock.mock.calls.find((c) => (c[0] as string) === '/api/logout');
     expect(call).toBeTruthy();
     expect((call![1] as RequestInit).method).toBe('POST');
+  });
+
+  it('shows no guild switcher when the session names a single guild', async () => {
+    renderAt('/');
+    await screen.findByRole('button', { name: 'Sign out' });
+    expect(screen.queryByLabelText('Server')).toBeNull();
+  });
+
+  it('the switcher lists exactly the reachable guilds and posts the chosen one', async () => {
+    const CLUB = '999999999999999999';
+    const mock = stubFetch([
+      { url: '/api/health', body: HEALTH },
+      { url: '/api/log-routes', body: { routes: [] } },
+      { url: '/api/panels', body: [] },
+      { url: '/api/audit?limit=50', body: [] },
+      { url: '/api/automod/rules', body: { rules: [] } },
+      {
+        url: '/api/automod/review?limit=50',
+        body: { matches: [], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+      },
+      { method: 'POST', url: '/api/session/guild', body: { guildId: CLUB } },
+    ]);
+    const onLoggedOut = vi.fn();
+    const { hook } = memoryLocation({ path: '/' });
+    renderWithSession(
+      <Router hook={hook}>
+        <Shell />
+      </Router>,
+      {
+        session: {
+          ...TEST_SESSION,
+          reachableGuilds: [
+            { guildId: TEST_SESSION.guildId, name: 'Bananasaurs dev' },
+            { guildId: CLUB, name: 'Club' },
+          ],
+        },
+        onLoggedOut,
+      },
+    );
+    const select = await screen.findByLabelText('Server');
+    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
+      'Bananasaurs dev',
+      'Club',
+    ]);
+    await act(async () => {
+      fireEvent.change(select, { target: { value: CLUB } });
+    });
+    const call = mock.mock.calls.find((c) => (c[0] as string) === '/api/session/guild');
+    expect(call).toBeTruthy();
+    expect(bodyOf(call!)).toEqual({ guildId: CLUB });
+    expect((call![1] as RequestInit).headers).toMatchObject({
+      'x-bananasaurs-csrf': TEST_SESSION.csrfToken,
+    });
+    expect(onLoggedOut).toHaveBeenCalledTimes(1);
   });
 
   it.each([

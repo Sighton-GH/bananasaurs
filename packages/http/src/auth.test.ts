@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import type { FastifyInstance } from 'fastify';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzStoreFor, guildRepo, sessionRepo } from '@bananasaurs/storage';
-import { authorize, parseGuildId } from '@bananasaurs/core';
+import { accountRepo, authzStoreFor, effectRepo, guildRepo, sessionRepo } from '@bananasaurs/storage';
+import { authorize, CAPABILITIES, createLogger, parseGuildId } from '@bananasaurs/core';
 
 import {
   actorFor,
@@ -21,6 +22,8 @@ import {
 } from './auth.js';
 import { POLICY } from './policy.js';
 import { csrfTokenFor, hashPassword, hashToken } from './secrets.js';
+import { createServer, CSRF_HEADER, type HttpDeps } from './server.js';
+import { testInstanceFor, testPortsFor } from './test-support.js';
 
 const GUILD_A = parseGuildId('111111111111111111');
 const GUILD_B = parseGuildId('222222222222222222');
@@ -149,15 +152,38 @@ describe('login', () => {
     expect(result.ok && result.guildId).toBe(GUILD_A);
   });
 
-  it('refuses to guess when more than one guild is reachable', async () => {
-    // Picking the first would silently log someone into the wrong server — the
-    // same refusal the operator socket makes for a command with no --guild.
+  it('refuses to guess when more than one guild is reachable, naming both choices', async () => {
+    // S13-D6: the refusal carries the reachable set, so the login form can ask
+    // which guild — but only after the password verified.
     await provision({ guilds: [GUILD_A, GUILD_B] });
     const result = await login(deps, { username: 'owner', password: PASSWORD, ip: null });
-    expect(result).toEqual({ ok: false, reason: 'guild-required' });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'guild-required',
+      choices: [
+        { guildId: GUILD_A, name: 'guild a' },
+        { guildId: GUILD_B, name: 'guild b' },
+      ],
+    });
   });
 
-  it('accepts a named guild the account can reach', async () => {
+  it('returns no choices on a wrong password — the list is earned by the password', async () => {
+    // S13-D6: an unauthenticated caller learns nothing, not even the shape.
+    await provision({ guilds: [GUILD_A, GUILD_B] });
+    const result = await login(deps, { username: 'owner', password: 'wrong', ip: null });
+    expect(result).toEqual({ ok: false, reason: 'invalid-credentials' });
+    expect(result).not.toHaveProperty('choices');
+    expect('choices' in result).toBe(false);
+  });
+
+  it('returns no choices for an unknown username either', async () => {
+    await provision({ guilds: [GUILD_A, GUILD_B] });
+    const result = await login(deps, { username: 'nobody', password: PASSWORD, ip: null });
+    expect(result).toEqual({ ok: false, reason: 'invalid-credentials' });
+    expect('choices' in result).toBe(false);
+  });
+
+  it('accepts a named guild the account can reach, carrying no choices', async () => {
     await provision({ guilds: [GUILD_A, GUILD_B] });
     const result = await login(deps, {
       username: 'owner',
@@ -166,9 +192,12 @@ describe('login', () => {
       ip: null,
     });
     expect(result.ok && result.guildId).toBe(GUILD_B);
+    expect('choices' in result).toBe(false);
   });
 
-  it('refuses a named guild the account cannot reach', async () => {
+  it('refuses a named guild the account cannot reach, with the same choices', async () => {
+    // No oracle: an unreachable guild and an unknown one are refused the same
+    // way, carrying the same reachable set the password earned.
     await provision({ guilds: [GUILD_A] });
     const result = await login(deps, {
       username: 'owner',
@@ -176,19 +205,43 @@ describe('login', () => {
       guildId: GUILD_B,
       ip: null,
     });
-    expect(result).toEqual({ ok: false, reason: 'guild-required' });
+    expect(result).toEqual({
+      ok: false,
+      reason: 'guild-required',
+      choices: [{ guildId: GUILD_A, name: 'guild a' }],
+    });
   });
 
-  it('refuses a guild this instance does not serve, even with an access row', async () => {
+  it('refuses a guild this instance does not serve exactly like an unreachable one', async () => {
     await provision({ guilds: [GUILD_A, GUILD_B] });
     const narrowed: AuthDeps = { ...deps, guildIds: [GUILD_A] };
-    const result = await login(narrowed, {
+    const unserved = await login(narrowed, {
       username: 'owner',
       password: PASSWORD,
       guildId: GUILD_B,
       ip: null,
     });
-    expect(result).toEqual({ ok: false, reason: 'guild-required' });
+    await provision({
+      guilds: [GUILD_A],
+      username: 'lonely',
+      accountId: 'acct_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',
+    });
+    const unreachable = await login(deps, {
+      username: 'lonely',
+      password: PASSWORD,
+      guildId: GUILD_B,
+      ip: null,
+    });
+    expect(unserved).toEqual({
+      ok: false,
+      reason: 'guild-required',
+      choices: [{ guildId: GUILD_A, name: 'guild a' }],
+    });
+    expect(unreachable).toEqual({
+      ok: false,
+      reason: 'guild-required',
+      choices: [{ guildId: GUILD_A, name: 'guild a' }],
+    });
   });
 
   it('refuses a disabled account without saying so', async () => {
@@ -687,5 +740,197 @@ describe('the first-account bootstrap (docs/19 §6.10)', () => {
       ip: null,
     });
     expect(result).toEqual({ ok: false, reason: 'already-provisioned' });
+  });
+});
+
+const routeLogger = createLogger({ level: 'fatal', env: 'development' });
+
+/**
+ * `POST /api/session/guild` and the extended `GET /api/session` (S13-D7–D9).
+ *
+ * These are route tests, and they live here rather than in `server.test.ts`
+ * because the task's file list names this file for `login`'s tests and the
+ * switch is login's second half: one account, many guilds.
+ */
+describe('switching guilds without logging out', () => {
+  let app: FastifyInstance;
+  let httpDeps: HttpDeps;
+
+  const sessionCount = (): number =>
+    (t.raw.prepare(`SELECT COUNT(*) AS n FROM dashboard_sessions`).get() as { n: number }).n;
+
+  const cookieOf = (response: { headers: Record<string, unknown> }): string => {
+    const raw = response.headers['set-cookie'];
+    const first = Array.isArray(raw) ? (raw[0] ?? '') : ((raw as string | undefined) ?? '');
+    return first.split(';')[0] ?? '';
+  };
+
+  beforeEach(async () => {
+    httpDeps = {
+      scopes: t.scopes,
+      now: () => clock,
+      guildIds: [GUILD_A, GUILD_B],
+      logger: routeLogger,
+      readonly: false,
+      portsFor: (scope) => testPortsFor(scope, () => clock),
+      instance: testInstanceFor(t.scopes.instance(), () => clock),
+    };
+    app = createServer({ deps: httpDeps });
+    const instance = t.scopes.instance();
+    accountRepo.createAccount(instance, {
+      accountId: 'acct_0123456789abcdef0123456789abcdef',
+      username: 'owner',
+      passwordHash: await hashPassword(PASSWORD),
+      isOwner: true,
+      now: clock,
+    });
+    for (const guildId of [GUILD_A, GUILD_B]) {
+      const scope = t.scopes.forGuild(guildId);
+      accountRepo.grantGuildAccess(scope, 'acct_0123456789abcdef0123456789abcdef');
+      accountRepo.grantAllCapabilities(scope, {
+        accountId: 'acct_0123456789abcdef0123456789abcdef',
+        capabilities: CAPABILITIES,
+        grantedBy: 'test',
+        now: clock,
+      });
+    }
+  });
+
+  afterEach(async () => {
+    await app.close();
+  });
+
+  const signIn = async (
+    guildId: string,
+    target: FastifyInstance = app,
+  ): Promise<{ cookie: string; csrf: string }> => {
+    const response = await target.inject({
+      method: 'POST',
+      url: '/api/login',
+      payload: { username: 'owner', password: PASSWORD, guildId },
+    });
+    expect(response.statusCode).toBe(200);
+    return { cookie: cookieOf(response), csrf: response.json<{ csrfToken: string }>().csrfToken };
+  };
+
+  it('GET /api/session names the guild and lists every reachable one (S13-D9)', async () => {
+    const { cookie } = await signIn(GUILD_A);
+    const response = await app.inject({ method: 'GET', url: '/api/session', headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      authenticated: true,
+      guildId: GUILD_A,
+      guildName: 'guild a',
+      reachableGuilds: [
+        { guildId: GUILD_A, name: 'guild a' },
+        { guildId: GUILD_B, name: 'guild b' },
+      ],
+    });
+  });
+
+  it('moves the session and the next GET reports the new guild, with no new row', async () => {
+    // S13-D7: the existing row is re-scoped in place, so revoking stays a
+    // question about one row, not about how many times the operator switched.
+    const { cookie, csrf } = await signIn(GUILD_A);
+    expect(sessionCount()).toBe(1);
+    const moved = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { guildId: GUILD_B },
+    });
+    expect(moved.statusCode).toBe(200);
+    expect(moved.json()).toEqual({ guildId: GUILD_B });
+    expect(sessionCount()).toBe(1);
+    const again = await app.inject({ method: 'GET', url: '/api/session', headers: { cookie } });
+    expect(again.json()).toMatchObject({ authenticated: true, guildId: GUILD_B });
+  });
+
+  it('refuses a guild the account cannot reach, leaving the session where it was', async () => {
+    const { cookie, csrf } = await signIn(GUILD_A);
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { guildId: '333333333333333333' },
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toEqual({ error: 'no-guild-access' });
+    const again = await app.inject({ method: 'GET', url: '/api/session', headers: { cookie } });
+    expect(again.json()).toMatchObject({ authenticated: true, guildId: GUILD_A });
+    const token = cookie.split('=')[1] ?? '';
+    expect(sessionRepo.findSessionByHash(t.scopes.instance(), hashToken(token))?.guildId).toBe(
+      GUILD_A,
+    );
+  });
+
+  it('refuses an unknown guild exactly like an unreachable one — no oracle', async () => {
+    const { cookie, csrf } = await signIn(GUILD_A);
+    const unknown = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { guildId: '444444444444444444' },
+    });
+    const unreachable = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { guildId: '333333333333333333' },
+    });
+    expect(unknown.statusCode).toBe(403);
+    expect(unknown.json()).toEqual(unreachable.json());
+  });
+
+  it('answers 401 unauthenticated with no session', async () => {
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { [CSRF_HEADER]: 'csrf-test' },
+      payload: { guildId: GUILD_B },
+    });
+    expect(refused.statusCode).toBe(401);
+  });
+
+  it('needs the CSRF token, like every other POST', async () => {
+    const { cookie } = await signIn(GUILD_A);
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie },
+      payload: { guildId: GUILD_B },
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(refused.json()).toEqual({ error: 'csrf' });
+  });
+
+  it('switching to the guild already held is a 200 that writes no audit row', async () => {
+    const { cookie, csrf } = await signIn(GUILD_A);
+    const same = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { guildId: GUILD_A },
+    });
+    expect(same.statusCode).toBe(200);
+    expect(
+      effectRepo.tailAudit(t.scopes.forGuild(GUILD_A), {}).map((row) => row.action),
+    ).not.toContain('session.guild_switched');
+  });
+
+  it('writes one audit row in the new guild naming the guild moved from and to', async () => {
+    const { cookie, csrf } = await signIn(GUILD_A);
+    const moved = await app.inject({
+      method: 'POST',
+      url: '/api/session/guild',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { guildId: GUILD_B },
+    });
+    expect(moved.statusCode).toBe(200);
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD_B), {});
+    const row = rows.find((r) => r.action === 'session.guild_switched');
+    expect(row).toBeDefined();
+    expect(JSON.parse(row?.before ?? 'null')).toEqual({ guildId: GUILD_A });
+    expect(JSON.parse(row?.after ?? 'null')).toEqual({ guildId: GUILD_B });
   });
 });

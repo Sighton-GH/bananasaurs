@@ -11,6 +11,7 @@ import {
   listSessionsForAccount,
   revokeAllForAccount,
   revokeSession,
+  setSessionGuild,
   touchReauth,
 } from './sessions.js';
 
@@ -186,6 +187,53 @@ describe('listing is guild-scoped', () => {
   });
 });
 
+describe('setSessionGuild re-scopes a live session in place (S13-D7)', () => {
+  it('moves a live session to the new guild and says it did', () => {
+    open(a);
+    expect(setSessionGuild(a, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 })).toBe(true);
+    expect(findSessionByHash(instance, HASH)?.guildId).toBe(GUILD_B);
+  });
+
+  it('refuses a revoked session, leaving the row where it was', () => {
+    open(a);
+    revokeSession(a, { sessionIdHash: HASH, now: 2000 });
+    expect(setSessionGuild(a, { sessionIdHash: HASH, guildId: GUILD_B, now: 3000 })).toBe(false);
+    expect(findSessionByHash(instance, HASH)?.guildId).toBe(GUILD_A);
+  });
+
+  it('reports false for a hash that was never issued', () => {
+    expect(setSessionGuild(a, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 })).toBe(false);
+  });
+
+  it('is governed by the current scope in the read direction too', () => {
+    // The row lives in guild A, so a scope for guild B must not move it — the
+    // same partition rule `revokeSession`'s cross-guild test pins.
+    open(a);
+    expect(setSessionGuild(b, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 })).toBe(false);
+    expect(findSessionByHash(instance, HASH)?.guildId).toBe(GUILD_A);
+  });
+
+  it('after the move the row answers in the new partition and not the old one', () => {
+    open(a);
+    expect(setSessionGuild(a, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 })).toBe(true);
+    expect(listSessionsForAccount(b, ACCOUNT).map((s) => s.sessionId)).toEqual([HASH]);
+    expect(listSessionsForAccount(a, ACCOUNT)).toEqual([]);
+  });
+
+  it('moves back just as well — both directions of the partition boundary', () => {
+    open(a);
+    expect(setSessionGuild(a, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 })).toBe(true);
+    expect(setSessionGuild(b, { sessionIdHash: HASH, guildId: GUILD_A, now: 3000 })).toBe(true);
+    expect(findSessionByHash(instance, HASH)?.guildId).toBe(GUILD_A);
+  });
+
+  it('keeps the token hash, so the cookie and CSRF derivation survive the move', () => {
+    open(a);
+    setSessionGuild(a, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 });
+    expect(findSessionByHash(instance, HASH)?.sessionId).toBe(HASH);
+  });
+});
+
 describe('readonly mode refuses every session write (ADR 0029)', () => {
   it('refuses createSession, which is why login is unavailable read-only', () => {
     const ro = t.readonlyScopes.forGuild(GUILD_A);
@@ -198,6 +246,13 @@ describe('readonly mode refuses every session write (ADR 0029)', () => {
     expect(() => revokeSession(ro, { sessionIdHash: HASH, now: 2000 })).toThrow(ReadonlyError);
   });
 
+  it('refuses setSessionGuild — moving a session is a write', () => {
+    open(a);
+    const ro = t.readonlyScopes.forGuild(GUILD_A);
+    expect(() =>
+      setSessionGuild(ro, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 }),
+    ).toThrow(ReadonlyError);
+  });
   it('still allows the lookup, so an existing session can still read', () => {
     open(a);
     expect(findSessionByHash(t.readonlyScopes.instance(), HASH)?.guildId).toBe(GUILD_A);
