@@ -14,6 +14,10 @@ function Card({ title, children }: { readonly title: string; readonly children: 
 export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
+  const [guildId, setGuildId] = useState<string | undefined>(undefined);
+  const [choices, setChoices] = useState<readonly { guildId: string; name?: string }[] | undefined>(
+    undefined,
+  );
   const [error, setError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
@@ -26,16 +30,32 @@ export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ username, password }),
+        body: JSON.stringify(
+          guildId === undefined ? { username, password } : { username, password, guildId },
+        ),
       });
       if (!response.ok) {
-        const body = (await response.json()) as { error: string };
+        const body = (await response.json()) as {
+          error: string;
+          choices?: { guildId: string; name?: string }[];
+        };
+        // The account reaches more than one guild: the server verified the
+        // password first and sent the reachable set, so ask which guild —
+        // and re-post the same credentials with the choice.
+        if (body.error === 'guild-required' && Array.isArray(body.choices)) {
+          setChoices(body.choices);
+          setGuildId(body.choices[0]?.guildId);
+          setError('This account reaches more than one server. Choose which one to sign in to.');
+          return;
+        }
         setError(
           body.error === 'locked-out'
             ? 'This account is temporarily locked after too many failed attempts.'
             : body.error === 'read-only'
               ? ((body as { message?: string }).message ?? 'This instance is read-only.')
-              : 'Wrong username or password.',
+              : body.error === 'no-guild-access'
+                ? 'This account cannot reach any server on this instance.'
+                : 'Wrong username or password.',
         );
         return;
       }
@@ -64,6 +84,21 @@ export function LoginForm({ onSignedIn }: { readonly onSignedIn: () => void }) {
             autoComplete="current-password"
           />
         </Field>
+        {choices !== undefined && (
+          <Field label="Server">
+            <select
+              value={guildId ?? ''}
+              onChange={(e) => setGuildId(e.target.value)}
+              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+            >
+              {choices.map((choice) => (
+                <option key={choice.guildId} value={choice.guildId}>
+                  {choice.name ?? choice.guildId}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )}
         <div>
           <Button type="submit" variant="primary" busy={busy}>
             Sign in

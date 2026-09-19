@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ChannelType, Client, PermissionsBitField, type Guild } from 'discord.js';
-import { parseGuildId, type Config } from '@bananasaurs/core';
+import { ChannelType, Client, PermissionsBitField, Status, type Guild } from 'discord.js';
+import { parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
+import { REQUIRED_PERMISSIONS } from '../runtime/doctor.js';
 import {
   accountRepo,
   archiveRepo,
@@ -17,6 +18,7 @@ import { accountOpsFor, opsInstanceFor, opsPortsFor } from './wiring.js';
 // By relative path rather than the `@bananasaurs/http/test-support` subpath:
 // vitest aliases `@bananasaurs/http` to the package index, so the subpath
 // would resolve under it and break (see `mcp/wiring.test.ts`).
+import { verifyPassword } from '@bananasaurs/http';
 import { testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -602,6 +604,310 @@ describe('accountRevokeCredentials (M3c)', () => {
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-1')).toBeUndefined();
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-2')).toBeUndefined();
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-other-1')).toBeDefined();
+  });
+});
+
+describe('accountGrantGuild / accountRevokeGuild (S13-D1/D2)', () => {
+  const GUILD_2 = parseGuildId('311111111111111111');
+  const instance = () => t.scopes.instance();
+  const guildB = () => t.scopes.forGuild(GUILD_2);
+
+  const seedAccount = (accountId: string, username: string): void => {
+    accountRepo.createAccount(instance(), {
+      accountId,
+      username,
+      passwordHash: '$argon2id$fake',
+      isOwner: false,
+      now: NOW,
+    });
+  };
+
+  const portsA = () => opsPortsFor(scope, instance(), operations, () => NOW, client, true);
+  const portsB = () => opsPortsFor(guildB(), instance(), operations, () => NOW, client, true);
+
+  it('grant returns no-such-account for an unknown username and writes nothing', () => {
+    expect(portsA().accountGrantGuild('nobody')).toBe('no-such-account');
+    expect(portsA().accountRevokeGuild('nobody')).toBe('no-such-account');
+  });
+
+  it('grant then re-grant answers granted, then already-had-it, with one row', () => {
+    seedAccount('acct_grant00000000000000000000000001', 'grantee');
+
+    expect(portsA().accountGrantGuild('grantee')).toBe('granted');
+    expect(accountRepo.hasGuildAccess(scope, 'acct_grant00000000000000000000000001')).toBe(true);
+    expect(portsA().accountGrantGuild('grantee')).toBe('already-had-it');
+  });
+
+  it('the grant names one guild: a grant in A leaves B unreached (S13-D1)', () => {
+    seedAccount('acct_secondguild000000000000000000001', 'second-guild');
+    guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
+
+    expect(portsA().accountGrantGuild('second-guild')).toBe('granted');
+    expect(accountRepo.hasGuildAccess(scope, 'acct_secondguild000000000000000000001')).toBe(true);
+    expect(accountRepo.hasGuildAccess(guildB(), 'acct_secondguild000000000000000000001')).toBe(
+      false,
+    );
+    // Each guild's ports act on their own guild: granting in B afterwards is
+    // a fresh grant, not an already-had-it.
+    expect(portsB().accountGrantGuild('second-guild')).toBe('granted');
+    expect(accountRepo.hasGuildAccess(guildB(), 'acct_secondguild000000000000000000001')).toBe(
+      true,
+    );
+  });
+
+  it('revoke then re-revoke answers revoked, then did-not-have-it', () => {
+    seedAccount('acct_revoke0000000000000000000000001', 'revokee');
+    accountRepo.grantGuildAccess(scope, 'acct_revoke0000000000000000000000001');
+
+    expect(portsA().accountRevokeGuild('revokee')).toBe('revoked');
+    expect(accountRepo.hasGuildAccess(scope, 'acct_revoke0000000000000000000000001')).toBe(false);
+    expect(portsA().accountRevokeGuild('revokee')).toBe('did-not-have-it');
+  });
+
+  it('revoking a guild the account never had is did-not-have-it, not revoked', () => {
+    seedAccount('acct_stranger0000000000000000000000001', 'stranger');
+
+    expect(portsA().accountRevokeGuild('stranger')).toBe('did-not-have-it');
+  });
+});
+
+describe('accountSetPassword (S13-D3/D4)', () => {
+  const GUILD_2 = parseGuildId('411111111111111111');
+  const instance = () => t.scopes.instance();
+  const guildB = () => t.scopes.forGuild(GUILD_2);
+
+  const seedAccount = (accountId: string, username: string): void => {
+    accountRepo.createAccount(instance(), {
+      accountId,
+      username,
+      passwordHash: '$argon2id$old-password',
+      isOwner: false,
+      now: NOW,
+    });
+  };
+
+  const openSession = (guildScope: GuildScope, sessionIdHash: string, accountId: string): void => {
+    sessionRepo.createSession(guildScope, {
+      sessionIdHash,
+      accountId,
+      createdAt: NOW,
+      expiresAt: NOW + 12 * 3_600_000,
+      reauthAt: NOW,
+      ip: '127.0.0.1',
+    });
+  };
+
+  const seedToken = (tokenId: string, accountId: string): void => {
+    oauthRepo.createClient(instance(), {
+      clientId: 'client-1',
+      clientName: 'name of client-1',
+      redirectUris: ['https://example.test/cb'],
+      createdAt: NOW,
+      createdByAccountId: null,
+      registrationSource: 'dynamic',
+    });
+    oauthRepo.createToken(instance(), {
+      tokenId,
+      tokenHash: `hash-${tokenId}`,
+      kind: 'access',
+      clientId: 'client-1',
+      accountId,
+      scopes: ['bananasaurs:read'],
+      createdAt: NOW,
+      expiresAt: NOW + 100_000,
+      parentTokenId: null,
+      issuedFromCodeHash: `code-for-${tokenId}`,
+    });
+  };
+
+  const ops = () => accountOpsFor(instance(), [scope, guildB()], () => NOW);
+
+  beforeEach(() => {
+    guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
+  });
+
+  it('returns no-such-account for an unknown username and writes nothing', async () => {
+    seedAccount('acct_keeper0000000000000000000000004', 'keeper');
+
+    expect(await ops().accountSetPassword('nobody')).toBe('no-such-account');
+    expect(accountRepo.findAccountByUsername(instance(), 'keeper')?.passwordHash).toBe(
+      '$argon2id$old-password',
+    );
+  });
+
+  it('stores a hash the generated password verifies against, and nothing else retrievable', async () => {
+    seedAccount('acct_reset00000000000000000000000001', 'resettable');
+
+    const result = await ops().accountSetPassword('resettable');
+    expect(result).not.toBe('no-such-account');
+    if (result === 'no-such-account') return;
+    expect(result).toMatchObject({
+      username: 'resettable',
+      accountId: 'acct_reset00000000000000000000000001',
+      guildsTouched: 2,
+    });
+    // The stored row holds a hash the generated password verifies against —
+    // the plaintext itself is in the result and nowhere else.
+    const stored = accountRepo.findAccountByUsername(instance(), 'resettable');
+    expect(stored?.passwordHash).not.toBe('$argon2id$old-password');
+    expect(stored?.passwordHash).not.toContain(result.password);
+    expect(await verifyPassword(stored?.passwordHash ?? '', result.password)).toBe(true);
+  });
+
+  it('revokes dashboard sessions in every guild and leaves OAuth tokens live', async () => {
+    seedAccount('acct_sweep00000000000000000000000001', 'swept');
+    openSession(scope, 'a'.repeat(64), 'acct_sweep00000000000000000000000001');
+    openSession(guildB(), 'b'.repeat(64), 'acct_sweep00000000000000000000000001');
+    seedToken('swept-token', 'acct_sweep00000000000000000000000001');
+
+    const result = await ops().accountSetPassword('swept');
+    expect(result).toMatchObject({ sessionsRevoked: 2, guildsTouched: 2 });
+    expect(sessionRepo.findSessionByHash(instance(), 'a'.repeat(64))?.revokedAt).toBe(NOW);
+    expect(sessionRepo.findSessionByHash(instance(), 'b'.repeat(64))?.revokedAt).toBe(NOW);
+    // S13-D4: OAuth tokens are bound to the account, not the password.
+    expect(oauthRepo.findTokenById(instance(), 'swept-token')?.revokedAt).toBeNull();
+  });
+});
+
+describe('doctor dashboard access end to end (S13-D5)', () => {
+  // The one `buildDoctorReport` call site with a database handle: seed
+  // accounts and access rows in the migrated test database, then read the
+  // finding back out of the real `doctor()` port — data, `ok`, and the fact
+  // that the gateway-half text carries no dashboard lines of its own (those
+  // render command-side in `packages/core`, tested in `reads.test.ts`).
+  const EXTRA = parseGuildId('511111111111111111');
+
+  const testConfig = (allowlist: string): Config =>
+    parseConfig({
+      DISCORD_BOT_TOKEN: 'NOT.A.REALTOKEN',
+      DISCORD_APPLICATION_ID: BOT,
+      BANANASAURS_GUILD_ALLOWLIST: allowlist,
+      BANANASAURS_OWNER_USER_ID: OWNER,
+      DASHBOARD_SESSION_SECRET: 'b'.repeat(32),
+    });
+
+  const readyClient = (guildIds: readonly string[]): Client => {
+    const ready = new Client(buildClientOptions(() => BOT));
+    const mutable = ready as unknown as { user: unknown };
+    mutable.user = internals(ready).users._add({
+      id: BOT,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
+    (ready.ws as unknown as { status: number }).status = Status.Ready;
+    for (const id of guildIds) {
+      internals(ready).guilds._add({
+        id,
+        name: 'test guild',
+        owner_id: OWNER,
+        member_count: 30,
+        channels: [],
+        roles: [
+          { id, name: '@everyone', position: 0, permissions: '0', managed: false },
+          {
+            id: BOT_ROLE,
+            name: 'bananasaurs',
+            position: 7,
+            permissions: String(REQUIRED_PERMISSIONS),
+            managed: true,
+          },
+        ],
+        members: [
+          { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        ],
+        emojis: [],
+        unavailable: false,
+      });
+    }
+    return ready;
+  };
+
+  const doctorFor = (allowlist: string, guildIds: readonly string[]) =>
+    opsInstanceFor({
+      config: testConfig(allowlist),
+      client: readyClient(guildIds),
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [scope, t.scopes.forGuild(EXTRA)],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    }).doctor();
+
+  const seedOwner = (accountId: string, username: string): void => {
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId,
+      username,
+      passwordHash: '$argon2id$fake',
+      isOwner: true,
+      now: NOW,
+    });
+  };
+
+  beforeEach(() => {
+    guildRepo.upsertGuild(t.scopes.forGuild(EXTRA), { name: 'extra guild', now: 0 });
+  });
+
+  it('reports ok with data when an enabled account reaches every allowlisted guild', () => {
+    seedOwner('acct_docok00000000000000000000000001', 'doc-owner');
+    accountRepo.grantGuildAccess(scope, 'acct_docok00000000000000000000000001');
+    accountRepo.grantGuildAccess(t.scopes.forGuild(EXTRA), 'acct_docok00000000000000000000000001');
+
+    const report = doctorFor(`${GUILD},${EXTRA}`, [GUILD, EXTRA]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(true);
+    expect(data.dashboardAccess).toMatchObject({
+      enabledAccounts: 1,
+      unreachableGuilds: [],
+      liveBootstrapTokens: 0,
+    });
+  });
+
+  it('fails ok and names the guild when the second guild is unreached (gap 1)', () => {
+    seedOwner('acct_docgap0000000000000000000000001', 'gap-owner');
+    accountRepo.grantGuildAccess(scope, 'acct_docgap0000000000000000000000001');
+
+    const report = doctorFor(`${GUILD},${EXTRA}`, [GUILD, EXTRA]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(false);
+    expect(data.dashboardAccess).toMatchObject({
+      enabledAccounts: 1,
+      unreachableGuilds: [EXTRA],
+    });
+  });
+
+  it('a disabled account counts for nothing: zero enabled with no token fails', () => {
+    seedOwner('acct_docdis00000000000000000000000001', 'disabled-owner');
+    accountRepo.grantGuildAccess(scope, 'acct_docdis00000000000000000000000001');
+    accountRepo.setAccountDisabled(t.scopes.instance(), {
+      accountId: 'acct_docdis00000000000000000000000001',
+      disabled: true,
+    });
+
+    const report = doctorFor(GUILD, [GUILD]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(false);
+    expect(data.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 0 });
+  });
+
+  it('zero accounts with a live bootstrap token stays ok: setup pending', () => {
+    accountRepo.issueBootstrapToken(t.scopes.instance(), {
+      tokenHash: 'live-token-hash',
+      now: NOW,
+      ttlMs: 900_000,
+    });
+
+    const report = doctorFor(GUILD, [GUILD]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(true);
+    expect(data.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 1 });
   });
 });
 

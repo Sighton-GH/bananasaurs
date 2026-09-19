@@ -38,11 +38,15 @@ import {
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
-import { generateToken, hashToken, POLICY } from '@bananasaurs/http';
+import { generateToken, hashPassword, hashToken, POLICY } from '@bananasaurs/http';
 import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
-import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
+import {
+  buildDoctorReport,
+  formatDoctorReport,
+  type DoctorDashboardAccess,
+} from '../runtime/doctor.js';
 import {
   formatPublicSurface,
   probePublicSurface as runPublicSurfaceProbe,
@@ -590,6 +594,31 @@ export const opsPortsFor = (
     return 'granted';
   },
 
+  // Slice 13 (S13-D1/D2): guild access itself, granted and revoked. The exact
+  // pattern `grantAccountCapability` above uses: the account lookup is
+  // instance-level (accounts predate any guild choice, ADR 0027) and runs
+  // through the `instanceScope` parameter, while the access write is
+  // guild-scoped — this closure's `scope` IS the guild being granted or
+  // revoked, which is why the command takes no guild of its own and the
+  // global `--guild` is the target. The pre-check before each write turns a
+  // repeated grant and a vacant revoke into answers (`'already-had-it'`,
+  // `'did-not-have-it'`) rather than silent no-ops; the revoke's capability
+  // cascade is the foreign key's, not this function's (ADR 0028).
+  accountGrantGuild: (username) => {
+    const account = accountRepo.findAccountByUsername(instanceScope, username);
+    if (account === undefined) return 'no-such-account';
+    if (accountRepo.hasGuildAccess(scope, account.accountId)) return 'already-had-it';
+    accountRepo.grantGuildAccess(scope, account.accountId);
+    return 'granted';
+  },
+  accountRevokeGuild: (username) => {
+    const account = accountRepo.findAccountByUsername(instanceScope, username);
+    if (account === undefined) return 'no-such-account';
+    if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'did-not-have-it';
+    accountRepo.revokeGuildAccess(scope, account.accountId);
+    return 'revoked';
+  },
+
   enqueueReconcile: (panelId) =>
     enqueued(
       jobRepo.enqueue(scope, {
@@ -863,6 +892,43 @@ const automodRuleSummary = (
   verdicts: verdicts[rule.ruleId] ?? { falsePositive: 0, truePositive: 0, unclear: 0 },
 });
 
+/**
+ * S13-D5's input: whether anyone can sign in, computed over the account
+ * tables for `doctor()`.
+ *
+ * Only ENABLED accounts count toward reachability: a disabled account's
+ * sessions and tokens stop verifying, so a guild reachable solely through
+ * one is a guild nobody can sign in to. With zero enabled accounts the guild
+ * list is meaningless (every guild is trivially unreachable) and the report
+ * turns on the bootstrap token instead — live means setup is pending, gone
+ * means nobody can get in without a restart. A guild with no runtime in
+ * `guildScopes` is unreachable with no account able to prove otherwise, so
+ * it fails closed rather than passing silently.
+ */
+const readDashboardAccess = (
+  instanceScope: InstanceScope,
+  guildScopes: readonly GuildScope[],
+  allowlistedGuildIds: readonly string[],
+  nowMs: number,
+): DoctorDashboardAccess => {
+  const enabledAccountIds = accountRepo
+    .listAccounts(instanceScope)
+    .filter((account) => !account.disabled)
+    .map((account) => account.accountId);
+  const liveBootstrapTokens = accountRepo.countUnconsumedBootstrapTokens(instanceScope, nowMs);
+  if (enabledAccountIds.length === 0) {
+    return { enabledAccounts: 0, unreachableGuilds: [], liveBootstrapTokens };
+  }
+  const unreachableGuilds = allowlistedGuildIds.filter((guildId) => {
+    const guildScope = guildScopes.find((candidate) => candidate.guildId === guildId);
+    if (guildScope === undefined) return true;
+    return !enabledAccountIds.some((accountId) =>
+      accountRepo.hasGuildAccess(guildScope, accountId),
+    );
+  });
+  return { enabledAccounts: enabledAccountIds.length, unreachableGuilds, liveBootstrapTokens };
+};
+
 /** The case projection, shared by the three case reads. */
 const opsCaseRow = (found: ReturnType<typeof automodAdminRepo.listRecentCases>[number]) => ({
   caseId: found.caseId,
@@ -909,7 +975,11 @@ export const accountOpsFor = (
   now: () => number,
 ): Pick<
   OpsInstance,
-  'accountList' | 'accountSetDisabled' | 'accountDelete' | 'accountRevokeCredentials'
+  | 'accountList'
+  | 'accountSetDisabled'
+  | 'accountDelete'
+  | 'accountRevokeCredentials'
+  | 'accountSetPassword'
 > => ({
   // Field by field, never a spread: the row carries a `passwordHash` that
   // must not cross this boundary (`ports.ts` may not import
@@ -1019,6 +1089,54 @@ export const accountOpsFor = (
       stillEnabled: !reread.disabled,
     };
   },
+  /**
+   * Slice 13 (S13-D3/D4): the password reset ADR 0045 Amendment 4 named as a
+   * gap — `setPasswordHash` finally has a production caller.
+   *
+   * Generate, hash outside, write the finished hash inside: Argon2id is async
+   * and `writeInstance` makes an async transaction uncompilable, so the hash
+   * is computed before the write, the same split the repository's own comment
+   * demands (`passwordHash`, never `password`). `generateToken` is the same
+   * 32-random-bytes primitive the bootstrap path uses — S13-D3 generates
+   * rather than accepts, so the secret never lands in shell history or `ps`
+   * output.
+   *
+   * The session sweep is exactly `accountRevokeCredentials`' guild half, and
+   * deliberately ONLY that half: a session is trust derived from the
+   * password, so it dies with it, while an OAuth token is bound to the
+   * account and survives — the operator who wants both runs `account
+   * revoke-credentials` for the other half, and the command says so. The
+   * plaintext is returned and never stored: the command prints it into `text`
+   * once, and it appears in neither `data` nor the audit row (rule 4).
+   */
+  accountSetPassword: async (username) => {
+    const row = accountRepo.findAccountByUsername(instanceScope, username);
+    if (row === undefined) return 'no-such-account';
+    const password = generateToken();
+    const passwordHash = await hashPassword(password);
+    accountRepo.setPasswordHash(instanceScope, {
+      accountId: row.accountId,
+      passwordHash,
+    });
+    // The session half of the sweep covers the guild allowlist and nothing
+    // else, the same boundary `accountRevokeCredentials` above documents: a
+    // session in a guild since dropped from the allowlist is never swept.
+    const at = now();
+    let sessionsRevoked = 0;
+    for (const guildScope of guildScopes) {
+      sessionsRevoked += sessionRepo.revokeAllForAccount(guildScope, {
+        accountId: row.accountId,
+        now: at,
+      });
+    }
+    return {
+      username: row.username,
+      accountId: row.accountId,
+      password,
+      sessionsRevoked,
+      guildsTouched: guildScopes.length,
+    };
+  },
 });
 
 /**
@@ -1039,7 +1157,17 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // throws on a role delivered without a `permissions` field. A diagnostic
     // that can take down the socket handler is worse than no diagnostic.
     try {
-      const report = buildDoctorReport(deps.client, deps.config, deps.now());
+      // S13-D5: the dashboard-access input, computed here — this is the one
+      // `buildDoctorReport` call site with a database handle. The account
+      // reads are synchronous, so the report stays synchronous. Startup and
+      // doctor mode pass nothing and skip the finding (see `doctor.ts`).
+      const dashboardAccess = readDashboardAccess(
+        deps.instanceScope,
+        deps.guildScopes,
+        deps.config.BANANASAURS_GUILD_ALLOWLIST,
+        deps.now(),
+      );
+      const report = buildDoctorReport(deps.client, deps.config, deps.now(), dashboardAccess);
       return {
         ok: report.ok,
         text: formatDoctorReport(report),

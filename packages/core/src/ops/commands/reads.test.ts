@@ -800,3 +800,100 @@ describe('bananasaurs doctor', () => {
     expect(res.data).toMatchObject({ ok: true });
   });
 });
+
+describe('bananasaurs doctor dashboard access (S13-D5)', () => {
+  const healthy = {
+    listPanels: () => [],
+    listUnassignableRoles: () => [],
+    listKeywordFilterRulesMissingManageMessages: () => [],
+    listUnusableAutomodRules: () => [],
+    listAutomodRulesEnforcingWithBadCutoverState: () => [],
+    listAutomodRulesObservingPastWindowWithBacklog: () => [],
+    listUnreadableArchiveChannels: () => [],
+    archiveIndexHealth: () => ({ indexed: 0, rows: 0 }),
+  };
+
+  // The gateway-half report carries the dashboard-access data the daemon's
+  // wiring computed over the account tables; the command renders the
+  // `dashboard access    …` lines from it and folds the verdict into `ok`.
+  const withDashboardAccess = (
+    dashboardAccess: {
+      enabledAccounts: number;
+      unreachableGuilds: string[];
+      liveBootstrapTokens: number;
+    },
+    reportOk: boolean,
+    reportText = 'gateway: ok',
+  ) =>
+    drive(
+      doctorCommand,
+      healthy,
+      {},
+      {
+        doctor: () => ({ ok: reportOk, text: reportText, data: { dashboardAccess } }),
+      },
+    );
+
+  it('reports ok when an enabled account reaches every allowlisted guild', async () => {
+    const res = await withDashboardAccess(
+      { enabledAccounts: 1, unreachableGuilds: [], liveBootstrapTokens: 0 },
+      true,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('dashboard access    ok');
+    expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('names an allowlisted guild no enabled account can reach, and fails the check', async () => {
+    const res = await withDashboardAccess(
+      { enabledAccounts: 1, unreachableGuilds: ['999000111222333444'], liveBootstrapTokens: 0 },
+      false,
+      'gateway: ok',
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('999000111222333444');
+    expect(res.text).toContain('account grant-guild');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('treats zero accounts with a live bootstrap token as setup pending, not broken', async () => {
+    const res = await withDashboardAccess(
+      { enabledAccounts: 0, unreachableGuilds: [], liveBootstrapTokens: 1 },
+      true,
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('dashboard access');
+    expect(res.text).toContain('bootstrap token');
+    expect(res.text).not.toContain('PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: true });
+  });
+
+  it('fails when nobody can sign in: zero accounts and no live bootstrap token', async () => {
+    const res = await withDashboardAccess(
+      { enabledAccounts: 0, unreachableGuilds: [], liveBootstrapTokens: 0 },
+      false,
+      'gateway: ok',
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).toContain('dashboard access');
+    expect(res.text).toContain('nobody can sign in');
+    expect(res.text).toContain('doctor: PROBLEMS FOUND');
+    expect(res.data).toMatchObject({ ok: false });
+  });
+
+  it('says nothing about dashboard access when the report predates the finding', async () => {
+    // Older or stubbed `doctor()` ports return data without the section
+    // (including `data: null`); the command skips the finding rather than
+    // failing a state it did not assess.
+    const res = await drive(doctorCommand, healthy);
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.text).not.toContain('dashboard access');
+    expect(res.data).toMatchObject({ ok: true });
+  });
+});

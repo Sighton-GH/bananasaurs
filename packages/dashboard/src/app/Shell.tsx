@@ -23,10 +23,28 @@ function GuildIdentity() {
   const session = useSession();
   const health = useHealth();
   const name = health.resource.state === 'ready' ? health.resource.data.guildName : null;
+  const reachable = session.info.reachableGuilds;
   return (
     <div className="border-b border-line px-4 py-3">
       <p className="text-xs text-ink-muted">Bananasaurs</p>
-      <p className="text-base font-medium">{name ?? 'Guild'}</p>
+      {reachable !== undefined && reachable.length > 1 ? (
+        <label className="block">
+          <span className="mb-1 block text-xs text-ink-muted">Server</span>
+          <select
+            value={session.info.guildId}
+            onChange={(e) => void session.switchGuild(e.target.value)}
+            className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-base font-medium text-ink"
+          >
+            {reachable.map((guild) => (
+              <option key={guild.guildId} value={guild.guildId}>
+                {guild.name ?? guild.guildId}
+              </option>
+            ))}
+          </select>
+        </label>
+      ) : (
+        <p className="text-base font-medium">{name ?? 'Guild'}</p>
+      )}
       <p className="text-xs text-ink-muted">{session.info.guildId}</p>
     </div>
   );

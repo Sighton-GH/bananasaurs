@@ -35,6 +35,12 @@ export interface Session {
     body: unknown,
     method?: 'POST' | 'PUT' | 'DELETE',
   ): Promise<T | undefined>;
+  /**
+   * Moves this session to another reachable guild without logging out
+   * (S13-D7). Refreshes the session from the server on success — the cookie
+   * is unchanged, so re-reading `/api/session` is what re-scopes the shell.
+   */
+  switchGuild(guildId: string): Promise<void>;
   logout(): Promise<void>;
 }
 
@@ -137,20 +143,31 @@ function SessionInner({
         throw err;
       }
     };
+    const write = async <T,>(
+      url: string,
+      body: unknown,
+      method: 'POST' | 'PUT' | 'DELETE' = 'POST',
+    ): Promise<T | undefined> => {
+      try {
+        return await writeOrThrow<T>(url, body, method);
+      } catch (err) {
+        if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
+          toast({ tone: 'danger', title: 'The request failed', message: err.message });
+          return undefined;
+        }
+        throw err;
+      }
+    };
     return {
       info: session,
       read: <T,>(url: string) => apiFetch<T>(url, session.csrfToken, requireReauth),
       writeOrThrow,
-      write: async <T,>(url: string, body: unknown, method: 'POST' | 'PUT' | 'DELETE' = 'POST') => {
-        try {
-          return await writeOrThrow<T>(url, body, method);
-        } catch (err) {
-          if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-            toast({ tone: 'danger', title: 'The request failed', message: err.message });
-            return undefined;
-          }
-          throw err;
-        }
+      write,
+      switchGuild: async (guildId: string): Promise<void> => {
+        const updated = await write<{ guildId: string }>('/api/session/guild', { guildId });
+        // `write` already toasted the failure and resolved undefined; only a
+        // success re-reads the session, which is what re-scopes the shell.
+        if (updated !== undefined) onLoggedOut();
       },
       logout: async () => {
         await fetch('/api/logout', {

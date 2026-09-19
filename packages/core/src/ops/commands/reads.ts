@@ -5,6 +5,38 @@ import { humaniseDuration } from './status.js';
 import { currentValue } from './writes.js';
 
 /**
+ * The S13-D5 verdict, mirrored from `dashboardAccessOk` in
+ * `apps/daemon/src/runtime/doctor.ts`.
+ *
+ * Restated here rather than shared because this package may not import from
+ * `apps/daemon` (ADR 0014) — the same reason `ELIGIBILITY_REVIEW_WINDOW_MS`
+ * in `provider.ts` mirrors a storage constant instead of importing it. The
+ * four rows are tested on both sides, so a drift fails loudly in two files
+ * rather than silently in one.
+ */
+const dashboardAccessVerdict = (access: {
+  readonly enabledAccounts: number;
+  readonly unreachableGuilds: readonly string[];
+  readonly liveBootstrapTokens: number;
+}): boolean => {
+  if (access.enabledAccounts === 0) return access.liveBootstrapTokens > 0;
+  return access.unreachableGuilds.length === 0;
+};
+
+/**
+ * The shape of `DoctorReport.dashboardAccess` as it arrives inside
+ * `ctx.instance.doctor().data` — the whole gateway-half report serialised to
+ * JSON. Parsed, never cast: the data crossed a serialisation boundary, and a
+ * stubbed or older `doctor()` port may carry no such section at all, in
+ * which case the finding is skipped rather than failed.
+ */
+const dashboardAccessSchema = z.object({
+  enabledAccounts: z.number().int().nonnegative(),
+  unreachableGuilds: z.array(z.string()),
+  liveBootstrapTokens: z.number().int().nonnegative(),
+});
+
+/**
  * The read half of the Release 1 surface (`docs/17` §1): `doctor`,
  * `audit tail`, `jobs list`, `config get`, `panel list`, `panel show`,
  * `log routing list`.
@@ -155,14 +187,63 @@ export const doctorCommand = defineCommand<Record<string, never>>({
               .join('\n'),
     );
 
+    // S13-D5: whether anyone can sign in at all. The data rides in the
+    // gateway-half report — computed by the daemon over the account tables,
+    // which this command cannot read itself — so it is parsed out of
+    // `report.data` and rendered here in the same `label    text` column
+    // form as every finding above. Absent data (an older or stubbed
+    // `doctor()` port) skips the finding: unassessed is not failed.
+    //
+    // On the expiry the third row cannot name: no in-scope repository
+    // function returns the live bootstrap token's expiry (only the count),
+    // and the accounts repository is out of scope for this slice — so the
+    // setup-pending line names the live token without a timestamp.
+    const dashboardAccess = dashboardAccessSchema.safeParse(
+      (report.data as { dashboardAccess?: unknown } | null)?.dashboardAccess,
+    );
+    if (dashboardAccess.success) {
+      const access = dashboardAccess.data;
+      if (access.enabledAccounts === 0) {
+        if (access.liveBootstrapTokens > 0) {
+          lines.push(
+            `dashboard access    setup pending, not broken: no dashboard accounts yet, ` +
+              `but ${String(access.liveBootstrapTokens)} bootstrap token(s) still live — ` +
+              `complete setup before it expires`,
+          );
+        } else {
+          lines.push(
+            `dashboard access    nobody can sign in: no dashboard accounts and no live ` +
+              `bootstrap token — restart the daemon to mint one`,
+          );
+        }
+      } else if (access.unreachableGuilds.length === 0) {
+        lines.push('dashboard access    ok');
+      } else {
+        lines.push(
+          `dashboard access    ${String(access.unreachableGuilds.length)} allowlisted ` +
+            `guild(s) no enabled account can reach:\n` +
+            access.unreachableGuilds
+              .map(
+                (guildId) =>
+                  `            ${guildId}  run 'account grant-guild <username> ` +
+                  `--guild ${guildId} --confirm'`,
+              )
+              .join('\n'),
+        );
+      }
+    }
+
     // The gateway half already decides `ok`; the eight guild-scoped findings
     // here are just as capable of making a panel, an enforce-mode rule, or an
     // automod rule that never gets as far as matching — silently do nothing,
     // so they count the same way rather than being printed as decoration
     // under a green header. The eligibility finding above it counts too: a
     // stale promise about training is a silent breach of `PRIVACY.md`, not a
-    // footnote. And the public-surface probe counts most of all: an exposed
-    // dashboard is a silent breach of the whole exposure decision.
+    // footnote. The dashboard-access finding counts the same way: an
+    // allowlisted guild nobody can reach, or an instance nobody can sign in
+    // to, is a silent failure of the whole operator surface. And the
+    // public-surface probe counts most of all: an exposed dashboard is a
+    // silent breach of the whole exposure decision.
     lines.push(surface.text);
     const ok =
       report.ok &&
@@ -175,6 +256,7 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       unreadableArchiveChannels.length === 0 &&
       archiveIndex.indexed === archiveIndex.rows &&
       eligibilityWarnings.length === 0 &&
+      (!dashboardAccess.success || dashboardAccessVerdict(dashboardAccess.data)) &&
       surface.ok;
     lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
 
@@ -218,6 +300,13 @@ export const doctorCommand = defineCommand<Record<string, never>>({
           trainsOnInput: w.trainsOnInput,
           reviewedAt: w.reviewedAt,
         })),
+        dashboardAccess: dashboardAccess.success
+          ? {
+              enabledAccounts: dashboardAccess.data.enabledAccounts,
+              unreachableGuilds: [...dashboardAccess.data.unreachableGuilds],
+              liveBootstrapTokens: dashboardAccess.data.liveBootstrapTokens,
+            }
+          : null,
         publicSurface: surface.data,
       },
     };

@@ -34,6 +34,58 @@ describe('LoginForm', () => {
     });
     expect(screen.getByRole('alert').textContent).toContain('temporarily locked');
   });
+
+  it('shows no guild choice before the server asks for one', async () => {
+    stubFetch([{ method: 'POST', url: '/api/login', body: {} }]);
+    render(<LoginForm onSignedIn={() => undefined} />);
+    expect(screen.queryByLabelText('Server')).toBeNull();
+  });
+
+  it('offers the server’s guild choices after guild-required and re-posts with guildId', async () => {
+    const bodies: unknown[] = [];
+    const mock = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+      bodies.push(init?.body !== undefined ? JSON.parse(init.body as string) : undefined);
+      if (bodies.length === 1) {
+        return new Response(
+          JSON.stringify({
+            error: 'guild-required',
+            choices: [
+              { guildId: '111111111111111111', name: 'Dev' },
+              { guildId: '222222222222222222', name: 'Club' },
+            ],
+          }),
+          { status: 401 },
+        );
+      }
+      return new Response(JSON.stringify({ ok: true }), { status: 200 });
+    });
+    vi.stubGlobal('fetch', mock);
+    const onSignedIn = vi.fn();
+    render(<LoginForm onSignedIn={onSignedIn} />);
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'correct horse battery' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    });
+    const select = screen.getByLabelText('Server');
+    expect(Array.from(select.querySelectorAll('option')).map((o) => o.textContent)).toEqual([
+      'Dev',
+      'Club',
+    ]);
+    fireEvent.change(select, { target: { value: '222222222222222222' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
+    });
+    expect(bodies[0]).toEqual({ username: 'owner', password: 'correct horse battery' });
+    expect(bodies[1]).toEqual({
+      username: 'owner',
+      password: 'correct horse battery',
+      guildId: '222222222222222222',
+    });
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('BootstrapForm', () => {

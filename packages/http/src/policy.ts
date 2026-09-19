@@ -72,6 +72,17 @@ export const bootstrapBodySchema = z.object({
   password: passwordSchema,
 });
 
+/**
+ * The guild-switch body (S13-D8).
+ *
+ * A plain string, like `loginBodySchema.guildId` and unlike the snowflake
+ * schemas elsewhere: a malformed value must be refused exactly like an
+ * unreachable one (403 `no-guild-access`, no oracle), and a schema that
+ * rejected it with 400 would be the oracle. Non-strings still fail here.
+ */
+export const sessionGuildBodySchema = z.object({
+  guildId: z.string().min(1).max(64),
+});
 export const reauthBodySchema = z.object({
   password: z.string().min(1).max(1024),
 });

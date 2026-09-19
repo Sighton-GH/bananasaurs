@@ -6,6 +6,7 @@ import type {
   OpsAccountDeleteResult,
   OpsAccountDisableResult,
   OpsAccountRevokeResult,
+  OpsAccountSetPasswordResult,
   OpsAuditWrite,
   OpsPorts,
 } from '../ports.js';
@@ -15,8 +16,11 @@ import {
   accountDisableCommand,
   accountEnableCommand,
   accountGrantCommand,
+  accountGrantGuildCommand,
   accountListCommand,
   accountRevokeCredentialsCommand,
+  accountRevokeGuildCommand,
+  accountSetPasswordCommand,
 } from './account.js';
 
 const NOW = 1_700_000_000_000;
@@ -65,6 +69,7 @@ interface AccountStubs {
   accountSetDisabled?: (username: string, disabled: boolean) => OpsAccountDisableResult;
   accountDelete?: (username: string) => OpsAccountDeleteResult;
   accountRevokeCredentials?: (username: string) => OpsAccountRevokeResult;
+  accountSetPassword?: (username: string) => Promise<OpsAccountSetPasswordResult>;
 }
 
 interface AccountHarness {
@@ -74,6 +79,7 @@ interface AccountHarness {
   readonly setDisabledCalls: Array<{ username: string; disabled: boolean }>;
   readonly deleteCalls: string[];
   readonly revokeCalls: string[];
+  readonly setPasswordCalls: string[];
 }
 
 const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
@@ -81,6 +87,7 @@ const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
   const setDisabledCalls: Array<{ username: string; disabled: boolean }> = [];
   const deleteCalls: string[] = [];
   const revokeCalls: string[] = [];
+  const setPasswordCalls: string[] = [];
   let listCalls = 0;
   const dispatcher = createDispatcher({
     commands: [
@@ -89,6 +96,7 @@ const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
       accountEnableCommand,
       accountDeleteCommand,
       accountRevokeCredentialsCommand,
+      accountSetPasswordCommand,
     ],
     guildIds: [FIXTURE_GUILD_ID],
     contextFor: () => ({
@@ -117,6 +125,10 @@ const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
         revokeCalls.push(username);
         return stubs.accountRevokeCredentials?.(username) ?? 'no-such-account';
       },
+      accountSetPassword: (username) => {
+        setPasswordCalls.push(username);
+        return stubs.accountSetPassword?.(username) ?? Promise.resolve('no-such-account');
+      },
     }),
   });
   return {
@@ -124,9 +136,60 @@ const accountHarness = (stubs: AccountStubs = {}): AccountHarness => {
     setDisabledCalls,
     deleteCalls,
     revokeCalls,
+    setPasswordCalls,
     get listCalls() {
       return listCalls;
     },
+    run: (command, args = {}, confirm = true) =>
+      dispatcher.dispatch({ v: 1, command, args, confirm }),
+  };
+};
+
+type GrantGuildOutcome = ReturnType<OpsPorts['accountGrantGuild']>;
+type RevokeGuildOutcome = ReturnType<OpsPorts['accountRevokeGuild']>;
+
+interface GuildAccessHarness {
+  run(command: string, args?: Record<string, unknown>, confirm?: boolean): Promise<Dispatched>;
+  readonly audit: OpsAuditWrite[];
+  readonly grantCalls: string[];
+  readonly revokeCalls: string[];
+}
+
+const guildAccessHarness = (
+  stubs: {
+    accountGrantGuild?: (username: string) => GrantGuildOutcome;
+    accountRevokeGuild?: (username: string) => RevokeGuildOutcome;
+  } = {},
+): GuildAccessHarness => {
+  const audit: OpsAuditWrite[] = [];
+  const grantCalls: string[] = [];
+  const revokeCalls: string[] = [];
+  const dispatcher = createDispatcher({
+    commands: [accountGrantGuildCommand, accountRevokeGuildCommand],
+    guildIds: [FIXTURE_GUILD_ID],
+    contextFor: () => ({
+      guildId: FIXTURE_GUILD_ID,
+      now: () => NOW,
+      ports: fakeOpsPorts({
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+        accountGrantGuild: (username) => {
+          grantCalls.push(username);
+          return stubs.accountGrantGuild?.(username) ?? 'no-such-account';
+        },
+        accountRevokeGuild: (username) => {
+          revokeCalls.push(username);
+          return stubs.accountRevokeGuild?.(username) ?? 'no-such-account';
+        },
+      }),
+    }),
+    instance: fakeOpsInstance(),
+  });
+  return {
+    audit,
+    grantCalls,
+    revokeCalls,
     run: (command, args = {}, confirm = true) =>
       dispatcher.dispatch({ v: 1, command, args, confirm }),
   };
@@ -787,6 +850,252 @@ describe('a leading-dash username is refused by every command that takes one (fi
     expect(grantResponse.ok).toBe(false);
     expect(grantResponse.ok === false && grantResponse.code).toBe('bad-request');
     expect(grantResponse.ok === false && grantResponse.message).toContain('must start with');
+  });
+});
+
+describe('account grant-guild and revoke-guild are registered (S13)', () => {
+  it('lists both as writes beside the existing account commands', () => {
+    expect(OPERATOR_COMMANDS.map((c) => c.name)).toContain('account grant-guild');
+    expect(OPERATOR_COMMANDS.map((c) => c.name)).toContain('account revoke-guild');
+    expect(OPERATOR_COMMANDS.find((c) => c.name === 'account grant-guild')?.write).toBe(true);
+    expect(OPERATOR_COMMANDS.find((c) => c.name === 'account revoke-guild')?.write).toBe(true);
+  });
+
+  it('says in the summary that the global --guild is the guild being granted', () => {
+    const grant = OPERATOR_COMMANDS.find((c) => c.name === 'account grant-guild');
+    const revoke = OPERATOR_COMMANDS.find((c) => c.name === 'account revoke-guild');
+    expect(grant?.summary).toContain('--guild');
+    expect(revoke?.summary).toContain('--guild');
+  });
+
+  it('refuses a leading-dash username like every other account command', async () => {
+    const grantHarness = guildAccessHarness({ accountGrantGuild: () => 'granted' });
+    const grantResponse = await grantHarness.run('account grant-guild', { username: '-eve' });
+    expect(grantResponse.ok).toBe(false);
+    expect(grantResponse.ok === false && grantResponse.code).toBe('bad-request');
+
+    const revokeHarness = guildAccessHarness({ accountRevokeGuild: () => 'revoked' });
+    const revokeResponse = await revokeHarness.run('account revoke-guild', { username: '-eve' });
+    expect(revokeResponse.ok).toBe(false);
+    expect(revokeResponse.ok === false && revokeResponse.code).toBe('bad-request');
+
+    const passwordHarness = accountHarness({
+      accountSetPassword: () =>
+        Promise.resolve({
+          username: 'alice',
+          accountId: 'acc-1',
+          password: 'secret-unused',
+          sessionsRevoked: 0,
+          guildsTouched: 0,
+        }),
+    });
+    const passwordResponse = await passwordHarness.run('account set-password', {
+      username: '-eve',
+    });
+    expect(passwordResponse.ok).toBe(false);
+    expect(passwordResponse.ok === false && passwordResponse.code).toBe('bad-request');
+  });
+});
+
+describe('account grant-guild (S13-D1)', () => {
+  it('refuses without --confirm and never reaches the port', async () => {
+    const h = guildAccessHarness({ accountGrantGuild: () => 'granted' });
+    const response = await h.run('account grant-guild', { username: 'owner' }, false);
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.code).toBe('needs-confirm');
+    expect(h.grantCalls).toHaveLength(0);
+    expect(h.audit).toHaveLength(0);
+  });
+
+  it('grants access, names the guild as the target, and audits the write', async () => {
+    const h = guildAccessHarness({ accountGrantGuild: () => 'granted' });
+    const response = await h.run('account grant-guild', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain(`guild ${FIXTURE_GUILD_ID}`);
+    expect(response.ok && response.text).toContain('owner');
+    // S13-D1: here --guild selects what is granted, unlike every other
+    // account command, and the success text says so.
+    expect(response.ok && response.text).toContain('--guild');
+    expect(h.grantCalls).toEqual(['owner']);
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'account.guild.granted',
+      subjectType: 'account',
+      subjectId: 'owner',
+    });
+  });
+
+  it('reports already-had-it as a usage answer with an audit row marked unchanged', async () => {
+    const h = guildAccessHarness({ accountGrantGuild: () => 'already-had-it' });
+    const response = await h.run('account grant-guild', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('already');
+    expect(response.ok && response.text).toContain(FIXTURE_GUILD_ID);
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'account.guild.granted',
+      subjectType: 'account',
+      subjectId: 'owner',
+    });
+    expect((h.audit[0]?.after as { changed?: boolean } | undefined)?.changed).toBe(false);
+  });
+
+  it('throws for an account that does not exist, and audits nothing', async () => {
+    const h = guildAccessHarness({ accountGrantGuild: () => 'no-such-account' });
+    const response = await h.run('account grant-guild', { username: 'ghost' });
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.message).toContain('ghost');
+    expect(h.audit).toHaveLength(0);
+  });
+});
+
+describe('account revoke-guild (S13-D2)', () => {
+  it('refuses without --confirm and never reaches the port', async () => {
+    const h = guildAccessHarness({ accountRevokeGuild: () => 'revoked' });
+    const response = await h.run('account revoke-guild', { username: 'owner' }, false);
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.code).toBe('needs-confirm');
+    expect(h.revokeCalls).toHaveLength(0);
+    expect(h.audit).toHaveLength(0);
+  });
+
+  it('revokes access, audits the write, and warns about locking yourself out', async () => {
+    const h = guildAccessHarness({ accountRevokeGuild: () => 'revoked' });
+    const response = await h.run('account revoke-guild', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain(`guild ${FIXTURE_GUILD_ID}`);
+    expect(response.ok && response.text).toContain('owner');
+    // S13-D2: no guard against revoking your own last guild access — the
+    // output warns instead, naming the recovery. The CLI has no verified
+    // identity (ADR 0024 amendment 2), so the command cannot know whether the
+    // revoked access was the operator's own, and warns unconditionally.
+    expect(response.ok && response.text).toContain('WARNING');
+    expect(response.ok && response.text).toContain('account delete');
+    expect(response.ok && response.text).toContain('re-bootstrap');
+    expect(h.revokeCalls).toEqual(['owner']);
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'account.guild.revoked',
+      subjectType: 'account',
+      subjectId: 'owner',
+    });
+  });
+
+  it('reports did-not-have-it as a usage answer with an audit row marked unchanged', async () => {
+    const h = guildAccessHarness({ accountRevokeGuild: () => 'did-not-have-it' });
+    const response = await h.run('account revoke-guild', { username: 'owner' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('owner');
+    expect(response.ok && response.text).toContain(FIXTURE_GUILD_ID);
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'account.guild.revoked',
+      subjectType: 'account',
+      subjectId: 'owner',
+    });
+    expect((h.audit[0]?.after as { changed?: boolean } | undefined)?.changed).toBe(false);
+  });
+
+  it('throws for an account that does not exist, and audits nothing', async () => {
+    const h = guildAccessHarness({ accountRevokeGuild: () => 'no-such-account' });
+    const response = await h.run('account revoke-guild', { username: 'ghost' });
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.message).toContain('ghost');
+    expect(h.audit).toHaveLength(0);
+  });
+});
+
+describe('account set-password (S13-D3/D4)', () => {
+  const stubbed =
+    (password = 'generated-password-value'): NonNullable<AccountStubs['accountSetPassword']> =>
+    () =>
+      Promise.resolve({
+        username: 'alice',
+        accountId: 'acc-1',
+        password,
+        sessionsRevoked: 2,
+        guildsTouched: 2,
+      });
+
+  it('is registered as a write beside the existing account commands', () => {
+    expect(OPERATOR_COMMANDS.map((c) => c.name)).toContain('account set-password');
+    expect(OPERATOR_COMMANDS.find((c) => c.name === 'account set-password')?.write).toBe(true);
+  });
+
+  it('refuses without --confirm and never reaches the instance', async () => {
+    const h = accountHarness({ accountSetPassword: stubbed() });
+    const response = await h.run('account set-password', { username: 'alice' }, false);
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.code).toBe('needs-confirm');
+    expect(h.setPasswordCalls).toHaveLength(0);
+    expect(h.audit).toHaveLength(0);
+  });
+
+  it('throws for an account that does not exist, and audits nothing', async () => {
+    const h = accountHarness({ accountSetPassword: () => Promise.resolve('no-such-account') });
+    const response = await h.run('account set-password', { username: 'ghost' });
+    expect(response.ok).toBe(false);
+    expect(response.ok === false && response.message).toContain('ghost');
+    expect(h.audit).toHaveLength(0);
+  });
+
+  it('prints the generated password once, in text only', async () => {
+    const h = accountHarness({ accountSetPassword: stubbed('one-time-secret-value') });
+    const response = await h.run('account set-password', { username: 'alice' });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('one-time-secret-value');
+    expect(response.ok && response.text).toContain('alice');
+    // S13-D4: sessions die with the password, OAuth tokens do not — the
+    // output says which happened and names the other command.
+    expect(response.ok && response.text).toContain('2 dashboard session(s)');
+    expect(response.ok && response.text).toContain('account revoke-credentials');
+    if (!response.ok) return;
+    // The secret goes into `text` and nowhere else: not into `data`, not
+    // into the audit row, not into any log line.
+    expect(JSON.stringify(response.data)).not.toContain('one-time-secret-value');
+    expect(JSON.stringify(h.audit)).not.toContain('one-time-secret-value');
+    expect(response.data).toMatchObject({
+      username: 'alice',
+      accountId: 'acc-1',
+      sessionsRevoked: 2,
+      guildsTouched: 2,
+    });
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'account.password.changed',
+      subjectType: 'account',
+      subjectId: 'alice',
+    });
+  });
+
+  it('declares no password parameter: generation is the only path', () => {
+    // S13-D3: a password passed as an argument lands in shell history and in
+    // `ps` output, so the command must not accept one. The CLI builds its
+    // argv from `positional`/`flags`, so no parameter there means no way to
+    // pass one from a terminal.
+    const command = OPERATOR_COMMANDS.find((c) => c.name === 'account set-password');
+    expect(command).toBeDefined();
+    expect(command?.positional.map((p) => p.name)).toEqual(['username']);
+    expect(command?.flags.map((f) => f.name)).toEqual([]);
+  });
+
+  it('ignores a smuggled password argument rather than using it', async () => {
+    // Zod strips unknown keys, so a `password` in raw socket args never
+    // reaches `run`: the port is called with the username alone, the printed
+    // secret is the generated one, and the smuggled value appears nowhere.
+    const h = accountHarness({ accountSetPassword: stubbed('generated-secret-abc123') });
+    const response = await h.run('account set-password', {
+      username: 'alice',
+      password: 'hunter2',
+    });
+    expect(response.ok).toBe(true);
+    expect(h.setPasswordCalls).toEqual(['alice']);
+    expect(response.ok && response.text).toContain('generated-secret-abc123');
+    expect(response.ok && response.text).not.toContain('hunter2');
+    if (response.ok) {
+      expect(JSON.stringify(response.data)).not.toContain('hunter2');
+    }
+    expect(JSON.stringify(h.audit)).not.toContain('hunter2');
   });
 });
 

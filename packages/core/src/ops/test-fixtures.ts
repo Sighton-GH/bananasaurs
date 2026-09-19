@@ -96,6 +96,8 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   archiveSearch: unstubbed('archiveSearch'),
   archiveReindex: unstubbed('archiveReindex'),
   grantAccountCapability: unstubbed('grantAccountCapability'),
+  accountGrantGuild: unstubbed('accountGrantGuild'),
+  accountRevokeGuild: unstubbed('accountRevokeGuild'),
   allowSendChannel: unstubbed('allowSendChannel'),
   disallowSendChannel: unstubbed('disallowSendChannel'),
   listSendAllowlist: unstubbed('listSendAllowlist'),
@@ -141,6 +143,7 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   accountSetDisabled: unstubbed('accountSetDisabled'),
   accountDelete: unstubbed('accountDelete'),
   accountRevokeCredentials: unstubbed('accountRevokeCredentials'),
+  accountSetPassword: unstubbed('accountSetPassword'),
   ...over,
 });
 
