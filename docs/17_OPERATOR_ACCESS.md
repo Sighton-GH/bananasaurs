@@ -152,15 +152,39 @@ the kill switch on the LAN.
 
 ### If nobody can log in
 
+**A forgotten password is this same path**, because there is no password reset
+command — `setPasswordHash` has no production caller (ADR 0045 Amendment 4).
+Recovering means `account delete <username> --confirm` first (reissue refuses
+while any account exists), which also **revokes every OAuth token and
+authorization code that account approved**. That is free on an instance with no
+connector and expensive on one with a live MCP client, so if you are going to
+forget a password, forget it early.
+
+
 `bootstrap reissue` is the recovery path (ADR 0012), and it is why the owner is
 not a single point of failure for dashboard access — anyone with shell access
 and membership of the ops group can re-arm the setup page.
 
 ```bash
-bananasaurs bootstrap reissue --confirm     # prints a URL with a 15-minute token
 sudo systemctl restart bananasaurs          # required: /bootstrap is registered at startup
-ssh -L 8787:127.0.0.1:8787 <host>           # then open the printed URL
+journalctl -u bananasaurs --since "-5 min" | grep "bootstrap?token="
+ssh -L 8787:127.0.0.1:8787 <host>           # then open THAT url, within 15 minutes
 ```
+
+**Read the token from the startup banner, not from `bootstrap reissue`** — and
+in this flow you do not need `reissue` at all. Two behaviours combine:
+`issueBootstrapTokenIfNeeded` mints a token at **every** startup while zero
+accounts exist, and `issueBootstrapToken` **deletes every earlier unconsumed
+token** when it mints one (deliberately: a recovering operator must not end up
+with two valid ways in and know only one). So
+`reissue` → `restart` → open-the-reissued-URL always fails with `bad token`,
+because the restart superseded it. Tried on 2026-09-19; that is what it cost.
+
+`bootstrap reissue` is still the right command when the daemon is **already
+running with zero accounts and no live token** and you would rather not
+restart — but then do not restart afterwards, or read the banner instead. If
+the fifteen minutes lapse, just restart again: while no account exists, every
+start issues a fresh one.
 
 Three things about it are deliberate:
 
