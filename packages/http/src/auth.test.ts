@@ -756,6 +756,9 @@ describe('switching guilds without logging out', () => {
   let app: FastifyInstance;
   let httpDeps: HttpDeps;
 
+  /** Served by this instance, but the owner has no access row for it. */
+  const GUILD_C = parseGuildId('555555555555555555');
+
   const sessionCount = (): number =>
     (t.raw.prepare(`SELECT COUNT(*) AS n FROM dashboard_sessions`).get() as { n: number }).n;
 
@@ -769,13 +772,14 @@ describe('switching guilds without logging out', () => {
     httpDeps = {
       scopes: t.scopes,
       now: () => clock,
-      guildIds: [GUILD_A, GUILD_B],
+      guildIds: [GUILD_A, GUILD_B, GUILD_C],
       logger: routeLogger,
       readonly: false,
       portsFor: (scope) => testPortsFor(scope, () => clock),
       instance: testInstanceFor(t.scopes.instance(), () => clock),
     };
     app = createServer({ deps: httpDeps });
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD_C), { name: 'guild c', now: clock });
     const instance = t.scopes.instance();
     accountRepo.createAccount(instance, {
       accountId: 'acct_0123456789abcdef0123456789abcdef',
@@ -847,12 +851,13 @@ describe('switching guilds without logging out', () => {
   });
 
   it('refuses a guild the account cannot reach, leaving the session where it was', async () => {
+    // GUILD_C is served but unreached: `hasGuildAccess` is the refusing check.
     const { cookie, csrf } = await signIn(GUILD_A);
     const refused = await app.inject({
       method: 'POST',
       url: '/api/session/guild',
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { guildId: '333333333333333333' },
+      payload: { guildId: GUILD_C },
     });
     expect(refused.statusCode).toBe(403);
     expect(refused.json()).toEqual({ error: 'no-guild-access' });
@@ -876,7 +881,7 @@ describe('switching guilds without logging out', () => {
       method: 'POST',
       url: '/api/session/guild',
       headers: { cookie, [CSRF_HEADER]: csrf },
-      payload: { guildId: '333333333333333333' },
+      payload: { guildId: GUILD_C },
     });
     expect(unknown.statusCode).toBe(403);
     expect(unknown.json()).toEqual(unreachable.json());
