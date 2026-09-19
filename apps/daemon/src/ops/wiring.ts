@@ -42,7 +42,11 @@ import { generateToken, hashPassword, hashToken, POLICY } from '@bananasaurs/htt
 import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
-import { buildDoctorReport, formatDoctorReport } from '../runtime/doctor.js';
+import {
+  buildDoctorReport,
+  formatDoctorReport,
+  type DoctorDashboardAccess,
+} from '../runtime/doctor.js';
 import {
   formatPublicSurface,
   probePublicSurface as runPublicSurfaceProbe,
@@ -888,6 +892,43 @@ const automodRuleSummary = (
   verdicts: verdicts[rule.ruleId] ?? { falsePositive: 0, truePositive: 0, unclear: 0 },
 });
 
+/**
+ * S13-D5's input: whether anyone can sign in, computed over the account
+ * tables for `doctor()`.
+ *
+ * Only ENABLED accounts count toward reachability: a disabled account's
+ * sessions and tokens stop verifying, so a guild reachable solely through
+ * one is a guild nobody can sign in to. With zero enabled accounts the guild
+ * list is meaningless (every guild is trivially unreachable) and the report
+ * turns on the bootstrap token instead — live means setup is pending, gone
+ * means nobody can get in without a restart. A guild with no runtime in
+ * `guildScopes` is unreachable with no account able to prove otherwise, so
+ * it fails closed rather than passing silently.
+ */
+const readDashboardAccess = (
+  instanceScope: InstanceScope,
+  guildScopes: readonly GuildScope[],
+  allowlistedGuildIds: readonly string[],
+  nowMs: number,
+): DoctorDashboardAccess => {
+  const enabledAccountIds = accountRepo
+    .listAccounts(instanceScope)
+    .filter((account) => !account.disabled)
+    .map((account) => account.accountId);
+  const liveBootstrapTokens = accountRepo.countUnconsumedBootstrapTokens(instanceScope, nowMs);
+  if (enabledAccountIds.length === 0) {
+    return { enabledAccounts: 0, unreachableGuilds: [], liveBootstrapTokens };
+  }
+  const unreachableGuilds = allowlistedGuildIds.filter((guildId) => {
+    const guildScope = guildScopes.find((candidate) => candidate.guildId === guildId);
+    if (guildScope === undefined) return true;
+    return !enabledAccountIds.some((accountId) =>
+      accountRepo.hasGuildAccess(guildScope, accountId),
+    );
+  });
+  return { enabledAccounts: enabledAccountIds.length, unreachableGuilds, liveBootstrapTokens };
+};
+
 /** The case projection, shared by the three case reads. */
 const opsCaseRow = (found: ReturnType<typeof automodAdminRepo.listRecentCases>[number]) => ({
   caseId: found.caseId,
@@ -1116,7 +1157,17 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // throws on a role delivered without a `permissions` field. A diagnostic
     // that can take down the socket handler is worse than no diagnostic.
     try {
-      const report = buildDoctorReport(deps.client, deps.config, deps.now());
+      // S13-D5: the dashboard-access input, computed here — this is the one
+      // `buildDoctorReport` call site with a database handle. The account
+      // reads are synchronous, so the report stays synchronous. Startup and
+      // doctor mode pass nothing and skip the finding (see `doctor.ts`).
+      const dashboardAccess = readDashboardAccess(
+        deps.instanceScope,
+        deps.guildScopes,
+        deps.config.BANANASAURS_GUILD_ALLOWLIST,
+        deps.now(),
+      );
+      const report = buildDoctorReport(deps.client, deps.config, deps.now(), dashboardAccess);
       return {
         ok: report.ok,
         text: formatDoctorReport(report),

@@ -1,7 +1,8 @@
 import { beforeEach, describe, expect, it } from 'vitest';
-import { ChannelType, Client, PermissionsBitField, type Guild } from 'discord.js';
-import { parseGuildId, type Config } from '@bananasaurs/core';
+import { ChannelType, Client, PermissionsBitField, Status, type Guild } from 'discord.js';
+import { parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
+import { REQUIRED_PERMISSIONS } from '../runtime/doctor.js';
 import {
   accountRepo,
   archiveRepo,
@@ -719,6 +720,10 @@ describe('accountSetPassword (S13-D3/D4)', () => {
 
   const ops = () => accountOpsFor(instance(), [scope, guildB()], () => NOW);
 
+  beforeEach(() => {
+    guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
+  });
+
   it("returns no-such-account for an unknown username and writes nothing", async () => {
     seedAccount('acct_keeper0000000000000000000000004', 'keeper');
 
@@ -759,6 +764,148 @@ describe('accountSetPassword (S13-D3/D4)', () => {
     expect(sessionRepo.findSessionByHash(instance(), 'b'.repeat(64))?.revokedAt).toBe(NOW);
     // S13-D4: OAuth tokens are bound to the account, not the password.
     expect(oauthRepo.findTokenById(instance(), 'swept-token')?.revokedAt).toBeNull();
+  });
+});
+
+describe('doctor dashboard access end to end (S13-D5)', () => {
+  // The one `buildDoctorReport` call site with a database handle: seed
+  // accounts and access rows in the migrated test database, then read the
+  // finding back out of the real `doctor()` port — data, `ok`, and the fact
+  // that the gateway-half text carries no dashboard lines of its own (those
+  // render command-side in `packages/core`, tested in `reads.test.ts`).
+  const EXTRA = parseGuildId('511111111111111111');
+
+  const testConfig = (allowlist: string): Config =>
+    parseConfig({
+      DISCORD_BOT_TOKEN: 'NOT.A.REALTOKEN',
+      DISCORD_APPLICATION_ID: BOT,
+      BANANASAURS_GUILD_ALLOWLIST: allowlist,
+      BANANASAURS_OWNER_USER_ID: OWNER,
+      DASHBOARD_SESSION_SECRET: 'b'.repeat(32),
+    });
+
+  const readyClient = (guildIds: readonly string[]): Client => {
+    const ready = new Client(buildClientOptions(() => BOT));
+    const mutable = ready as unknown as { user: unknown };
+    mutable.user = internals(ready).users._add({
+      id: BOT,
+      username: 'bananasaurs',
+      discriminator: '0',
+    });
+    (ready.ws as unknown as { status: number }).status = Status.Ready;
+    for (const id of guildIds) {
+      internals(ready).guilds._add({
+        id,
+        name: 'test guild',
+        owner_id: OWNER,
+        member_count: 30,
+        channels: [],
+        roles: [
+          { id, name: '@everyone', position: 0, permissions: '0', managed: false },
+          {
+            id: BOT_ROLE,
+            name: 'bananasaurs',
+            position: 7,
+            permissions: String(REQUIRED_PERMISSIONS),
+            managed: true,
+          },
+        ],
+        members: [
+          { user: { id: BOT, username: 'bananasaurs', discriminator: '0' }, roles: [BOT_ROLE] },
+        ],
+        emojis: [],
+        unavailable: false,
+      });
+    }
+    return ready;
+  };
+
+  const doctorFor = (allowlist: string, guildIds: readonly string[]) =>
+    opsInstanceFor({
+      config: testConfig(allowlist),
+      client: readyClient(guildIds),
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [scope, t.scopes.forGuild(EXTRA)],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    }).doctor();
+
+  const seedOwner = (accountId: string, username: string): void => {
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId,
+      username,
+      passwordHash: '$argon2id$fake',
+      isOwner: true,
+      now: NOW,
+    });
+  };
+
+  beforeEach(() => {
+    guildRepo.upsertGuild(t.scopes.forGuild(EXTRA), { name: 'extra guild', now: 0 });
+  });
+
+  it('reports ok with data when an enabled account reaches every allowlisted guild', () => {
+    seedOwner('acct_docok00000000000000000000000001', 'doc-owner');
+    accountRepo.grantGuildAccess(scope, 'acct_docok00000000000000000000000001');
+    accountRepo.grantGuildAccess(t.scopes.forGuild(EXTRA), 'acct_docok00000000000000000000000001');
+
+    const report = doctorFor(`${GUILD},${EXTRA}`, [GUILD, EXTRA]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(true);
+    expect(data.dashboardAccess).toMatchObject({
+      enabledAccounts: 1,
+      unreachableGuilds: [],
+      liveBootstrapTokens: 0,
+    });
+  });
+
+  it('fails ok and names the guild when the second guild is unreached (gap 1)', () => {
+    seedOwner('acct_docgap0000000000000000000000001', 'gap-owner');
+    accountRepo.grantGuildAccess(scope, 'acct_docgap0000000000000000000000001');
+
+    const report = doctorFor(`${GUILD},${EXTRA}`, [GUILD, EXTRA]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(false);
+    expect(data.dashboardAccess).toMatchObject({
+      enabledAccounts: 1,
+      unreachableGuilds: [EXTRA],
+    });
+  });
+
+  it('a disabled account counts for nothing: zero enabled with no token fails', () => {
+    seedOwner('acct_docdis00000000000000000000000001', 'disabled-owner');
+    accountRepo.grantGuildAccess(scope, 'acct_docdis00000000000000000000000001');
+    accountRepo.setAccountDisabled(t.scopes.instance(), {
+      accountId: 'acct_docdis00000000000000000000000001',
+      disabled: true,
+    });
+
+    const report = doctorFor(GUILD, [GUILD]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(false);
+    expect(data.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 0 });
+  });
+
+  it('zero accounts with a live bootstrap token stays ok: setup pending', () => {
+    accountRepo.issueBootstrapToken(t.scopes.instance(), {
+      tokenHash: 'live-token-hash',
+      now: NOW,
+      ttlMs: 900_000,
+    });
+
+    const report = doctorFor(GUILD, [GUILD]);
+    const data = report.data as { dashboardAccess?: unknown };
+
+    expect(report.ok).toBe(true);
+    expect(data.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 1 });
   });
 });
 

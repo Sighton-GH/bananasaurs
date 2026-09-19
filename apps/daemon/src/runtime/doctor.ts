@@ -174,9 +174,52 @@ const checkBackupHealth = (config: Config, nowMs: number): DoctorBackupHealth =>
   };
 };
 
+/**
+ * Whether anyone can sign in to the dashboard at all (slice 13, S13-D5).
+ *
+ * Two findings in one struct: an allowlisted guild no enabled account can
+ * reach (gap 1's symptom, which nothing reported until this slice), and the
+ * no-accounts bootstrap state (a live token means setup is pending, not
+ * broken; no live token means nobody can get in without a restart).
+ * `liveBootstrapTokens` is only meaningful when there are no accounts at
+ * all — once an account exists, sign-in no longer depends on a token.
+ */
+export interface DoctorDashboardAccess {
+  readonly enabledAccounts: number;
+  /** Allowlisted guilds no enabled account can reach (gap 1). */
+  readonly unreachableGuilds: readonly string[];
+  /** Only meaningful when there are no accounts at all. */
+  readonly liveBootstrapTokens: number;
+}
+
+/**
+ * The S13-D5 verdict over one `DoctorDashboardAccess`.
+ *
+ * Four rows: accounts everywhere means ok; an unreachable guild fails; zero
+ * accounts with a live token is setup pending and stays ok (a `doctor` that
+ * shouts at a correct fresh instance teaches the operator to ignore it);
+ * zero accounts with no live token fails. With zero accounts the guild list
+ * is meaningless — every guild is trivially unreachable — so the token count
+ * alone decides.
+ */
+export const dashboardAccessOk = (access: DoctorDashboardAccess): boolean => {
+  if (access.enabledAccounts === 0) return access.liveBootstrapTokens > 0;
+  return access.unreachableGuilds.length === 0;
+};
+
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
   readonly ok: boolean;
+  /**
+   * The dashboard-access finding (S13-D5), when the caller assessed it.
+   *
+   * Optional, deliberately: the account reads need a database this report
+   * must never open — `index.ts` runs it against a live daemon — so the
+   * caller computes the struct over the account tables and passes it in, and
+   * call sites that cannot (startup, doctor mode) omit it. Absent means not
+   * assessed, never a failure: it contributes no line and no `ok` vote.
+   */
+  readonly dashboardAccess?: DoctorDashboardAccess | undefined;
   readonly partials: {
     readonly configured: readonly string[];
     readonly missing: readonly string[];
@@ -200,6 +243,13 @@ export function buildDoctorReport(
   client: Client,
   config: Config,
   nowMs: number = Date.now(),
+  /**
+   * The dashboard-access finding's input (S13-D5), computed by the caller
+   * over the account tables — this report never opens the database itself.
+   * Omitted by call sites with no database handle (startup, doctor mode);
+   * see `dashboardAccess` above for what omission means.
+   */
+  dashboardAccess?: DoctorDashboardAccess | undefined,
 ): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
@@ -227,6 +277,12 @@ export function buildDoctorReport(
   // work has stopped.
   const backupOk = !(backup.dirExists && !backup.dirWritable) && !backup.stale;
 
+  // S13-D5: both dashboard-access findings count toward `ok` — but only
+  // when assessed. An omitted input is a call site with no database, not a
+  // state with no accounts, so it votes nothing rather than failing every
+  // startup and every doctor-mode run.
+  const dashboardOk = dashboardAccess === undefined || dashboardAccessOk(dashboardAccess);
+
   const ok =
     missing.length === 0 &&
     privileged.every((p) => p.requested) &&
@@ -235,7 +291,8 @@ export function buildDoctorReport(
       (g) => g.present && g.missingPermissions.length === 0 && g.forbiddenPermissions.length === 0,
     ) &&
     backupOk &&
-    archiveGuildsNotAllowlisted.length === 0;
+    archiveGuildsNotAllowlisted.length === 0 &&
+    dashboardOk;
 
   return {
     ok,
@@ -244,6 +301,10 @@ export function buildDoctorReport(
     guilds,
     backup,
     archiveGuildsNotAllowlisted,
+    // Conditional spread, not `dashboardAccess: undefined` directly:
+    // `exactOptionalPropertyTypes` treats an explicit `undefined` as distinct
+    // from the property being absent, and "not assessed" is absence.
+    ...(dashboardAccess !== undefined && { dashboardAccess }),
   };
 }
 
