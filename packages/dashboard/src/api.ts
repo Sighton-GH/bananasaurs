@@ -15,10 +15,24 @@ export interface SessionInfo {
   readonly authenticated: true;
   readonly accountId: string;
   readonly guildId: string;
+  /** The current guild's display name. Absent on older servers; the shell falls back to health. */
+  readonly guildName?: string | undefined;
+  /**
+   * Every guild this account can reach on this instance (S13-D9). Optional so
+   * a session established before the server learned to send it still renders —
+   * the shell simply shows no switcher.
+   */
+  readonly reachableGuilds?: readonly ReachableGuild[] | undefined;
   readonly csrfToken: string;
   readonly expiresAt: number;
   readonly reauthFresh: boolean;
   readonly readonly: boolean;
+}
+
+/** One entry of the login refusal's `choices` and the session's `reachableGuilds`. */
+export interface ReachableGuild {
+  readonly guildId: string;
+  readonly name?: string | undefined;
 }
 
 export interface NoSession {
