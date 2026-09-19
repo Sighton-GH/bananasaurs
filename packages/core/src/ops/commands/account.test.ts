@@ -155,10 +155,12 @@ interface GuildAccessHarness {
   readonly revokeCalls: string[];
 }
 
-const guildAccessHarness = (stubs: {
-  accountGrantGuild?: (username: string) => GrantGuildOutcome;
-  accountRevokeGuild?: (username: string) => RevokeGuildOutcome;
-} = {}): GuildAccessHarness => {
+const guildAccessHarness = (
+  stubs: {
+    accountGrantGuild?: (username: string) => GrantGuildOutcome;
+    accountRevokeGuild?: (username: string) => RevokeGuildOutcome;
+  } = {},
+): GuildAccessHarness => {
   const audit: OpsAuditWrite[] = [];
   const grantCalls: string[] = [];
   const revokeCalls: string[] = [];
@@ -1004,16 +1006,16 @@ describe('account revoke-guild (S13-D2)', () => {
 });
 
 describe('account set-password (S13-D3/D4)', () => {
-  const stubbed = (
-    password = 'generated-password-value',
-  ): NonNullable<AccountStubs['accountSetPassword']> => () =>
-    Promise.resolve({
-      username: 'alice',
-      accountId: 'acc-1',
-      password,
-      sessionsRevoked: 2,
-      guildsTouched: 2,
-    });
+  const stubbed =
+    (password = 'generated-password-value'): NonNullable<AccountStubs['accountSetPassword']> =>
+    () =>
+      Promise.resolve({
+        username: 'alice',
+        accountId: 'acc-1',
+        password,
+        sessionsRevoked: 2,
+        guildsTouched: 2,
+      });
 
   it('is registered as a write beside the existing account commands', () => {
     expect(OPERATOR_COMMANDS.map((c) => c.name)).toContain('account set-password');

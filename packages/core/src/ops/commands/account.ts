@@ -385,8 +385,7 @@ export const accountGrantGuildCommand = defineCommand<z.infer<typeof accountName
       // audit record (the type enforces it), so the row says what happened:
       // the access already held, and nothing changed.
       return {
-        text:
-          `${args.username} already has access to guild ${ctx.guildId}; nothing changed`,
+        text: `${args.username} already has access to guild ${ctx.guildId}; nothing changed`,
         data: {
           username: args.username,
           guildId: ctx.guildId,

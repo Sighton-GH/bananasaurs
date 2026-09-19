@@ -817,13 +817,22 @@ describe('bananasaurs doctor dashboard access (S13-D5)', () => {
   // wiring computed over the account tables; the command renders the
   // `dashboard access    …` lines from it and folds the verdict into `ok`.
   const withDashboardAccess = (
-    dashboardAccess: unknown,
+    dashboardAccess: {
+      enabledAccounts: number;
+      unreachableGuilds: string[];
+      liveBootstrapTokens: number;
+    },
     reportOk: boolean,
     reportText = 'gateway: ok',
   ) =>
-    drive(doctorCommand, healthy, {}, {
-      doctor: () => ({ ok: reportOk, text: reportText, data: { dashboardAccess } }),
-    });
+    drive(
+      doctorCommand,
+      healthy,
+      {},
+      {
+        doctor: () => ({ ok: reportOk, text: reportText, data: { dashboardAccess } }),
+      },
+    );
 
   it('reports ok when an enabled account reaches every allowlisted guild', async () => {
     const res = await withDashboardAccess(

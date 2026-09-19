@@ -622,12 +622,10 @@ describe('accountGrantGuild / accountRevokeGuild (S13-D1/D2)', () => {
     });
   };
 
-  const portsA = () =>
-    opsPortsFor(scope, instance(), operations, () => NOW, client, true);
-  const portsB = () =>
-    opsPortsFor(guildB(), instance(), operations, () => NOW, client, true);
+  const portsA = () => opsPortsFor(scope, instance(), operations, () => NOW, client, true);
+  const portsB = () => opsPortsFor(guildB(), instance(), operations, () => NOW, client, true);
 
-  it("grant returns no-such-account for an unknown username and writes nothing", () => {
+  it('grant returns no-such-account for an unknown username and writes nothing', () => {
     expect(portsA().accountGrantGuild('nobody')).toBe('no-such-account');
     expect(portsA().accountRevokeGuild('nobody')).toBe('no-such-account');
   });
@@ -645,12 +643,16 @@ describe('accountGrantGuild / accountRevokeGuild (S13-D1/D2)', () => {
     guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
 
     expect(portsA().accountGrantGuild('second-guild')).toBe('granted');
-    expect(
-      accountRepo.hasGuildAccess(scope, 'acct_secondguild000000000000000000001'),
-    ).toBe(true);
-    expect(
-      accountRepo.hasGuildAccess(guildB(), 'acct_secondguild000000000000000000001'),
-    ).toBe(false);
+    expect(accountRepo.hasGuildAccess(scope, 'acct_secondguild000000000000000000001')).toBe(true);
+    expect(accountRepo.hasGuildAccess(guildB(), 'acct_secondguild000000000000000000001')).toBe(
+      false,
+    );
+    // Each guild's ports act on their own guild: granting in B afterwards is
+    // a fresh grant, not an already-had-it.
+    expect(portsB().accountGrantGuild('second-guild')).toBe('granted');
+    expect(accountRepo.hasGuildAccess(guildB(), 'acct_secondguild000000000000000000001')).toBe(
+      true,
+    );
   });
 
   it('revoke then re-revoke answers revoked, then did-not-have-it', () => {
@@ -724,13 +726,13 @@ describe('accountSetPassword (S13-D3/D4)', () => {
     guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
   });
 
-  it("returns no-such-account for an unknown username and writes nothing", async () => {
+  it('returns no-such-account for an unknown username and writes nothing', async () => {
     seedAccount('acct_keeper0000000000000000000000004', 'keeper');
 
     expect(await ops().accountSetPassword('nobody')).toBe('no-such-account');
-    expect(
-      accountRepo.findAccountByUsername(instance(), 'keeper')?.passwordHash,
-    ).toBe('$argon2id$old-password');
+    expect(accountRepo.findAccountByUsername(instance(), 'keeper')?.passwordHash).toBe(
+      '$argon2id$old-password',
+    );
   });
 
   it('stores a hash the generated password verifies against, and nothing else retrievable', async () => {

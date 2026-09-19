@@ -249,7 +249,7 @@ export function buildDoctorReport(
    * Omitted by call sites with no database handle (startup, doctor mode);
    * see `dashboardAccess` above for what omission means.
    */
-  dashboardAccess?: DoctorDashboardAccess | undefined,
+  dashboardAccess?: DoctorDashboardAccess,
 ): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
