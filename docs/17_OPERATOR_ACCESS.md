@@ -71,6 +71,20 @@ bananasaurs account delete <username> --confirm
                                              # dashboard sessions cascade. Not reversible.
 bananasaurs account grant <username> <capability> --confirm
                                              # ADR 0028, guild-scoped — takes the global --guild
+bananasaurs account grant-guild <username> --confirm
+                                             # grants the account access to THIS guild:
+                                             # the global --guild IS the guild granted,
+                                             # not just the audit destination (unlike
+                                             # every other account command)
+bananasaurs account revoke-guild <username> --confirm
+                                             # revokes the account's access to THIS guild
+                                             # (same --guild rule); warns rather than
+                                             # refusing your own lockout
+bananasaurs account set-password <username> --confirm
+                                             # generates a password, prints it once, and
+                                             # revokes the account's dashboard sessions
+                                             # in every guild — but not its OAuth tokens
+                                             # (use `account revoke-credentials` for those)
 bananasaurs mcp clients                      # registered OAuth clients (no client holds a secret)
 bananasaurs mcp tokens                       # every token row, live or revoked — ids only
 bananasaurs mcp revoke <token-id> --confirm  # revokes the token's whole lineage, not one row
@@ -123,7 +137,9 @@ the intended security behaviour and not a broken server, but several MCP
 clients report it as one — so if a freshly connected client says the server
 has no methods, check which scope was approved before checking anything else.
 
-The five `account` commands act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
+The `account` commands mostly act instance-wide (ADR 0027) — a dashboard account exists before a guild is chosen, so disabling one disables it everywhere, and the account is not a member of the guild you name. But the socket still requires `--guild <id>` on an instance that serves more than one guild, because every operator command resolves a guild before it runs and every audit row is written into one (`audit_events.guild_id` is `NOT NULL`); on this instance that is two guilds, so the flag is required. What the flag selects is therefore only which guild's audit trail records the change — not what the change touches, so `account disable --guild A` still locks the account out everywhere, including guild B, and `account revoke-credentials --guild A` still revokes its sessions and tokens and deletes its authorization codes everywhere, including guild B. `account grant` is the genuine exception in the other direction: its effect really is guild-scoped, because a capability is. `disable` is reversible with `enable`; `delete` is not. Neither guards against removing the last owner, deliberately: `enable` undoes a disable, and deleting the last account is the path `bootstrap reissue` documents, so a guard would make that recovery unreachable (ADR 0045 Amendment 3, A3-3).
+
+`account grant-guild` and `account revoke-guild` are the second exception, and the louder one: for these two the global `--guild` IS the target — it selects the guild being granted or revoked — not merely the audit destination. Say it plainly because it differs from every other account command: `account grant-guild alice --guild B` gives Alice guild B, and the row lands in B's trail because B is where the change happened. One guild id on the line, never two. `revoke-guild` joins `delete` in deliberately refusing no lockout: revoking your own last guild access signs you out with no way back in, the command warns rather than refusing, and recovery is delete + re-bootstrap.
 
 `disable` is a pause, not a rotation: re-enabling an account restores every session and token it approved, intact. `account revoke-credentials` is the rotation: it ends every live dashboard session and every live OAuth token, and deletes every unexchanged authorization code, for the account without disabling it. It does not rotate the password, so an attacker who knows the password can sign in again and get new sessions and tokens — to stop the account signing in at all, use `account disable`; to remove it, `account delete`.
 
@@ -150,15 +166,11 @@ Tailscale works as well. If the page "doesn't load", this is why, and the fix is
 the tunnel rather than a wider bind: `0.0.0.0` would put a password form holding
 the kill switch on the LAN.
 
+A fresh account reaches only the **first** guild in `BANANASAURS_GUILD_ALLOWLIST` — that is all `bootstrap` grants, and nothing else granted the rest until slice 13. On this instance that meant the owner's account reached the dev guild while the club guild sat unreachable by anybody, which is how the Release 2 gate's own guild went unopened for months. `account grant-guild <username> --guild <id> --confirm` is how an account reaches the others: run it once per guild past the first, and check with `doctor`, which now fails loudly on any allowlisted guild no enabled account can reach.
+
 ### If nobody can log in
 
-**A forgotten password is this same path**, because there is no password reset
-command — `setPasswordHash` has no production caller (ADR 0045 Amendment 4).
-Recovering means `account delete <username> --confirm` first (reissue refuses
-while any account exists), which also **revokes every OAuth token and
-authorization code that account approved**. That is free on an instance with no
-connector and expensive on one with a live MCP client, so if you are going to
-forget a password, forget it early.
+**A forgotten password is `account set-password <username> --confirm`.** It generates a replacement, prints it once — copy it into a password manager immediately, it is not stored anywhere — and revokes the account's dashboard sessions in every guild. It does **not** revoke OAuth tokens: those are bound to the account, not the password, so run `account revoke-credentials <username> --confirm` as well if the password may have leaked. `account delete` plus re-bootstrap remains the recovery only when nobody can sign in at all (reissue refuses while any account exists), and it still costs every OAuth token and authorization code the deleted account approved — which is free on an instance with no connector and expensive on one with a live MCP client, so if you are going to lose the last account, lose it early.
 
 
 `bootstrap reissue` is the recovery path (ADR 0012), and it is why the owner is
@@ -197,18 +209,18 @@ Three things about it are deliberate:
   keep answering 404 — which looks exactly like the command not having worked.
 - **It refuses while any dashboard account exists.** Otherwise anyone with shell
   access could mint a second owner account, with the audit trail showing only a
-  token issuance. To reset a forgotten password, have an owner change it from
-  the dashboard. If there is no owner left at all, delete the account rows
+  token issuance. To reset a forgotten password, run `account set-password`
+  from the shell. If there is no owner left at all, delete the account rows
   deliberately and then run this.
 
-`bootstrap reissue` refuses while any dashboard account exists, so reaching the empty state it needs is itself a deliberate act — and that act now has a supported command: `bananasaurs account delete <username> --confirm`, which revokes the account's OAuth tokens in the same transaction instead of leaving raw row deletes to the operator. That is the path the refusal message already names, so the manual and the tool agree.
+`bootstrap reissue` refuses while any dashboard account exists, so reaching the empty state it needs is itself a deliberate act — and that act now has a supported command: `bananasaurs account delete <username> --confirm`, which revokes the account's OAuth tokens in the same transaction instead of leaving raw row deletes to the operator. That is the path the refusal message already names, so the manual and the tool agree. (To reset a forgotten password while accounts still exist, use `account set-password`, not this path — see above.)
 
 ### Rules every command follows
 
 - Guild-scoped, like every other data path.
 - `--json` for machine-readable output. This is what makes the CLI useful to an agent.
 - Writes need `--confirm` and write an audit row: `actor_type: operator_cli`, the Unix user, `via: ssh`.
-- Secrets are never printed. Not in `config get`, not in `status`, not in `--json`.
+- Secrets are never printed. Not in `config get`, not in `status`, not in `--json`. The two deliberate exceptions are the print-once secrets: the bootstrap token and `account set-password`'s generated password, each shown once in the command's text output and stored nowhere — never in `data`, never in the audit row, never in a log line.
 - `BANANASAURS_READONLY=1` makes every write command refuse. Use this for ordinary inspection.
 
 ---
