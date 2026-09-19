@@ -1,13 +1,21 @@
 import { and, eq, isNull } from 'drizzle-orm';
 import type { GuildScope, InstanceScope } from '../scope.js';
 import { read, readInstance, write } from '../write.js';
-import { dashboardSessions } from '../schema.js';
+import { accountGuildAccess, dashboardSessions } from '../schema.js';
 
 /**
  * Dashboard sessions.
  *
- * Guild-scoped rows (ADR 0012: a session is for one guild, so a stolen cookie
- * cannot be pointed at another), with **one deliberately instance-scoped
+ * Guild-scoped rows. ADR 0012 put it as "a session is for one guild, so a
+ * stolen cookie cannot be pointed at another"; slice 13 narrowed that, because
+ * an instance serving two guilds has to let its operator move between them
+ * without signing out. What still holds — and is what the sentence was
+ * protecting — is that a session may only ever be pointed at a guild **the
+ * account already has access to**, checked inside `setSessionGuild` below
+ * rather than by its callers. A stolen cookie still reaches exactly the guilds
+ * its account could reach.
+ *
+ * There is **one deliberately instance-scoped
  * function**: `findSessionByHash`. A session is looked up by its token before
  * the guild is known, so guild-scoping that lookup would mean trusting a
  * client-supplied guild in order to authenticate the session (ADR 0027, and the
@@ -186,16 +194,37 @@ export const listSessionsForAccount = (
  * two statements to do what one does, and would briefly leave the session
  * addressed by nothing.
  *
- * False when the row is gone or already revoked. `now` is accepted for
+ * False when the row is gone, already revoked, **or the account has no access
+ * to the target guild** — the last is checked in this function rather than
+ * left to the caller, so a future caller cannot forget it. `now` is accepted for
  * call-site symmetry but stamps nothing: the row carries no `updated_at`, and
  * touching `expires_at` would shift the absolute lifetime ADR 0029 forbids
  * shifting.
  */
 export const setSessionGuild = (
   scope: GuildScope,
-  input: { sessionIdHash: string; guildId: string; now: number },
+  input: { sessionIdHash: string; accountId: string; guildId: string; now: number },
 ): boolean =>
   write(scope, ({ db }) => {
+    // The access check lives here, not only in the route (CLAUDE.md rule 2:
+    // enforce guild scope in repository signatures, not in caller discipline).
+    // Without it this is a bare partition-move primitive that will happily put
+    // a session in a guild its account cannot reach — harmless today only
+    // because `authenticate` re-checks on the next request, which is a backstop
+    // and not a guard. Taking `accountId` is what makes the check possible at
+    // all, so the signature is the enforcement.
+    const target = db
+      .select({ accountId: accountGuildAccess.accountId })
+      .from(accountGuildAccess)
+      .where(
+        and(
+          eq(accountGuildAccess.guildId, input.guildId),
+          eq(accountGuildAccess.accountId, input.accountId),
+        ),
+      )
+      .get();
+    if (target === undefined) return false;
+
     const result = db
       .update(dashboardSessions)
       .set({ guildId: input.guildId })

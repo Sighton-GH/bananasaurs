@@ -422,6 +422,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
 
     const moved = sessionRepo.setSessionGuild(session.scope, {
       sessionIdHash: session.sessionIdHash,
+      accountId: session.accountId,
       guildId: target.guildId,
       now: deps.now(),
     });

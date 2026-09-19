@@ -353,9 +353,13 @@ export const accountRevokeCredentialsCommand = defineCommand<z.infer<typeof acco
 /**
  * `bananasaurs account grant-guild <username> --confirm` (slice 13).
  *
- * The guild-access lever `bootstrap` never grew: a fresh account reaches only
- * `deps.guildIds[0]`, and until this command nothing could grant it the
- * others. Guild-scoped — the odd one out beside the instance-level commands
+ * **Not** the lever that makes a guild reachable: `bootstrap` already grants
+ * access and every capability in *every* guild the instance serves (its own
+ * loop over `deps.guildIds`), and only one account can exist today, so there
+ * has never been an account short of a guild. This is the opposite job —
+ * **restricting** an account to fewer guilds, and restoring it afterwards.
+ * The first draft of the slice plan said otherwise; it was read out of its
+ * enclosing loop and corrected in ADR 0045 Amendment 6. Guild-scoped — the odd one out beside the instance-level commands
  * above — so this reads `ctx.ports`, not `ctx.instance`: the closure IS the
  * guild being granted, resolved by the dispatcher from the global `--guild`
  * flag, and the command takes no guild of its own (one guild id on the line,
