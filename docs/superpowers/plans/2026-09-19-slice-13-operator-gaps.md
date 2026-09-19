@@ -113,6 +113,33 @@ The third row is deliberately not a problem: a fresh instance waiting for its
 first account is working correctly, and a `doctor` that shouts at a correct
 state teaches the operator to ignore it (the M6-D1 argument, again).
 
+**S13-D6 — the guild list rides on the `guild-required` refusal and nowhere
+else.** It is computed after `checkPassword` succeeds, so no response to
+someone who cannot log in changes shape or timing class. An account holder
+learning which guilds their own account reaches is not a disclosure.
+
+**S13-D7 — switching re-scopes the existing session; it does not issue a new
+one.** One UPDATE of `guild_id` under the current scope, so the primary key —
+which the cookie, the CSRF derivation and every revocation query address the
+row by — survives, and `account revoke-credentials` still counts one session
+per sign-in.
+
+**S13-D8 — the switch is not `requireFresh`-gated.** A fresh login to the
+target guild sets `reauth_at` just the same, so the switch grants no freshness
+an operator could not get by signing out and back in with the same password.
+Requiring a password to change a dropdown trains the operator to retype it on
+demand. The review contested this hardest and it held.
+
+**S13-D9 — the switcher lists only guilds the account can reach, from the
+server**, via `GET /api/session`, never from a client-side reading of the
+allowlist.
+
+**S13-D10 (review I-2) — the access check lives inside `setSessionGuild`, not
+only in its route.** CLAUDE.md rule 2 says enforce guild scope in repository
+signatures rather than caller discipline. The function therefore takes
+`accountId` and refuses a target the account cannot reach; `authenticate`
+re-checking on the next request is a backstop, not the guard.
+
 ## Global constraints (copy verbatim into the brief)
 
 1. **Do not touch** `mod_rules`, `setRuleMode`, `packages/core/src/mod/`,
