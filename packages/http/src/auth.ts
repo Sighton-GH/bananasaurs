@@ -261,7 +261,7 @@ export type LoginResult =
     }
   | {
       readonly ok: false;
-      readonly reason: 'invalid-credentials' | 'locked-out' | 'no-guild-access';
+      readonly reason: Exclude<LoginFailure, 'guild-required'>;
     }
   | {
       readonly ok: false;

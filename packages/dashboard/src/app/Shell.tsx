@@ -31,7 +31,6 @@ function GuildIdentity() {
         <label className="block">
           <span className="mb-1 block text-xs text-ink-muted">Server</span>
           <select
-            aria-label="Server"
             value={session.info.guildId}
             onChange={(e) => void session.switchGuild(e.target.value)}
             className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-base font-medium text-ink"
