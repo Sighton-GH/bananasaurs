@@ -1,4 +1,10 @@
-import { accountRepo, guildRepo, sessionRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  guildRepo,
+  sessionRepo,
+  type GuildScope,
+  type ScopeFactory,
+} from '@bananasaurs/storage';
 import {
   CAPABILITIES,
   parseAccountId,
@@ -219,9 +225,7 @@ export interface GuildChoice {
  * guild-row read per reachable guild, all after the password verified.
  */
 export const listGuildChoices = (deps: AuthDeps, accountId: string): GuildChoice[] => {
-  const accessible = new Set(
-    accountRepo.listAccessibleGuilds(deps.scopes.instance(), accountId),
-  );
+  const accessible = new Set(accountRepo.listAccessibleGuilds(deps.scopes.instance(), accountId));
   const out: GuildChoice[] = [];
   for (const id of deps.guildIds) {
     if (!accessible.has(id)) continue;
@@ -255,7 +259,10 @@ export type LoginResult =
       readonly guildId: GuildId;
       readonly expiresAt: number;
     }
-  | { readonly ok: false; readonly reason: 'invalid-credentials' | 'locked-out' | 'no-guild-access' }
+  | {
+      readonly ok: false;
+      readonly reason: 'invalid-credentials' | 'locked-out' | 'no-guild-access';
+    }
   | {
       readonly ok: false;
       readonly reason: 'guild-required';

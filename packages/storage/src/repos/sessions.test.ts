@@ -249,9 +249,9 @@ describe('readonly mode refuses every session write (ADR 0029)', () => {
   it('refuses setSessionGuild — moving a session is a write', () => {
     open(a);
     const ro = t.readonlyScopes.forGuild(GUILD_A);
-    expect(() =>
-      setSessionGuild(ro, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 }),
-    ).toThrow(ReadonlyError);
+    expect(() => setSessionGuild(ro, { sessionIdHash: HASH, guildId: GUILD_B, now: 2000 })).toThrow(
+      ReadonlyError,
+    );
   });
   it('still allows the lookup, so an existing session can still read', () => {
     open(a);

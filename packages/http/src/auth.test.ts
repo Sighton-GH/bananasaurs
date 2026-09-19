@@ -4,7 +4,13 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzStoreFor, effectRepo, guildRepo, sessionRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  authzStoreFor,
+  effectRepo,
+  guildRepo,
+  sessionRepo,
+} from '@bananasaurs/storage';
 import { authorize, CAPABILITIES, createLogger, parseGuildId } from '@bananasaurs/core';
 
 import {
@@ -763,9 +769,14 @@ describe('switching guilds without logging out', () => {
     (t.raw.prepare(`SELECT COUNT(*) AS n FROM dashboard_sessions`).get() as { n: number }).n;
 
   const cookieOf = (response: { headers: Record<string, unknown> }): string => {
-    const raw = response.headers['set-cookie'];
-    const first = Array.isArray(raw) ? (raw[0] ?? '') : ((raw as string | undefined) ?? '');
-    return first.split(';')[0] ?? '';
+    const raw: unknown = response.headers['set-cookie'];
+    const first: unknown =
+      Array.isArray(raw) && typeof raw[0] === 'string'
+        ? raw[0]
+        : typeof raw === 'string'
+          ? raw
+          : '';
+    return typeof first === 'string' ? (first.split(';')[0] ?? '') : '';
   };
 
   beforeEach(async () => {
