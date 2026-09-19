@@ -227,15 +227,34 @@ incoming tool call's arguments. The test now asserts `ajv` **is** loaded and
 that it comes from the SDK's nested copy, so the exception is pinned by the
 suite rather than by a paragraph.
 
-**Next action: Slice 11 — driving the cutover state machine — needs the
-owner's go-ahead before any code is written, and Slice M6's live run needs
-the owner's Cloudflare Bypass application.** As of 2026-09-17, M4, M5, M6
-(code side) and Slice 10 are all merged; `main` is at 175 files / 3,352
-tests, verified in an isolated worktree because a build on this box is a
-deployment (see the 2026-09-17 incident above). The daemon is up on both
-guilds on the pre-M6 build; the next `npm run build && sudo systemctl
-restart bananasaurs` deploys M6's `doctor` probe and the `Secure` cookie —
-no migration is pending, so no stop → migrate → start is needed for that one.
+**Next action: deploy, then M6's live run. Slice 11 merges after the floor.**
+As of 2026-09-19 `main` is `1b8d579`, 175 files / 3,414 tests, with M4, M5,
+M6's code, Slice 10 and Slice 13 all merged. The daemon is up on both guilds
+but running a build from 2026-09-17, so **the next `npm run build && sudo
+systemctl restart bananasaurs` deploys M6's `doctor` probe, the `Secure`
+cookie and all of Slice 13.** No migration is pending; see the 2026-09-17
+incident above for why the order matters when one is.
+
+Cloudflare is fully configured: an identity policy on the hostname and a
+Bypass application on the six machine paths, with `MCP_PUBLIC_URL` set. The
+origin answers `401` with the bearer challenge on `/mcp` and `200` on the
+authorization-server document, so **M6's live run (`docs/SMOKE_TESTS.md`
+Section D) is unblocked** and is the next thing to do after deploying.
+
+`oc/slice-11-cutover` is built, reviewed twice and **held unmerged** by the
+owner's decision until the club guild's floor elapses **2026-09-26 19:49 PDT
+(2026-09-27T02:49:57.656Z)**. It gives `setRuleMode` its first production
+callers, so merging early would put a command that can end an observe window
+on a live daemon. After the floor: merge, rehearse on the dev guild
+(`SMOKE_TESTS.md` Section E), flip the club, then Slice 12's sign-off against
+`docs/reports/release2-gate-signoff.md`.
+
+Slice 13 was not in the original plan. It exists because the owner tried to
+log in on 2026-09-19 and found three gaps nothing had caught: no password
+reset, a `doctor` silent about whether anyone could sign in, and — the real
+one — a dashboard that could not serve a two-guild instance at all, because
+`login` correctly refuses `guild-required` while the login page never sent a
+guild. The owner was signed in only because `bootstrap` bypasses `login`.
 
 What M6 still owes is the live run (`docs/SMOKE_TESTS.md` Section D), and it
 is blocked on one owner action: the Cloudflare Access **Bypass** application
