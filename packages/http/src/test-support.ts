@@ -528,6 +528,33 @@ export const testPortsFor = (
     });
     return 'granted';
   },
+  // Slice 13 (S13-D1/D2): the same real-repo behaviour
+  // `apps/daemon/src/ops/wiring.ts` wires — `findAccountByUsername` through
+  // `opts.instanceScope`, then the guild-scoped access write. The pre-check
+  // before each write is what turns "already had it" and "did not have it"
+  // into answers rather than silent no-ops.
+  accountGrantGuild: (username) => {
+    const instanceScope = opts.instanceScope;
+    if (instanceScope === undefined) {
+      throw new Error('accountGrantGuild needs opts.instanceScope: pass t.scopes.instance()');
+    }
+    const account = accountRepo.findAccountByUsername(instanceScope, username);
+    if (account === undefined) return 'no-such-account';
+    if (accountRepo.hasGuildAccess(scope, account.accountId)) return 'already-had-it';
+    accountRepo.grantGuildAccess(scope, account.accountId);
+    return 'granted';
+  },
+  accountRevokeGuild: (username) => {
+    const instanceScope = opts.instanceScope;
+    if (instanceScope === undefined) {
+      throw new Error('accountRevokeGuild needs opts.instanceScope: pass t.scopes.instance()');
+    }
+    const account = accountRepo.findAccountByUsername(instanceScope, username);
+    if (account === undefined) return 'no-such-account';
+    if (!accountRepo.hasGuildAccess(scope, account.accountId)) return 'did-not-have-it';
+    accountRepo.revokeGuildAccess(scope, account.accountId);
+    return 'revoked';
+  },
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */
@@ -730,6 +757,13 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
     };
   },
   accountRevokeCredentials: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  // Slice 13 (S13-D3/D4): the operator CLI's password reset. Not a dashboard
+  // route — and `testInstanceFor` has no `guildScopes` to sweep sessions
+  // across, where the canonical `accountOpsFor` does — so this throws like
+  // `accountRevokeCredentials` above rather than half-implementing the sweep.
+  accountSetPassword: () => {
     throw new Error('not used by the dashboard routes under test');
   },
 });

@@ -17,6 +17,7 @@ import { accountOpsFor, opsInstanceFor, opsPortsFor } from './wiring.js';
 // By relative path rather than the `@bananasaurs/http/test-support` subpath:
 // vitest aliases `@bananasaurs/http` to the package index, so the subpath
 // would resolve under it and break (see `mcp/wiring.test.ts`).
+import { verifyPassword } from '@bananasaurs/http';
 import { testPortsFor } from '../../../../packages/http/src/test-support.js';
 
 /**
@@ -602,6 +603,162 @@ describe('accountRevokeCredentials (M3c)', () => {
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-1')).toBeUndefined();
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-holder-2')).toBeUndefined();
     expect(oauthRepo.findAuthorizationCode(instance(), 'code-other-1')).toBeDefined();
+  });
+});
+
+describe('accountGrantGuild / accountRevokeGuild (S13-D1/D2)', () => {
+  const GUILD_2 = parseGuildId('311111111111111111');
+  const instance = () => t.scopes.instance();
+  const guildB = () => t.scopes.forGuild(GUILD_2);
+
+  const seedAccount = (accountId: string, username: string): void => {
+    accountRepo.createAccount(instance(), {
+      accountId,
+      username,
+      passwordHash: '$argon2id$fake',
+      isOwner: false,
+      now: NOW,
+    });
+  };
+
+  const portsA = () =>
+    opsPortsFor(scope, instance(), operations, () => NOW, client, true);
+  const portsB = () =>
+    opsPortsFor(guildB(), instance(), operations, () => NOW, client, true);
+
+  it("grant returns no-such-account for an unknown username and writes nothing", () => {
+    expect(portsA().accountGrantGuild('nobody')).toBe('no-such-account');
+    expect(portsA().accountRevokeGuild('nobody')).toBe('no-such-account');
+  });
+
+  it('grant then re-grant answers granted, then already-had-it, with one row', () => {
+    seedAccount('acct_grant00000000000000000000000001', 'grantee');
+
+    expect(portsA().accountGrantGuild('grantee')).toBe('granted');
+    expect(accountRepo.hasGuildAccess(scope, 'acct_grant00000000000000000000000001')).toBe(true);
+    expect(portsA().accountGrantGuild('grantee')).toBe('already-had-it');
+  });
+
+  it('the grant names one guild: a grant in A leaves B unreached (S13-D1)', () => {
+    seedAccount('acct_secondguild000000000000000000001', 'second-guild');
+    guildRepo.upsertGuild(guildB(), { name: 'second guild', now: 0 });
+
+    expect(portsA().accountGrantGuild('second-guild')).toBe('granted');
+    expect(
+      accountRepo.hasGuildAccess(scope, 'acct_secondguild000000000000000000001'),
+    ).toBe(true);
+    expect(
+      accountRepo.hasGuildAccess(guildB(), 'acct_secondguild000000000000000000001'),
+    ).toBe(false);
+  });
+
+  it('revoke then re-revoke answers revoked, then did-not-have-it', () => {
+    seedAccount('acct_revoke0000000000000000000000001', 'revokee');
+    accountRepo.grantGuildAccess(scope, 'acct_revoke0000000000000000000000001');
+
+    expect(portsA().accountRevokeGuild('revokee')).toBe('revoked');
+    expect(accountRepo.hasGuildAccess(scope, 'acct_revoke0000000000000000000000001')).toBe(false);
+    expect(portsA().accountRevokeGuild('revokee')).toBe('did-not-have-it');
+  });
+
+  it('revoking a guild the account never had is did-not-have-it, not revoked', () => {
+    seedAccount('acct_stranger0000000000000000000000001', 'stranger');
+
+    expect(portsA().accountRevokeGuild('stranger')).toBe('did-not-have-it');
+  });
+});
+
+describe('accountSetPassword (S13-D3/D4)', () => {
+  const GUILD_2 = parseGuildId('411111111111111111');
+  const instance = () => t.scopes.instance();
+  const guildB = () => t.scopes.forGuild(GUILD_2);
+
+  const seedAccount = (accountId: string, username: string): void => {
+    accountRepo.createAccount(instance(), {
+      accountId,
+      username,
+      passwordHash: '$argon2id$old-password',
+      isOwner: false,
+      now: NOW,
+    });
+  };
+
+  const openSession = (guildScope: GuildScope, sessionIdHash: string, accountId: string): void => {
+    sessionRepo.createSession(guildScope, {
+      sessionIdHash,
+      accountId,
+      createdAt: NOW,
+      expiresAt: NOW + 12 * 3_600_000,
+      reauthAt: NOW,
+      ip: '127.0.0.1',
+    });
+  };
+
+  const seedToken = (tokenId: string, accountId: string): void => {
+    oauthRepo.createClient(instance(), {
+      clientId: 'client-1',
+      clientName: 'name of client-1',
+      redirectUris: ['https://example.test/cb'],
+      createdAt: NOW,
+      createdByAccountId: null,
+      registrationSource: 'dynamic',
+    });
+    oauthRepo.createToken(instance(), {
+      tokenId,
+      tokenHash: `hash-${tokenId}`,
+      kind: 'access',
+      clientId: 'client-1',
+      accountId,
+      scopes: ['bananasaurs:read'],
+      createdAt: NOW,
+      expiresAt: NOW + 100_000,
+      parentTokenId: null,
+      issuedFromCodeHash: `code-for-${tokenId}`,
+    });
+  };
+
+  const ops = () => accountOpsFor(instance(), [scope, guildB()], () => NOW);
+
+  it("returns no-such-account for an unknown username and writes nothing", async () => {
+    seedAccount('acct_keeper0000000000000000000000004', 'keeper');
+
+    expect(await ops().accountSetPassword('nobody')).toBe('no-such-account');
+    expect(
+      accountRepo.findAccountByUsername(instance(), 'keeper')?.passwordHash,
+    ).toBe('$argon2id$old-password');
+  });
+
+  it('stores a hash the generated password verifies against, and nothing else retrievable', async () => {
+    seedAccount('acct_reset00000000000000000000000001', 'resettable');
+
+    const result = await ops().accountSetPassword('resettable');
+    expect(result).not.toBe('no-such-account');
+    if (result === 'no-such-account') return;
+    expect(result).toMatchObject({
+      username: 'resettable',
+      accountId: 'acct_reset00000000000000000000000001',
+      guildsTouched: 2,
+    });
+    // The stored row holds a hash the generated password verifies against —
+    // the plaintext itself is in the result and nowhere else.
+    const stored = accountRepo.findAccountByUsername(instance(), 'resettable');
+    expect(stored?.passwordHash).not.toBe('$argon2id$old-password');
+    expect(stored?.passwordHash).not.toContain(result.password);
+    expect(await verifyPassword(stored?.passwordHash ?? '', result.password)).toBe(true);
+  });
+
+  it('revokes dashboard sessions in every guild and leaves OAuth tokens live', async () => {
+    seedAccount('acct_sweep00000000000000000000000001', 'swept');
+    openSession(scope, 'a'.repeat(64), 'acct_sweep00000000000000000000000001');
+    openSession(guildB(), 'b'.repeat(64), 'acct_sweep00000000000000000000000001');
+    seedToken('swept-token', 'acct_sweep00000000000000000000000001');
+
+    const result = await ops().accountSetPassword('swept');
+    expect(result).toMatchObject({ sessionsRevoked: 2, guildsTouched: 2 });
+    expect(sessionRepo.findSessionByHash(instance(), 'a'.repeat(64))?.revokedAt).toBe(NOW);
+    expect(sessionRepo.findSessionByHash(instance(), 'b'.repeat(64))?.revokedAt).toBe(NOW);
+    // S13-D4: OAuth tokens are bound to the account, not the password.
+    expect(oauthRepo.findTokenById(instance(), 'swept-token')?.revokedAt).toBeNull();
   });
 });
 

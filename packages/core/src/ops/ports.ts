@@ -550,6 +550,25 @@ export type OpsAccountRevokeResult =
       readonly stillEnabled: boolean;
     };
 
+/**
+ * What `account set-password` did (S13-D3/D4).
+ *
+ * A success arm beside `'no-such-account'`, like its neighbours: a mistyped
+ * name is a usage mistake, not an answer. The success arm carries the
+ * generated plaintext — shown once, in `text` only — alongside the session
+ * sweep counts that say what died with the old password.
+ */
+export type OpsAccountSetPasswordResult =
+  | 'no-such-account'
+  | {
+      readonly username: string;
+      readonly accountId: string;
+      /** Shown once, in `text` only. Never in `data`, never audited, never logged. */
+      readonly password: string;
+      readonly sessionsRevoked: number;
+      readonly guildsTouched: number;
+    };
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -995,6 +1014,31 @@ export interface OpsPorts {
     readonly grantedBy: string;
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
 
+  /**
+   * S13-D1: grants the account access to THIS guild. `--guild` selects what
+   * is granted, not merely which audit trail records it — unlike every other
+   * account command, whose effect is instance-wide (ADR 0027) while their
+   * `--guild` only picks the audit destination.
+   *
+   * `'already-had-it'` is a real answer, not a refusal: the access row is
+   * written `onConflictDoNothing`, so re-running the grant must say so
+   * rather than write a duplicate. `'no-such-account'` is the usage answer
+   * for a mistyped name.
+   */
+  accountGrantGuild(username: string): 'granted' | 'already-had-it' | 'no-such-account';
+  /**
+   * S13-D2: revokes the account's access to THIS guild, the mirror of
+   * `accountGrantGuild` above — `--guild` selects what is revoked. The
+   * capabilities the account held in this guild cascade away with the access
+   * row (ADR 0028).
+   *
+   * There is deliberately no guard against revoking your own last guild
+   * access, following `account delete`'s precedent (ADR 0045 A3-3): the
+   * command warns in its output instead, and recovery is delete +
+   * re-bootstrap.
+   */
+  accountRevokeGuild(username: string): 'revoked' | 'did-not-have-it' | 'no-such-account';
+
   // --- mcp send allowlist (slice M5, ADR 0044 §4) ------------------------------
   /**
    * What `mcp allow-channel` did.
@@ -1248,6 +1292,24 @@ export interface OpsInstance {
    * what the account is, not what it was.
    */
   accountRevokeCredentials(username: string): OpsAccountRevokeResult;
+  /**
+   * S13-D3/D4: replaces one dashboard account's password with a generated
+   * one, revokes that account's dashboard sessions in every guild, and
+   * returns the plaintext exactly once.
+   *
+   * Instance-level like every other account member: the account predates any
+   * guild choice. Async: the implementation hashes with Argon2id, and Argon2id
+   * is async by nature — as is the reason `core` never sees the secret
+   * primitives at all (ADR 0014 keeps `hashPassword` in `packages/http`, so
+   * the hashing lives in the daemon's wiring, never here). The plaintext is
+   * returned once and never stored: the command prints it into `text` and
+   * keeps it out of `data` and the audit row. Sessions die with the password
+   * (trust derived from it); OAuth tokens are bound to the account, not the
+   * password, so they survive — `account revoke-credentials` is the command
+   * that ends those. `'no-such-account'` is the usage answer for a mistyped
+   * name.
+   */
+  accountSetPassword(username: string): Promise<OpsAccountSetPasswordResult>;
 }
 
 export interface OpsBackupOutcome {
