@@ -179,6 +179,7 @@ const loggedCallAsync = async <T>(
 const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage => ({
   messageId: row.messageId,
   channelId: row.channelId,
+  threadId: row.threadId,
   authorId: row.authorId,
   content: row.content,
   createdAt: row.createdAt,
@@ -216,6 +217,7 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
         hits: result.hits.map((hit) => ({
           messageId: hit.messageId,
           channelId: hit.channelId,
+          threadId: hit.threadId,
           authorId: hit.authorId,
           createdAt: hit.createdAt,
           excerpt: hit.excerpt,
@@ -316,6 +318,16 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
             })
         );
       }),
+    listThreads: async (guildId, channelId, includeArchived) => {
+      const guild = requireGuild(guildId);
+      const active = [...guild.channels.cache.values()].flatMap((channel) => {
+        if (!channel.isThread() || channel.parentId !== channelId || channel.isThreadOnly())
+          return [];
+        return [{ id: channel.id, parentId: channelId, archived: channel.archived ?? false }];
+      });
+      if (!includeArchived) return active.filter((thread) => !thread.archived);
+      return active;
+    },
     listRoles: (guildId) =>
       loggedCall(deps.logger, 'listRoles', () => {
         const guild = requireGuild(guildId);

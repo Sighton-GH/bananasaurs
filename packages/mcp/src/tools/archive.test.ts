@@ -566,6 +566,7 @@ describe('archive tools on the MCP server', () => {
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
+        'list_threads',
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
         LIST_MOD_CASES_TOOL_NAME,

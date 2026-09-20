@@ -282,7 +282,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all eleven tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twelve tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -290,13 +290,14 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(names).toEqual([
       'get_health',
       'search_messages',
       'read_channel_history',
       'get_message',
       'list_channels',
+      'list_threads',
       'list_roles',
       'list_members',
       'list_mod_cases',

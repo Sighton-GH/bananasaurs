@@ -24,6 +24,7 @@ import {
   LIST_CHANNELS_TOOL_NAME,
   LIST_MEMBERS_TOOL_NAME,
   LIST_ROLES_TOOL_NAME,
+  LIST_THREADS_TOOL_NAME,
   listChannelsText,
   listMembersText,
   listRolesText,
@@ -448,7 +449,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all eleven tools and still no send_message', async () => {
+  it('lists all twelve tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -458,6 +459,7 @@ describe('guild tools on the MCP server', () => {
         'read_channel_history',
         'get_message',
         LIST_CHANNELS_TOOL_NAME,
+        LIST_THREADS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
         'list_mod_cases',

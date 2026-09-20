@@ -511,6 +511,7 @@ export const countMessages = (scope: GuildScope, channelId: string): number =>
 export interface ArchiveMessage {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | null;
   readonly createdAt: number;
@@ -524,6 +525,7 @@ export interface ArchiveMessage {
 const toArchiveMessage = (row: typeof archiveMessages.$inferSelect): ArchiveMessage => ({
   messageId: row.messageId,
   channelId: row.channelId,
+  threadId: row.threadId ?? undefined,
   authorId: row.authorId ?? undefined,
   content: row.content,
   createdAt: row.createdAt,
@@ -584,7 +586,13 @@ export const listChannelHistory = (
       .from(archiveChannels)
       .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
       .get();
-    if (channel === undefined) return [];
+    const threadExists =
+      db
+        .select({ threadId: archiveMessages.threadId })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, eq(archiveMessages.threadId, input.channelId)))
+        .get() !== undefined;
+    if (channel === undefined && !threadExists) return [];
 
     const wanted = input.limit;
     const limit =
@@ -598,7 +606,10 @@ export const listChannelHistory = (
       .where(
         scope.only(
           archiveMessages,
-          eq(archiveMessages.channelId, input.channelId),
+          threadExists
+            ? eq(archiveMessages.threadId, input.channelId)
+            : eq(archiveMessages.channelId, input.channelId),
+          threadExists ? undefined : isNull(archiveMessages.threadId),
           input.beforeMessageId === undefined
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,

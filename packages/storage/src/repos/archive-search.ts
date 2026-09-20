@@ -26,6 +26,7 @@ export interface VisibilitySet {
 export interface SearchHit {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId: string | undefined;
   readonly authorId: string | undefined;
   readonly createdAt: number;
   /** FTS5 `snippet()` over `content`, with the match marked by the delimiters below. */
@@ -90,6 +91,7 @@ const rawOf = (db: Db): Database.Database =>
 interface SearchRow {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId: string | null;
   readonly authorId: string | null;
   readonly createdAt: number;
   readonly excerpt: string;
@@ -161,7 +163,7 @@ export const searchMessages = (
       `WHERE ${where.join(' AND ')}`;
 
     const hitsSql =
-      'SELECT m.message_id AS messageId, m.channel_id AS channelId, m.author_id AS authorId, ' +
+      'SELECT m.message_id AS messageId, m.channel_id AS channelId, m.thread_id AS threadId, m.author_id AS authorId, ' +
       'm.created_at AS createdAt, ' +
       `snippet(archive_messages_fts, 0, '${SEARCH_SNIPPET_OPEN}', '${SEARCH_SNIPPET_CLOSE}', ` +
       `'${SEARCH_SNIPPET_ELLIPSIS}', ${SEARCH_SNIPPET_TOKENS}) AS excerpt, ` +
@@ -176,6 +178,7 @@ export const searchMessages = (
         hits: rows.map((row): SearchHit => ({
           messageId: row.messageId,
           channelId: row.channelId,
+          threadId: row.threadId ?? undefined,
           authorId: row.authorId ?? undefined,
           createdAt: row.createdAt,
           excerpt: row.excerpt,

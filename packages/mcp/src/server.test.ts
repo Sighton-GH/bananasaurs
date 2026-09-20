@@ -155,13 +155,13 @@ describe('getHealthText', () => {
 });
 
 describe('createMcpServer', () => {
-  it('lists send_message first, alongside the eleven read tools', async () => {
+  it('lists send_message first, alongside the twelve read tools', async () => {
     const { client, close } = await connectPair(
       principalWith([GUILD], ['bananasaurs:read', 'bananasaurs:send']),
     );
     try {
       const list = await client.listTools();
-      expect(list.tools).toHaveLength(12);
+      expect(list.tools).toHaveLength(13);
       expect(list.tools.map((tool) => tool.name)).toEqual([
         SEND_MESSAGE_TOOL_NAME,
         GET_HEALTH_TOOL_NAME,
@@ -169,6 +169,7 @@ describe('createMcpServer', () => {
         READ_CHANNEL_HISTORY_TOOL_NAME,
         GET_MESSAGE_TOOL_NAME,
         LIST_CHANNELS_TOOL_NAME,
+        'list_threads',
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
         LIST_MOD_CASES_TOOL_NAME,
