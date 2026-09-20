@@ -7,6 +7,12 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
+import {
+  MCP_READ_LIST_CHANNELS,
+  MCP_READ_LIST_MEMBERS,
+  MCP_READ_LIST_ROLES,
+  type McpReadRecord,
+} from '../read-audit.js';
 
 /**
  * The three Discord-cache tools (slice M4, Task 5): what channels exist, what
@@ -74,8 +80,14 @@ export const MEMBER_DEFAULT_LIMIT = 25;
 /** Capped here at 100; Discord's own per-page maximum is 1000 (see above). */
 export const MEMBER_LIMIT_MAX = 100;
 
+/**
+ * A successful read carries the record ADR 0050 says the server must
+ * perform: the three guild tools return structure, never member content,
+ * so each is one info log line, never an audit row. A refusal carries none.
+ */
 export type GuildToolOutcome =
-  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
+  | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
+  | { readonly ok: false; readonly message: string };
 
 /**
  * Plain-data projections — the whole reason `packages/mcp` needs no
@@ -278,7 +290,16 @@ const listChannelsInner = (
   const head =
     `Channels in guild ${gate.guildId}: ` +
     `${String(channels.length)} ${noun} (${String(enabled)} archive-enabled).`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'structural',
+      action: MCP_READ_LIST_CHANNELS,
+      guildIds: [gate.guildId],
+      resultCount: channels.length,
+    },
+  };
 };
 
 const listRolesInner = (
@@ -297,7 +318,16 @@ const listRolesInner = (
   const head =
     `Roles in guild ${gate.guildId} (@everyone excluded): ` +
     `${String(roles.length)} ${noun} (${String(managed)} managed by Bananasaurs).`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'structural',
+      action: MCP_READ_LIST_ROLES,
+      guildIds: [gate.guildId],
+      resultCount: roles.length,
+    },
+  };
 };
 
 const listMembersInner = async (
@@ -324,7 +354,16 @@ const listMembersInner = async (
       ? 'End of list.'
       : `Next cursor: ${result.nextCursor} (pass as after to continue).`;
   const head = `Members in guild ${gate.guildId}: showing ${String(items.length)} ${noun}. ${cursor}`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'structural',
+      action: MCP_READ_LIST_MEMBERS,
+      guildIds: [gate.guildId],
+      resultCount: items.length,
+    },
+  };
 };
 
 /**

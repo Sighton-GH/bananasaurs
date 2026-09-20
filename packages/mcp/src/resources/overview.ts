@@ -8,6 +8,7 @@ import {
 import { envelope, type EvidenceItem } from '../envelope.js';
 import type { McpGuildChannel, McpGuildPort, McpGuildRole } from '../tools/guild.js';
 import type { McpOverviewPanel, McpOverviewRule, McpRecordsPort } from '../tools/records.js';
+import { MCP_READ_GET_SERVER_OVERVIEW, type McpReadRecord } from '../read-audit.js';
 
 /**
  * The overview resource (slice M4, Task 6 absorbing Task 8):
@@ -46,8 +47,14 @@ export interface OverviewCardInput {
   readonly panels: readonly McpOverviewPanel[];
 }
 
+/**
+ * A successful read carries the same structural record the tool door
+ * carries (ADR 0050): the card is structure, not content, so the read is
+ * logged, never audited. A refusal carries none.
+ */
 export type OverviewOutcome =
-  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
+  | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
+  | { readonly ok: false; readonly message: string };
 
 /**
  * Channel and role rows reuse the guild tools' locator shape (guild, row id,
@@ -168,6 +175,12 @@ export const readOverviewResource = (
     if (!gate.ok) return { ok: false, message: gate.message };
     return {
       ok: true,
+      read: {
+        kind: 'structural',
+        action: MCP_READ_GET_SERVER_OVERVIEW,
+        guildIds: [gate.guildId],
+        resultCount: undefined,
+      },
       text: buildOverviewCard({
         guildId: gate.guildId,
         channels: guildPort.listChannels(gate.guildId),

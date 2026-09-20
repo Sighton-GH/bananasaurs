@@ -67,6 +67,7 @@ import {
   sendMessageText,
   type McpSendPort,
 } from './tools/send.js';
+import { performReadRecord, type McpReadAuditPort, type McpReadRecord } from './read-audit.js';
 import { GUILD_REFUSAL_MESSAGE, hasReadScope, hasSendScope, type McpPrincipal } from './scope.js';
 
 /**
@@ -122,7 +123,31 @@ export interface McpServerDeps {
    * still registers only when the principal carries the send scope.
    */
   readonly send: McpSendPort;
+  /**
+   * The daemon's per-request read-logging port (ADR 0050). Required like
+   * the five ports above: a server without it would serve unaudited reads,
+   * which is the gap ADR 0050 exists to close — so a missing port fails at
+   * construction, not silently at the first call.
+   */
+  readonly readAudit: McpReadAuditPort;
 }
+
+/** The ok-outcome shape every read tool returns (ADR 0050). */
+type ReadToolOk = { readonly ok: true; readonly text: string; readonly read: McpReadRecord };
+
+/**
+ * Every successful read passes its record through the port BEFORE the text
+ * is returned, inside the caller's try/catch: a read whose audit row or log
+ * line cannot be written ends as the shared refusal, never as an
+ * unrecorded answer (ADR 0050 — fail closed).
+ */
+const okReadResult = (
+  readAudit: McpReadAuditPort,
+  outcome: ReadToolOk,
+): { content: { type: 'text'; text: string }[] } => {
+  performReadRecord(readAudit, outcome.read);
+  return { content: [{ type: 'text' as const, text: outcome.text }] };
+};
 
 export const createMcpServer = (deps: McpServerDeps): McpServer => {
   const server = new McpServer({ name: MCP_SERVER_NAME, version: MCP_SERVER_VERSION });
@@ -156,12 +181,20 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     );
   }
   if (!hasReadScope(deps.principal)) return server;
+  const readAudit = deps.readAudit;
   server.tool(GET_HEALTH_TOOL_NAME, GET_HEALTH_TOOL_DESCRIPTION, () => {
-    const outcome = getHealthText(deps.principal, deps.health);
-    if (!outcome.ok) {
-      return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+    try {
+      const outcome = getHealthText(deps.principal, deps.health);
+      if (!outcome.ok) {
+        return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+      }
+      return okReadResult(readAudit, outcome);
+    } catch {
+      return {
+        content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
+        isError: true,
+      };
     }
-    return { content: [{ type: 'text' as const, text: outcome.text }] };
   });
   // The `try/catch` in each handler is belt over braces: the text functions
   // already answer every malformed argument as the shared refusal and never
@@ -178,7 +211,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -197,7 +230,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -212,7 +245,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       if (!outcome.ok) {
         return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
       }
-      return { content: [{ type: 'text' as const, text: outcome.text }] };
+      return okReadResult(readAudit, outcome);
     } catch {
       return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
     }
@@ -228,7 +261,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -243,7 +276,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       if (!outcome.ok) {
         return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
       }
-      return { content: [{ type: 'text' as const, text: outcome.text }] };
+      return okReadResult(readAudit, outcome);
     } catch {
       return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
     }
@@ -258,7 +291,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -278,7 +311,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -293,7 +326,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
       if (!outcome.ok) {
         return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
       }
-      return { content: [{ type: 'text' as const, text: outcome.text }] };
+      return okReadResult(readAudit, outcome);
     } catch {
       return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
     }
@@ -308,7 +341,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -327,7 +360,7 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
         if (!outcome.ok) {
           return { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
         }
-        return { content: [{ type: 'text' as const, text: outcome.text }] };
+        return okReadResult(readAudit, outcome);
       } catch {
         return {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
@@ -349,6 +382,8 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
     (uri, variables) => {
       const outcome = readOverviewResource(deps.principal, guild, records, variables.guildId ?? '');
       if (!outcome.ok) throw new Error(outcome.message);
+      // ADR 0050: the resource door logs its read exactly like the tool door.
+      performReadRecord(deps.readAudit, outcome.read);
       return { contents: [{ uri: uri.href, mimeType: 'text/plain', text: outcome.text }] };
     },
   );

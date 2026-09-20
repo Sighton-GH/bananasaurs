@@ -30,6 +30,24 @@ export {
   type McpHealthPort,
 } from './tools/health.js';
 export {
+  MCP_READ_GET_HEALTH,
+  MCP_READ_GET_MESSAGE,
+  MCP_READ_GET_MOD_CASE,
+  MCP_READ_GET_SERVER_OVERVIEW,
+  MCP_READ_LIST_AUDIT_EVENTS,
+  MCP_READ_LIST_CHANNELS,
+  MCP_READ_LIST_MEMBERS,
+  MCP_READ_LIST_MOD_CASES,
+  MCP_READ_LIST_ROLES,
+  MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_SEARCH_MESSAGES,
+  performReadRecord,
+  type McpContentReadRecord,
+  type McpReadAuditPort,
+  type McpReadRecord,
+  type McpStructuralReadRecord,
+} from './read-audit.js';
+export {
   MCP_SERVER_NAME,
   MCP_SERVER_VERSION,
   createMcpServer,

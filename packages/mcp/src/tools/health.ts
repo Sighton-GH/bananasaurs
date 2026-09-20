@@ -1,6 +1,7 @@
 import { humaniseDuration, type GuildId } from '@bananasaurs/core';
 import { requireAnyReachableGuild, type McpPrincipal } from '../scope.js';
 import { escapeEvidenceText } from '../envelope.js';
+import { MCP_READ_GET_HEALTH, type McpReadRecord } from '../read-audit.js';
 
 /**
  * `get_health` — the one tool Task 3 ships, chosen because it takes no
@@ -70,8 +71,16 @@ export interface McpHealthPort {
   guilds(): readonly McpGuildHealth[];
 }
 
+/**
+ * A successful read carries the record ADR 0050 says the server must
+ * perform: `get_health` returns process state, never member content, so it
+ * is one info log line per reachable guild (hard rule 2 — it takes no guild
+ * argument, so the per-guild fan-out is how every line still carries an
+ * explicit guild id). A refusal carries none.
+ */
 export type HealthOutcome =
-  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
+  | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
+  | { readonly ok: false; readonly message: string };
 
 /**
  * No `envelope()` around the result. The envelope marks *retrieved* content —
@@ -137,5 +146,14 @@ export const getHealthText = (principal: McpPrincipal, port: McpHealthPort): Hea
   // answers a revoked-everywhere token with a health report.
   const gate = requireAnyReachableGuild(principal);
   if (!gate.ok) return { ok: false, message: gate.message };
-  return { ok: true, text: renderHealth(port) };
+  return {
+    ok: true,
+    text: renderHealth(port),
+    read: {
+      kind: 'structural',
+      action: MCP_READ_GET_HEALTH,
+      guildIds: principal.reachableGuilds,
+      resultCount: undefined,
+    },
+  };
 };

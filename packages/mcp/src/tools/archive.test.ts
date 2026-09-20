@@ -1,4 +1,12 @@
 import { readFileSync } from 'node:fs';
+import type { McpReadAuditPort } from '../read-audit.js';
+
+/** ADR 0050: this file does not exercise read logging; the server requires the port. */
+const noopReadAudit: McpReadAuditPort = {
+  auditContentRead: () => undefined,
+  logStructuralRead: () => undefined,
+};
+
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
@@ -464,13 +472,21 @@ describe('channelIds narrows within the visibility set, never widens it', () => 
       ...base,
       query: 'quince',
     });
-    expect(open).toEqual({ ok: true, text: expect.stringContaining('0 matches') });
+    expect(open).toEqual({
+      ok: true,
+      text: expect.stringContaining('0 matches'),
+      read: expect.anything(),
+    });
     const named = searchMessagesText(principal(), port, {
       ...base,
       query: 'quince',
       channelIds: [ORPHAN],
     });
-    expect(named).toEqual({ ok: true, text: expect.stringContaining('0 matches') });
+    expect(named).toEqual({
+      ok: true,
+      text: expect.stringContaining('0 matches'),
+      read: expect.anything(),
+    });
   });
 });
 
@@ -515,6 +531,7 @@ describe('archive tools on the MCP server', () => {
       records,
       // Required since M5 Task 4; never called by the archive tools pinned here.
       send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+      readAudit: noopReadAudit,
     });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

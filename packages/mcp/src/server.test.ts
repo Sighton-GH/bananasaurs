@@ -4,6 +4,7 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
+import type { McpReadAuditPort } from './read-audit.js';
 import { createMcpServer } from './server.js';
 import {
   GET_MESSAGE_TOOL_NAME,
@@ -26,6 +27,12 @@ import {
   type McpGuildPort,
 } from './tools/guild.js';
 import { SEND_MESSAGE_TOOL_NAME, type McpSendPort } from './tools/send.js';
+
+/** ADR 0050: the tests in this file do not exercise read logging; the server requires the port. */
+const noopReadAudit: McpReadAuditPort = {
+  auditContentRead: () => undefined,
+  logStructuralRead: () => undefined,
+};
 
 /**
  * Task 3, `packages/mcp` side: `get_health` exercised through a real MCP
@@ -106,6 +113,7 @@ const connectPair = async (
     archive: stubArchive(),
     guild: stubGuild(),
     records: stubRecords(),
+    readAudit: noopReadAudit,
     send,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
