@@ -78,16 +78,25 @@ protect. So the read writes its row, and the tool's query excludes its own
 action (`mcp.read.list_audit_events`) from what it returns. The row is still
 visible to `audit tail` over SSH, where it belongs.
 
-The exclusion is by action, not by actor, and that is wider than the
-argument above strictly needs. It hides *every* operator's trail reads from
-the tool, not only the caller's own, so one MCP token cannot see through
-this tool that another one read the trail. Narrowing it to the caller's
-token would mean the tool layer knowing *who* is reading, which is exactly
-what `McpReadAuditPort` exists to keep out of `packages/mcp` (ruling
-M4-D14); the boundary is worth more than the narrowing, because the durable
-row is written either way and `audit tail` over SSH — the operator surface
-that is actually authoritative for this question — shows every one of them.
-Recorded here so the next reader finds a decision rather than a surprise.
+The exclusion is keyed on the action **and the caller's token**, not on the
+action alone. Suppressing my own trail reads must not suppress anyone
+else's: an operator who cannot see that a second token has been reading the
+audit trail is looking at a trail that lies by omission, which is a worse
+failure than the one the exclusion exists to prevent.
+
+Pairing the two costs nothing at the package boundary, because it is the
+same division of labour the write side already uses. The tool layer names
+the action it wants suppressed; the daemon's `recordsPortFor` supplies the
+actor from the request's principal. `packages/mcp` still never learns who
+is reading (ruling M4-D14 intact) — it says *what*, the daemon says *who*,
+for reads exactly as for writes.
+
+The SQL is written as `action NOT IN (...) OR actor_id IS NULL OR actor_id
+<> <me>` rather than the more obvious `NOT (action IN (...) AND actor_id =
+<me>)`. `actor_id` is nullable — SSH-originated rows carry none — and in
+SQL `NULL = 'tok_x'` is NULL rather than false, so the naive negation
+evaluates to NULL for those rows and drops them silently. The row that
+belongs to nobody is the one a careless filter loses first.
 
 ## Consequences
 
@@ -99,9 +108,12 @@ Recorded here so the next reader finds a decision rather than a surprise.
   `packages/mcp` still holds no repository handle (ruling M4-D14 intact),
   the tool layer says *what* was read, and the daemon's port closes over
   *who* read it (token id, account id, client id).
-- `effectRepo.tailAudit` gains an optional `excludeActions` filter,
-  implemented in SQL so a page of results cannot be silently emptied by
-  rows the caller asked not to see.
+- `effectRepo.tailAudit` gains an optional `excludeOwnActions` filter —
+  actions *and* the actor they belong to, inseparable in the type so an
+  action can never be excluded without naming whose it is. Implemented in
+  SQL so a page of results cannot be silently emptied by rows the caller
+  asked not to see, and NULL-safe so a row with no actor is never lost.
+- `recordsPortFor` now takes the request's principal, for that one reason.
 - A failed audit write rethrows so the read fails closed, but it logs one
   allowlisted `error` line first. The connector sees the shared
   unreachable-guild refusal, which is indistinguishable from a revoked

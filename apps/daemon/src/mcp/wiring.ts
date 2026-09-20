@@ -387,8 +387,16 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
  * are never referenced here, let alone called (ruling M4-D14). A fault
  * leaves one allowlisted-fields error line via `loggedCall` above, never a
  * snippet, a reason or a payload (rule 4).
+ *
+ * It takes the principal for one reason: `tailAudit` needs the caller's
+ * token id to exclude the caller's *own* trail reads and no one else's
+ * (ADR 0050). That is the same division of labour the write side uses — the
+ * tool layer names the action, the daemon supplies the actor.
  */
-const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
+const recordsPortFor = (
+  principal: McpPrincipal & { readonly tokenId: string },
+  deps: HttpDeps,
+): McpRecordsPort => ({
   listRecentCases: (guildId, input) =>
     loggedCall(deps.logger, 'listRecentCases', () =>
       automodAdminRepo
@@ -436,9 +444,16 @@ const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
         .tailAudit(deps.scopes.forGuild(guildId), {
           limit: input.limit,
           ...(input.sinceMs !== undefined ? { sinceMs: input.sinceMs } : {}),
-          // ADR 0050: `list_audit_events` excludes its own reads from what
-          // it returns; the filter is the repository's, in SQL.
-          ...(input.excludeActions !== undefined ? { excludeActions: input.excludeActions } : {}),
+          // ADR 0050: `list_audit_events` excludes *the caller's own* reads
+          // from what it returns. The same split as the write side — the
+          // tool layer names the action, this port supplies the actor, so
+          // `packages/mcp` never learns who is reading (ruling M4-D14) and
+          // another operator's trail reads stay visible.
+          ...(input.excludeActions !== undefined
+            ? {
+                excludeOwnActions: { actions: input.excludeActions, actorId: principal.tokenId },
+              }
+            : {}),
         })
         .map((row) => ({
           auditId: row.auditId,
@@ -814,7 +829,7 @@ export const registerMcpRoutes = (
       health: healthPortFor(principal, deps),
       archive: archivePortFor(deps),
       guild: guildPortFor(client, deps),
-      records: recordsPortFor(deps),
+      records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),
     });

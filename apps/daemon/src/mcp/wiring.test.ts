@@ -1461,6 +1461,45 @@ describe('/mcp read logging (ADR 0050)', () => {
   });
 
   /**
+   * The other half of the same rule, and the reason the filter is keyed on
+   * the actor rather than on the action alone: suppressing my own trail
+   * reads must not suppress anyone else's. An operator who cannot see that
+   * a second token has been reading the audit trail is looking at a trail
+   * that lies by omission — so the string the test above requires to be
+   * absent is required here to be present.
+   */
+  it("shows another token's reads of the trail, while still hiding the caller's own", async () => {
+    const theirs = await mintToken();
+    const mine = await mintToken();
+
+    // A different token reads the trail, which writes its own row.
+    expect(
+      (await mcpCall(theirs, 'list_audit_events', { guildId: String(GUILD_A) })).statusCode,
+    ).toBe(200);
+    const afterTheirs = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A))
+      .filter((row) => row.action === 'mcp.read.list_audit_events');
+    expect(afterTheirs).toHaveLength(1);
+    const theirTokenId = afterTheirs[0]?.actorId;
+    expect(theirTokenId).toMatch(/^tok_/);
+
+    // Now I read. Their row is in my answer; only mine would be filtered.
+    const response = await mcpCall(mine, 'list_audit_events', { guildId: String(GUILD_A) });
+    expect(response.statusCode).toBe(200);
+    const bodies = sseData(response.body);
+    const result = (bodies[0] as { result?: { content?: Array<{ text: string }> } }).result;
+    const text = result?.content?.[0]?.text ?? '';
+    expect(text).toContain('mcp.read.list_audit_events');
+
+    // And the two reads are two distinct actors in the durable trail.
+    const rows = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A))
+      .filter((row) => row.action === 'mcp.read.list_audit_events');
+    expect(rows).toHaveLength(2);
+    expect(new Set(rows.map((row) => row.actorId)).size).toBe(2);
+  });
+
+  /**
    * ADR 0050 fails closed: a read whose audit row cannot be written is
    * refused rather than served unrecorded. The fault is the audit table
    * itself going missing — the same shape as the dropped FTS index above,
