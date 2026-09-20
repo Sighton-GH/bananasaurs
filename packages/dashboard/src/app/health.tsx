@@ -6,7 +6,27 @@ export interface HealthInfo {
   guildId: string;
   guildName: string | null;
   gateway: { connected: boolean; pingMs: number | undefined; guildCount: number };
-  safety: { killswitch: boolean; dryRun: boolean; breakerOpen: boolean } | undefined;
+  /**
+   * The guild's full safety row, as `OpsSafetyState` sends it. The state
+   * strip reads the three booleans; the Config page reads the thresholds
+   * and the breaker's own reason.
+   */
+  safety:
+    | {
+        killswitch: boolean;
+        dryRun: boolean;
+        breakerOpen: boolean;
+        /**
+         * The rest of the `OpsSafetyState` row. Optional so a session fixture
+         * (or server) built before the mirror widened still typechecks — the
+         * Config page says so rather than guessing when they are absent.
+         */
+        breakerReason?: string | null;
+        roleRatePerMin?: number;
+        reconcileBudget?: number;
+        breakerThreshold?: number;
+      }
+    | undefined;
   jobCounts: Record<string, number>;
   oldestDueJobAtMs: number | undefined;
 }
