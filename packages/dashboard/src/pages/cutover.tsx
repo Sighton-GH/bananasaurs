@@ -8,6 +8,7 @@ import {
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
+import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -62,47 +63,74 @@ export function CutoverPage() {
           <p className="text-sm text-ink-muted">No rules yet. Create one on the Automod page.</p>
         }
       >
-        {(rows) => (
-          <DataTable
-            caption="Cutover board"
-            rows={rows}
-            rowKey={(r) => r.ruleId}
-            columns={[
-              { key: 'rule', header: 'Rule', cell: (r) => r.name },
-              {
-                key: 'legacy',
-                header: 'Legacy rule ref',
-                cell: (r) => r.legacyRuleRef ?? '—',
-              },
-              {
-                key: 'state',
-                header: 'Cutover state',
-                cell: (r) => <Badge tone={stateTone(r.cutoverState)}>{r.cutoverState}</Badge>,
-              },
-              { key: 'observed', header: 'Observed', cell: observedCell },
-              { key: 'matches', header: 'Matches', numeric: true, cell: (r) => r.matchCount },
-              {
-                key: 'falsePositive',
-                header: 'False positive',
-                numeric: true,
-                cell: (r) => r.verdicts.falsePositive,
-              },
-              {
-                key: 'truePositive',
-                header: 'True positive',
-                numeric: true,
-                cell: (r) => r.verdicts.truePositive,
-              },
-              {
-                key: 'unclear',
-                header: 'Unclear',
-                numeric: true,
-                cell: (r) => r.verdicts.unclear,
-              },
-              { key: 'signoff', header: 'Sign-off', cell: signoffCell },
-            ]}
-          />
-        )}
+        {(rows) => {
+          const observing = rows.filter((r) => r.cutoverState === 'observing').length;
+          const pastFloor = rows.filter(
+            (r) =>
+              r.cutoverState === 'observing' &&
+              (daysObserved(r.observeStartedAt, Date.now()) ?? 0) >= OBSERVE_FLOOR_DAYS,
+          ).length;
+          return (
+            <>
+              <div className="mb-4 grid max-w-4xl gap-3 sm:grid-cols-3">
+                <Card title="Rules on the board">
+                  <p className="text-2xl font-semibold">{rows.length}</p>
+                </Card>
+                <Card title="Still observing">
+                  <p className="text-2xl font-semibold">{observing}</p>
+                </Card>
+                <Card title="Past the observe floor">
+                  <p className="text-2xl font-semibold">{pastFloor}</p>
+                  <p className="mt-1 text-xs text-ink-muted">
+                    the floor is necessary, not sufficient: the release gate also reads the review
+                    tally (ADR 0042)
+                  </p>
+                </Card>
+              </div>
+              <Card title="Every rule">
+                <DataTable
+                  caption="Cutover board"
+                  rows={rows}
+                  rowKey={(r) => r.ruleId}
+                  columns={[
+                    { key: 'rule', header: 'Rule', cell: (r) => r.name },
+                    {
+                      key: 'legacy',
+                      header: 'Legacy rule ref',
+                      cell: (r) => r.legacyRuleRef ?? '—',
+                    },
+                    {
+                      key: 'state',
+                      header: 'Cutover state',
+                      cell: (r) => <Badge tone={stateTone(r.cutoverState)}>{r.cutoverState}</Badge>,
+                    },
+                    { key: 'observed', header: 'Observed', cell: observedCell },
+                    { key: 'matches', header: 'Matches', numeric: true, cell: (r) => r.matchCount },
+                    {
+                      key: 'falsePositive',
+                      header: 'False positive',
+                      numeric: true,
+                      cell: (r) => r.verdicts.falsePositive,
+                    },
+                    {
+                      key: 'truePositive',
+                      header: 'True positive',
+                      numeric: true,
+                      cell: (r) => r.verdicts.truePositive,
+                    },
+                    {
+                      key: 'unclear',
+                      header: 'Unclear',
+                      numeric: true,
+                      cell: (r) => r.verdicts.unclear,
+                    },
+                    { key: 'signoff', header: 'Sign-off', cell: signoffCell },
+                  ]}
+                />
+              </Card>
+            </>
+          );
+        }}
       </DataState>
     </>
   );

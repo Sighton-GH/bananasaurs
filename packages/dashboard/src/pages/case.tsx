@@ -2,6 +2,7 @@ import { useCallback } from 'react';
 import { useParams } from 'wouter';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -54,27 +55,29 @@ export function CasePage() {
         {({ case: item, events }) => {
           const ordered = [...events].sort((a, b) => a.at - b.at);
           return (
-            <>
-              <dl className="grid max-w-lg grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-                <dt className="text-ink-muted">Case</dt>
-                <dd>{item.caseId}</dd>
-                <dt className="text-ink-muted">Member</dt>
-                <dd>{item.memberId}</dd>
-                <dt className="text-ink-muted">Opened</dt>
-                <dd>{new Date(item.openedAt).toLocaleString()}</dd>
-                <dt className="text-ink-muted">Violations</dt>
-                <dd>{item.violationCount}</dd>
-                <dt className="text-ink-muted">Tier</dt>
-                <dd>{item.escalationTier}</dd>
-                <dt className="text-ink-muted">Status</dt>
-                <dd>{item.status}</dd>
-              </dl>
-              {ordered.length === 0 ? (
-                <p className="mt-4 text-sm text-ink-muted">
-                  No events yet. Events appear here as the bot acts on this case.
-                </p>
-              ) : (
-                <div className="mt-4">
+            <div className="grid gap-4">
+              <Card title="Case">
+                <dl className="grid max-w-lg grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                  <dt className="text-ink-muted">Case</dt>
+                  <dd>{item.caseId}</dd>
+                  <dt className="text-ink-muted">Member</dt>
+                  <dd>{item.memberId}</dd>
+                  <dt className="text-ink-muted">Opened</dt>
+                  <dd>{new Date(item.openedAt).toLocaleString()}</dd>
+                  <dt className="text-ink-muted">Violations</dt>
+                  <dd>{item.violationCount}</dd>
+                  <dt className="text-ink-muted">Tier</dt>
+                  <dd>{item.escalationTier}</dd>
+                  <dt className="text-ink-muted">Status</dt>
+                  <dd>{item.status}</dd>
+                </dl>
+              </Card>
+              <Card title="Events">
+                {ordered.length === 0 ? (
+                  <p className="text-sm text-ink-muted">
+                    No events yet. Events appear here as the bot acts on this case.
+                  </p>
+                ) : (
                   <DataTable
                     caption="Case events"
                     rows={ordered}
@@ -117,9 +120,9 @@ export function CasePage() {
                       },
                     ]}
                   />
-                </div>
-              )}
-            </>
+                )}
+              </Card>
+            </div>
           );
         }}
       </DataState>

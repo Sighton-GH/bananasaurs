@@ -16,6 +16,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
+import { Card } from '../ui/Card.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -231,8 +232,7 @@ function RuleDetailView({
 
   return (
     <>
-      <section>
-        <h2 className="text-lg">Status</h2>
+      <Card title="Status">
         <dl className="mt-2 grid max-w-lg grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
           <dt className="text-ink-muted">Kind</dt>
           <dd>{detail.kind}</dd>
@@ -257,10 +257,9 @@ function RuleDetailView({
             {modeRefusal}
           </p>
         )}
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Mode</h2>
+      <Card title="Mode">
         <fieldset className="mt-2">
           <legend className="text-sm text-ink-muted">Mode</legend>
           <div className="mt-1 flex gap-4">
@@ -311,10 +310,9 @@ function RuleDetailView({
           onConfirm={() => void applyMode()}
           onCancel={() => setModeOpen(false)}
         />
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Configuration</h2>
+      <Card title="Configuration">
         <div className="mt-2 max-w-lg">
           <Field
             label="Configuration"
@@ -349,10 +347,9 @@ function RuleDetailView({
           onConfirm={() => void saveConfig()}
           onCancel={() => setConfigOpen(false)}
         />
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Exemptions</h2>
+      <Card title="Exemptions">
         {detail.exemptions.length === 0 ? (
           <p className="mt-2 text-sm text-ink-muted">No exemptions yet. Add one below.</p>
         ) : (
@@ -403,10 +400,9 @@ function RuleDetailView({
             Add exemption
           </Button>
         </form>
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Lists</h2>
+      <Card title="Lists">
         <div className="mt-2 text-sm">
           {detail.kind === 'keyword_filter' &&
             (detail.terms.length > 0 || detail.allowlist.length > 0) && (
@@ -460,10 +456,9 @@ function RuleDetailView({
               detail.kind !== 'invite' &&
               detail.kind !== 'link_domain')) && <p className="text-ink-muted">No lists.</p>}
         </div>
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Dry run</h2>
+      <Card title="Dry run">
         <div className="mt-2">
           <Button busy={dryBusy} onClick={() => void runDryRun()}>
             Run against fixtures
@@ -520,7 +515,7 @@ function RuleDetailView({
             )}
           </div>
         )}
-      </section>
+      </Card>
     </>
   );
 }

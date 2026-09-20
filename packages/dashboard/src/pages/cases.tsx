@@ -4,6 +4,7 @@ import { useHealth } from '../app/health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
+import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -58,38 +59,46 @@ export function CasesPage() {
           </p>
         }
       >
-        {(rows) => (
-          <DataTable
-            caption="Moderation cases"
-            rows={rows}
-            rowKey={(c) => c.caseId}
-            columns={[
-              {
-                key: 'case',
-                header: 'Case',
-                cell: (c) => <Link href={`/cases/${c.caseId}`}>{c.caseId}</Link>,
-              },
-              {
-                key: 'member',
-                header: 'Member',
-                cell: (c) => <Link href={`/members/${c.memberId}`}>{c.memberId}</Link>,
-              },
-              {
-                key: 'opened',
-                header: 'Opened',
-                cell: (c) => new Date(c.openedAt).toLocaleString(),
-              },
-              {
-                key: 'violations',
-                header: 'Violations',
-                numeric: true,
-                cell: (c) => c.violationCount,
-              },
-              { key: 'tier', header: 'Tier', numeric: true, cell: (c) => c.escalationTier },
-              { key: 'status', header: 'Status', cell: (c) => statusBadge(c.status) },
-            ]}
-          />
-        )}
+        {(rows) => {
+          const openCount = rows.filter((c) => c.status === 'open').length;
+          return (
+            <Card title={`${String(openCount)} open`}>
+              <p className="mb-3 text-sm text-ink-muted">
+                A case collects one member&apos;s violations; the tier rises as they add up.
+              </p>
+              <DataTable
+                caption="Moderation cases"
+                rows={rows}
+                rowKey={(c) => c.caseId}
+                columns={[
+                  {
+                    key: 'case',
+                    header: 'Case',
+                    cell: (c) => <Link href={`/cases/${c.caseId}`}>{c.caseId}</Link>,
+                  },
+                  {
+                    key: 'member',
+                    header: 'Member',
+                    cell: (c) => <Link href={`/members/${c.memberId}`}>{c.memberId}</Link>,
+                  },
+                  {
+                    key: 'opened',
+                    header: 'Opened',
+                    cell: (c) => new Date(c.openedAt).toLocaleString(),
+                  },
+                  {
+                    key: 'violations',
+                    header: 'Violations',
+                    numeric: true,
+                    cell: (c) => c.violationCount,
+                  },
+                  { key: 'tier', header: 'Tier', numeric: true, cell: (c) => c.escalationTier },
+                  { key: 'status', header: 'Status', cell: (c) => statusBadge(c.status) },
+                ]}
+              />
+            </Card>
+          );
+        }}
       </DataState>
     </>
   );
