@@ -283,7 +283,8 @@ describe('archiveEnableCategory (review S2 + B2)', () => {
     const jobs = jobRepo.listJobs(scope, {});
     const backfilled = jobs
       .filter((job) => job.kind === JOB_KINDS.archiveBackfill)
-      .map((job) => JSON.parse(job.payload) as { channelId: string }).map((p) => p.channelId);
+      .map((job) => JSON.parse(job.payload) as { channelId: string })
+      .map((p) => p.channelId);
     expect(backfilled.sort()).toEqual([CHILD_A, CHILD_B].sort());
   });
 
@@ -292,9 +293,9 @@ describe('archiveEnableCategory (review S2 + B2)', () => {
     expect(ports.allowSendCategory({ channelId: CHILD_A, accountId: 'tester' })).toBe(
       'no-such-channel',
     );
-    expect(
-      ports.allowSendCategory({ channelId: '699999999999999999', accountId: 'tester' }),
-    ).toBe('no-such-channel');
+    expect(ports.allowSendCategory({ channelId: '699999999999999999', accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
     expect(ports.allowSendCategory({ channelId: CATEGORY, accountId: 'tester' })).toBe('allowed');
   });
 });
