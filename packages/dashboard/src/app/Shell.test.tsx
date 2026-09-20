@@ -66,11 +66,17 @@ describe('Shell', () => {
     expect(screen.queryByRole('link', { current: 'page' })).toBeNull();
   });
 
-  it('the rail lists every built NAV entry and no others, and names the guild', async () => {
+  it('the rail groups every NAV entry and names the guild', async () => {
     renderAt('/');
     const nav = screen.getByRole('navigation', { name: 'Areas' });
-    const labels = Array.from(nav.querySelectorAll('a')).map((a) => a.textContent);
-    expect(labels).toEqual(NAV.filter((n) => n.status === 'built').map((n) => n.label));
+    const labels = Array.from(nav.querySelectorAll('a')).map((a) =>
+      a.textContent?.replace('Future', ''),
+    );
+    expect(labels).toEqual(NAV.map((n) => n.label));
+    expect(within(nav).getByRole('heading', { name: 'Workspace' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Operations' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Governance' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Release 3' })).toBeTruthy();
     const aside = screen.getByRole('complementary');
     expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();
   });
@@ -166,11 +172,12 @@ describe('Shell', () => {
     },
   );
 
-  it('the Planned nav group lists exactly the seven stub labels', async () => {
+  it('marks exactly the seven Release 3 entries as future', async () => {
     renderAt('/');
-    const nav = screen.getByRole('navigation', { name: 'Planned' });
-    const labels = Array.from(nav.querySelectorAll('a')).map((a) => a.textContent);
-    expect(labels).toEqual([
+    const nav = screen.getByRole('navigation', { name: 'Areas' });
+    const future = within(nav).getAllByText('Future');
+    expect(future).toHaveLength(7);
+    expect(NAV.filter((n) => n.status === 'stub').map((n) => n.label)).toEqual([
       'Archive',
       'Search',
       'Resources',
@@ -179,6 +186,20 @@ describe('Shell', () => {
       'AI workspace',
       'Proposals',
     ]);
-    expect(labels).toEqual(NAV.filter((n) => n.status === 'stub').map((n) => n.label));
+  });
+
+  it('opens and closes the mobile navigation without changing the page', async () => {
+    renderAt('/');
+    const open = await screen.findByRole('button', { name: 'Open navigation' });
+    expect(open.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(open);
+    expect(
+      screen
+        .getByRole('button', { name: 'Close navigation', expanded: true })
+        .getAttribute('aria-expanded'),
+    ).toBe('true');
+    fireEvent.keyDown(document, { key: 'Escape' });
+    expect(screen.getByRole('button', { name: 'Open navigation' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy();
   });
 });
