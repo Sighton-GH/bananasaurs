@@ -8,6 +8,7 @@ import {
 } from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
 import {
+  MCP_READ_LIST_THREADS,
   MCP_READ_LIST_CHANNELS,
   MCP_READ_LIST_MEMBERS,
   MCP_READ_LIST_ROLES,
@@ -466,5 +467,13 @@ export const listThreadsText = async (
         content: `parent: ${thread.parentId}`,
       })),
     ),
+    // Thread ids, parents and archived flags are structure, not member
+    // content: structural read under ADR 0050's split (one log line).
+    read: {
+      kind: 'structural',
+      action: MCP_READ_LIST_THREADS,
+      guildIds: [gate.guildId],
+      resultCount: threads.length,
+    },
   };
 };

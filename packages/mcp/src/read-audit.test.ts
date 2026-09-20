@@ -84,6 +84,7 @@ const archivePort = (): McpArchivePort => ({
     {
       messageId: MESSAGE,
       channelId: CHANNEL,
+      threadId: undefined,
       authorId: undefined,
       content: null,
       createdAt: 1,
@@ -372,6 +373,7 @@ const contentfulArchivePort = (): McpArchivePort => ({
   findMessage: () => ({
     messageId: MESSAGE,
     channelId: CHANNEL,
+    threadId: undefined,
     authorId: '666666666666666666',
     content: SECRET_MESSAGE_TEXT,
     createdAt: 1,
