@@ -593,6 +593,7 @@ export const opsPortsFor = (
     });
     return 'granted';
   },
+  listAccountCapabilities: (accountId) => authzRepo.listAccountCapabilities(scope, accountId),
 
   // Slice 13 (S13-D1/D2): guild access itself, granted and revoked. The exact
   // pattern `grantAccountCapability` above uses: the account lookup is

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { LOG_EVENT_KINDS, snowflakeIdSchema } from '@bananasaurs/core';
+import { CAPABILITIES, LOG_EVENT_KINDS, snowflakeIdSchema } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
@@ -35,6 +35,10 @@ const settingsBodySchema = z.discriminatedUnion('key', [
   z.object({ key: z.literal('breaker_threshold'), value: z.number().int().positive() }),
   z.object({ key: z.literal('breaker'), value: z.literal('closed') }),
 ]);
+
+const accountCapabilityGrantSchema = z.object({
+  capability: z.enum(CAPABILITIES),
+});
 
 const archiveEnableBodySchema = z.object({
   channelId: snowflakeIdSchema,
@@ -873,6 +877,57 @@ export const registerOpsWriteRoutes = (
         subjectId: request.params.username,
         before: { hadAccess: true },
         after: { revoked: outcome === 'revoked' },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  // `bananasaurs account grant <username> <capability> --confirm`, web half:
+  // grants one capability in THIS guild. Unknown accounts and accounts that
+  // cannot reach the guild are usage answers (404/409) with no audit row,
+  // exactly the CLI's throws; a repeat grant is audited with changed:false,
+  // exactly the CLI's `already-held` row.
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/capabilities',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = accountCapabilityGrantSchema.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'bad-request', issues: parsed.error.issues });
+      }
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.grantAccountCapability({
+        username: request.params.username,
+        capability: parsed.data.capability,
+        // Recorded, consulted for nothing - the same posture the CLI takes
+        // with `unixUserClaimed` (ADR 0024, amendment 2). Here the actor is
+        // the session account, already on the audit row via dashboardAuditBase.
+        grantedBy: session.accountId,
+      });
+      if (outcome === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      if (outcome === 'no-guild-access') {
+        return reply.status(409).send({
+          error: 'no-guild-access',
+          message: `account ${request.params.username} cannot reach this guild, so it cannot hold a capability here`,
+        });
+      }
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.capability.granted',
+        subjectType: 'account',
+        subjectId: request.params.username,
+        before: { held: outcome === 'already-held' },
+        after: {
+          held: true,
+          capability: parsed.data.capability,
+          changed: outcome === 'granted',
+        },
       });
       return reply.status(200).send({ outcome });
     },

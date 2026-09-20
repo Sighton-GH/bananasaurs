@@ -528,6 +528,7 @@ export const testPortsFor = (
     });
     return 'granted';
   },
+  listAccountCapabilities: (accountId) => authzRepo.listAccountCapabilities(scope, accountId),
   // Slice 13 (S13-D1/D2): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires — `findAccountByUsername` through
   // `opts.instanceScope`, then the guild-scoped access write. The pre-check

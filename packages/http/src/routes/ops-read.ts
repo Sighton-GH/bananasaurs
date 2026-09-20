@@ -135,7 +135,16 @@ export const registerOpsReadRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
-    return reply.status(200).send({ accounts: deps.instance.accountList() });
+    // The accounts are instance-level; the capabilities are this guild's.
+    // `account list` + `account grant` in one read, so the web page shows
+    // everything the CLI shows.
+    const accounts = deps.instance.accountList();
+    const ports = deps.portsFor(session.scope);
+    const capabilities: Record<string, readonly string[]> = {};
+    for (const account of accounts) {
+      capabilities[account.accountId] = ports.listAccountCapabilities(account.accountId);
+    }
+    return reply.status(200).send({ accounts, capabilities });
   });
 
   app.get('/api/mcp/clients', (request, reply) => {

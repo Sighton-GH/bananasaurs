@@ -138,7 +138,7 @@ export function ConfigPage() {
     <>
       <PageHeader
         title="Configuration"
-        purpose="The instance's redacted configuration, and this guild's live safety settings with the changes the CLI would ask you to --confirm."
+        purpose="Every configuration value, what controls it, and what changing it costs. Runtime settings change here with a confirmation and an audit row; nothing needs a terminal."
       />
       <div className="grid max-w-4xl gap-3">
         <Card title="Safety settings">
@@ -191,8 +191,9 @@ export function ConfigPage() {
             <p className="text-sm text-ink-muted">Loading the safety state…</p>
           ) : !limitsKnown ? (
             <p className="text-sm text-ink-muted">
-              This server does not send the current limits. Set them on the host with{' '}
-              <code className="text-xs">config set --confirm</code>.
+              This server does not send the current limits, so they stay read-only here. The runtime
+              keys are BANANASAURS_ROLE_RATE_PER_MIN, BANANASAURS_RECONCILE_BUDGET and
+              BANANASAURS_BREAKER_THRESHOLD in the guild's live settings.
             </p>
           ) : (
             <form
@@ -224,17 +225,61 @@ export function ConfigPage() {
             </form>
           )}
         </Card>
-        <Card title="Redacted configuration">
+        <Card title="Runtime settings, editable here">
+          <dl className="grid grid-cols-[14rem_1fr] gap-x-4 gap-y-2 text-sm">
+            <dt className="text-ink-muted">Dry run</dt>
+            <dd>
+              Safety settings above — confirmed before it changes, and every change writes an audit
+              row.
+            </dd>
+            <dt className="text-ink-muted">Circuit breaker reset</dt>
+            <dd>Safety settings above, when the breaker is open.</dd>
+            <dt className="text-ink-muted">Role rate, reconcile budget, breaker threshold</dt>
+            <dd>Limits above — applied together, validated, audited.</dd>
+          </dl>
+        </Card>
+        <Card title="Process configuration">
           <p className="mb-2 text-sm text-ink-muted">
-            As <code className="text-xs">bananasaurs config get</code> prints it — secrets are
-            redacted by the server before anything crosses this boundary. Changes are made on the
-            host with <code className="text-xs">config set --confirm</code>.
+            Read at startup from the instance's environment file on the host. Changing one means
+            editing that file and restarting the daemon — that is a host action, so this page shows
+            them read-only. Secrets are redacted by the server before anything crosses this
+            boundary.
           </p>
           <DataState resource={config.resource}>
             {(data) => (
-              <pre className="overflow-x-auto text-xs break-words whitespace-pre-wrap">
-                {JSON.stringify(data, null, 2)}
-              </pre>
+              <>
+                <dl className="grid gap-2 text-sm">
+                  {Object.entries(data).map(([key, value]) => {
+                    const secret = /token|secret|key|password/i.test(key);
+                    return (
+                      <div
+                        key={key}
+                        className="grid gap-1 rounded-sm border border-line bg-canvas/60 px-3 py-2 sm:grid-cols-[16rem_1fr_auto] sm:items-center"
+                      >
+                        <dt className="font-medium break-all">{key}</dt>
+                        <dd className="text-ink-muted break-all">
+                          {typeof value === 'string' ? value : JSON.stringify(value)}
+                        </dd>
+                        <dd>
+                          {secret ? (
+                            <Badge tone="danger">secret — redacted</Badge>
+                          ) : (
+                            <Badge tone="neutral">environment — restart to change</Badge>
+                          )}
+                        </dd>
+                      </div>
+                    );
+                  })}
+                </dl>
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm text-ink-muted">
+                    Raw redacted configuration (as config get prints it)
+                  </summary>
+                  <pre className="mt-2 overflow-x-auto text-xs break-words whitespace-pre-wrap">
+                    {JSON.stringify(data, null, 2)}
+                  </pre>
+                </details>
+              </>
             )}
           </DataState>
         </Card>

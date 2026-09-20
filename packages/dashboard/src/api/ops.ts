@@ -98,6 +98,15 @@ export interface Account {
   readonly createdAt: number;
 }
 
+/** `GET /api/accounts` — the accounts plus, for each, the capabilities it holds in THIS guild. */
+export interface AccountsResponse {
+  readonly accounts: readonly Account[];
+  readonly capabilities: Record<string, readonly string[]>;
+}
+
+/** `POST /api/accounts/:username/capabilities` — the grant outcome; 404/409 are refusal answers. */
+export type AccountCapabilityOutcome = 'granted' | 'already-held';
+
 /** `POST /api/accounts/:username/disabled` — the success arm of `OpsAccountDisableResult`. */
 export interface AccountDisableResult {
   readonly changed: boolean;

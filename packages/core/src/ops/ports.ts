@@ -1014,6 +1014,9 @@ export interface OpsPorts {
     readonly grantedBy: string;
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
 
+  /** The capabilities one account holds in THIS guild — the read half of the grant above. */
+  listAccountCapabilities(accountId: string): readonly string[];
+
   /**
    * S13-D1: grants the account access to THIS guild. `--guild` selects what
    * is granted, not merely which audit trail records it — unlike every other

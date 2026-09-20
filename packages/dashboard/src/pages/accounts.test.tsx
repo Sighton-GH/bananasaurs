@@ -23,6 +23,7 @@ const ACCOUNTS = {
       createdAt: 0,
     },
   ],
+  capabilities: { 'acct-2': ['audit.read'] },
 };
 
 afterEach(cleanup);
@@ -146,5 +147,32 @@ describe('AccountsPage', () => {
         (c) => (c[0] as string) === '/api/accounts/ops-alt' && c[1]?.method === 'DELETE',
       ),
     ).toBe(true);
+  });
+});
+
+describe('AccountsPage capabilities (account grant parity)', () => {
+  it('shows held capabilities in this guild and grants another through the confirm', async () => {
+    const mock = stubFetch([
+      { url: '/api/accounts', body: ACCOUNTS },
+      { method: 'POST', url: '/api/accounts/ops-alt/capabilities', body: { outcome: 'granted' } },
+    ]);
+    renderWithSession(<AccountsPage />);
+
+    // The held one is listed for the non-owner account; the owner row says so instead.
+    expect(await screen.findByText('audit.read')).toBeTruthy();
+    expect(screen.getByText('every capability (owner)')).toBeTruthy();
+
+    const select = screen.getByLabelText('Grant a capability to ops-alt');
+    fireEvent.change(select, { target: { value: 'config.read' } });
+    expect(await screen.findByText(/the config\.read capability in guild/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Grant capability' }));
+
+    await vi.waitFor(() => {
+      const post = mock.mock.calls.find(
+        (c) => (c[0] as string) === '/api/accounts/ops-alt/capabilities',
+      );
+      expect(post).toBeDefined();
+      expect(bodyOf(post!)).toEqual({ capability: 'config.read' });
+    });
   });
 });

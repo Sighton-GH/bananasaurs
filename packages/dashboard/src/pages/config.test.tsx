@@ -41,10 +41,16 @@ describe('ConfigPage', () => {
       { url: '/api/config', body: CONFIG },
     ]);
     renderPage();
-    expect(await screen.findByText(/<redacted>/)).toBeTruthy();
+    // The matrix labels the secret and shows its redacted value; the raw dump
+    // survives as a disclosure, so the marker appears in both.
+    expect((await screen.findAllByText(/<redacted>/)).length).toBeGreaterThan(0);
     expect(await screen.findByText('on — effects are rehearsed, not sent')).toBeTruthy();
+    expect(screen.getByText('secret — redacted')).toBeTruthy();
+    expect(screen.getAllByText('environment — restart to change').length).toBeGreaterThan(0);
     expect(screen.getByLabelText('Role rate per minute')).toHaveProperty('value', '12');
     expect(screen.getByLabelText('Breaker threshold')).toHaveProperty('value', '5');
+    // No instruction to drop to the terminal survives on this page.
+    expect(screen.queryByText(/config set --confirm/)).toBeNull();
   });
 
   it('turning dry run off states that effects start being sent, then posts', async () => {

@@ -207,6 +207,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   archiveSearch: notNeeded('archiveSearch'),
   archiveReindex: notNeeded('archiveReindex'),
   grantAccountCapability: notNeeded('grantAccountCapability'),
+  listAccountCapabilities: notNeeded('listAccountCapabilities'),
   accountGrantGuild: notNeeded('accountGrantGuild'),
   accountRevokeGuild: notNeeded('accountRevokeGuild'),
   allowSendChannel: notNeeded('allowSendChannel'),

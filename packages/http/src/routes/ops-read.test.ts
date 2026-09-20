@@ -203,8 +203,14 @@ describe('ops-read routes', () => {
       url: '/api/accounts',
       headers: { cookie },
     });
-    const accountBody: { accounts: { username: string; isOwner: boolean }[] } = accounts.json();
+    const accountBody: {
+      accounts: { accountId: string; username: string; isOwner: boolean }[];
+      capabilities: Record<string, readonly string[]>;
+    } = accounts.json();
     expect(accountBody.accounts.map((a) => a.username)).toContain('owner');
+    // CLI `account grant` parity, read half: the dashboard shows which
+    // capabilities each account holds IN THIS GUILD.
+    expect(accountBody.capabilities).toBeDefined();
 
     const search = await app.inject({
       method: 'GET',
@@ -212,5 +218,27 @@ describe('ops-read routes', () => {
       headers: { cookie },
     });
     expect(search.json()).toEqual({ hits: [], total: 0 });
+  });
+});
+
+describe('GET /api/accounts capabilities map', () => {
+  it('lists the capabilities each account holds in this guild', async () => {
+    const { cookie } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    // The caller needs config.read to reach the route at all; the audit.read
+    // row is the grant the map is expected to surface.
+    for (const capability of ['config.read', 'audit.read'] as const) {
+      authzRepo.grantAccountCapability(scope, {
+        accountId: ACCOUNT,
+        capability,
+        grantedBy: 'test',
+        now: clock,
+      });
+    }
+
+    const response = await app.inject({ method: 'GET', url: '/api/accounts', headers: { cookie } });
+    expect(response.statusCode).toBe(200);
+    const body: { capabilities: Record<string, readonly string[]> } = response.json();
+    expect(body.capabilities[ACCOUNT]).toContain('audit.read');
   });
 });

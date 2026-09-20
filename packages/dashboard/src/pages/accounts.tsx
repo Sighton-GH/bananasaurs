@@ -1,7 +1,10 @@
 import { useCallback, useState } from 'react';
+import { CAPABILITIES } from '@bananasaurs/core';
 import type {
   Account,
+  AccountCapabilityOutcome,
   AccountDeleteResult,
+  AccountsResponse,
   AccountDisableResult,
   AccountGuildOutcome,
   AccountRevokeResult,
@@ -23,12 +26,18 @@ type PendingAction =
   | { readonly kind: 'set-password'; readonly account: Account }
   | { readonly kind: 'revoke-credentials'; readonly account: Account }
   | { readonly kind: 'grant-guild' | 'revoke-guild'; readonly account: Account }
+  | { readonly kind: 'grant-capability'; readonly account: Account; readonly capability: string }
   | { readonly kind: 'delete'; readonly account: Account };
 
 const ACTION_TEXT: Record<
   PendingAction['kind'],
   { readonly title: (a: Account) => string; readonly confirm: string; readonly danger: boolean }
 > = {
+  'grant-capability': {
+    title: (a) => `Grant ${a.username} a capability?`,
+    confirm: 'Grant capability',
+    danger: false,
+  },
   disable: {
     title: (a) => `Disable ${a.username}?`,
     confirm: 'Disable account',
@@ -85,10 +94,7 @@ const GUILD_OUTCOME_TEXT: Record<AccountGuildOutcome, string> = {
 export function AccountsPage() {
   const session = useSession();
   const toast = useToast();
-  const load = useCallback(
-    () => session.read<{ accounts: Account[] }>('/api/accounts').then((r) => r.accounts),
-    [session],
-  );
+  const load = useCallback(() => session.read<AccountsResponse>('/api/accounts'), [session]);
   const accounts = useResource('the accounts', load);
 
   const [pending, setPending] = useState<PendingAction | undefined>(undefined);
@@ -175,6 +181,23 @@ export function AccountsPage() {
           }
           break;
         }
+        case 'grant-capability': {
+          const result = await session.write<{ outcome: AccountCapabilityOutcome }>(
+            `/api/accounts/${name}/capabilities`,
+            { capability: pending.capability },
+          );
+          if (result !== undefined) {
+            toast({
+              tone: result.outcome === 'granted' ? 'ok' : 'neutral',
+              title:
+                result.outcome === 'granted'
+                  ? `Granted ${pending.capability} to ${account.username} in this guild`
+                  : `${account.username} already holds ${pending.capability} here`,
+            });
+            accounts.reload();
+          }
+          break;
+        }
         case 'delete': {
           const result = await session.write<AccountDeleteResult>(
             `/api/accounts/${name}`,
@@ -225,6 +248,8 @@ export function AccountsPage() {
             ? ' This is your own account — revoking signs you out with no way back in. Recovery is delete plus re-bootstrap.'
             : ''
         }`;
+      case 'grant-capability':
+        return `Gives ${account.username} the ${action.capability} capability in guild ${session.info.guildId} — the web half of \`bananasaurs account grant\`. Recorded in the audit trail either way; a capability it already holds changes nothing.`;
       case 'delete':
         return `Deletes ${account.username} AND revokes its OAuth tokens in one transaction; guild access, capabilities and dashboard sessions cascade. Not reversible.${
           account.isOwner ? ' It is an owner account.' : ''
@@ -240,17 +265,17 @@ export function AccountsPage() {
       />
       <DataState
         resource={accounts.resource}
-        isEmpty={(rows) => rows.length === 0}
+        isEmpty={(r) => r.accounts.length === 0}
         empty={
           <p className="text-sm text-ink-muted">
             No accounts. The setup page re-arms with bootstrap reissue from the host.
           </p>
         }
       >
-        {(rows) => (
+        {(r) => (
           <DataTable
             caption="Dashboard accounts"
-            rows={rows}
+            rows={r.accounts}
             rowKey={(a) => a.accountId}
             columns={[
               { key: 'username', header: 'Username', cell: (a) => a.username },
@@ -273,6 +298,51 @@ export function AccountsPage() {
                     )}
                   </span>
                 ),
+              },
+              {
+                key: 'capabilities',
+                header: 'Capabilities in this guild',
+                cell: (a) => {
+                  const held = r.capabilities[a.accountId] ?? [];
+                  const remaining = CAPABILITIES.filter(
+                    (c) => !held.includes(c),
+                  ) as readonly string[];
+                  return (
+                    <span className="flex flex-wrap items-center gap-1">
+                      {a.isOwner ? (
+                        <Badge tone="neutral">every capability (owner)</Badge>
+                      ) : held.length === 0 ? (
+                        <span className="text-ink-muted">none</span>
+                      ) : (
+                        held.map((c) => (
+                          <Badge key={c} tone="neutral">
+                            {c}
+                          </Badge>
+                        ))
+                      )}
+                      {!a.isOwner && remaining.length > 0 && (
+                        <select
+                          aria-label={`Grant a capability to ${a.username}`}
+                          className="rounded-sm border border-line bg-panel px-1 py-0.5 text-xs text-ink"
+                          value=""
+                          onChange={(event) => {
+                            const capability = event.target.value;
+                            if (capability !== '') {
+                              setPending({ kind: 'grant-capability', account: a, capability });
+                            }
+                          }}
+                        >
+                          <option value="">grant…</option>
+                          {remaining.map((c) => (
+                            <option key={c} value={c}>
+                              {c}
+                            </option>
+                          ))}
+                        </select>
+                      )}
+                    </span>
+                  );
+                },
               },
               {
                 key: 'created',

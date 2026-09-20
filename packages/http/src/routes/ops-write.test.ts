@@ -147,6 +147,11 @@ const ALL_CALLS: readonly Call[] = [
   { method: 'POST', url: '/api/accounts/nobody/password', payload: { confirm: true } },
   { method: 'POST', url: '/api/accounts/nobody/grant-guild' },
   { method: 'POST', url: '/api/accounts/nobody/revoke-guild' },
+  {
+    method: 'POST',
+    url: '/api/accounts/nobody/capabilities',
+    payload: { capability: 'audit.read' },
+  },
 ];
 
 const ALL_GRANTS: readonly Capability[] = [
@@ -215,7 +220,7 @@ describe('ops-write routes', () => {
         method: call.method,
         url: call.url,
         headers: { cookie, [CSRF]: csrf },
-        payload: call.payload,
+        payload: call.payload ?? {},
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(400);
     }
@@ -394,5 +399,67 @@ describe('ops-write routes', () => {
     expect(reindexBody.indexed).toBe(0);
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
     expect(rows.map((row) => row.action)).toContain('archive_reindex.ran');
+  });
+});
+
+describe('POST /api/accounts/:username/capabilities (account grant parity)', () => {
+  const MOD = 'acct_11111111111111111111111111111111';
+
+  const call = (cookie: string, csrf: string, username: string, capability: unknown) =>
+    app.inject({
+      method: 'POST',
+      url: `/api/accounts/${username}/capabilities`,
+      headers: { cookie, [CSRF]: csrf },
+      payload: { capability },
+    });
+
+  beforeEach(async () => {
+    const instance = t.scopes.instance();
+    accountRepo.createAccount(instance, {
+      accountId: MOD,
+      username: 'mod',
+      passwordHash: await hashPassword(PASSWORD),
+      isOwner: false,
+      now: clock,
+    });
+  });
+
+  it('grants a capability to an account with guild access and audits it', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(ALL_GRANTS);
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), MOD);
+
+    const first = await call(cookie, csrf, 'mod', 'audit.read');
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ outcome: 'granted' });
+    expect(authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), MOD)).toContain(
+      'audit.read',
+    );
+
+    const audits = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), { limit: 5 })
+      .filter((row) => row.action === 'account.capability.granted');
+    expect(audits).toHaveLength(1);
+    expect(audits[0]?.subjectId).toBe('mod');
+
+    // Idempotent: the repeat is an answer, not a second change.
+    const second = await call(cookie, csrf, 'mod', 'audit.read');
+    expect(second.statusCode).toBe(200);
+    expect(second.json()).toEqual({ outcome: 'already-held' });
+  });
+
+  it('404s an unknown account and 409s one without guild access', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(ALL_GRANTS);
+    expect((await call(cookie, csrf, 'nobody', 'audit.read')).statusCode).toBe(404);
+    expect((await call(cookie, csrf, 'mod', 'audit.read')).statusCode).toBe(409);
+    expect(authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), MOD)).toEqual([]);
+  });
+
+  it('400s a capability outside the known set', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(ALL_GRANTS);
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), MOD);
+    expect((await call(cookie, csrf, 'mod', 'everything.please')).statusCode).toBe(400);
   });
 });
