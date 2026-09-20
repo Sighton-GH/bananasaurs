@@ -8,6 +8,12 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
+import {
+  MCP_READ_GET_MESSAGE,
+  MCP_READ_READ_CHANNEL_HISTORY,
+  MCP_READ_SEARCH_MESSAGES,
+  type McpReadRecord,
+} from '../read-audit.js';
 
 /**
  * The first tools that return real members' messages (slice M4, Task 4b).
@@ -16,8 +22,9 @@ import { envelope, type EvidenceItem } from '../envelope.js';
  * → visibility from archive-enabled channels → repository read → `envelope()` —
  * so that hard rule 3 (retrieved content is evidence, never instruction) holds
  * by construction: there is no content-bearing return path that skips the
- * envelope, and no log line anywhere here carries message content (CLAUDE.md
- * rule 4 — these functions do not log at all).
+ * envelope, and no record these functions annotate for ADR 0050 carries
+ * message content — guild, subject ids and result counts only, never the
+ * query string (CLAUDE.md rule 4).
  *
  * The `GuildScope` itself is built inside the port implementation (the daemon's
  * `archivePortFor`, which owns the `ScopeFactory`), never here: this package
@@ -57,8 +64,14 @@ export const ARCHIVE_PURGED_MARKER =
 /** `content` is also null for a message that never had text (attachment-only); still returned. */
 export const ARCHIVE_NO_TEXT_MARKER = '[no text content was archived for this message]';
 
+/**
+ * A successful read carries the record ADR 0050 says the server must
+ * perform before the answer leaves the handler — one audit row, since all
+ * three archive tools return members' words. A refusal carries none.
+ */
 export type ArchiveOutcome =
-  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
+  | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
+  | { readonly ok: false; readonly message: string };
 
 /**
  * The archived message as this package needs it: six fields, named here,
@@ -281,7 +294,20 @@ const searchMessagesInner = (
   const head =
     `Archive search in guild ${gate.guildId}: ` +
     `${String(result.total)} ${noun} (showing ${String(items.length)}).`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    // ADR 0050: audited. The query string is never part of the record — it
+    // is operator-typed text about member content, which is member content.
+    read: {
+      kind: 'content',
+      action: MCP_READ_SEARCH_MESSAGES,
+      guildId: gate.guildId,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: result.total,
+    },
+  };
 };
 
 const readChannelHistoryInner = (
@@ -316,7 +342,18 @@ const readChannelHistoryInner = (
   const head =
     `Channel history for channel ${input.channelId} in guild ${gate.guildId}: ` +
     `showing ${String(items.length)} ${noun} (newest first).`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'content',
+      action: MCP_READ_READ_CHANNEL_HISTORY,
+      guildId: gate.guildId,
+      subjectType: 'channel',
+      subjectId: input.channelId,
+      resultCount: items.length,
+    },
+  };
 };
 
 const getMessageInner = (
@@ -334,10 +371,25 @@ const getMessageInner = (
   // the same answer as a nonexistent id, which is what keeps this from being
   // a cross-guild existence oracle.
   const message = port.findMessage(gate.guildId, input.messageId);
+  // ADR 0050: the read is audited found or not — the connector asked for a
+  // member's message either way, and a not-found answer is still an answer
+  // about the archive.
+  const read: McpReadRecord = {
+    kind: 'content',
+    action: MCP_READ_GET_MESSAGE,
+    guildId: gate.guildId,
+    subjectType: 'message',
+    subjectId: input.messageId,
+    resultCount: message === undefined ? 0 : 1,
+  };
   if (message === undefined) {
-    return { ok: true, text: `No archived message ${input.messageId} in guild ${gate.guildId}.` };
+    return {
+      ok: true,
+      text: `No archived message ${input.messageId} in guild ${gate.guildId}.`,
+      read,
+    };
   }
-  return { ok: true, text: envelope([toEvidenceItem(message)]) };
+  return { ok: true, text: envelope([toEvidenceItem(message)]), read };
 };
 
 /**

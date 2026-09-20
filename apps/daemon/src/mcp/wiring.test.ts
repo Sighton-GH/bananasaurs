@@ -1302,3 +1302,161 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
     }
   });
 });
+
+describe('/mcp read logging (ADR 0050)', () => {
+  const CHANNEL = '555555555555555555';
+  const MEMBER = '666666666666666666';
+
+  interface CapturedLine {
+    readonly level: string;
+    readonly fields: Record<string, unknown>;
+    readonly msg: string;
+  }
+
+  /** A logger that records every line, swapped in for the silent one. */
+  const recordingLogger = (): { readonly logger: never; readonly lines: CapturedLine[] } => {
+    const lines: CapturedLine[] = [];
+    const capture = (level: string) => (fields: Record<string, unknown>, msg: string) => {
+      lines.push({ level, fields, msg });
+    };
+    const logger = {
+      info: capture('info'),
+      warn: capture('warn'),
+      error: capture('error'),
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as never;
+    return { logger, lines };
+  };
+
+  const seedArchive = (): void => {
+    archiveRepo.enableChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CHANNEL,
+      attachmentPolicy: 'none',
+      now: clock,
+    });
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD_A), {
+      messageId: '777777777777777777',
+      channelId: CHANNEL,
+      authorId: MEMBER,
+      content: 'alpha plans for the picnic',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+  };
+
+  const mcpCall = (accessToken: string, name: string, args: Record<string, unknown>) =>
+    mcpPost(
+      app,
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name, arguments: args } },
+      accessToken,
+    );
+
+  it('a content-bearing read writes exactly one audit row with the right guild, and never the query', async () => {
+    seedArchive();
+    const accessToken = await mintToken();
+    const response = await mcpCall(accessToken, 'search_messages', {
+      guildId: String(GUILD_A),
+      query: 'picnic',
+    });
+    expect(response.statusCode).toBe(200);
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD_A));
+    expect(rows).toHaveLength(1);
+    const row = rows[0];
+    expect(row).toBeDefined();
+    if (row === undefined) throw new Error('expected one audit row');
+    expect(row.action).toBe('mcp.read.search_messages');
+    expect(row.actorType).toBe('mcp_operator');
+    expect(row.via).toBe('http');
+    expect(row.actorId).toMatch(/^tok_/);
+    expect(row.subjectType).toBe('guild');
+    expect(row.subjectId).toBeNull();
+    const after = JSON.parse(row.after ?? '{}') as Record<string, unknown>;
+    expect(after['accountId']).toBe(ACCOUNT);
+    expect(after['clientId']).toMatch(/^cli_/);
+    expect(after['tokenId']).toBe(row.actorId);
+    expect(after['resultCount']).toBe(1);
+    // The privacy half (ADR 0050): the query string and the returned content
+    // appear nowhere in the row — they are member content about member
+    // content.
+    expect(row.before).toBeNull();
+    expect(row.after).not.toContain('picnic');
+    expect(row.after).not.toContain('alpha plans');
+
+    // And the second read is a second row: one read, one row, no more.
+    const again = await mcpCall(accessToken, 'search_messages', {
+      guildId: String(GUILD_A),
+      query: 'picnic',
+    });
+    expect(again.statusCode).toBe(200);
+    expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD_A))).toHaveLength(2);
+    // The other guild's trail is untouched (hard rule 2).
+    expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD_B))).toHaveLength(0);
+  });
+
+  it('a structural read writes no audit row and one allowlisted info line per reachable guild', async () => {
+    const { logger, lines } = recordingLogger();
+    const logged = buildDashboardApp({ ...deps, logger });
+    try {
+      const accessToken = await mintToken('bananasaurs:read', logged);
+      const response = await mcpPost(
+        logged,
+        {
+          jsonrpc: '2.0',
+          id: 2,
+          method: 'tools/call',
+          params: { name: 'get_health', arguments: {} },
+        },
+        accessToken,
+      );
+      expect(response.statusCode).toBe(200);
+
+      expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD_A))).toHaveLength(0);
+      expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD_B))).toHaveLength(0);
+      // The seeded account holds `mcp.authorize` in guild A only, so the
+      // reachable set is exactly [A] and the fan-out is one line.
+      const reads = lines.filter((line) => line.fields['action'] === 'mcp.read.get_health');
+      expect(reads).toHaveLength(1);
+      const guilds = reads.map((line) => line.fields['guildId']).sort();
+      expect(guilds).toEqual([String(GUILD_A)]);
+      for (const line of reads) {
+        expect(line.fields['component']).toBe('mcp');
+        expect(line.fields['accountId']).toBe(ACCOUNT);
+        expect(line.fields['oauthTokenId']).toMatch(/^tok_/);
+        expect(line.fields['oauthClientId']).toMatch(/^cli_/);
+      }
+    } finally {
+      await logged.close();
+    }
+  });
+
+  it('list_audit_events is audited, but never returns the rows its own reads generate', async () => {
+    const accessToken = await mintToken();
+    const first = await mcpCall(accessToken, 'list_audit_events', { guildId: String(GUILD_A) });
+    expect(first.statusCode).toBe(200);
+    expect(
+      effectRepo
+        .tailAudit(t.scopes.forGuild(GUILD_A))
+        .filter((row) => row.action === 'mcp.read.list_audit_events'),
+    ).toHaveLength(1);
+
+    const second = await mcpCall(accessToken, 'list_audit_events', { guildId: String(GUILD_A) });
+    expect(second.statusCode).toBe(200);
+    // Two reads, two durable rows…
+    expect(
+      effectRepo
+        .tailAudit(t.scopes.forGuild(GUILD_A))
+        .filter((row) => row.action === 'mcp.read.list_audit_events'),
+    ).toHaveLength(2);
+    // …but the tool's answer excludes its own action, so watching the trail
+    // through the tool does not grow it (ADR 0050).
+    const bodies = sseData(second.body);
+    const result = (bodies[0] as { result?: { content?: Array<{ text: string }> } }).result;
+    const text = result?.content?.[0]?.text ?? '';
+    expect(text).not.toContain('mcp.read.list_audit_events');
+    expect(text).toContain('Audit events in guild');
+  });
+});

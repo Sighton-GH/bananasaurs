@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, gte } from 'drizzle-orm';
+import { and, desc, eq, gte, notInArray } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { auditEvents, effectBatches, managedRoleAssignments, roleEffects } from '../schema.js';
@@ -387,6 +387,14 @@ export interface TailAuditInput {
   limit?: number | undefined;
   /** `--since 2h`, as an absolute millisecond timestamp the caller computed. */
   sinceMs?: number | undefined;
+  /**
+   * Actions to leave out of the result (ADR 0050): `list_audit_events`
+   * audits its own reads, and the tool must not return the rows its own
+   * reads generate. Filtered in SQL, not in memory: a post-limit filter
+   * would let a page full of excluded rows empty the result while older,
+   * wanted rows exist. An empty list filters nothing.
+   */
+  excludeActions?: readonly string[] | undefined;
 }
 
 /**
@@ -419,7 +427,12 @@ export const tailAudit = (scope: GuildScope, input: TailAuditInput = {}): AuditR
       .where(
         scope.only(
           auditEvents,
-          input.sinceMs === undefined ? undefined : gte(auditEvents.at, input.sinceMs),
+          and(
+            input.sinceMs === undefined ? undefined : gte(auditEvents.at, input.sinceMs),
+            input.excludeActions === undefined || input.excludeActions.length === 0
+              ? undefined
+              : notInArray(auditEvents.action, [...input.excludeActions]),
+          ),
         ),
       )
       .orderBy(desc(auditEvents.at), desc(auditEvents.auditId))

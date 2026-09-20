@@ -20,6 +20,7 @@ import {
   type McpGuildPort,
   type McpHealthPort,
   type McpPrincipal,
+  type McpReadAuditPort,
   type McpRecordsPort,
   type McpSendPort,
 } from '@bananasaurs/mcp';
@@ -435,6 +436,9 @@ const recordsPortFor = (deps: HttpDeps): McpRecordsPort => ({
         .tailAudit(deps.scopes.forGuild(guildId), {
           limit: input.limit,
           ...(input.sinceMs !== undefined ? { sinceMs: input.sinceMs } : {}),
+          // ADR 0050: `list_audit_events` excludes its own reads from what
+          // it returns; the filter is the repository's, in SQL.
+          ...(input.excludeActions !== undefined ? { excludeActions: input.excludeActions } : {}),
         })
         .map((row) => ({
           auditId: row.auditId,
@@ -610,6 +614,63 @@ const sendPortFor = (
     }),
 });
 
+/**
+ * The `McpReadAuditPort` behind every read tool (ADR 0050), the one writer
+ * in this file: the tool layer says *what* was read (guild, action, subject,
+ * result count) and this port closes over *who* read it — the OAuth token
+ * id, account id and client id from the request's principal.
+ *
+ * A content-bearing read writes one `audit_events` row through
+ * `effectRepo.recordAudit`, in the send path's vocabulary (ruling M5-D10):
+ * `actor_type = 'mcp_operator'`, `actor_id = <token id>`, `via = 'http'`.
+ * The `after` payload carries the account, client, token and result count —
+ * never a query string, never returned content, never a message body (rule
+ * 4; a log of what someone searched for is itself member content).
+ *
+ * A structural read is one allowlisted info line through `safeLogFields`:
+ * guild id, action, account, token and client ids, result count. Arrays are
+ * dropped by the allowlist, which is why `get_health` fans out one line per
+ * guild at the call site instead.
+ */
+const readAuditPortFor = (
+  principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
+  deps: HttpDeps,
+): McpReadAuditPort => ({
+  auditContentRead: (record) => {
+    effectRepo.recordAudit(deps.scopes.forGuild(record.guildId), {
+      at: deps.now(),
+      actorType: 'mcp_operator',
+      actorId: principal.tokenId,
+      via: 'http',
+      action: record.action,
+      subjectType: record.subjectType,
+      subjectId: record.subjectId,
+      before: undefined,
+      after: {
+        accountId: principal.accountId,
+        clientId: principal.clientId,
+        tokenId: principal.tokenId,
+        resultCount: record.resultCount,
+      },
+      dryRun: false,
+    });
+  },
+  logStructuralRead: (input) => {
+    deps.logger.info(
+      safeLogFields({
+        component: 'mcp',
+        action: input.action,
+        guildId: input.guildId,
+        accountId: principal.accountId,
+        oauthClientId: principal.clientId,
+        oauthTokenId: principal.tokenId,
+        ...(input.resultCount !== undefined ? { count: input.resultCount } : {}),
+      }),
+      'mcp read',
+    );
+  },
+});
+
 /** Hop-by-hop headers that must not survive the Fastify → Web conversion. */
 const DROPPED_REQUEST_HEADERS = new Set([
   'host',
@@ -732,6 +793,7 @@ export const registerMcpRoutes = (
       guild: guildPortFor(client, deps),
       records: recordsPortFor(deps),
       send: sendPortFor(principal, deps, discord, client),
+      readAudit: readAuditPortFor(principal, deps),
     });
     const transport = new WebStandardStreamableHTTPServerTransport();
     // `server.close()` closes the transport too (`Protocol.close`), so one

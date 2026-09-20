@@ -279,3 +279,46 @@ describe('tailAudit', () => {
     expect(tailAudit(b)).toHaveLength(1);
   });
 });
+
+describe('tailAudit excludeActions (ADR 0050)', () => {
+  const put = (scope: GuildScope, at: number, action: string) =>
+    recordAudit(scope, {
+      at,
+      actorType: 'mcp_operator',
+      actorId: 'tok_test',
+      via: 'http',
+      action,
+      subjectType: 'guild',
+      subjectId: undefined,
+      dryRun: false,
+    });
+
+  it('omits the named actions, in SQL, so a full page of excluded rows cannot empty the result', () => {
+    for (let i = 0; i < 5; i += 1) put(a, 100 + i, 'mcp.read.list_audit_events');
+    put(a, 1, 'real.one');
+    put(a, 2, 'real.two');
+    // Without the filter the five read-rows fill the limit-5 page and the two
+    // real rows vanish; with it they are exactly what remains.
+    expect(tailAudit(a, { limit: 5, excludeActions: ['mcp.read.list_audit_events'] })).toHaveLength(
+      2,
+    );
+    expect(
+      tailAudit(a, { limit: 5, excludeActions: ['mcp.read.list_audit_events'] }).map(
+        (r) => r.action,
+      ),
+    ).toEqual(['real.two', 'real.one']);
+  });
+
+  it('filters nothing when the option is absent, and treats an empty list as absent', () => {
+    put(a, 100, 'mcp.read.list_audit_events');
+    expect(tailAudit(a)).toHaveLength(1);
+    expect(tailAudit(a, { excludeActions: [] })).toHaveLength(1);
+  });
+
+  it('stays guild-scoped while filtering', () => {
+    put(a, 100, 'mcp.read.list_audit_events');
+    put(b, 100, 'real.theirs');
+    expect(tailAudit(a, { excludeActions: ['mcp.read.list_audit_events'] })).toEqual([]);
+    expect(tailAudit(b, { excludeActions: ['mcp.read.list_audit_events'] })).toHaveLength(1);
+  });
+});

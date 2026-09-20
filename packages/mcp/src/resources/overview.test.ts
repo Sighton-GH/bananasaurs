@@ -1,4 +1,12 @@
 import { describe, expect, it } from 'vitest';
+import type { McpReadAuditPort } from '../read-audit.js';
+
+/** ADR 0050: this file does not exercise read logging; the server requires the port. */
+const noopReadAudit: McpReadAuditPort = {
+  auditContentRead: () => undefined,
+  logStructuralRead: () => undefined,
+};
+
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
@@ -98,6 +106,7 @@ const connectPair = async (
     records: stubRecords(),
     // Required since M5 Task 4; never called by the resource pinned here.
     send: { send: () => Promise.resolve({ status: 'sent' as const, messageId: 'mid' }) },
+    readAudit: noopReadAudit,
   });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
   await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);

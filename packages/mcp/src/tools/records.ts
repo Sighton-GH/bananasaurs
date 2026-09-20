@@ -7,6 +7,13 @@ import {
   type McpPrincipal,
 } from '../scope.js';
 import { envelope, type EvidenceItem } from '../envelope.js';
+import {
+  MCP_READ_GET_MOD_CASE,
+  MCP_READ_GET_SERVER_OVERVIEW,
+  MCP_READ_LIST_AUDIT_EVENTS,
+  MCP_READ_LIST_MOD_CASES,
+  type McpReadRecord,
+} from '../read-audit.js';
 import { buildOverviewCard } from '../resources/overview.js';
 import type { McpGuildPort } from './guild.js';
 
@@ -30,8 +37,9 @@ import type { McpGuildPort } from './guild.js';
  * snippet that tripped a rule is member-written text, audit `before`/`after`
  * JSON can hold moderator-typed text, and channel, role and panel names are
  * all human-typed, so every content-bearing result is enveloped and no log
- * line anywhere here carries any of it (CLAUDE.md rule 4 — these functions
- * do not log at all).
+ * line anywhere here carries any of it (CLAUDE.md rule 4 — the records
+ * these functions annotate for ADR 0050 carry ids and counts only, never
+ * content).
  *
  * The `get_server_overview` card itself lives in
  * `resources/overview.ts` as `buildOverviewCard`: the tool and the resource
@@ -78,8 +86,15 @@ export const AUDIT_DEFAULT_LIMIT = 50;
 /** Upper bound for an audit listing page. */
 export const AUDIT_LIMIT_MAX = 100;
 
+/**
+ * A successful read carries the record ADR 0050 says the server must
+ * perform before the answer leaves the handler: an audit row for the three
+ * tools that return moderation history or the audit trail, an info log line
+ * for the structural overview card. A refusal carries none.
+ */
 export type RecordsOutcome =
-  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly message: string };
+  | { readonly ok: true; readonly text: string; readonly read: McpReadRecord }
+  | { readonly ok: false; readonly message: string };
 
 /**
  * Plain-data projections — the whole reason `packages/mcp` needs no storage
@@ -158,7 +173,16 @@ export interface McpRecordsPort {
   readonly listCaseEvents: (guildId: GuildId, caseId: string) => readonly McpCaseEventView[];
   readonly tailAudit: (
     guildId: GuildId,
-    input: { readonly limit: number; readonly sinceMs?: number | undefined },
+    input: {
+      readonly limit: number;
+      readonly sinceMs?: number | undefined;
+      /**
+       * ADR 0050: actions the listing must leave out. `list_audit_events`
+       * passes its own read action, so an operator watching the trail
+       * through the tool never watches it grow because they looked at it.
+       */
+      readonly excludeActions?: readonly string[] | undefined;
+    },
   ) => readonly McpAuditEventView[];
   readonly listRules: (guildId: GuildId) => readonly McpOverviewRule[];
   readonly listPanels: (guildId: GuildId) => readonly McpOverviewPanel[];
@@ -301,7 +325,18 @@ const listModCasesInner = (
   const head =
     `Mod cases in guild ${gate.guildId}: ` +
     `showing ${String(items.length)} ${noun} (newest first).`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'content',
+      action: MCP_READ_LIST_MOD_CASES,
+      guildId: gate.guildId,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: items.length,
+    },
+  };
 };
 
 /**
@@ -329,10 +364,20 @@ const getModCaseInner = (
   // The not-found reply below is unenveloped, so the echoed id goes through
   // `safeNotFoundCaseId` above rather than out raw.
   const summary = port.findCase(gate.guildId, parsed.data.caseId);
+  // ADR 0050: audited found or not — the connector asked for a moderation
+  // case either way, and a not-found answer is still moderation history.
   if (summary === undefined) {
     return {
       ok: true,
       text: `No mod case ${safeNotFoundCaseId(parsed.data.caseId)} in guild ${gate.guildId}.`,
+      read: {
+        kind: 'content',
+        action: MCP_READ_GET_MOD_CASE,
+        guildId: gate.guildId,
+        subjectType: 'mod_case',
+        subjectId: parsed.data.caseId,
+        resultCount: 0,
+      },
     };
   }
   const events = port.listCaseEvents(gate.guildId, parsed.data.caseId);
@@ -344,7 +389,18 @@ const getModCaseInner = (
     `violations ${String(summary.violationCount)}, ` +
     `escalation tier ${String(summary.escalationTier)}, status ${summary.status}; ` +
     `showing ${String(items.length)} ${noun}.`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'content',
+      action: MCP_READ_GET_MOD_CASE,
+      guildId: gate.guildId,
+      subjectType: 'mod_case',
+      subjectId: parsed.data.caseId,
+      resultCount: items.length,
+    },
+  };
 };
 
 const listAuditEventsInner = (
@@ -359,13 +415,29 @@ const listAuditEventsInner = (
   const rows = port.tailAudit(gate.guildId, {
     limit: parsed.data.limit ?? AUDIT_DEFAULT_LIMIT,
     ...(parsed.data.sinceMs !== undefined ? { sinceMs: parsed.data.sinceMs } : {}),
+    // ADR 0050: this read IS audited, but the tool never returns the rows
+    // its own reads generate — otherwise every call would surface the
+    // previous call's row and the trail would grow by being watched. The
+    // row stays visible to `audit tail` over SSH.
+    excludeActions: [MCP_READ_LIST_AUDIT_EVENTS],
   });
   const items = rows.map(auditToEvidenceItem);
   const noun = items.length === 1 ? 'row' : 'rows';
   const head =
     `Audit events in guild ${gate.guildId}: ` +
     `showing ${String(items.length)} ${noun} (newest first).`;
-  return { ok: true, text: `${head}\n\n${envelope(items)}` };
+  return {
+    ok: true,
+    text: `${head}\n\n${envelope(items)}`,
+    read: {
+      kind: 'content',
+      action: MCP_READ_LIST_AUDIT_EVENTS,
+      guildId: gate.guildId,
+      subjectType: 'guild',
+      subjectId: undefined,
+      resultCount: items.length,
+    },
+  };
 };
 
 const getServerOverviewInner = (
@@ -383,6 +455,15 @@ const getServerOverviewInner = (
   if (!gate.ok) return { ok: false, message: gate.message };
   return {
     ok: true,
+    // ADR 0050: the card is structure, not content, so the read is logged,
+    // not audited — the same side of the split as list_channels/list_roles,
+    // through both of the card's doors (ruling M4-D13).
+    read: {
+      kind: 'structural',
+      action: MCP_READ_GET_SERVER_OVERVIEW,
+      guildIds: [gate.guildId],
+      resultCount: undefined,
+    },
     text: buildOverviewCard({
       guildId: gate.guildId,
       channels: guildPort.listChannels(gate.guildId),
