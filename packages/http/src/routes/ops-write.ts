@@ -1,0 +1,882 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import { LOG_EVENT_KINDS, snowflakeIdSchema } from '@bananasaurs/core';
+import type { HttpDeps, RouteGuard } from '../server.js';
+import { dashboardAuditBase } from './audit-base.js';
+import { requireCapability } from './capability.js';
+
+/**
+ * The dashboard's second write surface: the CLI's operator write commands
+ * (`docs/17`) that the Release 1 routes did not yet cover (ADR 0051 D1–D3).
+ * Automod rule management, review verdicts, cases, killswitch and the log
+ * route setter already have routes in `write.ts` / `automod.ts` /
+ * `cases.ts`; this module deliberately does not duplicate them.
+ *
+ * Same discipline as `write.ts`: nothing goes through `createDispatcher`
+ * (it hard-codes `actorType: 'operator_cli'`), every handler builds its own
+ * `OpsAuditWrite` from `dashboardAuditBase`, and every refusal the port
+ * unions name becomes an audited-or-plain 4xx answer rather than a thrown
+ * 500. Usage answers (`no-such-*`, `wrong-kind`, `not-failed`) map to 404
+ * or 409 as the union's own comments direct; `already-present` /
+ * `not-present` are real answers and return 200 with the outcome named.
+ */
+
+const eventKindParamSchema = z.string().refine(
+  (k) => LOG_EVENT_KINDS.includes(k),
+  (k) => ({
+    message: `no such log event kind: ${k}`,
+  }),
+);
+
+const settingsBodySchema = z.discriminatedUnion('key', [
+  z.object({ key: z.literal('dry_run'), value: z.boolean() }),
+  z.object({ key: z.literal('role_rate_per_min'), value: z.number().positive() }),
+  z.object({ key: z.literal('reconcile_budget'), value: z.number().int().positive() }),
+  z.object({ key: z.literal('breaker_threshold'), value: z.number().int().positive() }),
+  z.object({ key: z.literal('breaker'), value: z.literal('closed') }),
+]);
+
+const archiveEnableBodySchema = z.object({
+  channelId: snowflakeIdSchema,
+  attachmentPolicy: z.enum(['none', 'bytes']),
+});
+
+const archiveLinkCaseBodySchema = z.object({
+  messageId: snowflakeIdSchema,
+  caseId: z.string().min(1),
+});
+
+const undoBodySchema = z.object({
+  batchId: z.string().min(1),
+  reason: z.string().min(1).max(500),
+});
+
+const sendAllowBodySchema = z.object({
+  channelId: snowflakeIdSchema,
+  accountId: z.string().min(1),
+});
+
+const adoptionAllowanceBodySchema = z.object({
+  count: z.number().int().positive().max(100),
+});
+
+const signoffBodySchema = z.object({ signedOffBy: z.string().min(1).max(100) });
+
+const inviteAllowlistBodySchema = z.object({
+  code: z.string().min(1).max(100),
+  label: z.string().min(1).max(200),
+});
+
+const linkDomainBodySchema = z.object({
+  domain: z.string().min(1).max(253),
+  listType: z.enum(['allow', 'deny']),
+});
+
+const accountDisabledBodySchema = z.object({ disabled: z.boolean() });
+
+const accountPasswordBodySchema = z.object({ confirm: z.literal(true) });
+
+export const registerOpsWriteRoutes = (
+  app: FastifyInstance,
+  guard: RouteGuard,
+  deps: HttpDeps,
+): void => {
+  app.post<{ Params: { id: string } }>('/api/jobs/:id/retry', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const jobId = Number(request.params.id);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.retryJob(jobId);
+    if (!outcome.ok) {
+      if (outcome.reason === 'not-found') {
+        return reply.status(404).send({ error: 'not-found' });
+      }
+      return reply
+        .status(409)
+        .send({
+          error: outcome.reason,
+          ...('state' in outcome ? { state: outcome.state } : {}),
+          ...('blockingJobId' in outcome ? { blockingJobId: outcome.blockingJobId } : {}),
+        });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'job.retried',
+      subjectType: 'job',
+      subjectId: String(jobId),
+      before: undefined,
+      after: { retried: true },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+
+  app.post<{ Params: { id: string } }>('/api/panels/:id/publish', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'panels.manage', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    if (ports.findPanel(request.params.id) === undefined) {
+      return reply.status(404).send({ error: 'not-found' });
+    }
+    const result = await ports.publishPanel(request.params.id);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'panel.published',
+      subjectType: 'panel',
+      subjectId: request.params.id,
+      before: undefined,
+      after: { action: result.action, messageId: result.messageId ?? null },
+    });
+    return reply.status(200).send(result);
+  });
+
+  app.post<{ Params: { id: string } }>('/api/panels/:id/reconcile', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'panels.manage', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    if (ports.findPanel(request.params.id) === undefined) {
+      return reply.status(404).send({ error: 'not-found' });
+    }
+    const enqueued = ports.enqueueReconcile(request.params.id);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'panel.reconcile_enqueued',
+      subjectType: 'panel',
+      subjectId: request.params.id,
+      before: undefined,
+      after: { enqueued: enqueued.enqueued, jobId: enqueued.jobId ?? null },
+    });
+    return reply.status(200).send(enqueued);
+  });
+
+  app.post('/api/settings', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = settingsBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    ports.applySetting(parsed.data);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'setting.applied',
+      subjectType: 'setting',
+      subjectId: parsed.data.key,
+      before: undefined,
+      after: { value: parsed.data.value },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+
+  app.post<{ Params: { eventKind: string }; Body: { enabled?: boolean } }>(
+    '/api/log-routes/:eventKind/enabled',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'logging.manage', reply)) return reply;
+
+      const kindParsed = eventKindParamSchema.safeParse(request.params.eventKind);
+      const bodyParsed = z.object({ enabled: z.boolean() }).safeParse(request.body);
+      if (!kindParsed.success || !bodyParsed.success) {
+        return reply.status(400).send({ error: 'bad-request' });
+      }
+
+      const ports = deps.portsFor(session.scope);
+      const existed = ports.setRouteEnabled(kindParsed.data, bodyParsed.data.enabled);
+      if (!existed) return reply.status(404).send({ error: 'not-found' });
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: bodyParsed.data.enabled ? 'log_route.enabled' : 'log_route.disabled',
+        subjectType: 'log_route',
+        subjectId: kindParsed.data,
+        before: { enabled: !bodyParsed.data.enabled },
+        after: { enabled: bodyParsed.data.enabled },
+      });
+      return reply.status(200).send({ ok: true });
+    },
+  );
+
+  app.post('/api/log-exclusions', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'logging.manage', reply)) return reply;
+
+    const parsed = z.object({ channelId: snowflakeIdSchema }).safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const added = ports.excludeChannel(parsed.data.channelId);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'log_exclusion.added',
+      subjectType: 'channel',
+      subjectId: parsed.data.channelId,
+      before: { excluded: !added },
+      after: { excluded: true },
+    });
+    return reply.status(200).send({ ok: true, added });
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    '/api/log-exclusions/:channelId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'logging.manage', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const removed = ports.unexcludeChannel(parsed.data);
+      if (removed) {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'log_exclusion.removed',
+          subjectType: 'channel',
+          subjectId: parsed.data,
+          before: { excluded: true },
+          after: { excluded: false },
+        });
+      }
+      return reply.status(200).send({ ok: true, removed });
+    },
+  );
+
+  app.post('/api/archive/channels', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = archiveEnableBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.archiveEnableChannel(parsed.data);
+    if (outcome === 'guild-not-archive-enabled') {
+      return reply.status(409).send({ error: 'guild-not-archive-enabled' });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'archive_channel.enabled',
+      subjectType: 'channel',
+      subjectId: parsed.data.channelId,
+      before: { enabled: outcome === 'already-enabled' },
+      after: { enabled: true, attachmentPolicy: parsed.data.attachmentPolicy },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    '/api/archive/channels/:channelId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archiveDisableChannel(parsed.data);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_channel.disabled',
+        subjectType: 'channel',
+        subjectId: parsed.data,
+        before: { enabled: outcome.outcome === 'disabled' },
+        after: {
+          enabled: false,
+          ...('messageCount' in outcome ? { messagesDestroyed: outcome.messageCount } : {}),
+        },
+      });
+      return reply.status(200).send(outcome);
+    },
+  );
+
+  app.post<{ Params: { messageId: string } }>(
+    '/api/archive/messages/:messageId/preserve',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.messageId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archivePreserve(parsed.data);
+      if (outcome === 'no-such-message') {
+        return reply.status(404).send({ error: 'not-found' });
+      }
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_message.preserved',
+        subjectType: 'archive_message',
+        subjectId: parsed.data,
+        before: undefined,
+        after: { preserved: true, already: outcome === 'already-preserved' },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.post('/api/archive/link-case', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+    const parsed = archiveLinkCaseBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.archiveLinkCase(parsed.data);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'archive_message.case_linked',
+      subjectType: 'archive_message',
+      subjectId: parsed.data.messageId,
+      before: undefined,
+      after: { caseId: parsed.data.caseId, outcome },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.post<{ Params: { channelId: string } }>(
+    '/api/archive/channels/:channelId/backfill',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      ports.enqueueArchiveBackfill(parsed.data);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_backfill.enqueued',
+        subjectType: 'channel',
+        subjectId: parsed.data,
+        before: undefined,
+        after: { enqueued: true },
+      });
+      return reply.status(200).send({ ok: true });
+    },
+  );
+
+  app.post('/api/archive/reindex', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    const indexed = ports.archiveReindex();
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'archive_reindex.ran',
+      subjectType: 'guild',
+      subjectId: session.guildId,
+      before: undefined,
+      after: { indexed },
+    });
+    return reply.status(200).send({ indexed });
+  });
+
+  app.post('/api/undo', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'undo.execute', reply)) return reply;
+
+    const parsed = undoBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const batch = ports.findBatch(parsed.data.batchId);
+    if (batch === undefined) return reply.status(404).send({ error: 'not-found' });
+    if (batch.undoneAt !== null) {
+      return reply.status(409).send({ error: 'already-undone' });
+    }
+    const undoable = ports.countUndoable(parsed.data.batchId);
+    const enqueued = ports.enqueueUndo(parsed.data);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'undo.enqueued',
+      subjectType: 'effect_batch',
+      subjectId: parsed.data.batchId,
+      before: { undoneAt: batch.undoneAt },
+      after: { reason: parsed.data.reason, undoable: undoable.reversible },
+    });
+    return reply.status(200).send({ ...enqueued, undoable });
+  });
+
+  app.post('/api/send-allowlist', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = sendAllowBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.allowSendChannel(parsed.data);
+    if (outcome === 'no-such-channel') {
+      return reply.status(404).send({ error: 'no-such-channel' });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'send_channel.allowed',
+      subjectType: 'channel',
+      subjectId: parsed.data.channelId,
+      before: { allowed: outcome === 'already-allowed' },
+      after: { allowed: true, accountId: parsed.data.accountId },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    '/api/send-allowlist/:channelId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const removed = ports.disallowSendChannel(parsed.data);
+      if (removed) {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'send_channel.disallowed',
+          subjectType: 'channel',
+          subjectId: parsed.data,
+          before: { allowed: true },
+          after: { allowed: false },
+        });
+      }
+      return reply.status(200).send({ ok: true, removed });
+    },
+  );
+
+  app.post('/api/adoption-allowance', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'roles.mutate', reply)) return reply;
+
+    const parsed = adoptionAllowanceBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const before = ports.adoptionAllowance();
+    ports.grantAdoptionAllowance(parsed.data.count);
+    const after = ports.adoptionAllowance();
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'adoption_allowance.granted',
+      subjectType: 'guild',
+      subjectId: session.guildId,
+      before: { allowance: before },
+      after: { allowance: after, granted: parsed.data.count },
+    });
+    return reply.status(200).send({ allowance: after });
+  });
+
+  app.post<{ Params: { ruleId: string } }>('/api/automod/rules/:ruleId/ready', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.setAutomodRuleReady(request.params.ruleId);
+    if (!outcome.ok) {
+      return reply.status(409).send({ error: outcome.reason, state: outcome.state });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'automod_rule.ready',
+      subjectType: 'automod_rule',
+      subjectId: request.params.ruleId,
+      before: undefined,
+      after: { ready: true },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+
+  app.post<{ Params: { ruleId: string } }>(
+    '/api/automod/rules/:ruleId/signoff',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+      const parsed = signoffBodySchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      if (ports.findAutomodRule(request.params.ruleId) === undefined) {
+        return reply.status(404).send({ error: 'not-found' });
+      }
+      ports.recordAutomodSignOff({
+        ruleId: request.params.ruleId,
+        signedOffBy: parsed.data.signedOffBy,
+      });
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'automod_rule.signed_off',
+        subjectType: 'automod_rule',
+        subjectId: request.params.ruleId,
+        before: undefined,
+        after: { signedOffBy: parsed.data.signedOffBy },
+      });
+      return reply.status(200).send({ ok: true });
+    },
+  );
+
+  app.post<{ Params: { ruleId: string } }>(
+    '/api/automod/rules/:ruleId/invite-allowlist',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+      const parsed = inviteAllowlistBodySchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.addInviteAllowlistEntry({
+        ruleId: request.params.ruleId,
+        ...parsed.data,
+      });
+      if (outcome === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
+      if (outcome === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
+      if (outcome === 'added') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'invite_allowlist.added',
+          subjectType: 'automod_rule',
+          subjectId: request.params.ruleId,
+          before: undefined,
+          after: { code: parsed.data.code, label: parsed.data.label },
+        });
+      }
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.delete<{ Params: { ruleId: string; code: string } }>(
+    '/api/automod/rules/:ruleId/invite-allowlist/:code',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.removeInviteAllowlistEntry({
+        ruleId: request.params.ruleId,
+        code: request.params.code,
+      });
+      if (outcome === 'no-such-rule') return reply.status(404).send({ error: 'not-found' });
+      if (outcome === 'wrong-kind') return reply.status(409).send({ error: 'wrong-kind' });
+      if (outcome === 'removed') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'invite_allowlist.removed',
+          subjectType: 'automod_rule',
+          subjectId: request.params.ruleId,
+          before: { code: request.params.code },
+          after: undefined,
+        });
+      }
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.post<{ Params: { ruleId: string } }>(
+    '/api/automod/rules/:ruleId/link-domains',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+      const parsed = linkDomainBodySchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const result = ports.addLinkDomain({ ruleId: request.params.ruleId, ...parsed.data });
+      if (result.outcome === 'no-such-rule') {
+        return reply.status(404).send({ error: 'not-found' });
+      }
+      if (result.outcome === 'wrong-kind') {
+        return reply.status(409).send({ error: 'wrong-kind' });
+      }
+      if (result.outcome === 'added') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'link_domain.added',
+          subjectType: 'automod_rule',
+          subjectId: request.params.ruleId,
+          before: undefined,
+          after: { domain: parsed.data.domain, listType: parsed.data.listType },
+        });
+      }
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.delete<{ Params: { ruleId: string; domain: string } }>(
+    '/api/automod/rules/:ruleId/link-domains/:domain',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'moderation.act', reply)) return reply;
+
+      const ports = deps.portsFor(session.scope);
+      const result = ports.removeLinkDomain({
+        ruleId: request.params.ruleId,
+        domain: request.params.domain,
+      });
+      if (result.outcome === 'no-such-rule') {
+        return reply.status(404).send({ error: 'not-found' });
+      }
+      if (result.outcome === 'wrong-kind') {
+        return reply.status(409).send({ error: 'wrong-kind' });
+      }
+      if (result.outcome === 'removed') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'link_domain.removed',
+          subjectType: 'automod_rule',
+          subjectId: request.params.ruleId,
+          before: { domain: request.params.domain },
+          after: undefined,
+        });
+      }
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.post('/api/backup-now', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const result = deps.instance.backupNow();
+    // Instance-level effect with no guild scope: the audit row still
+    // attributes through the session's guild, the scope the operator was
+    // acting from.
+    const ports = deps.portsFor(session.scope);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: result.ok ? 'backup.ran' : 'backup.failed',
+      subjectType: 'instance',
+      subjectId: 'instance',
+      before: undefined,
+      after: result.ok
+        ? { fileName: result.fileName, sizeBytes: result.sizeBytes, pruned: result.prunedCount }
+        : { error: result.error },
+    });
+    if (!result.ok)
+      return reply.status(500).send({ error: 'backup-failed', message: result.error });
+    return reply.status(200).send(result);
+  });
+
+  app.post<{ Params: { provider: string } }>(
+    '/api/providers/:provider/review',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const result = deps.instance.providerReview(request.params.provider);
+      if (result === 'no-such-provider') {
+        return reply.status(404).send({ error: 'no-such-provider' });
+      }
+      const ports = deps.portsFor(session.scope);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'provider.reviewed',
+        subjectType: 'provider',
+        subjectId: request.params.provider,
+        before: undefined,
+        after: { trainsOnInput: result.trainsOnInput, reviewedAt: result.reviewedAt },
+      });
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/disabled',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = accountDisabledBodySchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const result = deps.instance.accountSetDisabled(
+        request.params.username,
+        parsed.data.disabled,
+      );
+      if (result === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      const ports = deps.portsFor(session.scope);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: result.disabled ? 'account.disabled' : 'account.enabled',
+        subjectType: 'account',
+        subjectId: result.username,
+        before: { disabled: !result.disabled },
+        after: { disabled: result.disabled, enabledOwnersRemaining: result.enabledOwnersRemaining },
+      });
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.delete<{ Params: { username: string } }>('/api/accounts/:username', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const result = deps.instance.accountDelete(request.params.username);
+    if (result === 'no-such-account') {
+      return reply.status(404).send({ error: 'no-such-account' });
+    }
+    const ports = deps.portsFor(session.scope);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'account.deleted',
+      subjectType: 'account',
+      subjectId: result.username,
+      before: { isOwner: result.wasOwner },
+      after: {
+        tokensRevoked: result.tokensRevoked,
+        codesDeleted: result.codesDeleted,
+        enabledOwnersRemaining: result.enabledOwnersRemaining,
+      },
+    });
+    return reply.status(200).send(result);
+  });
+
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/revoke-credentials',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const result = deps.instance.accountRevokeCredentials(request.params.username);
+      if (result === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      const ports = deps.portsFor(session.scope);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.credentials_revoked',
+        subjectType: 'account',
+        subjectId: result.username,
+        before: undefined,
+        after: {
+          sessionsRevoked: result.sessionsRevoked,
+          tokensRevoked: result.tokensRevoked,
+          codesDeleted: result.codesDeleted,
+          guildsTouched: result.guildsTouched,
+        },
+      });
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/password',
+    async (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      // The body is the operator's explicit confirmation, mirroring the
+      // CLI's prompt: the response carries the new plaintext exactly once,
+      // and nothing but that one response ever sees it — never an audit row,
+      // never a log line (S13-D3/D4).
+      const parsed = accountPasswordBodySchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const result = await deps.instance.accountSetPassword(request.params.username);
+      if (result === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      const ports = deps.portsFor(session.scope);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.password_reset',
+        subjectType: 'account',
+        subjectId: result.username,
+        before: undefined,
+        after: { sessionsRevoked: result.sessionsRevoked, guildsTouched: result.guildsTouched },
+      });
+      return reply.status(200).send(result);
+    },
+  );
+
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/grant-guild',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.accountGrantGuild(request.params.username);
+      if (outcome === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.guild_granted',
+        subjectType: 'account',
+        subjectId: request.params.username,
+        before: { hadAccess: outcome === 'already-had-it' },
+        after: { guildId: session.guildId },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/revoke-guild',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.accountRevokeGuild(request.params.username);
+      if (outcome === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.guild_revoked',
+        subjectType: 'account',
+        subjectId: request.params.username,
+        before: { hadAccess: true },
+        after: { revoked: outcome === 'revoked' },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+};
