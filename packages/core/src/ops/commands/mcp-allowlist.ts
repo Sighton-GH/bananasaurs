@@ -173,10 +173,21 @@ export const mcpAllowlistCommand = defineCommand<Record<string, never>>({
             `${row.channelId}  ${row.scopeKind === 'category' ? `category, covers ${String(row.coverage ?? ctx.ports.sendScopeCoverage(row.channelId))} channels  ` : ''}allowed by ${row.addedByAccountId}  ${iso(row.addedAt)}`,
         )
         .join('\n'),
+      // scopeKind and coverage ride the JSON exactly as the text line
+      // renders them (review M4): a category row's blast radius must be
+      // machine-readable, not text-only.
       data: rows.map((row) => ({
         channelId: row.channelId,
         addedByAccountId: row.addedByAccountId,
         addedAt: row.addedAt,
+        scopeKind: row.scopeKind ?? 'channel',
+        // A channel row covers exactly itself; only a category needs the
+        // live coverage count.
+        coverage:
+          row.coverage ??
+          ((row.scopeKind ?? 'channel') === 'category'
+            ? ctx.ports.sendScopeCoverage(row.channelId)
+            : 1),
       })),
     };
   },

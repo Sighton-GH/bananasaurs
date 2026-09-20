@@ -262,6 +262,40 @@ describe('mcp allowlist', () => {
     expect(response.ok && response.text).toContain(new Date(NOW - 86_400_000).toISOString());
   });
 
+  it('the JSON data carries scopeKind and coverage alongside the text (M4)', async () => {
+    const h = harness({
+      listSendAllowlist: () => [
+        { channelId: CHANNEL, addedByAccountId: 'acct_1', addedAt: NOW, scopeKind: 'channel' },
+        {
+          channelId: '555555555555555555',
+          addedByAccountId: 'acct_2',
+          addedAt: NOW,
+          scopeKind: 'category' as const,
+          coverage: 7,
+        },
+      ],
+      sendScopeCoverage: () => 7,
+    });
+    const response = await h.run('mcp allowlist');
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.data).toEqual([
+      {
+        channelId: CHANNEL,
+        addedByAccountId: 'acct_1',
+        addedAt: NOW,
+        scopeKind: 'channel',
+        coverage: 1,
+      },
+      {
+        channelId: '555555555555555555',
+        addedByAccountId: 'acct_2',
+        addedAt: NOW,
+        scopeKind: 'category',
+        coverage: 7,
+      },
+    ]);
+  });
+
   it('never asks for --confirm, since nothing changes', async () => {
     const h = harness({ listSendAllowlist: () => [] });
     const response = await h.run('mcp allowlist', {}, false);
@@ -372,7 +406,6 @@ describe('mcp sends', () => {
     expect(response.ok).toBe(false);
     expect(response.ok === false && response.message).toContain('--since expects a duration');
   });
-
   it('never asks for --confirm, since nothing changes', async () => {
     const h = harness({ listSends: () => [] });
     const response = await h.run('mcp sends', {}, false);
