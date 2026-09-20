@@ -110,6 +110,8 @@ describe('archive backfill continuation through the real queue', () => {
       fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
       listThreads: async () => [],
       isForum: () => false,
+      hasCategoryRow: (categoryId) => archiveRepo.hasCategoryRow(scope, categoryId),
+      categoryOf: () => undefined,
       setThreadProgress: (input) => archiveRepo.setThreadProgress(scope, input),
       findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
       upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
@@ -172,5 +174,108 @@ describe('archive backfill continuation through the real queue', () => {
     expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(250);
     expect(archiveRepo.findChannel(scope, CHANNEL)?.backfillState).toBe('done');
     expect(jobRepo.listJobs(scope, {}).filter((job) => job.state === 'queued')).toHaveLength(0);
+  });
+});
+
+describe('category-covered channels (B2, ADR 0047 amendment)', () => {
+  const CATEGORY = '444444444444444444';
+
+  /**
+   * Ports wired exactly the way `runtime/guild.ts` wires them after the fix:
+   * the category lookup and the live category membership come from real
+   * sources (the repository, and here a stand-in for the client cache).
+   */
+  const buildWorker = (categoryOf: (channelId: string) => string | undefined) => {
+    const source = new FakeMessageSource();
+    const ports: BackfillPorts = {
+      guildArchiveEnabled: true,
+      isChannelExcluded: () => false,
+      fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
+      listThreads: async () => [],
+      isForum: () => false,
+      hasCategoryRow: (categoryId) => archiveRepo.hasCategoryRow(scope, categoryId),
+      categoryOf,
+      setThreadProgress: (input) => archiveRepo.setThreadProgress(scope, input),
+      findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
+      upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
+      setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
+      enqueueContinuation: ({ channelId, jobId, runAfter }) =>
+        void jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.archiveBackfill,
+          payload: JSON.stringify({ channelId }),
+          dedupeKey: archiveBackfillDedupeKey(GUILD, channelId, jobId),
+          runAfter,
+          now: nowMs,
+        }),
+      now: () => nowMs,
+      logger,
+    };
+    const worker = new JobWorker({
+      store: jobStoreFor(scope),
+      handlers: [archiveBackfillHandler(ports)],
+      logger,
+      now: () => nowMs,
+    });
+    return { source, worker };
+  };
+
+  const seedCategoryCoverage = (messageCount: number, source: FakeMessageSource): void => {
+    archiveRepo.enableChannel(scope, {
+      channelId: CATEGORY,
+      attachmentPolicy: 'none',
+      now: nowMs,
+      scopeKind: 'category',
+    });
+    // What `archive enable-category`'s wiring does for every covered channel.
+    archiveRepo.ensureDerivedChannel(scope, {
+      channelId: CHANNEL,
+      categoryId: CATEGORY,
+      attachmentPolicy: 'none',
+      now: nowMs,
+    });
+    source.seed(CHANNEL, messageCount);
+    jobRepo.enqueue(scope, {
+      kind: JOB_KINDS.archiveBackfill,
+      payload: JSON.stringify({ channelId: CHANNEL }),
+      dedupeKey: archiveBackfillDedupeKey(GUILD, CHANNEL),
+      now: nowMs,
+    });
+  };
+
+  it('a channel covered by an enabled category actually backfills', async () => {
+    const { source, worker } = buildWorker(() => CATEGORY);
+    seedCategoryCoverage(250, source);
+
+    for (let i = 0; i < 8; i += 1) {
+      const tick = await worker.runOnce();
+      if (tick.status === 'idle') break;
+      expect(tick.status).toBe('completed');
+    }
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(250);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.backfillState).toBe('done');
+  });
+
+  it('a channel that left its category before the job ran is not backfilled', async () => {
+    // The live cache no longer has the channel under any category.
+    const { source, worker } = buildWorker(() => undefined);
+    seedCategoryCoverage(250, source);
+
+    const tick = await worker.runOnce();
+    expect(tick.status).toBe('completed');
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(0);
+    expect(
+      jobRepo.listJobs(scope, {}).filter((job) => job.state === 'queued'),
+    ).toHaveLength(0);
+  });
+
+  it('a channel whose category row was disabled is not backfilled', async () => {
+    // Still in some category, but not an enabled one.
+    const { source, worker } = buildWorker(() => CATEGORY);
+    seedCategoryCoverage(250, source);
+    archiveRepo.disableCategory(scope, CATEGORY);
+    // disable-category removed the derived row: the job finds nothing.
+    const tick = await worker.runOnce();
+    expect(tick.status).toBe('completed');
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(0);
   });
 });

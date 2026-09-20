@@ -510,6 +510,11 @@ export const opsPortsFor = (
   },
   archiveEnableCategory: (input) => {
     if (!archiveGuildEnabled) return 'guild-not-archive-enabled';
+    // Review S2: the id must name a category of this guild, resolved from
+    // the live cache — without this a plain channel id wrote a `category`
+    // scope row whose "coverage" was a type error.
+    const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(input.channelId);
+    if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
     const outcome = archiveRepo.enableChannel(scope, {
       ...input,
       scopeKind: 'category',
@@ -519,6 +524,15 @@ export const opsPortsFor = (
       const guild = client.guilds.cache.get(scope.guildId);
       for (const channel of guild?.channels.cache.values() ?? []) {
         if (!channel.isThread() && channel.parentId === input.channelId) {
+          // Review B2: materialize the derived row now so the backfill job
+          // below has a row to cursor against; the job still re-checks live
+          // category membership when it runs.
+          archiveRepo.ensureDerivedChannel(scope, {
+            channelId: channel.id,
+            categoryId: input.channelId,
+            attachmentPolicy: input.attachmentPolicy,
+            now: now(),
+          });
           jobRepo.enqueue(scope, {
             kind: JOB_KINDS.archiveBackfill,
             payload: JSON.stringify({ channelId: channel.id }),
@@ -531,11 +545,7 @@ export const opsPortsFor = (
     }
     return outcome;
   },
-  archiveDisableCategory: (channelId) => {
-    const messageCount = archiveRepo.countMessages(scope, channelId);
-    const outcome = archiveRepo.disableChannel(scope, channelId);
-    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
-  },
+  archiveDisableCategory: (channelId) => archiveRepo.disableCategory(scope, channelId),
   archiveSetThreads: (channelId, include) => {
     const channel = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
     if (!include && channel?.type === ChannelType.GuildForum) return 'forum-requires-all';

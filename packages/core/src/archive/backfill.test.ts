@@ -112,11 +112,15 @@ const harness = (): Harness => {
     fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
     listThreads: async () => [],
     isForum: () => false,
+    hasCategoryRow: () => false,
+    categoryOf: () => undefined,
     setThreadProgress: () => {},
     findChannel: (channelId) =>
       channel.live && channelId === CHANNEL
         ? {
             channelId,
+            scopeKind: 'channel' as const,
+            derivedFrom: undefined,
             cursorMessageId: channel.cursorMessageId,
             backfillState: channel.state,
           }

@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ChannelType, type Client } from 'discord.js';
 import {
   createConnectionSubscriber,
   editManagedPanel,
@@ -100,6 +101,12 @@ export interface GuildRuntimeDeps {
   readonly scope: GuildScope;
   readonly config: Config;
   readonly discord: DiscordPort;
+  /**
+   * The live discord.js client: forum detection and category membership are
+   * cache facts, not port calls (review B3 — a hardwired `false` skipped
+   * forum backfills entirely).
+   */
+  readonly client: Client;
   readonly logger: Logger;
   /** A property, not a method: it is destructured and passed on by value. */
   readonly now: () => number;
@@ -140,7 +147,7 @@ export interface GuildRuntime {
 const newPassId = (): string => `pass-${randomUUID()}`;
 
 export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
-  const { scope, config, discord, logger, now } = deps;
+  const { scope, config, discord, client, logger, now } = deps;
   const guildId = parseGuildId(scope.guildId);
 
   /**
@@ -323,7 +330,16 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       discord.fetchRecentMessages(guildId, channelId, { before, limit: 100 }),
     listThreads: (channelId) =>
       discord.listPublicThreads?.(guildId, channelId) ?? Promise.resolve([]),
-    isForum: () => false,
+    isForum: (channelId) =>
+      client.guilds.cache.get(guildId)?.channels.cache.get(channelId)?.type ===
+      ChannelType.GuildForum,
+    hasCategoryRow: (categoryId) => archiveRepo.hasCategoryRow(scope, categoryId),
+    categoryOf: (channelId) => {
+      const channel = client.guilds.cache.get(guildId)?.channels.cache.get(channelId);
+      return channel !== undefined && 'parentId' in channel
+        ? (channel.parentId ?? undefined)
+        : undefined;
+    },
     setThreadProgress: (input) => archiveRepo.setThreadProgress(scope, input),
     findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),

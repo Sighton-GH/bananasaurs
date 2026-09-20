@@ -417,7 +417,8 @@ export interface OpsUnreadableArchiveChannel {
  */
 export type OpsArchiveDisableOutcome =
   | { readonly outcome: 'disabled'; readonly messageCount: number }
-  | { readonly outcome: 'not-enabled' };
+  | { readonly outcome: 'not-enabled' }
+  | { readonly outcome: 'wrong-kind' };
 
 /** One archive search hit, as `archive search` renders it. */
 export interface OpsArchiveSearchHit {
@@ -966,7 +967,7 @@ export interface OpsPorts {
   archiveEnableCategory(input: {
     channelId: string;
     attachmentPolicy: ArchiveAttachmentPolicy;
-  }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
+  }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled' | 'no-such-channel';
   archiveDisableCategory(channelId: string): OpsArchiveDisableOutcome;
   archiveSetThreads(
     channelId: string,

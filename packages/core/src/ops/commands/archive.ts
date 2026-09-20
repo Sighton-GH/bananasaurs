@@ -136,6 +136,18 @@ export const archiveDisableChannelCommand = defineCommand<
   args: archiveDisableChannelArgs,
   run(ctx: OpsContext, args): OpsWriteResult {
     const result = ctx.ports.archiveDisableChannel(args.channelId);
+    if (result.outcome === 'wrong-kind') {
+      return {
+        text: `channel ${args.channelId} is archived as a category; use archive disable-category`,
+        data: { ok: false, reason: result.outcome, channelId: args.channelId },
+        audit: {
+          action: 'archive.channel_disabled',
+          subjectType: 'archive_channel',
+          subjectId: args.channelId,
+          after: { outcome: result.outcome, channelId: args.channelId },
+        },
+      };
+    }
     if (result.outcome === 'not-enabled') {
       return {
         text: `channel ${args.channelId} is not archived; nothing changed`,
@@ -401,7 +413,9 @@ export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archive
       text:
         outcome === 'enabled'
           ? `category ${args.channelId} is enabled for archive scope; ${String(coverage.channels)} channels and ${String(coverage.messages)} archived messages currently covered; backfill queued`
-          : `category ${args.channelId}: ${outcome}`,
+          : outcome === 'no-such-channel'
+            ? `${args.channelId} is not a category of this guild`
+            : `category ${args.channelId}: ${outcome}`,
       data: { channelId: args.channelId, outcome, coverage },
       audit: {
         action: 'archive.category_enabled',
@@ -423,8 +437,10 @@ export const archiveDisableCategoryCommand = defineCommand<z.infer<typeof archiv
     return {
       text:
         result.outcome === 'disabled'
-          ? `category ${args.channelId} is no longer archived`
-          : `category ${args.channelId} was not archived`,
+          ? `category ${args.channelId} is no longer archived (${String(result.messageCount)} archived message(s) removed)`
+          : result.outcome === 'wrong-kind'
+            ? `category ${args.channelId} is archived as a channel; use archive disable-channel`
+            : `category ${args.channelId} was not archived`,
       data: { channelId: args.channelId, ...result },
       audit: {
         action: 'archive.category_disabled',

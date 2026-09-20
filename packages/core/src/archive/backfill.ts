@@ -23,6 +23,13 @@ export type BackfillState = 'pending' | 'running' | 'done';
 /** The slice of `archive_channels` this job reads and writes. */
 export interface ArchiveChannel {
   readonly channelId: Snowflake;
+  /**
+   * ADR 0047 amendment 2026-09-20: a `derived` row means this channel is
+   * covered by a category, not enabled itself — the job must re-check that
+   * coverage at run time (scope is dynamic), not assume it.
+   */
+  readonly scopeKind: 'channel' | 'category' | 'derived';
+  readonly derivedFrom: Snowflake | undefined;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: BackfillState;
 }
@@ -40,6 +47,10 @@ export interface BackfillPorts {
   findChannel(channelId: Snowflake): ArchiveChannel | undefined;
   listThreads(channelId: Snowflake): Promise<readonly { id: Snowflake; isPrivate: boolean }[]>;
   isForum(channelId: Snowflake): boolean;
+  /** Whether the category row exists — the grant a derived row's coverage resolves from. */
+  hasCategoryRow(categoryId: Snowflake): boolean;
+  /** The category the channel currently sits in, from the live guild cache. */
+  categoryOf(channelId: Snowflake): Snowflake | undefined;
   setThreadProgress(input: { channelId: Snowflake; found: number; done: number }): void;
   upsertMessage(input: UpsertMessageInput): boolean;
   setBackfillCursor(input: {
@@ -93,6 +104,24 @@ export const archiveBackfillHandler = (
         'archive: backfill channel no longer enabled, stopping',
       );
       return;
+    }
+    if (channel.scopeKind === 'derived') {
+      // ADR 0047 amendment 2026-09-20: a derived row is coverage, not a
+      // grant, and coverage is dynamic. Re-resolve it at run time: a channel
+      // moved out of its enabled category since the job was queued stops
+      // being backfilled, exactly as the subscriber stops archiving it.
+      const categoryId = ports.categoryOf(channelId);
+      if (categoryId === undefined || !ports.hasCategoryRow(categoryId)) {
+        ports.logger.info(
+          safeLogFields({
+            component: 'archive',
+            jobKind: JOB_KINDS.archiveBackfill,
+            channelId,
+          }),
+          'archive: backfill channel no longer covered by an enabled category, stopping',
+        );
+        return;
+      }
     }
     if (ports.isChannelExcluded(channelId)) {
       // Archive-enabled and excluded at once: the subscriber refuses these,
