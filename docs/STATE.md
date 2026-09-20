@@ -227,7 +227,46 @@ incoming tool call's arguments. The test now asserts `ajv` **is** loaded and
 that it comes from the SDK's nested copy, so the exception is pinned by the
 suite rather than by a paragraph.
 
-**Next action: deploy, then M6's live run. Slice 11 merges after the floor.**
+**Slice M6's live run is done — `docs/SMOKE_TESTS.md` Section D, run
+2026-09-20, all ten steps pass.** The record with timestamps and evidence is
+`docs/reports/mcp-m6-live-run.md`. The connector works end to end over the
+real tunnel and real Cloudflare Access from the Claude desktop app, claude.ai
+and Claude Code. Four things were confirmed from the server side rather than a
+client's rendering: `@everyone` in a sent message produced
+`mention_everyone: false` in Discord's own message object, so the
+`allowedMentions` fix survives the REST adapter; the consent POST arrived with
+`Host` and `Origin` both `bananasaurs.sighton.ca`, so no Host rewrite is set
+on the tunnel route; a replayed idempotency key produced exactly one Discord
+message, checked against the archive; and the call after `mcp revoke` was
+refused with the daemon naming the token id and `reason: "revoked"`.
+
+**Two configuration facts blocked the run and are worth carrying.**
+`BANANASAURS_ARCHIVE_GUILDS` was **empty** — no guild in archive scope,
+including the club — so the archive subsystem was entirely inert and
+`search_messages`, `read_channel_history` and `get_message` had never been
+exercised against real data; their empty results were correct-by-construction
+and proved nothing. That is config drift against ADR 0046 Amendment 2 as
+recorded here and in `packages/core/src/config/schema.ts:55-62`, not a bug.
+A contributing cause: the variable **appeared nowhere in `.env.example`**,
+which this run fixed. The dev guild is now in archive scope by owner decision
+(two channels, 75 messages, FTS in sync); **the club deliberately is not** —
+that ingests 269 real members' messages and should be its own act. And
+`BANANASAURS_DRY_RUN=1` makes the MCP send path record `outcome: 'dry_run'`
+and post nothing (`message-gateway.ts:299`), so steps 5–7 required dry run
+off; the club was covered by its per-guild killswitch meanwhile, and both were
+restored at the end.
+
+**Four findings remain open**, in fix order: the refusal text at
+`packages/mcp/src/tools/send.ts:171` suggests `mcp allow-channel` without
+`--guild` and so fails verbatim on this two-guild instance (Minor, one
+interpolation); **MCP read tools write no audit row and emit no log line**, so
+a connector that can read archived member messages, moderation cases and the
+audit trail leaves no server-side trace of what was read, and no ruling exists
+either way — this is the one worth a decision rather than a patch; OAuth
+client registrations accumulate with only `mcp revoke-client` to prune them;
+and the club guild's archive scope question is still open.
+
+**Next action: Slice 11 merges after the floor.**
 As of 2026-09-19 `main` is `1b8d579`, 175 files / 3,414 tests, with M4, M5,
 M6's code, Slice 10 and Slice 13 all merged. The daemon is up on both guilds
 but running a build from 2026-09-17, so **the next `npm run build && sudo
@@ -256,12 +295,14 @@ one — a dashboard that could not serve a two-guild instance at all, because
 `login` correctly refuses `guild-required` while the login page never sent a
 guild. The owner was signed in only because `bootstrap` bypasses `login`.
 
-What M6 still owes is the live run (`docs/SMOKE_TESTS.md` Section D), and it
-is blocked on one owner action: the Cloudflare Access **Bypass** application
-on the six machine paths (`docs/17` §2.4). Today every path on the public
-hostname answers with an Access redirect — the probe run by hand reports both
-machine rows `blocked-by-access`, which is the too-wide state the probe
-exists to catch, and the connector cannot work until it is fixed.
+**M6 owes nothing further — the live run happened 2026-09-20 and passed;
+see above.** The Cloudflare Access **Bypass** application on the six machine
+paths (`docs/17` §2.4) that this paragraph previously recorded as the
+blocking owner action is in place and was verified from the wire during the
+run: `/mcp`, `/oauth/token`, `/oauth/register` and both `.well-known`
+documents arrive at the origin with no `Cf-Access-*` headers, while
+`/oauth/authorize` arrives carrying `Cf-Access-Authenticated-User-Email`.
+Both applications are scoped correctly.
 
 Slice 11 is the first slice permitted to give `setRuleMode` a production
 caller, "and only under owner decision" (`docs/reports/release2-slices-7-12-ledger.md`).
