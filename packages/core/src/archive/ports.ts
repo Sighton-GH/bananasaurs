@@ -21,6 +21,7 @@ export interface ArchiveAttachmentInput {
 export interface UpsertMessageInput {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId?: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | undefined;
   readonly createdAt: number;
@@ -32,6 +33,8 @@ export interface ArchivePorts {
   /** ADR 0046 D1: the guild must be in BANANASAURS_ARCHIVE_GUILDS. Closed over by the daemon. */
   readonly guildArchiveEnabled: boolean;
   isChannelEnabled(channelId: Snowflake): boolean;
+  hasCategoryRow(channelId: Snowflake): boolean;
+  parentIncludesThreads(channelId: Snowflake): boolean;
   /** `log_excluded_channels` — the second veto (ADR 0009, standing under 0046 D1). */
   isChannelExcluded(channelId: Snowflake): boolean;
   upsertMessage(input: UpsertMessageInput): boolean;

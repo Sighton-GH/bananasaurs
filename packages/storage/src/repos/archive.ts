@@ -48,6 +48,7 @@ export interface ArchiveAttachmentInput {
 export interface UpsertMessageInput {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId?: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | undefined;
   readonly createdAt: number;
@@ -114,6 +115,33 @@ export const isChannelEnabled = (scope: GuildScope, channelId: string): boolean 
         .get() !== undefined,
   );
 
+export const hasCategoryRow = (scope: GuildScope, channelId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ channelId: archiveChannels.channelId })
+        .from(archiveChannels)
+        .where(
+          scope.only(
+            archiveChannels,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'category'`,
+          ),
+        )
+        .get() !== undefined,
+  );
+
+export const parentIncludesThreads = (scope: GuildScope, channelId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ includeThreads: archiveChannels.includeThreads })
+        .from(archiveChannels)
+        .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+        .get()?.includeThreads !== 0,
+  );
+
 export const listChannels = (scope: GuildScope): ArchiveChannel[] =>
   read(scope, (db) =>
     db
@@ -164,6 +192,7 @@ export const upsertMessage = (scope: GuildScope, input: UpsertMessageInput): boo
         guildId: scope.guildId,
         messageId: input.messageId,
         channelId: input.channelId,
+        threadId: input.threadId ?? null,
         authorId: input.authorId ?? null,
         content: input.content ?? null,
         createdAt: input.createdAt,

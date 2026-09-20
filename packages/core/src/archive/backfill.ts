@@ -122,6 +122,7 @@ export const archiveBackfillHandler = (
       ports.upsertMessage({
         messageId: message.messageId,
         channelId,
+        threadId: undefined,
         authorId: message.authorId,
         content: message.content,
         createdAt: message.createdAtMs,

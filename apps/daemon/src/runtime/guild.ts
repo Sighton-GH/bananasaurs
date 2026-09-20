@@ -301,6 +301,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const archivePorts: ArchivePorts = {
     guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
     isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
+    hasCategoryRow: (channelId) => archiveRepo.hasCategoryRow(scope, channelId),
+    parentIncludesThreads: (channelId) => archiveRepo.parentIncludesThreads(scope, channelId),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
     recordEdit: (input) => archiveRepo.recordEdit(scope, input),

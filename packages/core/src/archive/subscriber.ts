@@ -1,6 +1,7 @@
 import type { MessageAttachment } from '../discord/events.js';
 import type { Snowflake } from '../discord/port.js';
 import { safeLogFields } from '../obs/logger.js';
+import { isInScope } from '../channels/scope.js';
 import type { Subscriber } from '../pipeline/pipeline.js';
 import type { ArchiveAttachmentInput, ArchivePorts } from './ports.js';
 
@@ -61,17 +62,26 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
       return;
     }
     if (!ports.guildArchiveEnabled) return;
-    // A bulk delete names no per-message channel — the event's channel is the
-    // only one there is. Every other handled kind carries its own.
-    const channelId = event.channelId;
-    if (!ports.isChannelEnabled(channelId)) return;
-    if (ports.isChannelExcluded(channelId)) return;
+    const inScope = isInScope('archive', {
+      channelId: event.channelId,
+      parentChannelId: event.parentChannelId,
+      categoryId: event.categoryId,
+      isPrivateThread: event.isPrivateThread,
+      hasOwnRow: (id) => ports.isChannelEnabled(id),
+      hasCategoryRow: (id) => ports.hasCategoryRow(id),
+      isExcluded: (id) => ports.isChannelExcluded(id),
+      parentIncludesThreads: (id) => ports.parentIncludesThreads(id),
+    });
+    if (!inScope) return;
+    const archiveChannelId = event.parentChannelId ?? event.channelId;
+    const threadId = event.parentChannelId === undefined ? undefined : event.channelId;
 
     switch (event.kind) {
       case 'messageCreate':
         ports.upsertMessage({
           messageId: event.messageId,
-          channelId: event.channelId,
+          channelId: archiveChannelId,
+          threadId,
           authorId: event.authorId,
           content: event.content,
           createdAt: event.receivedAtMs,
@@ -90,7 +100,8 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
           // update, so insert what the event carries.
           ports.upsertMessage({
             messageId: event.messageId,
-            channelId: event.channelId,
+            channelId: archiveChannelId,
+            threadId,
             authorId: event.authorId,
             content: event.content,
             createdAt: event.receivedAtMs,

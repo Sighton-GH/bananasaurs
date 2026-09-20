@@ -59,6 +59,8 @@ const buildPipeline = (guildArchiveEnabled: boolean): Pipeline => {
   const ports: ArchivePorts = {
     guildArchiveEnabled,
     isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
+    hasCategoryRow: (channelId) => archiveRepo.hasCategoryRow(scope, channelId),
+    parentIncludesThreads: (channelId) => archiveRepo.parentIncludesThreads(scope, channelId),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
     recordEdit: (input) => archiveRepo.recordEdit(scope, input),
