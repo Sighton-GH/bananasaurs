@@ -87,6 +87,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   adoptionAllowance: unstubbed('adoptionAllowance'),
   archiveEnableChannel: unstubbed('archiveEnableChannel'),
   archiveDisableChannel: unstubbed('archiveDisableChannel'),
+  archiveCategoryCoverage: unstubbed('archiveCategoryCoverage'),
   archiveEnableCategory: unstubbed('archiveEnableCategory'),
   archiveDisableCategory: unstubbed('archiveDisableCategory'),
   archiveSetThreads: unstubbed('archiveSetThreads'),

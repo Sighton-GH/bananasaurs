@@ -198,6 +198,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   adoptionAllowance: notNeeded('adoptionAllowance'),
   archiveEnableChannel: notNeeded('archiveEnableChannel'),
   archiveDisableChannel: notNeeded('archiveDisableChannel'),
+  archiveCategoryCoverage: notNeeded('archiveCategoryCoverage'),
   archiveEnableCategory: notNeeded('archiveEnableCategory'),
   archiveDisableCategory: notNeeded('archiveDisableCategory'),
   archiveSetThreads: notNeeded('archiveSetThreads'),

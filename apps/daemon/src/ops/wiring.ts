@@ -1,4 +1,4 @@
-import { PermissionsBitField, type Client } from 'discord.js';
+import { ChannelType, PermissionsBitField, type Client } from 'discord.js';
 import {
   archiveBackfillDedupeKey,
   compileRule,
@@ -492,17 +492,55 @@ export const opsPortsFor = (
       now: now(),
     });
   },
+  archiveCategoryCoverage: (channelId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const covered =
+      guild === undefined
+        ? []
+        : [...guild.channels.cache.values()].filter(
+            (channel) => !channel.isThread() && channel.parentId === channelId,
+          );
+    return {
+      channels: covered.length,
+      messages: covered.reduce(
+        (sum, channel) => sum + archiveRepo.countMessages(scope, channel.id),
+        0,
+      ),
+    };
+  },
   archiveEnableCategory: (input) => {
     if (!archiveGuildEnabled) return 'guild-not-archive-enabled';
-    return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
+    const outcome = archiveRepo.enableChannel(scope, {
+      ...input,
+      scopeKind: 'category',
+      now: now(),
+    });
+    if (outcome === 'enabled') {
+      const guild = client.guilds.cache.get(scope.guildId);
+      for (const channel of guild?.channels.cache.values() ?? []) {
+        if (!channel.isThread() && channel.parentId === input.channelId) {
+          jobRepo.enqueue(scope, {
+            kind: JOB_KINDS.archiveBackfill,
+            payload: JSON.stringify({ channelId: channel.id }),
+            dedupeKey: archiveBackfillDedupeKey(scope.guildId, channel.id),
+            runAfter: now(),
+            now: now(),
+          });
+        }
+      }
+    }
+    return outcome;
   },
   archiveDisableCategory: (channelId) => {
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
     return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
   },
-  archiveSetThreads: (channelId, include) =>
-    archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
+  archiveSetThreads: (channelId, include) => {
+    const channel = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
+    if (!include && channel?.type === ChannelType.GuildForum) return 'forum-requires-all';
+    return archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled';
+  },
   archiveThreads: (channelId) => {
     const row = archiveRepo.findChannel(scope, channelId);
     return row === undefined ? undefined : { found: row.threadsFound, done: row.threadsDone };

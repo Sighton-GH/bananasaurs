@@ -959,6 +959,10 @@ export interface OpsPorts {
   }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
   /** Removes the channel row; its messages, edits and attachments cascade. */
   archiveDisableChannel(channelId: string): OpsArchiveDisableOutcome;
+  archiveCategoryCoverage(channelId: string): {
+    readonly channels: number;
+    readonly messages: number;
+  };
   archiveEnableCategory(input: {
     channelId: string;
     attachmentPolicy: ArchiveAttachmentPolicy;

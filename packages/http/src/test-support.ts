@@ -437,6 +437,7 @@ export const testPortsFor = (
       now: now(),
     });
   },
+  archiveCategoryCoverage: () => ({ channels: 0, messages: 0 }),
   archiveEnableCategory: (input) => {
     if (!opts.archiveGuildEnabled === true) return 'guild-not-archive-enabled';
     return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });

@@ -392,6 +392,7 @@ export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archive
   positional: [{ name: 'channelId', required: true, describe: 'the category to archive' }],
   args: archiveCategoryArgs,
   run(ctx, args): OpsWriteResult {
+    const coverage = ctx.ports.archiveCategoryCoverage(args.channelId);
     const outcome = ctx.ports.archiveEnableCategory({
       channelId: args.channelId,
       attachmentPolicy: 'none',
@@ -399,9 +400,9 @@ export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archive
     return {
       text:
         outcome === 'enabled'
-          ? `category ${args.channelId} is enabled for archive scope; backfill queued`
+          ? `category ${args.channelId} is enabled for archive scope; ${String(coverage.channels)} channels and ${String(coverage.messages)} archived messages currently covered; backfill queued`
           : `category ${args.channelId}: ${outcome}`,
-      data: { channelId: args.channelId, outcome },
+      data: { channelId: args.channelId, outcome, coverage },
       audit: {
         action: 'archive.category_enabled',
         subjectType: 'archive_category',
