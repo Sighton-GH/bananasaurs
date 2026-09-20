@@ -1,5 +1,6 @@
 import {
   AuditLogEvent,
+  ChannelType,
   InteractionResponseType,
   MessageFlags,
   Routes,
@@ -9,6 +10,7 @@ import {
   type APIGuild,
   type APIGuildMember,
   type APIMessage,
+  type APIThreadList,
   type APIRole,
   type APIUser,
   type REST,
@@ -316,6 +318,36 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         // learns the truth by getting a short page next.
         nextBefore: messages.length === limit && last !== undefined ? last.id : undefined,
       };
+    },
+
+    async listPublicThreads(guildId, channelId) {
+      const active = (await mapErrors(() =>
+        rest.get(Routes.guildActiveThreads(guildId)),
+      )) as APIThreadList;
+      const found = new Map<string, { id: string; isPrivate: boolean }>();
+      for (const thread of active.threads) {
+        if (
+          'parent_id' in thread &&
+          thread.parent_id === channelId &&
+          thread.type !== ChannelType.PrivateThread
+        ) {
+          found.set(thread.id, { id: thread.id, isPrivate: false });
+        }
+      }
+      let before: string | undefined;
+      for (;;) {
+        const archived = (await mapErrors(() =>
+          rest.get(Routes.channelThreads(channelId, 'public'), {
+            query: makeURLSearchParams({ limit: 100, before }),
+          }),
+        )) as APIThreadList & { has_more?: boolean };
+        for (const thread of archived.threads)
+          found.set(thread.id, { id: thread.id, isPrivate: false });
+        const last = archived.threads.at(-1);
+        if (!archived.has_more || last === undefined) break;
+        before = last.id;
+      }
+      return [...found.values()];
     },
 
     // --- interactions ----------------------------------------------------

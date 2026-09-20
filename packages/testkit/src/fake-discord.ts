@@ -1180,6 +1180,15 @@ export class FakeDiscord implements DiscordPort {
     };
   }
 
+  async listPublicThreads(
+    guildId: Snowflake,
+    channelId: Snowflake,
+  ): Promise<readonly { id: Snowflake; isPrivate: boolean }[]> {
+    this.record('listPublicThreads', [guildId, channelId]);
+    this.check('listPublicThreads', guildId);
+    return [];
+  }
+
   /**
    * Three seconds. Discord discards the token rather than queueing, so being
    * late is unrecoverable and the member sees "This interaction failed".

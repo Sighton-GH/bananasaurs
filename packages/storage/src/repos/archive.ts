@@ -36,6 +36,8 @@ export interface ArchiveChannel {
   readonly enabledAt: number;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: BackfillState;
+  readonly threadsFound: number | undefined;
+  readonly threadsDone: number;
 }
 
 export interface ArchiveAttachmentInput {
@@ -71,6 +73,8 @@ const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChan
   enabledAt: row.enabledAt,
   cursorMessageId: row.cursorMessageId ?? undefined,
   backfillState: row.backfillState as BackfillState,
+  threadsFound: row.threadsFound ?? undefined,
+  threadsDone: row.threadsDone,
 });
 
 /** Inserts the channel row; a replayed enable is a no-op reported as such. */
@@ -161,6 +165,17 @@ export const findChannel = (scope: GuildScope, channelId: string): ArchiveChanne
       .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
       .get();
     return row === undefined ? undefined : toArchiveChannel(row);
+  });
+
+export const setThreadProgress = (
+  scope: GuildScope,
+  input: { channelId: string; found: number; done: number },
+): void =>
+  write(scope, ({ db }) => {
+    db.update(archiveChannels)
+      .set({ threadsFound: input.found, threadsDone: input.done })
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
+      .run();
   });
 
 export const setBackfillCursor = (

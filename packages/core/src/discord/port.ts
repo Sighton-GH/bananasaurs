@@ -125,6 +125,11 @@ export interface FetchedMessage {
   attachments?: readonly MessageAttachment[] | undefined;
 }
 
+export interface DiscordThread {
+  readonly id: Snowflake;
+  readonly isPrivate: boolean;
+}
+
 export interface RecentMessagesPage {
   messages: readonly FetchedMessage[];
   /** Pass back as `before` to continue. Undefined when the page is the last. */
@@ -217,6 +222,8 @@ export interface DiscordPort {
     channelId: Snowflake,
     options: { before?: Snowflake | undefined; limit?: number | undefined },
   ): Promise<RecentMessagesPage>;
+  /** Active and archived public threads under a parent. Private threads are never fetched. */
+  listPublicThreads?(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
 
   // --- interactions ------------------------------------------------------
   /**

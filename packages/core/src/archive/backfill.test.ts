@@ -37,7 +37,7 @@ interface SourceMessage {
 /** In-memory channel, newest-first, cursor on full pages only. */
 class FakeMessageSource {
   readonly messages = new Map<string, SourceMessage & { channelId: string }>();
-  readonly calls: { before: string | undefined }[] = [];
+  readonly calls: { channelId: string; before: string | undefined }[] = [];
   failure: DiscordApiError | undefined = undefined;
 
   seed(channelId: string, count: number, startIndex = 0): void {
@@ -56,7 +56,7 @@ class FakeMessageSource {
   }
 
   async fetch(channelId: string, before: string | undefined): Promise<RecentMessagesPage> {
-    this.calls.push({ before });
+    this.calls.push({ channelId, before });
     if (this.failure !== undefined) {
       const error = this.failure;
       this.failure = undefined;
@@ -110,6 +110,9 @@ const harness = (): Harness => {
     guildArchiveEnabled: true,
     isChannelExcluded: () => false,
     fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
+    listThreads: async () => [],
+    isForum: () => false,
+    setThreadProgress: () => {},
     findChannel: (channelId) =>
       channel.live && channelId === CHANNEL
         ? {
@@ -148,6 +151,37 @@ const rateLimited = (): DiscordApiError =>
   });
 
 describe('archive backfill paging', () => {
+  it('backfills public threads under the channel and records the parent beside thread ids', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 1);
+    h.source.seed('777777777777777777', 2, 100);
+    h.source.seed('888888888888888888', 1, 200);
+    h.ports.listThreads = async () => [
+      { id: '777777777777777777', isPrivate: false },
+      { id: '888888888888888888', isPrivate: false },
+      { id: '999999999999999999', isPrivate: true },
+    ];
+    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    expect(
+      [...h.rows.values()].filter((row) => row.threadId !== undefined).map((row) => row.threadId),
+    ).toEqual(['777777777777777777', '777777777777777777', '888888888888888888']);
+    expect(h.source.calls).not.toContainEqual(
+      expect.objectContaining({ channelId: '999999999999999999' }),
+    );
+  });
+
+  it('a forum skips parent history and backfills only its public posts', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 1);
+    h.source.seed('777777777777777777', 1, 100);
+    h.ports.isForum = () => true;
+    h.ports.listThreads = async () => [{ id: '777777777777777777', isPrivate: false }];
+    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    expect(h.source.calls).not.toContainEqual(expect.objectContaining({ channelId: CHANNEL }));
+    expect([...h.rows.values()]).toEqual([
+      expect.objectContaining({ channelId: CHANNEL, threadId: '777777777777777777' }),
+    ]);
+  });
   it('three runs land 250 rows; the cursor after run 1 is the 100th id; done after run 3', async () => {
     const h = harness();
     h.source.seed(CHANNEL, 250);

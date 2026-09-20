@@ -38,6 +38,9 @@ export interface BackfillPorts {
     before: string | undefined,
   ): Promise<RecentMessagesPage>;
   findChannel(channelId: Snowflake): ArchiveChannel | undefined;
+  listThreads(channelId: Snowflake): Promise<readonly { id: Snowflake; isPrivate: boolean }[]>;
+  isForum(channelId: Snowflake): boolean;
+  setThreadProgress(input: { channelId: Snowflake; found: number; done: number }): void;
   upsertMessage(input: UpsertMessageInput): boolean;
   setBackfillCursor(input: {
     channelId: Snowflake;
@@ -114,9 +117,10 @@ export const archiveBackfillHandler = (
       state: 'running',
     });
 
-    // A rate limit propagates untouched — the worker's backoff is the retry
-    // (ADR 0018). Catching it here would turn a visible refusal into a slowdown.
-    const page = await ports.fetchRecentMessages(channelId, channel.cursorMessageId);
+    // A forum has no messages of its own; its posts are threads.
+    const page = ports.isForum(channelId)
+      ? { messages: [], nextBefore: undefined }
+      : await ports.fetchRecentMessages(channelId, channel.cursorMessageId);
 
     for (const message of page.messages) {
       ports.upsertMessage({
@@ -131,9 +135,34 @@ export const archiveBackfillHandler = (
       });
     }
 
-    // The cursor lands before anything else: a crash between here and the
-    // continuation still resumes from this page, never re-fetches it.
     const done = page.nextBefore === undefined;
+    if (done) {
+      const threads = (await ports.listThreads(channelId)).filter((thread) => !thread.isPrivate);
+      ports.setThreadProgress({ channelId, found: threads.length, done: 0 });
+      let threadsDone = 0;
+      for (const thread of threads) {
+        let before: string | undefined;
+        do {
+          const threadPage = await ports.fetchRecentMessages(thread.id, before);
+          for (const message of threadPage.messages) {
+            ports.upsertMessage({
+              messageId: message.messageId,
+              channelId,
+              threadId: thread.id,
+              authorId: message.authorId,
+              content: message.content,
+              createdAt: message.createdAtMs,
+              editedAt: message.editedTimestampMs ?? undefined,
+              attachments: mapAttachments(ports, message.messageId, message.attachments ?? []),
+            });
+          }
+          before = threadPage.nextBefore;
+        } while (before !== undefined);
+        threadsDone += 1;
+        ports.setThreadProgress({ channelId, found: threads.length, done: threadsDone });
+      }
+    }
+
     ports.setBackfillCursor({
       channelId,
       cursorMessageId: page.nextBefore,
