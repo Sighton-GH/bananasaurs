@@ -612,6 +612,29 @@ describe('listChannelHistory', () => {
     ).toEqual(expected.slice(0, 3));
   });
 
+  it('a forum read rolls its posts up under the forum id (M1)', () => {
+    enable(a, CHANNEL_A); // the forum
+    for (let i = 1; i <= 2; i += 1) {
+      upsertMessage(a, {
+        messageId: historyId(i),
+        channelId: CHANNEL_A,
+        threadId: String(800000000000000000n + BigInt(i)),
+        authorId: MEMBER,
+        content: `post ${String(i)}`,
+        createdAt: 2000 + i,
+        editedAt: undefined,
+        attachments: [],
+      });
+    }
+    // Without the roll-up flag a channel read keeps its threadless shape.
+    expect(listChannelHistory(a, { channelId: CHANNEL_A })).toEqual([]);
+    // With it — the wiring passes it for forums — the posts read under the
+    // forum id, newest first.
+    expect(
+      listChannelHistory(a, { channelId: CHANNEL_A, includeThreads: true }).map((m) => m.messageId),
+    ).toEqual([historyId(2), historyId(1)]);
+  });
+
   it('beforeMessageId pages backwards without overlap or gaps', () => {
     const lastMessageId = (messages: readonly { readonly messageId: string }[]): string => {
       const last = messages[messages.length - 1];

@@ -198,7 +198,7 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
  * A fault leaves one allowlisted-fields error line via `loggedCall` above,
  * never message content (rule 4).
  */
-const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
+const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
   listArchiveChannelIds: (guildId) =>
     loggedCall(deps.logger, 'listArchiveChannelIds', () =>
       archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
@@ -236,6 +236,13 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
       archiveRepo
         .listChannelHistory(deps.scopes.forGuild(guildId), {
           channelId: input.channelId,
+          // M1: a forum's posts are threads; the read rolls them up under
+          // the forum id. The type comes from the live cache — the repo
+          // never trusts caller input for the visibility decision.
+          ...(client.guilds.cache.get(guildId)?.channels.cache.get(input.channelId)?.type ===
+          ChannelType.GuildForum
+            ? { includeThreads: true as const }
+            : {}),
           ...(input.beforeMessageId !== undefined
             ? { beforeMessageId: input.beforeMessageId }
             : {}),
@@ -875,7 +882,7 @@ export const registerMcpRoutes = (
     const server = createMcpServer({
       principal,
       health: healthPortFor(principal, deps),
-      archive: archivePortFor(deps),
+      archive: archivePortFor(deps, client),
       guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),

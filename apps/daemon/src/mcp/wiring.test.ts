@@ -943,6 +943,65 @@ describe('/mcp archive tools across two guilds', () => {
     expect(history.text).not.toContain('alpha plans');
   });
 
+  it("read_channel_history rolls a forum's posts up under the forum id (M1)", async () => {
+    const FORUM = '599999999999999999';
+    const POST_A = '911111111111111111';
+    const POST_B = '922222222222222222';
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: FORUM,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildForum,
+          name: 'forum',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    archiveRepo.enableChannel(scopeA, { channelId: FORUM, attachmentPolicy: 'none', now: clock });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: POST_A,
+      channelId: FORUM,
+      threadId: '933333333333333333',
+      authorId: MEMBER,
+      content: 'forum post alpha',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: POST_B,
+      channelId: FORUM,
+      threadId: '944444444444444444',
+      authorId: MEMBER,
+      content: 'forum post beta',
+      createdAt: clock + 1,
+      editedAt: undefined,
+      attachments: [],
+    });
+    const accessToken = await mintToken();
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: FORUM,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('forum post alpha');
+    expect(found.text).toContain('forum post beta');
+  });
+
   it('a guild the bot is not in is a refusal, never an empty result', async () => {
     authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
       accountId: ACCOUNT,

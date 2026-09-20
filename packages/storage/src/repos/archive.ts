@@ -815,6 +815,14 @@ export const listChannelHistory = (
     readonly channelId: string;
     readonly beforeMessageId?: string;
     readonly limit?: number;
+    /**
+     * ADR 0047 amendment 2026-09-20 (M1): a forum owns no messages of its
+     * own — every post is a thread — so a forum's history read rolls its
+     * posts up under the forum id. The daemon wiring sets this from the
+     * live cache (GuildForum); a plain channel read keeps its threadless
+     * shape.
+     */
+    readonly includeThreads?: boolean;
   },
 ): readonly ArchiveMessage[] =>
   read(scope, (db) => {
@@ -846,7 +854,9 @@ export const listChannelHistory = (
           threadExists
             ? eq(archiveMessages.threadId, input.channelId)
             : eq(archiveMessages.channelId, input.channelId),
-          threadExists ? undefined : isNull(archiveMessages.threadId),
+          threadExists || input.includeThreads === true
+            ? undefined
+            : isNull(archiveMessages.threadId),
           input.beforeMessageId === undefined
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,
