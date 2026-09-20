@@ -190,6 +190,7 @@ describe('send_message argument boundary (hard rule 3)', () => {
 
 describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
   const ALL_REFUSALS: readonly McpSendRefusal[] = [
+    'private-thread',
     'channel-not-allowlisted',
     'channel-not-in-guild',
     'killswitch',
@@ -214,6 +215,7 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
   });
 
   it.each([
+    ['private-thread', 'private thread'],
     ['channel-not-allowlisted', 'allowlist'],
     ['channel-not-in-guild', 'will not help'],
     ['killswitch', 'kill switch'],
@@ -226,6 +228,12 @@ describe('send_message refusal rendering (M5-D3/M5-D9 outcomes)', () => {
     const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
     expect(messageOf(outcome)).toContain(phrase);
   });
+});
+
+it('the allowlist remediation names the guild', async () => {
+  const port = fakeSendPort({ status: 'refused', reason: 'channel-not-allowlisted' });
+  const outcome = await sendMessageText(principalWith([GUILD_A]), port, validArgs());
+  expect(messageOf(outcome)).toContain('--guild 111111111111111111');
 });
 
 describe('send_message happy path', () => {
