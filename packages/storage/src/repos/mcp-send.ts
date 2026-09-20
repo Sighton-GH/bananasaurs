@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, gte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { mcpSendAllowlist, mcpSends } from '../schema.js';
@@ -14,12 +14,14 @@ import { mcpSendAllowlist, mcpSends } from '../schema.js';
 
 export interface AllowlistedChannel {
   readonly channelId: string;
+  readonly scopeKind: 'channel' | 'category';
   readonly addedByAccountId: string;
   readonly addedAt: number;
 }
 
 const toAllowlistedChannel = (row: typeof mcpSendAllowlist.$inferSelect): AllowlistedChannel => ({
   channelId: row.channelId,
+  scopeKind: row.scopeKind as 'channel' | 'category',
   addedByAccountId: row.addedByAccountId,
   addedAt: row.addedAt,
 });
@@ -55,16 +57,31 @@ export const disallowChannel = (scope: GuildScope, channelId: string): boolean =
     return result.changes === 1;
   });
 
-export const isChannelAllowed = (scope: GuildScope, channelId: string): boolean =>
+export const isScopeAllowed = (
+  scope: GuildScope,
+  channelId: string,
+  scopeKind: 'channel' | 'category',
+): boolean =>
   read(
     scope,
     (db) =>
       db
         .select({ channelId: mcpSendAllowlist.channelId })
         .from(mcpSendAllowlist)
-        .where(scope.only(mcpSendAllowlist, eq(mcpSendAllowlist.channelId, channelId)))
+        .where(
+          scope.only(
+            mcpSendAllowlist,
+            and(
+              eq(mcpSendAllowlist.channelId, channelId),
+              eq(mcpSendAllowlist.scopeKind, scopeKind),
+            ),
+          ),
+        )
         .get() !== undefined,
   );
+
+export const isChannelAllowed = (scope: GuildScope, channelId: string): boolean =>
+  isScopeAllowed(scope, channelId, 'channel');
 
 export const listAllowedChannels = (scope: GuildScope): readonly AllowlistedChannel[] =>
   read(scope, (db) =>

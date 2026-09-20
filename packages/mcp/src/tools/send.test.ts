@@ -377,6 +377,7 @@ const READ_TOOL_NAMES = [
   'read_channel_history',
   'get_message',
   'list_channels',
+  'list_threads',
   'list_roles',
   'list_members',
   'list_mod_cases',
@@ -420,9 +421,9 @@ const toolNamesOf = async (principal: McpPrincipal): Promise<string[]> => {
 };
 
 describe('send_message scope filtering (ruling M4-D17)', () => {
-  it('a read-only token sees the eleven read tools and not send_message', async () => {
+  it('a read-only token sees the twelve read tools and not send_message', async () => {
     const names = await toolNamesOf(principalWith([GUILD_A, GUILD_B], ['bananasaurs:read']));
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(names).toEqual(READ_TOOL_NAMES);
     expect(names).not.toContain(SEND_MESSAGE_TOOL_NAME);
   });
@@ -433,11 +434,11 @@ describe('send_message scope filtering (ruling M4-D17)', () => {
     expect(names).toEqual([SEND_MESSAGE_TOOL_NAME]);
   });
 
-  it('a token with both scopes sees twelve tools', async () => {
+  it('a token with both scopes sees thirteen tools', async () => {
     const names = await toolNamesOf(
       principalWith([GUILD_A], ['bananasaurs:read', 'bananasaurs:send']),
     );
-    expect(names).toHaveLength(12);
+    expect(names).toHaveLength(13);
     expect(names).toContain(SEND_MESSAGE_TOOL_NAME);
   });
 

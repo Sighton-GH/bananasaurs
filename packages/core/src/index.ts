@@ -530,3 +530,5 @@ export {
   panelShowCommand,
   parseDuration,
 } from './ops/commands/reads.js';
+
+export * from './channels/scope.js';

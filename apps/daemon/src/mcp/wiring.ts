@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
 import {
+  isInScope,
   parseSnowflakeId,
   safeLogFields,
   sendMessageEffect,
@@ -9,6 +10,7 @@ import {
   type GuildId,
   type Logger,
 } from '@bananasaurs/core';
+import { resolveChannel } from '../channels/resolver.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
@@ -506,24 +508,6 @@ const recordsPortFor = (
 });
 
 /**
- * Whether the channel is a text-capable channel of this guild (C2 send-time).
- *
- * Answered from `client.guilds.cache` — already in memory, nothing to fetch
- * — the same style `apps/daemon/src/ops/wiring.ts`'s allow-time check uses.
- * A guild absent from the cache (not yet READY, or left) answers false:
- * failing closed, because this check exists to contain rows the allow-time
- * check never saw. Threads are excluded like the allow-time check: a thread
- * id is not a channel an owner allowlists.
- */
-const isSendChannelInGuild = (client: Client, guildId: GuildId, channelId: string): boolean => {
-  const guild = client.guilds.cache.get(guildId);
-  if (guild === undefined) return false;
-  const channel = guild.channels.cache.get(channelId);
-  if (channel === undefined) return false;
-  return channel.isTextBased() && !channel.isThread();
-};
-
-/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -553,6 +537,33 @@ const sendPortFor = (
   send: (guildId, input) =>
     loggedCallAsync(deps.logger, 'sendMessage', async () => {
       const scope = deps.scopes.forGuild(guildId);
+      const resolved = await resolveChannel(client, guildId, parseSnowflakeId(input.channelId));
+      if (resolved === undefined || !resolved.postable) {
+        return { status: 'refused', reason: 'channel-not-in-guild' };
+      }
+      if (resolved.isPrivateThread && !mcpSendRepo.isChannelAllowed(scope, input.channelId)) {
+        return { status: 'refused', reason: 'private-thread' };
+      }
+      const grantId = mcpSendRepo.isChannelAllowed(scope, input.channelId)
+        ? input.channelId
+        : resolved.parentChannelId !== undefined &&
+            mcpSendRepo.isChannelAllowed(scope, resolved.parentChannelId)
+          ? resolved.parentChannelId
+          : resolved.categoryId !== undefined &&
+              mcpSendRepo.isScopeAllowed(scope, resolved.categoryId, 'category')
+            ? resolved.categoryId
+            : undefined;
+      const derivedGrant = grantId !== undefined && grantId !== input.channelId;
+      const authorized = isInScope('send', {
+        channelId: resolved.channelId,
+        parentChannelId: resolved.parentChannelId,
+        categoryId: resolved.categoryId,
+        isPrivateThread: resolved.isPrivateThread,
+        hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
+        hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
+        isExcluded: () => false,
+        parentIncludesThreads: () => true,
+      });
       const outcome = await sendMessageEffect(
         {
           guildId,
@@ -565,8 +576,8 @@ const sendPortFor = (
             // leak across this boundary the way they did before the archive
             // port's projection.
             read: () => guildRepo.readSafetyState(scope),
-            isChannelAllowed: (channelId) => mcpSendRepo.isChannelAllowed(scope, channelId),
-            isChannelInGuild: (channelId) => isSendChannelInGuild(client, guildId, channelId),
+            isChannelAllowed: () => authorized,
+            isChannelInGuild: () => true,
           },
           sends: {
             find: (idempotencyKey) => mcpSendRepo.findSend(scope, idempotencyKey),
@@ -607,6 +618,9 @@ const sendPortFor = (
                   tokenId: record.tokenId,
                   outcome: record.outcome,
                   ...(record.messageId !== undefined ? { messageId: record.messageId } : {}),
+                  ...(derivedGrant
+                    ? { authorization: 'derived', grantedByChannelId: grantId }
+                    : {}),
                 },
                 dryRun: record.dryRun,
               });
