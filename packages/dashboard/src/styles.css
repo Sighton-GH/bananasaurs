@@ -84,3 +84,23 @@
     }
   }
 }
+
+@layer utilities {
+  .login-backdrop {
+    background:
+      radial-gradient(
+        circle at 15% 15%,
+        color-mix(in srgb, var(--color-hold) 7%, transparent),
+        transparent 28rem
+      ),
+      linear-gradient(
+        135deg,
+        var(--color-canvas),
+        color-mix(in srgb, var(--color-panel) 82%, black)
+      );
+  }
+
+  .shell-backdrop {
+    backdrop-filter: blur(2px);
+  }
+}
