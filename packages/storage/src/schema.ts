@@ -874,6 +874,10 @@ export const archiveChannels = sqliteTable(
   {
     guildId: snowflake('guild_id').notNull(),
     channelId: snowflake('channel_id').notNull(),
+    scopeKind: text('scope_kind').notNull().default('channel'),
+    includeThreads: integer('include_threads').notNull().default(1),
+    threadsFound: integer('threads_found'),
+    threadsDone: integer('threads_done').notNull().default(0),
     attachmentPolicy: text('attachment_policy').notNull().default('none'),
     enabledAt: integer('enabled_at').notNull(),
     /** NULL = not started or done. */
@@ -885,6 +889,8 @@ export const archiveChannels = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('archive_channels_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_channels_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('archive_channels_scope_kind', sql`${t.scopeKind} IN ('channel','category')`),
+    check('archive_channels_include_threads_bool', sql`${t.includeThreads} IN (0,1)`),
     check('archive_channels_attachment_policy', sql`${t.attachmentPolicy} IN ('none','bytes')`),
     check(
       'archive_channels_backfill_state',
@@ -912,6 +918,7 @@ export const archiveMessages = sqliteTable(
     guildId: snowflake('guild_id').notNull(),
     messageId: snowflake('message_id').notNull(),
     channelId: snowflake('channel_id').notNull(),
+    threadId: text('thread_id'),
     /** NULL for webhook/system messages. */
     authorId: text('author_id'),
     /** NULL after purge, or never known. */
@@ -936,6 +943,7 @@ export const archiveMessages = sqliteTable(
       foreignColumns: [archiveChannels.guildId, archiveChannels.channelId],
     }).onDelete('cascade'),
     index('archive_messages_channel_created').on(t.guildId, t.channelId, t.createdAt),
+    index('archive_messages_thread_created').on(t.guildId, t.threadId, t.createdAt),
     index('archive_messages_deleted').on(t.guildId, t.deletedAt),
     check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
@@ -1052,6 +1060,7 @@ export const modCaseEvents = sqliteTable(
     caseId: text('case_id').notNull(),
     ruleId: text('rule_id').notNull(),
     memberId: snowflake('member_id').notNull(),
+    channelId: text('channel_id'),
     at: integer('at').notNull(),
     matchedCategory: text('matched_category').notNull(),
     matchedSnippet: text('matched_snippet').notNull(),
@@ -1110,6 +1119,7 @@ export const modCaseEvents = sqliteTable(
     }).onDelete('cascade'),
     check('mod_case_events_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('mod_case_events_member_id_snowflake', snowflakeCheck(t.memberId)),
+    check('mod_case_events_channel_id_snowflake', nullableSnowflakeCheck(t.channelId)),
     /**
      * One value per *real* outcome, so case history cannot claim a punishment
      * that never happened.
@@ -1662,6 +1672,7 @@ export const mcpSendAllowlist = sqliteTable(
   {
     guildId: snowflake('guild_id').notNull(),
     channelId: snowflake('channel_id').notNull(),
+    scopeKind: text('scope_kind').notNull().default('channel'),
     /** The dashboard account that allowed it — an account id, not a snowflake. */
     addedByAccountId: text('added_by_account_id').notNull(),
     addedAt: integer('added_at').notNull(),
@@ -1671,6 +1682,7 @@ export const mcpSendAllowlist = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('mcp_send_allowlist_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('mcp_send_allowlist_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('mcp_send_allowlist_scope_kind', sql`${t.scopeKind} IN ('channel','category')`),
   ],
 );
 
