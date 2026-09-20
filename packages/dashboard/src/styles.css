@@ -19,7 +19,7 @@
 
   --backdrop-glow-a: rgb(242 180 65 / 0.1);
   --backdrop-glow-b: rgb(61 179 122 / 0.07);
-  --backdrop-ink-opacity: 0.05;
+  --backdrop-art-opacity: 0.3;
 
   --font-sans: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
 
@@ -50,7 +50,7 @@
       --color-hold-ink: #1a1405;
       --backdrop-glow-a: rgb(217 154 30 / 0.14);
       --backdrop-glow-b: rgb(61 179 122 / 0.1);
-      --backdrop-ink-opacity: 0.06;
+      --backdrop-art-opacity: 0.32;
     }
   }
 
@@ -66,7 +66,7 @@
     --color-hold-ink: #1a1405;
     --backdrop-glow-a: rgb(217 154 30 / 0.14);
     --backdrop-glow-b: rgb(61 179 122 / 0.1);
-    --backdrop-ink-opacity: 0.06;
+    --backdrop-art-opacity: 0.32;
   }
 
   :root[data-theme='dark'] {
@@ -87,8 +87,8 @@
      * the panels, never over the text. */
     background-color: var(--color-canvas);
     background-image:
-      radial-gradient(60rem 40rem at 110% -10%, var(--backdrop-glow-a), transparent 60%),
-      radial-gradient(55rem 38rem at -15% 110%, var(--backdrop-glow-b), transparent 60%);
+      radial-gradient(52rem 36rem at 108% 106%, var(--backdrop-glow-a), transparent 62%),
+      radial-gradient(48rem 34rem at -12% -12%, var(--backdrop-glow-b), transparent 62%);
     background-attachment: fixed;
   }
 
@@ -101,22 +101,24 @@
     line-height: 1.45;
   }
 
-  /* The themed pattern: dino, bananas, leaf and footprints, tiled at a few
-   * percent of the ink colour. A mask, so it follows the theme for free;
-   * fixed and negative-stacked so every panel, card and table keeps its
-   * solid ground and the console stays readable first. */
+  /* The composed backdrop: the owner-supplied banana-saur (his exact
+   * artwork, keyed off its tile - never redrawn) standing at the bottom
+   * right, abstract banana leaves framing the top left. One composition,
+   * not a repeating pattern; fixed and negative-stacked so every panel,
+   * card and table keeps its solid ground and stays readable first. */
   body::before {
     content: '';
     position: fixed;
     inset: 0;
     z-index: -1;
     pointer-events: none;
-    background: var(--color-ink);
-    opacity: var(--backdrop-ink-opacity);
-    -webkit-mask-image: url('/brand/backdrop-tile.svg');
-    mask-image: url('/brand/backdrop-tile.svg');
-    -webkit-mask-size: 19rem;
-    mask-size: 19rem;
+    background-image: url('/brand/leaves.svg'), url('/brand/bananasaur.png');
+    background-repeat: no-repeat, no-repeat;
+    background-position:
+      left -7vmin top -7vmin,
+      right -6vmin bottom -7vmin;
+    background-size: 36vmin, 47vmin;
+    opacity: var(--backdrop-art-opacity);
   }
 
   h1,
