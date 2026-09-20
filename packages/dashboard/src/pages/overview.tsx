@@ -1,5 +1,6 @@
 import { Link } from 'wouter';
 import { useHealth } from '../app/health.js';
+import { OperatorPulse } from './overview-pulse.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
@@ -25,7 +26,7 @@ export function OverviewPage() {
     <>
       <PageHeader
         title="Overview"
-        purpose="How the bot is connected and what it is doing right now — each card leads to the page that acts on it."
+        purpose="How the bot is connected, what needs a decision right now, and what just happened — each card leads to the page that acts on it."
       />
       <DataState resource={health.resource}>
         {(h) => (
@@ -102,6 +103,7 @@ export function OverviewPage() {
           </div>
         )}
       </DataState>
+      {health.resource.state === 'ready' && <OperatorPulse health={health.resource.data} />}
     </>
   );
 }
