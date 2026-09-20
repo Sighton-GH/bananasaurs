@@ -1,6 +1,15 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
+import { AccountsPage } from '../pages/accounts.js';
+import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
+import { BackupsPage } from '../pages/backups.js';
+import { ConfigPage } from '../pages/config.js';
+import { DoctorPage } from '../pages/doctor.js';
+import { JobsPage } from '../pages/jobs.js';
+import { McpPage } from '../pages/mcp.js';
+import { ProvidersPage } from '../pages/providers.js';
+import { SearchPage } from '../pages/search.js';
 import { AutomodRulePage } from '../pages/automod-rule.js';
 import { AutomodRulesPage } from '../pages/automod-rules.js';
 import { CasePage } from '../pages/case.js';
@@ -112,10 +121,6 @@ function Rail({ onNavigate }: { readonly onNavigate?: () => void }) {
   );
 }
 
-/** Ruling S10-D3: Archive and Search live in Release 2 as CLI/MCP only; the pages arrive with Release 3. */
-const ARCHIVE_SEARCH_TODAY =
-  'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.';
-
 function Pages() {
   return (
     <Switch>
@@ -131,37 +136,20 @@ function Pages() {
       <Route path="/cases/:caseId" component={CasePage} />
       <Route path="/members/:memberId" component={MemberPage} />
       <Route path="/cutover" component={CutoverPage} />
-      <Route path="/archive">
-        {() => (
-          <StubPage
-            title="Archive"
-            purpose="Every message from the channels the owner enabled, kept under the retention policy."
-            availableToday={ARCHIVE_SEARCH_TODAY}
-          />
-        )}
-      </Route>
-      <Route path="/search">
-        {() => (
-          <StubPage
-            title="Search"
-            purpose="Full-text search over the archive, with citations."
-            availableToday={ARCHIVE_SEARCH_TODAY}
-          />
-        )}
-      </Route>
+      <Route path="/archive" component={ArchivePage} />
+      <Route path="/search" component={SearchPage} />
+      <Route path="/jobs" component={JobsPage} />
+      <Route path="/doctor" component={DoctorPage} />
+      <Route path="/backups" component={BackupsPage} />
+      <Route path="/config" component={ConfigPage} />
+      <Route path="/accounts" component={AccountsPage} />
+      <Route path="/mcp" component={McpPage} />
+      <Route path="/providers" component={ProvidersPage} />
       <Route path="/resources">
         {() => (
           <StubPage
             title="Resources"
             purpose="Files, links and notes the club keeps, findable from Discord."
-          />
-        )}
-      </Route>
-      <Route path="/providers">
-        {() => (
-          <StubPage
-            title="Providers"
-            purpose="Which AI providers are configured, their eligibility and their cost."
           />
         )}
       </Route>

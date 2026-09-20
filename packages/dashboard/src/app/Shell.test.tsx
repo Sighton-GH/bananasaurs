@@ -152,11 +152,10 @@ describe('Shell', () => {
     expect(onLoggedOut).toHaveBeenCalledTimes(1);
   });
 
+  // ADR 0051 D7 supersedes S10-D3: Archive, Search and Providers are real pages now;
+  // only the Release 3 four remain stubs.
   it.each([
-    ['/archive', 'Archive'],
-    ['/search', 'Search'],
     ['/resources', 'Resources'],
-    ['/providers', 'Providers'],
     ['/memory', 'Memory'],
     ['/ai', 'AI workspace'],
     ['/proposals', 'Proposals'],
@@ -166,28 +165,13 @@ describe('Shell', () => {
     expect(await screen.findByText(NOT_BUILT)).toBeTruthy();
   });
 
-  it.each([['/archive'], ['/search']])(
-    'the %s stub says where the feature lives today (S10-D3)',
-    async (path) => {
-      renderAt(path);
-      expect(
-        await screen.findByText(
-          'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.',
-        ),
-      ).toBeTruthy();
-    },
-  );
-
-  it('marks exactly the seven Release 3 entries as future', async () => {
+  it('marks exactly the four Release 3 entries as future', async () => {
     renderAt('/');
     const nav = screen.getByRole('navigation', { name: 'Areas' });
     const future = within(nav).getAllByText('Future');
-    expect(future).toHaveLength(7);
+    expect(future).toHaveLength(4);
     expect(NAV.filter((n) => n.status === 'stub').map((n) => n.label)).toEqual([
-      'Archive',
-      'Search',
       'Resources',
-      'Providers',
       'Memory',
       'AI workspace',
       'Proposals',
