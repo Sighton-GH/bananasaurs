@@ -194,12 +194,12 @@ const refusalText = (guildId: GuildId, channelId: string, reason: McpSendRefusal
         'so nothing was posted. Wait for an operator to clear it; do not retry in a loop.'
       );
     case 'rate-cap':
-      // Ten per guild per rolling hour, mirroring MESSAGE_SEND_RATE_LIMIT /
-      // MESSAGE_SEND_RATE_WINDOW_MS in `core`'s message gateway (ruling
-      // M5-D4); duplicated, not imported, for the same reason that module
-      // duplicates the storage numbers.
+      // Two hundred per guild per rolling hour, mirroring
+      // MESSAGE_SEND_RATE_LIMIT / MESSAGE_SEND_RATE_WINDOW_MS in `core`'s
+      // message gateway (ruling M5-D4); duplicated, not imported, for the
+      // same reason that module duplicates the storage numbers.
       return (
-        `Guild ${guildId} has used its send budget of 10 sends per rolling hour, ` +
+        `Guild ${guildId} has used its send budget of 200 sends per rolling hour, ` +
         'so nothing was posted. Wait for the window to pass before retrying; ' +
         'answering an already-sent idempotency key still works meanwhile.'
       );

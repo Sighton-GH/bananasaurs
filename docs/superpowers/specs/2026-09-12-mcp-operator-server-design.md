@@ -110,8 +110,9 @@ the signature, not by caller discipline).
 - `idempotencyKey` is caller-supplied and stored with a unique constraint on
   `(guild_id, idempotency_key)` (hard rule 6). A replay returns the original
   result, does not send twice.
-- Rate-capped: **10 sends per guild per rolling hour**, enforced in the
+- Rate-capped: **200 sends per guild per rolling hour**, enforced in the
   daemon, not the client. Exceeding it is a refusal with a reason, not a queue.
+  (Raised from the launch default of 10 on 2026-09-20; see Q1.)
 - Goes through the existing effect gateway — kill switch, breaker, dry-run
   all apply. There is no second path to Discord (ADR 0014).
 - Writes one `audit_events` row with `actor_type = 'mcp_operator'` and the
@@ -402,7 +403,7 @@ to 0047 and 0048 (see the edit to the Release 2/3 spec §9).
 
 | # | Question | Default if unanswered |
 | --- | --- | --- |
-| Q1 | Send rate cap: 10 per guild per hour is a guess. Higher? | 10 |
+| Q1 | Send rate cap: 10 per guild per hour is a guess. Higher? | **Resolved 2026-09-20: raised to 200 per guild per hour**, owner decision |
 | Q2 | Should M1/M2 interleave with Slices 7–9, or strictly follow them? | Strictly follow (§9) |
 | Q3 | Access token lifetime 1 h / refresh 30 d — acceptable for the desktop app's re-auth friction? | As stated |
 | Q4 | Which channels go into archive scope on the test guild first? | Whatever `docs/RELEASE1_CONFIG.md` names as test channels; none by default |
