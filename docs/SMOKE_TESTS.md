@@ -123,7 +123,7 @@ the actual running daemon and its actual `./data/bananasaurs.db`.
 
 ---
 
-## Section D — the MCP connector over the tunnel (slice M6, not yet run)
+## Section D — the MCP connector over the tunnel (slice M6, run 2026-09-20)
 
 Run from a client **off the LAN** — a laptop on mobile data, or the desktop
 app somewhere else — so the tunnel and Access are actually in the path.
@@ -165,7 +165,7 @@ arrived as on the consent POST (`docs/17` §2.4 says why).
 10. **`doctor` again.** Still `ok` on the public surface; the eligibility row
     still fresh.
 
-- [ ] Steps 1–10 recorded with timestamps in `docs/reports/mcp-m6-live-run.md`.
+- [x] Steps 1–10 recorded with timestamps in `docs/reports/mcp-m6-live-run.md` (all pass; six findings, one needing a ruling).
 
 ## Section E — the automod cutover, rehearsed on the dev guild (Slice 12, not yet run)
 
