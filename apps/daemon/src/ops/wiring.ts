@@ -1,4 +1,4 @@
-import { PermissionsBitField, type Client } from 'discord.js';
+import { ChannelType, PermissionsBitField, type Client } from 'discord.js';
 import {
   archiveBackfillDedupeKey,
   compileRule,
@@ -518,6 +518,23 @@ export const opsPortsFor = (
     });
   },
   listUnreadableArchiveChannels: () => unreadableArchiveChannels(scope, client),
+  // The named pickers' channel list, straight from the gateway cache: text,
+  // announcement and forum channels with their display names. Empty before
+  // READY (or after leaving), which the picker shows as its honest loading
+  // state rather than a fabricated list.
+  listGuildChannels: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    const kindOf = (type: ChannelType): string => {
+      if (type === ChannelType.GuildForum || type === ChannelType.GuildMedia) return 'forum';
+      if (type === ChannelType.GuildAnnouncement) return 'announcement';
+      return 'text';
+    };
+    return [...guild.channels.cache.values()]
+      .filter((channel) => channel.isTextBased() && !channel.isThread())
+      .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
   archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
   // The operator sees what the archive holds, nothing wider: the visibility
   // set is every archive-enabled channel in this guild, built here from

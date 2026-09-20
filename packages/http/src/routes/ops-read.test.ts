@@ -82,6 +82,7 @@ const signIn = async (): Promise<{ cookie: string }> => {
 };
 
 const GUILD_ROUTES = [
+  '/api/guild/channels',
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
@@ -240,5 +241,25 @@ describe('GET /api/accounts capabilities map', () => {
     expect(response.statusCode).toBe(200);
     const body: { capabilities: Record<string, readonly string[]> } = response.json();
     expect(body.capabilities[ACCOUNT]).toContain('audit.read');
+  });
+});
+
+describe('GET /api/guild/channels', () => {
+  it('answers the guild channel list with names and kinds for the pickers', async () => {
+    const { cookie } = await signIn();
+    grant(['config.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/guild/channels',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      channels: [
+        { channelId: '333333333333333333', name: 'general', kind: 'text' },
+        { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
+        { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
+      ],
+    });
   });
 });

@@ -77,6 +77,14 @@ export const testPortsFor = (
     }),
   setKillswitch: (on) => guildRepo.setKillswitch(scope, on, now()),
 
+  // The Discord cache cannot exist here, so the pickers' channel list is a
+  // static demo set beside the seeded archive fixture channel; the daemon's
+  // wiring reads the live gateway cache instead.
+  listGuildChannels: () => [
+    { channelId: '333333333333333333', name: 'general', kind: 'text' },
+    { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
+    { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
+  ],
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
       auditId: row.auditId,

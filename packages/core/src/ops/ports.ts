@@ -569,6 +569,14 @@ export type OpsAccountSetPasswordResult =
       readonly guildsTouched: number;
     };
 
+/** One guild channel as the pickers show it: display name plus the snowflake. */
+export interface OpsGuildChannelInfo {
+  readonly channelId: string;
+  readonly name: string;
+  /** Discord's channel kind as a small label: `text`, `announcement`, `forum`. */
+  readonly kind: string;
+}
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -598,6 +606,13 @@ export interface OpsPorts {
 
   // --- read commands (13c) ---------------------------------------------------
   tailAudit(query: OpsAuditQuery): readonly OpsAuditRow[];
+  /**
+   * The guild's text-family channels (text, announcement, forum) with their
+   * display names, for the named pickers that replace raw-snowflake inputs.
+   * From the live gateway cache; empty when the guild is not cached yet,
+   * which the picker shows as an honest loading state, never a fake list.
+   */
+  listGuildChannels(): readonly OpsGuildChannelInfo[];
   listJobs(query: OpsJobQuery): readonly OpsJobRow[];
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;
