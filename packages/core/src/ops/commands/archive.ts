@@ -183,7 +183,10 @@ export const archiveStatusCommand = defineCommand<Record<string, never>>({
         `${channel.channelId}  ${channel.attachmentPolicy}  ` +
         `backfill:${channel.backfillState}  ` +
         `cursor:${channel.cursorMessageId ?? '-'}  ` +
-        `messages:${String(channel.messageCount)}`,
+        `messages:${String(channel.messageCount)}` +
+        (channel.threadsFound === undefined
+          ? ''
+          : `  threads:${String(channel.threadsDone ?? 0)}/${String(channel.threadsFound)}`),
     );
     return {
       text: lines.join('\n'),
@@ -194,6 +197,8 @@ export const archiveStatusCommand = defineCommand<Record<string, never>>({
           enabledAt: channel.enabledAt,
           cursorMessageId: channel.cursorMessageId ?? null,
           backfillState: channel.backfillState,
+          threadsFound: channel.threadsFound ?? null,
+          threadsDone: channel.threadsDone ?? 0,
           messageCount: channel.messageCount,
         })),
       },

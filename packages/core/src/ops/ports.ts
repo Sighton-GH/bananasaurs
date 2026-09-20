@@ -396,6 +396,8 @@ export interface OpsArchiveChannelStatus {
   readonly enabledAt: number;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: ArchiveBackfillState;
+  readonly threadsFound?: number | undefined;
+  readonly threadsDone?: number;
   readonly messageCount: number;
 }
 
