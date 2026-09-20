@@ -875,6 +875,14 @@ export const archiveChannels = sqliteTable(
     guildId: snowflake('guild_id').notNull(),
     channelId: snowflake('channel_id').notNull(),
     scopeKind: text('scope_kind').notNull().default('channel'),
+    /**
+     * ADR 0047 amendment 2026-09-20: for a `derived` row, the category row it
+     * was materialised from. NULL on `channel` and `category` rows.
+     * Deliberately no FK: `disable-category` removes the category row and its
+     * derived children in one write, and a self-referencing composite FK
+     * would only order that delete without guarding anything.
+     */
+    derivedFrom: snowflake('derived_from'),
     includeThreads: integer('include_threads').notNull().default(1),
     threadsFound: integer('threads_found'),
     threadsDone: integer('threads_done').notNull().default(0),
@@ -889,7 +897,8 @@ export const archiveChannels = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('archive_channels_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_channels_channel_id_snowflake', snowflakeCheck(t.channelId)),
-    check('archive_channels_scope_kind', sql`${t.scopeKind} IN ('channel','category')`),
+    check('archive_channels_scope_kind', sql`${t.scopeKind} IN ('channel','category','derived')`),
+    check('archive_channels_derived_from_snowflake', nullableSnowflakeCheck(t.derivedFrom)),
     check('archive_channels_include_threads_bool', sql`${t.includeThreads} IN (0,1)`),
     check('archive_channels_attachment_policy', sql`${t.attachmentPolicy} IN ('none','bytes')`),
     check(
@@ -948,6 +957,7 @@ export const archiveMessages = sqliteTable(
     check('archive_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('archive_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
     check('archive_messages_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('archive_messages_thread_id_snowflake', nullableSnowflakeCheck(t.threadId)),
     check(
       'archive_messages_retention_class',
       sql`${t.retentionClass} IN ('default','case','preserve')`,
