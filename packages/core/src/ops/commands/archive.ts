@@ -383,3 +383,99 @@ export const archiveReindexCommand = defineCommand<Record<string, never>>({
     };
   },
 });
+
+const archiveCategoryArgs = z.object({ channelId: channelIdArg });
+export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive enable-category',
+  write: true,
+  summary: 'archive channels dynamically covered by a category',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to archive' }],
+  args: archiveCategoryArgs,
+  run(ctx, args): OpsWriteResult {
+    const outcome = ctx.ports.archiveEnableCategory({
+      channelId: args.channelId,
+      attachmentPolicy: 'none',
+    });
+    return {
+      text:
+        outcome === 'enabled'
+          ? `category ${args.channelId} is enabled for archive scope; backfill queued`
+          : `category ${args.channelId}: ${outcome}`,
+      data: { channelId: args.channelId, outcome },
+      audit: {
+        action: 'archive.category_enabled',
+        subjectType: 'archive_category',
+        subjectId: args.channelId,
+        after: { outcome },
+      },
+    };
+  },
+});
+export const archiveDisableCategoryCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive disable-category',
+  write: true,
+  summary: 'remove a category from archive scope',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to remove' }],
+  args: archiveCategoryArgs,
+  run(ctx, args): OpsWriteResult {
+    const result = ctx.ports.archiveDisableCategory(args.channelId);
+    return {
+      text:
+        result.outcome === 'disabled'
+          ? `category ${args.channelId} is no longer archived`
+          : `category ${args.channelId} was not archived`,
+      data: { channelId: args.channelId, ...result },
+      audit: {
+        action: 'archive.category_disabled',
+        subjectType: 'archive_category',
+        subjectId: args.channelId,
+        after: result,
+      },
+    };
+  },
+});
+const setThreadsArgs = z.object({ channelId: channelIdArg, value: z.enum(['all', 'none']) });
+export const archiveSetThreadsCommand = defineCommand<z.infer<typeof setThreadsArgs>>({
+  name: 'archive set-threads',
+  write: true,
+  summary: 'include all public threads under an archived channel, or none',
+  positional: [
+    { name: 'channelId', required: true, describe: 'the archived channel' },
+    { name: 'value', required: true, describe: 'all | none' },
+  ],
+  args: setThreadsArgs,
+  run(ctx, args): OpsWriteResult {
+    const outcome = ctx.ports.archiveSetThreads(args.channelId, args.value === 'all');
+    return {
+      text:
+        outcome === 'updated'
+          ? `thread inheritance for ${args.channelId} set to ${args.value}`
+          : outcome === 'forum-requires-all'
+            ? 'forums always include their posts; none is refused'
+            : `channel ${args.channelId} is not archived`,
+      data: { channelId: args.channelId, value: args.value, outcome },
+      audit: {
+        action: 'archive.threads_set',
+        subjectType: 'archive_channel',
+        subjectId: args.channelId,
+        after: { value: args.value, outcome },
+      },
+    };
+  },
+});
+export const archiveThreadsCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive threads',
+  write: false,
+  summary: 'show public-thread backfill progress for an archived channel',
+  positional: [{ name: 'channelId', required: true, describe: 'the archived channel' }],
+  args: archiveCategoryArgs,
+  run(ctx, args): OpsCommandResult {
+    const row = ctx.ports.archiveThreads(args.channelId);
+    return row === undefined
+      ? { text: `channel ${args.channelId} is not archived`, data: null }
+      : {
+          text: `threads: ${String(row.done)}/${row.found === undefined ? '?' : String(row.found)}`,
+          data: { found: row.found ?? null, done: row.done },
+        };
+  },
+});

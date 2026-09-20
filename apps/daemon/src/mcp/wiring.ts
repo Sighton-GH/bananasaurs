@@ -320,15 +320,15 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
             })
         );
       }),
-    listThreads: async (guildId, channelId, includeArchived) => {
+    listThreads: (guildId, channelId, includeArchived) => {
       const guild = requireGuild(guildId);
       const active = [...guild.channels.cache.values()].flatMap((channel) => {
         if (!channel.isThread() || channel.parentId !== channelId || channel.isThreadOnly())
           return [];
         return [{ id: channel.id, parentId: channelId, archived: channel.archived ?? false }];
       });
-      if (!includeArchived) return active.filter((thread) => !thread.archived);
-      return active;
+      if (!includeArchived) return Promise.resolve(active.filter((thread) => !thread.archived));
+      return Promise.resolve(active);
     },
     listRoles: (guildId) =>
       loggedCall(deps.logger, 'listRoles', () => {

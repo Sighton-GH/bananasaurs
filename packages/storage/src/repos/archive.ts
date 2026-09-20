@@ -80,7 +80,12 @@ const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChan
 /** Inserts the channel row; a replayed enable is a no-op reported as such. */
 export const enableChannel = (
   scope: GuildScope,
-  input: { channelId: string; attachmentPolicy: AttachmentPolicy; now: number },
+  input: {
+    channelId: string;
+    attachmentPolicy: AttachmentPolicy;
+    now: number;
+    scopeKind?: 'channel' | 'category';
+  },
 ): 'enabled' | 'already-enabled' =>
   write(scope, ({ db }) => {
     const result = db
@@ -89,6 +94,7 @@ export const enableChannel = (
         guildId: scope.guildId,
         channelId: input.channelId,
         attachmentPolicy: input.attachmentPolicy,
+        scopeKind: input.scopeKind ?? 'channel',
         enabledAt: input.now,
         cursorMessageId: null,
         backfillState: 'pending',
@@ -97,6 +103,21 @@ export const enableChannel = (
       .run();
     return result.changes === 1 ? 'enabled' : 'already-enabled';
   });
+
+export const setIncludeThreads = (
+  scope: GuildScope,
+  channelId: string,
+  includeThreads: boolean,
+): boolean =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .update(archiveChannels)
+        .set({ includeThreads: includeThreads ? 1 : 0 })
+        .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+        .run().changes === 1,
+  );
 
 /** Deletes the channel row; the messages, edits and attachments cascade in the schema. */
 export const disableChannel = (scope: GuildScope, channelId: string): 'disabled' | 'not-enabled' =>

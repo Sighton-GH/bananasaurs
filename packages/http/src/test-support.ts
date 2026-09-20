@@ -437,6 +437,21 @@ export const testPortsFor = (
       now: now(),
     });
   },
+  archiveEnableCategory: (input) => {
+    if (!opts.archiveGuildEnabled === true) return 'guild-not-archive-enabled';
+    return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
+  },
+  archiveDisableCategory: (channelId) => {
+    const messageCount = archiveRepo.countMessages(scope, channelId);
+    const outcome = archiveRepo.disableChannel(scope, channelId);
+    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+  },
+  archiveSetThreads: (channelId, include) =>
+    archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
+  archiveThreads: (channelId) => {
+    const row = archiveRepo.findChannel(scope, channelId);
+    return row === undefined ? undefined : { found: row.threadsFound, done: row.threadsDone };
+  },
   archiveDisableChannel: (channelId) => {
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
@@ -502,6 +517,17 @@ export const testPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
+  allowSendCategory: (input) => {
+    const added = mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      scopeKind: 'category',
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  sendScopeCoverage: () => 0,
   disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
   listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
   listSends: (input) =>

@@ -439,6 +439,9 @@ describe('/mcp behind the bearer guard', () => {
 describe('/mcp send_message through the real composition', () => {
   const CHANNEL = '444444444444444444';
   const OTHER_CHANNEL = '455555555555555555';
+  const CATEGORY = '466666666666666666';
+  const THREAD = '488888888888888888';
+  const PRIVATE_THREAD = '499999999999999999';
   /** Allowlisted but in no guild's channel cache: the stale-row shape C2 is about. */
   const OUTSIDE_CHANNEL = '477777777777777777';
   /** Distinctive text: must reach Discord, must never reach the audit row. */
@@ -462,12 +465,54 @@ describe('/mcp send_message through the real composition', () => {
       owner_id: '345678901234567890',
       channels: [
         {
+          id: CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'category',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
           id: CHANNEL,
           guild_id: GUILD_A,
           type: ChannelType.GuildText,
           name: 'planning',
           position: 0,
           permission_overwrites: [],
+          parent_id: CATEGORY,
+        },
+        {
+          id: THREAD,
+          guild_id: GUILD_A,
+          parent_id: CHANNEL,
+          owner_id: ACCOUNT,
+          type: ChannelType.PublicThread,
+          name: 'public-thread',
+          position: 0,
+          permission_overwrites: [],
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: new Date().toISOString(),
+            locked: false,
+          },
+        },
+        {
+          id: PRIVATE_THREAD,
+          guild_id: GUILD_A,
+          parent_id: CHANNEL,
+          owner_id: ACCOUNT,
+          type: ChannelType.PrivateThread,
+          name: 'private-thread',
+          position: 0,
+          permission_overwrites: [],
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: new Date().toISOString(),
+            locked: false,
+            invitable: true,
+          },
         },
         {
           id: OTHER_CHANNEL,
@@ -569,6 +614,55 @@ describe('/mcp send_message through the real composition', () => {
     expect(audit?.actorId).toBe(after['tokenId']);
     // The absence assertion, not only the presence one.
     expect(JSON.stringify(trail)).not.toContain(CONTENT);
+  });
+
+  it('a public thread inherits its parent and audits the derived grant', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (await sendCall(accessToken, sendArgs({ channelId: THREAD, idempotencyKey: 'thread-send' })))
+        .body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('sendMessage')[0]?.args[1]).toBe(THREAD);
+    const audit = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+      .find((entry) => entry.action === 'mcp.message.sent');
+    const after = JSON.parse(audit?.after ?? '{}') as Record<string, unknown>;
+    expect(after['authorization']).toBe('derived');
+    expect(after['grantedByChannelId']).toBe(CHANNEL);
+  });
+
+  it('a channel inherits an allowlisted category', async () => {
+    seedSendGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CATEGORY,
+      scopeKind: 'category',
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'category-send' }))).body,
+    );
+    expect(found.isError).not.toBe(true);
+  });
+
+  it('a private thread never inherits its parent', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: PRIVATE_THREAD, idempotencyKey: 'private-send' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('private thread');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
   });
 
   it('a non-allowlisted channel is refused and Discord is never called', async () => {

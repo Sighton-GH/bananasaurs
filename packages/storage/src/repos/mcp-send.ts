@@ -29,7 +29,12 @@ const toAllowlistedChannel = (row: typeof mcpSendAllowlist.$inferSelect): Allowl
 /** Inserts the channel row; an already-allowed channel is a no-op reported as false. */
 export const allowChannel = (
   scope: GuildScope,
-  input: { channelId: string; addedByAccountId: string; now: number },
+  input: {
+    channelId: string;
+    addedByAccountId: string;
+    now: number;
+    scopeKind?: 'channel' | 'category';
+  },
 ): boolean =>
   write(scope, ({ db }) => {
     const result = db
@@ -37,6 +42,7 @@ export const allowChannel = (
       .values({
         guildId: scope.guildId,
         channelId: input.channelId,
+        scopeKind: input.scopeKind ?? 'channel',
         addedByAccountId: input.addedByAccountId,
         addedAt: input.now,
       })

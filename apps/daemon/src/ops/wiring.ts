@@ -492,6 +492,21 @@ export const opsPortsFor = (
       now: now(),
     });
   },
+  archiveEnableCategory: (input) => {
+    if (!archiveGuildEnabled) return 'guild-not-archive-enabled';
+    return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
+  },
+  archiveDisableCategory: (channelId) => {
+    const messageCount = archiveRepo.countMessages(scope, channelId);
+    const outcome = archiveRepo.disableChannel(scope, channelId);
+    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+  },
+  archiveSetThreads: (channelId, include) =>
+    archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
+  archiveThreads: (channelId) => {
+    const row = archiveRepo.findChannel(scope, channelId);
+    return row === undefined ? undefined : { found: row.threadsFound, done: row.threadsDone };
+  },
   archiveDisableChannel: (channelId) => {
     // Counted before the delete: the cascade below removes the rows, and the
     // audit trail should say how many went with the channel.
@@ -566,8 +581,40 @@ export const opsPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
+  allowSendCategory: (input) => {
+    const added = mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      scopeKind: 'category',
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  sendScopeCoverage: (channelId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    return guild === undefined
+      ? 0
+      : guild.channels.cache.filter(
+          (channel) => !channel.isThread() && channel.parentId === channelId,
+        ).size;
+  },
   disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
-  listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
+  listSendAllowlist: () =>
+    mcpSendRepo.listAllowedChannels(scope).map((row) => ({
+      ...row,
+      coverage:
+        row.scopeKind === 'category'
+          ? (() => {
+              const guild = client.guilds.cache.get(scope.guildId);
+              return guild === undefined
+                ? 0
+                : guild.channels.cache.filter(
+                    (channel) => !channel.isThread() && channel.parentId === row.channelId,
+                  ).size;
+            })()
+          : 1,
+    })),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
 

@@ -959,6 +959,18 @@ export interface OpsPorts {
   }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
   /** Removes the channel row; its messages, edits and attachments cascade. */
   archiveDisableChannel(channelId: string): OpsArchiveDisableOutcome;
+  archiveEnableCategory(input: {
+    channelId: string;
+    attachmentPolicy: ArchiveAttachmentPolicy;
+  }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
+  archiveDisableCategory(channelId: string): OpsArchiveDisableOutcome;
+  archiveSetThreads(
+    channelId: string,
+    include: boolean,
+  ): 'updated' | 'not-enabled' | 'forum-requires-all';
+  archiveThreads(
+    channelId: string,
+  ): { readonly found: number | undefined; readonly done: number } | undefined;
   /** Every enabled channel with its backfill cursor and message count. */
   archiveStatus(): readonly OpsArchiveChannelStatus[];
   /** Marks one archived message preserved (the indefinite retention tier). */
@@ -1052,6 +1064,9 @@ export interface OpsPorts {
    * id) is refused before any row is written.
    */
   allowSendChannel(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
+  allowSendCategory(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
+  disallowSendCategory(channelId: string): boolean;
+  sendScopeCoverage(channelId: string): number;
   disallowSendChannel(channelId: string): boolean;
   listSendAllowlist(): readonly OpsSendAllowlistEntry[];
   listSends(input: {
@@ -1065,6 +1080,8 @@ export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-suc
 
 export interface OpsSendAllowlistEntry {
   readonly channelId: string;
+  readonly scopeKind?: 'channel' | 'category';
+  readonly coverage?: number;
   readonly addedByAccountId: string;
   readonly addedAt: number;
 }
