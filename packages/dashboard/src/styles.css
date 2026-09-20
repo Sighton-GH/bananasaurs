@@ -152,11 +152,13 @@
         color-mix(in srgb, var(--color-ink) 5%, transparent),
         transparent 28rem
       ),
-      linear-gradient(
-        135deg,
-        var(--color-canvas),
-        color-mix(in srgb, var(--color-panel) 82%, black)
-      );
+      /* Translucent on purpose: the fixed backdrop pattern and the html
+       * glows stay visible behind the login screen. */
+        linear-gradient(
+          135deg,
+          color-mix(in srgb, var(--color-canvas) 62%, transparent),
+          color-mix(in srgb, var(--color-panel) 74%, transparent)
+        );
   }
 
   .shell-backdrop {
