@@ -173,6 +173,15 @@ export interface McpToken {
   readonly lastUsedAt: number | null;
 }
 
+/** One row of `GET /api/mcp/sends` — mirrors `OpsSendRecord`: ids and outcomes, never content. */
+export interface McpSend {
+  readonly channelId: string;
+  readonly messageId: string | null;
+  readonly tokenId: string;
+  readonly sentAt: number;
+  readonly outcome: 'sent' | 'dry_run';
+}
+
 /** One row of `GET /api/send-allowlist` — mirrors `OpsSendAllowlistEntry`. */
 export interface SendAllowlistEntry {
   readonly channelId: string;

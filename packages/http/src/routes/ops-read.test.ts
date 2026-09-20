@@ -85,6 +85,7 @@ const GUILD_ROUTES = [
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
+  '/api/mcp/sends',
 ] as const;
 
 const INSTANCE_ROUTES = [

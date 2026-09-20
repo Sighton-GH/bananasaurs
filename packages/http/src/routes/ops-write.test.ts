@@ -4,7 +4,14 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, effectRepo, guildRepo, loggingRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  authzRepo,
+  effectRepo,
+  guildRepo,
+  loggingRepo,
+  oauthRepo,
+} from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
@@ -115,6 +122,8 @@ const ALL_CALLS: readonly Call[] = [
     payload: { channelId: '333333333333333333', accountId: ACCOUNT },
   },
   { method: 'DELETE', url: '/api/send-allowlist/333333333333333333' },
+  { method: 'POST', url: '/api/mcp/tokens/t1/revoke' },
+  { method: 'POST', url: '/api/mcp/clients/c1/revoke' },
   { method: 'POST', url: '/api/adoption-allowance', payload: { count: 5 } },
   { method: 'POST', url: '/api/automod/rules/r1/ready' },
   { method: 'POST', url: '/api/automod/rules/r1/signoff', payload: { signedOffBy: 'owner' } },
@@ -210,6 +219,60 @@ describe('ops-write routes', () => {
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(400);
     }
+  });
+
+  it('revokes an MCP token lineage and audits it; unknown ids are 404 with no audit row', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(ALL_GRANTS);
+    const instance = t.scopes.instance();
+    oauthRepo.createClient(instance, {
+      clientId: 'client_1',
+      clientName: 'Claude Desktop',
+      redirectUris: ['https://claude.test/callback'],
+      createdAt: clock,
+      createdByAccountId: ACCOUNT,
+      registrationSource: 'dynamic',
+    });
+    oauthRepo.createToken(instance, {
+      tokenId: 'tok_1',
+      tokenHash: 'hash_1',
+      kind: 'access',
+      clientId: 'client_1',
+      accountId: ACCOUNT,
+      scopes: ['mcp'],
+      createdAt: clock,
+      expiresAt: clock + 60_000,
+      parentTokenId: null,
+      issuedFromCodeHash: 'codehash_1',
+    });
+
+    const ok = await app.inject({
+      method: 'POST',
+      url: '/api/mcp/tokens/tok_1/revoke',
+      headers: { cookie, [CSRF]: csrf },
+    });
+    expect(ok.statusCode).toBe(200);
+    expect(ok.json()).toEqual({ tokenId: 'tok_1', tokensRevoked: 1 });
+    expect(oauthRepo.findTokenById(instance, 'tok_1')?.revokedAt).toBe(clock);
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.some((row) => row.action === 'mcp.token.revoked')).toBe(true);
+
+    const missing = await app.inject({
+      method: 'POST',
+      url: '/api/mcp/tokens/nope/revoke',
+      headers: { cookie, [CSRF]: csrf },
+    });
+    expect(missing.statusCode).toBe(404);
+    const missingBody: { error: string } = missing.json();
+    expect(missingBody.error).toBe('no-such-token');
+
+    const clientGone = await app.inject({
+      method: 'POST',
+      url: '/api/mcp/clients/client_1/revoke',
+      headers: { cookie, [CSRF]: csrf },
+    });
+    expect(clientGone.statusCode).toBe(200);
+    expect(oauthRepo.findClient(instance, 'client_1')).toBeUndefined();
   });
 
   it('maps usage answers to 404s', async () => {

@@ -1,5 +1,11 @@
 import { useCallback, useState } from 'react';
-import type { McpClient, McpToken, SendAllowlistEntry, SendAllowOutcome } from '../api/ops.js';
+import type {
+  McpClient,
+  McpSend,
+  McpToken,
+  SendAllowlistEntry,
+  SendAllowOutcome,
+} from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -14,12 +20,11 @@ import { useToast } from '../ui/Toast.js';
 
 /**
  * `/mcp`: the connector's standing state as a page (ADR 0051 D3) —
- * `mcp clients`, `mcp tokens` and the send allowlist (`mcp allowlist`,
- * `allow-channel`, `disallow-channel`). Nothing is allowlisted by default,
- * and the allowlist is the only thing that decides where the connector may
- * post. Token and client revocation and the send ledger stay on the CLI for
- * now (`mcp revoke`, `mcp revoke-client`, `mcp sends`) — no HTTP route
- * exists for them yet, and the page says so rather than hiding it.
+ * `mcp clients`, `mcp tokens`, the send allowlist (`mcp allowlist`,
+ * `allow-channel`, `disallow-channel`), revocation (`mcp revoke`,
+ * `mcp revoke-client`) and the send ledger (`mcp sends`). Nothing is
+ * allowlisted by default, and the allowlist is the only thing that decides
+ * where the connector may post.
  */
 export function McpPage() {
   const session = useSession();
@@ -40,10 +45,60 @@ export function McpPage() {
   const clients = useResource('the MCP clients', loadClients);
   const tokens = useResource('the MCP tokens', loadTokens);
   const allowlist = useResource('the send allowlist', loadAllowlist);
+  const loadSends = useCallback(
+    () => session.read<{ sends: McpSend[] }>('/api/mcp/sends').then((r) => r.sends),
+    [session],
+  );
+  const sends = useResource('the send ledger', loadSends);
 
   const [channelId, setChannelId] = useState('');
   const [removing, setRemoving] = useState<SendAllowlistEntry | undefined>(undefined);
+  const [revokingToken, setRevokingToken] = useState<McpToken | undefined>(undefined);
+  const [revokingClient, setRevokingClient] = useState<McpClient | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+
+  const revokeToken = async () => {
+    if (revokingToken === undefined) return;
+    setBusy(true);
+    try {
+      const result = await session.write<{ tokenId: string; tokensRevoked: number }>(
+        `/api/mcp/tokens/${encodeURIComponent(revokingToken.tokenId)}/revoke`,
+        {},
+      );
+      if (result !== undefined) {
+        toast({
+          tone: 'ok',
+          title: `Token revoked — ${String(result.tokensRevoked)} token(s) in its lineage`,
+        });
+        tokens.reload();
+      }
+    } finally {
+      setBusy(false);
+      setRevokingToken(undefined);
+    }
+  };
+
+  const revokeClient = async () => {
+    if (revokingClient === undefined) return;
+    setBusy(true);
+    try {
+      const result = await session.write<{ clientId: string; tokensRevoked: number }>(
+        `/api/mcp/clients/${encodeURIComponent(revokingClient.clientId)}/revoke`,
+        {},
+      );
+      if (result !== undefined) {
+        toast({
+          tone: 'ok',
+          title: `Client removed — ${String(result.tokensRevoked)} token(s) revoked`,
+        });
+        clients.reload();
+        tokens.reload();
+      }
+    } finally {
+      setBusy(false);
+      setRevokingClient(undefined);
+    }
+  };
 
   const allow = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -181,6 +236,11 @@ export function McpPage() {
                     header: 'Created',
                     cell: (c) => new Date(c.createdAt).toLocaleDateString(),
                   },
+                  {
+                    key: 'actions',
+                    header: '',
+                    cell: (c) => <Button onClick={() => setRevokingClient(c)}>Revoke</Button>,
+                  },
                 ]}
               />
             )}
@@ -229,19 +289,59 @@ export function McpPage() {
                         new Date(t.lastUsedAt).toLocaleString()
                       ),
                   },
+                  {
+                    key: 'actions',
+                    header: '',
+                    cell: (t) =>
+                      t.revokedAt !== null ? null : (
+                        <Button onClick={() => setRevokingToken(t)}>Revoke</Button>
+                      ),
+                  },
                 ]}
               />
             )}
           </DataState>
         </Card>
-        <Card title="Still on the CLI">
-          <p className="text-sm">
-            Revoking a token lineage or a whole client, and the send ledger (
-            <code className="text-xs">mcp sends</code>), have no HTTP route yet — use{' '}
-            <code className="text-xs">mcp revoke</code>,{' '}
-            <code className="text-xs">mcp revoke-client</code> and{' '}
-            <code className="text-xs">mcp sends</code> from the operator CLI.
-          </p>
+        <Card title="Send ledger">
+          <DataState
+            resource={sends.resource}
+            isEmpty={(rows) => rows.length === 0}
+            empty={<p className="text-sm text-ink-muted">No MCP sends recorded.</p>}
+          >
+            {(rows) => (
+              <DataTable
+                caption="Recent MCP sends — channels and outcomes, never content"
+                rows={rows}
+                rowKey={(s2) => `${s2.tokenId}:${String(s2.sentAt)}:${s2.channelId}`}
+                columns={[
+                  {
+                    key: 'sentAt',
+                    header: 'Sent',
+                    cell: (s2) => new Date(s2.sentAt).toLocaleString(),
+                  },
+                  {
+                    key: 'outcome',
+                    header: 'Outcome',
+                    cell: (s2) =>
+                      s2.outcome === 'sent' && s2.messageId === null ? (
+                        <Badge tone="neutral">sent (no message id)</Badge>
+                      ) : s2.outcome === 'sent' ? (
+                        <Badge tone="ok">sent</Badge>
+                      ) : (
+                        <Badge tone="neutral">dry run</Badge>
+                      ),
+                  },
+                  { key: 'channel', header: 'Channel', cell: (s2) => s2.channelId },
+                  { key: 'token', header: 'Token', cell: (s2) => s2.tokenId },
+                  {
+                    key: 'message',
+                    header: 'Message',
+                    cell: (s2) => s2.messageId ?? <span className="text-ink-muted">—</span>,
+                  },
+                ]}
+              />
+            )}
+          </DataState>
         </Card>
       </div>
       <ConfirmDialog
@@ -258,6 +358,36 @@ export function McpPage() {
         busy={busy}
         onConfirm={() => void disallow()}
         onCancel={() => setRemoving(undefined)}
+      />
+      <ConfirmDialog
+        open={revokingToken !== undefined}
+        title={`Revoke token ${revokingToken?.tokenId ?? ''}?`}
+        scope={
+          <p>
+            The token and its whole lineage stop working at once; anything holding it has to
+            authorise again. This is the CLI&apos;s <code className="text-xs">mcp revoke</code>.
+          </p>
+        }
+        confirmLabel="Revoke token"
+        danger
+        busy={busy}
+        onConfirm={() => void revokeToken()}
+        onCancel={() => setRevokingToken(undefined)}
+      />
+      <ConfirmDialog
+        open={revokingClient !== undefined}
+        title={`Remove client ${revokingClient?.clientName ?? ''}?`}
+        scope={
+          <p>
+            The client is gone and every token ever issued to it is revoked. This is the CLI&apos;s{' '}
+            <code className="text-xs">mcp revoke-client</code>.
+          </p>
+        }
+        confirmLabel="Remove client"
+        danger
+        busy={busy}
+        onConfirm={() => void revokeClient()}
+        onCancel={() => setRevokingClient(undefined)}
       />
     </>
   );

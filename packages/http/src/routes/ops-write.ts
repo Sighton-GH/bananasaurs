@@ -96,13 +96,11 @@ export const registerOpsWriteRoutes = (
       if (outcome.reason === 'not-found') {
         return reply.status(404).send({ error: 'not-found' });
       }
-      return reply
-        .status(409)
-        .send({
-          error: outcome.reason,
-          ...('state' in outcome ? { state: outcome.state } : {}),
-          ...('blockingJobId' in outcome ? { blockingJobId: outcome.blockingJobId } : {}),
-        });
+      return reply.status(409).send({
+        error: outcome.reason,
+        ...('state' in outcome ? { state: outcome.state } : {}),
+        ...('blockingJobId' in outcome ? { blockingJobId: outcome.blockingJobId } : {}),
+      });
     }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
@@ -877,6 +875,55 @@ export const registerOpsWriteRoutes = (
         after: { revoked: outcome === 'revoked' },
       });
       return reply.status(200).send({ outcome });
+    },
+  );
+
+  app.post<{ Params: { tokenId: string } }>('/api/mcp/tokens/:tokenId/revoke', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    // Like the CLI, an unknown id is a usage answer with no audit row:
+    // nothing changed. The port revokes the token's whole lineage.
+    const tokensRevoked = deps.instance.mcpRevokeToken(request.params.tokenId);
+    if (tokensRevoked === undefined) {
+      return reply
+        .status(404)
+        .send({ error: 'no-such-token', message: `no such token ${request.params.tokenId}` });
+    }
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'mcp.token.revoked',
+      subjectType: 'instance',
+      subjectId: 'instance',
+      before: { tokenId: request.params.tokenId, live: true },
+      after: { tokenId: request.params.tokenId, live: false, tokensRevoked },
+    });
+    return reply.status(200).send({ tokenId: request.params.tokenId, tokensRevoked });
+  });
+
+  app.post<{ Params: { clientId: string } }>(
+    '/api/mcp/clients/:clientId/revoke',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const tokensRevoked = deps.instance.mcpRevokeClient(request.params.clientId);
+      if (tokensRevoked === undefined) {
+        return reply
+          .status(404)
+          .send({ error: 'no-such-client', message: `no such client ${request.params.clientId}` });
+      }
+      deps.portsFor(session.scope).recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'mcp.client.revoked',
+        subjectType: 'instance',
+        subjectId: 'instance',
+        before: { clientId: request.params.clientId },
+        after: { clientId: request.params.clientId, tokensRevoked },
+      });
+      return reply.status(200).send({ clientId: request.params.clientId, tokensRevoked });
     },
   );
 };
