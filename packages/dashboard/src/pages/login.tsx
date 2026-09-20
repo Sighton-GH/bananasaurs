@@ -15,14 +15,13 @@ function Card({ title, children }: { readonly title: string; readonly children: 
           {children}
         </div>
         <p className="mt-5 text-center text-xs text-ink-muted">
-          A{' '}
+          Bananasaurs by{' '}
           <a
             className="underline decoration-line underline-offset-2 hover:text-ink"
             href="https://sighton.ca"
           >
             Sighton Media
-          </a>{' '}
-          product
+          </a>
         </p>
       </div>
     </main>

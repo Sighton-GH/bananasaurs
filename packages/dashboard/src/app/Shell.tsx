@@ -54,7 +54,9 @@ function GuildIdentity() {
   );
 }
 
-const GROUPS = ['Workspace', 'Operations', 'Governance', 'Release 3'] as const;
+// ADR 0051 D6's rail groups, in order. Empty groups (Archive until the
+// operator pages land) render nothing rather than a bare heading.
+const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'] as const;
 
 function Rail({ onNavigate }: { readonly onNavigate?: () => void }) {
   const [location] = useLocation();
@@ -63,6 +65,7 @@ function Rail({ onNavigate }: { readonly onNavigate?: () => void }) {
       <nav aria-label="Areas" className="flex-1 overflow-y-auto px-3 py-2">
         {GROUPS.map((group) => {
           const entries = NAV.filter((entry) => entry.group === group);
+          if (entries.length === 0) return null;
           return (
             <section
               key={group}
@@ -213,14 +216,13 @@ function ShellFooter({ onSignOut }: { readonly onSignOut: () => void }) {
         Sign out
       </Button>
       <p className="mt-3 text-center text-[0.6875rem] text-ink-muted">
-        A{' '}
+        Bananasaurs by{' '}
         <a
           className="underline decoration-line underline-offset-2 hover:text-ink"
           href="https://sighton.ca"
         >
           Sighton Media
-        </a>{' '}
-        product
+        </a>
       </p>
     </div>
   );

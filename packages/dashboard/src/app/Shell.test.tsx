@@ -72,10 +72,16 @@ describe('Shell', () => {
     const labels = Array.from(nav.querySelectorAll('a')).map((a) =>
       a.textContent?.replace('Future', ''),
     );
-    expect(labels).toEqual(NAV.map((n) => n.label));
-    expect(within(nav).getByRole('heading', { name: 'Workspace' })).toBeTruthy();
-    expect(within(nav).getByRole('heading', { name: 'Operations' })).toBeTruthy();
-    expect(within(nav).getByRole('heading', { name: 'Governance' })).toBeTruthy();
+    // Rendered order follows the rail groups (ADR 0051 D6), not the NAV
+    // array: every entry appears exactly once, in group order.
+    const groupOrder = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'];
+    const expected = groupOrder.flatMap((group) =>
+      NAV.filter((n) => n.group === group).map((n) => n.label),
+    );
+    expect(labels).toEqual(expected);
+    expect(within(nav).getByRole('heading', { name: 'Operate' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Moderation' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Instance' })).toBeTruthy();
     expect(within(nav).getByRole('heading', { name: 'Release 3' })).toBeTruthy();
     const aside = screen.getByRole('complementary');
     expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();

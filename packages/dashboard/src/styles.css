@@ -90,7 +90,7 @@
     background:
       radial-gradient(
         circle at 15% 15%,
-        color-mix(in srgb, var(--color-hold) 7%, transparent),
+        color-mix(in srgb, var(--color-ink) 5%, transparent),
         transparent 28rem
       ),
       linear-gradient(
