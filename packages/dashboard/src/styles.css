@@ -47,6 +47,28 @@
     }
   }
 
+  /* An explicit choice from the header toggle (persisted in localStorage)
+   * beats the media query; `system` simply sets no attribute. */
+  :root[data-theme='light'] {
+    --color-canvas: #f4f6f8;
+    --color-panel: #ffffff;
+    --color-line: #d7dde3;
+    --color-ink: #1b2026;
+    --color-ink-muted: #5c6773;
+    --color-hold: #d99a1e;
+    --color-hold-ink: #1a1405;
+  }
+
+  :root[data-theme='dark'] {
+    --color-canvas: #14181d;
+    --color-panel: #1b2026;
+    --color-line: #2b333c;
+    --color-ink: #d9dfe6;
+    --color-ink-muted: #8a94a0;
+    --color-hold: #f2b441;
+    --color-hold-ink: #1a1405;
+  }
+
   html {
     font-variant-numeric: tabular-nums;
   }

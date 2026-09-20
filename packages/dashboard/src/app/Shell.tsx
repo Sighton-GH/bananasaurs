@@ -23,7 +23,9 @@ import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { StubPage } from '../pages/stub.js';
+import { Attribution } from '../ui/Attribution.js';
 import { Brand } from '../ui/Brand.js';
+import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { Button } from '../ui/Button.js';
 import { HealthProvider, useHealth } from './health.js';
 import { NAV } from './routes.js';
@@ -203,15 +205,7 @@ function ShellFooter({ onSignOut }: { readonly onSignOut: () => void }) {
       <Button className="w-full justify-center" onClick={onSignOut}>
         Sign out
       </Button>
-      <p className="mt-3 text-center text-[0.6875rem] text-ink-muted">
-        Bananasaurs by{' '}
-        <a
-          className="underline decoration-line underline-offset-2 hover:text-ink"
-          href="https://sighton.ca"
-        >
-          Sighton Media
-        </a>
-      </p>
+      <Attribution className="mt-3 text-center text-[0.6875rem] text-ink-muted" />
     </div>
   );
 }
@@ -235,16 +229,19 @@ export function Shell() {
       <div className="min-h-screen lg:flex">
         <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-line bg-canvas/95 px-4 backdrop-blur lg:hidden">
           <Brand />
-          <button
-            type="button"
-            aria-label={drawerOpen ? 'Close navigation' : 'Open navigation'}
-            aria-expanded={drawerOpen}
-            aria-controls="mobile-navigation"
-            className="grid size-10 place-items-center rounded-sm border border-line bg-panel text-ink"
-            onClick={() => setDrawerOpen((open) => !open)}
-          >
-            <MenuIcon open={drawerOpen} />
-          </button>
+          <div className="flex items-center gap-2">
+            <ThemeToggle />
+            <button
+              type="button"
+              aria-label={drawerOpen ? 'Close navigation' : 'Open navigation'}
+              aria-expanded={drawerOpen}
+              aria-controls="mobile-navigation"
+              className="grid size-10 place-items-center rounded-sm border border-line bg-panel text-ink"
+              onClick={() => setDrawerOpen((open) => !open)}
+            >
+              <MenuIcon open={drawerOpen} />
+            </button>
+          </div>
         </header>
 
         {drawerOpen && (
@@ -272,7 +269,10 @@ export function Shell() {
           <StateStrip />
           <div className="hidden h-16 items-center justify-between border-b border-line px-6 lg:flex">
             <p className="text-sm text-ink-muted">Operator console</p>
-            <p className="text-xs text-ink-muted">Observe-first controls</p>
+            <div className="flex items-center gap-3">
+              <p className="text-xs text-ink-muted">Observe-first controls</p>
+              <ThemeToggle />
+            </div>
           </div>
           <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
             <Pages />

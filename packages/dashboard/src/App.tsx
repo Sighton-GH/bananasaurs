@@ -1,8 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { Router } from 'wouter';
 import { getSession, type SessionInfo } from './api.js';
 import { SessionProvider } from './app/session.js';
 import { Shell } from './app/Shell.js';
+import { ThemeProvider } from './app/theme.js';
 import { BootstrapForm, LoginForm } from './pages/login.js';
 
 // --- top-level session state machine ----------------------------------------
@@ -38,22 +39,27 @@ export default function App() {
 
   useEffect(check, [check]);
 
+  let body: ReactNode;
   if (phase.kind === 'loading') {
-    return (
+    body = (
       <p role="status" className="p-6 text-sm text-ink-muted">
         Loading…
       </p>
     );
+  } else if (phase.kind === 'anon') {
+    body = <LoginForm onSignedIn={check} />;
+  } else if (phase.kind === 'bootstrap') {
+    body = <BootstrapForm token={phase.token} onSignedIn={check} />;
+  } else {
+    body = (
+      <SessionProvider session={phase.session} onLoggedOut={check}>
+        <Router>
+          <Shell />
+        </Router>
+      </SessionProvider>
+    );
   }
-  if (phase.kind === 'anon') return <LoginForm onSignedIn={check} />;
-  if (phase.kind === 'bootstrap') {
-    return <BootstrapForm token={phase.token} onSignedIn={check} />;
-  }
-  return (
-    <SessionProvider session={phase.session} onLoggedOut={check}>
-      <Router>
-        <Shell />
-      </Router>
-    </SessionProvider>
-  );
+  // The provider wraps login and bootstrap too: the toggle must be reachable
+  // before a session exists.
+  return <ThemeProvider>{body}</ThemeProvider>;
 }

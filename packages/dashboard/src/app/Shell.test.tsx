@@ -7,6 +7,7 @@ import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-supp
 import { NOT_BUILT } from '../pages/stub.js';
 import { NAV } from './routes.js';
 import { Shell } from './Shell.js';
+import { ThemeProvider } from './theme.js';
 
 const HEALTH = {
   guildId: '1540816150026518620',
@@ -32,9 +33,11 @@ function renderAt(path: string) {
   ]);
   const { hook } = memoryLocation({ path });
   renderWithSession(
-    <Router hook={hook}>
-      <Shell />
-    </Router>,
+    <ThemeProvider>
+      <Router hook={hook}>
+        <Shell />
+      </Router>
+    </ThemeProvider>,
   );
   return mock;
 }
@@ -121,9 +124,11 @@ describe('Shell', () => {
     const onLoggedOut = vi.fn();
     const { hook } = memoryLocation({ path: '/' });
     renderWithSession(
-      <Router hook={hook}>
-        <Shell />
-      </Router>,
+      <ThemeProvider>
+        <Router hook={hook}>
+          <Shell />
+        </Router>
+      </ThemeProvider>,
       {
         session: {
           ...TEST_SESSION,

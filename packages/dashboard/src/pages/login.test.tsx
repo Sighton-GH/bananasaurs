@@ -2,7 +2,10 @@
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, stubFetch } from '../test-support.js';
+import { ThemeProvider } from '../app/theme.js';
 import { BootstrapForm, LoginForm } from './login.js';
+
+const renderForm = (node: React.ReactElement) => render(<ThemeProvider>{node}</ThemeProvider>);
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
@@ -11,7 +14,7 @@ describe('LoginForm', () => {
   it('posts { username, password } to /api/login and calls onSignedIn on 200', async () => {
     const mock = stubFetch([{ method: 'POST', url: '/api/login', body: {} }]);
     const onSignedIn = vi.fn();
-    render(<LoginForm onSignedIn={onSignedIn} />);
+    renderForm(<LoginForm onSignedIn={onSignedIn} />);
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
     fireEvent.change(screen.getByLabelText('Password'), {
       target: { value: 'correct horse battery' },
@@ -28,7 +31,7 @@ describe('LoginForm', () => {
 
   it('shows the lock-out message on locked-out', async () => {
     stubFetch([{ method: 'POST', url: '/api/login', status: 429, body: { error: 'locked-out' } }]);
-    render(<LoginForm onSignedIn={() => undefined} />);
+    renderForm(<LoginForm onSignedIn={() => undefined} />);
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Sign in' }));
     });
@@ -37,7 +40,7 @@ describe('LoginForm', () => {
 
   it('shows no guild choice before the server asks for one', async () => {
     stubFetch([{ method: 'POST', url: '/api/login', body: {} }]);
-    render(<LoginForm onSignedIn={() => undefined} />);
+    renderForm(<LoginForm onSignedIn={() => undefined} />);
     expect(screen.queryByLabelText('Server')).toBeNull();
   });
 
@@ -61,7 +64,7 @@ describe('LoginForm', () => {
     });
     vi.stubGlobal('fetch', mock);
     const onSignedIn = vi.fn();
-    render(<LoginForm onSignedIn={onSignedIn} />);
+    renderForm(<LoginForm onSignedIn={onSignedIn} />);
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
     fireEvent.change(screen.getByLabelText('Password'), {
       target: { value: 'correct horse battery' },
@@ -98,7 +101,7 @@ describe('BootstrapForm', () => {
         body: { error: 'bad-request', issues: ['too short', 'too common'] },
       },
     ]);
-    render(<BootstrapForm token="tok" onSignedIn={() => undefined} />);
+    renderForm(<BootstrapForm token="tok" onSignedIn={() => undefined} />);
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
     fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'short' } });
     await act(async () => {

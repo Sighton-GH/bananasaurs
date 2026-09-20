@@ -1,11 +1,16 @@
 import { useState } from 'react';
+import { Attribution } from '../ui/Attribution.js';
 import { Brand } from '../ui/Brand.js';
 import { Button } from '../ui/Button.js';
 import { Field, Input } from '../ui/Field.js';
+import { ThemeToggle } from '../ui/ThemeToggle.js';
 
 function Card({ title, children }: { readonly title: string; readonly children: React.ReactNode }) {
   return (
-    <main className="login-backdrop grid min-h-screen place-items-center px-4 py-10">
+    <main className="login-backdrop relative grid min-h-screen place-items-center px-4 py-10">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
       <div className="w-full max-w-[25rem]">
         <div className="mb-6 flex justify-center">
           <Brand />
@@ -14,15 +19,7 @@ function Card({ title, children }: { readonly title: string; readonly children: 
           <h1 className="text-xl tracking-[-0.02em]">{title}</h1>
           {children}
         </div>
-        <p className="mt-5 text-center text-xs text-ink-muted">
-          Bananasaurs by{' '}
-          <a
-            className="underline decoration-line underline-offset-2 hover:text-ink"
-            href="https://sighton.ca"
-          >
-            Sighton Media
-          </a>
-        </p>
+        <Attribution className="mt-5 text-center text-xs text-ink-muted" />
       </div>
     </main>
   );
