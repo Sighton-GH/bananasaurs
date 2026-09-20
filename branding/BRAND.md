@@ -8,11 +8,13 @@ it points to.
 
 | File               | Origin                                                       | Notes                                                                                                                                           |
 | ------------------ | ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `logo.jpg`         | Owner-supplied banana-saur mark (2026-09-20).                | The product mark. Preserved byte-exact: no pixel of the mark is edited, and derived uses are sized/compressed copies placed on a light tile so no transparency is faked. |
-| `sighton-mark.jpg` | Owner-supplied Sighton Media mark (2026-09-20).              | Rides next to the attribution line only.                                                                                                         |
-| `favicon.png`      | Derived from `logo.jpg` for this project.                    | Sized down from the mark; the source stays untouched.                                                                                            |
-| `bg-dark.jpg`      | Generated for this project (2026-09-20).                     | Shell/login backdrop, dark scheme.                                                                                                               |
-| `bg-light.jpg`     | Generated for this project (2026-09-20).                     | Shell/login backdrop, light scheme.                                                                                                              |
+| `logo.jpg`         | Owner-supplied banana-saur mark (2026-09-20, re-sent 2026-09-20 after a sandbox loss). | The product mark, in `packages/dashboard/public/brand/`. Preserved byte-exact: no pixel of the mark is edited, and derived uses are sized/compressed copies placed on its original light tile so no transparency is faked. The earlier PNG export of the same mark also lives at `branding/logo.png` (planning baseline). |
+| `brand-mark.jpg`   | Derived from `logo.jpg` (512px).                             | The display copy the rail header and login screen load.                                                                                          |
+| `favicon.png`      | Derived from `logo.jpg` (48px) for this project.             | Sized down from the mark; the source stays untouched.                                                                                            |
+
+Still owed: the Sighton Media mark (owner to send; rides next to the
+attribution line only) and the dark/light shell backdrop art from ADR 0051
+D5 (lost with the sandbox, not yet regenerated).
 
 ## Usage rules (ADR 0051 D5)
 
