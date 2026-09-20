@@ -115,9 +115,9 @@
     background-image: url('/brand/leaves.svg'), url('/brand/bananasaur.png');
     background-repeat: no-repeat, no-repeat;
     background-position:
-      left -7vmin top -7vmin,
+      left -9vmin center,
       right -6vmin bottom -7vmin;
-    background-size: 36vmin, 47vmin;
+    background-size: 44vmin, 47vmin;
     opacity: var(--backdrop-art-opacity);
   }
 
