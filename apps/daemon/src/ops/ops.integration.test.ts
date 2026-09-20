@@ -1486,21 +1486,29 @@ describe('archive search visibility, end to end', () => {
       attachments: [],
     });
     // A message in a channel that is NOT archive-enabled: no channel row, so
-    // the composite foreign key would refuse it — inserted with enforcement
-    // off, the shape a hand-written orphan row has. The FTS trigger still
-    // fires, so the text IS in the index; only the visibility set keeps it
-    // out of results.
+    // the composite foreign key would refuse it — and since B1 the repo's
+    // own upsert refuses it loudly first. The orphan this test needs is the
+    // hand-written kind, so it is written by hand: enforcement off, straight
+    // SQL, the shape a manual insert has. The FTS trigger still fires, so
+    // the text IS in the index; only the visibility set keeps it out of
+    // results.
     t.raw.pragma('foreign_keys = OFF');
     try {
-      archiveRepo.upsertMessage(scope(), {
-        messageId: '890123456789012345',
-        channelId: CHANNEL_B,
-        authorId: '789012345678901234',
-        content: 'quince visibility proof alpha',
-        createdAt: discord.now(),
-        editedAt: undefined,
-        attachments: [],
-      });
+      t.raw
+        .prepare(
+          `INSERT INTO archive_messages
+             (guild_id, message_id, channel_id, thread_id, author_id, content,
+              created_at, edited_at, deleted_at, retention_class, case_id, content_purged_at)
+           VALUES (?, ?, ?, NULL, ?, ?, ?, NULL, NULL, 'default', NULL, NULL)`,
+        )
+        .run(
+          GUILD,
+          '890123456789012345',
+          CHANNEL_B,
+          '789012345678901234',
+          'quince visibility proof alpha',
+          discord.now(),
+        );
     } finally {
       t.raw.pragma('foreign_keys = ON');
     }
