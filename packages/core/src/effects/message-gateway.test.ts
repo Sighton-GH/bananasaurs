@@ -10,6 +10,7 @@ import type {
 import { parseGuildId, parseSnowflakeId } from '../ids.js';
 import {
   contentHashFor,
+  MESSAGE_SEND_RATE_LIMIT,
   sendMessageEffect,
   type MessageGatewayDeps,
   type MessageIntent,
@@ -29,7 +30,7 @@ const CHANNEL = parseSnowflakeId('222222222222222222');
 const OTHER_CHANNEL = parseSnowflakeId('333333333333333333');
 const TOKEN_ID = 'tok_testrow000000000000000000000001';
 
-const RATE_LIMIT = 10;
+const RATE_LIMIT = MESSAGE_SEND_RATE_LIMIT;
 const HOUR_MS = 60 * 60 * 1000;
 const DUPLICATE_WINDOW_MS = 60 * 1000;
 
@@ -387,7 +388,7 @@ describe('sendMessageEffect', () => {
     expect(h.trips).toHaveLength(0);
   });
 
-  it('refuses the eleventh send in the hour; the tenth succeeds', async () => {
+  it('refuses the send that overflows the cap; the last one under it succeeds', async () => {
     const h = build();
     for (let i = 0; i < RATE_LIMIT; i += 1) {
       const outcome = await sendMessageEffect(
@@ -396,12 +397,12 @@ describe('sendMessageEffect', () => {
       );
       expect(outcome.status).toBe('sent');
     }
-    const eleventh = await sendMessageEffect(
+    const overflow = await sendMessageEffect(
       h.deps(),
-      intent({ idempotencyKey: 'key-cap-10', content: 'cap message 10' }),
+      intent({ idempotencyKey: 'key-cap-overflow', content: 'cap message overflow' }),
     );
 
-    expect(eleventh).toEqual({ status: 'refused', reason: 'rate-cap' });
+    expect(overflow).toEqual({ status: 'refused', reason: 'rate-cap' });
     expect(h.discord.callsFor('sendMessage')).toHaveLength(RATE_LIMIT);
   });
 

@@ -195,6 +195,10 @@ export const listSends = (
     return rows.map(toSendRow);
   });
 
-/** Ruling M5-D4: ten accepted sends per guild per rolling hour. */
-export const SEND_RATE_LIMIT = 10;
+/**
+ * Ruling M5-D4: two hundred accepted sends per guild per rolling hour
+ * (raised from the launch default of 10 per owner decision, see Q1 in
+ * docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md).
+ */
+export const SEND_RATE_LIMIT = 200;
 export const SEND_RATE_WINDOW_MS = 60 * 60 * 1000;

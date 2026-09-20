@@ -163,7 +163,9 @@ export interface MessageGatewayDeps {
 }
 
 /**
- * Ten accepted sends per guild per rolling hour (ruling M5-D4).
+ * Two hundred accepted sends per guild per rolling hour (ruling M5-D4;
+ * raised from the launch default of 10 per owner decision, see Q1 in
+ * docs/superpowers/specs/2026-09-12-mcp-operator-server-design.md).
  *
  * Mirrors `SEND_RATE_LIMIT` / `SEND_RATE_WINDOW_MS` in
  * `packages/storage/src/repos/mcp-send.ts`. Duplicated rather than imported:
@@ -171,7 +173,7 @@ export interface MessageGatewayDeps {
  * the Task 4 wiring passes repository-backed ports and this module owns the
  * numbers it enforces. If the cap ever changes, both places change together.
  */
-export const MESSAGE_SEND_RATE_LIMIT = 10;
+export const MESSAGE_SEND_RATE_LIMIT = 200;
 export const MESSAGE_SEND_RATE_WINDOW_MS = 60 * 60 * 1000;
 
 /**
