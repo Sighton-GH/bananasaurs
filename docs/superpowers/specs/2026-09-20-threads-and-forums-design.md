@@ -118,8 +118,8 @@ archive_channels       -- add: scope_kind TEXT NOT NULL DEFAULT 'channel'
 mcp_send_channels      -- add: scope_kind TEXT NOT NULL DEFAULT 'channel'
                        --      ('channel' | 'category')
 
-archive_messages       -- add: parent_channel_id TEXT NULL
-                       -- add: is_thread INTEGER NOT NULL DEFAULT 0
+archive_messages       -- add: thread_id TEXT NULL
+                       --      channel_id keeps meaning THE AUTHORIZED PARENT
 
 mod_case_events        -- add: channel_id TEXT NULL   (§7)
 ```
@@ -131,9 +131,28 @@ nothing, which is not a state worth being able to express, so
 rather than silently stored or silently ignored. The column still exists on a
 forum's row, always 1, so the predicate needs no special case.
 
-`archive_messages.parent_channel_id` denormalizes parentage at write time so
-that "everything said in `#help`, threads included" is one indexed query rather
-than a resolution walk over historical rows whose threads may no longer exist.
+**`archive_messages.channel_id` must keep meaning the authorized parent
+channel, with the thread's own id going into a new nullable `thread_id`.** This
+is forced, not stylistic. That table carries a foreign key on
+`(guild_id, channel_id)` → `archive_channels`, `ON DELETE CASCADE`
+(`packages/storage/src/schema.ts:934-937`). A thread has no `archive_channels`
+row under the dynamic model, so writing a thread's id into `channel_id` would
+make **every thread insert fail the foreign key**. Keeping `channel_id` as the
+parent means:
+
+- the foreign key is untouched, and `archive disable-channel` still cascades a
+  channel's thread messages away with it — which is the correct behaviour;
+- existing rows stay valid unchanged, with `thread_id` NULL;
+- "everything said in `#help`, threads included" is a plain
+  `channel_id = '<help>'` query against the existing
+  `archive_messages_channel_created` index, with no resolution walk over
+  historical rows whose threads may since have been deleted;
+- for a **forum**, `channel_id` is the forum and `thread_id` is the post, so a
+  forum's rows hang off the forum's own authorization row.
+
+Everything that reports a message — the MCP evidence envelope, `archive
+search`, `get_message` — must surface `thread_id` when it is set, or a quote
+from a thread will be cited as though it came from the parent channel.
 
 Every new column is additive and nullable or defaulted, so the migration is
 safe on the live database. **Note the drizzle-kit 0.31.10 defect recorded as
@@ -146,7 +165,8 @@ assert the index survives.
 
 - The subscriber's two-line veto becomes a call to the §3.1 predicate, using
   the parentage now on the event. No network call.
-- Writes record `parent_channel_id` and `is_thread`.
+- Writes record `thread_id` (NULL for a message in the channel itself), with
+  `channel_id` set to the authorized parent — see §4.
 - Backfill gains a thread walk: for each newly enabled channel, enumerate
   **active** threads (`GET /guilds/{id}/threads/active`) and **archived** public
   threads (`GET /channels/{id}/threads/archived/public`, paginated), then
@@ -175,7 +195,7 @@ assert the index survives.
   through the §3.1 predicate so that a thread under an enabled parent is
   genuinely visible rather than incidentally reachable.
 - `get_message` is unchanged; it already works by message id.
-- Every result that came from a thread carries `parentChannelId` and a
+- Every result that came from a thread carries `threadId`, its parent `channelId` and a
   `threadName` in its evidence envelope, so the AI can cite *where* a quote
   came from. A quote attributed to `#help` that actually came from a thread
   inside it is a citation error, and the envelope exists to prevent exactly
@@ -299,7 +319,7 @@ is nothing but those.
 - **Automod exemption inheritance**, including the case that matters: a thread
   under an exempt parent is exempt, and a thread under a non-exempt parent in
   an exempt category is exempt.
-- **The evidence envelope carries `parentChannelId`** for every thread-sourced
+- **The evidence envelope carries `threadId`** for every thread-sourced
   result, so citations cannot silently attribute a thread quote to its parent.
 - **Idempotency is unchanged**: a send to a thread under the same key still
   produces exactly one message.
