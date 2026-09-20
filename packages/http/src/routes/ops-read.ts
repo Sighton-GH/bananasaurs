@@ -1,0 +1,165 @@
+import type { FastifyInstance } from 'fastify';
+import { z } from 'zod';
+import type { HttpDeps, RouteGuard } from '../server.js';
+import { requireCapability } from './capability.js';
+
+/**
+ * The dashboard's second read surface: the operator-observability answers
+ * the CLI gives through `doctor`, `backup list`, `provider status`,
+ * `archive status|search`, `config show`, `account list`, `mcp clients` and
+ * `mcp tokens` (ADR 0051 D1–D3). Every answer already exists on `OpsPorts`
+ * / `OpsInstance` — nothing here is a new query. The module's whole job is
+ * the same as `read.ts`'s: authentication (via `guard`), authorization
+ * (via `requireCapability`), and mapping a scope-free call onto
+ * `session.scope`.
+ *
+ * `GET /api/archive/status` deliberately omits
+ * `listUnreadableArchiveChannels`: that check needs the live Discord
+ * client and already renders through `doctor`, so the dashboard reads it
+ * from the Doctor page rather than duplicating the probe here.
+ *
+ * Capability mapping: everything below reads under `config.read` — the
+ * same grant the existing `/api/health` and `/api/jobs` reads use — with
+ * one exception. `GET /api/archive/search` returns archived message
+ * content, so it sits under `audit.read`, the grant that already gates
+ * the dashboard's other content-bearing history (`/api/audit`). `doctor`,
+ * backups, providers, MCP client/token listings and the redacted config
+ * are instance facts, not guild facts, so they come from `deps.instance`
+ * rather than `portsFor(scope)` — the same split `OpsInstance`'s own
+ * comments make.
+ */
+
+const archiveSearchQuerySchema = z.object({
+  q: z.string().min(1).max(500),
+  channelId: z.string().min(1).optional(),
+  authorId: z.string().min(1).optional(),
+  limit: z.coerce.number().int().positive().max(500).optional(),
+});
+
+export const registerOpsReadRoutes = (
+  app: FastifyInstance,
+  guard: RouteGuard,
+  deps: HttpDeps,
+): void => {
+  app.get<{ Params: { id: string } }>('/api/jobs/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    const jobId = Number(request.params.id);
+    if (!Number.isInteger(jobId) || jobId <= 0) {
+      return reply.status(400).send({ error: 'bad-request' });
+    }
+    const ports = deps.portsFor(session.scope);
+    const job = ports.findJob(jobId);
+    if (job === undefined) return reply.status(404).send({ error: 'not-found' });
+    return reply.status(200).send(job);
+  });
+
+  app.get('/api/archive/status', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    return reply.status(200).send({
+      channels: ports.archiveStatus(),
+      index: ports.archiveIndexHealth(),
+    });
+  });
+
+  app.get('/api/archive/search', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+    const parsed = archiveSearchQuerySchema.safeParse(request.query);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const input: {
+      query: string;
+      channelId?: string;
+      authorId?: string;
+      limit?: number;
+    } = { query: parsed.data.q, limit: parsed.data.limit ?? 50 };
+    if (parsed.data.channelId !== undefined) input.channelId = parsed.data.channelId;
+    if (parsed.data.authorId !== undefined) input.authorId = parsed.data.authorId;
+    return reply.status(200).send(ports.archiveSearch(input));
+  });
+
+  app.get('/api/send-allowlist', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    return reply.status(200).send({ entries: ports.listSendAllowlist() });
+  });
+
+  app.get('/api/doctor', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send(deps.instance.doctor());
+  });
+
+  app.get('/api/doctor/public-surface', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send(await deps.instance.probePublicSurface());
+  });
+
+  app.get('/api/backups', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send({ backups: deps.instance.backupList() });
+  });
+
+  app.get('/api/config', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send(deps.instance.redactedConfig());
+  });
+
+  app.get('/api/accounts', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send({ accounts: deps.instance.accountList() });
+  });
+
+  app.get('/api/mcp/clients', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send({ clients: deps.instance.mcpClients() });
+  });
+
+  app.get('/api/mcp/tokens', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply.status(200).send({ tokens: deps.instance.mcpTokens() });
+  });
+
+  app.get('/api/providers/eligibility', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    return reply
+      .status(200)
+      .send({ warnings: deps.instance.providerEligibilityWarnings(deps.now()) });
+  });
+};
