@@ -1,5 +1,5 @@
 import type { RecentMessagesPage, Snowflake } from '../discord/port.js';
-import { archiveBackfillPayload, JOB_KINDS } from '../jobs/kinds.js';
+import { archiveBackfillPayload, JOB_KINDS, type ArchiveBackfillPayload } from '../jobs/kinds.js';
 import type { JobHandler } from '../jobs/worker.js';
 import { safeLogFields, type Logger } from '../obs/logger.js';
 import type { ArchiveAttachmentInput, UpsertMessageInput } from './ports.js';
@@ -64,14 +64,20 @@ export interface BackfillPorts {
    * `archiveBackfillDedupeKey` (`jobs/kinds.ts`) for why the successor's key
    * must be minted from it rather than from the channel alone.
    */
-  enqueueContinuation(input: { channelId: Snowflake; jobId: number; runAfter: number }): void;
+  enqueueContinuation(input: {
+    channelId: Snowflake;
+    /** Present on the thread-walk ticks (review M2); absent while the channel itself is paging. */
+    threadWalk?: { threadIds: readonly Snowflake[]; index: number; before: Snowflake | undefined };
+    jobId: number;
+    runAfter: number;
+  }): void;
   now(): number;
   readonly logger: Logger;
 }
 
 export const archiveBackfillHandler = (
   ports: BackfillPorts,
-): JobHandler<{ channelId: string }> => ({
+): JobHandler<ArchiveBackfillPayload> => ({
   kind: JOB_KINDS.archiveBackfill,
   payload: archiveBackfillPayload,
   async run(payload, context) {
@@ -138,6 +144,72 @@ export const archiveBackfillHandler = (
       return;
     }
 
+    if (payload.threadWalk !== undefined) {
+      // Review M2: one page of one thread per tick, with the position in the
+      // job payload — a thread walk of any size no longer happens inside a
+      // single tick, and a restart resumes from the last persisted page.
+      const { threadIds, index, before } = payload.threadWalk;
+      const threadId = threadIds[index];
+      if (threadId === undefined) {
+        // A payload whose index ran off the list (a hand-edited row, say):
+        // finish rather than throw — every thread the payload named is done.
+        ports.setBackfillCursor({
+          channelId,
+          cursorMessageId: channel.cursorMessageId,
+          state: 'done',
+        });
+        return;
+      }
+      const threadPage = await ports.fetchRecentMessages(threadId, before);
+      for (const message of threadPage.messages) {
+        ports.upsertMessage({
+          messageId: message.messageId,
+          channelId,
+          threadId,
+          authorId: message.authorId,
+          content: message.content,
+          createdAt: message.createdAtMs,
+          editedAt: message.editedTimestampMs ?? undefined,
+          attachments: mapAttachments(ports, message.messageId, message.attachments ?? []),
+        });
+      }
+      const threadDone = threadPage.nextBefore === undefined;
+      if (threadDone) {
+        // Persisted before the continuation is enqueued: a crash between the
+        // two restarts from the last COMPLETE thread, never mid-list.
+        ports.setThreadProgress({ channelId, found: threadIds.length, done: index + 1 });
+      }
+      const nextIndex = threadDone ? index + 1 : index;
+      if (nextIndex >= threadIds.length) {
+        ports.setBackfillCursor({
+          channelId,
+          cursorMessageId: channel.cursorMessageId,
+          state: 'done',
+        });
+        ports.logger.info(
+          safeLogFields({
+            component: 'archive',
+            jobKind: JOB_KINDS.archiveBackfill,
+            channelId,
+            count: threadIds.length,
+          }),
+          'archive: backfill thread walk complete',
+        );
+        return;
+      }
+      ports.enqueueContinuation({
+        channelId,
+        threadWalk: {
+          threadIds,
+          index: nextIndex,
+          before: threadDone ? undefined : threadPage.nextBefore,
+        },
+        jobId,
+        runAfter: ports.now(),
+      });
+      return;
+    }
+
     // Marked running before the fetch: there is no failed state, so a thrown
     // page retried by the worker must read running, not pending.
     ports.setBackfillCursor({
@@ -168,36 +240,31 @@ export const archiveBackfillHandler = (
     if (done) {
       const threads = (await ports.listThreads(channelId)).filter((thread) => !thread.isPrivate);
       ports.setThreadProgress({ channelId, found: threads.length, done: 0 });
-      let threadsDone = 0;
-      for (const thread of threads) {
-        let before: string | undefined;
-        do {
-          const threadPage = await ports.fetchRecentMessages(thread.id, before);
-          for (const message of threadPage.messages) {
-            ports.upsertMessage({
-              messageId: message.messageId,
-              channelId,
-              threadId: thread.id,
-              authorId: message.authorId,
-              content: message.content,
-              createdAt: message.createdAtMs,
-              editedAt: message.editedTimestampMs ?? undefined,
-              attachments: mapAttachments(ports, message.messageId, message.attachments ?? []),
-            });
-          }
-          before = threadPage.nextBefore;
-        } while (before !== undefined);
-        threadsDone += 1;
-        ports.setThreadProgress({ channelId, found: threads.length, done: threadsDone });
+      ports.setBackfillCursor({
+        channelId,
+        cursorMessageId: undefined,
+        state: threads.length === 0 ? 'done' : 'running',
+      });
+      if (threads.length > 0) {
+        // Review M2: the walk itself is the continuation chain — one page of
+        // one thread per tick — not a loop inside this tick.
+        ports.enqueueContinuation({
+          channelId,
+          threadWalk: {
+            threadIds: threads.map((thread) => thread.id),
+            index: 0,
+            before: undefined,
+          },
+          jobId,
+          runAfter: ports.now(),
+        });
       }
-    }
-
-    ports.setBackfillCursor({
-      channelId,
-      cursorMessageId: page.nextBefore,
-      state: done ? 'done' : 'running',
-    });
-    if (!done) {
+    } else {
+      ports.setBackfillCursor({
+        channelId,
+        cursorMessageId: page.nextBefore,
+        state: 'running',
+      });
       // Immediate `runAfter`: the job-poll interval is the throttle (ADR 0046 D4).
       ports.enqueueContinuation({ channelId, jobId, runAfter: ports.now() });
     }

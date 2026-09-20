@@ -49,8 +49,8 @@ const idAt = (index: number): string => (ID_BASE + BigInt(index)).toString();
 class FakeMessageSource {
   readonly messages = new Map<string, { messageId: string; channelId: string }>();
 
-  seed(channelId: string, count: number): void {
-    for (let i = 0; i < count; i += 1) {
+  seed(channelId: string, count: number, start = 0): void {
+    for (let i = start; i < start + count; i += 1) {
       const messageId = idAt(i);
       this.messages.set(messageId, { messageId, channelId });
     }
@@ -116,10 +116,10 @@ describe('archive backfill continuation through the real queue', () => {
       findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
       upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
       setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
-      enqueueContinuation: ({ channelId, jobId, runAfter }) =>
+      enqueueContinuation: ({ channelId, threadWalk, jobId, runAfter }) =>
         void jobRepo.enqueue(scope, {
           kind: JOB_KINDS.archiveBackfill,
-          payload: JSON.stringify({ channelId }),
+          payload: JSON.stringify({ channelId, threadWalk }),
           dedupeKey: archiveBackfillDedupeKey(GUILD, channelId, jobId),
           runAfter,
           now: nowMs,
@@ -177,6 +177,84 @@ describe('archive backfill continuation through the real queue', () => {
   });
 });
 
+describe('resumable thread walk (M2)', () => {
+  const THREAD_A = '555555555555555551';
+  const THREAD_B = '555555555555555552';
+
+  it('walks threads one page per tick, persisting progress between ticks', async () => {
+    const source = new FakeMessageSource();
+    // The channel's own listing is already exhausted: the first tick moves
+    // straight to the thread walk.
+    archiveRepo.enableChannel(scope, { channelId: CHANNEL, attachmentPolicy: 'none', now: nowMs });
+    // Distinct id ranges: the source keys messages by id, so overlapping
+    // ranges would silently re-home the low ids to the last channel seeded.
+    source.seed(THREAD_A, 150); // two pages
+    source.seed(THREAD_B, 50, 1000); // one page
+    jobRepo.enqueue(scope, {
+      kind: JOB_KINDS.archiveBackfill,
+      payload: JSON.stringify({ channelId: CHANNEL }),
+      dedupeKey: archiveBackfillDedupeKey(GUILD, CHANNEL),
+      now: nowMs,
+    });
+    const ports: BackfillPorts = {
+      guildArchiveEnabled: true,
+      isChannelExcluded: () => false,
+      fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
+      listThreads: async () => [
+        { id: THREAD_A, isPrivate: false },
+        { id: THREAD_B, isPrivate: false },
+      ],
+      isForum: () => false,
+      hasCategoryRow: (categoryId) => archiveRepo.hasCategoryRow(scope, categoryId),
+      categoryOf: () => undefined,
+      setThreadProgress: (input) => archiveRepo.setThreadProgress(scope, input),
+      findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
+      upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
+      setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
+      enqueueContinuation: ({ channelId, threadWalk, jobId, runAfter }) =>
+        void jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.archiveBackfill,
+          payload: JSON.stringify({ channelId, threadWalk }),
+          dedupeKey: archiveBackfillDedupeKey(GUILD, channelId, jobId),
+          runAfter,
+          now: nowMs,
+        }),
+      now: () => nowMs,
+      logger,
+    };
+    const worker = new JobWorker({
+      store: jobStoreFor(scope),
+      handlers: [archiveBackfillHandler(ports)],
+      logger,
+      now: () => nowMs,
+    });
+
+    // Tick 1: channel page done, thread walk queued; nothing archived yet.
+    expect((await worker.runOnce()).status).toBe('completed');
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(0);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.threadsFound).toBe(2);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.threadsDone).toBe(0);
+
+    // Tick 2: ONE page of thread A — 100 messages, not the whole walk.
+    expect((await worker.runOnce()).status).toBe('completed');
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(100);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.threadsDone).toBe(0);
+
+    // Tick 3: thread A's second page — thread A complete, progress persisted.
+    expect((await worker.runOnce()).status).toBe('completed');
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(150);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.threadsDone).toBe(1);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.backfillState).not.toBe('done');
+
+    // Tick 4: thread B's only page — the walk is complete.
+    expect((await worker.runOnce()).status).toBe('completed');
+    expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(200);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.threadsDone).toBe(2);
+    expect(archiveRepo.findChannel(scope, CHANNEL)?.backfillState).toBe('done');
+    expect((await worker.runOnce()).status).toBe('idle');
+  });
+});
+
 describe('category-covered channels (B2, ADR 0047 amendment)', () => {
   const CATEGORY = '444444444444444444';
 
@@ -199,10 +277,10 @@ describe('category-covered channels (B2, ADR 0047 amendment)', () => {
       findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
       upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
       setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
-      enqueueContinuation: ({ channelId, jobId, runAfter }) =>
+      enqueueContinuation: ({ channelId, threadWalk, jobId, runAfter }) =>
         void jobRepo.enqueue(scope, {
           kind: JOB_KINDS.archiveBackfill,
-          payload: JSON.stringify({ channelId }),
+          payload: JSON.stringify({ channelId, threadWalk }),
           dedupeKey: archiveBackfillDedupeKey(GUILD, channelId, jobId),
           runAfter,
           now: nowMs,
@@ -263,9 +341,7 @@ describe('category-covered channels (B2, ADR 0047 amendment)', () => {
     const tick = await worker.runOnce();
     expect(tick.status).toBe('completed');
     expect(archiveRepo.countMessages(scope, CHANNEL)).toBe(0);
-    expect(
-      jobRepo.listJobs(scope, {}).filter((job) => job.state === 'queued'),
-    ).toHaveLength(0);
+    expect(jobRepo.listJobs(scope, {}).filter((job) => job.state === 'queued')).toHaveLength(0);
   });
 
   it('a channel whose category row was disabled is not backfilled', async () => {
