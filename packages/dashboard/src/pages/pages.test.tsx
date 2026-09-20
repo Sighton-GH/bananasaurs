@@ -29,9 +29,23 @@ const HEALTH = {
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
+const PULSE_STUBS = [
+  { url: '/api/providers/eligibility', body: { warnings: [] } },
+  {
+    url: '/api/automod/review',
+    body: { matches: [], nativeHits: [], nativeBlocked: 0, verdicts: {} },
+  },
+  { url: '/api/jobs?failedOnly=true&limit=100', body: [] },
+  { url: '/api/backups', body: { backups: [] } },
+  { url: '/api/audit?limit=8', body: [] },
+  { url: '/api/archive/status', body: { channels: [], index: { indexed: 0, rows: 0 } } },
+  { url: '/api/mcp/clients', body: { clients: [] } },
+  { url: '/api/mcp/sends?since=24h', body: { sends: [] } },
+];
+
 describe('OverviewPage', () => {
   it('renders the health fields as cards that lead to their pages', async () => {
-    const mock = stubFetch([{ url: '/api/health', body: HEALTH }]);
+    const mock = stubFetch([{ url: '/api/health', body: HEALTH }, ...PULSE_STUBS]);
     renderWithSession(
       <HealthProvider>
         <OverviewPage />
@@ -46,11 +60,13 @@ describe('OverviewPage', () => {
     expect(screen.getByRole('link', { name: 'Open the queue →' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open safety →' })).toBeTruthy();
     expect(screen.queryByText(/scheduler lag/)).toBeNull();
-    expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/health']);
+    expect(mock.mock.calls.map((c) => c[0] as string).sort()).toEqual(
+      ['/api/health', ...PULSE_STUBS.map((s) => s.url)].sort(),
+    );
   });
 
   it('shows the scheduler lag badge only when a due job is waiting', async () => {
-    stubFetch([{ url: '/api/health', body: { ...HEALTH, oldestDueJobAtMs: 0 } }]);
+    stubFetch([{ url: '/api/health', body: { ...HEALTH, oldestDueJobAtMs: 0 } }, ...PULSE_STUBS]);
     renderWithSession(
       <HealthProvider>
         <OverviewPage />
