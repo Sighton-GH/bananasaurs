@@ -631,29 +631,52 @@ const sendPortFor = (
  * guild id, action, account, token and client ids, result count. Arrays are
  * dropped by the allowlist, which is why `get_health` fans out one line per
  * guild at the call site instead.
+ *
+ * A failed audit write rethrows, because the read must fail closed — but it
+ * logs before it does. The refusal the operator sees is the shared
+ * `GUILD_REFUSAL_MESSAGE`, which is indistinguishable from an unreachable
+ * guild; without this line a database that cannot accept audit rows would
+ * look exactly like a revoked token, and the one event that must never pass
+ * unnoticed would pass unnoticed.
  */
 const readAuditPortFor = (
   principal: McpPrincipal & { readonly clientId: string; readonly tokenId: string },
   deps: HttpDeps,
 ): McpReadAuditPort => ({
   auditContentRead: (record) => {
-    effectRepo.recordAudit(deps.scopes.forGuild(record.guildId), {
-      at: deps.now(),
-      actorType: 'mcp_operator',
-      actorId: principal.tokenId,
-      via: 'http',
-      action: record.action,
-      subjectType: record.subjectType,
-      subjectId: record.subjectId,
-      before: undefined,
-      after: {
-        accountId: principal.accountId,
-        clientId: principal.clientId,
-        tokenId: principal.tokenId,
-        resultCount: record.resultCount,
-      },
-      dryRun: false,
-    });
+    try {
+      effectRepo.recordAudit(deps.scopes.forGuild(record.guildId), {
+        at: deps.now(),
+        actorType: 'mcp_operator',
+        actorId: principal.tokenId,
+        via: 'http',
+        action: record.action,
+        subjectType: record.subjectType,
+        subjectId: record.subjectId,
+        before: undefined,
+        after: {
+          accountId: principal.accountId,
+          clientId: principal.clientId,
+          tokenId: principal.tokenId,
+          resultCount: record.resultCount,
+        },
+        dryRun: false,
+      });
+    } catch (err) {
+      deps.logger.error(
+        safeLogFields({
+          component: 'mcp',
+          action: record.action,
+          guildId: record.guildId,
+          accountId: principal.accountId,
+          oauthClientId: principal.clientId,
+          oauthTokenId: principal.tokenId,
+          err,
+        }),
+        'mcp read audit write failed — read refused',
+      );
+      throw err;
+    }
   },
   logStructuralRead: (input) => {
     deps.logger.info(

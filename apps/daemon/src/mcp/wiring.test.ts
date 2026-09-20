@@ -1459,4 +1459,72 @@ describe('/mcp read logging (ADR 0050)', () => {
     expect(text).not.toContain('mcp.read.list_audit_events');
     expect(text).toContain('Audit events in guild');
   });
+
+  /**
+   * ADR 0050 fails closed: a read whose audit row cannot be written is
+   * refused rather than served unrecorded. The fault is the audit table
+   * itself going missing — the same shape as the dropped FTS index above,
+   * and the one fault that hits the recorder rather than the reader.
+   *
+   * Two things are asserted together, because either alone would be a
+   * hazard: the member content the read had already fetched never reaches
+   * the connector, and the operator gets an error line saying why. The
+   * refusal the connector sees is the shared unreachable-guild message, so
+   * without that line a database that cannot accept audit rows would be
+   * indistinguishable from a revoked token.
+   */
+  it('a content read whose audit row cannot be written is refused, logged, and leaks nothing', async () => {
+    const { logger, lines } = recordingLogger();
+    const logged = buildDashboardApp({ ...deps, logger });
+    try {
+      seedArchive();
+      const accessToken = await mintToken('bananasaurs:read', logged);
+      // The recorder's table is gone while the archive rows remain.
+      t.raw.exec('DROP TABLE audit_events');
+
+      const response = await mcpPost(
+        logged,
+        {
+          jsonrpc: '2.0',
+          id: 3,
+          method: 'tools/call',
+          params: {
+            name: 'get_message',
+            arguments: { guildId: String(GUILD_A), messageId: '777777777777777777' },
+          },
+        },
+        accessToken,
+      );
+      expect(response.statusCode).toBe(200);
+      const bodies = sseData(response.body);
+      const result = (
+        bodies[0] as { result?: { isError?: boolean; content?: Array<{ text: string }> } }
+      ).result;
+      expect(result?.isError).toBe(true);
+      const text = result?.content?.[0]?.text ?? '';
+      expect(text).toBe(GUILD_REFUSAL_MESSAGE);
+      // The read had already fetched the message before the row failed.
+      expect(text).not.toContain('alpha plans');
+
+      const failures = lines.filter(
+        (line) => line.msg === 'mcp read audit write failed — read refused',
+      );
+      expect(failures).toHaveLength(1);
+      const fields = failures[0]?.fields ?? {};
+      expect(fields['component']).toBe('mcp');
+      expect(fields['action']).toBe('mcp.read.get_message');
+      expect(fields['guildId']).toBe(String(GUILD_A));
+      expect(fields['accountId']).toBe(ACCOUNT);
+      expect(fields['oauthTokenId']).toMatch(/^tok_/);
+      expect(fields['err']).toBeDefined();
+
+      // The absence assertion as well as the presence one (rule 4).
+      const dump = JSON.stringify(lines);
+      expect(dump).not.toContain('alpha plans');
+      expect(dump).not.toContain(accessToken);
+      expect(dump).not.toContain(MEMBER);
+    } finally {
+      await logged.close();
+    }
+  });
 });

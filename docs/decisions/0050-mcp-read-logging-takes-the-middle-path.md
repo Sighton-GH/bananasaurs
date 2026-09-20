@@ -78,6 +78,17 @@ protect. So the read writes its row, and the tool's query excludes its own
 action (`mcp.read.list_audit_events`) from what it returns. The row is still
 visible to `audit tail` over SSH, where it belongs.
 
+The exclusion is by action, not by actor, and that is wider than the
+argument above strictly needs. It hides *every* operator's trail reads from
+the tool, not only the caller's own, so one MCP token cannot see through
+this tool that another one read the trail. Narrowing it to the caller's
+token would mean the tool layer knowing *who* is reading, which is exactly
+what `McpReadAuditPort` exists to keep out of `packages/mcp` (ruling
+M4-D14); the boundary is worth more than the narrowing, because the durable
+row is written either way and `audit tail` over SSH — the operator surface
+that is actually authoritative for this question — shows every one of them.
+Recorded here so the next reader finds a decision rather than a surprise.
+
 ## Consequences
 
 - A content-bearing read with a resolved guild writes exactly one audit row;
@@ -91,3 +102,14 @@ visible to `audit tail` over SSH, where it belongs.
 - `effectRepo.tailAudit` gains an optional `excludeActions` filter,
   implemented in SQL so a page of results cannot be silently emptied by
   rows the caller asked not to see.
+- A failed audit write rethrows so the read fails closed, but it logs one
+  allowlisted `error` line first. The connector sees the shared
+  unreachable-guild refusal, which is indistinguishable from a revoked
+  token, so without that line a database that could not accept audit rows
+  would refuse every content read and look exactly like an authorisation
+  problem. Fail closed is the behaviour; fail silently is not.
+- The fail-closed path is tested by fault injection rather than by reading
+  the code: a throwing port at the `packages/mcp` boundary, and a dropped
+  `audit_events` table through the daemon's real composition. Both assert
+  that the member content the read had already fetched does not reach the
+  connector — the guard is watched failing, not assumed.

@@ -1,4 +1,7 @@
 import { describe, expect, it } from 'vitest';
+import { Client } from '@modelcontextprotocol/sdk/client/index.js';
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js';
+import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
 import { parseGuildId, type GuildId } from '@bananasaurs/core';
 import { GUILD_REFUSAL_MESSAGE, type McpPrincipal } from './scope.js';
 import {
@@ -14,15 +17,19 @@ import {
   MCP_READ_READ_CHANNEL_HISTORY,
   MCP_READ_SEARCH_MESSAGES,
   type McpContentReadRecord,
+  type McpReadAuditPort,
 } from './read-audit.js';
+import { createMcpServer } from './server.js';
 import {
+  GET_MESSAGE_TOOL_NAME,
   getMessageText,
   readChannelHistoryText,
   searchMessagesText,
   type McpArchivePort,
 } from './tools/archive.js';
-import { getHealthText, type McpHealthPort } from './tools/health.js';
+import { GET_HEALTH_TOOL_NAME, getHealthText, type McpHealthPort } from './tools/health.js';
 import {
+  LIST_CHANNELS_TOOL_NAME,
   listChannelsText,
   listMembersText,
   listRolesText,
@@ -35,7 +42,8 @@ import {
   listModCasesText,
   type McpRecordsPort,
 } from './tools/records.js';
-import { readOverviewResource } from './resources/overview.js';
+import { OVERVIEW_RESOURCE_URI_TEMPLATE, readOverviewResource } from './resources/overview.js';
+import type { McpSendPort } from './tools/send.js';
 
 /**
  * ADR 0050, tool layer: every successful read annotates its outcome with the
@@ -276,18 +284,9 @@ describe('ADR 0050: structural reads annotate a log record, never an audit row',
     expect(roles.ok).toBe(true);
     if (!roles.ok) throw new Error('expected ok');
     expect(roles.read).toMatchObject({ kind: 'structural', action: MCP_READ_LIST_ROLES });
-    void (async () => {
-      const members = await listMembersText(principalWith(GUILD_A), guildPort(), {
-        guildId: String(GUILD_A),
-      });
-      expect(members.ok).toBe(true);
-      if (!members.ok) throw new Error('expected ok');
-      expect(members.read).toMatchObject({
-        kind: 'structural',
-        action: MCP_READ_LIST_MEMBERS,
-        resultCount: 1,
-      });
-    })();
+    // `list_members` is async and is pinned by the test below. It was
+    // asserted here too, inside an un-awaited async IIFE — assertions a
+    // failing run could never surface, which is worse than no assertion.
   });
 
   it('list_members records a structural read', async () => {
@@ -352,6 +351,163 @@ describe('ADR 0050: a refused read annotates nothing', () => {
     expect('read' in invalidArgs && invalidArgs.read !== undefined).toBe(false);
     const healthRefused = getHealthText(principalWith(), healthPort());
     expect(healthRefused).toEqual({ ok: false, message: GUILD_REFUSAL_MESSAGE });
+  });
+});
+
+/**
+ * ADR 0050, fail closed. The ADR's strongest claim is that a read whose
+ * record cannot be written is refused rather than served unrecorded, so it
+ * is asserted the only way a guard may be trusted: by watching it fail. A
+ * port that throws stands in for the failure that matters in production —
+ * the `audit_events` insert not landing — and the assertion is not merely
+ * that the call errored but that the member content the read had already
+ * fetched never reaches the connector.
+ */
+
+const SECRET_MESSAGE_TEXT = 'the member words this read must never leak unrecorded';
+
+/** An archive that really returns a member's words, so a leak would be visible. */
+const contentfulArchivePort = (): McpArchivePort => ({
+  ...archivePort(),
+  findMessage: () => ({
+    messageId: MESSAGE,
+    channelId: CHANNEL,
+    authorId: '666666666666666666',
+    content: SECRET_MESSAGE_TEXT,
+    createdAt: 1,
+    contentPurgedAt: undefined,
+  }),
+});
+
+const stubSendPort = (): McpSendPort => ({
+  send: () => Promise.resolve({ status: 'sent', messageId: 'mid-test' }),
+});
+
+/** One connected client/server pair whose read-audit port is the one under test. */
+const connectWithReadAudit = async (
+  readAudit: McpReadAuditPort,
+): Promise<{ client: Client; close: () => Promise<void> }> => {
+  const client = new Client({ name: 'mcp-read-audit-test-client', version: '0.0.0' });
+  const server = createMcpServer({
+    principal: principalWith(GUILD_A),
+    health: healthPort(),
+    archive: contentfulArchivePort(),
+    guild: guildPort(),
+    records: recordsPort(),
+    readAudit,
+    send: stubSendPort(),
+  });
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  await Promise.all([client.connect(clientTransport), server.connect(serverTransport)]);
+  return {
+    client,
+    close: async () => {
+      await client.close();
+      await server.close();
+    },
+  };
+};
+
+const toolTextOf = (result: CallToolResult): string =>
+  (result.content as ReadonlyArray<{ readonly type: string; readonly text: string }>)
+    .map((block) => block.text)
+    .join('\n');
+
+const throwingAudit = (): McpReadAuditPort => ({
+  auditContentRead: () => {
+    throw new Error('audit_events insert failed');
+  },
+  logStructuralRead: () => undefined,
+});
+
+const throwingLog = (): McpReadAuditPort => ({
+  auditContentRead: () => undefined,
+  logStructuralRead: () => {
+    throw new Error('logger unavailable');
+  },
+});
+
+describe('ADR 0050: a read whose record cannot be written is refused, not served', () => {
+  it('get_message answers the shared refusal and leaks no member content when the audit row throws', async () => {
+    const { client, close } = await connectWithReadAudit(throwingAudit());
+    try {
+      const result = (await client.callTool({
+        name: GET_MESSAGE_TOOL_NAME,
+        arguments: { guildId: String(GUILD_A), messageId: MESSAGE },
+      })) as CallToolResult;
+      const text = toolTextOf(result);
+      // The read had already fetched the message before the record failed;
+      // what matters is that none of it reached the connector.
+      expect(text).not.toContain(SECRET_MESSAGE_TEXT);
+      expect(text).toBe(GUILD_REFUSAL_MESSAGE);
+      expect(result.isError).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  it('a structural read is refused too when its log line throws', async () => {
+    const { client, close } = await connectWithReadAudit(throwingLog());
+    try {
+      const channels = (await client.callTool({
+        name: LIST_CHANNELS_TOOL_NAME,
+        arguments: { guildId: String(GUILD_A) },
+      })) as CallToolResult;
+      expect(toolTextOf(channels)).toBe(GUILD_REFUSAL_MESSAGE);
+      expect(channels.isError).toBe(true);
+      const health = (await client.callTool({
+        name: GET_HEALTH_TOOL_NAME,
+        arguments: {},
+      })) as CallToolResult;
+      expect(toolTextOf(health)).toBe(GUILD_REFUSAL_MESSAGE);
+      expect(health.isError).toBe(true);
+    } finally {
+      await close();
+    }
+  });
+
+  it('the overview resource door refuses rather than answering unlogged', async () => {
+    const { client, close } = await connectWithReadAudit(throwingLog());
+    try {
+      await expect(
+        client.readResource({ uri: `bananasaurs://guild/${String(GUILD_A)}/overview` }),
+      ).rejects.toThrow();
+    } finally {
+      await close();
+    }
+  });
+});
+
+/**
+ * ADR 0050, the resource door's wiring. The outcome-shape test above proves
+ * `readOverviewResource` *carries* a structural record; this proves the
+ * registered resource handler actually performs it, which is otherwise the
+ * one read path whose recording nothing observes.
+ */
+describe('ADR 0050: the overview resource handler performs its record', () => {
+  it('a successful resource read emits exactly one structural log line for its guild', async () => {
+    const seen: { action: string; guildId: GuildId }[] = [];
+    const { client, close } = await connectWithReadAudit({
+      auditContentRead: () => {
+        throw new Error('the overview card is structural — it must never audit');
+      },
+      logStructuralRead: (input) => {
+        seen.push({ action: input.action, guildId: input.guildId });
+      },
+    });
+    try {
+      const result = await client.readResource({
+        uri: `bananasaurs://guild/${String(GUILD_A)}/overview`,
+      });
+      expect(result.contents).toHaveLength(1);
+      expect(seen).toEqual([{ action: MCP_READ_GET_SERVER_OVERVIEW, guildId: GUILD_A }]);
+    } finally {
+      await close();
+    }
+  });
+
+  it('the template the handler is registered under is the one the record follows', () => {
+    expect(OVERVIEW_RESOURCE_URI_TEMPLATE).toBe('bananasaurs://guild/{guildId}/overview');
   });
 });
 
