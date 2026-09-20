@@ -112,6 +112,9 @@ class MinimalModerationDiscord implements DiscordPort {
   async fetchMessage(): Promise<{ exists: true }> {
     this.notUsed('fetchMessage');
   }
+  async listPublicThreads(): Promise<never> {
+    this.notUsed('listPublicThreads');
+  }
   async createReaction(): Promise<void> {
     this.notUsed('createReaction');
   }

@@ -328,8 +328,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     fetchRecentMessages: (channelId, before) =>
       discord.fetchRecentMessages(guildId, channelId, { before, limit: 100 }),
-    listThreads: (channelId) =>
-      discord.listPublicThreads?.(guildId, channelId) ?? Promise.resolve([]),
+    listThreads: (channelId) => discord.listPublicThreads(guildId, channelId),
     isForum: (channelId) =>
       client.guilds.cache.get(guildId)?.channels.cache.get(channelId)?.type ===
       ChannelType.GuildForum,

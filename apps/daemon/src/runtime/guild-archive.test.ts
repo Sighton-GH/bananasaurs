@@ -38,8 +38,8 @@ class ForumFakeDiscord extends FakeDiscord {
   override async listPublicThreads(
     _guildId: Snowflake,
     channelId: Snowflake,
-  ): Promise<readonly { id: Snowflake; isPrivate: boolean }[]> {
-    return channelId === FORUM ? [{ id: THREAD, isPrivate: false }] : [];
+  ): Promise<readonly { id: Snowflake; isPrivate: boolean; archived: boolean }[]> {
+    return channelId === FORUM ? [{ id: THREAD, isPrivate: false, archived: false }] : [];
   }
 }
 

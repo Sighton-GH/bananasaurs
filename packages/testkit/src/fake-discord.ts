@@ -5,6 +5,7 @@ import {
   type DiscordMember,
   type DiscordMessageRef,
   type DiscordPort,
+  type DiscordThread,
   type DiscordRole,
   type DomainEvent,
   type InteractionRef,
@@ -1183,7 +1184,7 @@ export class FakeDiscord implements DiscordPort {
   async listPublicThreads(
     guildId: Snowflake,
     channelId: Snowflake,
-  ): Promise<readonly { id: Snowflake; isPrivate: boolean }[]> {
+  ): Promise<readonly DiscordThread[]> {
     this.record('listPublicThreads', [guildId, channelId]);
     this.check('listPublicThreads', guildId);
     return [];

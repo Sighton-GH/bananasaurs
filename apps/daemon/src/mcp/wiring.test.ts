@@ -1228,18 +1228,16 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
   };
 
   /** The same `createServer` call production uses, with the fake client. */
-  const buildGuildApp = (discordClient: Client): FastifyInstance =>
+  const buildGuildApp = (
+    discordClient: Client,
+    discord: FakeDiscord = new FakeDiscord({ guildId: GUILD_A }),
+  ): FastifyInstance =>
     createServer({
       deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
       registerRoutes: (instance, _guard, routeDeps) => {
         // A port that is never called by the guild tools pinned here — but
         // required (ruling M5-D11), so it is threaded even so.
-        registerMcpRoutes(
-          instance,
-          routeDeps,
-          discordClient,
-          new FakeDiscord({ guildId: GUILD_A }),
-        );
+        registerMcpRoutes(instance, routeDeps, discordClient, discord);
       },
     });
 
@@ -1363,6 +1361,48 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain(PUBLIC_THREAD);
       expect(found.text).not.toContain(PRIVATE_THREAD);
       expect(found.text).not.toContain('private-thread');
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('list_threads with includeArchived pages the REST port, not the cache (S4)', async () => {
+    seedStorage();
+    const ARCHIVED_THREAD = '400000000000000001';
+    const { client: discordClient } = buildDiscordClient();
+    // The archived thread is not in any cache — the default sweeper evicts
+    // archived threads — so only a port that asks Discord can return it.
+    class ArchivedThreadDiscord extends FakeDiscord {
+      restListCalls = 0;
+      override async listPublicThreads(
+        _guildId: string,
+        _channelId: string,
+      ): Promise<readonly { id: string; isPrivate: boolean; archived: boolean }[]> {
+        this.restListCalls += 1;
+        return [
+          { id: PUBLIC_THREAD, isPrivate: false, archived: false },
+          { id: ARCHIVED_THREAD, isPrivate: false, archived: true },
+        ];
+      }
+    }
+    const discord = new ArchivedThreadDiscord({ guildId: GUILD_A });
+    const guildApp = buildGuildApp(discordClient, discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_threads', {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+            includeArchived: true,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(discord.restListCalls).toBe(1);
+      expect(found.text).toContain(ARCHIVED_THREAD);
+      expect(found.text).toContain(PUBLIC_THREAD);
+      expect(found.text).not.toContain(PRIVATE_THREAD);
     } finally {
       await guildApp.close();
     }

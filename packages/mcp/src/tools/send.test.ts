@@ -353,6 +353,7 @@ const stubArchive = (): McpArchivePort => ({
 
 const stubGuild = (): McpGuildPort => ({
   listChannels: () => [],
+  listThreads: async () => [],
   listRoles: () => [],
   listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
   memberCount: () => 0,

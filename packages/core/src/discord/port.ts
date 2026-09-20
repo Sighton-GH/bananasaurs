@@ -128,6 +128,8 @@ export interface FetchedMessage {
 export interface DiscordThread {
   readonly id: Snowflake;
   readonly isPrivate: boolean;
+  /** True for threads from the archived listing, false for active ones. */
+  readonly archived: boolean;
 }
 
 export interface RecentMessagesPage {
@@ -222,8 +224,12 @@ export interface DiscordPort {
     channelId: Snowflake,
     options: { before?: Snowflake | undefined; limit?: number | undefined },
   ): Promise<RecentMessagesPage>;
-  /** Active and archived public threads under a parent. Private threads are never fetched. */
-  listPublicThreads?(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
+  /**
+   * Active and archived public threads under a parent. Private threads are
+   * never fetched. Required (review S6): an optional port silently served
+   * an empty list, which read as "no threads" rather than "not wired".
+   */
+  listPublicThreads(guildId: Snowflake, channelId: Snowflake): Promise<readonly DiscordThread[]>;
 
   // --- interactions ------------------------------------------------------
   /**

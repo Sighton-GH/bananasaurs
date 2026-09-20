@@ -267,7 +267,11 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
  * an empty list. A fault leaves one allowlisted-fields error line via
  * `loggedCall` above, never a member name (rule 4).
  */
-export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
+export const guildPortFor = (
+  client: Client,
+  deps: HttpDeps,
+  discord: DiscordPort,
+): McpGuildPort => {
   const requireGuild = (guildId: GuildId): Guild => {
     const guild = client.guilds.cache.get(guildId);
     if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
@@ -322,6 +326,22 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
       }),
     listThreads: (guildId, channelId, includeArchived) => {
       const guild = requireGuild(guildId);
+      if (includeArchived) {
+        // Review S4: the cache cannot answer this — the default sweeper
+        // evicts archived threads (node_modules discord.js Options.js), so
+        // an includeArchived read from cache silently dropped them. The
+        // REST listing pages active + archived and never returns private
+        // threads (review B4 lives in the port's filter too).
+        return loggedCall(deps.logger, 'listThreads', () =>
+          discord.listPublicThreads(guildId, channelId).then((threads) =>
+            threads.map((thread) => ({
+              id: thread.id,
+              parentId: channelId,
+              archived: thread.archived,
+            })),
+          ),
+        );
+      }
       // Review B4: exclude private threads explicitly — the clause this
       // replaces, `channel.isThreadOnly()`, is `'availableTags' in this` and
       // is never true on a thread (node_modules discord.js
@@ -335,8 +355,7 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
           return [];
         return [{ id: channel.id, parentId: channelId, archived: channel.archived ?? false }];
       });
-      if (!includeArchived) return Promise.resolve(active.filter((thread) => !thread.archived));
-      return Promise.resolve(active);
+      return Promise.resolve(active.filter((thread) => !thread.archived));
     },
     listRoles: (guildId) =>
       loggedCall(deps.logger, 'listRoles', () => {
@@ -862,7 +881,7 @@ export const registerMcpRoutes = (
       principal,
       health: healthPortFor(principal, deps),
       archive: archivePortFor(deps),
-      guild: guildPortFor(client, deps),
+      guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),

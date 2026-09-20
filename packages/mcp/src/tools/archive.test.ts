@@ -509,6 +509,7 @@ describe('archive tools on the MCP server', () => {
     // at construction rather than serving fewer tools.
     const guild: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
       memberCount: () => 0,

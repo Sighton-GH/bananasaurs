@@ -81,6 +81,7 @@ const stubArchive = (): McpArchivePort => ({
 /** Minimal guild port: this file pins `get_health`, never the guild tools. */
 const stubGuild = (): McpGuildPort => ({
   listChannels: () => [],
+  listThreads: async () => [],
   listRoles: () => [],
   listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
   memberCount: () => 0,

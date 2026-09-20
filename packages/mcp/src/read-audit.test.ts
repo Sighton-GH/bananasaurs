@@ -146,6 +146,7 @@ const guildPort = (): McpGuildPort => ({
       archiveEnabled: true,
     },
   ],
+  listThreads: async () => [],
   listRoles: () => [
     { id: '555555555555555555', name: 'dev', position: 1, color: 0, managedByBananasaurs: false },
   ],

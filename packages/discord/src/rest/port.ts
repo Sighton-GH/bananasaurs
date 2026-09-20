@@ -324,28 +324,43 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       const active = (await mapErrors(() =>
         rest.get(Routes.guildActiveThreads(guildId)),
       )) as APIThreadList;
-      const found = new Map<string, { id: string; isPrivate: boolean }>();
+      const found = new Map<string, { id: string; isPrivate: boolean; archived: boolean }>();
       for (const thread of active.threads) {
         if (
           'parent_id' in thread &&
           thread.parent_id === channelId &&
           thread.type !== ChannelType.PrivateThread
         ) {
-          found.set(thread.id, { id: thread.id, isPrivate: false });
+          found.set(thread.id, { id: thread.id, isPrivate: false, archived: false });
         }
       }
+      // Review S3: the archived endpoint paginates by
+      // `thread_metadata.archive_timestamp` (ISO8601), not by thread
+      // snowflake — discord.js does the same in ThreadManager.js. A
+      // snowflake `before` silently re-fetches or skips pages. The walk is
+      // bounded: a channel with more archived threads than the cap is a
+      // visible refusal, not an unbounded loop.
+      const MAX_ARCHIVED_THREAD_PAGES = 50;
       let before: string | undefined;
-      for (;;) {
+      for (let page = 0; ; page += 1) {
+        if (page >= MAX_ARCHIVED_THREAD_PAGES) {
+          throw new Error(
+            `archive: archived-thread listing for channel ${channelId} hit the ` +
+              `${String(MAX_ARCHIVED_THREAD_PAGES)}-page cap; refusing to page without bound`,
+          );
+        }
         const archived = (await mapErrors(() =>
           rest.get(Routes.channelThreads(channelId, 'public'), {
             query: makeURLSearchParams({ limit: 100, before }),
           }),
         )) as APIThreadList & { has_more?: boolean };
         for (const thread of archived.threads)
-          found.set(thread.id, { id: thread.id, isPrivate: false });
+          found.set(thread.id, { id: thread.id, isPrivate: false, archived: true });
         const last = archived.threads.at(-1);
         if (!archived.has_more || last === undefined) break;
-        before = last.id;
+        const metadata = 'thread_metadata' in last ? last.thread_metadata : undefined;
+        if (metadata?.archive_timestamp === undefined) break;
+        before = metadata.archive_timestamp;
       }
       return [...found.values()];
     },

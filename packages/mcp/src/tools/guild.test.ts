@@ -95,6 +95,7 @@ const fakePort = (): McpGuildPort & {
         archiveEnabled: false,
       },
     ],
+    listThreads: async () => [],
     listRoles: () => [
       {
         id: '666666666666666666',
@@ -278,6 +279,7 @@ describe('list_members carries no presence, status or activity (sentinel)', () =
     } as unknown as McpGuildMember;
     const port: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [smuggled], nextCursor: smuggled.id }),
       memberCount: () => 1,
@@ -334,6 +336,7 @@ describe('list_members paging and failure behaviour', () => {
   it('a rejected port promise becomes a refusal, not a throw', async () => {
     const port: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.reject(new Error('rate limited')),
       memberCount: () => 0,
@@ -348,6 +351,7 @@ describe('list_members paging and failure behaviour', () => {
       listChannels: () => {
         throw new Error('guild gone');
       },
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
       memberCount: () => 0,
@@ -380,6 +384,7 @@ describe('a display name containing the envelope closing marker cannot break fra
   it('the exact marker occurs once per item, never from content', async () => {
     const port: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () =>
         Promise.resolve({

@@ -156,7 +156,11 @@ export interface McpListMembersResult {
  */
 export interface McpGuildPort {
   readonly listChannels: (guildId: GuildId) => readonly McpGuildChannel[];
-  readonly listThreads?: (
+  /**
+   * Required (review S6): an optional port silently served an empty list,
+   * which read as "no threads" rather than "not wired".
+   */
+  readonly listThreads: (
     guildId: GuildId,
     channelId: string,
     includeArchived: boolean,
@@ -451,11 +455,11 @@ export const listThreadsText = async (
   if (!parsed.success || !idsAreWellFormed([parsed.data.channelId])) return refuseInvalidArgs();
   const gate = requireReachableGuild(principal, parsed.data.guildId);
   if (!gate.ok) return { ok: false, message: gate.message };
-  const threads = await (port.listThreads?.(
+  const threads = await port.listThreads(
     gate.guildId,
     parsed.data.channelId,
     parsed.data.includeArchived ?? false,
-  ) ?? Promise.resolve([]));
+  );
   return {
     ok: true,
     text: envelope(
