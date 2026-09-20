@@ -571,17 +571,10 @@ const sendPortFor = (
       if (resolved.isPrivateThread && !mcpSendRepo.isChannelAllowed(scope, input.channelId)) {
         return { status: 'refused', reason: 'private-thread' };
       }
-      const grantId = mcpSendRepo.isChannelAllowed(scope, input.channelId)
-        ? input.channelId
-        : resolved.parentChannelId !== undefined &&
-            mcpSendRepo.isChannelAllowed(scope, resolved.parentChannelId)
-          ? resolved.parentChannelId
-          : resolved.categoryId !== undefined &&
-              mcpSendRepo.isScopeAllowed(scope, resolved.categoryId, 'category')
-            ? resolved.categoryId
-            : undefined;
-      const derivedGrant = grantId !== undefined && grantId !== input.channelId;
-      const authorized = isInScope('send', {
+      // Review M3: the granting row's id comes from the one predicate that
+      // owns the precedence — the nested ternary this replaces was a second,
+      // driftable copy of it (and missed the private-thread rule).
+      const grantId = isInScope('send', {
         channelId: resolved.channelId,
         parentChannelId: resolved.parentChannelId,
         categoryId: resolved.categoryId,
@@ -591,6 +584,8 @@ const sendPortFor = (
         isExcluded: () => false,
         parentIncludesThreads: () => true,
       });
+      const derivedGrant = grantId !== undefined && grantId !== input.channelId;
+      const authorized = grantId !== undefined;
       const outcome = await sendMessageEffect(
         {
           guildId,

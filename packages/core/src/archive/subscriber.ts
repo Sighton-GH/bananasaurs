@@ -62,7 +62,7 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
       return;
     }
     if (!ports.guildArchiveEnabled) return;
-    const inScope = isInScope('archive', {
+    const grantingId = isInScope('archive', {
       channelId: event.channelId,
       parentChannelId: event.parentChannelId,
       categoryId: event.categoryId,
@@ -72,7 +72,7 @@ export const createArchiveSubscriber = (ports: ArchivePorts): Subscriber => ({
       isExcluded: (id) => ports.isChannelExcluded(id),
       parentIncludesThreads: (id) => ports.parentIncludesThreads(id),
     });
-    if (!inScope) return;
+    if (grantingId === undefined) return;
     const archiveChannelId = event.parentChannelId ?? event.channelId;
     const threadId = event.parentChannelId === undefined ? undefined : event.channelId;
 
