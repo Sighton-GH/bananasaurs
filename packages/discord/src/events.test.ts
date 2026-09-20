@@ -384,6 +384,83 @@ const messageCreatePacket = (over: Record<string, unknown> = {}): object => ({
 });
 
 describe('messages', () => {
+  it('carries the parent and category for a message in a public thread', () => {
+    const h = harness();
+    const categoryId = '111111111111111111';
+    const parentId = '222222222222222222';
+    const threadId = '555555555555555551';
+    internals(h.client).channels._add(
+      { id: categoryId, guild_id: GUILD, type: ChannelType.GuildCategory, name: 'cat' },
+      h.client.guilds.cache.get(GUILD),
+      {},
+    );
+    internals(h.client).channels._add(
+      {
+        id: parentId,
+        guild_id: GUILD,
+        parent_id: categoryId,
+        type: ChannelType.GuildText,
+        name: 'parent',
+      },
+      h.client.guilds.cache.get(GUILD),
+      {},
+    );
+    h.packet('ThreadCreate', {
+      id: threadId,
+      guild_id: GUILD,
+      parent_id: parentId,
+      type: ChannelType.PublicThread,
+      name: 'thread',
+      owner_id: USER,
+      message_count: 0,
+      member_count: 1,
+      thread_metadata: {
+        archived: false,
+        auto_archive_duration: 60,
+        archive_timestamp: '2026-08-30T00:00:00.000Z',
+        locked: false,
+        invitable: true,
+      },
+    });
+    h.packet('MessageCreate', messageCreatePacket({ channel_id: threadId }));
+    expect(h.events.at(-1)).toMatchObject({
+      channelId: threadId,
+      parentChannelId: parentId,
+      categoryId,
+      isPrivateThread: false,
+    });
+  });
+
+  it('marks a private thread so downstream vetoes can refuse it', () => {
+    const h = harness();
+    const parentId = '222222222222222222';
+    const threadId = '555555555555555552';
+    internals(h.client).channels._add(
+      { id: parentId, guild_id: GUILD, type: ChannelType.GuildText, name: 'parent' },
+      h.client.guilds.cache.get(GUILD),
+      {},
+    );
+    h.packet('ThreadCreate', {
+      id: threadId,
+      guild_id: GUILD,
+      parent_id: parentId,
+      type: ChannelType.PrivateThread,
+      name: 'private',
+      owner_id: USER,
+      message_count: 0,
+      member_count: 1,
+      thread_metadata: {
+        archived: false,
+        auto_archive_duration: 60,
+        archive_timestamp: '2026-08-30T00:00:00.000Z',
+        locked: false,
+        invitable: true,
+      },
+    });
+    h.packet('MessageCreate', messageCreatePacket({ channel_id: threadId }));
+    expect(h.events.at(-1)).toMatchObject({ isPrivateThread: true });
+  });
+
   it('translates a create into the domain shape, guild id included', () => {
     const h = harness();
     h.packet('MessageCreate', messageCreatePacket());
@@ -393,6 +470,9 @@ describe('messages', () => {
         guildId: GUILD,
         receivedAtMs: 1_700_000_000_000,
         channelId: CHANNEL,
+        parentChannelId: undefined,
+        categoryId: undefined,
+        isPrivateThread: false,
         messageId: MESSAGE,
         authorId: USER,
         authorIsBot: false,

@@ -140,6 +140,12 @@ export interface MessageAttachment {
 export interface MessageEvent extends Base {
   kind: 'messageCreate' | 'messageUpdate' | 'messageDelete';
   channelId: Snowflake;
+  /** Thread parent when this message is in a thread. Cache-derived only. */
+  parentChannelId: Snowflake | undefined;
+  /** Category of the authorized unit: thread parent, or channel itself. */
+  categoryId: Snowflake | undefined;
+  /** Private threads never inherit archive or send authorization. */
+  isPrivateThread: boolean;
   messageId: Snowflake;
   authorId: Snowflake | undefined;
   /**
@@ -170,6 +176,9 @@ export interface MessageEvent extends Base {
 export interface MessageBulkDeleteEvent extends Base {
   kind: 'messageDeleteBulk';
   channelId: Snowflake;
+  parentChannelId: Snowflake | undefined;
+  categoryId: Snowflake | undefined;
+  isPrivateThread: boolean;
   /** Every id Discord named, in the order it named them. Never empty. */
   messageIds: readonly Snowflake[];
 }

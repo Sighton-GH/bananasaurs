@@ -356,6 +356,9 @@ export class FakeDiscord implements DiscordPort {
    */
   async emitMessageCreate(p: {
     channelId: Snowflake;
+    parentChannelId?: Snowflake;
+    categoryId?: Snowflake;
+    isPrivateThread?: boolean;
     messageId: Snowflake;
     authorId: Snowflake;
     content: string;
@@ -380,6 +383,9 @@ export class FakeDiscord implements DiscordPort {
       guildId: this.guildId,
       receivedAtMs: this.clock,
       channelId: p.channelId,
+      parentChannelId: p.parentChannelId,
+      categoryId: p.categoryId,
+      isPrivateThread: p.isPrivateThread ?? false,
       messageId: p.messageId,
       authorId: p.authorId,
       authorIsBot: p.authorIsBot ?? p.authorId === BOT_USER_ID,
@@ -399,6 +405,9 @@ export class FakeDiscord implements DiscordPort {
    */
   async emitMessageUpdate(p: {
     channelId: Snowflake;
+    parentChannelId?: Snowflake;
+    categoryId?: Snowflake;
+    isPrivateThread?: boolean;
     messageId: Snowflake;
     authorId: Snowflake;
     content: string;
@@ -412,6 +421,9 @@ export class FakeDiscord implements DiscordPort {
       guildId: this.guildId,
       receivedAtMs: this.clock,
       channelId: p.channelId,
+      parentChannelId: p.parentChannelId,
+      categoryId: p.categoryId,
+      isPrivateThread: p.isPrivateThread ?? false,
       messageId: p.messageId,
       authorId: p.authorId,
       authorIsBot: p.authorId === BOT_USER_ID,
@@ -432,6 +444,9 @@ export class FakeDiscord implements DiscordPort {
    */
   async emitMessageDelete(p: {
     channelId: Snowflake;
+    parentChannelId?: Snowflake;
+    categoryId?: Snowflake;
+    isPrivateThread?: boolean;
     messageId: Snowflake;
     authorId?: Snowflake;
   }): Promise<void> {
@@ -443,6 +458,9 @@ export class FakeDiscord implements DiscordPort {
       guildId: this.guildId,
       receivedAtMs: this.clock,
       channelId: p.channelId,
+      parentChannelId: p.parentChannelId,
+      categoryId: p.categoryId,
+      isPrivateThread: p.isPrivateThread ?? false,
       messageId: p.messageId,
       authorId,
       authorIsBot: authorId === BOT_USER_ID,
@@ -463,6 +481,9 @@ export class FakeDiscord implements DiscordPort {
    */
   async emitMessageDeleteBulk(p: {
     channelId: Snowflake;
+    parentChannelId?: Snowflake;
+    categoryId?: Snowflake;
+    isPrivateThread?: boolean;
     messageIds: readonly Snowflake[];
   }): Promise<void> {
     for (const messageId of p.messageIds) {
@@ -474,6 +495,9 @@ export class FakeDiscord implements DiscordPort {
       guildId: this.guildId,
       receivedAtMs: this.clock,
       channelId: p.channelId,
+      parentChannelId: p.parentChannelId,
+      categoryId: p.categoryId,
+      isPrivateThread: p.isPrivateThread ?? false,
       messageIds: p.messageIds,
     });
   }
@@ -791,6 +815,9 @@ export class FakeDiscord implements DiscordPort {
       guildId: this.guildId,
       receivedAtMs: this.clock,
       channelId: p.channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       messageId: p.messageId,
       // MESSAGE_DELETE carries id, channel and guild and nothing else.
       // discord.js fills the author in from its cache when it has one, so an
