@@ -1092,6 +1092,8 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
   const ROLE_MANAGED = '344444444444444444';
   const ROLE_PLAIN = '355555555555555555';
   const CACHED_MEMBER = '366666666666666666';
+  const PUBLIC_THREAD = '388888888888888888';
+  const PRIVATE_THREAD = '399999999999999999';
   const REST_MEMBER_A = '377777777777777777';
   const REST_MEMBER_B = '388888888888888888';
 
@@ -1154,6 +1156,32 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
           parent_id: CATEGORY,
           topic: 'plan the picnic',
           permission_overwrites: [],
+        },
+        {
+          id: PUBLIC_THREAD,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'public-thread',
+          parent_id: PLANNING,
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: '2026-09-01T00:00:00.000Z',
+            locked: false,
+          },
+        },
+        {
+          id: PRIVATE_THREAD,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPrivateThread,
+          name: 'private-thread',
+          parent_id: PLANNING,
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: '2026-09-01T00:00:00.000Z',
+            locked: false,
+          },
         },
         {
           id: LOUNGE,
@@ -1312,6 +1340,29 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain('club');
       expect(found.text).toContain('archive-enabled: yes');
       expect(found.text).toContain('archive-enabled: no');
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('list_threads returns public threads and never private ones (B4)', async () => {
+    seedStorage();
+    const { client: discordClient } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_threads', {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(PUBLIC_THREAD);
+      expect(found.text).not.toContain(PRIVATE_THREAD);
+      expect(found.text).not.toContain('private-thread');
     } finally {
       await guildApp.close();
     }

@@ -322,8 +322,16 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
       }),
     listThreads: (guildId, channelId, includeArchived) => {
       const guild = requireGuild(guildId);
+      // Review B4: exclude private threads explicitly — the clause this
+      // replaces, `channel.isThreadOnly()`, is `'availableTags' in this` and
+      // is never true on a thread (node_modules discord.js
+      // BaseChannel.js:154), so private threads leaked to any caller.
       const active = [...guild.channels.cache.values()].flatMap((channel) => {
-        if (!channel.isThread() || channel.parentId !== channelId || channel.isThreadOnly())
+        if (
+          !channel.isThread() ||
+          channel.parentId !== channelId ||
+          channel.type === ChannelType.PrivateThread
+        )
           return [];
         return [{ id: channel.id, parentId: channelId, archived: channel.archived ?? false }];
       });
