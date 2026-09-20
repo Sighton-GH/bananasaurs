@@ -282,6 +282,8 @@ export const findRuleIncludingDisabled = (
 export interface IsExemptInput {
   readonly authorRoleIds: readonly string[];
   readonly channelId: string;
+  readonly parentChannelId?: string | undefined;
+  readonly categoryId?: string | undefined;
 }
 
 /**
@@ -301,7 +303,8 @@ export const isExempt = (scope: GuildScope, ruleId: string, input: IsExemptInput
     return rows.some(
       (row) =>
         (row.exemptType === 'role' && input.authorRoleIds.includes(row.exemptId)) ||
-        (row.exemptType === 'channel' && row.exemptId === input.channelId),
+        (row.exemptType === 'channel' &&
+          [input.channelId, input.parentChannelId, input.categoryId].includes(row.exemptId)),
     );
   });
 

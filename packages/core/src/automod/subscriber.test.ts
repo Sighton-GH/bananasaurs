@@ -130,7 +130,15 @@ interface Harness {
   deps: AutomodSubscriberDeps;
   calls: {
     listRules: number;
-    isExempt: { ruleId: string; input: { authorRoleIds: readonly string[]; channelId: string } }[];
+    isExempt: {
+      ruleId: string;
+      input: {
+        authorRoleIds: readonly string[];
+        channelId: string;
+        parentChannelId: string | undefined;
+        categoryId: string | undefined;
+      };
+    }[];
     deleteMessage: { channelId: string; messageId: string; reason: string }[];
     openOrResolveCase: { memberId: string; countsAsViolation: boolean }[];
     recordCaseEvent: Parameters<AutomodSubscriberDeps['recordCaseEvent']>[0][];
@@ -255,6 +263,21 @@ function buildHarness(
 }
 
 describe('automod subscriber', () => {
+  it('passes thread parentage to exemption checks', async () => {
+    const { deps, calls } = buildHarness({
+      rules: [rule({ ruleId: 'rule-1' })],
+      exemptRuleIds: new Set(['rule-1']),
+    });
+    await createAutomodSubscriber(deps).handle(
+      messageCreate({ channelId: 'T', parentChannelId: 'P', categoryId: 'CAT' }),
+    );
+    expect(calls.isExempt[0]?.input).toMatchObject({
+      channelId: 'T',
+      parentChannelId: 'P',
+      categoryId: 'CAT',
+    });
+    expect(calls.recordCaseEvent).toHaveLength(0);
+  });
   it('ignores an event that is not messageCreate or messageUpdate', async () => {
     const { deps, calls } = buildHarness({ rules: [rule({ ruleId: 'rule-1' })] });
     const subscriber = createAutomodSubscriber(deps);
@@ -318,6 +341,7 @@ describe('automod subscriber', () => {
         caseId: 'case-1',
         ruleId: 'rule-2',
         memberId: AUTHOR,
+        channelId: CHANNEL,
         matchedCategory: 'cat-1',
         matchedSnippet: 'badword',
         actionTaken: 'deleted',
@@ -326,6 +350,7 @@ describe('automod subscriber', () => {
         // The predicate's own trace, threaded through unchanged (Task 5):
         // `matchedOn` names the *configured* term, not the possibly-evasive
         // matched spelling, which is what Slice 9's suppression will key on.
+        fixtureId: undefined,
         trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
@@ -617,11 +642,13 @@ describe('automod subscriber', () => {
         caseId: 'case-1',
         ruleId: 'rule-6',
         memberId: AUTHOR,
+        channelId: CHANNEL,
         matchedCategory: 'cat-1',
         matchedSnippet: 'badword',
         actionTaken: 'deleted_and_escalated',
         escalationAction: 'timeout',
         refusalReason: undefined,
+        fixtureId: undefined,
         trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
@@ -648,11 +675,13 @@ describe('automod subscriber', () => {
         caseId: 'case-1',
         ruleId: 'rule-7',
         memberId: AUTHOR,
+        channelId: CHANNEL,
         matchedCategory: 'cat-1',
         matchedSnippet: 'badword',
         actionTaken: 'escalation_refused',
         escalationAction: 'kick',
         refusalReason: 'discord-owner',
+        fixtureId: undefined,
         trace: expect.objectContaining({ kind: 'keyword_filter', matchedOn: 'badword' }),
       },
     ]);
