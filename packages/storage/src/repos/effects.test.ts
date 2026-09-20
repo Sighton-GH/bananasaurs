@@ -280,12 +280,20 @@ describe('tailAudit', () => {
   });
 });
 
-describe('tailAudit excludeActions (ADR 0050)', () => {
-  const put = (scope: GuildScope, at: number, action: string) =>
+describe('tailAudit excludeOwnActions (ADR 0050)', () => {
+  const ME = 'tok_me';
+  const THEM = 'tok_them';
+  const TRAIL_READ = 'mcp.read.list_audit_events';
+
+  // `null` means "no actor", spelled distinctly from `undefined`: passing
+  // `undefined` explicitly would trigger the default and silently write the
+  // row as mine, which is how this helper first told the opposite of the
+  // truth about the null case below.
+  const put = (scope: GuildScope, at: number, action: string, actorId: string | null = ME) =>
     recordAudit(scope, {
       at,
       actorType: 'mcp_operator',
-      actorId: 'tok_test',
+      actorId: actorId ?? undefined,
       via: 'http',
       action,
       subjectType: 'guild',
@@ -293,32 +301,59 @@ describe('tailAudit excludeActions (ADR 0050)', () => {
       dryRun: false,
     });
 
-  it('omits the named actions, in SQL, so a full page of excluded rows cannot empty the result', () => {
-    for (let i = 0; i < 5; i += 1) put(a, 100 + i, 'mcp.read.list_audit_events');
+  /** What `list_audit_events` passes on behalf of the caller. */
+  const mine = { actions: [TRAIL_READ], actorId: ME };
+
+  it('omits my own named actions, in SQL, so a full page of them cannot empty the result', () => {
+    for (let i = 0; i < 5; i += 1) put(a, 100 + i, TRAIL_READ);
     put(a, 1, 'real.one');
     put(a, 2, 'real.two');
     // Without the filter the five read-rows fill the limit-5 page and the two
     // real rows vanish; with it they are exactly what remains.
-    expect(tailAudit(a, { limit: 5, excludeActions: ['mcp.read.list_audit_events'] })).toHaveLength(
-      2,
-    );
-    expect(
-      tailAudit(a, { limit: 5, excludeActions: ['mcp.read.list_audit_events'] }).map(
-        (r) => r.action,
-      ),
-    ).toEqual(['real.two', 'real.one']);
+    expect(tailAudit(a, { limit: 5, excludeOwnActions: mine })).toHaveLength(2);
+    expect(tailAudit(a, { limit: 5, excludeOwnActions: mine }).map((r) => r.action)).toEqual([
+      'real.two',
+      'real.one',
+    ]);
   });
 
-  it('filters nothing when the option is absent, and treats an empty list as absent', () => {
-    put(a, 100, 'mcp.read.list_audit_events');
+  it('filters nothing when the option is absent, and treats an empty action list as absent', () => {
+    put(a, 100, TRAIL_READ);
     expect(tailAudit(a)).toHaveLength(1);
-    expect(tailAudit(a, { excludeActions: [] })).toHaveLength(1);
+    expect(tailAudit(a, { excludeOwnActions: { actions: [], actorId: ME } })).toHaveLength(1);
   });
 
   it('stays guild-scoped while filtering', () => {
-    put(a, 100, 'mcp.read.list_audit_events');
+    put(a, 100, TRAIL_READ);
     put(b, 100, 'real.theirs');
-    expect(tailAudit(a, { excludeActions: ['mcp.read.list_audit_events'] })).toEqual([]);
-    expect(tailAudit(b, { excludeActions: ['mcp.read.list_audit_events'] })).toHaveLength(1);
+    expect(tailAudit(a, { excludeOwnActions: mine })).toEqual([]);
+    expect(tailAudit(b, { excludeOwnActions: mine })).toHaveLength(1);
+  });
+
+  /**
+   * The point of pairing the action with an actor: hiding my own reads of
+   * the trail must not hide anyone else's. An operator who cannot see that
+   * a second token has been reading the audit trail is looking at a trail
+   * that lies by omission.
+   */
+  it("keeps another token's reads of the trail, and hides only mine", () => {
+    put(a, 100, TRAIL_READ, ME);
+    put(a, 200, TRAIL_READ, THEM);
+    const rows = tailAudit(a, { excludeOwnActions: mine });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.actorId).toBe(THEM);
+  });
+
+  /**
+   * `actor_id` is nullable — SSH-originated rows carry none — and in SQL
+   * `NULL = 'tok_me'` is NULL rather than false. A naively negated filter
+   * evaluates to NULL for these rows and drops them silently, so the row
+   * that belongs to nobody is the one most likely to disappear.
+   */
+  it('keeps a row whose actor_id is null, which no naive negation would', () => {
+    put(a, 100, TRAIL_READ, null);
+    const rows = tailAudit(a, { excludeOwnActions: mine });
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.actorId).toBeNull();
   });
 });

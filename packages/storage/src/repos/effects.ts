@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { and, desc, eq, gte, notInArray } from 'drizzle-orm';
+import { and, desc, eq, gte, isNull, ne, notInArray, or } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { auditEvents, effectBatches, managedRoleAssignments, roleEffects } from '../schema.js';
@@ -388,14 +388,35 @@ export interface TailAuditInput {
   /** `--since 2h`, as an absolute millisecond timestamp the caller computed. */
   sinceMs?: number | undefined;
   /**
-   * Actions to leave out of the result (ADR 0050): `list_audit_events`
-   * audits its own reads, and the tool must not return the rows its own
-   * reads generate. Filtered in SQL, not in memory: a post-limit filter
-   * would let a page full of excluded rows empty the result while older,
-   * wanted rows exist. An empty list filters nothing.
+   * The caller's *own* reads to leave out of the result (ADR 0050):
+   * `list_audit_events` audits its own reads, and the tool must not return
+   * the rows the caller's own reads generate — otherwise watching the trail
+   * makes it grow. Both halves are required together: an action alone would
+   * hide every operator's reads of the trail, so a second operator's
+   * trail-reading would be invisible to the first, which is the opposite of
+   * what an audit trail is for.
+   *
+   * Filtered in SQL, not in memory: a post-limit filter would let a page
+   * full of excluded rows empty the result while older, wanted rows exist.
+   * An empty action list filters nothing.
    */
-  excludeActions?: readonly string[] | undefined;
+  excludeOwnActions?: { readonly actions: readonly string[]; readonly actorId: string } | undefined;
 }
+
+/**
+ * `NOT (action IN (...) AND actor_id = <me>)`, written as its De Morgan
+ * twin so a NULL `actor_id` cannot swallow a row. `actor_id` is nullable —
+ * SSH-originated rows carry none — and in SQL `NULL = 'tok_x'` is NULL, not
+ * false, so the negation of the naive form evaluates to NULL and the row
+ * silently vanishes from the page. The explicit `IS NULL` arm keeps every
+ * row that is not provably the caller's own.
+ */
+const notOwnAction = (own: { readonly actions: readonly string[]; readonly actorId: string }) =>
+  or(
+    notInArray(auditEvents.action, [...own.actions]),
+    isNull(auditEvents.actorId),
+    ne(auditEvents.actorId, own.actorId),
+  );
 
 /**
  * Newest first, on the `audit_tail` index.
@@ -429,9 +450,9 @@ export const tailAudit = (scope: GuildScope, input: TailAuditInput = {}): AuditR
           auditEvents,
           and(
             input.sinceMs === undefined ? undefined : gte(auditEvents.at, input.sinceMs),
-            input.excludeActions === undefined || input.excludeActions.length === 0
+            input.excludeOwnActions === undefined || input.excludeOwnActions.actions.length === 0
               ? undefined
-              : notInArray(auditEvents.action, [...input.excludeActions]),
+              : notOwnAction(input.excludeOwnActions),
           ),
         ),
       )
