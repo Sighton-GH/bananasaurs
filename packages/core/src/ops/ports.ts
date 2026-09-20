@@ -1070,9 +1070,9 @@ export interface OpsPorts {
    */
   allowSendChannel(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
   allowSendCategory(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
-  disallowSendCategory(channelId: string): boolean;
+  disallowSendCategory(channelId: string): OpsDisallowSendOutcome;
   sendScopeCoverage(channelId: string): number;
-  disallowSendChannel(channelId: string): boolean;
+  disallowSendChannel(channelId: string): OpsDisallowSendOutcome;
   listSendAllowlist(): readonly OpsSendAllowlistEntry[];
   listSends(input: {
     sinceMs?: number | undefined;
@@ -1082,6 +1082,13 @@ export interface OpsPorts {
 
 /** What `mcp allow-channel` did: allowed, already allowed, or refused. */
 export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';
+
+/**
+ * What `mcp disallow-channel` / `mcp disallow-category` did (review S1):
+ * kind-scoped, so the wrong verb on the other kind's row is a distinct
+ * answer, never a silent delete.
+ */
+export type OpsDisallowSendOutcome = 'removed' | 'not-allowed' | 'wrong-kind';
 
 export interface OpsSendAllowlistEntry {
   readonly channelId: string;

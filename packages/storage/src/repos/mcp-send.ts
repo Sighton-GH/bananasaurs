@@ -53,14 +53,28 @@ export const allowChannel = (
     return result.changes === 1;
   });
 
-/** Deletes the channel row; false when it was never allowed. */
-export const disallowChannel = (scope: GuildScope, channelId: string): boolean =>
+/**
+ * Deletes the row whose `scope_kind` matches the verb (review S1): a
+ * category row is `'wrong-kind'` to `disallow-channel` and vice versa, so a
+ * mistyped verb can never silently remove the other kind's scope.
+ */
+export const disallowChannel = (
+  scope: GuildScope,
+  channelId: string,
+  scopeKind: 'channel' | 'category',
+): 'removed' | 'not-allowed' | 'wrong-kind' =>
   write(scope, ({ db }) => {
-    const result = db
-      .delete(mcpSendAllowlist)
+    const row = db
+      .select({ scopeKind: mcpSendAllowlist.scopeKind })
+      .from(mcpSendAllowlist)
+      .where(scope.only(mcpSendAllowlist, eq(mcpSendAllowlist.channelId, channelId)))
+      .get();
+    if (row === undefined) return 'not-allowed';
+    if (row.scopeKind !== scopeKind) return 'wrong-kind';
+    db.delete(mcpSendAllowlist)
       .where(scope.only(mcpSendAllowlist, eq(mcpSendAllowlist.channelId, channelId)))
       .run();
-    return result.changes === 1;
+    return 'removed';
   });
 
 export const isScopeAllowed = (

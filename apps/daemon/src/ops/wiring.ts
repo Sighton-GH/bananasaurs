@@ -630,6 +630,10 @@ export const opsPortsFor = (
     return added ? 'allowed' : 'already-allowed';
   },
   allowSendCategory: (input) => {
+    // Review S2: the same allow-time shape check `allowSendChannel` has —
+    // the id must name a category of this guild before any row is written.
+    const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(input.channelId);
+    if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
     const added = mcpSendRepo.allowChannel(scope, {
       channelId: input.channelId,
       addedByAccountId: input.accountId,
@@ -638,7 +642,7 @@ export const opsPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
-  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'category'),
   sendScopeCoverage: (channelId) => {
     const guild = client.guilds.cache.get(scope.guildId);
     return guild === undefined
@@ -647,7 +651,7 @@ export const opsPortsFor = (
           (channel) => !channel.isThread() && channel.parentId === channelId,
         ).size;
   },
-  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'channel'),
   listSendAllowlist: () =>
     mcpSendRepo.listAllowedChannels(scope).map((row) => ({
       ...row,

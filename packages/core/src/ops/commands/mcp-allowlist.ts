@@ -109,9 +109,23 @@ export const mcpDisallowChannelCommand = defineCommand<z.infer<typeof disallowCh
   args: disallowChannelArgs,
 
   run(ctx: OpsContext, args): OpsWriteResult {
-    const removed = ctx.ports.disallowSendChannel(args.channelId);
+    const outcome = ctx.ports.disallowSendChannel(args.channelId);
 
-    if (!removed) {
+    if (outcome === 'wrong-kind') {
+      return {
+        text: `channel ${args.channelId} is allowlisted as a category; use mcp disallow-category`,
+        data: { channelId: args.channelId, allowed: true, changed: false },
+        audit: {
+          action: 'mcp.send_channel.disallowed',
+          subjectType: 'mcp_send_channel',
+          subjectId: args.channelId,
+          before: { allowed: true },
+          after: { allowed: true, changed: false },
+        },
+      };
+    }
+
+    if (outcome === 'not-allowed') {
       return {
         text: `channel ${args.channelId} was not allowlisted for MCP sends; nothing changed`,
         data: { channelId: args.channelId, allowed: false, changed: false },
@@ -252,6 +266,18 @@ export const mcpAllowCategoryCommand = defineCommand<z.infer<typeof categoryArgs
       channelId: args.channelId,
       accountId: ctx.actor.unixUserClaimed ?? 'operator_cli',
     });
+    if (outcome === 'no-such-channel') {
+      return {
+        text: `category ${args.channelId} is not a category of this guild; nothing changed`,
+        data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
+        audit: {
+          action: 'mcp.send_category.allowed',
+          subjectType: 'mcp_send_category',
+          subjectId: args.channelId,
+          after: { outcome: 'no-such-channel', channelId: args.channelId },
+        },
+      };
+    }
     return {
       text:
         outcome === 'allowed'
@@ -275,17 +301,20 @@ export const mcpDisallowCategoryCommand = defineCommand<z.infer<typeof categoryA
   positional: [{ name: 'channelId', required: true, describe: 'the category to remove' }],
   args: categoryArgs,
   run(ctx, args): OpsWriteResult {
-    const removed = ctx.ports.disallowSendCategory(args.channelId);
+    const outcome = ctx.ports.disallowSendCategory(args.channelId);
     return {
-      text: removed
-        ? `category ${args.channelId} can no longer authorize MCP sends`
-        : `category ${args.channelId} was not allowlisted; nothing changed`,
-      data: { channelId: args.channelId, removed },
+      text:
+        outcome === 'removed'
+          ? `category ${args.channelId} can no longer authorize MCP sends`
+          : outcome === 'wrong-kind'
+            ? `category ${args.channelId} is allowlisted as a channel; use mcp disallow-channel`
+            : `category ${args.channelId} was not allowlisted; nothing changed`,
+      data: { channelId: args.channelId, removed: outcome === 'removed' },
       audit: {
         action: 'mcp.send_category.disallowed',
         subjectType: 'mcp_send_category',
         subjectId: args.channelId,
-        after: { removed },
+        after: { removed: outcome === 'removed' },
       },
     };
   },

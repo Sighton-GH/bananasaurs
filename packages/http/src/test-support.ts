@@ -527,9 +527,9 @@ export const testPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
-  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'category'),
   sendScopeCoverage: () => 0,
-  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'channel'),
   listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
