@@ -5,6 +5,7 @@ import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
@@ -105,7 +106,12 @@ export function AuditPage() {
       <DataState
         resource={audit.resource}
         isEmpty={(a) => a.length === 0}
-        empty={<p className="text-sm text-ink-muted">Nothing has been audited yet.</p>}
+        empty={
+          <EmptyState
+            title="No audit activity yet"
+            detail="Actions and refusals will appear here with their actor and source. Try the Safety page to review the controls that govern every action."
+          />
+        }
       >
         {(rows) => (
           <DataTable

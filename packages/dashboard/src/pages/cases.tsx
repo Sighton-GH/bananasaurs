@@ -7,6 +7,7 @@ import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 /** One row of the `/cases` list and the `/members/:memberId` history. */
@@ -54,9 +55,15 @@ export function CasesPage() {
         resource={resource}
         isEmpty={(c) => c.length === 0}
         empty={
-          <p className="text-sm text-ink-muted">
-            No cases. Nothing has matched or been actioned yet.
-          </p>
+          <EmptyState
+            title="No moderation cases"
+            detail="Nothing has matched or been actioned. Review Automod to see which rules are observing this server."
+            action={
+              <Link href="/automod" className="text-sm font-medium underline underline-offset-4">
+                Review Automod rules
+              </Link>
+            }
+          />
         }
       >
         {(rows) => {

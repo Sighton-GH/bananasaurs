@@ -32,6 +32,50 @@ import { NAV } from './routes.js';
 import { useSession } from './session.js';
 import { StateStrip } from './StateStrip.js';
 
+function DesktopHeader() {
+  const session = useSession();
+  const health = useHealth();
+  const [refreshedAt, setRefreshedAt] = useState<Date | undefined>(undefined);
+
+  useEffect(() => {
+    if (health.resource.state === 'ready') setRefreshedAt(new Date());
+  }, [health.resource]);
+
+  const guildName =
+    health.resource.state === 'ready'
+      ? (health.resource.data.guildName ?? 'Unnamed server')
+      : 'Loading server';
+  const freshness =
+    health.resource.state === 'loading'
+      ? 'Refreshing data…'
+      : health.resource.state === 'error'
+        ? 'Data unavailable'
+        : refreshedAt === undefined
+          ? 'Current data'
+          : `Updated ${refreshedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+
+  return (
+    <div className="hidden h-16 items-center justify-between border-b border-line bg-canvas/82 px-6 backdrop-blur lg:flex">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-medium text-ink">{guildName}</p>
+          <span className="rounded-full border border-line px-2 py-0.5 text-[0.625rem] uppercase tracking-[0.1em] text-ink-muted">
+            Active server
+          </span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-ink-muted">{session.info.guildId}</p>
+      </div>
+      <div className="flex items-center gap-4">
+        <div className="text-right">
+          <p className="text-xs font-medium text-ink">{freshness}</p>
+          <p className="text-[0.6875rem] text-ink-muted">Health summary · Observe-first controls</p>
+        </div>
+        <ThemeToggle />
+      </div>
+    </div>
+  );
+}
+
 function GuildIdentity() {
   const session = useSession();
   const health = useHealth();
@@ -275,13 +319,7 @@ export function Shell() {
 
         <div className="flex min-h-screen min-w-0 flex-1 flex-col">
           <StateStrip />
-          <div className="hidden h-16 items-center justify-between border-b border-line px-6 lg:flex">
-            <p className="text-sm text-ink-muted">Operator console</p>
-            <div className="flex items-center gap-3">
-              <p className="text-xs text-ink-muted">Observe-first controls</p>
-              <ThemeToggle />
-            </div>
-          </div>
+          <DesktopHeader />
           <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
             <Pages />
           </main>

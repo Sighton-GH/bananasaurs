@@ -24,7 +24,7 @@ describe('SearchPage', () => {
   it('searches nothing until the form is submitted', () => {
     const mock = stubFetch([]);
     renderWithSession(<SearchPage />);
-    expect(screen.getByText(/Nothing searched yet/)).toBeTruthy();
+    expect(screen.getByRole('region', { name: 'Search the archive' })).toBeTruthy();
     expect(mock).not.toHaveBeenCalled();
   });
 
@@ -66,6 +66,8 @@ describe('SearchPage', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     });
-    expect(await screen.findByText('No archived messages matched.')).toBeTruthy();
+    expect(
+      await screen.findByRole('region', { name: 'No archived messages matched' }),
+    ).toBeTruthy();
   });
 });

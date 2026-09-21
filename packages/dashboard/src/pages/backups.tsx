@@ -7,6 +7,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -66,7 +67,17 @@ export function BackupsPage() {
       <DataState
         resource={backups.resource}
         isEmpty={(rows) => rows.length === 0}
-        empty={<p className="text-sm text-ink-muted">No backups yet. Take one now.</p>}
+        empty={
+          <EmptyState
+            title="No backups on disk"
+            detail="Take the first backup now. Bananasaurs will write the database snapshot and apply the configured retention policy."
+            action={
+              <Button variant="primary" onClick={() => setConfirming(true)}>
+                Take the first backup
+              </Button>
+            }
+          />
+        }
       >
         {(rows) => (
           <div className="max-w-4xl">

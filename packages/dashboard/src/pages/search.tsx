@@ -5,6 +5,7 @@ import { useResource } from '../hooks/useResource.js';
 import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
@@ -90,14 +91,20 @@ export function SearchPage() {
         </div>
       </form>
       {submitted === undefined ? (
-        <p className="text-sm text-ink-muted">
-          Nothing searched yet. Results stay within this guild&apos;s archive-enabled channels.
-        </p>
+        <EmptyState
+          title="Search the archive"
+          detail="Enter a word or phrase above. Results stay within this server’s archive-enabled channels."
+        />
       ) : (
         <DataState
           resource={results.resource}
           isEmpty={(r) => r === undefined || r.hits.length === 0}
-          empty={<p className="text-sm text-ink-muted">No archived messages matched.</p>}
+          empty={
+            <EmptyState
+              title="No archived messages matched"
+              detail="Try fewer words, remove a channel or author filter, or check that the channel is enabled on the Archive page."
+            />
+          }
         >
           {(result) =>
             result === undefined ? null : (

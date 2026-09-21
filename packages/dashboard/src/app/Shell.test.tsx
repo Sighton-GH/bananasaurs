@@ -90,6 +90,14 @@ describe('Shell', () => {
     expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();
   });
 
+  it('names the active server and health freshness in the desktop header', async () => {
+    renderAt('/');
+    expect(await screen.findByText('Updated', { exact: false })).toBeTruthy();
+    expect(screen.getAllByText('Bananasaurs dev')).toHaveLength(3);
+    expect(screen.getAllByText('Active server')).toHaveLength(2);
+    expect(screen.getByText('Health summary · Observe-first controls')).toBeTruthy();
+  });
+
   it('Sign out posts /api/logout', async () => {
     const mock = renderAt('/');
     await screen.findByRole('button', { name: 'Sign out' });

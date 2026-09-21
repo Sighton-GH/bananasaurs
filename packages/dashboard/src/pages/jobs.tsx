@@ -10,6 +10,7 @@ import { Checkbox } from '../ui/Field.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -103,9 +104,19 @@ export function JobsPage() {
         resource={jobs.resource}
         isEmpty={(rows) => rows.length === 0}
         empty={
-          <p className="text-sm text-ink-muted">
-            {failedOnly ? 'No failed jobs.' : 'The queue is empty.'}
-          </p>
+          <EmptyState
+            title={failedOnly ? 'No failed jobs' : 'The queue is clear'}
+            detail={
+              failedOnly
+                ? 'Nothing needs a retry. Show the full queue to see queued, running and completed work.'
+                : 'There is no queued or running work right now. New durable work will appear here automatically.'
+            }
+            action={
+              failedOnly ? (
+                <Button onClick={() => setFailedOnly(false)}>Show all jobs</Button>
+              ) : undefined
+            }
+          />
         }
       >
         {(rows) => (

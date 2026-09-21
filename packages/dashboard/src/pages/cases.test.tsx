@@ -103,9 +103,7 @@ describe('CasesPage', () => {
       { url: '/api/mod/cases?limit=50', body: { cases: [] } },
     ]);
     renderCasesPage();
-    expect(
-      await screen.findByText('No cases. Nothing has matched or been actioned yet.'),
-    ).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'No moderation cases' })).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
   });
 
