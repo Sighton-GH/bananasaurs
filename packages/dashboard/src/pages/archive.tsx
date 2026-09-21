@@ -18,6 +18,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
@@ -257,13 +258,12 @@ export function ArchivePage() {
             )}
           </DataState>
           <form onSubmit={(e) => void enable(e)} className="mt-3 grid max-w-md gap-3">
-            <Field
+            <ChannelPicker
               label="Enable archiving for a channel"
-              hint="The channel's snowflake ID."
               {...(enableError !== undefined ? { error: enableError } : {})}
-            >
-              <Input value={channelId} onChange={(e) => setChannelId(e.target.value)} />
-            </Field>
+              value={channelId}
+              onChange={setChannelId}
+            />
             <Field
               label="Attachment policy"
               hint="'none' keeps text only; 'bytes' stores attachment bytes."

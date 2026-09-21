@@ -14,7 +14,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
-import { Field, Input } from '../ui/Field.js';
+import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -187,12 +187,12 @@ export function McpPage() {
             )}
           </DataState>
           <form onSubmit={(e) => void allow(e)} className="mt-3 grid max-w-md gap-3">
-            <Field
+            <ChannelPicker
               label="Allow a channel"
-              hint="The channel's snowflake ID. Mentions never ping and the ten-per-hour guild limit applies."
-            >
-              <Input value={channelId} onChange={(e) => setChannelId(e.target.value)} />
-            </Field>
+              hint="Pick a channel or paste its snowflake ID. Mentions never ping and the ten-per-hour guild limit applies."
+              value={channelId}
+              onChange={setChannelId}
+            />
             <div>
               <Button
                 type="submit"

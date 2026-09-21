@@ -201,6 +201,15 @@ export interface SendAllowlistEntry {
 /** `POST /api/send-allowlist` outcomes; `no-such-channel` arrives as a 404. */
 export type SendAllowOutcome = 'allowed' | 'already-allowed';
 
+// --- guild ----------------------------------------------------------------
+
+/** One row of `GET /api/guild/channels`'s `channels` — mirrors `OpsGuildChannelInfo`. */
+export interface GuildChannelInfo {
+  readonly channelId: string;
+  readonly name: string;
+  readonly kind: string;
+}
+
 // --- archive ----------------------------------------------------------------
 
 export type ArchiveAttachmentPolicy = 'none' | 'bytes';
