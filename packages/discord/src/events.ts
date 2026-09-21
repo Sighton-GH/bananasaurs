@@ -322,6 +322,10 @@ function toSlashCommandEvent(
     // the reply is addressed by the token, not by the channel.
     channelId: interaction.channelId ?? undefined,
     userId: interaction.user.id,
+    userRoleIds: Array.isArray(interaction.member?.roles)
+      ? interaction.member.roles.filter((id) => id !== guildId)
+      : (interaction.member?.roles.cache.map((role) => role.id).filter((id) => id !== guildId) ??
+        []),
   };
 }
 

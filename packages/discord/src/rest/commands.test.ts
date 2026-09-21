@@ -73,6 +73,29 @@ describe('the Release 1 command set', () => {
   });
 });
 
+describe('the Release 3 command set', () => {
+  it('adds the member assistant commands and no privacy commands', () => {
+    expect(RELEASE_3_COMMANDS.map((command) => command.name)).toEqual([
+      'status',
+      'mod',
+      'ask',
+      'find',
+      'remind',
+      'decision',
+      'review-plan',
+      'onboard',
+      'agenda',
+      'summarise',
+      'announce',
+      'checklist',
+      'handoff',
+    ]);
+    expect(
+      RELEASE_3_COMMANDS.some((command) => ['mydata', 'forgetme'].includes(command.name)),
+    ).toBe(false);
+  });
+});
+
 describe('the Release 2 command set', () => {
   it('is Release 1 plus /mod', () => {
     expect(RELEASE_2_COMMANDS).toEqual([STATUS_COMMAND, MOD_COMMAND]);

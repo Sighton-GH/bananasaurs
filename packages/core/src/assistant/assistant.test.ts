@@ -19,6 +19,7 @@ const behaviour = {
   reviewerRoleIds: [],
   callerRoleIds: [],
   systemPrompt: 'Use Canadian English.',
+  promptVersion: 1,
   allowedSkillIds: ['search-club'],
   resourceIds: ['web'],
   enabled: true,
@@ -54,6 +55,16 @@ describe('assistant behaviour and permissions', () => {
       permissionKeys: new Set(['assistant.search']),
     });
     expect(skills.map((skill) => skill.id)).toEqual(['search-club']);
+  });
+  it('offers the organisation catalogue only through explicit permission intersections', () => {
+    const skills = allowedSkills(['onboarding-guide', 'draft-agenda', 'draft-announcement'], {
+      guildId: 'g1',
+      userId: 'u1',
+      owner: false,
+      permissionKeys: new Set(['assistant.onboarding', 'assistant.organise']),
+    });
+    expect(skills.map((skill) => skill.id)).toEqual(['onboarding-guide', 'draft-agenda']);
+    expect(skills.every((skill) => skill.effect === 'read' || skill.effect === 'draft')).toBe(true);
   });
 });
 

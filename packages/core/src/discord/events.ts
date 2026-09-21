@@ -111,6 +111,8 @@ export interface SlashCommandEvent extends Base {
    */
   channelId: Snowflake | undefined;
   userId: Snowflake;
+  /** Current guild roles for permission-aware assistant skills. */
+  userRoleIds?: readonly Snowflake[];
 }
 
 /**

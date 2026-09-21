@@ -12,7 +12,10 @@ const behaviour = z.object({
   mentionRoleId: snowflake.optional(),
   name: z.string().min(1).max(100),
   systemPrompt: z.string().min(1).max(4000),
-  allowedSkillIds: z.array(z.string()).max(20),
+  promptVersion: z.number().int().min(0),
+  allowedSkillIds: z
+    .array(z.enum(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id) as [string, ...string[]]))
+    .max(CLUB_ASSISTANT_SKILLS.length),
   callerRoleIds: z.array(snowflake).max(100),
   ticket: z
     .object({
@@ -69,6 +72,13 @@ export const registerAssistantRoutes = (
     const parsed = behaviour.safeParse(request.body);
     if (!parsed.success || parsed.data.id !== (request.params as { id: string }).id)
       return reply.status(400).send({ error: 'bad-request' });
+    const existing = assistantRepo
+      .listBehaviours(session.scope)
+      .find((item) => item.id === parsed.data.id);
+    if (existing !== undefined && existing.promptVersion !== parsed.data.promptVersion)
+      return reply
+        .status(409)
+        .send({ error: 'prompt-version-conflict', currentVersion: existing.promptVersion });
     assistantRepo.putBehaviour(
       session.scope,
       {
@@ -80,6 +90,7 @@ export const registerAssistantRoutes = (
           : { mentionRoleId: parsed.data.mentionRoleId }),
         name: parsed.data.name,
         systemPrompt: parsed.data.systemPrompt,
+        promptVersion: (existing?.promptVersion ?? 0) + 1,
         allowedSkillIds: parsed.data.allowedSkillIds,
         callerRoleIds: parsed.data.callerRoleIds,
         ...(parsed.data.ticket?.channelId === undefined
@@ -106,6 +117,33 @@ export const registerAssistantRoutes = (
       return reply.status(400).send({ error: 'bad-request' });
     assistantRepo.putSkillGrant(session.scope, { skillId: id, ...parsed.data }, deps.now());
     return reply.status(200).send({ ok: true });
+  });
+  app.post('/api/assistant/reminders/:id/cancel', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const id = (request.params as { id: string }).id;
+    return assistantRepo.cancelReminder(session.scope, id)
+      ? reply.status(200).send({ ok: true })
+      : reply.status(409).send({ error: 'invalid-transition' });
+  });
+  app.post('/api/assistant/decisions/:id/review', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const id = (request.params as { id: string }).id;
+    return assistantRepo.transitionDecision(session.scope, id, 'draft', 'reviewed')
+      ? reply.status(200).send({ ok: true })
+      : reply.status(409).send({ error: 'invalid-transition' });
+  });
+  app.post('/api/assistant/decisions/:id/save', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const id = (request.params as { id: string }).id;
+    return assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved')
+      ? reply.status(200).send({ ok: true })
+      : reply.status(409).send({ error: 'invalid-transition' });
   });
   app.put('/api/assistant/resources/:id', (request, reply) => {
     const session = guard.require(request, reply);

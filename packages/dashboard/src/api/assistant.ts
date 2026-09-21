@@ -115,6 +115,12 @@ export interface AssistantData {
 
 export const ASSISTANT_URL = '/api/assistant';
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
+export const reminderCancelUrl = (id: string) =>
+  `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;
+export const decisionReviewUrl = (id: string) =>
+  `/api/assistant/decisions/${encodeURIComponent(id)}/review`;
+export const decisionSaveUrl = (id: string) =>
+  `/api/assistant/decisions/${encodeURIComponent(id)}/save`;
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;

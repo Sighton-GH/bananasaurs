@@ -18,6 +18,7 @@ const direct: AssistantBehaviour = {
   reviewerRoleIds: [],
   callerRoleIds: [],
   systemPrompt: 'direct',
+  promptVersion: 1,
   allowedSkillIds: ['club-search', 'reminder-create'],
   resourceIds: [],
   enabled: true,
@@ -31,6 +32,7 @@ const club: AssistantBehaviour = {
   reviewerRoleIds: [],
   callerRoleIds: [],
   systemPrompt: 'club',
+  promptVersion: 1,
   allowedSkillIds: ['club-search'],
   resourceIds: [],
   enabled: true,
@@ -91,6 +93,12 @@ describe('assistant command subscriber', () => {
     ],
     ['decision', [{ name: 'topic', value: 'Battery supplier' }]],
     ['review-plan', [{ name: 'plan', value: 'Test on Friday' }]],
+    ['onboard', [{ name: 'request', value: 'What should a new member do?' }]],
+    ['agenda', [{ name: 'request', value: 'Monday tech meeting' }]],
+    ['summarise', [{ name: 'request', value: 'Notes from the build session' }]],
+    ['announce', [{ name: 'request', value: 'Battery workshop moved' }]],
+    ['checklist', [{ name: 'request', value: 'Competition packing' }]],
+    ['handoff', [{ name: 'request', value: 'Electrical to software' }]],
   ])('defers and routes /%s through the service', async (name, options) => {
     const h = harness();
     await h.subscriber.handle(slash(name, options));

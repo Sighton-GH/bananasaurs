@@ -14,6 +14,7 @@ const BEHAVIOURS = [
     surface: 'bananasaurs',
     name: 'Club assistant',
     systemPrompt: 'Answer with reviewed club knowledge only.',
+    promptVersion: 1,
     allowedSkillIds: ['search-club', 'create-reminder'],
     resourceIds: ['handbook'],
     enabled: true,
@@ -25,6 +26,7 @@ const BEHAVIOURS = [
     surface: 'it-services',
     name: 'IT services',
     systemPrompt: 'Answer infrastructure questions.',
+    promptVersion: 1,
     allowedSkillIds: ['open-resource'],
     resourceIds: [],
     enabled: false,
@@ -173,6 +175,7 @@ describe('AssistantPage', () => {
       surface: 'bananasaurs',
       name: 'Club assistant',
       systemPrompt: 'Answer with reviewed club knowledge only.',
+      promptVersion: 1,
       allowedSkillIds: ['search-club', 'create-reminder'],
       resourceIds: ['handbook'],
       enabled: true,
@@ -336,7 +339,7 @@ describe('AssistantPage', () => {
     for (const label of [/Edit behaviour/, /Run test scenario/, /New reminder/]) {
       expect(screen.queryByRole('button', { name: label })).toBeNull();
     }
-    expect(screen.getByText(/Prompt edits change through the configuration API/)).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Save prompt' }).hasAttribute('disabled')).toBe(true);
   });
 
   it('renders the error state when the load fails', async () => {

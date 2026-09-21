@@ -12,6 +12,8 @@ export interface AssistantBehaviour {
   readonly reviewerRoleIds: readonly string[];
   readonly name: string;
   readonly systemPrompt: string;
+  /** Monotonic revision used for conflict-safe dashboard editing. */
+  readonly promptVersion: number;
   readonly allowedSkillIds: readonly string[];
   readonly resourceIds: readonly string[];
   readonly enabled: boolean;

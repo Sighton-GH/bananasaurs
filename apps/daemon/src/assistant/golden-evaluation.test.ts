@@ -39,6 +39,7 @@ const behaviour = (
   reviewerRoleIds: [],
   callerRoleIds: ['333333333333333333'],
   systemPrompt: `Reviewed ${id} behaviour.`,
+  promptVersion: 1,
   allowedSkillIds: ['search-club', 'create-reminder', 'send-reminder'],
   resourceIds: ['public'],
   enabled: true,

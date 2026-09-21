@@ -4,7 +4,10 @@ import type { AssistantSkill, ClubResource, ReminderStatus } from '@bananasaurs/
 import {
   ASSISTANT_URL,
   behaviourUrl,
+  decisionReviewUrl,
+  decisionSaveUrl,
   resourceUrl,
+  reminderCancelUrl,
   skillGrantUrl,
   type AssistantBehaviourView,
   type AssistantData,
@@ -50,8 +53,10 @@ const behaviourBody = (
   behaviour: AssistantBehaviourView,
   patch: Partial<{
     enabled: boolean;
+    systemPrompt: string;
     callerRoleIds: readonly string[];
     resourceIds: readonly string[];
+    allowedSkillIds: readonly string[];
     ticket: { readonly channelId?: string; readonly reviewerRoleIds?: readonly string[] };
   }>,
 ) => ({
@@ -59,8 +64,9 @@ const behaviourBody = (
   surface: behaviour.surface,
   ...(behaviour.mentionRoleId === undefined ? {} : { mentionRoleId: behaviour.mentionRoleId }),
   name: behaviour.name,
-  systemPrompt: behaviour.systemPrompt,
-  allowedSkillIds: behaviour.allowedSkillIds,
+  systemPrompt: patch.systemPrompt ?? behaviour.systemPrompt,
+  promptVersion: behaviour.promptVersion,
+  allowedSkillIds: patch.allowedSkillIds ?? behaviour.allowedSkillIds,
   resourceIds: patch.resourceIds ?? behaviour.resourceIds,
   enabled: patch.enabled ?? behaviour.enabled,
   ...(behaviour.callerRoleIds === undefined
@@ -169,6 +175,9 @@ function BehaviourAccessEditor({
   const toast = useToast();
   const [roleIds, setRoleIds] = useState<readonly string[]>(behaviour.callerRoleIds ?? []);
   const [resourceIds, setResourceIds] = useState<readonly string[]>(behaviour.resourceIds);
+  const [allowedSkillIds, setAllowedSkillIds] = useState<readonly string[]>(
+    behaviour.allowedSkillIds,
+  );
   const [channelId, setChannelId] = useState(behaviour.ticket?.channelId ?? '');
   const [reviewerRoleIds, setReviewerRoleIds] = useState<readonly string[]>(
     behaviour.ticket?.reviewerRoleIds ?? [],
@@ -183,6 +192,7 @@ function BehaviourAccessEditor({
         behaviourBody(behaviour, {
           callerRoleIds: roleIds,
           resourceIds,
+          allowedSkillIds,
           ticket: {
             ...(channelId === '' ? {} : { channelId }),
             reviewerRoleIds,
@@ -221,6 +231,29 @@ function BehaviourAccessEditor({
             </p>
           </>
         )}
+      </section>
+      <section aria-label="Allowed skills" className="mt-4">
+        <h3 className="text-sm font-medium">Skills this behaviour may use</h3>
+        <ul className="mt-2 grid gap-1 sm:grid-cols-2">
+          {data.skills.map((skill) => (
+            <li key={skill.id}>
+              <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
+                <input
+                  type="checkbox"
+                  checked={allowedSkillIds.includes(skill.id)}
+                  onChange={() => setAllowedSkillIds((ids) => toggleIn(ids, skill.id))}
+                />
+                <span>
+                  <span className="block">{skill.name}</span>
+                  <span className="text-xs text-ink-muted">
+                    {skill.effect}
+                    {skill.requiresConfirmation ? ' · confirmation required' : ''}
+                  </span>
+                </span>
+              </label>
+            </li>
+          ))}
+        </ul>
       </section>
       <section aria-label="Attached resources" className="mt-4">
         <h3 className="text-sm font-medium">Resources this behaviour may use</h3>
@@ -544,6 +577,15 @@ function ResourcesCard({
                 {resource.kind} · reviewed{' '}
                 {new Date(resource.reviewedAt).toLocaleDateString('en-CA')}
               </p>
+              <p className="mt-1 text-xs text-ink-muted">
+                Fetch: {resource.fetchStatus ?? 'pending'}
+                {resource.lastFetchedAt === undefined
+                  ? ''
+                  : ` · ${new Date(resource.lastFetchedAt).toLocaleString('en-CA')}`}
+              </p>
+              {resource.fetchDetail !== undefined && (
+                <p className="mt-1 text-xs text-ink-muted">{resource.fetchDetail}</p>
+              )}
               <div className="mt-2 flex items-center justify-between gap-2">
                 <Badge tone={resource.enabled ? 'ok' : 'neutral'}>
                   {resource.enabled ? 'enabled' : 'disabled'}
@@ -567,9 +609,13 @@ function ResourcesCard({
 function DecisionsCard({
   decisions,
   data,
+  session,
+  onSaved,
 }: {
   readonly decisions: readonly DecisionRow[];
   readonly data: AssistantData;
+  readonly session: Session;
+  readonly onSaved: () => void;
 }) {
   const memberName = (id: string) => data.members?.find((m) => m.id === id)?.name;
   return (
@@ -607,6 +653,27 @@ function DecisionsCard({
             },
             { key: 'provenance', header: 'Provenance', cell: (d) => d.provenance },
             { key: 'when', header: 'When', cell: (d) => new Date(d.at).toLocaleString('en-CA') },
+            {
+              key: 'action',
+              header: 'Action',
+              cell: (d) =>
+                d.status === 'saved' ? (
+                  <span className="text-xs text-ink-muted">Saved</span>
+                ) : (
+                  <Button
+                    onClick={() =>
+                      void session
+                        .write(
+                          d.status === 'draft' ? decisionReviewUrl(d.id) : decisionSaveUrl(d.id),
+                          {},
+                        )
+                        .then((result) => result !== undefined && onSaved())
+                    }
+                  >
+                    {d.status === 'draft' ? 'Mark reviewed' : 'Save record'}
+                  </Button>
+                ),
+            },
           ]}
         />
       )}
@@ -761,6 +828,41 @@ function AssistantReady({
     }
   };
 
+  const [prompt, setPrompt] = useState(current.systemPrompt);
+  const [promptBusy, setPromptBusy] = useState(false);
+  const savePrompt = async () => {
+    const cleaned = prompt.trim();
+    if (cleaned.length < 1 || cleaned.length > 4_000) {
+      toast({ tone: 'danger', title: 'Prompt not saved', message: 'Use 1 to 4,000 characters.' });
+      return;
+    }
+    setPromptBusy(true);
+    try {
+      const result = await session.writeOrThrow(
+        behaviourUrl(current.id),
+        behaviourBody(current, { systemPrompt: cleaned }),
+        'PUT',
+      );
+      if (result !== undefined) {
+        toast({
+          tone: 'ok',
+          title: `${current.name} prompt saved`,
+          message: `Saved as revision ${String(current.promptVersion + 1)}.`,
+        });
+        reload();
+      }
+    } catch {
+      toast({
+        tone: 'hold',
+        title: 'Prompt changed elsewhere',
+        message: 'Reloaded the latest revision. Review it before saving again.',
+      });
+      reload();
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <section aria-label="Invocation behaviours" className="grid gap-3 md:grid-cols-2">
@@ -795,11 +897,15 @@ function AssistantReady({
             hint="Reviewed instructions only. Retrieved content cannot change these instructions."
           >
             <textarea
-              readOnly
-              value={current.systemPrompt}
+              value={prompt}
+              maxLength={4_000}
+              onChange={(event) => setPrompt(event.target.value)}
               className="mt-3 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
             />
           </Field>
+          <p className="mt-1 text-xs text-ink-muted">
+            Revision {current.promptVersion} · {prompt.length.toLocaleString('en-CA')}/4,000
+          </p>
           <div className="mt-3 flex flex-wrap items-center gap-2">
             <Button
               className="max-w-full shrink-0 whitespace-nowrap"
@@ -807,9 +913,13 @@ function AssistantReady({
             >
               {current.enabled ? 'Disable behaviour' : 'Enable behaviour'}
             </Button>
-            <p className="text-xs text-ink-muted">
-              Prompt edits change through the configuration API, not from this page.
-            </p>
+            <Button
+              busy={promptBusy}
+              disabled={prompt === current.systemPrompt}
+              onClick={() => void savePrompt()}
+            >
+              Save prompt
+            </Button>
           </div>
         </Card>
         <Card title="Available skills">
@@ -891,6 +1001,24 @@ function AssistantReady({
                 header: 'Status',
                 cell: (r) => <Badge tone={stateTone(r.status)}>{r.status}</Badge>,
               },
+              {
+                key: 'action',
+                header: 'Action',
+                cell: (r) =>
+                  r.status === 'scheduled' ? (
+                    <Button
+                      onClick={() =>
+                        void session
+                          .write(reminderCancelUrl(r.id), {})
+                          .then((result) => result !== undefined && reload())
+                      }
+                    >
+                      Cancel
+                    </Button>
+                  ) : (
+                    <span className="text-xs text-ink-muted">None</span>
+                  ),
+              },
             ]}
           />
         )}
@@ -899,7 +1027,9 @@ function AssistantReady({
       {data.tickets !== undefined && (
         <TicketsCard tickets={data.tickets} behaviour={current} data={data} />
       )}
-      {data.decisions !== undefined && <DecisionsCard decisions={data.decisions} data={data} />}
+      {data.decisions !== undefined && (
+        <DecisionsCard decisions={data.decisions} data={data} session={session} onSaved={reload} />
+      )}
     </div>
   );
 }

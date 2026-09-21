@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   compileAssistantContext,
+  CLUB_ASSISTANT_SKILLS,
   GeminiProvider,
   createNvidiaNimProvider,
   createOpenRouterProvider,
@@ -47,26 +48,54 @@ export const createAssistantService = (
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
-      const skill =
-        input.command === 'remind'
-          ? 'create-reminder'
-          : input.command === 'decision'
-            ? 'record-decision'
-            : input.command === 'review-plan'
-              ? 'review-plan'
-              : input.command === 'find'
-                ? 'search-club'
-                : 'search-club';
+      const commandSkill: Record<AssistantInvocation['command'], string> = {
+        ask: 'search-club',
+        find: 'search-club',
+        remind: 'create-reminder',
+        decision: 'record-decision',
+        'review-plan': 'review-plan',
+        onboard: 'onboarding-guide',
+        agenda: 'draft-agenda',
+        summarise: 'summarise-meeting',
+        announce: 'draft-announcement',
+        checklist: 'event-checklist',
+        handoff: 'draft-handoff',
+      };
+      const skill = commandSkill[input.command];
       if (!input.behaviour.allowedSkillIds.includes(skill))
         return {
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      if (input.source === 'slash-command' && input.userId !== config.BANANASAURS_OWNER_USER_ID)
+      const owner = input.userId === config.BANANASAURS_OWNER_USER_ID;
+      const grants = assistantRepo.listSkillGrants(scope);
+      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
+        if (!input.behaviour.allowedSkillIds.includes(candidate.id)) return false;
+        if (owner) return true;
+        if (candidate.ownerOnly === true) return false;
+        const grant = grants.find((item) => item.skillId === candidate.id);
+        return (
+          grant !== undefined &&
+          (grant.userIds.includes(input.userId) ||
+            grant.roleIds.some((roleId) => input.callerRoleIds.includes(roleId)))
+        );
+      });
+      if (!permittedSkills.some((candidate) => candidate.id === skill)) {
+        assistantRepo.recordSkillActivity(scope, {
+          id: randomUUID(),
+          at: now(),
+          behaviourId: input.behaviour.id,
+          skillId: skill,
+          actorId: input.userId,
+          outcome: 'denied',
+          detail: 'No matching owner, user or role grant.',
+        });
         return {
           ok: false,
-          content: 'This assistant skill is currently owner-only. No action was taken.',
+          content:
+            'You do not have a matching grant for this assistant skill. No action was taken.',
         };
+      }
       if (input.command === 'remind') {
         const dueAt = Date.parse(input.input.when ?? '');
         if (!Number.isFinite(dueAt) || dueAt <= now())
@@ -106,16 +135,28 @@ export const createAssistantService = (
       const resources = assistantRepo
         .listResources(scope)
         .filter((r) => input.behaviour.resourceIds.includes(r.id) && r.enabled);
-      const evidence = (
-        await Promise.all(
-          resources
-            .filter((resource) => ['website', 'document', 'repository'].includes(resource.kind))
-            .map(async (resource) => ({
-              resource,
-              result: await resourceFetcher.fetch(resource.url),
-            })),
-        )
-      ).flatMap(({ resource, result }) =>
+      const fetched = await Promise.all(
+        resources
+          .filter((resource) => ['website', 'document', 'repository'].includes(resource.kind))
+          .map(async (resource) => ({
+            resource,
+            result: await resourceFetcher.fetch(resource.url),
+          })),
+      );
+      for (const { resource, result } of fetched) {
+        assistantRepo.recordResourceFetch(scope, resource.id, {
+          status: result.ok
+            ? 'ok'
+            : result.code === 'private-address' || result.code === 'invalid-url'
+              ? 'blocked'
+              : 'failed',
+          at: now(),
+          detail: result.ok
+            ? `${result.evidence.mediaType}; ${result.evidence.text.length.toLocaleString('en-CA')} characters; cache=${result.cache}`
+            : `${result.code}: ${result.message}`,
+        });
+      }
+      const evidence = fetched.flatMap(({ resource, result }) =>
         result.ok
           ? [
               {
@@ -132,7 +173,7 @@ export const createAssistantService = (
         serverCard: 'Bananasaurs club assistant',
         resources,
         evidence,
-        skills: [],
+        skills: permittedSkills,
       });
       const isIt = input.behaviour.surface === 'it-services';
       const response = await provider.generateText({
@@ -157,6 +198,23 @@ export const createAssistantService = (
         actorId: input.userId,
         outcome: 'completed',
       });
+      if (input.command === 'decision' || input.command === 'review-plan') {
+        const id = `${input.command}-${randomUUID()}`;
+        assistantRepo.insertDecisionDraft(scope, {
+          id,
+          kind: input.command,
+          summary: response.text.slice(0, 4_000),
+          requesterId: input.userId,
+          provenance: `Discord ${input.source}; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
+          at: now(),
+        });
+        return {
+          ok: true,
+          content: `${response.text}
+
+Draft ID: ${id}. This is analysis, not club policy. An owner must review and save it from the dashboard.`,
+        };
+      }
       if (isIt && response.text.startsWith('ESCALATE:')) {
         if (
           input.behaviour.ticketChannelId === undefined ||

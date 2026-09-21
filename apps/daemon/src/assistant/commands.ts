@@ -11,12 +11,24 @@ import {
 } from '@bananasaurs/core';
 import { routeAssistantMention } from '@bananasaurs/discord';
 
-export type AssistantCommand = 'ask' | 'find' | 'remind' | 'decision' | 'review-plan';
+export type AssistantCommand =
+  | 'ask'
+  | 'find'
+  | 'remind'
+  | 'decision'
+  | 'review-plan'
+  | 'onboard'
+  | 'agenda'
+  | 'summarise'
+  | 'announce'
+  | 'checklist'
+  | 'handoff';
 
 export interface AssistantInvocation {
   readonly guildId: string;
   readonly channelId: string | undefined;
   readonly userId: string;
+  readonly callerRoleIds: readonly string[];
   readonly behaviour: AssistantBehaviour;
   readonly command: AssistantCommand;
   readonly input: Readonly<Record<string, string>>;
@@ -60,7 +72,19 @@ export interface AssistantCommandDeps {
   readonly logger: Logger;
 }
 
-const COMMANDS = new Set<AssistantCommand>(['ask', 'find', 'remind', 'decision', 'review-plan']);
+const COMMANDS = new Set<AssistantCommand>([
+  'ask',
+  'find',
+  'remind',
+  'decision',
+  'review-plan',
+  'onboard',
+  'agenda',
+  'summarise',
+  'announce',
+  'checklist',
+  'handoff',
+]);
 const value = (event: SlashCommandEvent, name: string): string | undefined => {
   const found = event.options.find((option) => option.name === name)?.value;
   return typeof found === 'string' ? found.trim() : undefined;
@@ -88,6 +112,14 @@ const commandInput = (event: SlashCommandEvent): Readonly<Record<string, string>
   if (event.commandName === 'review-plan') {
     const plan = value(event, 'plan');
     return plan ? { plan } : undefined;
+  }
+  if (
+    ['onboard', 'agenda', 'summarise', 'announce', 'checklist', 'handoff'].includes(
+      event.commandName,
+    )
+  ) {
+    const request = value(event, 'request');
+    return request ? { request } : undefined;
   }
   return undefined;
 };
@@ -139,6 +171,7 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
       guildId: event.guildId,
       channelId: event.channelId,
       userId: event.userId,
+      callerRoleIds: event.userRoleIds ?? [],
       behaviour,
       command: event.commandName as AssistantCommand,
       input,
@@ -167,6 +200,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     guildId: event.guildId,
     channelId: event.channelId,
     userId: event.authorId!,
+    callerRoleIds: event.authorRoleIds ?? [],
     behaviour: route.behaviour,
     command: 'ask',
     input: { question: route.prompt },

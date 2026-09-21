@@ -25,6 +25,7 @@ const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehav
   ...(r.mentionRoleId === null ? {} : { mentionRoleId: r.mentionRoleId }),
   name: r.name,
   systemPrompt: r.systemPrompt,
+  promptVersion: r.promptVersion,
   allowedSkillIds: array(r.skillIdsJson),
   callerRoleIds: array(r.callerRoleIdsJson),
   ...(r.ticketChannelId === null ? {} : { ticketChannelId: r.ticketChannelId }),
@@ -52,6 +53,7 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         mentionRoleId: input.mentionRoleId,
         name: input.name,
         systemPrompt: input.systemPrompt,
+        promptVersion: input.promptVersion,
         enabled: input.enabled ? 1 : 0,
         skillIdsJson: JSON.stringify(input.allowedSkillIds),
         callerRoleIdsJson: JSON.stringify(input.callerRoleIds),
@@ -68,6 +70,7 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
           mentionRoleId: input.mentionRoleId,
           name: input.name,
           systemPrompt: input.systemPrompt,
+          promptVersion: input.promptVersion,
           enabled: input.enabled ? 1 : 0,
           skillIdsJson: JSON.stringify(input.allowedSkillIds),
           callerRoleIdsJson: JSON.stringify(input.callerRoleIds),
@@ -87,6 +90,9 @@ const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => 
   kind: r.kind as ClubResource['kind'],
   enabled: r.enabled === 1,
   reviewedAt: new Date(r.reviewedAt).toISOString(),
+  ...(r.lastFetchedAt === null ? {} : { lastFetchedAt: r.lastFetchedAt }),
+  fetchStatus: r.fetchStatus as 'pending' | 'ok' | 'failed' | 'blocked',
+  ...(r.content === null ? {} : { fetchDetail: r.content }),
 });
 export const listResources = (scope: GuildScope): readonly ClubResource[] =>
   read(scope, (db) =>
@@ -120,6 +126,25 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
           reviewedAt: Date.parse(input.reviewedAt),
         },
       })
+      .run();
+  });
+export const recordResourceFetch = (
+  scope: GuildScope,
+  id: string,
+  input: {
+    readonly status: 'ok' | 'failed' | 'blocked';
+    readonly at: number;
+    readonly detail: string;
+  },
+): void =>
+  write(scope, ({ db }) => {
+    db.update(assistantResources)
+      .set({
+        lastFetchedAt: input.at,
+        fetchStatus: input.status,
+        content: input.detail.slice(0, 500),
+      })
+      .where(scope.only(assistantResources, eq(assistantResources.resourceId, id)))
       .run();
   });
 export interface StoredReminder extends Reminder {
@@ -458,5 +483,49 @@ export const insertTicket = (scope: GuildScope, input: NewAssistantTicket): bool
           createdAt: input.at,
         })
         .onConflictDoNothing()
+        .run().changes > 0,
+  );
+export interface NewAssistantDecision {
+  readonly id: string;
+  readonly kind: 'decision' | 'review-plan';
+  readonly summary: string;
+  readonly requesterId: string;
+  readonly provenance: string;
+  readonly at: number;
+}
+export const insertDecisionDraft = (scope: GuildScope, input: NewAssistantDecision): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantDecisions)
+      .values({
+        guildId: scope.guildId,
+        decisionId: input.id,
+        kind: input.kind,
+        summary: input.summary,
+        status: 'draft',
+        requesterId: input.requesterId,
+        provenance: input.provenance,
+        createdAt: input.at,
+      })
+      .run();
+  });
+export const transitionDecision = (
+  scope: GuildScope,
+  id: string,
+  expected: 'draft' | 'reviewed',
+  next: 'reviewed' | 'saved',
+): boolean =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .update(assistantDecisions)
+        .set({ status: next })
+        .where(
+          scope.only(
+            assistantDecisions,
+            eq(assistantDecisions.decisionId, id),
+            eq(assistantDecisions.status, expected),
+          ),
+        )
         .run().changes > 0,
   );

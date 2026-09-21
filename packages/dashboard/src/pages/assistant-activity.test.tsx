@@ -15,6 +15,7 @@ const PAYLOAD = {
       surface: 'bananasaurs',
       name: 'Club assistant',
       systemPrompt: 'Prompt.',
+      promptVersion: 1,
       allowedSkillIds: ['search-club'],
       resourceIds: [],
       enabled: true,

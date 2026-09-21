@@ -11,6 +11,10 @@ import {
   putResource,
   insertReminder,
   recordSkillActivity,
+  insertDecisionDraft,
+  transitionDecision,
+  listDecisions,
+  recordResourceFetch,
 } from './assistant.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
@@ -30,6 +34,7 @@ it('round-trips guild-scoped assistant settings and activity', () => {
       mentionRoleId: '222222222222222222',
       name: 'Club',
       systemPrompt: 'Canadian English',
+      promptVersion: 1,
       allowedSkillIds: ['search-club'],
       reviewerRoleIds: [],
       callerRoleIds: ['555555555555555555'],
@@ -68,6 +73,20 @@ it('round-trips guild-scoped assistant settings and activity', () => {
   });
   expect(listBehaviours(s)[0]?.id).toBe('club');
   expect(listResources(s)[0]?.url).toBe('https://sfuracerbot.ca');
+  recordResourceFetch(s, 'web', { status: 'ok', at: 15, detail: 'text/html; fresh' });
+  expect(listResources(s)[0]).toMatchObject({ fetchStatus: 'ok', lastFetchedAt: 15 });
   expect(listReminders(s)[0]?.status).toBe('scheduled');
   expect(listSkillActivity(s)[0]?.skillId).toBe('search-club');
+  insertDecisionDraft(s, {
+    id: 'd',
+    kind: 'decision',
+    summary: 'Draft',
+    requesterId: '333333333333333333',
+    provenance: 'test',
+    at: 10,
+  });
+  expect(transitionDecision(s, 'd', 'draft', 'reviewed')).toBe(true);
+  expect(transitionDecision(s, 'd', 'reviewed', 'saved')).toBe(true);
+  expect(transitionDecision(s, 'd', 'reviewed', 'saved')).toBe(false);
+  expect(listDecisions(s)[0]?.status).toBe('saved');
 });

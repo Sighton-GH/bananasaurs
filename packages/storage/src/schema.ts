@@ -1768,6 +1768,7 @@ export const assistantBehaviours = sqliteTable(
     mentionRoleId: snowflake('mention_role_id'),
     name: text('name').notNull(),
     systemPrompt: text('system_prompt').notNull(),
+    promptVersion: integer('prompt_version').notNull().default(1),
     enabled: integer('enabled').notNull().default(1),
     skillIdsJson: text('skill_ids_json').notNull().default('[]'),
     callerRoleIdsJson: text('caller_role_ids_json').notNull().default('[]'),
