@@ -70,4 +70,15 @@ describe('SearchPage', () => {
       await screen.findByRole('region', { name: 'No archived messages matched' }),
     ).toBeTruthy();
   });
+
+  it('each hit links to the archive browse view for that message', async () => {
+    stubFetch([{ url: '/api/archive/search?q=compressor&limit=50', body: RESULT }]);
+    renderWithSession(<SearchPage />);
+    fireEvent.change(screen.getByLabelText('Search for'), { target: { value: 'compressor' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Search' }));
+    });
+    const link = await screen.findByRole('link', { name: 'Open' });
+    expect(link.getAttribute('href')).toBe('/archive?browse=c1&message=m1');
+  });
 });

@@ -23,7 +23,7 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `automod dryrun <rule>` | Automod rule page: replay over the fixture corpus, with the attachment-awareness and windowed-corpus caveats | `POST /api/automod/rules/:ruleId/dry-run` |
 | `automod review` | Review queue page (matches, native hits, evidence) | `GET /api/automod/review` |
 | `archive status` | Archive page | `GET /api/archive/status` |
-| `archive search <query>` | Search page (channel/author filters, case linkage) | `GET /api/archive/search` |
+| `archive search <query>` | Search page (channel/author filters; a hit's Open link lands on that message in the Archive browse view) | `GET /api/archive/search` |
 | MCP `read_channel_history` / `get_message` | Archive page, Browse card (paged history, message detail, purged tombstones) | `GET /api/archive/channels/:channelId/messages`, `GET /api/archive/messages/:messageId` |
 | `mcp allowlist` / `mcp sends` | Connector page | `GET /api/send-allowlist`, `GET /api/mcp/sends` |
 | `mcp clients` / `mcp tokens` | Connector page | `GET /api/mcp/clients`, `GET /api/mcp/tokens` |

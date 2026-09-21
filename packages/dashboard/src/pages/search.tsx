@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { Link } from 'wouter';
 import type { ArchiveSearchResult } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -135,6 +136,19 @@ export function SearchPage() {
                       cell: (h) => new Date(h.createdAt).toLocaleString(),
                     },
                     { key: 'message', header: 'Message', cell: (h) => h.messageId },
+                    {
+                      key: 'open',
+                      header: '',
+                      // A search result opens the thing it found: the
+                      // Archive page's browse view, scrolled to this message.
+                      cell: (h) => (
+                        <Link
+                          href={`/archive?browse=${encodeURIComponent(h.channelId)}&message=${encodeURIComponent(h.messageId)}`}
+                        >
+                          Open
+                        </Link>
+                      ),
+                    },
                   ]}
                 />
               </>

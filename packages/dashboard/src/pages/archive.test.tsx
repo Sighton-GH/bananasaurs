@@ -330,4 +330,40 @@ describe('ArchivePage', () => {
     });
     expect(await screen.findByText('message 25')).toBeTruthy();
   });
+
+  it('a /archive?browse=...&message=... deep link opens the channel and the message', async () => {
+    window.history.pushState({}, '', '/archive?browse=c-1&message=m-1');
+    stubFetch([
+      { url: '/api/archive/status', body: STATUS },
+      {
+        url: '/api/archive/channels/c-1/messages?limit=25',
+        body: {
+          messages: [
+            {
+              messageId: 'm-1',
+              channelId: 'c-1',
+              authorId: 'u-1',
+              content: 'the launch notes are pinned',
+              createdAt: 1700000000000,
+            },
+          ],
+        },
+      },
+      {
+        url: '/api/archive/messages/m-1',
+        body: {
+          messageId: 'm-1',
+          channelId: 'c-1',
+          authorId: 'u-1',
+          content: 'the launch notes are pinned',
+          createdAt: 1700000000000,
+        },
+      },
+    ]);
+    renderWithSession(<ArchivePage />);
+    // The excerpt in the list and the full text in the detail both render.
+    expect((await screen.findAllByText('the launch notes are pinned')).length).toBe(2);
+    expect(await screen.findByText('Message m-1')).toBeTruthy();
+    window.history.pushState({}, '', '/archive');
+  });
 });

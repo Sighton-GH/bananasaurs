@@ -1,4 +1,5 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useSearch } from 'wouter';
 import { ApiError } from '../api.js';
 import type {
   ArchiveAttachmentPolicy,
@@ -69,6 +70,13 @@ export function ArchivePage() {
   const [before, setBefore] = useState<string | undefined>(undefined);
   const [trail, setTrail] = useState<readonly (string | undefined)[]>([]);
   const [detail, setDetail] = useState<ArchiveMessage | undefined>(undefined);
+  const detailRef = useRef<HTMLDivElement | null>(null);
+  // A long first page pushes the detail below the fold; when one opens
+  // (deep link or Open button), bring it into view.
+  useEffect(() => {
+    // jsdom has no scrollIntoView; optional-call keeps the tests honest.
+    detailRef.current?.scrollIntoView?.({ block: 'nearest' });
+  }, [detail]);
   const loadBrowse = useCallback(
     () =>
       browseId === undefined
@@ -98,6 +106,22 @@ export function ArchivePage() {
       toast({ tone: 'danger', title: 'That message could not be loaded' });
     }
   };
+
+  // A search hit links here as `/archive?browse=<channelId>&message=<id>`:
+  // open that channel's history and the message itself, once, on arrival.
+  const urlSearch = useSearch();
+  const appliedDeepLink = useRef(false);
+  useEffect(() => {
+    if (appliedDeepLink.current) return;
+    appliedDeepLink.current = true;
+    const params = new URLSearchParams(urlSearch);
+    const channel = params.get('browse');
+    const message = params.get('message');
+    if (channel !== null) openBrowse(channel);
+    if (message !== null) void openMessage(message);
+    // Mount-only: later browse state is the operator's, not the URL's.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlSearch]);
 
   const enable = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -551,6 +575,7 @@ export function ArchivePage() {
             </DataState>
             {detail !== undefined && (
               <div
+                ref={detailRef}
                 role="region"
                 aria-label={`Archived message ${detail.messageId}`}
                 className="mt-3 grid gap-1 rounded-sm border border-line bg-canvas p-3 text-sm"
