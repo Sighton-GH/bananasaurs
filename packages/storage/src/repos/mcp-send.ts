@@ -1,4 +1,4 @@
-import { asc, count, desc, eq, gte } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gte } from 'drizzle-orm';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 import { mcpSendAllowlist, mcpSends } from '../schema.js';
@@ -14,12 +14,14 @@ import { mcpSendAllowlist, mcpSends } from '../schema.js';
 
 export interface AllowlistedChannel {
   readonly channelId: string;
+  readonly scopeKind: 'channel' | 'category';
   readonly addedByAccountId: string;
   readonly addedAt: number;
 }
 
 const toAllowlistedChannel = (row: typeof mcpSendAllowlist.$inferSelect): AllowlistedChannel => ({
   channelId: row.channelId,
+  scopeKind: row.scopeKind as 'channel' | 'category',
   addedByAccountId: row.addedByAccountId,
   addedAt: row.addedAt,
 });
@@ -27,7 +29,12 @@ const toAllowlistedChannel = (row: typeof mcpSendAllowlist.$inferSelect): Allowl
 /** Inserts the channel row; an already-allowed channel is a no-op reported as false. */
 export const allowChannel = (
   scope: GuildScope,
-  input: { channelId: string; addedByAccountId: string; now: number },
+  input: {
+    channelId: string;
+    addedByAccountId: string;
+    now: number;
+    scopeKind?: 'channel' | 'category';
+  },
 ): boolean =>
   write(scope, ({ db }) => {
     const result = db
@@ -35,6 +42,7 @@ export const allowChannel = (
       .values({
         guildId: scope.guildId,
         channelId: input.channelId,
+        scopeKind: input.scopeKind ?? 'channel',
         addedByAccountId: input.addedByAccountId,
         addedAt: input.now,
       })
@@ -45,26 +53,55 @@ export const allowChannel = (
     return result.changes === 1;
   });
 
-/** Deletes the channel row; false when it was never allowed. */
-export const disallowChannel = (scope: GuildScope, channelId: string): boolean =>
+/**
+ * Deletes the row whose `scope_kind` matches the verb (review S1): a
+ * category row is `'wrong-kind'` to `disallow-channel` and vice versa, so a
+ * mistyped verb can never silently remove the other kind's scope.
+ */
+export const disallowChannel = (
+  scope: GuildScope,
+  channelId: string,
+  scopeKind: 'channel' | 'category',
+): 'removed' | 'not-allowed' | 'wrong-kind' =>
   write(scope, ({ db }) => {
-    const result = db
-      .delete(mcpSendAllowlist)
+    const row = db
+      .select({ scopeKind: mcpSendAllowlist.scopeKind })
+      .from(mcpSendAllowlist)
+      .where(scope.only(mcpSendAllowlist, eq(mcpSendAllowlist.channelId, channelId)))
+      .get();
+    if (row === undefined) return 'not-allowed';
+    if (row.scopeKind !== scopeKind) return 'wrong-kind';
+    db.delete(mcpSendAllowlist)
       .where(scope.only(mcpSendAllowlist, eq(mcpSendAllowlist.channelId, channelId)))
       .run();
-    return result.changes === 1;
+    return 'removed';
   });
 
-export const isChannelAllowed = (scope: GuildScope, channelId: string): boolean =>
+export const isScopeAllowed = (
+  scope: GuildScope,
+  channelId: string,
+  scopeKind: 'channel' | 'category',
+): boolean =>
   read(
     scope,
     (db) =>
       db
         .select({ channelId: mcpSendAllowlist.channelId })
         .from(mcpSendAllowlist)
-        .where(scope.only(mcpSendAllowlist, eq(mcpSendAllowlist.channelId, channelId)))
+        .where(
+          scope.only(
+            mcpSendAllowlist,
+            and(
+              eq(mcpSendAllowlist.channelId, channelId),
+              eq(mcpSendAllowlist.scopeKind, scopeKind),
+            ),
+          ),
+        )
         .get() !== undefined,
   );
+
+export const isChannelAllowed = (scope: GuildScope, channelId: string): boolean =>
+  isScopeAllowed(scope, channelId, 'channel');
 
 export const listAllowedChannels = (scope: GuildScope): readonly AllowlistedChannel[] =>
   read(scope, (db) =>

@@ -24,9 +24,11 @@ import {
   LIST_CHANNELS_TOOL_NAME,
   LIST_MEMBERS_TOOL_NAME,
   LIST_ROLES_TOOL_NAME,
+  LIST_THREADS_TOOL_NAME,
   listChannelsText,
   listMembersText,
   listRolesText,
+  listThreadsText,
   type McpGuildMember,
   type McpGuildPort,
 } from './guild.js';
@@ -94,6 +96,7 @@ const fakePort = (): McpGuildPort & {
         archiveEnabled: false,
       },
     ],
+    listThreads: async () => [],
     listRoles: () => [
       {
         id: '666666666666666666',
@@ -277,6 +280,7 @@ describe('list_members carries no presence, status or activity (sentinel)', () =
     } as unknown as McpGuildMember;
     const port: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [smuggled], nextCursor: smuggled.id }),
       memberCount: () => 1,
@@ -333,6 +337,7 @@ describe('list_members paging and failure behaviour', () => {
   it('a rejected port promise becomes a refusal, not a throw', async () => {
     const port: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.reject(new Error('rate limited')),
       memberCount: () => 0,
@@ -347,6 +352,7 @@ describe('list_members paging and failure behaviour', () => {
       listChannels: () => {
         throw new Error('guild gone');
       },
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () => Promise.resolve({ members: [], nextCursor: undefined }),
       memberCount: () => 0,
@@ -379,6 +385,7 @@ describe('a display name containing the envelope closing marker cannot break fra
   it('the exact marker occurs once per item, never from content', async () => {
     const port: McpGuildPort = {
       listChannels: () => [],
+      listThreads: async () => [],
       listRoles: () => [],
       listMembers: () =>
         Promise.resolve({
@@ -448,7 +455,7 @@ describe('guild tools on the MCP server', () => {
     };
   };
 
-  it('lists all eleven tools and still no send_message', async () => {
+  it('lists all twelve tools and still no send_message', async () => {
     const { client, close } = await connectPair(principalWith(GUILD_A), fakePort());
     try {
       const list = await client.listTools();
@@ -458,6 +465,7 @@ describe('guild tools on the MCP server', () => {
         'read_channel_history',
         'get_message',
         LIST_CHANNELS_TOOL_NAME,
+        LIST_THREADS_TOOL_NAME,
         LIST_ROLES_TOOL_NAME,
         LIST_MEMBERS_TOOL_NAME,
         'list_mod_cases',
@@ -500,5 +508,46 @@ describe('guild tools on the MCP server', () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe('list_threads rows follow the structural-row convention (N3)', () => {
+  const CHANNEL = '777777777777777777';
+  const threadPort = (): McpGuildPort => ({
+    ...fakePort(),
+    listThreads: async () => [
+      { id: '800000000000000001', name: 'weekly build night', parentId: CHANNEL, archived: false },
+      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+    ],
+  });
+
+  it('puts the thread id in the id slot and the thread NAME in the name slot', async () => {
+    const result = await listThreadsText(principalWith(GUILD_A), threadPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The name is the only thing that identifies a forum post to a reader,
+    // and this listing used to drop it entirely while putting the id where
+    // `list_channels` puts the name and the parent where it puts the id.
+    expect(result.text).toContain('weekly build night');
+    expect(result.text).toContain('archived plans');
+    expect(result.text).toContain('800000000000000001');
+    expect(result.text).toContain(`parent: ${CHANNEL}`);
+    expect(result.text).toContain('2 threads (1 archived)');
+    expect(result.text).toContain('Private threads are never listed.');
+  });
+
+  it('still frames every row inside the evidence envelope', async () => {
+    const result = await listThreadsText(principalWith(GUILD_A), threadPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain(EVIDENCE_PREAMBLE);
+    expect(result.text).toContain(EVIDENCE_OPEN);
+    expect(result.text).toContain(EVIDENCE_CLOSE);
   });
 });

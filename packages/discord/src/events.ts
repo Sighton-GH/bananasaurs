@@ -1,5 +1,6 @@
 import {
   ApplicationCommandOptionType,
+  ChannelType,
   Events,
   type AutoModerationActionExecution,
   type ChatInputCommandInteraction,
@@ -151,11 +152,24 @@ export function attachGatewayTranslation(client: Client, deps: TranslationDeps):
     translate('messageDeleteBulk', () => {
       const messageIds = [...messages.keys()];
       if (messageIds.length === 0) return undefined;
+      const isThread =
+        channel.type === ChannelType.PublicThread ||
+        channel.type === ChannelType.PrivateThread ||
+        channel.type === ChannelType.AnnouncementThread;
+      const parentChannelId = isThread ? (channel.parentId ?? undefined) : undefined;
+      const authorized = isThread ? channel.parent : channel;
+      const categoryId =
+        authorized !== null && 'parentId' in authorized
+          ? (authorized.parentId ?? undefined)
+          : undefined;
       return {
         kind: 'messageDeleteBulk',
         guildId: channel.guildId, // discord.js types the channel as GuildTextBasedChannel — always a guild
         receivedAtMs: now(),
         channelId: channel.id,
+        parentChannelId,
+        categoryId,
+        isPrivateThread: isThread && channel.type === ChannelType.PrivateThread,
         messageIds,
       };
     });
@@ -387,12 +401,26 @@ function toMessageEvent(
   // at best and throws at worst, and "no mentions known" must not be reported
   // as "no mentions present", so the partial case is branched explicitly.
   const mentions = message.partial ? undefined : message.mentions;
+  const channel = message.channel;
+  const isThread =
+    channel.type === ChannelType.PublicThread ||
+    channel.type === ChannelType.PrivateThread ||
+    channel.type === ChannelType.AnnouncementThread;
+  const parentChannelId = isThread ? (channel.parentId ?? undefined) : undefined;
+  const authorized = isThread ? channel.parent : channel;
+  const categoryId =
+    authorized !== null && 'parentId' in authorized
+      ? (authorized.parentId ?? undefined)
+      : undefined;
 
   return {
     kind,
     guildId,
     receivedAtMs,
     channelId: message.channelId,
+    parentChannelId,
+    categoryId,
+    isPrivateThread: isThread && channel.type === ChannelType.PrivateThread,
     messageId: message.id,
     authorId: message.author?.id ?? undefined,
     // `?? false` rather than leaving it optional: an unknown author is not a

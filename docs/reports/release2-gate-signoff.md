@@ -46,3 +46,7 @@ and the whole thing works with every AI provider unreachable."*
 ## Sign-off
 
 Signed by: ____ on ____.
+
+### 2026-09-20 - thread-aware automod exemptions
+
+The evaluator now checks channel exemptions against the message channel, its parent channel and its category, and records the actual message channel on match events. `mod_rule_exemptions` held zero live rows when this observe-window-safe change was designed, so no collected match was reclassified.

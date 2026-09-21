@@ -1,4 +1,4 @@
-import { PermissionsBitField, type Client } from 'discord.js';
+import { ChannelType, PermissionsBitField, type Client } from 'discord.js';
 import {
   archiveBackfillDedupeKey,
   compileRule,
@@ -492,18 +492,100 @@ export const opsPortsFor = (
       now: now(),
     });
   },
+  archiveCategoryCoverage: (channelId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    const covered =
+      guild === undefined
+        ? []
+        : [...guild.channels.cache.values()].filter(
+            (channel) => !channel.isThread() && channel.parentId === channelId,
+          );
+    return {
+      channels: covered.length,
+      messages: covered.reduce(
+        (sum, channel) => sum + archiveRepo.countMessages(scope, channel.id),
+        0,
+      ),
+    };
+  },
+  archiveEnableCategory: (input) => {
+    if (!archiveGuildEnabled) return 'guild-not-archive-enabled';
+    // Review S2: the id must name a category of this guild, resolved from
+    // the live cache — without this a plain channel id wrote a `category`
+    // scope row whose "coverage" was a type error.
+    const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(input.channelId);
+    if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
+    const outcome = archiveRepo.enableChannel(scope, {
+      ...input,
+      scopeKind: 'category',
+      now: now(),
+    });
+    if (outcome === 'enabled') {
+      const guild = client.guilds.cache.get(scope.guildId);
+      for (const channel of guild?.channels.cache.values() ?? []) {
+        if (!channel.isThread() && channel.parentId === input.channelId) {
+          // Review B2: materialize the derived row now so the backfill job
+          // below has a row to cursor against; the job still re-checks live
+          // category membership when it runs.
+          archiveRepo.ensureDerivedChannel(scope, {
+            channelId: channel.id,
+            categoryId: input.channelId,
+            attachmentPolicy: input.attachmentPolicy,
+            now: now(),
+          });
+          jobRepo.enqueue(scope, {
+            kind: JOB_KINDS.archiveBackfill,
+            payload: JSON.stringify({ channelId: channel.id }),
+            dedupeKey: archiveBackfillDedupeKey(scope.guildId, channel.id),
+            runAfter: now(),
+            now: now(),
+          });
+        }
+      }
+    }
+    return outcome;
+  },
+  archiveDisableCategory: (channelId) => archiveRepo.disableCategory(scope, channelId),
+  archiveSetThreads: (channelId, include) => {
+    const channel = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
+    if (!include && channel?.type === ChannelType.GuildForum) return 'forum-requires-all';
+    return archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled';
+  },
+  archiveThreads: (channelId) => {
+    const row = archiveRepo.findChannel(scope, channelId);
+    return row === undefined ? undefined : { found: row.threadsFound, done: row.threadsDone };
+  },
   archiveDisableChannel: (channelId) => {
     // Counted before the delete: the cascade below removes the rows, and the
     // audit trail should say how many went with the channel.
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
-    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    if (outcome !== 'derived') {
+      return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    }
+    const channel = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
+    const categoryId =
+      channel !== undefined && 'parentId' in channel ? (channel.parentId ?? undefined) : undefined;
+    if (categoryId !== undefined && archiveRepo.hasCategoryRow(scope, categoryId)) {
+      return { outcome: 'covered-by-category', categoryId };
+    }
+    // Orphaned: the channel moved out of the category, so archiving already
+    // stopped and only the retained history is left to destroy.
+    const removed = archiveRepo.disableDerivedChannel(scope, channelId);
+    return removed.outcome === 'disabled'
+      ? { outcome: 'disabled', messageCount: removed.messageCount }
+      : { outcome: 'not-enabled' };
   },
   archiveStatus: () =>
     archiveRepo.listChannels(scope).map((channel) => ({
       ...channel,
       messageCount: archiveRepo.countMessages(scope, channel.channelId),
     })),
+  // Review 2 N1: a derived row is coverage, and coverage is a live cache
+  // fact, so only here can the two cases be told apart — still covered (no
+  // delete: the next message re-materialises the row) versus orphaned by a
+  // channel that moved out (deletable, which is the choice ADR 0047's
+  // amendment says the operator has).
   archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
   // `preserve` outranks any case link, and the port names it as its own
   // `'preserved'` arm rather than folding it into `'already-linked'` — a
@@ -566,8 +648,44 @@ export const opsPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
-  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
-  listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
+  allowSendCategory: (input) => {
+    // Review S2: the same allow-time shape check `allowSendChannel` has —
+    // the id must name a category of this guild before any row is written.
+    const target = client.guilds.cache.get(scope.guildId)?.channels.cache.get(input.channelId);
+    if (target?.type !== ChannelType.GuildCategory) return 'no-such-channel';
+    const added = mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      scopeKind: 'category',
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'category'),
+  sendScopeCoverage: (channelId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    return guild === undefined
+      ? 0
+      : guild.channels.cache.filter(
+          (channel) => !channel.isThread() && channel.parentId === channelId,
+        ).size;
+  },
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'channel'),
+  listSendAllowlist: () =>
+    mcpSendRepo.listAllowedChannels(scope).map((row) => ({
+      ...row,
+      coverage:
+        row.scopeKind === 'category'
+          ? (() => {
+              const guild = client.guilds.cache.get(scope.guildId);
+              return guild === undefined
+                ? 0
+                : guild.channels.cache.filter(
+                    (channel) => !channel.isThread() && channel.parentId === row.channelId,
+                  ).size;
+            })()
+          : 1,
+    })),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
 

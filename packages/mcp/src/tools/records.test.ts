@@ -180,6 +180,7 @@ const fakeGuildPort = (memberCount: number): McpGuildPort => ({
       archiveEnabled: false,
     },
   ],
+  listThreads: async () => [],
   listRoles: () => [
     {
       id: '666666666666666666',

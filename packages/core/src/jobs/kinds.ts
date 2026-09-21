@@ -208,6 +208,20 @@ export const purgeDedupeKey = (guildId: string, intentId: string, afterJobId?: n
 
 export const archiveBackfillPayload = z.object({
   channelId: snowflakeIdSchema,
+  /**
+   * Resumable thread-walk position (review M2): once the channel's own
+   * pages are exhausted, its threads are walked one page per tick and the
+   * continuation carries the walk's state — the thread list, the index of
+   * the thread being paged, and the page cursor inside it. Absent on the
+   * channel-paging ticks.
+   */
+  threadWalk: z
+    .object({
+      threadIds: z.array(snowflakeIdSchema),
+      index: z.number().int().nonnegative(),
+      before: snowflakeIdSchema.optional(),
+    })
+    .optional(),
 });
 export type ArchiveBackfillPayload = z.infer<typeof archiveBackfillPayload>;
 

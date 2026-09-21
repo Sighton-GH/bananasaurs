@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto';
+import { ChannelType, type Client } from 'discord.js';
 import {
   createConnectionSubscriber,
   editManagedPanel,
@@ -100,6 +101,12 @@ export interface GuildRuntimeDeps {
   readonly scope: GuildScope;
   readonly config: Config;
   readonly discord: DiscordPort;
+  /**
+   * The live discord.js client: forum detection and category membership are
+   * cache facts, not port calls (review B3 — a hardwired `false` skipped
+   * forum backfills entirely).
+   */
+  readonly client: Client;
   readonly logger: Logger;
   /** A property, not a method: it is destructured and passed on by value. */
   readonly now: () => number;
@@ -140,7 +147,7 @@ export interface GuildRuntime {
 const newPassId = (): string => `pass-${randomUUID()}`;
 
 export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
-  const { scope, config, discord, logger, now } = deps;
+  const { scope, config, discord, client, logger, now } = deps;
   const guildId = parseGuildId(scope.guildId);
 
   /**
@@ -301,6 +308,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const archivePorts: ArchivePorts = {
     guildArchiveEnabled: config.BANANASAURS_ARCHIVE_GUILDS.includes(guildId),
     isChannelEnabled: (channelId) => archiveRepo.isChannelEnabled(scope, channelId),
+    hasCategoryRow: (channelId) => archiveRepo.hasCategoryRow(scope, channelId),
+    parentIncludesThreads: (channelId) => archiveRepo.parentIncludesThreads(scope, channelId),
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
     recordEdit: (input) => archiveRepo.recordEdit(scope, input),
@@ -319,13 +328,25 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     isChannelExcluded: (channelId) => loggingRepo.isChannelExcluded(scope, channelId),
     fetchRecentMessages: (channelId, before) =>
       discord.fetchRecentMessages(guildId, channelId, { before, limit: 100 }),
+    listThreads: (channelId) => discord.listPublicThreads(guildId, channelId),
+    isForum: (channelId) =>
+      client.guilds.cache.get(guildId)?.channels.cache.get(channelId)?.type ===
+      ChannelType.GuildForum,
+    hasCategoryRow: (categoryId) => archiveRepo.hasCategoryRow(scope, categoryId),
+    categoryOf: (channelId) => {
+      const channel = client.guilds.cache.get(guildId)?.channels.cache.get(channelId);
+      return channel !== undefined && 'parentId' in channel
+        ? (channel.parentId ?? undefined)
+        : undefined;
+    },
+    setThreadProgress: (input) => archiveRepo.setThreadProgress(scope, input),
     findChannel: (channelId) => archiveRepo.findChannel(scope, channelId),
     upsertMessage: (input) => archiveRepo.upsertMessage(scope, input),
     setBackfillCursor: (input) => archiveRepo.setBackfillCursor(scope, input),
-    enqueueContinuation: ({ channelId, jobId, runAfter }) =>
+    enqueueContinuation: ({ channelId, threadWalk, jobId, runAfter }) =>
       void jobRepo.enqueue(scope, {
         kind: JOB_KINDS.archiveBackfill,
-        payload: JSON.stringify({ channelId }),
+        payload: JSON.stringify({ channelId, threadWalk }),
         dedupeKey: archiveBackfillDedupeKey(guildId, channelId, jobId),
         runAfter,
         now: now(),

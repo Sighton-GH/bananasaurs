@@ -30,12 +30,25 @@ export type AttachmentPolicy = 'none' | 'bytes';
 export type BackfillState = 'pending' | 'running' | 'done';
 export type RetentionClass = 'default' | 'case' | 'preserve';
 
+/**
+ * ADR 0047 amendment 2026-09-20: `channel` and `category` rows are written by
+ * the operator and decide scope. A `derived` row only satisfies
+ * `archive_messages`' composite foreign key and owns the cascade — no
+ * authorization read below ever matches one.
+ */
+export type ScopeKind = 'channel' | 'category' | 'derived';
+
 export interface ArchiveChannel {
   readonly channelId: string;
+  readonly scopeKind: ScopeKind;
+  /** The category row a `derived` row was materialised from; otherwise absent. */
+  readonly derivedFrom: string | undefined;
   readonly attachmentPolicy: AttachmentPolicy;
   readonly enabledAt: number;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: BackfillState;
+  readonly threadsFound: number | undefined;
+  readonly threadsDone: number;
 }
 
 export interface ArchiveAttachmentInput {
@@ -48,6 +61,14 @@ export interface ArchiveAttachmentInput {
 export interface UpsertMessageInput {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId?: string | undefined;
+  /**
+   * The category covering `channelId` at write time. Read only when the
+   * channel has no `archive_channels` row of its own: the first write for a
+   * category-covered channel materialises its derived row with this as
+   * `derived_from` (ADR 0047 amendment 2026-09-20).
+   */
+  readonly categoryId?: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | undefined;
   readonly createdAt: number;
@@ -66,16 +87,25 @@ export const SEARCH_LIMIT_MAX = 100;
 
 const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChannel => ({
   channelId: row.channelId,
+  scopeKind: row.scopeKind as ScopeKind,
+  derivedFrom: row.derivedFrom ?? undefined,
   attachmentPolicy: row.attachmentPolicy as AttachmentPolicy,
   enabledAt: row.enabledAt,
   cursorMessageId: row.cursorMessageId ?? undefined,
   backfillState: row.backfillState as BackfillState,
+  threadsFound: row.threadsFound ?? undefined,
+  threadsDone: row.threadsDone,
 });
 
 /** Inserts the channel row; a replayed enable is a no-op reported as such. */
 export const enableChannel = (
   scope: GuildScope,
-  input: { channelId: string; attachmentPolicy: AttachmentPolicy; now: number },
+  input: {
+    channelId: string;
+    attachmentPolicy: AttachmentPolicy;
+    now: number;
+    scopeKind?: 'channel' | 'category';
+  },
 ): 'enabled' | 'already-enabled' =>
   write(scope, ({ db }) => {
     const result = db
@@ -84,25 +114,236 @@ export const enableChannel = (
         guildId: scope.guildId,
         channelId: input.channelId,
         attachmentPolicy: input.attachmentPolicy,
+        scopeKind: input.scopeKind ?? 'channel',
+        derivedFrom: null,
         enabledAt: input.now,
         cursorMessageId: null,
         backfillState: 'pending',
       })
       .onConflictDoNothing({ target: [archiveChannels.guildId, archiveChannels.channelId] })
       .run();
-    return result.changes === 1 ? 'enabled' : 'already-enabled';
+    if (result.changes === 1) return 'enabled';
+
+    // An explicit enable over a derived row upgrades it into the row the
+    // operator asked for: the derived row only ever satisfied the foreign
+    // key, and its archived messages stay attached through the upgrade.
+    const existing = db
+      .select({ scopeKind: archiveChannels.scopeKind })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
+      .get();
+    if (existing?.scopeKind !== 'derived') return 'already-enabled';
+    db.update(archiveChannels)
+      .set({
+        scopeKind: input.scopeKind ?? 'channel',
+        derivedFrom: null,
+        attachmentPolicy: input.attachmentPolicy,
+        enabledAt: input.now,
+        cursorMessageId: null,
+        backfillState: 'pending',
+      })
+      .where(
+        scope.only(
+          archiveChannels,
+          sql`${archiveChannels.channelId} = ${input.channelId} AND ${archiveChannels.scopeKind} = 'derived'`,
+        ),
+      )
+      .run();
+    return 'enabled';
   });
 
-/** Deletes the channel row; the messages, edits and attachments cascade in the schema. */
-export const disableChannel = (scope: GuildScope, channelId: string): 'disabled' | 'not-enabled' =>
+/**
+ * Materialises a derived row for a category-covered channel (ADR 0047
+ * amendment 2026-09-20): it satisfies `archive_messages`' composite foreign
+ * key and owns the cascade, and nothing else. Authorization never reads it —
+ * `isChannelEnabled`, `hasCategoryRow` and `parentIncludesThreads` all skip
+ * derived rows, so scope keeps resolving from the category row at use time.
+ *
+ * Idempotent, and never overwrites an operator-written row: any existing row
+ * — derived, channel or category — is reported as already present.
+ */
+export const ensureDerivedChannel = (
+  scope: GuildScope,
+  input: {
+    channelId: string;
+    categoryId: string;
+    attachmentPolicy: AttachmentPolicy;
+    now: number;
+  },
+): 'created' | 'already-present' =>
+  write(scope, ({ db }) => {
+    const result = db
+      .insert(archiveChannels)
+      .values({
+        guildId: scope.guildId,
+        channelId: input.channelId,
+        scopeKind: 'derived',
+        derivedFrom: input.categoryId,
+        attachmentPolicy: input.attachmentPolicy,
+        enabledAt: input.now,
+        cursorMessageId: null,
+        backfillState: 'pending',
+      })
+      .onConflictDoNothing({ target: [archiveChannels.guildId, archiveChannels.channelId] })
+      .run();
+    return result.changes === 1 ? 'created' : 'already-present';
+  });
+
+export const setIncludeThreads = (
+  scope: GuildScope,
+  channelId: string,
+  includeThreads: boolean,
+): boolean =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .update(archiveChannels)
+        .set({ includeThreads: includeThreads ? 1 : 0 })
+        .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+        .run().changes === 1,
+  );
+
+/**
+ * Deletes the explicitly-enabled channel row; the messages, edits and
+ * attachments cascade in the schema.
+ *
+ * Kind-scoped (review S1): the predicate names `scope_kind = 'channel'`, so
+ * `archive disable-channel <categoryId>` can no longer delete a category row
+ * and report it as a channel. A row of another kind is a refusal, not a
+ * silent delete and not a misleading `'not-enabled'`.
+ *
+ * A derived row answers `'derived'` rather than `'wrong-kind'` (review 2 N1):
+ * "this is archived as a category, use disable-category" is false of a
+ * derived row, and `disable-category` refused it in turn, so the two verbs
+ * sent the operator in a circle with no way to act on the row at all. Only
+ * the caller knows whether the channel is still covered — that is a live
+ * cache fact, not a stored one — so the decision belongs above this layer.
+ */
+export const disableChannel = (
+  scope: GuildScope,
+  channelId: string,
+): 'disabled' | 'not-enabled' | 'wrong-kind' | 'derived' =>
   write(scope, ({ db }) => {
     const result = db
       .delete(archiveChannels)
-      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+      .where(
+        scope.only(
+          archiveChannels,
+          sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'channel'`,
+        ),
+      )
       .run();
-    return result.changes === 1 ? 'disabled' : 'not-enabled';
+    if (result.changes === 1) return 'disabled';
+    const other = db
+      .select({ scopeKind: archiveChannels.scopeKind })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+      .get();
+    if (other === undefined) return 'not-enabled';
+    return other.scopeKind === 'derived' ? 'derived' : 'wrong-kind';
   });
 
+/**
+ * Deletes a derived row and cascades its messages (review 2 N1).
+ *
+ * The caller has already established that the channel is no longer covered
+ * by an enabled category — a derived row whose channel is still covered
+ * would simply be re-materialised by the next message, so destroying its
+ * history there would be a delete that disables nothing. ADR 0047's
+ * amendment says an orphaned derived row keeps its history "matching what an
+ * explicit `disable-channel` would have destroyed only by operator choice";
+ * this is the verb that makes that choice available.
+ */
+export const disableDerivedChannel = (
+  scope: GuildScope,
+  channelId: string,
+):
+  | { readonly outcome: 'disabled'; readonly messageCount: number }
+  | { readonly outcome: 'not-derived' } =>
+  write(scope, ({ db }) => {
+    const row = db
+      .select({ scopeKind: archiveChannels.scopeKind })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+      .get();
+    if (row?.scopeKind !== 'derived') return { outcome: 'not-derived' };
+    const messageCount =
+      db
+        .select({ n: count() })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, eq(archiveMessages.channelId, channelId)))
+        .get()?.n ?? 0;
+    db.delete(archiveChannels)
+      .where(
+        scope.only(
+          archiveChannels,
+          sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'derived'`,
+        ),
+      )
+      .run();
+    return { outcome: 'disabled', messageCount };
+  });
+
+/** What `disableCategory` destroyed, or why it refused. */
+export type DisableCategoryOutcome =
+  | { readonly outcome: 'disabled'; readonly messageCount: number }
+  | { readonly outcome: 'not-enabled' }
+  | { readonly outcome: 'wrong-kind' };
+
+/**
+ * Deletes the category row and its derived children; every message archived
+ * under those rows cascades in the schema, the way `disableChannel`'s do
+ * (ADR 0047 amendment 2026-09-20).
+ *
+ * The count is taken before the delete and covers the derived children's
+ * messages — the category id itself never owns messages, so counting under
+ * it would report `0 archived message(s) removed` regardless (review M4).
+ */
+export const disableCategory = (scope: GuildScope, categoryId: string): DisableCategoryOutcome =>
+  write(scope, ({ db }) => {
+    const row = db
+      .select({ scopeKind: archiveChannels.scopeKind })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, categoryId)))
+      .get();
+    if (row === undefined) return { outcome: 'not-enabled' };
+    if (row.scopeKind !== 'category') return { outcome: 'wrong-kind' };
+
+    const derivedChildren = db
+      .select({ channelId: archiveChannels.channelId })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.derivedFrom, categoryId)))
+      .all()
+      .map((child) => child.channelId);
+    const messageCount =
+      derivedChildren.length === 0
+        ? 0
+        : (db
+            .select({ n: count() })
+            .from(archiveMessages)
+            .where(scope.only(archiveMessages, inArray(archiveMessages.channelId, derivedChildren)))
+            .get()?.n ?? 0);
+
+    db.delete(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.derivedFrom, categoryId)))
+      .run();
+    db.delete(archiveChannels)
+      .where(
+        scope.only(
+          archiveChannels,
+          sql`${archiveChannels.channelId} = ${categoryId} AND ${archiveChannels.scopeKind} = 'category'`,
+        ),
+      )
+      .run();
+    return { outcome: 'disabled', messageCount };
+  });
+
+/**
+ * Whether the channel has its OWN row (review B1: never a derived row —
+ * `isInScope`'s `hasOwnRow` decides scope, and a derived row is not a scope
+ * grant). A category row under the same id does not count either.
+ */
 export const isChannelEnabled = (scope: GuildScope, channelId: string): boolean =>
   read(
     scope,
@@ -110,8 +351,51 @@ export const isChannelEnabled = (scope: GuildScope, channelId: string): boolean 
       db
         .select({ channelId: archiveChannels.channelId })
         .from(archiveChannels)
-        .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+        .where(
+          scope.only(
+            archiveChannels,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'channel'`,
+          ),
+        )
         .get() !== undefined,
+  );
+
+export const hasCategoryRow = (scope: GuildScope, channelId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ channelId: archiveChannels.channelId })
+        .from(archiveChannels)
+        .where(
+          scope.only(
+            archiveChannels,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'category'`,
+          ),
+        )
+        .get() !== undefined,
+  );
+
+/**
+ * The parent channel's own include-threads flag, defaulting to true when it
+ * has no explicit row. Derived rows are skipped (review B1): a thread's
+ * inheritance is decided by the parent's own row or by the default, never by
+ * a row that exists only to satisfy the foreign key.
+ */
+export const parentIncludesThreads = (scope: GuildScope, channelId: string): boolean =>
+  read(
+    scope,
+    (db) =>
+      db
+        .select({ includeThreads: archiveChannels.includeThreads })
+        .from(archiveChannels)
+        .where(
+          scope.only(
+            archiveChannels,
+            sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'channel'`,
+          ),
+        )
+        .get()?.includeThreads !== 0,
   );
 
 export const listChannels = (scope: GuildScope): ArchiveChannel[] =>
@@ -133,6 +417,17 @@ export const findChannel = (scope: GuildScope, channelId: string): ArchiveChanne
       .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
       .get();
     return row === undefined ? undefined : toArchiveChannel(row);
+  });
+
+export const setThreadProgress = (
+  scope: GuildScope,
+  input: { channelId: string; found: number; done: number },
+): void =>
+  write(scope, ({ db }) => {
+    db.update(archiveChannels)
+      .set({ threadsFound: input.found, threadsDone: input.done })
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
+      .run();
   });
 
 export const setBackfillCursor = (
@@ -158,12 +453,47 @@ export const setBackfillCursor = (
  */
 export const upsertMessage = (scope: GuildScope, input: UpsertMessageInput): boolean =>
   write(scope, ({ db }) => {
+    // ADR 0047 amendment 2026-09-20: `archive_messages`' composite foreign
+    // key needs a parent row for `input.channelId`. A category-covered
+    // channel has none, so the first write materialises the derived row in
+    // this same transaction. A write naming a channel with no row and no
+    // category to derive from is a bug in the caller — the subscriber only
+    // writes in-scope messages — and is refused loudly rather than surfaced
+    // as a bare foreign-key error.
+    const parentRow = db
+      .select({ channelId: archiveChannels.channelId })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
+      .get();
+    if (parentRow === undefined) {
+      if (input.categoryId === undefined) {
+        throw new Error(
+          `archive: upsert for channel ${input.channelId} has no archive_channels row ` +
+            'and no category id to derive one from',
+        );
+      }
+      db.insert(archiveChannels)
+        .values({
+          guildId: scope.guildId,
+          channelId: input.channelId,
+          scopeKind: 'derived',
+          derivedFrom: input.categoryId,
+          attachmentPolicy: 'none',
+          enabledAt: input.createdAt,
+          cursorMessageId: null,
+          backfillState: 'pending',
+        })
+        .onConflictDoNothing({ target: [archiveChannels.guildId, archiveChannels.channelId] })
+        .run();
+    }
+
     const result = db
       .insert(archiveMessages)
       .values({
         guildId: scope.guildId,
         messageId: input.messageId,
         channelId: input.channelId,
+        threadId: input.threadId ?? null,
         authorId: input.authorId ?? null,
         content: input.content ?? null,
         createdAt: input.createdAt,
@@ -467,6 +797,7 @@ export const countMessages = (scope: GuildScope, channelId: string): number =>
 export interface ArchiveMessage {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | null;
   readonly createdAt: number;
@@ -480,6 +811,7 @@ export interface ArchiveMessage {
 const toArchiveMessage = (row: typeof archiveMessages.$inferSelect): ArchiveMessage => ({
   messageId: row.messageId,
   channelId: row.channelId,
+  threadId: row.threadId ?? undefined,
   authorId: row.authorId ?? undefined,
   content: row.content,
   createdAt: row.createdAt,
@@ -532,6 +864,14 @@ export const listChannelHistory = (
     readonly channelId: string;
     readonly beforeMessageId?: string;
     readonly limit?: number;
+    /**
+     * ADR 0047 amendment 2026-09-20 (M1): a forum owns no messages of its
+     * own — every post is a thread — so a forum's history read rolls its
+     * posts up under the forum id. The daemon wiring sets this from the
+     * live cache (GuildForum); a plain channel read keeps its threadless
+     * shape.
+     */
+    readonly includeThreads?: boolean;
   },
 ): readonly ArchiveMessage[] =>
   read(scope, (db) => {
@@ -540,7 +880,13 @@ export const listChannelHistory = (
       .from(archiveChannels)
       .where(scope.only(archiveChannels, eq(archiveChannels.channelId, input.channelId)))
       .get();
-    if (channel === undefined) return [];
+    const threadExists =
+      db
+        .select({ threadId: archiveMessages.threadId })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, eq(archiveMessages.threadId, input.channelId)))
+        .get() !== undefined;
+    if (channel === undefined && !threadExists) return [];
 
     const wanted = input.limit;
     const limit =
@@ -554,7 +900,12 @@ export const listChannelHistory = (
       .where(
         scope.only(
           archiveMessages,
-          eq(archiveMessages.channelId, input.channelId),
+          threadExists
+            ? eq(archiveMessages.threadId, input.channelId)
+            : eq(archiveMessages.channelId, input.channelId),
+          threadExists || input.includeThreads === true
+            ? undefined
+            : isNull(archiveMessages.threadId),
           input.beforeMessageId === undefined
             ? undefined
             : sql`(length(${archiveMessages.messageId}) < length(${input.beforeMessageId}) OR (length(${archiveMessages.messageId}) = length(${input.beforeMessageId}) AND ${archiveMessages.messageId} < ${input.beforeMessageId}))`,

@@ -267,3 +267,8 @@ owner" is a real answer, if a member asks and is not served promptly, or if
 the archive's scope widens much beyond the channels first enabled, then
 `/mydata` and `/forgetme` stop being deferrable. They are on hiatus, not
 cancelled.
+
+
+## Amendment 3 - 2026-09-20, dynamic category scope
+
+D7's requirement that each channel be enabled one at a time is relaxed to permit category-level archive rows. The guild-level archive veto is unchanged, private threads are excluded from inheritance, and `archive enable-category` reports the current channel and archived-message scale before it writes. Dynamic category scope and its Manage Channels trade are recorded in ADR 0047.

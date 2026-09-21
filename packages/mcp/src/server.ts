@@ -25,12 +25,16 @@ import {
   LIST_CHANNELS_TOOL_NAME,
   LIST_MEMBERS_TOOL_DESCRIPTION,
   LIST_MEMBERS_TOOL_NAME,
+  LIST_THREADS_TOOL_DESCRIPTION,
+  LIST_THREADS_TOOL_NAME,
   LIST_ROLES_TOOL_DESCRIPTION,
   LIST_ROLES_TOOL_NAME,
   listChannelsParams,
   listChannelsText,
   listMembersParams,
   listMembersText,
+  listThreadsParams,
+  listThreadsText,
   listRolesParams,
   listRolesText,
   type McpGuildPort,
@@ -267,6 +271,21 @@ export const createMcpServer = (deps: McpServerDeps): McpServer => {
           content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }],
           isError: true,
         };
+      }
+    },
+  );
+  server.tool(
+    LIST_THREADS_TOOL_NAME,
+    LIST_THREADS_TOOL_DESCRIPTION,
+    listThreadsParams,
+    async (args) => {
+      try {
+        const outcome = await listThreadsText(deps.principal, guild, args);
+        return outcome.ok
+          ? { content: [{ type: 'text' as const, text: outcome.text }] }
+          : { content: [{ type: 'text' as const, text: outcome.message }], isError: true };
+      } catch {
+        return { content: [{ type: 'text' as const, text: GUILD_REFUSAL_MESSAGE }], isError: true };
       }
     },
   );

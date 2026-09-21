@@ -43,12 +43,13 @@ interface Recorded {
   authorization: string | undefined;
 }
 
-function harness(replies: Reply[] = [{ status: 204 }]) {
+function harness(replies: Reply[] = [{ status: 204 }], restOptions: Record<string, unknown> = {}) {
   const requests: Recorded[] = [];
   let next = 0;
 
   const rest = new REST({
     ...REST_OPTIONS,
+    ...restOptions,
     makeRequest: async (url, init) => {
       const parsed = new URL(url);
       const headers = new Headers(init.headers);
@@ -748,6 +749,77 @@ describe('audit log', () => {
     const { port, requests } = harness([{ status: 200, body: { audit_log_entries: [] } }]);
     await port.fetchAuditLog(GUILD, { actionType });
     expect(last(requests).query).toContain(`action_type=${expected}`);
+  });
+});
+
+describe('archived thread pagination (S3)', () => {
+  const THREAD_A = '666666666666666666';
+  const THREAD_B = '777777777777777777';
+
+  const publicThread = (id: string, archivedAt: string) => ({
+    id,
+    guild_id: GUILD,
+    parent_id: CHANNEL,
+    type: 11,
+    name: `thread-${id}`,
+    thread_metadata: {
+      archived: true,
+      archive_timestamp: archivedAt,
+      auto_archive_duration: 60,
+      locked: false,
+    },
+  });
+
+  it('pages the archived endpoint by archive_timestamp, never by thread snowflake', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { threads: [], has_more: false } },
+      {
+        status: 200,
+        body: { threads: [publicThread(THREAD_A, '2026-09-10T12:00:00.000Z')], has_more: true },
+      },
+      {
+        status: 200,
+        body: { threads: [publicThread(THREAD_B, '2026-09-01T12:00:00.000Z')], has_more: false },
+      },
+    ]);
+
+    const threads = await port.listPublicThreads(GUILD, CHANNEL);
+    expect(threads.map((thread) => thread.id).sort()).toEqual([THREAD_A, THREAD_B].sort());
+
+    // Request 0 is guildActiveThreads; requests 1 and 2 are the archived
+    // pages. The second page's `before` is the first page's last
+    // archive_timestamp (discord.js ThreadManager.js:138-155), an ISO8601
+    // string the API accepts for this endpoint — not the thread's id.
+    const pageTwo = requests[2];
+    expect(pageTwo).toBeDefined();
+    const before = new URLSearchParams(pageTwo?.query ?? '').get('before');
+    expect(before).toBe('2026-09-10T12:00:00.000Z');
+    expect(before).not.toBe(THREAD_A);
+  });
+
+  it('refuses visibly rather than paging without bound', async () => {
+    // globalRequestsPerSecond raised — the 51 rapid requests this test
+    // makes would otherwise trip @discordjs/rest's own 50/s global limiter
+    // (with REST_OPTIONS' rejectOnRateLimit, a visible refusal) before the
+    // cap under test is reached. 0 would mean "always limited", not
+    // "unlimited".
+    const { port, requests } = harness(
+      [
+        { status: 200, body: { threads: [], has_more: false } },
+        // Repeats forever: has_more is always true.
+        {
+          status: 200,
+          body: { threads: [publicThread(THREAD_A, '2026-09-10T12:00:00.000Z')], has_more: true },
+        },
+      ],
+      { globalRequestsPerSecond: 10_000 },
+    );
+
+    await expect(port.listPublicThreads(GUILD, CHANNEL)).rejects.toThrow(/page cap/);
+    // 50 archived pages were fetched before the refusal.
+    expect(requests.filter((request) => request.path.includes('/threads/archived')).length).toBe(
+      50,
+    );
   });
 });
 

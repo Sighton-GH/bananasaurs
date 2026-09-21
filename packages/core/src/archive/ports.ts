@@ -21,6 +21,14 @@ export interface ArchiveAttachmentInput {
 export interface UpsertMessageInput {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId?: string | undefined;
+  /**
+   * The category covering the channel at write time, forwarded from the
+   * event. The repository reads it only when the channel has no
+   * `archive_channels` row yet: the first write for a category-covered
+   * channel materialises its derived row (ADR 0047 amendment 2026-09-20).
+   */
+  readonly categoryId?: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | undefined;
   readonly createdAt: number;
@@ -32,6 +40,8 @@ export interface ArchivePorts {
   /** ADR 0046 D1: the guild must be in BANANASAURS_ARCHIVE_GUILDS. Closed over by the daemon. */
   readonly guildArchiveEnabled: boolean;
   isChannelEnabled(channelId: Snowflake): boolean;
+  hasCategoryRow(channelId: Snowflake): boolean;
+  parentIncludesThreads(channelId: Snowflake): boolean;
   /** `log_excluded_channels` — the second veto (ADR 0009, standing under 0046 D1). */
   isChannelExcluded(channelId: Snowflake): boolean;
   upsertMessage(input: UpsertMessageInput): boolean;

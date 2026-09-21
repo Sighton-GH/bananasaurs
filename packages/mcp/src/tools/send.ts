@@ -87,6 +87,7 @@ export type McpSendOutcome =
   | { readonly status: 'failed' };
 
 export type McpSendRefusal =
+  | 'private-thread'
   | 'channel-not-allowlisted'
   | 'channel-not-in-guild'
   | 'killswitch'
@@ -164,11 +165,13 @@ const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
  */
 const refusalText = (guildId: GuildId, channelId: string, reason: McpSendRefusal): string => {
   switch (reason) {
+    case 'private-thread':
+      return `Channel ${channelId} in guild ${guildId} is a private thread, so nothing was posted. Private threads never inherit send authorization.`;
     case 'channel-not-allowlisted':
       return (
         `Channel ${channelId} in guild ${guildId} is not on the send allowlist, ` +
         'so nothing was posted. The owner can allow it with ' +
-        `\`bananasaurs mcp allow-channel ${channelId} --confirm\`, then retry this call.`
+        `\`bananasaurs mcp allow-channel ${channelId} --guild ${guildId} --confirm\`, then retry this call.`
       );
     case 'channel-not-in-guild':
       // Its own text, not the allowlist text (N3): this channel is absent
@@ -179,7 +182,7 @@ const refusalText = (guildId: GuildId, channelId: string, reason: McpSendRefusal
       return (
         `Channel ${channelId} in guild ${guildId} is not a channel this guild's bot can see, ` +
         'so nothing was posted. Allowlisting it will not help: ' +
-        `\`bananasaurs mcp allow-channel ${channelId} --confirm\` would refuse the same id. ` +
+        `\`bananasaurs mcp allow-channel ${channelId} --guild ${guildId} --confirm\` would refuse the same id. ` +
         'If the channel was already allowlisted, the bot may not see it yet ' +
         '(for example right after a restart) — wait a moment and retry this call.'
       );

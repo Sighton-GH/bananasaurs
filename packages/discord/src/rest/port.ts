@@ -1,5 +1,6 @@
 import {
   AuditLogEvent,
+  ChannelType,
   InteractionResponseType,
   MessageFlags,
   Routes,
@@ -9,6 +10,7 @@ import {
   type APIGuild,
   type APIGuildMember,
   type APIMessage,
+  type APIThreadList,
   type APIRole,
   type APIUser,
   type REST,
@@ -316,6 +318,66 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
         // learns the truth by getting a short page next.
         nextBefore: messages.length === limit && last !== undefined ? last.id : undefined,
       };
+    },
+
+    async listPublicThreads(guildId, channelId) {
+      const active = (await mapErrors(() =>
+        rest.get(Routes.guildActiveThreads(guildId)),
+      )) as APIThreadList;
+      const found = new Map<
+        string,
+        { id: string; name: string; isPrivate: boolean; archived: boolean }
+      >();
+      for (const thread of active.threads) {
+        if (
+          'parent_id' in thread &&
+          thread.parent_id === channelId &&
+          thread.type !== ChannelType.PrivateThread
+        ) {
+          found.set(thread.id, {
+            id: thread.id,
+            name: thread.name,
+            isPrivate: false,
+            archived: false,
+          });
+        }
+      }
+      // Review S3: the archived endpoint paginates by
+      // `thread_metadata.archive_timestamp` (ISO8601), not by thread
+      // snowflake — discord.js does the same in ThreadManager.js. A
+      // snowflake `before` silently re-fetches or skips pages. The walk is
+      // bounded: a channel with more archived threads than the cap is a
+      // visible refusal, not an unbounded loop.
+      const MAX_ARCHIVED_THREAD_PAGES = 50;
+      let before: string | undefined;
+      for (let page = 0; ; page += 1) {
+        if (page >= MAX_ARCHIVED_THREAD_PAGES) {
+          throw new Error(
+            `archive: archived-thread listing for channel ${channelId} hit the ` +
+              `${String(MAX_ARCHIVED_THREAD_PAGES)}-page cap; refusing to page without bound`,
+          );
+        }
+        const archived = (await mapErrors(() =>
+          rest.get(Routes.channelThreads(channelId, 'public'), {
+            query: makeURLSearchParams({ limit: 100, before }),
+          }),
+        )) as APIThreadList & { has_more?: boolean };
+        for (const thread of archived.threads)
+          found.set(thread.id, {
+            id: thread.id,
+            // A thread always has a title in practice; the API type allows
+            // null, so name it rather than letting `null` reach the caller.
+            name: thread.name ?? '(unnamed thread)',
+            isPrivate: false,
+            archived: true,
+          });
+        const last = archived.threads.at(-1);
+        if (!archived.has_more || last === undefined) break;
+        const metadata = 'thread_metadata' in last ? last.thread_metadata : undefined;
+        if (metadata?.archive_timestamp === undefined) break;
+        before = metadata.archive_timestamp;
+      }
+      return [...found.values()];
     },
 
     // --- interactions ----------------------------------------------------

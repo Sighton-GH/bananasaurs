@@ -109,9 +109,23 @@ export const mcpDisallowChannelCommand = defineCommand<z.infer<typeof disallowCh
   args: disallowChannelArgs,
 
   run(ctx: OpsContext, args): OpsWriteResult {
-    const removed = ctx.ports.disallowSendChannel(args.channelId);
+    const outcome = ctx.ports.disallowSendChannel(args.channelId);
 
-    if (!removed) {
+    if (outcome === 'wrong-kind') {
+      return {
+        text: `channel ${args.channelId} is allowlisted as a category; use mcp disallow-category`,
+        data: { channelId: args.channelId, allowed: true, changed: false },
+        audit: {
+          action: 'mcp.send_channel.disallowed',
+          subjectType: 'mcp_send_channel',
+          subjectId: args.channelId,
+          before: { allowed: true },
+          after: { allowed: true, changed: false },
+        },
+      };
+    }
+
+    if (outcome === 'not-allowed') {
       return {
         text: `channel ${args.channelId} was not allowlisted for MCP sends; nothing changed`,
         data: { channelId: args.channelId, allowed: false, changed: false },
@@ -154,12 +168,26 @@ export const mcpAllowlistCommand = defineCommand<Record<string, never>>({
     }
     return {
       text: rows
-        .map((row) => `${row.channelId}  allowed by ${row.addedByAccountId}  ${iso(row.addedAt)}`)
+        .map(
+          (row) =>
+            `${row.channelId}  ${row.scopeKind === 'category' ? `category, covers ${String(row.coverage ?? ctx.ports.sendScopeCoverage(row.channelId))} channels  ` : ''}allowed by ${row.addedByAccountId}  ${iso(row.addedAt)}`,
+        )
         .join('\n'),
+      // scopeKind and coverage ride the JSON exactly as the text line
+      // renders them (review M4): a category row's blast radius must be
+      // machine-readable, not text-only.
       data: rows.map((row) => ({
         channelId: row.channelId,
         addedByAccountId: row.addedByAccountId,
         addedAt: row.addedAt,
+        scopeKind: row.scopeKind ?? 'channel',
+        // A channel row covers exactly itself; only a category needs the
+        // live coverage count.
+        coverage:
+          row.coverage ??
+          ((row.scopeKind ?? 'channel') === 'category'
+            ? ctx.ports.sendScopeCoverage(row.channelId)
+            : 1),
       })),
     };
   },
@@ -232,6 +260,73 @@ export const mcpSendsCommand = defineCommand<z.infer<typeof sendsArgs>>({
         sentAt: row.sentAt,
         outcome: row.outcome,
       })),
+    };
+  },
+});
+
+const categoryArgs = z.object({ channelId: channelIdArg });
+
+export const mcpAllowCategoryCommand = defineCommand<z.infer<typeof categoryArgs>>({
+  name: 'mcp allow-category',
+  write: true,
+  summary: 'allow MCP sends to channels dynamically covered by a category',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to allow' }],
+  args: categoryArgs,
+  run(ctx, args): OpsWriteResult {
+    const outcome = ctx.ports.allowSendCategory({
+      channelId: args.channelId,
+      accountId: ctx.actor.unixUserClaimed ?? 'operator_cli',
+    });
+    if (outcome === 'no-such-channel') {
+      return {
+        text: `category ${args.channelId} is not a category of this guild; nothing changed`,
+        data: { ok: false, reason: 'no-such-channel', channelId: args.channelId },
+        audit: {
+          action: 'mcp.send_category.allowed',
+          subjectType: 'mcp_send_category',
+          subjectId: args.channelId,
+          after: { outcome: 'no-such-channel', channelId: args.channelId },
+        },
+      };
+    }
+    return {
+      text:
+        outcome === 'allowed'
+          ? `category ${args.channelId} may now authorize MCP sends`
+          : `category ${args.channelId} is already allowlisted; nothing changed`,
+      data: { channelId: args.channelId, outcome },
+      audit: {
+        action: 'mcp.send_category.allowed',
+        subjectType: 'mcp_send_category',
+        subjectId: args.channelId,
+        after: { outcome },
+      },
+    };
+  },
+});
+
+export const mcpDisallowCategoryCommand = defineCommand<z.infer<typeof categoryArgs>>({
+  name: 'mcp disallow-category',
+  write: true,
+  summary: 'remove a category from the MCP send allowlist',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to remove' }],
+  args: categoryArgs,
+  run(ctx, args): OpsWriteResult {
+    const outcome = ctx.ports.disallowSendCategory(args.channelId);
+    return {
+      text:
+        outcome === 'removed'
+          ? `category ${args.channelId} can no longer authorize MCP sends`
+          : outcome === 'wrong-kind'
+            ? `category ${args.channelId} is allowlisted as a channel; use mcp disallow-channel`
+            : `category ${args.channelId} was not allowlisted; nothing changed`,
+      data: { channelId: args.channelId, removed: outcome === 'removed' },
+      audit: {
+        action: 'mcp.send_category.disallowed',
+        subjectType: 'mcp_send_category',
+        subjectId: args.channelId,
+        after: { removed: outcome === 'removed' },
+      },
     };
   },
 });

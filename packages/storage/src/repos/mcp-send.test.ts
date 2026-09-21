@@ -60,12 +60,27 @@ describe('allowlist', () => {
     expect(listAllowedChannels(a)).toHaveLength(1);
   });
 
-  it('disallowChannel removes it; false for a channel that was never allowed', () => {
-    expect(disallowChannel(a, CHANNEL_A)).toBe(false);
+  it('disallowChannel removes the kind-matching row; not-allowed for a channel never allowed', () => {
+    expect(disallowChannel(a, CHANNEL_A, 'channel')).toBe('not-allowed');
     allowChannel(a, { channelId: CHANNEL_A, addedByAccountId: 'acct-1', now: 1000 });
-    expect(disallowChannel(a, CHANNEL_A)).toBe(true);
+    expect(disallowChannel(a, CHANNEL_A, 'channel')).toBe('removed');
     expect(isChannelAllowed(a, CHANNEL_A)).toBe(false);
-    expect(disallowChannel(a, CHANNEL_A)).toBe(false);
+    expect(disallowChannel(a, CHANNEL_A, 'channel')).toBe('not-allowed');
+  });
+
+  it('disallowChannel is kind-scoped: a category row is wrong-kind to the channel verb (S1)', () => {
+    allowChannel(a, {
+      channelId: CHANNEL_A,
+      addedByAccountId: 'acct-1',
+      now: 1000,
+      scopeKind: 'category',
+    });
+    expect(disallowChannel(a, CHANNEL_A, 'channel')).toBe('wrong-kind');
+    // The wrong-kind attempt removed nothing (a category row never
+    // satisfies `isChannelAllowed`, so read the row list back instead).
+    expect(listAllowedChannels(a)).toHaveLength(1);
+    expect(disallowChannel(a, CHANNEL_A, 'category')).toBe('removed');
+    expect(disallowChannel(a, CHANNEL_A, 'category')).toBe('not-allowed');
   });
 
   it('listAllowedChannels returns the rows', () => {

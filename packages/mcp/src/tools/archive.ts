@@ -92,6 +92,7 @@ export type ArchiveOutcome =
 export interface McpArchiveMessage {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId: string | undefined;
   readonly authorId: string | undefined;
   readonly content: string | null;
   readonly createdAt: number;
@@ -112,6 +113,7 @@ export interface McpArchiveSearchInput {
 export interface McpArchiveSearchHit {
   readonly messageId: string;
   readonly channelId: string;
+  readonly threadId?: string | undefined;
   readonly authorId: string | undefined;
   readonly createdAt: number;
   readonly excerpt: string;
@@ -236,7 +238,7 @@ const idsAreWellFormed = (ids: readonly unknown[]): boolean => {
 
 const toEvidenceItem = (message: McpArchiveMessage): EvidenceItem => ({
   authorId: message.authorId ?? '(unknown author)',
-  channelId: message.channelId,
+  channelId: message.threadId ?? message.channelId,
   messageId: message.messageId,
   timestamp: new Date(message.createdAt).toISOString(),
   content:
@@ -279,7 +281,7 @@ const searchMessagesInner = (
   });
   const items = result.hits.map((hit): EvidenceItem => ({
     authorId: hit.authorId ?? '(unknown author)',
-    channelId: hit.channelId,
+    channelId: hit.threadId ?? hit.channelId,
     messageId: hit.messageId,
     timestamp: new Date(hit.createdAt).toISOString(),
     // The `[`/`]` markers around the match come from FTS5 `snippet()`,

@@ -2,6 +2,7 @@ import { Readable } from 'node:stream';
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { ChannelType, type Client, type Guild } from 'discord.js';
 import {
+  isInScope,
   parseSnowflakeId,
   safeLogFields,
   sendMessageEffect,
@@ -9,6 +10,7 @@ import {
   type GuildId,
   type Logger,
 } from '@bananasaurs/core';
+import { resolveChannel } from '../channels/resolver.js';
 import { requireBearer, type HttpDeps } from '@bananasaurs/http';
 import { WebStandardStreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js';
 import {
@@ -179,6 +181,7 @@ const loggedCallAsync = async <T>(
 const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage => ({
   messageId: row.messageId,
   channelId: row.channelId,
+  threadId: row.threadId,
   authorId: row.authorId,
   content: row.content,
   createdAt: row.createdAt,
@@ -195,7 +198,7 @@ const toMcpArchiveMessage = (row: archiveRepo.ArchiveMessage): McpArchiveMessage
  * A fault leaves one allowlisted-fields error line via `loggedCall` above,
  * never message content (rule 4).
  */
-const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
+const archivePortFor = (deps: HttpDeps, client: Client): McpArchivePort => ({
   listArchiveChannelIds: (guildId) =>
     loggedCall(deps.logger, 'listArchiveChannelIds', () =>
       archiveRepo.listChannels(deps.scopes.forGuild(guildId)).map((channel) => channel.channelId),
@@ -216,6 +219,7 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
         hits: result.hits.map((hit) => ({
           messageId: hit.messageId,
           channelId: hit.channelId,
+          threadId: hit.threadId,
           authorId: hit.authorId,
           createdAt: hit.createdAt,
           excerpt: hit.excerpt,
@@ -232,6 +236,13 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
       archiveRepo
         .listChannelHistory(deps.scopes.forGuild(guildId), {
           channelId: input.channelId,
+          // M1: a forum's posts are threads; the read rolls them up under
+          // the forum id. The type comes from the live cache — the repo
+          // never trusts caller input for the visibility decision.
+          ...(client.guilds.cache.get(guildId)?.channels.cache.get(input.channelId)?.type ===
+          ChannelType.GuildForum
+            ? { includeThreads: true as const }
+            : {}),
           ...(input.beforeMessageId !== undefined
             ? { beforeMessageId: input.beforeMessageId }
             : {}),
@@ -263,7 +274,11 @@ const archivePortFor = (deps: HttpDeps): McpArchivePort => ({
  * an empty list. A fault leaves one allowlisted-fields error line via
  * `loggedCall` above, never a member name (rule 4).
  */
-export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
+export const guildPortFor = (
+  client: Client,
+  deps: HttpDeps,
+  discord: DiscordPort,
+): McpGuildPort => {
   const requireGuild = (guildId: GuildId): Guild => {
     const guild = client.guilds.cache.get(guildId);
     if (guild === undefined) throw new Error(GUILD_REFUSAL_MESSAGE);
@@ -316,6 +331,47 @@ export const guildPortFor = (client: Client, deps: HttpDeps): McpGuildPort => {
             })
         );
       }),
+    listThreads: (guildId, channelId, includeArchived) => {
+      const guild = requireGuild(guildId);
+      if (includeArchived) {
+        // Review S4: the cache cannot answer this — the default sweeper
+        // evicts archived threads (node_modules discord.js Options.js), so
+        // an includeArchived read from cache silently dropped them. The
+        // REST listing pages active + archived and never returns private
+        // threads (review B4 lives in the port's filter too).
+        return loggedCall(deps.logger, 'listThreads', () =>
+          discord.listPublicThreads(guildId, channelId).then((threads) =>
+            threads.map((thread) => ({
+              id: thread.id,
+              name: thread.name,
+              parentId: channelId,
+              archived: thread.archived,
+            })),
+          ),
+        );
+      }
+      // Review B4: exclude private threads explicitly — the clause this
+      // replaces, `channel.isThreadOnly()`, is `'availableTags' in this` and
+      // is never true on a thread (node_modules discord.js
+      // BaseChannel.js:154), so private threads leaked to any caller.
+      const active = [...guild.channels.cache.values()].flatMap((channel) => {
+        if (
+          !channel.isThread() ||
+          channel.parentId !== channelId ||
+          channel.type === ChannelType.PrivateThread
+        )
+          return [];
+        return [
+          {
+            id: channel.id,
+            name: channel.name,
+            parentId: channelId,
+            archived: channel.archived ?? false,
+          },
+        ];
+      });
+      return Promise.resolve(active.filter((thread) => !thread.archived));
+    },
     listRoles: (guildId) =>
       loggedCall(deps.logger, 'listRoles', () => {
         const guild = requireGuild(guildId);
@@ -494,24 +550,6 @@ const recordsPortFor = (
 });
 
 /**
- * Whether the channel is a text-capable channel of this guild (C2 send-time).
- *
- * Answered from `client.guilds.cache` — already in memory, nothing to fetch
- * — the same style `apps/daemon/src/ops/wiring.ts`'s allow-time check uses.
- * A guild absent from the cache (not yet READY, or left) answers false:
- * failing closed, because this check exists to contain rows the allow-time
- * check never saw. Threads are excluded like the allow-time check: a thread
- * id is not a channel an owner allowlists.
- */
-const isSendChannelInGuild = (client: Client, guildId: GuildId, channelId: string): boolean => {
-  const guild = client.guilds.cache.get(guildId);
-  if (guild === undefined) return false;
-  const channel = guild.channels.cache.get(channelId);
-  if (channel === undefined) return false;
-  return channel.isTextBased() && !channel.isThread();
-};
-
-/**
  * The `McpSendPort` behind `send_message` (slice M5), field by field like
  * `healthPortFor` above. It builds the `MessageGatewayDeps` the
  * `sendMessageEffect` in `packages/core/src/effects/message-gateway.ts`
@@ -541,6 +579,28 @@ const sendPortFor = (
   send: (guildId, input) =>
     loggedCallAsync(deps.logger, 'sendMessage', async () => {
       const scope = deps.scopes.forGuild(guildId);
+      const resolved = await resolveChannel(client, guildId, parseSnowflakeId(input.channelId));
+      if (resolved === undefined || !resolved.postable) {
+        return { status: 'refused', reason: 'channel-not-in-guild' };
+      }
+      if (resolved.isPrivateThread && !mcpSendRepo.isChannelAllowed(scope, input.channelId)) {
+        return { status: 'refused', reason: 'private-thread' };
+      }
+      // Review M3: the granting row's id comes from the one predicate that
+      // owns the precedence — the nested ternary this replaces was a second,
+      // driftable copy of it (and missed the private-thread rule).
+      const grantId = isInScope('send', {
+        channelId: resolved.channelId,
+        parentChannelId: resolved.parentChannelId,
+        categoryId: resolved.categoryId,
+        isPrivateThread: resolved.isPrivateThread,
+        hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
+        hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
+        isExcluded: () => false,
+        parentIncludesThreads: () => true,
+      });
+      const derivedGrant = grantId !== undefined && grantId !== input.channelId;
+      const authorized = grantId !== undefined;
       const outcome = await sendMessageEffect(
         {
           guildId,
@@ -553,8 +613,8 @@ const sendPortFor = (
             // leak across this boundary the way they did before the archive
             // port's projection.
             read: () => guildRepo.readSafetyState(scope),
-            isChannelAllowed: (channelId) => mcpSendRepo.isChannelAllowed(scope, channelId),
-            isChannelInGuild: (channelId) => isSendChannelInGuild(client, guildId, channelId),
+            isChannelAllowed: () => authorized,
+            isChannelInGuild: () => true,
           },
           sends: {
             find: (idempotencyKey) => mcpSendRepo.findSend(scope, idempotencyKey),
@@ -595,6 +655,9 @@ const sendPortFor = (
                   tokenId: record.tokenId,
                   outcome: record.outcome,
                   ...(record.messageId !== undefined ? { messageId: record.messageId } : {}),
+                  ...(derivedGrant
+                    ? { authorization: 'derived', grantedByChannelId: grantId }
+                    : {}),
                 },
                 dryRun: record.dryRun,
               });
@@ -827,8 +890,8 @@ export const registerMcpRoutes = (
     const server = createMcpServer({
       principal,
       health: healthPortFor(principal, deps),
-      archive: archivePortFor(deps),
-      guild: guildPortFor(client, deps),
+      archive: archivePortFor(deps, client),
+      guild: guildPortFor(client, deps, discord),
       records: recordsPortFor(principal, deps),
       send: sendPortFor(principal, deps, discord, client),
       readAudit: readAuditPortFor(principal, deps),

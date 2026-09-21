@@ -392,10 +392,21 @@ export type ArchiveBackfillState = 'pending' | 'running' | 'done';
 /** One enabled archive channel, as `archive status` renders it. */
 export interface OpsArchiveChannelStatus {
   readonly channelId: string;
+  /**
+   * How the row got here (review 2 N2): `channel` and `category` are
+   * operator gestures; `derived` is coverage materialised under a category,
+   * which the operator never enabled and whose backfill state is not theirs
+   * to chase. Listing all three identically invited exactly that confusion.
+   */
+  readonly scopeKind?: 'channel' | 'category' | 'derived';
+  /** The category a `derived` row was materialised from. */
+  readonly derivedFrom?: string | undefined;
   readonly attachmentPolicy: ArchiveAttachmentPolicy;
   readonly enabledAt: number;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: ArchiveBackfillState;
+  readonly threadsFound?: number | undefined;
+  readonly threadsDone?: number;
   readonly messageCount: number;
 }
 
@@ -415,7 +426,15 @@ export interface OpsUnreadableArchiveChannel {
  */
 export type OpsArchiveDisableOutcome =
   | { readonly outcome: 'disabled'; readonly messageCount: number }
-  | { readonly outcome: 'not-enabled' };
+  | { readonly outcome: 'not-enabled' }
+  | { readonly outcome: 'wrong-kind' }
+  /**
+   * The channel has only a derived row and is still covered by an enabled
+   * category, so there is nothing for `disable-channel` to disable: the next
+   * message would re-materialise the row. Names the category to act on
+   * instead (review 2 N1).
+   */
+  | { readonly outcome: 'covered-by-category'; readonly categoryId: string };
 
 /** One archive search hit, as `archive search` renders it. */
 export interface OpsArchiveSearchHit {
@@ -957,6 +976,22 @@ export interface OpsPorts {
   }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled';
   /** Removes the channel row; its messages, edits and attachments cascade. */
   archiveDisableChannel(channelId: string): OpsArchiveDisableOutcome;
+  archiveCategoryCoverage(channelId: string): {
+    readonly channels: number;
+    readonly messages: number;
+  };
+  archiveEnableCategory(input: {
+    channelId: string;
+    attachmentPolicy: ArchiveAttachmentPolicy;
+  }): 'enabled' | 'already-enabled' | 'guild-not-archive-enabled' | 'no-such-channel';
+  archiveDisableCategory(channelId: string): OpsArchiveDisableOutcome;
+  archiveSetThreads(
+    channelId: string,
+    include: boolean,
+  ): 'updated' | 'not-enabled' | 'forum-requires-all';
+  archiveThreads(
+    channelId: string,
+  ): { readonly found: number | undefined; readonly done: number } | undefined;
   /** Every enabled channel with its backfill cursor and message count. */
   archiveStatus(): readonly OpsArchiveChannelStatus[];
   /** Marks one archived message preserved (the indefinite retention tier). */
@@ -1050,7 +1085,10 @@ export interface OpsPorts {
    * id) is refused before any row is written.
    */
   allowSendChannel(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
-  disallowSendChannel(channelId: string): boolean;
+  allowSendCategory(input: { channelId: string; accountId: string }): OpsAllowSendChannelOutcome;
+  disallowSendCategory(channelId: string): OpsDisallowSendOutcome;
+  sendScopeCoverage(channelId: string): number;
+  disallowSendChannel(channelId: string): OpsDisallowSendOutcome;
   listSendAllowlist(): readonly OpsSendAllowlistEntry[];
   listSends(input: {
     sinceMs?: number | undefined;
@@ -1061,8 +1099,17 @@ export interface OpsPorts {
 /** What `mcp allow-channel` did: allowed, already allowed, or refused. */
 export type OpsAllowSendChannelOutcome = 'allowed' | 'already-allowed' | 'no-such-channel';
 
+/**
+ * What `mcp disallow-channel` / `mcp disallow-category` did (review S1):
+ * kind-scoped, so the wrong verb on the other kind's row is a distinct
+ * answer, never a silent delete.
+ */
+export type OpsDisallowSendOutcome = 'removed' | 'not-allowed' | 'wrong-kind';
+
 export interface OpsSendAllowlistEntry {
   readonly channelId: string;
+  readonly scopeKind?: 'channel' | 'category';
+  readonly coverage?: number;
   readonly addedByAccountId: string;
   readonly addedAt: number;
 }

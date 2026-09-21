@@ -437,10 +437,33 @@ export const testPortsFor = (
       now: now(),
     });
   },
+  archiveCategoryCoverage: () => ({ channels: 0, messages: 0 }),
+  archiveEnableCategory: (input) => {
+    if (!opts.archiveGuildEnabled === true) return 'guild-not-archive-enabled';
+    return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
+  },
+  archiveDisableCategory: (channelId) => {
+    const messageCount = archiveRepo.countMessages(scope, channelId);
+    const outcome = archiveRepo.disableChannel(scope, channelId);
+    if (outcome === 'disabled') return { outcome, messageCount };
+    if (outcome === 'derived') return { outcome: 'wrong-kind' };
+    return { outcome };
+  },
+  archiveSetThreads: (channelId, include) =>
+    archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
+  archiveThreads: (channelId) => {
+    const row = archiveRepo.findChannel(scope, channelId);
+    return row === undefined ? undefined : { found: row.threadsFound, done: row.threadsDone };
+  },
   archiveDisableChannel: (channelId) => {
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
-    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    if (outcome === 'disabled') return { outcome, messageCount };
+    // No discord.js client in this harness, so a derived row cannot be
+    // resolved against live coverage the way `opsPortsFor` does; the HTTP
+    // fake reports it as the refusal it is.
+    if (outcome === 'derived') return { outcome: 'wrong-kind' };
+    return { outcome };
   },
   archiveStatus: () =>
     archiveRepo.listChannels(scope).map((channel) => ({
@@ -502,7 +525,18 @@ export const testPortsFor = (
     });
     return added ? 'allowed' : 'already-allowed';
   },
-  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId),
+  allowSendCategory: (input) => {
+    const added = mcpSendRepo.allowChannel(scope, {
+      channelId: input.channelId,
+      addedByAccountId: input.accountId,
+      scopeKind: 'category',
+      now: now(),
+    });
+    return added ? 'allowed' : 'already-allowed';
+  },
+  disallowSendCategory: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'category'),
+  sendScopeCoverage: () => 0,
+  disallowSendChannel: (channelId) => mcpSendRepo.disallowChannel(scope, channelId, 'channel'),
   listSendAllowlist: () => mcpSendRepo.listAllowedChannels(scope),
   listSends: (input) =>
     mcpSendRepo.listSends(scope, { sinceMs: input.sinceMs, limit: input.limit }),
