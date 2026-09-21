@@ -115,6 +115,61 @@ export interface DashboardAppDeps {
  * registration production serves. Exported so the MCP wiring test goes
  * through the real composition rather than a copy of it.
  */
+
+interface AssistantDirectoryMember {
+  readonly id: string;
+  readonly name: string;
+}
+
+const ASSISTANT_DIRECTORY_TTL_MS = 5 * 60_000;
+const assistantMemberCache = new Map<
+  string,
+  { readonly expiresAt: number; readonly members: readonly AssistantDirectoryMember[] }
+>();
+
+export const listAllAssistantMembers = async (
+  guildId: string,
+  now: () => number,
+  listPage: (after: string | undefined) => Promise<readonly AssistantDirectoryMember[]>,
+): Promise<readonly AssistantDirectoryMember[]> => {
+  const cached = assistantMemberCache.get(guildId);
+  if (cached !== undefined && cached.expiresAt > now()) return cached.members;
+  const members: AssistantDirectoryMember[] = [];
+  let after: string | undefined;
+  do {
+    const page = await listPage(after);
+    members.push(...page);
+    after = page.length === 1_000 ? page[page.length - 1]?.id : undefined;
+  } while (after !== undefined);
+  assistantMemberCache.set(guildId, {
+    expiresAt: now() + ASSISTANT_DIRECTORY_TTL_MS,
+    members,
+  });
+  return members;
+};
+
+const assistantDirectoriesFor = async (client: Client, guildId: string, now: () => number) => {
+  const guild = client.guilds.cache.get(guildId);
+  if (guild === undefined) throw new Error('guild directory unavailable');
+  const members = await listAllAssistantMembers(guildId, now, async (after) => {
+    const page = await guild.members.list({
+      limit: 1_000,
+      ...(after === undefined ? {} : { after }),
+      cache: false,
+    });
+    return [...page.values()].map((member) => ({ id: member.id, name: member.displayName }));
+  });
+  return {
+    roles: [...guild.roles.cache.values()]
+      .filter((role) => role.id !== guild.id)
+      .map((role) => ({ id: role.id, name: role.name, position: role.position })),
+    members,
+    channels: [...guild.channels.cache.values()]
+      .filter((channel) => channel.isTextBased())
+      .map((channel) => ({ id: channel.id, name: channel.name })),
+  };
+};
+
 export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
   const httpDeps: HttpDeps = {
     scopes: deps.scopes,
@@ -124,23 +179,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     readonly: deps.readonly,
     portsFor: deps.portsFor,
     instance: deps.instance,
-    assistantDirectories: async (guildId) => {
-      const guild = deps.client.guilds.cache.get(guildId);
-      if (guild === undefined) throw new Error('guild directory unavailable');
-      const memberPage = await guild.members.list({ limit: 100, cache: false });
-      return {
-        roles: [...guild.roles.cache.values()]
-          .filter((role) => role.id !== guild.id)
-          .map((role) => ({ id: role.id, name: role.name, position: role.position })),
-        members: [...memberPage.values()].map((member) => ({
-          id: member.id,
-          name: member.displayName,
-        })),
-        channels: [...guild.channels.cache.values()]
-          .filter((channel) => channel.isTextBased())
-          .map((channel) => ({ id: channel.id, name: channel.name })),
-      };
-    },
+    assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
   };
   const app = createServer({
@@ -206,23 +245,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     readonly: deps.config.BANANASAURS_READONLY,
     portsFor: deps.portsFor,
     instance: deps.instance,
-    assistantDirectories: async (guildId) => {
-      const guild = deps.client.guilds.cache.get(guildId);
-      if (guild === undefined) throw new Error('guild directory unavailable');
-      const memberPage = await guild.members.list({ limit: 100, cache: false });
-      return {
-        roles: [...guild.roles.cache.values()]
-          .filter((role) => role.id !== guild.id)
-          .map((role) => ({ id: role.id, name: role.name, position: role.position })),
-        members: [...memberPage.values()].map((member) => ({
-          id: member.id,
-          name: member.displayName,
-        })),
-        channels: [...guild.channels.cache.values()]
-          .filter((channel) => channel.isTextBased())
-          .map((channel) => ({ id: channel.id, name: channel.name })),
-      };
-    },
+    assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
   };
 

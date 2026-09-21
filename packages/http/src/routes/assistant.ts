@@ -73,9 +73,23 @@ export const registerAssistantRoutes = (
     const parsed = behaviour.safeParse(request.body);
     if (!parsed.success || parsed.data.id !== (request.params as { id: string }).id)
       return reply.status(400).send({ error: 'bad-request' });
-    const existing = assistantRepo
-      .listBehaviours(session.scope)
-      .find((item) => item.id === parsed.data.id);
+    const behaviours = assistantRepo.listBehaviours(session.scope);
+    const existing = behaviours.find((item) => item.id === parsed.data.id);
+    if (parsed.data.surface !== 'direct-command' && parsed.data.mentionRoleId === undefined)
+      return reply.status(400).send({ error: 'mention-role-required' });
+    if (parsed.data.enabled) {
+      const conflict = behaviours.find(
+        (item) =>
+          item.id !== parsed.data.id &&
+          item.enabled &&
+          (parsed.data.surface === 'direct-command'
+            ? item.surface === 'direct-command'
+            : item.surface !== 'direct-command' &&
+              item.mentionRoleId === parsed.data.mentionRoleId),
+      );
+      if (conflict !== undefined)
+        return reply.status(409).send({ error: 'behaviour-conflict', behaviourId: conflict.id });
+    }
     if (existing !== undefined && existing.promptVersion !== parsed.data.promptVersion)
       return reply
         .status(409)

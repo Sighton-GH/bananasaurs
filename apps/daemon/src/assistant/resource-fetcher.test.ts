@@ -148,6 +148,28 @@ describe('reviewed resource fetcher', () => {
     ).resolves.toMatchObject({ code: 'too-large' });
   });
 
+  it('falls back across every validated address before reporting a network failure', async () => {
+    const request = vi.fn<PinnedRequest>(async (_url, address) => {
+      if (address.family === 6) throw new Error('IPv6 unavailable');
+      return response(200, 'IPv4 succeeded');
+    });
+    const fetcher = new ReviewedResourceFetcher({
+      resolve: async () => [
+        { address: '2606:4700:4700::1111', family: 6 },
+        { address: '1.1.1.1', family: 4 },
+      ],
+      request,
+    });
+    await expect(fetcher.fetch('https://example.com/')).resolves.toMatchObject({
+      ok: true,
+      evidence: { text: 'IPv4 succeeded' },
+    });
+    expect(request.mock.calls.map((call) => call[1])).toEqual([
+      { address: '2606:4700:4700::1111', family: 6 },
+      { address: '1.1.1.1', family: 4 },
+    ]);
+  });
+
   it('maps timeouts to a safe failure without exposing network details', async () => {
     const fetcher = new ReviewedResourceFetcher({
       resolve: publicDns,

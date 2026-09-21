@@ -132,12 +132,26 @@ describe('resources and context', () => {
     expect(text).not.toMatch(/ignore previous instructions/i);
     expect(text).toContain('The rest of the handbook is ordinary.');
     expect(detectors).toEqual(
-      expect.arrayContaining(['email-address', 'phone-number', 'bare-api-key', 'instruction-override']),
+      expect.arrayContaining([
+        'email-address',
+        'phone-number',
+        'bare-api-key',
+        'instruction-override',
+      ]),
     );
     // Benign public text is untouched and reports no detectors.
     const benign = redactEvidenceText('Meetings are Mondays at 7 pm in the club room.');
     expect(benign.text).toBe('Meetings are Mondays at 7 pm in the club room.');
     expect(benign.detectors).toEqual([]);
+  });
+
+  it('redacts mixed-case bare keys and a truncated private key block', () => {
+    const result = redactEvidenceText(
+      'Mixed key SK-AbCdEfGhIjKlMnOpQr and -----BEGIN PRIVATE KEY-----\ntruncated-at-limit',
+    );
+    expect(result.text).not.toContain('SK-AbCdEfGhIjKlMnOpQr');
+    expect(result.text).not.toContain('truncated-at-limit');
+    expect(result.detectors).toEqual(expect.arrayContaining(['bare-api-key', 'private-key']));
   });
 
   it('hard-refuses a bare provider key in member input (low, round 2)', () => {
@@ -146,7 +160,9 @@ describe('resources and context', () => {
       messages: [{ role: 'user', text: 'here is my key sk-a1b2c3d4e5f6g7h8i9j0 take care of it' }],
     });
     expect(result.findings).toEqual(
-      expect.arrayContaining([expect.objectContaining({ kind: 'secret', detector: 'bare-api-key' })]),
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'secret', detector: 'bare-api-key' }),
+      ]),
     );
   });
 

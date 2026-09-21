@@ -90,6 +90,25 @@ it('round-trips guild-scoped assistant settings and activity', () => {
   expect(transitionDecision(s, 'd', 'reviewed', 'saved')).toBe(false);
   expect(listDecisions(s)[0]?.status).toBe('saved');
 });
+it('resets fetched resource evidence when reviewed resource details change', () => {
+  const s = t.scopes.forGuild(G);
+  const resource = {
+    id: 'web',
+    guildId: G,
+    title: 'Site',
+    url: 'https://one.example',
+    kind: 'website' as const,
+    enabled: true,
+    reviewedAt: new Date(10).toISOString(),
+  };
+  putResource(s, resource);
+  recordResourceFetch(s, 'web', { status: 'ok', at: 15, detail: 'old evidence' });
+  putResource(s, { ...resource, url: 'https://two.example' });
+  expect(listResources(s)[0]).toMatchObject({ url: 'https://two.example', fetchStatus: 'pending' });
+  expect(listResources(s)[0]?.lastFetchedAt).toBeUndefined();
+  expect(listResources(s)[0]?.fetchDetail).toBeUndefined();
+});
+
 it('clears mentionRoleId and ticketChannelId when a re-put omits them', () => {
   const s = t.scopes.forGuild(G);
   const base = {

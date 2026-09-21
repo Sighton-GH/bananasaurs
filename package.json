@@ -14,7 +14,7 @@
   "scripts": {
     "build": "npm run typecheck && npm run build --workspaces --if-present",
     "typecheck": "tsc --build --force && tsc -p tsconfig.all.json",
-    "lint": "eslint . && prettier --check .",
+    "lint": "eslint apps/daemon && eslint packages/core && eslint packages/storage && eslint packages/http && eslint packages/dashboard && eslint packages/cli packages/discord packages/mcp packages/testkit && eslint vitest.config.ts eslint.config.js drizzle.config.ts && prettier --check .",
     "lint:fix": "eslint . --fix && prettier --write .",
     "test": "vitest run",
     "test:watch": "vitest",

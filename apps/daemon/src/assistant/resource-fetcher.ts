@@ -143,7 +143,11 @@ export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs) =>
         method: 'GET',
         agent: false,
         headers: { accept: 'text/plain, text/markdown, text/html, application/json' },
-        lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
+        lookup: (_hostname, options, callback) => {
+          if (typeof options === 'object' && options.all === true)
+            return callback(null, [{ address: pinned.address, family: pinned.family }]);
+          return callback(null, pinned.address, pinned.family);
+        },
         servername: url.hostname,
       },
       (res) => {
@@ -244,12 +248,19 @@ export class ReviewedResourceFetcher {
       return fail('dns-failed', 'The reviewed resource host has no address.');
     if (addresses.some(({ address }) => !isPublicAddress(address)))
       return fail('private-address', 'The reviewed resource resolved to a non-public address.');
-    let response: PinnedResponse;
-    try {
-      response = await this.#request(url, addresses[0]!, this.#limits.timeoutMs);
-    } catch (error) {
+    let response: PinnedResponse | undefined;
+    let lastError: unknown;
+    for (const address of addresses) {
+      try {
+        response = await this.#request(url, address, this.#limits.timeoutMs);
+        break;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (response === undefined) {
       return fail(
-        error instanceof Error && /timed out/i.test(error.message) ? 'timeout' : 'network',
+        lastError instanceof Error && /timed out/i.test(lastError.message) ? 'timeout' : 'network',
         'The reviewed resource could not be retrieved safely.',
       );
     }

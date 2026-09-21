@@ -128,6 +128,9 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
           kind: input.kind,
           enabled: input.enabled ? 1 : 0,
           reviewedAt: Date.parse(input.reviewedAt),
+          lastFetchedAt: null,
+          fetchStatus: 'pending',
+          content: null,
         },
       })
       .run();

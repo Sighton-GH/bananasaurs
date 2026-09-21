@@ -206,14 +206,17 @@ export function redactEvidenceText(text: string): { text: string; detectors: rea
   });
 
   redact('authorization-header', /\bauthorization\s*:\s*(?:bearer|basic)\s+\S+/giu);
-  redact('private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/giu);
+  redact(
+    'private-key',
+    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?(?:-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----|$)/giu,
+  );
   redact(
     'api-key-assignment',
     /\b(?:api[_ -]?key|token|password|secret)\s*[:=]\s*['"]?[A-Za-z0-9_./+=-]{12,}/giu,
   );
   // Bare provider key shapes (should-fix, low): sk-..., and the common
   // vendor prefixes, whether or not they follow an assignment.
-  redact('bare-api-key', /\b(?:sk|pk|key|gsk|xox[baprs])-[A-Za-z0-9_-]{16,}\b/gu);
+  redact('bare-api-key', /\b(?:sk|pk|key|gsk|xox[baprs])-[A-Za-z0-9_-]{16,}\b/giu);
 
   redact(
     'instruction-override',
