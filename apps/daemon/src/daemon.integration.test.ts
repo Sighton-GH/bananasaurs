@@ -654,10 +654,9 @@ describe('/status, end to end', () => {
     expect(discord.wasEphemeral(INTERACTION)).toBe(true);
     expect(statusReply()).toContain('**Not connected**');
     expect(statusReply()).toContain('Role changes are **enabled**');
-    // None queued: no archive channel is enabled, so the startup timer
-    // enqueues no archive_expiry job — the "0 queued" signal reads
-    // meaningfully again.
-    expect(statusReply()).toContain('0 queued, 0 running, 0 failed');
+    // Reminder delivery enqueues one bounded pass at startup so reminders that
+    // became due while the process was down are not delayed.
+    expect(statusReply()).toContain('1 queued, 0 running, 0 failed');
   });
 
   /**
