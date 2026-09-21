@@ -29,6 +29,12 @@ export const JOB_KINDS = {
   archiveExpiry: 'archive_expiry',
   /** One due-reminder delivery pass (Release 3, docs/RELEASE3_ASSISTANT_SCOPE.md). */
   deliverReminders: 'deliver_reminders',
+  /**
+   * One assistant invocation (Release 3, B2): resource fetches and the
+   * provider call are far too slow for the serial per-guild dispatch chain —
+   * run them here so /ask cannot stall reaction roles, automod or /mod.
+   */
+  assistantInvoke: 'assistant_invoke',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -291,3 +297,55 @@ export type DeliverRemindersPayload = z.infer<typeof deliverRemindersPayload>;
  * returned to `scheduled` for retry.
  */
 export const deliverRemindersDedupeKey = (): string => JOB_KINDS.deliverReminders;
+
+/**
+ * One assistant invocation, enqueued by the slash/mention subscriber the
+ * moment cheap local routing is done (B2). The behaviour is re-resolved from
+ * storage at run time rather than serialised into the payload: a prompt edit
+ * or disable between enqueue and run must take effect, and a deleted
+ * behaviour fails closed with a plain answer instead of acting on a stale
+ * copy.
+ */
+export const assistantInvokePayload = z.object({
+  // Plain strings, not branded snowflakes: the producer (the gateway event)
+  // carries unbranded ids, and the schema re-validates at read time anyway.
+  channelId: z.string().min(1).optional(),
+  userId: z.string().min(1),
+  callerRoleIds: z.array(z.string().min(1)),
+  behaviourId: z.string().min(1).max(64),
+  command: z.enum([
+    'ask',
+    'find',
+    'remind',
+    'decision',
+    'review-plan',
+    'onboard',
+    'agenda',
+    'summarise',
+    'announce',
+    'checklist',
+    'handoff',
+  ]),
+  input: z.record(z.string()),
+  source: z.enum(['slash-command', 'mention']),
+  /**
+   * Slash invocations answer through the deferred interaction; mention
+   * invocations answer in the channel. Absent means mention.
+   */
+  interaction: z.object({ interactionId: z.string().min(1), token: z.string().min(1) }).optional(),
+  /**
+   * The Discord interaction or message id that produced this invocation,
+   * forwarded to the service as the dedupe anchor (IT-ticket keys are
+   * anchored on it — 50820ad).
+   */
+  invocationId: z.string().min(1),
+});
+export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
+
+/**
+ * One job per Discord interaction or message: the invocation id is the
+ * idempotency anchor the rest of Release 3 already dedupes on, so a gateway
+ * replay of the same interaction cannot queue a second provider call.
+ */
+export const assistantInvokeDedupeKey = (invocationId: string): string =>
+  `${JOB_KINDS.assistantInvoke}:${invocationId}`;

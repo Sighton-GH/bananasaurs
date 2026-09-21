@@ -1,7 +1,10 @@
 import {
+  assistantInvokeDedupeKey,
+  JOB_KINDS,
   resolveAssistantBehaviour,
   safeLogFields,
   type AssistantBehaviour,
+  type AssistantInvokePayload,
   type DomainEvent,
   type Logger,
   type MessageEvent,
@@ -71,6 +74,18 @@ export interface AssistantCommandDeps {
     message: OutgoingMessage,
   ) => Promise<void>;
   readonly send: (channelId: string, message: OutgoingMessage) => Promise<unknown>;
+  /**
+   * Hands the invocation to the job queue (B2). The provider call is far too
+   * slow for the serial per-guild dispatch chain: awaiting it here would
+   * stall reaction roles, automod and /mod behind one /ask.
+   */
+  readonly enqueue: (input: {
+    kind: typeof JOB_KINDS.assistantInvoke;
+    payload: AssistantInvokePayload;
+    dedupeKey: string;
+    now: number;
+  }) => void;
+  readonly now: () => number;
   readonly logger: Logger;
 }
 
@@ -166,25 +181,30 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
     return;
   }
 
+  // Cheap local routing stays inline; the expensive invoke is a job (B2).
   try {
     const behaviours = await deps.service.behavioursForGuild(event.guildId);
     const behaviour = directBehaviour(behaviours, event.guildId);
-    const result = await deps.service.invoke({
-      guildId: event.guildId,
-      channelId: event.channelId,
-      userId: event.userId,
-      callerRoleIds: event.userRoleIds ?? [],
-      behaviour,
-      command: event.commandName as AssistantCommand,
-      input,
-      source: 'slash-command',
-      invocationId: event.interactionId,
+    deps.enqueue({
+      kind: JOB_KINDS.assistantInvoke,
+      payload: {
+        channelId: event.channelId,
+        userId: event.userId,
+        callerRoleIds: [...(event.userRoleIds ?? [])],
+        behaviourId: behaviour.id,
+        command: event.commandName as AssistantCommand,
+        input,
+        source: 'slash-command',
+        interaction: { interactionId: event.interactionId, token: event.token },
+        invocationId: event.interactionId,
+      },
+      dedupeKey: assistantInvokeDedupeKey(event.interactionId),
+      now: deps.now(),
     });
-    await deps.respond(ref, reply(result.content));
   } catch (err) {
     deps.logger.error(
       safeLogFields({ component: 'assistant-command', guildId: event.guildId, err }),
-      'assistant command failed before a response was produced',
+      'assistant command could not be queued',
     );
     await deps.respond(ref, reply('I could not complete that request. No action was taken.'));
   }
@@ -199,42 +219,33 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     return;
   }
 
-  let result: Awaited<ReturnType<typeof deps.service.invoke>>;
+  // Same split as handleSlash: routing is cheap and inline, the invoke is a
+  // job (B2). The escalation delivery lives in the job handler with the
+  // invoke that produces it.
   try {
-    result = await deps.service.invoke({
-      guildId: event.guildId,
-      channelId: event.channelId,
-      userId: event.authorId!,
-      callerRoleIds: event.authorRoleIds ?? [],
-      behaviour: route.behaviour,
-      command: 'ask',
-      input: { question: route.prompt },
-      source: 'mention',
-      invocationId: event.messageId,
+    deps.enqueue({
+      kind: JOB_KINDS.assistantInvoke,
+      payload: {
+        channelId: event.channelId,
+        userId: event.authorId!,
+        callerRoleIds: [...(event.authorRoleIds ?? [])],
+        behaviourId: route.behaviour.id,
+        command: 'ask',
+        input: { question: route.prompt },
+        source: 'mention',
+        invocationId: event.messageId,
+      },
+      dedupeKey: assistantInvokeDedupeKey(event.messageId),
+      now: deps.now(),
     });
   } catch (err) {
-    // Mirror handleSlash: a provider or storage failure answers the member
-    // instead of vanishing into the pipeline's dispatch catch.
     deps.logger.error(
       safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
-      'assistant mention failed before a response was produced',
+      'assistant mention could not be queued',
     );
     await deps.send(
       event.channelId,
       reply('I could not complete that request. No action was taken.'),
     );
-    return;
-  }
-  await deps.send(event.channelId, reply(result.content));
-  if (result.ok && result.escalation !== undefined) {
-    const reviewers = result.escalation.reviewerRoleIds.map((id) => `<@&${id}>`).join(' ');
-    await deps.send(result.escalation.channelId, {
-      content:
-        `${reviewers}${reviewers === '' ? '' : '\n'}IT request ${result.escalation.ticketId} from <@${event.authorId!}> in <#${event.channelId}>:\n${result.content}`.slice(
-          0,
-          2_000,
-        ),
-      allowedMentions: { parse: [], roles: result.escalation.reviewerRoleIds },
-    });
   }
 }

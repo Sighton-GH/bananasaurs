@@ -1,11 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import type { AssistantBehaviour, DomainEvent } from '@bananasaurs/core';
+import type { AssistantBehaviour, AssistantInvokePayload, DomainEvent } from '@bananasaurs/core';
 import {
   createAssistantCommandSubscriber,
   type AssistantCommandService,
   type AssistantInvocationResult,
 } from './commands.js';
+import { assistantInvokeHandler } from '../jobs/assistant.js';
 
 const guildId = '234567890123456789';
 const channelId = '345678901234567890';
@@ -38,6 +39,12 @@ const club: AssistantBehaviour = {
   enabled: true,
 };
 
+/**
+ * The B2 split under test: the subscriber does cheap routing inline and
+ * enqueues; the job handler does the invoke and answers. `flush()` drains
+ * the captured queue through the real handler, so these tests exercise the
+ * whole path a production event travels.
+ */
 const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
@@ -52,17 +59,41 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
   const defer = vi.fn(async () => undefined);
   const respond = vi.fn(async () => undefined);
   const send = vi.fn(async () => undefined);
+  const queued: AssistantInvokePayload[] = [];
+  const handler = assistantInvokeHandler({
+    guildId,
+    service,
+    respond,
+    send,
+    logger: pino({ level: 'silent' }),
+  });
+  const flush = async (): Promise<void> => {
+    for (const payload of queued.splice(0)) {
+      await handler.run(handler.payload.parse(payload), {
+        jobId: 1,
+        attempts: 1,
+        cursor: null,
+        saveCursor: () => undefined,
+      });
+    }
+  };
   return {
     invoke,
     defer,
     respond,
     send,
+    queued,
+    flush,
     subscriber: createAssistantCommandSubscriber({
       guildId,
       service,
       defer,
       respond,
       send,
+      enqueue: (input) => {
+        queued.push(input.payload);
+      },
+      now: () => 1,
       logger: pino({ level: 'silent' }),
     }),
   };
@@ -99,10 +130,18 @@ describe('assistant command subscriber', () => {
     ['announce', [{ name: 'request', value: 'Battery workshop moved' }]],
     ['checklist', [{ name: 'request', value: 'Competition packing' }]],
     ['handoff', [{ name: 'request', value: 'Electrical to software' }]],
-  ])('defers and routes /%s through the service', async (name, options) => {
+  ])('defers and routes /%s through the queue to the service', async (name, options) => {
     const h = harness();
     await h.subscriber.handle(slash(name, options));
     expect(h.defer).toHaveBeenCalledTimes(1);
+    // The invoke must NOT happen inline (B2): the serial dispatch chain is
+    // already free, and the queued job carries the whole invocation.
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(1);
+    expect(h.queued[0]).toEqual(
+      expect.objectContaining({ command: name, source: 'slash-command' }),
+    );
+    await h.flush();
     expect(h.invoke).toHaveBeenCalledWith(
       expect.objectContaining({ command: name, source: 'slash-command' }),
     );
@@ -145,6 +184,7 @@ describe('assistant command subscriber', () => {
       mentionsEveryone: false,
       attachments: [],
     });
+    await h.flush();
     expect(h.send).toHaveBeenLastCalledWith(
       '987654321098765430',
       expect.objectContaining({
@@ -160,6 +200,7 @@ describe('assistant command subscriber', () => {
     await h.subscriber.handle(slash('forgetme', []));
     expect(h.defer).not.toHaveBeenCalled();
     expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(0);
   });
 
   it('fails closed on an ambiguous mention without calling the service', async () => {
@@ -190,6 +231,7 @@ describe('assistant command subscriber', () => {
       attachments: [],
     });
     expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(0);
     expect(h.send).toHaveBeenCalledWith(
       channelId,
       expect.objectContaining({
@@ -222,10 +264,59 @@ describe('assistant mention failure path', () => {
       mentionsEveryone: false,
       attachments: [],
     });
+    await h.flush();
     expect(h.send).toHaveBeenCalledWith(
       channelId,
       expect.objectContaining({
         content: expect.stringContaining('could not complete'),
+      }),
+    );
+  });
+
+  it('answers the member when the behaviour was deleted between enqueue and run', async () => {
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    // The behaviour vanishes before the worker picks the job up: fail closed,
+    // never act on the stale copy.
+    h.invoke.mockClear();
+    const payload = h.queued[0]!;
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => []), invoke: h.invoke },
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    await handler.run(handler.payload.parse(payload), {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({
+        content: expect.stringContaining('no longer available'),
       }),
     );
   });

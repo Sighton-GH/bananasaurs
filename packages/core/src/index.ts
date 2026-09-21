@@ -85,6 +85,9 @@ export {
   type RunOutcome,
 } from './jobs/worker.js';
 export {
+  assistantInvokeDedupeKey,
+  assistantInvokePayload,
+  type AssistantInvokePayload,
   adoptDedupeKey,
   adoptPanelPayload,
   archiveBackfillDedupeKey,

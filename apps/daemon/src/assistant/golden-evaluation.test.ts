@@ -16,6 +16,7 @@ import {
 import { routeAssistantMention } from '@bananasaurs/discord';
 import { pino } from 'pino';
 import { createAssistantCommandSubscriber, type AssistantCommandService } from './commands.js';
+import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { SAFE_GOLDENS, SAFETY_GOLDENS } from './__fixtures__/golden-evaluation.js';
 
 const guildA = '234567890123456789';
@@ -167,15 +168,37 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       invoke: vi.fn(async () => ({ ok: true, content: '@everyone ' + 'x'.repeat(2_500) })),
     };
     const send = vi.fn(async (_destinationId: string, _message: OutgoingMessage) => undefined);
+    const respond = vi.fn(async () => undefined);
+    // B2: the subscriber enqueues; the cap and mention-safety live where the
+    // provider output is answered — the job handler. Run the real pair.
+    const queued: Parameters<ReturnType<typeof assistantInvokeHandler>['run']>[0][] = [];
     const subscriber = createAssistantCommandSubscriber({
       guildId: guildA,
       service,
       defer: vi.fn(async () => undefined),
-      respond: vi.fn(async () => undefined),
+      respond,
       send,
+      enqueue: (input) => {
+        queued.push(input.payload);
+      },
+      now: () => 1,
       logger: pino({ level: 'silent' }),
     });
     await subscriber.handle(message());
+    expect(queued).toHaveLength(1);
+    const handler = assistantInvokeHandler({
+      guildId: guildA,
+      service,
+      respond,
+      send,
+      logger: pino({ level: 'silent' }),
+    });
+    await handler.run(handler.payload.parse(queued[0]), {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
     const outgoing = send.mock.calls[0]?.[1];
     expect(outgoing?.content).toHaveLength(2_000);
     expect(outgoing?.allowedMentions).toEqual({ parse: [] });

@@ -75,6 +75,7 @@ import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
+import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { createAssistantService } from '../assistant/service.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -674,7 +675,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
-  const subscribers: Subscriber[] = [
+    const assistantService = createAssistantService(scope, instance, config, now);
+
+const subscribers: Subscriber[] = [
     createConnectionSubscriber(
       {
         recordGap: (input) => pipelineRepo.recordGap(scope, input),
@@ -701,13 +704,19 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createModConfirmationSubscriber(modConfirmationDeps),
     // Release 3 assistant: slash commands and @behaviour mentions. The
     // service owns permission, safety and provider eligibility; the Discord
-    // layer never calls a provider itself.
+    // layer never calls a provider itself. One service instance is shared by
+    // the subscriber (cheap inline routing) and the job handler (the
+    // expensive invoke, off the serial dispatch chain — B2).
     createAssistantCommandSubscriber({
       guildId,
-      service: createAssistantService(scope, instance, config, now),
+      service: assistantService,
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
       respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
       send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
+      enqueue: (input) => {
+        jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
+      },
+      now,
       logger,
     }),
   ];
@@ -715,6 +724,13 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   const worker = new JobWorker({
     store: jobStoreFor(scope),
     handlers: [
+      assistantInvokeHandler({
+        guildId,
+        service: assistantService,
+        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+        send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
+        logger,
+      }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
       logMessageDeleteHandler(deletionAttributionPorts),
