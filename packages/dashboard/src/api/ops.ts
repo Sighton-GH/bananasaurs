@@ -290,6 +290,22 @@ export interface ArchiveSearchHit {
   readonly excerpt: string;
 }
 
+/**
+ * One archived message — mirrors `OpsArchiveMessage`. `content: null` is a
+ * purged tombstone: the metadata survives, the text is gone (ADR 0046).
+ * `GET /api/archive/channels/:channelId/messages` lists them newest first,
+ * paged by `before`; `GET /api/archive/messages/:messageId` reads one.
+ */
+export interface ArchiveMessage {
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly authorId: string | undefined;
+  readonly content: string | null;
+  readonly createdAt: number;
+  readonly editedAt: number | undefined;
+  readonly deletedAt: number | undefined;
+}
+
 export interface ArchiveSearchResult {
   readonly hits: readonly ArchiveSearchHit[];
   readonly total: number;

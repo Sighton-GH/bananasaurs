@@ -240,4 +240,94 @@ describe('ArchivePage', () => {
     )!;
     expect(bodyOf(post)).toEqual({ value: 'none' });
   });
+
+  it('browse lists a channel newest-first, marks tombstones, and opens one message', async () => {
+    const mock = stubFetch([
+      { url: '/api/archive/status', body: STATUS },
+      {
+        url: '/api/archive/channels/c-1/messages?limit=25',
+        body: {
+          messages: [
+            {
+              messageId: 'm-1',
+              channelId: 'c-1',
+              authorId: 'u-1',
+              content: 'the launch notes are pinned',
+              createdAt: 1700000000000,
+            },
+            {
+              messageId: 'm-2',
+              channelId: 'c-1',
+              content: null,
+              createdAt: 1699999000000,
+              deletedAt: 1699999500000,
+            },
+          ],
+        },
+      },
+      {
+        url: '/api/archive/messages/m-1',
+        body: {
+          messageId: 'm-1',
+          channelId: 'c-1',
+          authorId: 'u-1',
+          content: 'the launch notes are pinned',
+          createdAt: 1700000000000,
+          editedAt: 1700000060000,
+        },
+      },
+    ]);
+    renderWithSession(<ArchivePage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Browse' }));
+    expect(await screen.findByText('the launch notes are pinned')).toBeTruthy();
+    expect(screen.getByText('content purged')).toBeTruthy();
+    expect(screen.getByText(/deleted from Discord/)).toBeTruthy();
+    expect(
+      mock.mock.calls.some(
+        (c) => (c[0] as string) === '/api/archive/channels/c-1/messages?limit=25',
+      ),
+    ).toBe(true);
+
+    fireEvent.click(screen.getAllByRole('button', { name: 'Open' })[0]!);
+    expect(await screen.findByText('Message m-1')).toBeTruthy();
+    const region = screen.getByRole('region', { name: 'Archived message m-1' });
+    expect(region.textContent).toContain('edited');
+  });
+
+  it('browse pages older messages with the before cursor and walks back', async () => {
+    const page1 = Array.from({ length: 25 }, (_, i) => ({
+      messageId: `m-${25 - i}`,
+      channelId: 'c-1',
+      content: `message ${25 - i}`,
+      createdAt: 1700000000000 - i * 1000,
+    }));
+    const mock = stubFetch([
+      { url: '/api/archive/status', body: STATUS },
+      { url: '/api/archive/channels/c-1/messages?limit=25', body: { messages: page1 } },
+      {
+        url: '/api/archive/channels/c-1/messages?limit=25&before=m-1',
+        body: {
+          messages: [
+            { messageId: 'm-0', channelId: 'c-1', content: 'the oldest one', createdAt: 0 },
+          ],
+        },
+      },
+    ]);
+    renderWithSession(<ArchivePage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Browse' }));
+    await screen.findByText('message 25');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Older' }));
+    });
+    expect(await screen.findByText('the oldest one')).toBeTruthy();
+    expect(
+      mock.mock.calls.some(
+        (c) => (c[0] as string) === '/api/archive/channels/c-1/messages?limit=25&before=m-1',
+      ),
+    ).toBe(true);
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Newer' }));
+    });
+    expect(await screen.findByText('message 25')).toBeTruthy();
+  });
 });

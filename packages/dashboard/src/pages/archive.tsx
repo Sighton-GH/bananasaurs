@@ -4,6 +4,7 @@ import type {
   ArchiveAttachmentPolicy,
   ArchiveCategoryEnableOutcome,
   ArchiveChannelStatus,
+  ArchiveMessage,
   ArchiveDisableOutcome,
   ArchiveEnableOutcome,
   ArchiveLinkCaseOutcome,
@@ -60,6 +61,43 @@ export function ArchivePage() {
   const [linkCaseId, setLinkCaseId] = useState('');
   const [linkError, setLinkError] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+
+  // Browse: the channel being read, the `before` cursor for its current
+  // page, and the trail of cursors so "newer" can walk back. The detail
+  // panel is a separate read, the way `archive get-message` answers one id.
+  const [browseId, setBrowseId] = useState<string | undefined>(undefined);
+  const [before, setBefore] = useState<string | undefined>(undefined);
+  const [trail, setTrail] = useState<readonly (string | undefined)[]>([]);
+  const [detail, setDetail] = useState<ArchiveMessage | undefined>(undefined);
+  const loadBrowse = useCallback(
+    () =>
+      browseId === undefined
+        ? Promise.resolve({ messages: [] as readonly ArchiveMessage[] })
+        : session.read<{ messages: readonly ArchiveMessage[] }>(
+            `/api/archive/channels/${encodeURIComponent(browseId)}/messages?limit=25${before === undefined ? '' : `&before=${encodeURIComponent(before)}`}`,
+          ),
+    [session, browseId, before],
+  );
+  const browse = useResource('the archived messages', loadBrowse);
+
+  const openBrowse = (channelId: string) => {
+    setBrowseId(channelId);
+    setBefore(undefined);
+    setTrail([]);
+    setDetail(undefined);
+  };
+
+  const openMessage = async (messageId: string) => {
+    try {
+      setDetail(
+        await session.read<ArchiveMessage>(
+          `/api/archive/messages/${encodeURIComponent(messageId)}`,
+        ),
+      );
+    } catch {
+      toast({ tone: 'danger', title: 'That message could not be loaded' });
+    }
+  };
 
   const enable = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -339,6 +377,7 @@ export function ArchivePage() {
                         <span className="text-xs text-ink-muted">managed by its category</span>
                       ) : (
                         <span className="flex gap-1">
+                          <Button onClick={() => openBrowse(c.channelId)}>Browse</Button>
                           {(c.scopeKind ?? 'channel') === 'channel' && (
                             <Button
                               onClick={() =>
@@ -415,6 +454,130 @@ export function ArchivePage() {
             </div>
           </form>
         </Card>
+        {browseId !== undefined && (
+          <Card title={`Browsing ${browseId}`}>
+            <div className="mb-2 flex items-center justify-between gap-2">
+              <p className="text-sm text-ink-muted">
+                Newest first, 25 at a time. A purged message keeps its metadata; its text is
+                gone for good.
+              </p>
+              <Button onClick={() => setBrowseId(undefined)}>Close</Button>
+            </div>
+            <DataState
+              resource={browse.resource}
+              isEmpty={(data) => data.messages.length === 0}
+              empty={
+                <p className="text-sm text-ink-muted">
+                  No archived messages here yet — a backfill fills the history over time.
+                </p>
+              }
+            >
+              {(data) => (
+                <>
+                  <DataTable
+                    caption={`Archived messages in ${browseId}`}
+                    rows={data.messages}
+                    rowKey={(m) => m.messageId}
+                    columns={[
+                      {
+                        key: 'created',
+                        header: 'Posted',
+                        cell: (m) => (
+                          <span className="whitespace-nowrap">
+                            {new Date(m.createdAt).toLocaleString()}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'author',
+                        header: 'Author',
+                        cell: (m) => m.authorId ?? 'unknown',
+                      },
+                      {
+                        key: 'content',
+                        header: 'Message',
+                        cell: (m) => (
+                          <span>
+                            {m.content === null ? (
+                              <span className="italic text-ink-muted">content purged</span>
+                            ) : m.content.length > 120 ? (
+                              `${m.content.slice(0, 120)}…`
+                            ) : (
+                              m.content
+                            )}
+                            {m.deletedAt !== undefined && (
+                              <>
+                                {' '}
+                                <Badge tone="hold">deleted from Discord</Badge>
+                              </>
+                            )}
+                          </span>
+                        ),
+                      },
+                      {
+                        key: 'actions',
+                        header: '',
+                        cell: (m) => <Button onClick={() => void openMessage(m.messageId)}>Open</Button>,
+                      },
+                    ]}
+                  />
+                  {(data.messages.length === 25 || trail.length > 0) && (
+                    <div className="mt-3 flex gap-2">
+                      <Button
+                        disabled={trail.length === 0}
+                        onClick={() => {
+                          const previous = trail[trail.length - 1];
+                          setTrail((t) => t.slice(0, -1));
+                          setBefore(previous);
+                        }}
+                      >
+                        Newer
+                      </Button>
+                      <Button
+                        disabled={data.messages.length < 25}
+                        onClick={() => {
+                          const oldest = data.messages[data.messages.length - 1];
+                          if (oldest === undefined) return;
+                          setTrail((t) => [...t, before]);
+                          setBefore(oldest.messageId);
+                        }}
+                      >
+                        Older
+                      </Button>
+                    </div>
+                  )}
+                </>
+              )}
+            </DataState>
+            {detail !== undefined && (
+              <div
+                role="region"
+                aria-label={`Archived message ${detail.messageId}`}
+                className="mt-3 grid gap-1 rounded-sm border border-line bg-canvas p-3 text-sm"
+              >
+                <div className="flex items-center justify-between gap-2">
+                  <span className="font-medium">Message {detail.messageId}</span>
+                  <Button onClick={() => setDetail(undefined)}>Close</Button>
+                </div>
+                <p className="text-ink-muted">
+                  {detail.authorId ?? 'unknown author'} · posted{' '}
+                  {new Date(detail.createdAt).toLocaleString()}
+                  {detail.editedAt !== undefined &&
+                    ` · edited ${new Date(detail.editedAt).toLocaleString()}`}
+                  {detail.deletedAt !== undefined &&
+                    ` · deleted from Discord ${new Date(detail.deletedAt).toLocaleString()}`}
+                </p>
+                {detail.content === null ? (
+                  <p className="italic text-ink-muted">
+                    Content purged by retention — the metadata above is all that remains.
+                  </p>
+                ) : (
+                  <p className="whitespace-pre-wrap">{detail.content}</p>
+                )}
+              </div>
+            )}
+          </Card>
+        )}
         <Card title="Message tools">
           <div className="grid gap-4 sm:grid-cols-2">
             <form onSubmit={(e) => void preserve(e)} className="grid content-start gap-3">
