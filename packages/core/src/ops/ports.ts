@@ -392,6 +392,15 @@ export type ArchiveBackfillState = 'pending' | 'running' | 'done';
 /** One enabled archive channel, as `archive status` renders it. */
 export interface OpsArchiveChannelStatus {
   readonly channelId: string;
+  /**
+   * How the row got here (review 2 N2): `channel` and `category` are
+   * operator gestures; `derived` is coverage materialised under a category,
+   * which the operator never enabled and whose backfill state is not theirs
+   * to chase. Listing all three identically invited exactly that confusion.
+   */
+  readonly scopeKind?: 'channel' | 'category' | 'derived';
+  /** The category a `derived` row was materialised from. */
+  readonly derivedFrom?: string | undefined;
   readonly attachmentPolicy: ArchiveAttachmentPolicy;
   readonly enabledAt: number;
   readonly cursorMessageId: string | undefined;
@@ -418,7 +427,14 @@ export interface OpsUnreadableArchiveChannel {
 export type OpsArchiveDisableOutcome =
   | { readonly outcome: 'disabled'; readonly messageCount: number }
   | { readonly outcome: 'not-enabled' }
-  | { readonly outcome: 'wrong-kind' };
+  | { readonly outcome: 'wrong-kind' }
+  /**
+   * The channel has only a derived row and is still covered by an enabled
+   * category, so there is nothing for `disable-channel` to disable: the next
+   * message would re-materialise the row. Names the category to act on
+   * instead (review 2 N1).
+   */
+  | { readonly outcome: 'covered-by-category'; readonly categoryId: string };
 
 /** One archive search hit, as `archive search` renders it. */
 export interface OpsArchiveSearchHit {

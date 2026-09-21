@@ -343,6 +343,7 @@ export const guildPortFor = (
           discord.listPublicThreads(guildId, channelId).then((threads) =>
             threads.map((thread) => ({
               id: thread.id,
+              name: thread.name,
               parentId: channelId,
               archived: thread.archived,
             })),
@@ -360,7 +361,14 @@ export const guildPortFor = (
           channel.type === ChannelType.PrivateThread
         )
           return [];
-        return [{ id: channel.id, parentId: channelId, archived: channel.archived ?? false }];
+        return [
+          {
+            id: channel.id,
+            name: channel.name,
+            parentId: channelId,
+            archived: channel.archived ?? false,
+          },
+        ];
       });
       return Promise.resolve(active.filter((thread) => !thread.archived));
     },

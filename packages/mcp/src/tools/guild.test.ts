@@ -28,6 +28,7 @@ import {
   listChannelsText,
   listMembersText,
   listRolesText,
+  listThreadsText,
   type McpGuildMember,
   type McpGuildPort,
 } from './guild.js';
@@ -507,5 +508,46 @@ describe('guild tools on the MCP server', () => {
     } finally {
       await close();
     }
+  });
+});
+
+describe('list_threads rows follow the structural-row convention (N3)', () => {
+  const CHANNEL = '777777777777777777';
+  const threadPort = (): McpGuildPort => ({
+    ...fakePort(),
+    listThreads: async () => [
+      { id: '800000000000000001', name: 'weekly build night', parentId: CHANNEL, archived: false },
+      { id: '800000000000000002', name: 'archived plans', parentId: CHANNEL, archived: true },
+    ],
+  });
+
+  it('puts the thread id in the id slot and the thread NAME in the name slot', async () => {
+    const result = await listThreadsText(principalWith(GUILD_A), threadPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    // The name is the only thing that identifies a forum post to a reader,
+    // and this listing used to drop it entirely while putting the id where
+    // `list_channels` puts the name and the parent where it puts the id.
+    expect(result.text).toContain('weekly build night');
+    expect(result.text).toContain('archived plans');
+    expect(result.text).toContain('800000000000000001');
+    expect(result.text).toContain(`parent: ${CHANNEL}`);
+    expect(result.text).toContain('2 threads (1 archived)');
+    expect(result.text).toContain('Private threads are never listed.');
+  });
+
+  it('still frames every row inside the evidence envelope', async () => {
+    const result = await listThreadsText(principalWith(GUILD_A), threadPort(), {
+      guildId: GUILD_A,
+      channelId: CHANNEL,
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.text).toContain(EVIDENCE_PREAMBLE);
+    expect(result.text).toContain(EVIDENCE_OPEN);
+    expect(result.text).toContain(EVIDENCE_CLOSE);
   });
 });

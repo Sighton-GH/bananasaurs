@@ -112,6 +112,7 @@ export interface McpGuildChannel {
 
 export interface McpGuildThread {
   readonly id: string;
+  readonly name: string;
   readonly parentId: string;
   readonly archived: boolean;
 }
@@ -277,6 +278,24 @@ const channelToEvidenceItem = (guildId: GuildId, channel: McpGuildChannel): Evid
     `topic: ${channel.topic ?? '(none)'}`,
     `archive-enabled: ${channel.archiveEnabled ? 'yes' : 'no'}`,
   ].join('\n'),
+});
+
+/**
+ * A thread row in the same shape `channelToEvidenceItem` uses: guild, row
+ * id, row name, order key, then the human-readable row.
+ *
+ * Review 2 N3: this listing used to put the thread id in the name slot and
+ * the parent in the id slot, and never returned the thread's name at all —
+ * which for a forum post is the only thing that identifies it to a reader.
+ */
+const threadToEvidenceItem = (guildId: GuildId, thread: McpGuildThread): EvidenceItem => ({
+  authorId: guildId,
+  channelId: thread.id,
+  messageId: thread.name,
+  timestamp: thread.archived ? 'archived' : 'active',
+  content: [`parent: ${thread.parentId}`, `state: ${thread.archived ? 'archived' : 'active'}`].join(
+    '\n',
+  ),
 });
 
 const toHexColor = (color: number): string => `#${color.toString(16).padStart(6, '0').slice(-6)}`;
@@ -460,17 +479,15 @@ export const listThreadsText = async (
     parsed.data.channelId,
     parsed.data.includeArchived ?? false,
   );
+  const archived = threads.filter((thread) => thread.archived).length;
+  const noun = threads.length === 1 ? 'thread' : 'threads';
+  const head =
+    `Public threads under channel ${parsed.data.channelId}: ` +
+    `${String(threads.length)} ${noun} (${String(archived)} archived). ` +
+    'Private threads are never listed.';
   return {
     ok: true,
-    text: envelope(
-      threads.map((thread) => ({
-        authorId: gate.guildId,
-        channelId: thread.parentId,
-        messageId: thread.id,
-        timestamp: thread.archived ? 'archived' : 'active',
-        content: `parent: ${thread.parentId}`,
-      })),
-    ),
+    text: `${head}\n\n${envelope(threads.map((thread) => threadToEvidenceItem(gate.guildId, thread)))}`,
     // Thread ids, parents and archived flags are structure, not member
     // content: structural read under ADR 0050's split (one log line).
     read: {

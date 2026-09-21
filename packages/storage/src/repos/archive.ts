@@ -210,13 +210,20 @@ export const setIncludeThreads = (
  *
  * Kind-scoped (review S1): the predicate names `scope_kind = 'channel'`, so
  * `archive disable-channel <categoryId>` can no longer delete a category row
- * and report it as a channel. A row of another kind is a `'wrong-kind'`
- * refusal, not a silent delete and not a misleading `'not-enabled'`.
+ * and report it as a channel. A row of another kind is a refusal, not a
+ * silent delete and not a misleading `'not-enabled'`.
+ *
+ * A derived row answers `'derived'` rather than `'wrong-kind'` (review 2 N1):
+ * "this is archived as a category, use disable-category" is false of a
+ * derived row, and `disable-category` refused it in turn, so the two verbs
+ * sent the operator in a circle with no way to act on the row at all. Only
+ * the caller knows whether the channel is still covered — that is a live
+ * cache fact, not a stored one — so the decision belongs above this layer.
  */
 export const disableChannel = (
   scope: GuildScope,
   channelId: string,
-): 'disabled' | 'not-enabled' | 'wrong-kind' =>
+): 'disabled' | 'not-enabled' | 'wrong-kind' | 'derived' =>
   write(scope, ({ db }) => {
     const result = db
       .delete(archiveChannels)
@@ -229,11 +236,53 @@ export const disableChannel = (
       .run();
     if (result.changes === 1) return 'disabled';
     const other = db
-      .select({ channelId: archiveChannels.channelId })
+      .select({ scopeKind: archiveChannels.scopeKind })
       .from(archiveChannels)
       .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
       .get();
-    return other === undefined ? 'not-enabled' : 'wrong-kind';
+    if (other === undefined) return 'not-enabled';
+    return other.scopeKind === 'derived' ? 'derived' : 'wrong-kind';
+  });
+
+/**
+ * Deletes a derived row and cascades its messages (review 2 N1).
+ *
+ * The caller has already established that the channel is no longer covered
+ * by an enabled category — a derived row whose channel is still covered
+ * would simply be re-materialised by the next message, so destroying its
+ * history there would be a delete that disables nothing. ADR 0047's
+ * amendment says an orphaned derived row keeps its history "matching what an
+ * explicit `disable-channel` would have destroyed only by operator choice";
+ * this is the verb that makes that choice available.
+ */
+export const disableDerivedChannel = (
+  scope: GuildScope,
+  channelId: string,
+):
+  | { readonly outcome: 'disabled'; readonly messageCount: number }
+  | { readonly outcome: 'not-derived' } =>
+  write(scope, ({ db }) => {
+    const row = db
+      .select({ scopeKind: archiveChannels.scopeKind })
+      .from(archiveChannels)
+      .where(scope.only(archiveChannels, eq(archiveChannels.channelId, channelId)))
+      .get();
+    if (row?.scopeKind !== 'derived') return { outcome: 'not-derived' };
+    const messageCount =
+      db
+        .select({ n: count() })
+        .from(archiveMessages)
+        .where(scope.only(archiveMessages, eq(archiveMessages.channelId, channelId)))
+        .get()?.n ?? 0;
+    db.delete(archiveChannels)
+      .where(
+        scope.only(
+          archiveChannels,
+          sql`${archiveChannels.channelId} = ${channelId} AND ${archiveChannels.scopeKind} = 'derived'`,
+        ),
+      )
+      .run();
+    return { outcome: 'disabled', messageCount };
   });
 
 /** What `disableCategory` destroyed, or why it refused. */

@@ -560,13 +560,32 @@ export const opsPortsFor = (
     // audit trail should say how many went with the channel.
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
-    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    if (outcome !== 'derived') {
+      return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    }
+    const channel = client.guilds.cache.get(scope.guildId)?.channels.cache.get(channelId);
+    const categoryId =
+      channel !== undefined && 'parentId' in channel ? (channel.parentId ?? undefined) : undefined;
+    if (categoryId !== undefined && archiveRepo.hasCategoryRow(scope, categoryId)) {
+      return { outcome: 'covered-by-category', categoryId };
+    }
+    // Orphaned: the channel moved out of the category, so archiving already
+    // stopped and only the retained history is left to destroy.
+    const removed = archiveRepo.disableDerivedChannel(scope, channelId);
+    return removed.outcome === 'disabled'
+      ? { outcome: 'disabled', messageCount: removed.messageCount }
+      : { outcome: 'not-enabled' };
   },
   archiveStatus: () =>
     archiveRepo.listChannels(scope).map((channel) => ({
       ...channel,
       messageCount: archiveRepo.countMessages(scope, channel.channelId),
     })),
+  // Review 2 N1: a derived row is coverage, and coverage is a live cache
+  // fact, so only here can the two cases be told apart — still covered (no
+  // delete: the next message re-materialises the row) versus orphaned by a
+  // channel that moved out (deletable, which is the choice ADR 0047's
+  // amendment says the operator has).
   archivePreserve: (messageId) => archiveRepo.markPreserve(scope, messageId),
   // `preserve` outranks any case link, and the port names it as its own
   // `'preserved'` arm rather than folding it into `'already-linked'` — a

@@ -148,6 +148,33 @@ export const archiveDisableChannelCommand = defineCommand<
         },
       };
     }
+    if (result.outcome === 'covered-by-category') {
+      // Review 2 N1: naming the category is the whole point. Saying
+      // "archived as a category" here was false of a derived row, and
+      // `disable-category` refused it back, so the operator had no verb.
+      return {
+        text:
+          `channel ${args.channelId} is not archived in its own right: it is covered by ` +
+          `category ${result.categoryId}. Use \`archive disable-category ${result.categoryId}\` ` +
+          'to drop the whole category, or exclude this channel from logging to stop it alone.',
+        data: {
+          ok: false,
+          reason: result.outcome,
+          channelId: args.channelId,
+          categoryId: result.categoryId,
+        },
+        audit: {
+          action: 'archive.channel_disabled',
+          subjectType: 'archive_channel',
+          subjectId: args.channelId,
+          after: {
+            outcome: result.outcome,
+            channelId: args.channelId,
+            categoryId: result.categoryId,
+          },
+        },
+      };
+    }
     if (result.outcome === 'not-enabled') {
       return {
         text: `channel ${args.channelId} is not archived; nothing changed`,
@@ -193,6 +220,16 @@ export const archiveStatusCommand = defineCommand<Record<string, never>>({
     const lines = channels.map(
       (channel) =>
         `${channel.channelId}  ${channel.attachmentPolicy}  ` +
+        // Review 2 N2: a derived row is coverage under a category, not a
+        // channel the operator enabled. Naming it — and the category it
+        // came from — is the difference between a status line an operator
+        // can act on and one that invites them to chase a backfill that
+        // will never be queued.
+        (channel.scopeKind === undefined || channel.scopeKind === 'channel'
+          ? ''
+          : channel.scopeKind === 'derived'
+            ? `derived from ${channel.derivedFrom ?? '?'}  `
+            : `${channel.scopeKind}  `) +
         `backfill:${channel.backfillState}  ` +
         `cursor:${channel.cursorMessageId ?? '-'}  ` +
         `messages:${String(channel.messageCount)}` +
@@ -205,6 +242,8 @@ export const archiveStatusCommand = defineCommand<Record<string, never>>({
       data: {
         channels: channels.map((channel) => ({
           channelId: channel.channelId,
+          scopeKind: channel.scopeKind ?? 'channel',
+          derivedFrom: channel.derivedFrom ?? null,
           attachmentPolicy: channel.attachmentPolicy,
           enabledAt: channel.enabledAt,
           cursorMessageId: channel.cursorMessageId ?? null,

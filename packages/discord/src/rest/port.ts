@@ -324,14 +324,22 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
       const active = (await mapErrors(() =>
         rest.get(Routes.guildActiveThreads(guildId)),
       )) as APIThreadList;
-      const found = new Map<string, { id: string; isPrivate: boolean; archived: boolean }>();
+      const found = new Map<
+        string,
+        { id: string; name: string; isPrivate: boolean; archived: boolean }
+      >();
       for (const thread of active.threads) {
         if (
           'parent_id' in thread &&
           thread.parent_id === channelId &&
           thread.type !== ChannelType.PrivateThread
         ) {
-          found.set(thread.id, { id: thread.id, isPrivate: false, archived: false });
+          found.set(thread.id, {
+            id: thread.id,
+            name: thread.name,
+            isPrivate: false,
+            archived: false,
+          });
         }
       }
       // Review S3: the archived endpoint paginates by
@@ -355,7 +363,14 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
           }),
         )) as APIThreadList & { has_more?: boolean };
         for (const thread of archived.threads)
-          found.set(thread.id, { id: thread.id, isPrivate: false, archived: true });
+          found.set(thread.id, {
+            id: thread.id,
+            // A thread always has a title in practice; the API type allows
+            // null, so name it rather than letting `null` reach the caller.
+            name: thread.name ?? '(unnamed thread)',
+            isPrivate: false,
+            archived: true,
+          });
         const last = archived.threads.at(-1);
         if (!archived.has_more || last === undefined) break;
         const metadata = 'thread_metadata' in last ? last.thread_metadata : undefined;

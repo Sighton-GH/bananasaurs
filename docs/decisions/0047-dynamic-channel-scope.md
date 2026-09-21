@@ -57,3 +57,30 @@ lists. Reading a forum channel's history rolls its threads up into the
 parent read (every forum message carries a thread id, so a
 top-level-messages-only read of a forum is always empty); per-thread reads
 are unchanged.
+
+## Amendment 2026-09-20b: the operator's verb for a derived row
+
+The amendment above says an orphaned derived row keeps its history, "matching
+what an explicit `disable-channel` would have destroyed only by operator
+choice". As first written that choice did not exist: `disable-channel` answered
+a derived row with `wrong-kind` and the text "archived as a category; use
+archive disable-category", and `disable-category` answered it with "archived as
+a channel; use archive disable-channel". The two verbs pointed at each other and
+neither statement was true.
+
+`disableChannel` now answers `'derived'`, and the daemon — the only layer that
+can see live category membership — resolves it:
+
+- **Still covered by an enabled category:** refused, naming the category. There
+  is nothing to disable, because the next message would re-materialise the row;
+  the operator is pointed at `archive disable-category <categoryId>`, or at
+  excluding the single channel from logging.
+- **Orphaned** (the channel moved out of the category): the row and its
+  messages are deleted, which is the operator choice this amendment promised.
+
+`archive status` also marks a derived row as `derived from <categoryId>` rather
+than listing it as if the operator had enabled it: a derived row materialised by
+the live path carries `backfill:pending` forever, because no backfill is queued
+for it, and an unmarked row invited an operator to chase a job that will never
+run.
+

@@ -445,7 +445,9 @@ export const testPortsFor = (
   archiveDisableCategory: (channelId) => {
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
-    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    if (outcome === 'disabled') return { outcome, messageCount };
+    if (outcome === 'derived') return { outcome: 'wrong-kind' };
+    return { outcome };
   },
   archiveSetThreads: (channelId, include) =>
     archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
@@ -456,7 +458,12 @@ export const testPortsFor = (
   archiveDisableChannel: (channelId) => {
     const messageCount = archiveRepo.countMessages(scope, channelId);
     const outcome = archiveRepo.disableChannel(scope, channelId);
-    return outcome === 'disabled' ? { outcome, messageCount } : { outcome };
+    if (outcome === 'disabled') return { outcome, messageCount };
+    // No discord.js client in this harness, so a derived row cannot be
+    // resolved against live coverage the way `opsPortsFor` does; the HTTP
+    // fake reports it as the refusal it is.
+    if (outcome === 'derived') return { outcome: 'wrong-kind' };
+    return { outcome };
   },
   archiveStatus: () =>
     archiveRepo.listChannels(scope).map((channel) => ({

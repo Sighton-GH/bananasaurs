@@ -7,6 +7,7 @@ import {
   countMessages,
   disableCategory,
   disableChannel,
+  disableDerivedChannel,
   enableChannel,
   ensureDerivedChannel,
   findChannel,
@@ -204,7 +205,9 @@ describe('derived archive_channels rows (ADR 0047 amendment)', () => {
     expect(disableChannel(scope, CATEGORY)).toBe('wrong-kind');
     expect(hasCategoryRow(scope, CATEGORY)).toBe(true);
 
-    expect(disableChannel(scope, CHANNEL)).toBe('wrong-kind');
+    // Review 2 N1: a derived row answers 'derived', not 'wrong-kind' — the
+    // latter drove the operator to disable-category, which refused it back.
+    expect(disableChannel(scope, CHANNEL)).toBe('derived');
     expect(findChannel(scope, CHANNEL)?.scopeKind).toBe('derived');
     expect(countMessages(scope, CHANNEL)).toBe(1);
 
@@ -233,5 +236,21 @@ describe('derived archive_channels rows (ADR 0047 amendment)', () => {
         attachments: [],
       }),
     ).toThrowError();
+  });
+
+  it('an orphaned derived row can be destroyed, and only while it is derived (N1)', () => {
+    message(MESSAGE_ONE, CHANNEL, CATEGORY);
+    expect(findChannel(scope, CHANNEL)?.scopeKind).toBe('derived');
+
+    // The verb is kind-scoped in the other direction too: it will not touch
+    // a row the operator enabled explicitly.
+    enableChannel(scope, { channelId: EXPLICIT, attachmentPolicy: 'none', now: 1000 });
+    expect(disableDerivedChannel(scope, EXPLICIT)).toEqual({ outcome: 'not-derived' });
+    expect(isChannelEnabled(scope, EXPLICIT)).toBe(true);
+
+    expect(disableDerivedChannel(scope, CHANNEL)).toEqual({ outcome: 'disabled', messageCount: 1 });
+    expect(findChannel(scope, CHANNEL)).toBeUndefined();
+    expect(countMessages(scope, CHANNEL)).toBe(0);
+    expect(disableDerivedChannel(scope, CHANNEL)).toEqual({ outcome: 'not-derived' });
   });
 });

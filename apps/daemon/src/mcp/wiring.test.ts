@@ -1436,11 +1436,11 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       override async listPublicThreads(
         _guildId: string,
         _channelId: string,
-      ): Promise<readonly { id: string; isPrivate: boolean; archived: boolean }[]> {
+      ): Promise<readonly { id: string; name: string; isPrivate: boolean; archived: boolean }[]> {
         this.restListCalls += 1;
         return [
-          { id: PUBLIC_THREAD, isPrivate: false, archived: false },
-          { id: ARCHIVED_THREAD, isPrivate: false, archived: true },
+          { id: PUBLIC_THREAD, name: 'public thread', isPrivate: false, archived: false },
+          { id: ARCHIVED_THREAD, name: 'archived thread', isPrivate: false, archived: true },
         ];
       }
     }

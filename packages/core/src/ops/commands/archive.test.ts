@@ -225,6 +225,41 @@ describe('archive disable-channel', () => {
     if (!res.ok) return;
     expect(res.data).toMatchObject({ ok: false, reason: 'not-enabled' });
   });
+
+  it('names the covering category instead of sending the operator to a verb that refuses (N1)', async () => {
+    const audit: unknown[] = [];
+    const res = await driveWrite(
+      archiveDisableChannelCommand,
+      {
+        archiveDisableChannel: () => ({
+          outcome: 'covered-by-category',
+          categoryId: '999999999999999999',
+        }),
+        recordAudit: (input) => {
+          audit.push(input);
+        },
+      },
+      { channelId: CHANNEL },
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // The old text claimed the channel was "archived as a category" and
+    // pointed at disable-category, which refused it right back.
+    expect(res.text).not.toContain('archived as a category');
+    expect(res.text).toContain('covered by category 999999999999999999');
+    expect(res.text).toContain('archive disable-category 999999999999999999');
+    expect(res.data).toMatchObject({
+      ok: false,
+      reason: 'covered-by-category',
+      categoryId: '999999999999999999',
+    });
+    expect(audit).toEqual([
+      expect.objectContaining({
+        action: 'archive.channel_disabled',
+        after: expect.objectContaining({ categoryId: '999999999999999999' }),
+      }),
+    ]);
+  });
 });
 
 describe('archive status', () => {
@@ -263,6 +298,37 @@ describe('archive status', () => {
     expect(res.text).toContain(
       '444444444444444444  none  backfill:running  cursor:555555555555555555  messages:120',
     );
+  });
+
+  it('marks a derived row as coverage and names the category it came from (N2)', async () => {
+    const res = await drive(
+      archiveStatusCommand,
+      {
+        archiveStatus: () => [
+          {
+            channelId: CHANNEL,
+            scopeKind: 'derived',
+            derivedFrom: '999999999999999999',
+            attachmentPolicy: 'none',
+            enabledAt: NOW,
+            cursorMessageId: undefined,
+            backfillState: 'pending',
+            messageCount: 7,
+          },
+        ],
+      },
+      {},
+    );
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    // Without this an operator reads a channel they never enabled, stuck on
+    // backfill:pending, and goes looking for a job that is never queued.
+    expect(res.text).toContain('derived from 999999999999999999');
+    expect(res.data).toMatchObject({
+      channels: [
+        expect.objectContaining({ scopeKind: 'derived', derivedFrom: '999999999999999999' }),
+      ],
+    });
   });
 
   it('says so plainly when no channel is enabled', async () => {

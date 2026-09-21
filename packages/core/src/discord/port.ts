@@ -127,6 +127,8 @@ export interface FetchedMessage {
 
 export interface DiscordThread {
   readonly id: Snowflake;
+  /** The thread's title — for a forum post, the only thing that names it. */
+  readonly name: string;
   readonly isPrivate: boolean;
   /** True for threads from the archived listing, false for active ones. */
   readonly archived: boolean;
