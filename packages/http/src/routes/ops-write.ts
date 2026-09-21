@@ -973,7 +973,7 @@ export const registerOpsWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
       const parsed = accountDisabledBodySchema.safeParse(request.body);
       if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
@@ -1001,7 +1001,7 @@ export const registerOpsWriteRoutes = (
   app.delete<{ Params: { username: string } }>('/api/accounts/:username', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
-    if (!requireCapability(session, 'config.write', reply)) return reply;
+    if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
     const result = deps.instance.accountDelete(request.params.username);
     if (result === 'no-such-account') {
@@ -1028,7 +1028,7 @@ export const registerOpsWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
       const result = deps.instance.accountRevokeCredentials(request.params.username);
       if (result === 'no-such-account') {
@@ -1057,7 +1057,7 @@ export const registerOpsWriteRoutes = (
     async (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
       // The body is the operator's explicit confirmation, mirroring the
       // CLI's prompt: the response carries the new plaintext exactly once,
@@ -1088,7 +1088,7 @@ export const registerOpsWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.accountGrantGuild(request.params.username);
@@ -1112,7 +1112,7 @@ export const registerOpsWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.accountRevokeGuild(request.params.username);
@@ -1141,7 +1141,7 @@ export const registerOpsWriteRoutes = (
     (request, reply) => {
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
-      if (!requireCapability(session, 'config.write', reply)) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
       const parsed = accountCapabilityGrantSchema.safeParse(request.body);
       if (!parsed.success) {

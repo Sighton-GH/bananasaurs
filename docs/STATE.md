@@ -10,7 +10,9 @@ Instance / Release 3, "Bananasaurs by Sighton Media" attribution), five Release 
 operator pages (Jobs, Doctor, Backups, Configuration, Accounts, MCP connector, Archive, Search, Providers)
 backed by new `packages/http` routes — `ops-read.ts` (18 GET routes) and `ops-write.ts` (40 write routes,
 audited, refusal unions as 4xx answers). Writes confirm through a scope-quoting dialog; password resets print
-once and are never audited; `bootstrap reissue` stays CLI-only. Archive, Search and Providers are built pages
+once and are never audited; `bootstrap reissue` stays CLI-only; the seven account lifecycle routes are gated on the
+new `accounts.manage` capability rather than `config.write` (ADR 0056), with migration 0027 granting it to existing
+owners — **run `db:migrate` before starting the daemon**. Archive, Search and Providers are built pages
 now (D7 supersedes S10-D3); the Release 3 stubs are Resources, Memory, AI workspace and Proposals. The
 observe-phase freeze held: no route reaches `mode='enforce'`, and the automod mode gate is ADR 0042's existing
 one. Threads-and-forums compatibility is on `oc/threads-and-forums` (also unmerged); new channel fields accept
