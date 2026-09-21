@@ -31,11 +31,23 @@ export type JobRetryRefusal =
 
 // --- doctor -----------------------------------------------------------------
 
+/** One doctor finding — mirrors `DoctorProblem` in core's reads command. */
+export interface DoctorProblem {
+  readonly title: string;
+  readonly impact: string;
+  readonly fix: string;
+  readonly route?: string;
+  readonly details?: string;
+}
+
 /** `GET /api/doctor` — mirrors `OpsDoctorReport`. */
 export interface DoctorReport {
   readonly ok: boolean;
   readonly text: string;
-  readonly data: unknown;
+  readonly data: {
+    readonly problems?: readonly DoctorProblem[];
+    readonly advisories?: readonly string[];
+  };
 }
 
 /** `GET /api/doctor/public-surface` — mirrors `OpsPublicSurfaceReport`. */

@@ -438,8 +438,16 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       text: lines.join('\n'),
       data: {
         ok,
-        problems,
-        advisories,
+        // Rebuilt as fresh literals: interfaces carry no implicit index
+        // signature, so the interface values themselves are not JsonValue.
+        problems: problems.map((problem) => ({
+          title: problem.title,
+          impact: problem.impact,
+          fix: problem.fix,
+          ...(problem.route !== undefined && { route: problem.route }),
+          ...(problem.details !== undefined && { details: problem.details }),
+        })),
+        advisories: [...advisories],
         gateway: report.data,
         stalePanels: stale.map((p) => ({ panelId: p.panelId, status: p.status })),
         unassignableRoles: unassignable.map((r) => ({
