@@ -42,7 +42,7 @@ export function DoctorPage() {
     <>
       <PageHeader
         title="Doctor"
-        purpose="The instance's own health checks: gateway, permissions, panels, archive — and whether the public hostname is exposed exactly as intended."
+        purpose="Checks the bot connection, Discord permissions, role assignments, archive and public access. Re-run after changing setup."
         actions={
           <Button
             onClick={() => {
@@ -55,7 +55,7 @@ export function DoctorPage() {
         }
       />
       <div className="grid max-w-4xl gap-3">
-        <Card title="On-box checks">
+        <Card title="Bot and server checks">
           <DataState resource={doctor.resource}>
             {(report) => (
               <>
@@ -71,13 +71,15 @@ export function DoctorPage() {
             )}
           </DataState>
         </Card>
-        <Card title="Public surface">
+        <Card title="Internet access check">
           <DataState resource={publicSurface.resource}>
             {(report) => (
               <>
                 <p className="mb-2">
                   {!report.probed ? (
-                    <Badge tone="neutral">not probed — MCP_PUBLIC_URL is unset</Badge>
+                    <Badge tone="neutral">
+                      not checked - the public connector URL is not configured
+                    </Badge>
                   ) : report.ok ? (
                     <Badge tone="ok">as intended</Badge>
                   ) : (

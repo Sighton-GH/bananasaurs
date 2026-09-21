@@ -22,20 +22,20 @@ interface LimitField {
 const LIMIT_FIELDS: readonly LimitField[] = [
   {
     key: 'role_rate_per_min',
-    label: 'Role rate per minute',
-    hint: 'How many role changes the gateway may make per minute.',
+    label: 'Role changes per minute',
+    hint: 'The most role changes the bot may send to Discord each minute.',
     integer: false,
   },
   {
     key: 'reconcile_budget',
-    label: 'Reconcile budget',
-    hint: 'How many operations one reconcile run may spend.',
+    label: 'Repair changes per run',
+    hint: 'The most Discord changes one automatic repair run may make.',
     integer: true,
   },
   {
     key: 'breaker_threshold',
-    label: 'Breaker threshold',
-    hint: 'How many consecutive refusals open the circuit breaker.',
+    label: 'Safety stop threshold',
+    hint: 'How many failed Discord actions in a row pause further changes.',
     integer: true,
   },
 ];
@@ -146,7 +146,7 @@ export function ConfigPage() {
             <p className="text-sm text-ink-muted">Loading the safety state…</p>
           ) : (
             <>
-              <dl className="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-2 text-sm">
+              <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[12rem_1fr]">
                 <dt className="text-ink-muted">Dry run</dt>
                 <dd>
                   {safety.dryRun ? (
@@ -169,7 +169,7 @@ export function ConfigPage() {
                   )}
                 </dd>
               </dl>
-              <div className="mt-3 flex gap-2">
+              <div className="mt-3 flex flex-wrap gap-2">
                 <Button
                   variant={safety.dryRun ? 'danger' : 'default'}
                   busy={busy}
@@ -226,15 +226,15 @@ export function ConfigPage() {
           )}
         </Card>
         <Card title="Runtime settings, editable here">
-          <dl className="grid grid-cols-[14rem_1fr] gap-x-4 gap-y-2 text-sm">
+          <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[14rem_1fr]">
             <dt className="text-ink-muted">Dry run</dt>
             <dd>
               Safety settings above — confirmed before it changes, and every change writes an audit
               row.
             </dd>
-            <dt className="text-ink-muted">Circuit breaker reset</dt>
+            <dt className="text-ink-muted">Reset automatic safety stop</dt>
             <dd>Safety settings above, when the breaker is open.</dd>
-            <dt className="text-ink-muted">Role rate, reconcile budget, breaker threshold</dt>
+            <dt className="text-ink-muted">Role, repair and safety limits</dt>
             <dd>Limits above — applied together, validated, audited.</dd>
           </dl>
         </Card>

@@ -33,7 +33,9 @@ describe('DoctorPage', () => {
       { url: '/api/doctor/public-surface', body: { probed: false, ok: true, text: '', data: {} } },
     ]);
     renderWithSession(<DoctorPage />);
-    expect(await screen.findByText('not probed — MCP_PUBLIC_URL is unset')).toBeTruthy();
+    expect(
+      await screen.findByText('not checked - the public connector URL is not configured'),
+    ).toBeTruthy();
   });
 
   it('re-run checks refetches both reports', async () => {

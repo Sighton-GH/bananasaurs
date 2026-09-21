@@ -64,7 +64,7 @@ describe('JobsPage', () => {
     renderWithSession(<JobsPage />);
     await screen.findByText('#9');
     fireEvent.click(screen.getAllByRole('button', { name: 'View' })[1]!);
-    expect(await screen.findByText('Dedupe key')).toBeTruthy();
+    expect(await screen.findByText('Duplicate-work key')).toBeTruthy();
     expect(screen.getByText('role:2')).toBeTruthy();
   });
 

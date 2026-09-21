@@ -91,7 +91,7 @@ export function JobsPage() {
     <>
       <PageHeader
         title="Jobs"
-        purpose="The durable job queue: what is queued, running and failed, with retry for the failures."
+        purpose="Background work the bot has queued, is running or could not finish. Failed work can be retried here."
       />
       <div className="mb-3">
         <Checkbox
@@ -185,7 +185,7 @@ export function JobsPage() {
       {selected !== undefined && (
         <div className="mt-4 max-w-2xl">
           <Card title={`Job #${String(selected.jobId)}`}>
-            <dl className="grid grid-cols-[10rem_1fr] gap-x-4 gap-y-2 text-sm">
+            <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[10rem_1fr]">
               <dt className="text-ink-muted">Kind</dt>
               <dd>{selected.kind}</dd>
               <dt className="text-ink-muted">State</dt>
@@ -196,7 +196,7 @@ export function JobsPage() {
               </dd>
               <dt className="text-ink-muted">Run after</dt>
               <dd>{new Date(selected.runAfter).toLocaleString()}</dd>
-              <dt className="text-ink-muted">Dedupe key</dt>
+              <dt className="text-ink-muted">Duplicate-work key</dt>
               <dd className="break-all">{selected.dedupeKey}</dd>
               <dt className="text-ink-muted">Last error</dt>
               <dd className="break-all">{selected.lastError ?? '—'}</dd>

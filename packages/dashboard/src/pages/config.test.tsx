@@ -47,8 +47,8 @@ describe('ConfigPage', () => {
     expect(await screen.findByText('on — effects are rehearsed, not sent')).toBeTruthy();
     expect(screen.getByText('secret — redacted')).toBeTruthy();
     expect(screen.getAllByText('environment — restart to change').length).toBeGreaterThan(0);
-    expect(screen.getByLabelText('Role rate per minute')).toHaveProperty('value', '12');
-    expect(screen.getByLabelText('Breaker threshold')).toHaveProperty('value', '5');
+    expect(screen.getByLabelText('Role changes per minute')).toHaveProperty('value', '12');
+    expect(screen.getByLabelText('Safety stop threshold')).toHaveProperty('value', '5');
     // No instruction to drop to the terminal survives on this page.
     expect(screen.queryByText(/config set --confirm/)).toBeNull();
   });
@@ -102,7 +102,7 @@ describe('ConfigPage', () => {
       { method: 'POST', url: '/api/settings', body: { ok: true } },
     ]);
     renderPage();
-    const threshold = await screen.findByLabelText('Breaker threshold');
+    const threshold = await screen.findByLabelText('Safety stop threshold');
     fireEvent.change(threshold, { target: { value: 'not-a-number' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }));

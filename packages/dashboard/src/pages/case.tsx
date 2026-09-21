@@ -57,7 +57,7 @@ export function CasePage() {
           return (
             <div className="grid gap-4">
               <Card title="Case">
-                <dl className="grid max-w-lg grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
+                <dl className="grid max-w-lg gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
                   <dt className="text-ink-muted">Case</dt>
                   <dd>{item.caseId}</dd>
                   <dt className="text-ink-muted">Member</dt>

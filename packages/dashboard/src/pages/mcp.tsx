@@ -150,8 +150,8 @@ export function McpPage() {
   return (
     <>
       <PageHeader
-        title="MCP connector"
-        purpose="The clients and tokens the connector holds, and the allowlist that decides where it may post — which is nowhere, until a channel is added."
+        title="External app connector"
+        purpose="Control which connected apps may use Bananasaurs and which Discord channels they may post in. New apps cannot post anywhere until you allow a channel."
       />
       <div className="grid max-w-4xl gap-3">
         <Card title="Send allowlist">
@@ -189,7 +189,7 @@ export function McpPage() {
           <form onSubmit={(e) => void allow(e)} className="mt-3 grid max-w-md gap-3">
             <ChannelPicker
               label="Allow a channel"
-              hint="Pick a channel or paste its snowflake ID. Mentions never ping and the ten-per-hour guild limit applies."
+              hint="Pick a channel or paste its Discord channel ID. Mentions never notify people. The server allows at most ten connector messages per hour."
               value={channelId}
               onChange={setChannelId}
             />
@@ -223,7 +223,7 @@ export function McpPage() {
                     key: 'source',
                     header: 'Registered',
                     cell: (c) =>
-                      c.registrationSource === 'dynamic' ? 'dynamic (RFC 7591)' : 'via CLI',
+                      c.registrationSource === 'dynamic' ? 'by the app' : 'by an administrator',
                   },
                   {
                     key: 'redirects',
@@ -254,7 +254,7 @@ export function McpPage() {
           >
             {(rows) => (
               <DataTable
-                caption="OAuth token rows — ids only, values are never retrievable"
+                caption="App access tokens - identifiers only; secret values are never shown"
                 rows={rows}
                 rowKey={(t) => t.tokenId}
                 columns={[
@@ -306,11 +306,11 @@ export function McpPage() {
           <DataState
             resource={sends.resource}
             isEmpty={(rows) => rows.length === 0}
-            empty={<p className="text-sm text-ink-muted">No MCP sends recorded.</p>}
+            empty={<p className="text-sm text-ink-muted">No connector messages recorded yet.</p>}
           >
             {(rows) => (
               <DataTable
-                caption="Recent MCP sends — channels and outcomes, never content"
+                caption="Recent connector messages - channels and outcomes, never message content"
                 rows={rows}
                 rowKey={(s2) => `${s2.tokenId}:${String(s2.sentAt)}:${s2.channelId}`}
                 columns={[
@@ -365,7 +365,7 @@ export function McpPage() {
         scope={
           <p>
             The token and its whole lineage stop working at once; anything holding it has to
-            authorise again. This is the CLI&apos;s <code className="text-xs">mcp revoke</code>.
+            authorise again.
           </p>
         }
         confirmLabel="Revoke token"
@@ -379,8 +379,7 @@ export function McpPage() {
         title={`Remove client ${revokingClient?.clientName ?? ''}?`}
         scope={
           <p>
-            The client is gone and every token ever issued to it is revoked. This is the CLI&apos;s{' '}
-            <code className="text-xs">mcp revoke-client</code>.
+            The app is removed and every access token ever issued to it stops working immediately.
           </p>
         }
         confirmLabel="Remove client"
