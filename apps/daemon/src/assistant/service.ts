@@ -38,6 +38,17 @@ export const providerFor = (config: Config): TextProvider | undefined => {
   return undefined;
 };
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
+/**
+ * Raw Discord mention snowflakes carry no meaning to a provider and trip the
+ * conservative outbound scan's long-digit detectors, so they are flattened to
+ * readable tokens before anything leaves the process. Only the mention shape
+ * is rewritten; bare numbers stay untouched.
+ */
+export const sanitizeMentionsForProvider = (text: string): string =>
+  text
+    .replace(/<@&\d{17,20}>/g, '@role')
+    .replace(/<@!?\d{17,20}>/g, '@user')
+    .replace(/<#\d{17,20}>/g, '#channel');
 export interface AssistantServiceTestPorts {
   readonly provider?: TextProvider | undefined;
   readonly fetchResource?:
@@ -196,7 +207,9 @@ export const createAssistantService = (
         messages: [
           {
             role: 'user',
-            text: [textOf(input.input), context.evidenceEnvelope].filter(Boolean).join('\n\n'),
+            text: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
+              .filter(Boolean)
+              .join('\n\n'),
           },
         ],
         maxOutputTokens: 800,

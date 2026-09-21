@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { CLUB_ASSISTANT_SKILLS, validateResourceUrl } from '@bananasaurs/core';
 import { assistantRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
@@ -79,6 +80,28 @@ export const registerAssistantRoutes = (
       return reply
         .status(409)
         .send({ error: 'prompt-version-conflict', currentVersion: existing.promptVersion });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: existing === undefined ? 'assistant_behaviour.created' : 'assistant_behaviour.saved',
+      subjectType: 'assistant_behaviour',
+      subjectId: parsed.data.id,
+      before:
+        existing === undefined
+          ? undefined
+          : { promptVersion: existing.promptVersion, enabled: existing.enabled },
+      after: {
+        name: parsed.data.name,
+        surface: parsed.data.surface,
+        enabled: parsed.data.enabled,
+        allowedSkillIds: parsed.data.allowedSkillIds,
+        callerRoleIds: parsed.data.callerRoleIds,
+        resourceIds: parsed.data.resourceIds,
+        mentionRoleId: parsed.data.mentionRoleId ?? null,
+        ticketChannelId: parsed.data.ticket?.channelId ?? null,
+        reviewerRoleIds: parsed.data.ticket?.reviewerRoleIds ?? [],
+        systemPrompt: parsed.data.systemPrompt,
+      },
+    });
     assistantRepo.putBehaviour(
       session.scope,
       {
@@ -115,6 +138,19 @@ export const registerAssistantRoutes = (
     const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === id);
     if (!parsed.success || skill === undefined || skill.ownerOnly === true)
       return reply.status(400).send({ error: 'bad-request' });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_skill_grant.saved',
+      subjectType: 'assistant_skill_grant',
+      subjectId: id,
+      before: (() => {
+        const grant = assistantRepo
+          .listSkillGrants(session.scope)
+          .find((item) => item.skillId === id);
+        return grant === undefined ? undefined : { roleIds: grant.roleIds, userIds: grant.userIds };
+      })(),
+      after: { roleIds: parsed.data.roleIds, userIds: parsed.data.userIds },
+    });
     assistantRepo.putSkillGrant(session.scope, { skillId: id, ...parsed.data }, deps.now());
     return reply.status(200).send({ ok: true });
   });
@@ -123,27 +159,55 @@ export const registerAssistantRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const id = (request.params as { id: string }).id;
-    return assistantRepo.cancelReminder(session.scope, id)
-      ? reply.status(200).send({ ok: true })
-      : reply.status(409).send({ error: 'invalid-transition' });
+    const reminder = assistantRepo.listReminders(session.scope).find((item) => item.id === id);
+    if (!assistantRepo.cancelReminder(session.scope, id))
+      return reply.status(409).send({ error: 'invalid-transition' });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_reminder.cancelled',
+      subjectType: 'assistant_reminder',
+      subjectId: id,
+      before:
+        reminder === undefined
+          ? undefined
+          : { text: reminder.text, dueAt: reminder.dueAt, status: reminder.status },
+      after: { status: 'cancelled' },
+    });
+    return reply.status(200).send({ ok: true });
   });
   app.post('/api/assistant/decisions/:id/review', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const id = (request.params as { id: string }).id;
-    return assistantRepo.transitionDecision(session.scope, id, 'draft', 'reviewed')
-      ? reply.status(200).send({ ok: true })
-      : reply.status(409).send({ error: 'invalid-transition' });
+    if (!assistantRepo.transitionDecision(session.scope, id, 'draft', 'reviewed'))
+      return reply.status(409).send({ error: 'invalid-transition' });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_decision.reviewed',
+      subjectType: 'assistant_decision',
+      subjectId: id,
+      before: { status: 'draft' },
+      after: { status: 'reviewed' },
+    });
+    return reply.status(200).send({ ok: true });
   });
   app.post('/api/assistant/decisions/:id/save', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const id = (request.params as { id: string }).id;
-    return assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved')
-      ? reply.status(200).send({ ok: true })
-      : reply.status(409).send({ error: 'invalid-transition' });
+    if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved'))
+      return reply.status(409).send({ error: 'invalid-transition' });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_decision.saved',
+      subjectType: 'assistant_decision',
+      subjectId: id,
+      before: { status: 'reviewed' },
+      after: { status: 'saved' },
+    });
+    return reply.status(200).send({ ok: true });
   });
   app.put('/api/assistant/resources/:id', (request, reply) => {
     const session = guard.require(request, reply);
@@ -157,6 +221,31 @@ export const registerAssistantRoutes = (
     } catch {
       return reply.status(400).send({ error: 'unsafe-resource-url' });
     }
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_resource.saved',
+      subjectType: 'assistant_resource',
+      subjectId: parsed.data.id,
+      before: (() => {
+        const existing = assistantRepo
+          .listResources(session.scope)
+          .find((item) => item.id === parsed.data.id);
+        return existing === undefined
+          ? undefined
+          : {
+              title: existing.title,
+              url: existing.url,
+              kind: existing.kind,
+              enabled: existing.enabled,
+            };
+      })(),
+      after: {
+        title: parsed.data.title,
+        url: parsed.data.url,
+        kind: parsed.data.kind,
+        enabled: parsed.data.enabled,
+      },
+    });
     assistantRepo.putResource(session.scope, { ...parsed.data, guildId: session.guildId });
     return reply.status(200).send({ ok: true });
   });

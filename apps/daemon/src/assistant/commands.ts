@@ -196,16 +196,31 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
     return;
   }
 
-  const result = await deps.service.invoke({
-    guildId: event.guildId,
-    channelId: event.channelId,
-    userId: event.authorId!,
-    callerRoleIds: event.authorRoleIds ?? [],
-    behaviour: route.behaviour,
-    command: 'ask',
-    input: { question: route.prompt },
-    source: 'mention',
-  });
+  let result: Awaited<ReturnType<typeof deps.service.invoke>>;
+  try {
+    result = await deps.service.invoke({
+      guildId: event.guildId,
+      channelId: event.channelId,
+      userId: event.authorId!,
+      callerRoleIds: event.authorRoleIds ?? [],
+      behaviour: route.behaviour,
+      command: 'ask',
+      input: { question: route.prompt },
+      source: 'mention',
+    });
+  } catch (err) {
+    // Mirror handleSlash: a provider or storage failure answers the member
+    // instead of vanishing into the pipeline's dispatch catch.
+    deps.logger.error(
+      safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
+      'assistant mention failed before a response was produced',
+    );
+    await deps.send(
+      event.channelId,
+      reply('I could not complete that request. No action was taken.'),
+    );
+    return;
+  }
   await deps.send(event.channelId, reply(result.content));
   if (result.ok && result.escalation !== undefined) {
     const reviewers = result.escalation.reviewerRoleIds.map((id) => `<@&${id}>`).join(' ');

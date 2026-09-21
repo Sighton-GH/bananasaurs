@@ -5,7 +5,7 @@ Status: accepted
 
 ## Context
 
-Release 3 adds the assistant. Bryan selected Gemini API as its first AI integration. The
+Release 3 adds the assistant. Connor selected Gemini API as its first AI integration. The
 existing roadmap already requires a provider boundary, explicit routing, no-training
 eligibility, citations, disclosure records and a hard spend ceiling. The repository has
 eligibility records but no generation provider contract yet.
@@ -49,7 +49,7 @@ exist. Choosing another backend later does not change assistant or retrieval cod
 
 ## Amendment 1: three backends, zero spend and mandatory local preflight
 
-Later on 2026-09-20 Bryan selected Gemini, OpenRouter and NVIDIA NIM as user-selectable
+Later on 2026-09-20 Connor selected Gemini, OpenRouter and NVIDIA NIM as user-selectable
 options, set the monthly spend cap to zero, and required local scans for sensitive or
 personal data, prompt injection and malicious use before any request reaches an API.
 

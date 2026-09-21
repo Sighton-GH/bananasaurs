@@ -198,3 +198,35 @@ describe('assistant command subscriber', () => {
     );
   });
 });
+
+describe('assistant mention failure path', () => {
+  it('answers the member when the service throws instead of going silent', async () => {
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    h.invoke.mockRejectedValueOnce(new Error('provider outage'));
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({
+        content: expect.stringContaining('could not complete'),
+      }),
+    );
+  });
+});
