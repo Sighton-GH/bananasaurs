@@ -150,7 +150,10 @@ describe('LoggingPage', () => {
   it('lists routes with channel names and posts the same body the old form did', async () => {
     const mock = stubFetch([
       { url: '/api/log-routes', body: ROUTES },
-      { url: '/api/guild/channels', body: { channels: [{ channelId: '42', name: 'mod-log', kind: 'text' }] } },
+      {
+        url: '/api/guild/channels',
+        body: { channels: [{ channelId: '42', name: 'mod-log', kind: 'text' }] },
+      },
       { method: 'POST', url: '/api/log-routes', body: { ok: true } },
     ]);
     renderWithSession(<LoggingPage />);

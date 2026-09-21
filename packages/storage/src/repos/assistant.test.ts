@@ -106,7 +106,12 @@ it('clears mentionRoleId and ticketChannelId when a re-put omits them', () => {
   };
   putBehaviour(
     s,
-    { ...base, promptVersion: 1, mentionRoleId: '222222222222222222', ticketChannelId: '666666666666666666' },
+    {
+      ...base,
+      promptVersion: 1,
+      mentionRoleId: '222222222222222222',
+      ticketChannelId: '666666666666666666',
+    },
     10,
   );
   expect(listBehaviours(s)[0]).toMatchObject({

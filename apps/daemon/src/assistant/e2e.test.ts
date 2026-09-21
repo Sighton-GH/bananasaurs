@@ -265,7 +265,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     const { SafeProvider } = await import('@bananasaurs/core');
     const paid = new SafeProvider(paidInner, 'paid', { monthlyCapUsdMicros: 0 });
     seedEligibility(t, 'paid');
-    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, { provider: paid });
+    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, {
+      provider: paid,
+    });
     await expect(
       service.invoke({
         guildId: GUILD,
@@ -288,7 +290,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     };
     const free = new SafeProvider(freeInner, 'free', { monthlyCapUsdMicros: 0 });
     seedEligibility(t, 'free');
-    const safeService = createAssistantService(scope, t.scopes.instance(), config, () => NOW, { provider: free });
+    const safeService = createAssistantService(scope, t.scopes.instance(), config, () => NOW, {
+      provider: free,
+    });
     await expect(
       safeService.invoke({
         guildId: GUILD,
@@ -340,9 +344,15 @@ describe('Release 3 review fixes', () => {
 
   it('finding 1: fails closed when the provider has no eligibility row', async () => {
     const network = vi.fn(async () => ({ text: 'must not run', model: 'fixture-model' }));
-    const service = createAssistantService(t.scopes.forGuild(GUILD), t.scopes.instance(), config, () => NOW, {
-      provider: { id: 'unverified', capabilities: new Set(['text']), generateText: network },
-    });
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        provider: { id: 'unverified', capabilities: new Set(['text']), generateText: network },
+      },
+    );
     const result = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
@@ -365,9 +375,15 @@ describe('Release 3 review fixes', () => {
   it('finding 2: a test-injected provider still passes through the outbound scan', async () => {
     seedEligibility(t, 'fixture');
     const network = vi.fn(async () => ({ text: 'must not run', model: 'fixture-model' }));
-    const service = createAssistantService(t.scopes.forGuild(GUILD), t.scopes.instance(), config, () => NOW, {
-      provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
-    });
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
+      },
+    );
     await expect(
       service.invoke({
         guildId: GUILD,
@@ -403,9 +419,15 @@ describe('Release 3 review fixes', () => {
   });
 
   it('finding 7: reminders refuse without a channel and dedupe on the interaction id', async () => {
-    const service = createAssistantService(t.scopes.forGuild(GUILD), t.scopes.instance(), config, () => NOW, {
-      provider: undefined,
-    });
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        provider: undefined,
+      },
+    );
     const scope = t.scopes.forGuild(GUILD);
     const noChannel = await service.invoke({
       guildId: GUILD,

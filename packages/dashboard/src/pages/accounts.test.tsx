@@ -212,7 +212,8 @@ describe('AccountsPage capabilities (account grant parity)', () => {
     });
 
     const post = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
+      (c) =>
+        (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
     )!;
     expect(bodyOf(post)).toEqual({
       username: 'mod-casey',
@@ -247,9 +248,7 @@ describe('AccountsPage capabilities (account grant parity)', () => {
     fireEvent.change(screen.getByLabelText('Username'), {
       target: { value: 'mod-jules' },
     });
-    fireEvent.click(
-      screen.getByLabelText(/Give the account access to this guild/),
-    );
+    fireEvent.click(screen.getByLabelText(/Give the account access to this guild/));
     fireEvent.click(screen.getByLabelText('audit.read'));
     expect(
       screen.getByText(/access to guild 1540816150026518620 with the capabilities audit\.read/),
@@ -263,15 +262,16 @@ describe('AccountsPage capabilities (account grant parity)', () => {
     });
 
     const post = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
+      (c) =>
+        (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
     )!;
     expect(bodyOf(post)).toEqual({
       username: 'mod-jules',
       grantThisGuild: true,
       capabilities: ['audit.read'],
     });
-    expect(
-      (await screen.findByRole('dialog', { name: 'Account created' })).textContent,
-    ).toContain('Generated password for mod-jules');
+    expect((await screen.findByRole('dialog', { name: 'Account created' })).textContent).toContain(
+      'Generated password for mod-jules',
+    );
   });
 });

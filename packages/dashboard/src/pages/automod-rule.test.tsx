@@ -221,9 +221,7 @@ describe('AutomodRulePage', () => {
     expect(await screen.findByText('Not valid JSON')).toBeTruthy();
     // Only the detail GET (and the pickers' list loads) may have fired -
     // never a config write.
-    expect(
-      mock.mock.calls.filter((c) => (c[0] as string).includes('/config')),
-    ).toHaveLength(0);
+    expect(mock.mock.calls.filter((c) => (c[0] as string).includes('/config'))).toHaveLength(0);
   });
 
   it('config save posts { config } parsed from the textarea', async () => {

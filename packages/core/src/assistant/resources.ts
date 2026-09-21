@@ -27,7 +27,6 @@ const privateHost = (host: string): boolean => {
   );
 };
 
-
 /** First SSRF boundary. The fetcher must additionally pin public DNS results through the request. */
 export const validateResourceUrl = (raw: string): URL => {
   const url = new URL(raw);

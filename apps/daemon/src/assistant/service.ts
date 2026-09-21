@@ -9,9 +9,14 @@ import {
   SafeProvider,
   type Config,
   type TextProvider,
-  validateReminderDraft
+  validateReminderDraft,
 } from '@bananasaurs/core';
-import { assistantRepo, eligibilityRepo, type GuildScope, type InstanceScope } from '@bananasaurs/storage';
+import {
+  assistantRepo,
+  eligibilityRepo,
+  type GuildScope,
+  type InstanceScope,
+} from '@bananasaurs/storage';
 import type { AssistantCommandService, AssistantInvocation } from './commands.js';
 import { ReviewedResourceFetcher } from './resource-fetcher.js';
 

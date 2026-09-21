@@ -673,9 +673,7 @@ export const opsPortsFor = (
         memberId: member.id,
         username: member.user.username,
         displayName: member.displayName,
-        roleIds: member.roles.cache
-          .filter((role) => role.id !== guild.id)
-          .map((role) => role.id),
+        roleIds: member.roles.cache.filter((role) => role.id !== guild.id).map((role) => role.id),
         joinedAt: member.joinedTimestamp,
       }));
     } catch {

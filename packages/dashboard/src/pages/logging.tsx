@@ -145,7 +145,9 @@ export function LoggingPage() {
                     cell: (r) => (
                       <span title={r.channelId}>
                         {channelName(r.channelId)}
-                        {channelName(r.channelId) === r.channelId ? '' : (
+                        {channelName(r.channelId) === r.channelId ? (
+                          ''
+                        ) : (
                           <span className="text-xs text-ink-muted"> {r.channelId}</span>
                         )}
                       </span>
@@ -236,7 +238,9 @@ export function LoggingPage() {
                       cell: (id) => (
                         <span title={id}>
                           {channelName(id)}
-                          {channelName(id) === id ? '' : (
+                          {channelName(id) === id ? (
+                            ''
+                          ) : (
                             <span className="text-xs text-ink-muted"> {id}</span>
                           )}
                         </span>

@@ -99,9 +99,7 @@ describe('CasesPage', () => {
       name: `Bryan @bryan · ${MEMBER_ID}`,
     });
     expect(memberLink.getAttribute('href')).toBe(`/members/${MEMBER_ID}`);
-    expect(
-      within(table).getByText('(not in the live member directory)'),
-    ).toBeTruthy();
+    expect(within(table).getByText('(not in the live member directory)')).toBeTruthy();
     expect(within(table).getByText('open')).toBeTruthy();
     expect(within(table).getByText('closed')).toBeTruthy();
     expect(mock.mock.calls.map((c) => c[0] as string)).toContain('/api/mod/cases?limit=50');

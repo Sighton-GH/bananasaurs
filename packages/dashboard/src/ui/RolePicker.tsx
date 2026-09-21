@@ -39,8 +39,7 @@ export function RolePicker({
     roles === undefined
       ? undefined
       : roles.filter(
-          (r) =>
-            query === '' || r.name.toLowerCase().includes(query) || r.roleId.includes(query),
+          (r) => query === '' || r.name.toLowerCase().includes(query) || r.roleId.includes(query),
         );
   const selected = roles?.find((r) => r.roleId === value.trim());
 
@@ -96,7 +95,9 @@ export function RolePicker({
               >
                 <span className="truncate">
                   @{r.name}
-                  {r.managed ? <span className="text-xs text-ink-muted"> (Discord-managed)</span> : null}
+                  {r.managed ? (
+                    <span className="text-xs text-ink-muted"> (Discord-managed)</span>
+                  ) : null}
                 </span>
                 <span className="shrink-0 text-xs text-ink-muted">{r.roleId}</span>
               </button>

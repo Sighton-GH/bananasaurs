@@ -455,12 +455,8 @@ describe('ops-write routes', () => {
     const row = accountRepo.findAccountByUsername(instance, 'mod-one');
     expect(row).toBeDefined();
     expect(row!.isOwner).toBe(false);
-    expect(
-      accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId),
-    ).toBe(false);
-    expect(
-      authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), row!.accountId),
-    ).toEqual([]);
+    expect(accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId)).toBe(false);
+    expect(authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), row!.accountId)).toEqual([]);
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
     const created = rows.find((r) => r.action === 'account.created');
@@ -492,9 +488,7 @@ describe('ops-write routes', () => {
     const instance = t.scopes.instance();
     const row = accountRepo.findAccountByUsername(instance, 'mod-two');
     expect(row).toBeDefined();
-    expect(
-      accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId),
-    ).toBe(true);
+    expect(accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId)).toBe(true);
     expect(
       authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), row!.accountId).sort(),
     ).toEqual(['audit.read', 'config.read']);
@@ -764,7 +758,13 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     const picked = await post(cookie, csrf, {
       ...PANEL_BODY,
       options: [
-        { optionId: 'member', roleId: '777777777777777777', label: 'Member', emojiKey: 'u:1f535', position: 0 },
+        {
+          optionId: 'member',
+          roleId: '777777777777777777',
+          label: 'Member',
+          emojiKey: 'u:1f535',
+          position: 0,
+        },
       ],
     });
     expect(picked.statusCode).toBe(201);

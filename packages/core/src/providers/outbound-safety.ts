@@ -20,11 +20,7 @@ interface Detector {
   readonly matches: (text: string) => boolean;
 }
 
-const regexDetector = (
-  kind: SafetyFindingKind,
-  name: string,
-  pattern: RegExp,
-): Detector => ({
+const regexDetector = (kind: SafetyFindingKind, name: string, pattern: RegExp): Detector => ({
   kind,
   name,
   matches: (text) => {
@@ -70,7 +66,7 @@ const luhnValid = (digits: string): boolean => {
 /** Card candidates must also pass Luhn; arbitrary 13-19 digit runs do not. */
 const matchesCardNumber = (text: string): boolean => {
   CARD_CANDIDATE_PATTERN.lastIndex = 0;
-  for (let match = CARD_CANDIDATE_PATTERN.exec(text); match !== null; ) {
+  for (let match = CARD_CANDIDATE_PATTERN.exec(text); match !== null;) {
     const digits = match[0].replace(/[ -]/gu, '');
     if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) return true;
     match = CARD_CANDIDATE_PATTERN.exec(text);
@@ -79,11 +75,7 @@ const matchesCardNumber = (text: string): boolean => {
 };
 
 const DETECTORS: readonly Detector[] = [
-  regexDetector(
-    'personal-data',
-    'email-address',
-    /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu,
-  ),
+  regexDetector('personal-data', 'email-address', /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/iu),
   {
     kind: 'personal-data',
     name: 'phone-number',
@@ -99,16 +91,8 @@ const DETECTORS: readonly Detector[] = [
     matches: (text) => matchesCardNumber(maskUrls(text)),
   },
   regexDetector('personal-data', 'canadian-sin', /\b\d{3}[ -]?\d{3}[ -]?\d{3}\b/u),
-  regexDetector(
-    'secret',
-    'authorization-header',
-    /\bauthorization\s*:\s*(?:bearer|basic)\s+\S+/iu,
-  ),
-  regexDetector(
-    'secret',
-    'private-key',
-    /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/iu,
-  ),
+  regexDetector('secret', 'authorization-header', /\bauthorization\s*:\s*(?:bearer|basic)\s+\S+/iu),
+  regexDetector('secret', 'private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/iu),
   regexDetector(
     'secret',
     'api-key-assignment',

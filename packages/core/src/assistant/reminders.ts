@@ -92,7 +92,8 @@ export const REMINDER_DELIVERY_STALE_MS = 5 * 60_000;
 export const validateReminderDraft = (
   input: { readonly dueAt: number; readonly text: string },
   now: number,
-): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly error: string } => {
+):
+  { readonly ok: true; readonly text: string } | { readonly ok: false; readonly error: string } => {
   if (!Number.isFinite(input.dueAt) || input.dueAt <= now)
     return { ok: false, error: 'reminder time must be in the future' };
   const text = input.text.trim();
