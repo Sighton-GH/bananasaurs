@@ -1757,3 +1757,119 @@ export const providerEligibility = sqliteTable(
     check('provider_eligibility_production_use_allowed_bool', boolCheck(t.productionUseAllowed)),
   ],
 );
+
+// --- Release 3 assistant ----------------------------------------------------
+export const assistantBehaviours = sqliteTable(
+  'assistant_behaviours',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    surface: text('surface').notNull(),
+    mentionRoleId: snowflake('mention_role_id'),
+    name: text('name').notNull(),
+    systemPrompt: text('system_prompt').notNull(),
+    enabled: integer('enabled').notNull().default(1),
+    skillIdsJson: text('skill_ids_json').notNull().default('[]'),
+    callerRoleIdsJson: text('caller_role_ids_json').notNull().default('[]'),
+    ticketChannelId: snowflake('ticket_channel_id'),
+    reviewerRoleIdsJson: text('reviewer_role_ids_json').notNull().default('[]'),
+    resourceIdsJson: text('resource_ids_json').notNull().default('[]'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.behaviourId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check(
+      'assistant_behaviours_surface',
+      sql`${t.surface} IN ('bananasaurs','it-services','help','direct-command')`,
+    ),
+    check('assistant_behaviours_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_behaviours_enabled_bool', boolCheck(t.enabled)),
+    check('assistant_behaviours_mention_snowflake', nullableSnowflakeCheck(t.mentionRoleId)),
+    check(
+      'assistant_behaviours_ticket_channel_snowflake',
+      nullableSnowflakeCheck(t.ticketChannelId),
+    ),
+  ],
+);
+
+export const assistantResources = sqliteTable(
+  'assistant_resources',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    resourceId: text('resource_id').notNull(),
+    title: text('title').notNull(),
+    url: text('url').notNull(),
+    kind: text('kind').notNull(),
+    enabled: integer('enabled').notNull().default(1),
+    reviewedAt: integer('reviewed_at').notNull(),
+    lastFetchedAt: integer('last_fetched_at'),
+    fetchStatus: text('fetch_status').notNull().default('pending'),
+    content: text('content'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.resourceId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check(
+      'assistant_resources_kind',
+      sql`${t.kind} IN ('website','document','discord-channel','repository','note')`,
+    ),
+    check('assistant_resources_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_resources_enabled_bool', boolCheck(t.enabled)),
+    check(
+      'assistant_resources_fetch_status',
+      sql`${t.fetchStatus} IN ('pending','ok','failed','blocked')`,
+    ),
+  ],
+);
+
+export const assistantReminders = sqliteTable(
+  'assistant_reminders',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    reminderId: text('reminder_id').notNull(),
+    creatorId: snowflake('creator_id').notNull(),
+    destinationId: snowflake('destination_id').notNull(),
+    text: text('text').notNull(),
+    dueAt: integer('due_at').notNull(),
+    createdAt: integer('created_at').notNull(),
+    status: text('status').notNull().default('scheduled'),
+    dedupeKey: text('dedupe_key').notNull(),
+    failureReason: text('failure_reason'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.reminderId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    unique('assistant_reminders_dedupe').on(t.guildId, t.dedupeKey),
+    check('assistant_reminders_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_reminders_creator_snowflake', snowflakeCheck(t.creatorId)),
+    check('assistant_reminders_destination_snowflake', snowflakeCheck(t.destinationId)),
+    check(
+      'assistant_reminders_status',
+      sql`${t.status} IN ('scheduled','delivering','delivered','cancelled','failed')`,
+    ),
+    index('assistant_reminders_due').on(t.guildId, t.status, t.dueAt),
+  ],
+);
+
+export const assistantSkillActivity = sqliteTable(
+  'assistant_skill_activity',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    activityId: text('activity_id').notNull(),
+    at: integer('at').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    skillId: text('skill_id').notNull(),
+    actorId: snowflake('actor_id').notNull(),
+    outcome: text('outcome').notNull(),
+    detail: text('detail'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.activityId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_skill_activity_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_skill_activity_actor_snowflake', snowflakeCheck(t.actorId)),
+    index('assistant_skill_activity_recent').on(t.guildId, t.at),
+  ],
+);

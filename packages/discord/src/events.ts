@@ -437,6 +437,7 @@ function toMessageEvent(
     editedTimestampMs: message.editedTimestamp ?? undefined,
     mentionedUserIds: mentions ? [...mentions.users.keys()] : [],
     mentionedRoleIds: mentions ? [...mentions.roles.keys()] : [],
+    authorRoleIds: message.partial || message.member === null ? [] : roleIdsOf(message.member),
     mentionsEveryone: mentions?.everyone ?? false,
     attachments: message.partial
       ? []

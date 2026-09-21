@@ -168,6 +168,8 @@ export interface MessageEvent extends Base {
    */
   mentionedUserIds: readonly Snowflake[];
   mentionedRoleIds: readonly Snowflake[];
+  /** Author roles known on message create/update. Empty for partials or unavailable members. */
+  authorRoleIds?: readonly Snowflake[];
   mentionsEveryone: boolean;
   /** For Slice 5's `attachment_type`. Metadata only; no bytes are fetched. */
   attachments: readonly MessageAttachment[];
