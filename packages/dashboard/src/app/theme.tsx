@@ -1,9 +1,8 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react';
 
 /**
- * Light/dark is an operator choice, not only a system one (owner review,
- * 2026-09-20): the shell and login carry a toggle that pins the scheme,
- * persisted in localStorage. Untouched, the app keeps following
+ * Light/dark is an operator choice, not only a system one: the shell and
+ * login carry a toggle that pins the scheme, persisted in localStorage. Untouched, the app keeps following
  * `prefers-color-scheme`; once the operator picks, the `data-theme`
  * attribute on <html> wins over the media query (styles.css).
  */
