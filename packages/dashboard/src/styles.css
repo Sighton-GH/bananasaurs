@@ -167,6 +167,18 @@
     backdrop-filter: blur(2px);
   }
 
+  /* Long unbroken tokens (snowflakes, account ids, hashes) wrap instead of
+   * widening the page, and grid/flex children may shrink below their content
+   * width - without this a single 18-digit id pushes cards past a 390px
+   * viewport. Scoped to the content column so the sidebar is untouched. */
+  main {
+    overflow-wrap: anywhere;
+  }
+
+  main :where(.grid, .flex) > * {
+    min-width: 0;
+  }
+
   /* The operator shell has a persistent 16rem sidebar from lg up, so the
    * leaves' top-left corner is the content canvas, not the viewport: shift
    * the composition clear of the sidebar while the shell is mounted (the
