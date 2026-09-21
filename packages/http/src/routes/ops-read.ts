@@ -66,6 +66,55 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ channels: ports.listGuildChannels() });
   });
 
+  // The MCP `read_channel_history` / `get_message` answers as routes
+  // (ADR 0051): archived content, so `audit.read` like archive search. The
+  // visibility set lives in the repository — a channel outside the guild's
+  // archive-enabled set answers empty, never an existence leak.
+  app.get<{ Params: { channelId: string } }>(
+    '/api/archive/channels/:channelId/messages',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+      const query = z
+        .object({
+          before: snowflakeIdSchema.optional(),
+          limit: z.coerce.number().int().min(1).max(100).optional(),
+        })
+        .safeParse(request.query);
+      if (!query.success || !snowflakeIdSchema.safeParse(request.params.channelId).success) {
+        return reply.status(400).send({ error: 'invalid-query' });
+      }
+
+      const ports = deps.portsFor(session.scope);
+      return reply.status(200).send({
+        messages: ports.archiveChannelHistory({
+          channelId: request.params.channelId,
+          before: query.data.before,
+          limit: query.data.limit,
+        }),
+      });
+    },
+  );
+
+  app.get<{ Params: { messageId: string } }>(
+    '/api/archive/messages/:messageId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+      if (!snowflakeIdSchema.safeParse(request.params.messageId).success) {
+        return reply.status(400).send({ error: 'invalid-query' });
+      }
+      const ports = deps.portsFor(session.scope);
+      const message = ports.archiveFindMessage(request.params.messageId);
+      if (message === undefined) return reply.status(404).send({ error: 'not-found' });
+      return reply.status(200).send(message);
+    },
+  );
+
   app.get('/api/guild/members', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;

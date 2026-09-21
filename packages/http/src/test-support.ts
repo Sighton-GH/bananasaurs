@@ -93,6 +93,49 @@ export const testPortsFor = (
     { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
     { roleId: '888888888888888888', name: 'Bananasaurs', colour: 0xf1c40f, position: 4, managed: true },
   ],
+  // Two archived demo messages, newest first, paged like the repository's
+  // `before` cursor: the second page starts below the cursor id.
+  archiveChannelHistory: (input) => {
+    const all = [
+      {
+        messageId: '900000000000000002',
+        channelId: '333333333333333333',
+        authorId: '100000000000000001',
+        content: 'Movie night poll is up in the roles channel.',
+        createdAt: 1_700_000_100_000,
+        editedAt: undefined,
+        deletedAt: undefined,
+      },
+      {
+        messageId: '900000000000000001',
+        channelId: '333333333333333333',
+        authorId: '100000000000000002',
+        content: null,
+        createdAt: 1_700_000_000_000,
+        editedAt: undefined,
+        deletedAt: 1_700_000_050_000,
+      },
+    ];
+    if (input.channelId !== '333333333333333333') return [];
+    const start =
+      input.before === undefined
+        ? 0
+        : all.findIndex((m) => m.messageId === input.before) + 1;
+    const limit = input.limit ?? 20;
+    return all.slice(start, start + limit).map((m) => ({ ...m }));
+  },
+  archiveFindMessage: (messageId) => {
+    if (messageId !== '900000000000000002') return undefined;
+    return {
+      messageId: '900000000000000002',
+      channelId: '333333333333333333',
+      authorId: '100000000000000001',
+      content: 'Movie night poll is up in the roles channel.',
+      createdAt: 1_700_000_100_000,
+      editedAt: undefined,
+      deletedAt: undefined,
+    };
+  },
   // Static demo members, paged like the daemon's REST read: `after` continues
   // past that id, and a full page carries its last id as the next cursor.
   listGuildMembers: (input) => {

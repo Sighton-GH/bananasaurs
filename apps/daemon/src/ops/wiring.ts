@@ -611,6 +611,38 @@ export const opsPortsFor = (
     };
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
+  // Same visibility rule as archiveSearch: the repository itself refuses
+  // channels outside the guild's archive-enabled set, so the wiring passes
+  // the caller's channel id straight through.
+  archiveChannelHistory: (input) =>
+    archiveRepo
+      .listChannelHistory(scope, {
+        channelId: input.channelId,
+        ...(input.before !== undefined && { beforeMessageId: input.before }),
+        ...(input.limit !== undefined && { limit: input.limit }),
+      })
+      .map((message) => ({
+        messageId: message.messageId,
+        channelId: message.channelId,
+        authorId: message.authorId,
+        content: message.content,
+        createdAt: message.createdAt,
+        editedAt: message.editedAt,
+        deletedAt: message.deletedAt,
+      })),
+  archiveFindMessage: (messageId) => {
+    const message = archiveRepo.findMessage(scope, messageId);
+    if (message === undefined) return undefined;
+    return {
+      messageId: message.messageId,
+      channelId: message.channelId,
+      authorId: message.authorId,
+      content: message.content,
+      createdAt: message.createdAt,
+      editedAt: message.editedAt,
+      deletedAt: message.deletedAt,
+    };
+  },
 
   // Slice M5 (ADR 0044 §4): the channels this guild's MCP connector may post
   // to, and the ledger of what it posted. The clock is this composition

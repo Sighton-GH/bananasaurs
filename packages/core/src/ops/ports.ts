@@ -430,6 +430,21 @@ export interface OpsArchiveSearchHit {
 }
 
 /**
+ * One archived message, as the MCP `get_message` / `read_channel_history`
+ * answers render it. `content: null` is a purged tombstone: the metadata
+ * survives, the text is gone (ADR 0046).
+ */
+export interface OpsArchiveMessage {
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly authorId: string | undefined;
+  readonly content: string | null;
+  readonly createdAt: number;
+  readonly editedAt: number | undefined;
+  readonly deletedAt: number | undefined;
+}
+
+/**
  * A registered OAuth client, as `mcp clients` renders it (ADR 0045).
  *
  * Never a secret: there is none on a client. The client authenticates nothing;
@@ -1083,6 +1098,19 @@ export interface OpsPorts {
   }): { readonly hits: readonly OpsArchiveSearchHit[]; readonly total: number };
   /** Rebuilds the FTS index from archive_messages. Returns the indexed row count. */
   archiveReindex(): number;
+  /**
+   * One channel's archived messages, newest first, paged by a
+   * `before` message-id cursor — the MCP `read_channel_history` answer.
+   * A channel outside the guild's archive-enabled set returns empty,
+   * never an error, so the call cannot reveal whether it exists.
+   */
+  archiveChannelHistory(input: {
+    readonly channelId: string;
+    readonly before?: string | undefined;
+    readonly limit?: number | undefined;
+  }): readonly OpsArchiveMessage[];
+  /** One archived message by id — the MCP `get_message` answer. */
+  archiveFindMessage(messageId: string): OpsArchiveMessage | undefined;
 
   /**
    * ADR 0028 / ADR 0045: grant a dashboard account a capability IN THIS

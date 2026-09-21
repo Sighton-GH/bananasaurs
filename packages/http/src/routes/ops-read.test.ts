@@ -85,6 +85,8 @@ const GUILD_ROUTES = [
   '/api/guild/channels',
   '/api/guild/roles',
   '/api/guild/members',
+  '/api/archive/channels/333333333333333333/messages',
+  '/api/archive/messages/900000000000000002',
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
@@ -385,5 +387,93 @@ describe('GET /api/guild/members', () => {
       expect(response.statusCode, url).toBe(400);
       expect(response.json(), url).toEqual({ error: 'invalid-query' });
     }
+  });
+});
+
+describe('GET /api/archive/channels/:channelId/messages (read_channel_history parity)', () => {
+  it('answers the newest archived messages first, tombstones included', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/archive/channels/333333333333333333/messages',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body: { messages: { messageId: string; content: string | null }[] } = response.json();
+    expect(body.messages.map((m) => m.messageId)).toEqual([
+      '900000000000000002',
+      '900000000000000001',
+    ]);
+    // The purged message is a tombstone: metadata intact, content null.
+    expect(body.messages[1]?.content).toBeNull();
+  });
+
+  it('pages with the before cursor and honours limit', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/archive/channels/333333333333333333/messages?before=900000000000000002&limit=5',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body: { messages: { messageId: string }[] } = response.json();
+    expect(body.messages.map((m) => m.messageId)).toEqual(['900000000000000001']);
+  });
+
+  it('answers empty, not an error, for a channel outside the archive-enabled set', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/archive/channels/444444444444444444/messages',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ messages: [] });
+  });
+
+  it('answers 400 invalid-query for a bad cursor or limit', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    for (const url of [
+      '/api/archive/channels/nope/messages',
+      '/api/archive/channels/333333333333333333/messages?before=nope',
+      '/api/archive/channels/333333333333333333/messages?limit=0',
+    ]) {
+      const response = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(response.statusCode, url).toBe(400);
+      expect(response.json(), url).toEqual({ error: 'invalid-query' });
+    }
+  });
+});
+
+describe('GET /api/archive/messages/:messageId (get_message parity)', () => {
+  it('answers the archived message', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/archive/messages/900000000000000002',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      messageId: '900000000000000002',
+      content: 'Movie night poll is up in the roles channel.',
+    });
+  });
+
+  it('answers 404 for an unknown message', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/archive/messages/900000000000000009',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not-found' });
   });
 });
