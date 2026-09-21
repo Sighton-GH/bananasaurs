@@ -204,6 +204,13 @@
       "when": 1789967282463,
       "tag": "0028_organic_excalibur",
       "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "6",
+      "when": 1789999058332,
+      "tag": "0029_thankful_banshee",
+      "breakpoints": true
     }
   ]
 }

@@ -105,8 +105,8 @@ describe('deliverDueReminders', () => {
     });
   });
 
-  it('fails a transient error terminally once the reminder is older than the window', async () => {
-    const old = reminder({ createdAt: NOW - REMINDER_DELIVERY_TERMINAL_WINDOW_MS - 1 });
+  it('fails a transient error terminally once the reminder is past due by the window', async () => {
+    const old = reminder({ dueAt: NOW - REMINDER_DELIVERY_TERMINAL_WINDOW_MS - 1 });
     const store = storeFor([old]);
     const delivery = {
       send: vi.fn(async () => {
@@ -143,3 +143,27 @@ describe('deliverDueReminders', () => {
 // Type-level anchor: the fake stores above satisfy the real interface.
 const _typecheck: (s: ReturnType<typeof storeFor>) => ReminderStore = (s) => s;
 void _typecheck;
+
+describe('terminal window regression (review finding 4)', () => {
+  it('retries a reminder scheduled far ahead that fails on its first pass', async () => {
+    // Created 12h ago but only due now: the window runs from the due time,
+    // not creation, so the first transient error must retry, not fail.
+    const farAhead = reminder({
+      createdAt: NOW - 12 * 60 * 60 * 1_000,
+      dueAt: NOW - 1_000,
+    });
+    const store = storeFor([farAhead]);
+    const delivery = {
+      send: vi.fn(async () => {
+        throw new ReminderDeliveryError('You are being rate limited.', false);
+      }),
+    };
+    await expect(deliverDueReminders(store, delivery, NOW)).resolves.toEqual({
+      delivered: 0,
+      failed: 0,
+      retried: 1,
+    });
+    expect(store.retry).toHaveBeenCalled();
+    expect(store.fail).not.toHaveBeenCalled();
+  });
+});

@@ -1,4 +1,4 @@
-import { asc, desc, eq, inArray, lte } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
 import type { AssistantBehaviour, ClubResource, Reminder, ReminderStatus } from '@bananasaurs/core';
 import {
   assistantBehaviours,
@@ -153,6 +153,10 @@ export const recordResourceFetch = (
   });
 export interface StoredReminder extends Reminder {
   readonly failureReason?: string;
+  /** Next scheduled attempt after a transient failure; undefined when none is pending. */
+  readonly nextAttemptAt?: number;
+  /** When the current delivery pass claimed the row; undefined before any claim. */
+  readonly claimedAt?: number;
 }
 const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder => ({
   id: r.reminderId,
@@ -165,6 +169,8 @@ const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder =
   status: r.status as ReminderStatus,
   dedupeKey: r.dedupeKey,
   ...(r.failureReason === null ? {} : { failureReason: r.failureReason }),
+  ...(r.nextAttemptAt === null ? {} : { nextAttemptAt: r.nextAttemptAt }),
+  ...(r.claimedAt === null ? {} : { claimedAt: r.claimedAt }),
 });
 export const listReminders = (scope: GuildScope): readonly StoredReminder[] =>
   read(scope, (db) =>
@@ -214,8 +220,8 @@ export const insertReminder = (scope: GuildScope, r: Reminder): void =>
  *   still younger than the threshold belongs to a pass that is running right
  *   now and must be left alone.
  *
- * The returned rows carry the stamped `dueAt` (claim time), matching what a
- * re-read would return.
+ * The returned rows keep the original `dueAt`; the claim time is stamped in
+ * `claimedAt`, matching what a re-read would return.
  */
 export const claimDueReminders = (
   scope: GuildScope,
@@ -231,7 +237,12 @@ export const claimDueReminders = (
         scope.only(
           assistantReminders,
           eq(assistantReminders.status, 'scheduled'),
-          lte(assistantReminders.dueAt, now),
+          // Due when the next attempt time (falling back to the original due
+          // time) has arrived; due_at itself never moves.
+          or(
+            lte(assistantReminders.nextAttemptAt, now),
+            and(isNull(assistantReminders.nextAttemptAt), lte(assistantReminders.dueAt, now)),
+          ),
         ),
       )
       .orderBy(asc(assistantReminders.dueAt), asc(assistantReminders.reminderId))
@@ -247,7 +258,7 @@ export const claimDueReminders = (
               scope.only(
                 assistantReminders,
                 eq(assistantReminders.status, 'delivering'),
-                lte(assistantReminders.dueAt, now - staleMs),
+                lte(assistantReminders.claimedAt, now - staleMs),
               ),
             )
             .orderBy(asc(assistantReminders.dueAt), asc(assistantReminders.reminderId))
@@ -256,7 +267,7 @@ export const claimDueReminders = (
     const rows = [...due, ...stranded];
     if (rows.length === 0) return [];
     db.update(assistantReminders)
-      .set({ status: 'delivering', dueAt: now })
+      .set({ status: 'delivering', claimedAt: now })
       .where(
         scope.only(
           assistantReminders,
@@ -268,7 +279,7 @@ export const claimDueReminders = (
         ),
       )
       .run();
-    return rows.map((r) => toReminder({ ...r, status: 'delivering', dueAt: now }));
+    return rows.map((r) => toReminder({ ...r, status: 'delivering', claimedAt: now }));
   });
 
 /**
@@ -284,7 +295,8 @@ const transitionReminder = (
   set: {
     status?: ReminderStatus | undefined;
     failureReason?: string | null | undefined;
-    dueAt?: number | undefined;
+    nextAttemptAt?: number | null | undefined;
+    claimedAt?: number | null | undefined;
   },
 ): void =>
   write(scope, ({ db }) => {
@@ -318,7 +330,8 @@ export const retryReminder = (
   transitionReminder(scope, id, 'delivering', {
     status: 'scheduled',
     failureReason: reason,
-    dueAt: retryAt,
+    nextAttemptAt: retryAt,
+    claimedAt: null,
   });
 
 /**

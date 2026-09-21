@@ -1834,6 +1834,11 @@ export const assistantReminders = sqliteTable(
     destinationId: snowflake('destination_id').notNull(),
     text: text('text').notNull(),
     dueAt: integer('due_at').notNull(),
+    // The original due time never moves: retries persist the next attempt in
+    // next_attempt_at and claims stamp claimed_at, so the delivery terminal
+    // window can be measured from when the reminder fell due (finding 4).
+    nextAttemptAt: integer('next_attempt_at'),
+    claimedAt: integer('claimed_at'),
     createdAt: integer('created_at').notNull(),
     status: text('status').notNull().default('scheduled'),
     dedupeKey: text('dedupe_key').notNull(),

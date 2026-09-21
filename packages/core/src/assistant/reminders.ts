@@ -15,7 +15,8 @@ export interface ReminderStore {
   cancel(guildId: string, id: string, actorId: string): Promise<boolean>;
   /**
    * Atomically claims up to `limit` due reminders, moving them to
-   * `delivering`. Also re-claims rows a previous pass left in `delivering`
+   * `delivering` and stamping the claim time (in `claimed_at`; `due_at`
+   * never moves). Also re-claims rows a previous pass left in `delivering`
    * at least `staleMs` ago — the restart path after a crash mid-pass, which
    * must never fire immediately, only past an explicit stale threshold.
    */
@@ -24,9 +25,10 @@ export interface ReminderStore {
   fail(id: string, reason: string): Promise<void>;
   /**
    * Returns a claimed reminder to `scheduled` for a later pass, keeping the
-   * last error visible and persisting the next attempt time in `dueAt`. The
-   * transient counterpart of `fail`: a reminder that could not be sent right
-   * now but might send on the next pass.
+   * last error visible and persisting the next attempt time (in
+   * `next_attempt_at`; `due_at` stays the original due time). The transient
+   * counterpart of `fail`: a reminder that could not be sent right now but
+   * might send on the next pass.
    */
   retry(id: string, reason: string, retryAt: number): Promise<void>;
 }
@@ -55,15 +57,17 @@ export class ReminderDeliveryError extends Error {
 
 /**
  * How long a reminder may fail transiently before it is marked `failed`,
- * measured from its original creation time.
+ * measured from when it fell due.
  *
- * Measured from `createdAt` rather than `dueAt` because retry persists the
- * next attempt time in `dueAt` — the original due time is spent once the
- * first pass claims the row, while `createdAt` never moves. Unbounded retry
- * would keep a reminder that can never send circulating forever; six hours
- * covers a real Discord outage without making a poisoned reminder immortal.
- * There is no in-memory attempt counter: a restarted process must enforce
- * the same bound, and only the row survives a restart.
+ * Measured from `dueAt` — the original due time, which never moves (retries
+ * persist the next attempt in `next_attempt_at`, claims in `claimed_at`).
+ * Measuring from `createdAt` failed a reminder scheduled more than six
+ * hours ahead on its first transient error, before it was ever really
+ * tried (review finding 4). Unbounded retry would keep a reminder that can
+ * never send circulating forever; six hours past its due time covers a real
+ * Discord outage without making a poisoned reminder immortal. There is no
+ * in-memory attempt counter: a restarted process must enforce the same
+ * bound, and only the row survives a restart.
  */
 export const REMINDER_DELIVERY_TERMINAL_WINDOW_MS = 6 * 60 * 60 * 1_000;
 
@@ -136,7 +140,7 @@ export const deliverDueReminders = async (
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'delivery failed';
       const permanent = error instanceof ReminderDeliveryError ? error.permanent : false;
-      if (permanent || now - reminder.createdAt > REMINDER_DELIVERY_TERMINAL_WINDOW_MS) {
+      if (permanent || now - reminder.dueAt > REMINDER_DELIVERY_TERMINAL_WINDOW_MS) {
         await store.fail(reminder.id, reason);
         failed += 1;
       } else {

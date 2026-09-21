@@ -50,13 +50,16 @@ beforeEach(() => {
 afterEach(() => t.close());
 
 describe('claimDueReminders', () => {
-  it('claims due scheduled rows atomically, stamping the claim time', () => {
+  it('claims due scheduled rows atomically, stamping only the claim time', () => {
     insertReminder(scope(), reminder('a', { dueAt: 900 }));
     insertReminder(scope(), reminder('b', { dueAt: 1_100 }));
     const claimed = claimDueReminders(scope(), 1_000, 25, STALE_MS);
     expect(claimed.map((r) => r.id)).toEqual(['a']);
     expect(claimed[0]?.status).toBe('delivering');
-    expect(claimed[0]?.dueAt).toBe(1_000);
+    // due_at keeps the original due time; the claim is stamped in claimed_at
+    // so the delivery terminal window can be measured from the due time.
+    expect(claimed[0]?.dueAt).toBe(900);
+    expect(claimed[0]?.claimedAt).toBe(1_000);
     expect(statusOf('a')?.status).toBe('delivering');
     // The future row is untouched.
     expect(statusOf('b')?.status).toBe('scheduled');
@@ -74,7 +77,8 @@ describe('claimDueReminders', () => {
     // Past it, the row is stranded work from a crashed pass and is re-claimed.
     const reclaimed = claimDueReminders(scope(), 1_000 + STALE_MS, 25, STALE_MS);
     expect(reclaimed.map((r) => r.id)).toEqual(['a']);
-    expect(reclaimed[0]?.dueAt).toBe(1_000 + STALE_MS);
+    expect(reclaimed[0]?.dueAt).toBe(900);
+    expect(reclaimed[0]?.claimedAt).toBe(1_000 + STALE_MS);
   });
 
   it('honours the claim limit across both claim sources', () => {
@@ -111,7 +115,10 @@ describe('state-guarded transitions', () => {
     retryReminder(scope(), 'a', 'rate limited', 1_000 + 60_000);
     const row = statusOf('a');
     expect(row?.status).toBe('scheduled');
-    expect(row?.dueAt).toBe(1_000 + 60_000);
+    // The original due time survives; the next attempt lives in its own field.
+    expect(row?.dueAt).toBe(1_000);
+    expect(row?.nextAttemptAt).toBe(1_000 + 60_000);
+    expect(row?.claimedAt).toBeUndefined();
     expect(row?.failureReason).toBe('rate limited');
     // Not claimable again before the retry time; claimable at it.
     expect(claimDueReminders(scope(), 1_000 + 59_999, 25, STALE_MS)).toEqual([]);

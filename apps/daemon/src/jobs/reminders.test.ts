@@ -107,7 +107,8 @@ describe('deliverRemindersHandler', () => {
 
     await runPass(NOW);
     expect(statusOf('limited')?.status).toBe('scheduled');
-    expect(statusOf('limited')?.dueAt).toBe(NOW + REMINDER_RETRY_BACKOFF_MS);
+    // The original due time survives; the retry time is its own field.
+    expect(statusOf('limited')?.nextAttemptAt).toBe(NOW + REMINDER_RETRY_BACKOFF_MS);
     expect(statusOf('limited')?.failureReason).toContain('rate limited');
     expect(discord.restCalls('sendMessage')).toHaveLength(1);
 
