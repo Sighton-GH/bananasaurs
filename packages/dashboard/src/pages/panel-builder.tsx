@@ -7,9 +7,10 @@ import {
   unicodeEmojiChars,
   unicodeEmojiKey,
   type PanelBehaviour,
+  type PanelComponent,
 } from '@bananasaurs/core';
 import { ApiError } from '../api.js';
-import type { GuildRoleInfo } from '../api/ops.js';
+import type { GuildChannelInfo, GuildRoleInfo } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Button } from '../ui/Button.js';
@@ -17,11 +18,13 @@ import { Card } from '../ui/Card.js';
 import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { DataTable } from '../ui/DataTable.js';
 import { Field, Input } from '../ui/Field.js';
+import { HelpTip } from '../ui/HelpTip.js';
 
 /**
- * The role-panel builder (ADR 0053): the dashboard's production creation
- * path for managed panels. Two steps — configure, then review — and the
- * submit is `POST /api/panels`, which validates the assembled definition
+ * The role-assignment builder (ADRs 0053 and 0054): the dashboard's
+ * production creation path for managed panels, offered in plain language as
+ * reaction roles and role menus. Two steps — configure, then review — and
+ * the submit is `POST /api/panels`, which validates the assembled definition
  * with the same `panelDefinitionSchema` the CLI's `panel create` uses. This
  * component validates against that schema too, at "review" time, so the
  * answer the operator reads here is the answer the server would give.
@@ -31,6 +34,7 @@ import { Field, Input } from '../ui/Field.js';
  */
 
 const MAX_OPTIONS = 25;
+const MAX_CONTENT = 2000;
 
 interface DraftOption {
   readonly optionId: string;
@@ -65,7 +69,12 @@ const BEHAVIOURS: readonly { value: PanelBehaviour; label: string; help: string 
   },
 ];
 
-const COMPONENTS: readonly { value: 'button' | 'select'; label: string; help: string }[] = [
+const FORMATS: readonly { value: PanelComponent; label: string; help: string }[] = [
+  {
+    value: 'reaction',
+    label: 'Emoji reactions',
+    help: 'Members add an emoji reaction on the message to get the role, and remove their reaction to give it up. The classic reaction-role style; every option needs an emoji.',
+  },
   {
     value: 'button',
     label: 'Buttons',
@@ -114,12 +123,26 @@ export function PanelBuilder({
     [session],
   );
   const roles = useResource('the role list', loadRoles);
+  // Channel names for the review step; the picker owns the picking, but an
+  // ID alone means nothing on the confirmation card.
+  const loadChannels = useCallback(
+    () => session.read<{ channels: readonly GuildChannelInfo[] }>('/api/guild/channels'),
+    [session],
+  );
+  const channels = useResource('the channel list', loadChannels);
+  const channelName = (id: string) =>
+    (channels.resource.state === 'ready'
+      ? channels.resource.data.channels.find((c) => c.channelId === id)?.name
+      : undefined) ?? id;
 
   const [panelId, setPanelId] = useState('');
   const [channelId, setChannelId] = useState('');
+  const [content, setContent] = useState('');
   const [behaviour, setBehaviour] = useState<PanelBehaviour>('toggle');
-  const [component, setComponent] = useState<'button' | 'select'>('button');
+  const [format, setFormat] = useState<PanelComponent>('reaction');
   const [maxRoles, setMaxRoles] = useState('');
+  const [requiredRoleId, setRequiredRoleId] = useState('');
+  const [blockedRoleIds, setBlockedRoleIds] = useState<readonly string[]>([]);
   const [options, setOptions] = useState<readonly DraftOption[]>([emptyOption()]);
   const [step, setStep] = useState<'edit' | 'review'>('edit');
   const [problems, setProblems] = useState<readonly string[]>([]);
@@ -130,17 +153,25 @@ export function PanelBuilder({
   // The selects are controlled and always match an entry; the '' fallback is
   // unreachable but keeps the types honest under noUncheckedIndexedAccess.
   const behaviourHelp = BEHAVIOURS.find((b) => b.value === behaviour)?.help ?? '';
-  const componentHelp = COMPONENTS.find((c) => c.value === component)?.help ?? '';
+  const formatHelp = FORMATS.find((f) => f.value === format)?.help ?? '';
+  const isReaction = format === 'reaction';
 
   const roleList = roles.resource.state === 'ready' ? roles.resource.data.roles : undefined;
   const roleById = useMemo(
     () => new Map((roleList ?? []).map((r) => [r.roleId, r])),
     [roleList],
   );
+  const roleName = (roleId: string) => roleById.get(roleId)?.name ?? roleId;
 
   const updateOption = (index: number, patch: Partial<DraftOption>) => {
     setOptions((current) =>
       current.map((o, i) => (i === index ? { ...o, ...patch } : o)),
+    );
+  };
+
+  const toggleBlocked = (roleId: string) => {
+    setBlockedRoleIds((current) =>
+      current.includes(roleId) ? current.filter((r) => r !== roleId) : [...current, roleId],
     );
   };
 
@@ -150,9 +181,11 @@ export function PanelBuilder({
     kind: 'managed' as const,
     channelId: channelId.trim(),
     behaviour,
-    component,
+    component: format,
+    ...(content.trim() !== '' ? { content: content.trim() } : {}),
     ...(maxRoles.trim() !== '' ? { maxRoles: Number(maxRoles) } : {}),
-    blockedRoleIds: [],
+    ...(requiredRoleId !== '' ? { requiredRoleId } : {}),
+    blockedRoleIds: [...blockedRoleIds],
     options: options.map((o, index) => ({
       optionId: o.optionId.trim(),
       roleId: o.roleId,
@@ -166,10 +199,13 @@ export function PanelBuilder({
   const validate = (): readonly string[] => {
     const found: string[] = [];
     if (!IDENTIFIER.test(panelId.trim())) {
-      found.push('Panel id: lowercase letters, numbers, dashes and underscores, at most 64.');
+      found.push('Name: lowercase letters, numbers, dashes and underscores, at most 64.');
     }
     if (!SNOWFLAKE.test(channelId.trim())) {
       found.push('Channel: pick a channel or paste its snowflake ID.');
+    }
+    if (content.length > MAX_CONTENT) {
+      found.push(`Message text: at most ${String(MAX_CONTENT)} characters (Discord's limit).`);
     }
     const usable = options.filter(
       (o) => o.optionId.trim() !== '' || o.roleId !== '' || o.label.trim() !== '' || o.emoji.trim() !== '',
@@ -184,10 +220,14 @@ export function PanelBuilder({
     if (usable.some((o) => !SNOWFLAKE.test(o.roleId))) {
       found.push('Every option needs a role.');
     }
-    // Discord requires a label on buttons and dropdown options; the shared
-    // schema refuses without one, so say it here first.
-    if (usable.some((o) => o.label.trim() === '')) {
+    // Discord requires a label on buttons and dropdown options; reactions
+    // need an emoji instead. The shared schema refuses either way, so say it
+    // here first.
+    if (!isReaction && usable.some((o) => o.label.trim() === '')) {
       found.push('Every option needs a label — Discord requires one on buttons and dropdowns.');
+    }
+    if (isReaction && usable.some((o) => o.emoji.trim() === '')) {
+      found.push('Every option needs an emoji — members react with it to get the role.');
     }
     const roleIds = usable.map((o) => o.roleId).filter((r) => r !== '');
     if (new Set(roleIds).size !== roleIds.length) {
@@ -207,9 +247,9 @@ export function PanelBuilder({
     });
     if (notOptionable.length > 0) {
       found.push(
-        `Not available as panel options: ${notOptionable
+        `Not available to grant: ${notOptionable
           .map((o) => roleById.get(o.roleId)?.name ?? o.roleId)
-          .join(', ')} — a panel option must be a role Bananasaurs manages.`,
+          .join(', ')} — an option must be a role Bananasaurs manages.`,
       );
     }
     if (maxRoles.trim() !== '' && (!/^\d+$/.test(maxRoles.trim()) || Number(maxRoles) < 1)) {
@@ -260,7 +300,7 @@ export function PanelBuilder({
           setSubmitError(body.problems ?? 'The definition failed validation.');
         } else if (body.error === 'already-exists') {
           setSubmitError(
-            `A panel named "${panelId.trim()}" already exists — panel ids are immutable. ` +
+            `The name "${panelId.trim()}" is already taken — names are immutable. ` +
               'Go back and pick a new one.',
           );
         } else {
@@ -276,20 +316,23 @@ export function PanelBuilder({
 
   if (created !== undefined) {
     return (
-      <Card title="Panel created">
+      <Card title="Saved — nothing is live yet">
         <p className="text-sm">
-          <strong>{created.panelId}</strong> is configured — and nothing is live yet. Publishing
-          posts the panel&apos;s message in Discord, and stays a separate confirmed action.
+          <strong>{created.panelId}</strong> is configured. Publishing posts its message in Discord
+          and starts granting roles — a separate, confirmed action on its page.
         </p>
         <div className="mt-3 flex gap-2">
           <Button variant="primary" onClick={() => onCreated(created.panelId)}>
-            Open the new panel
+            Open it
           </Button>
           <Button
             onClick={() => {
               setCreated(undefined);
               setStep('edit');
               setPanelId('');
+              setContent('');
+              setRequiredRoleId('');
+              setBlockedRoleIds([]);
               setOptions([emptyOption()]);
             }}
           >
@@ -301,12 +344,12 @@ export function PanelBuilder({
   }
 
   return (
-    <Card title={`New role panel — ${step === 'edit' ? 'configure' : 'review'}`}>
+    <Card title={step === 'edit' ? 'New reaction role or role menu' : 'Review before creating'}>
       {step === 'edit' ? (
         <form onSubmit={review} className="grid max-w-2xl gap-4">
           <Field
-            label="Panel id"
-            hint="Lowercase letters, numbers, dashes. Immutable once created — members never see it."
+            label="Name"
+            hint="Lowercase letters, numbers, dashes. Only you see it, and it cannot change later."
           >
             <Input
               value={panelId}
@@ -317,38 +360,58 @@ export function PanelBuilder({
           </Field>
           <ChannelPicker
             label="Channel"
-            hint="Where the panel's message will be posted when you publish."
+            hint="Where the message will be posted when you publish."
             value={channelId}
             onChange={setChannelId}
           />
+          <Field
+            label="Message text"
+            hint="What the message says above the reactions or buttons. Leave empty for a short default."
+          >
+            <textarea
+              aria-label="Message text"
+              value={content}
+              onChange={(e) => setContent(e.target.value)}
+              rows={3}
+              maxLength={MAX_CONTENT}
+              placeholder="Pick your colour below!"
+              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+            />
+          </Field>
           <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="Behaviour" {...(behaviourHelp !== '' ? { hint: behaviourHelp } : {})}>
-              <select
-                aria-label="Behaviour"
-                value={behaviour}
-                onChange={(e) => setBehaviour(e.target.value as PanelBehaviour)}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                {BEHAVIOURS.map((b) => (
-                  <option key={b.value} value={b.value}>
-                    {b.label}
-                  </option>
-                ))}
-              </select>
+            <Field label="How members pick">
+              <div className="flex items-center gap-1">
+                <select
+                  aria-label="How members pick"
+                  value={format}
+                  onChange={(e) => setFormat(e.target.value as PanelComponent)}
+                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                >
+                  {FORMATS.map((f) => (
+                    <option key={f.value} value={f.value}>
+                      {f.label}
+                    </option>
+                  ))}
+                </select>
+                <HelpTip label="how members pick">{formatHelp}</HelpTip>
+              </div>
             </Field>
-            <Field label="Shown as" {...(componentHelp !== '' ? { hint: componentHelp } : {})}>
-              <select
-                aria-label="Shown as"
-                value={component}
-                onChange={(e) => setComponent(e.target.value as 'button' | 'select')}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                {COMPONENTS.map((c) => (
-                  <option key={c.value} value={c.value}>
-                    {c.label}
-                  </option>
-                ))}
-              </select>
+            <Field label="Behaviour">
+              <div className="flex items-center gap-1">
+                <select
+                  aria-label="Behaviour"
+                  value={behaviour}
+                  onChange={(e) => setBehaviour(e.target.value as PanelBehaviour)}
+                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                >
+                  {BEHAVIOURS.map((b) => (
+                    <option key={b.value} value={b.value}>
+                      {b.label}
+                    </option>
+                  ))}
+                </select>
+                <HelpTip label="behaviour">{behaviourHelp}</HelpTip>
+              </div>
             </Field>
           </div>
           <Field
@@ -363,6 +426,58 @@ export function PanelBuilder({
               autoComplete="off"
             />
           </Field>
+
+          <fieldset className="grid gap-3">
+            <legend className="text-sm font-medium text-ink">
+              Who can use it{' '}
+              <HelpTip label="who can use it">
+                Optional limits on who may pick up roles here. A required role means only members
+                already holding it can use this; blocked roles can never use it, whatever else they
+                hold. Neither limit ever grants or removes those roles.
+              </HelpTip>
+            </legend>
+            <Field
+              label="Require a role first"
+              hint="Optional. Only members already holding this role can pick up roles here."
+            >
+              <select
+                aria-label="Require a role first"
+                value={requiredRoleId}
+                onChange={(e) => setRequiredRoleId(e.target.value)}
+                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+              >
+                <option value="">No requirement — everyone</option>
+                {(roleList ?? []).map((role) => (
+                  <option key={role.roleId} value={role.roleId}>
+                    {role.name}
+                  </option>
+                ))}
+              </select>
+            </Field>
+            {roleList !== undefined && roleList.length > 0 && (
+              <Field
+                label="Block roles"
+                hint="Optional. Members holding any of these cannot use it."
+              >
+                <div
+                  role="group"
+                  aria-label="Blocked roles"
+                  className="grid max-h-40 gap-1 overflow-y-auto rounded-sm border border-line p-2"
+                >
+                  {roleList.map((role) => (
+                    <label key={role.roleId} className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={blockedRoleIds.includes(role.roleId)}
+                        onChange={() => toggleBlocked(role.roleId)}
+                      />
+                      {role.name}
+                    </label>
+                  ))}
+                </div>
+              </Field>
+            )}
+          </fieldset>
 
           <fieldset className="grid gap-3">
             <legend className="text-sm font-medium text-ink">Options</legend>
@@ -402,14 +517,14 @@ export function PanelBuilder({
                   aria-label={`Option ${String(index + 1)} label`}
                   value={option.label}
                   onChange={(e) => updateOption(index, { label: e.target.value })}
-                  placeholder="label"
+                  placeholder={isReaction ? 'label (optional)' : 'label'}
                   autoComplete="off"
                 />
                 <Input
                   aria-label={`Option ${String(index + 1)} emoji`}
                   value={option.emoji}
                   onChange={(e) => updateOption(index, { emoji: e.target.value })}
-                  placeholder="emoji"
+                  placeholder={isReaction ? 'emoji (required)' : 'emoji'}
                   autoComplete="off"
                 />
                 <Button
@@ -447,16 +562,28 @@ export function PanelBuilder({
       ) : (
         <div className="grid max-w-2xl gap-4">
           <dl className="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-2 text-sm">
-            <dt className="text-ink-muted">Panel</dt>
+            <dt className="text-ink-muted">Name</dt>
             <dd>{panelId.trim()}</dd>
             <dt className="text-ink-muted">Channel</dt>
-            <dd>{channelId.trim()}</dd>
+            <dd>#{channelName(channelId.trim())}</dd>
+            <dt className="text-ink-muted">Message text</dt>
+            <dd className="whitespace-pre-wrap">
+              {content.trim() === '' ? 'Pick your roles. (the default)' : content.trim()}
+            </dd>
+            <dt className="text-ink-muted">How members pick</dt>
+            <dd>{FORMATS.find((f) => f.value === format)?.label}</dd>
             <dt className="text-ink-muted">Behaviour</dt>
             <dd>{BEHAVIOURS.find((b) => b.value === behaviour)?.label}</dd>
-            <dt className="text-ink-muted">Shown as</dt>
-            <dd>{COMPONENTS.find((c) => c.value === component)?.label}</dd>
             <dt className="text-ink-muted">Max roles per member</dt>
             <dd>{maxRoles.trim() === '' ? 'no limit' : maxRoles.trim()}</dd>
+            <dt className="text-ink-muted">Who can use it</dt>
+            <dd>
+              {requiredRoleId === ''
+                ? 'everyone'
+                : `only members with the ${roleName(requiredRoleId)} role`}
+              {blockedRoleIds.length > 0 &&
+                `; blocked: ${blockedRoleIds.map(roleName).join(', ')}`}
+            </dd>
           </dl>
           <DataTable
             caption="Options to create"
@@ -467,7 +594,7 @@ export function PanelBuilder({
               {
                 key: 'role',
                 header: 'Role',
-                cell: (o) => roleById.get(o.roleId)?.name ?? o.roleId,
+                cell: (o) => roleName(o.roleId),
               },
               {
                 key: 'face',
@@ -485,8 +612,11 @@ export function PanelBuilder({
             ]}
           />
           <p className="text-sm text-ink-muted">
-            Creating writes the configuration only. The panel reaches Discord when you publish it —
-            a separate, confirmed action.
+            Creating saves the configuration only.{' '}
+            <HelpTip label="when this goes live">
+              Nothing reaches Discord yet. Publishing — a separate, confirmed action on the saved
+              page — posts the message and starts granting and removing roles as members use it.
+            </HelpTip>
           </p>
           {submitError !== undefined && (
             <p role="alert" className="text-sm text-danger">
@@ -495,7 +625,7 @@ export function PanelBuilder({
           )}
           <div className="flex gap-2">
             <Button variant="primary" busy={busy} onClick={() => void submit()}>
-              Create panel
+              Create
             </Button>
             <Button onClick={() => setStep('edit')}>Back</Button>
           </div>

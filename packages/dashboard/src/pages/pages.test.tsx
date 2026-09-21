@@ -238,7 +238,7 @@ describe('PanelsPage', () => {
     stubFetch([{ url: '/api/panels', body: PANELS }]);
     renderWithSession(<PanelsPage />);
     expect(await screen.findByText('p1')).toBeTruthy();
-    expect(screen.getByText('roles/select/toggle')).toBeTruthy();
+    expect(screen.getByText('Dropdown · toggle')).toBeTruthy();
     expect(screen.getByText('posted')).toBeTruthy();
     expect(screen.getByText('3')).toBeTruthy();
   });

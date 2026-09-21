@@ -26,10 +26,10 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Configuration',
     control: 'process configuration matrix (secrets stay redacted)',
   },
-  'panel list': { kind: 'covered', page: 'Role panels', control: 'panels table' },
+  'panel list': { kind: 'covered', page: 'Reaction roles', control: 'panels table' },
   'panel show': {
     kind: 'covered',
-    page: 'Role panels',
+    page: 'Reaction roles',
     control: 'per-panel detail with options and limits',
   },
   'log routing list': {
@@ -145,12 +145,12 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
   },
   'panel sync': {
     kind: 'covered',
-    page: 'Role panels',
+    page: 'Reaction roles',
     control: 'publish and reconcile with dry-run preview',
   },
   'panel create': {
     kind: 'covered',
-    page: 'Role panels',
+    page: 'Reaction roles',
     control: 'role panel builder — channel, behaviour, options, review, then publish',
   },
   'adoption allow': {

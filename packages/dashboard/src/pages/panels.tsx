@@ -1,6 +1,6 @@
 import { useCallback, useState } from 'react';
 import { isCustomEmojiKey, unicodeEmojiChars } from '@bananasaurs/core';
-import type { Enqueued, PanelDetail, PanelSummary, PublishResult } from '../api/ops.js';
+import type { Enqueued, GuildRoleInfo, PanelDetail, PanelSummary, PublishResult } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -28,6 +28,16 @@ export function PanelsPage() {
   const toast = useToast();
   const load = useCallback(() => session.read<PanelSummary[]>('/api/panels'), [session]);
   const panels = useResource('the role panels', load);
+  // Role names for the detail card; the ids alone mean nothing to a person.
+  const loadRoles = useCallback(
+    () => session.read<{ roles: readonly GuildRoleInfo[] }>('/api/guild/roles'),
+    [session],
+  );
+  const roles = useResource('the role list', loadRoles);
+  const roleName = (roleId: string) =>
+    (roles.resource.state === 'ready'
+      ? roles.resource.data.roles.find((r) => r.roleId === roleId)?.name
+      : undefined) ?? roleId;
 
   const [building, setBuilding] = useState(false);
   const [selected, setSelected] = useState<PanelDetail | undefined>(undefined);
@@ -106,12 +116,12 @@ export function PanelsPage() {
   return (
     <>
       <PageHeader
-        title="Role panels"
-        purpose="Self-service role menus posted in Discord: build them here, see whether Discord still agrees, and drive publish and reconcile."
+        title="Reaction roles"
+        purpose="Let members give themselves roles: by reacting with an emoji, or by clicking buttons or a dropdown. Build them here, see whether Discord still agrees, and drive publish and reconcile."
         actions={
           building ? undefined : (
             <Button variant="primary" onClick={() => setBuilding(true)}>
-              New panel
+              New reaction role or role menu
             </Button>
           )
         }
@@ -126,11 +136,11 @@ export function PanelsPage() {
         isEmpty={(p) => p.length === 0}
         empty={
           <EmptyState
-            title="No role panels configured"
-            detail="Build the first one here — the builder walks channel, behaviour and options, and nothing reaches Discord until you publish."
+            title="Nothing set up yet"
+            detail="Build the first one here — pick a channel, a format and the roles, and nothing reaches Discord until you publish."
             action={
               <Button variant="primary" onClick={() => setBuilding(true)}>
-                Build a role panel
+                Build the first one
               </Button>
             }
           />
@@ -138,7 +148,7 @@ export function PanelsPage() {
       >
         {(rows) => (
           <DataTable
-            caption="Role panels"
+            caption="Reaction roles and role panels"
             rows={rows}
             rowKey={(p) => p.panelId}
             columns={[
@@ -146,7 +156,21 @@ export function PanelsPage() {
               {
                 key: 'shape',
                 header: 'Kind',
-                cell: (p) => `${p.kind}/${p.component}/${p.behaviour}`,
+                // Plain words, not the storage triple: the format a member
+                // sees, then the behaviour.
+                cell: (p) => {
+                  const format =
+                    p.component === 'reaction'
+                      ? 'Emoji reactions'
+                      : p.component === 'button'
+                        ? 'Buttons'
+                        : 'Dropdown';
+                  const behaviour =
+                    p.behaviour === 'single_choice'
+                      ? 'single choice'
+                      : p.behaviour.replace('_', ' ');
+                  return `${format} · ${behaviour}`;
+                },
               },
               { key: 'status', header: 'Status', cell: (p) => p.status },
               { key: 'options', header: 'Options', cell: (p) => p.optionCount, numeric: true },
@@ -166,7 +190,7 @@ export function PanelsPage() {
       )}
       {selected !== undefined && (
         <div className="mt-4 grid max-w-4xl gap-3">
-          <Card title={`Panel ${selected.panelId}`}>
+          <Card title={selected.panelId}>
             <dl className="grid grid-cols-[12rem_1fr] gap-x-4 gap-y-2 text-sm">
               <dt className="text-ink-muted">Channel</dt>
               <dd>{selected.channelId}</dd>
@@ -174,21 +198,31 @@ export function PanelsPage() {
               <dd>{selected.status}</dd>
               <dt className="text-ink-muted">Message</dt>
               <dd>{selected.messageId ?? 'not posted'}</dd>
+              <dt className="text-ink-muted">Message text</dt>
+              <dd className="whitespace-pre-wrap">{selected.content ?? 'Pick your roles. (the default)'}</dd>
               <dt className="text-ink-muted">Max roles per member</dt>
               <dd>{selected.maxRoles !== undefined ? String(selected.maxRoles) : 'no limit'}</dd>
-              <dt className="text-ink-muted">Required role</dt>
-              <dd>{selected.requiredRoleId ?? 'none'}</dd>
-              <dt className="text-ink-muted">Blocked roles</dt>
+              <dt className="text-ink-muted">Requires role first</dt>
               <dd>
-                {selected.blockedRoleIds.length === 0 ? 'none' : selected.blockedRoleIds.join(', ')}
+                {selected.requiredRoleId === undefined ? 'none' : roleName(selected.requiredRoleId)}
               </dd>
-              <dt className="text-ink-muted">Adoption</dt>
+              <dt className="text-ink-muted">Blocks roles</dt>
               <dd>
-                {selected.adoptionPassState}
-                {selected.adoptionBlockedCount > 0 && (
-                  <Badge tone="hold">{String(selected.adoptionBlockedCount)} blocked</Badge>
-                )}
+                {selected.blockedRoleIds.length === 0
+                  ? 'none'
+                  : selected.blockedRoleIds.map(roleName).join(', ')}
               </dd>
+              {selected.kind === 'adopted' && (
+                <>
+                  <dt className="text-ink-muted">Adoption</dt>
+                  <dd>
+                    {selected.adoptionPassState}
+                    {selected.adoptionBlockedCount > 0 && (
+                      <Badge tone="hold">{String(selected.adoptionBlockedCount)} blocked</Badge>
+                    )}
+                  </dd>
+                </>
+              )}
             </dl>
             <div className="mt-3 flex gap-2">
               <Button variant="primary" busy={busy} onClick={() => setPublishing(selected)}>
@@ -209,7 +243,7 @@ export function PanelsPage() {
                 rowKey={(o) => o.optionId}
                 columns={[
                   { key: 'option', header: 'Option', cell: (o) => o.optionId },
-                  { key: 'role', header: 'Role', cell: (o) => o.roleId },
+                  { key: 'role', header: 'Role', cell: (o) => roleName(o.roleId) },
                   {
                     key: 'face',
                     header: 'Shown as',

@@ -50,7 +50,7 @@ describe('Shell', () => {
     ['/', 'Overview'],
     ['/safety', 'Safety'],
     ['/logging', 'Logging'],
-    ['/panels', 'Role panels'],
+    ['/panels', 'Reaction roles'],
     ['/audit', 'Audit'],
     ['/automod', 'Automod'],
     ['/review', 'Review'],
