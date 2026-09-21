@@ -24,13 +24,13 @@ import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { StubPage } from '../pages/stub.js';
-import { Attribution } from '../ui/Attribution.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
-import { Button } from '../ui/Button.js';
 import { HealthProvider, useHealth } from './health.js';
-import { NAV } from './routes.js';
+import { JumpNav } from './JumpNav.js';
+import { GROUPS, NAV } from './routes.js';
 import { useSession } from './session.js';
+import { GuildIdentity, ShellFooter } from './shell-chrome.js';
 import { StateStrip } from './StateStrip.js';
 
 function DesktopHeader() {
@@ -77,44 +77,7 @@ function DesktopHeader() {
   );
 }
 
-function GuildIdentity() {
-  const session = useSession();
-  const health = useHealth();
-  const name = health.resource.state === 'ready' ? health.resource.data.guildName : null;
-  const reachable = session.info.reachableGuilds;
-  return (
-    <div className="px-4 py-4">
-      <p className="mb-1 text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-ink-muted">
-        Active server
-      </p>
-      {reachable !== undefined && reachable.length > 1 ? (
-        <label className="block">
-          <span className="sr-only">Server</span>
-          <select
-            value={session.info.guildId}
-            onChange={(e) => void session.switchGuild(e.target.value)}
-            className="block w-full rounded-sm border border-line bg-panel px-2.5 py-2 text-sm font-medium text-ink"
-          >
-            {reachable.map((guild) => (
-              <option key={guild.guildId} value={guild.guildId}>
-                {guild.name ?? guild.guildId}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : (
-        <p className="truncate text-sm font-medium">{name ?? 'Guild'}</p>
-      )}
-      <p className="mt-0.5 truncate text-xs text-ink-muted">{session.info.guildId}</p>
-    </div>
-  );
-}
-
-// ADR 0051 D6's rail groups, in order. Empty groups (Archive until the
-// operator pages land) render nothing rather than a bare heading.
-const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'] as const;
-
-function Rail({ onNavigate }: { readonly onNavigate?: () => void }) {
+function Rail() {
   const [location] = useLocation();
   return (
     <div className="flex min-h-0 flex-1 flex-col">
@@ -141,7 +104,6 @@ function Rail({ onNavigate }: { readonly onNavigate?: () => void }) {
                     <li key={entry.path}>
                       <Link
                         href={entry.path}
-                        onClick={onNavigate}
                         aria-current={active ? 'page' : undefined}
                         className={`flex min-h-9 items-center justify-between rounded-sm px-2.5 py-1.5 text-sm transition-colors ${
                           active
@@ -230,36 +192,9 @@ function Pages() {
   );
 }
 
-function MenuIcon({ open }: { readonly open: boolean }) {
-  return (
-    <svg
-      viewBox="0 0 24 24"
-      aria-hidden="true"
-      className="size-5"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.8"
-    >
-      {open ? <path d="m6 6 12 12M18 6 6 18" /> : <path d="M4 7h16M4 12h16M4 17h16" />}
-    </svg>
-  );
-}
-
-function ShellFooter({ onSignOut }: { readonly onSignOut: () => void }) {
-  return (
-    <div className="border-t border-line px-4 py-3">
-      <Button className="w-full justify-center" onClick={onSignOut}>
-        Sign out
-      </Button>
-      <Attribution className="mt-3 text-center text-[0.6875rem] text-ink-muted" />
-    </div>
-  );
-}
-
 /** Responsive operator shell. Must render inside `SessionProvider` and a wouter `Router`. */
 export function Shell() {
   const session = useSession();
-  const [drawerOpen, setDrawerOpen] = useState(false);
 
   // The composed backdrop anchors its leaves to the viewport corner; while
   // the shell is mounted they belong to the content canvas, clear of the
@@ -269,53 +204,23 @@ export function Shell() {
     return () => document.body.classList.remove('shell-with-sidebar');
   }, []);
 
-  useEffect(() => {
-    if (!drawerOpen) return;
-    const close = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setDrawerOpen(false);
-    };
-    document.addEventListener('keydown', close);
-    return () => document.removeEventListener('keydown', close);
-  }, [drawerOpen]);
-
   return (
     <HealthProvider>
       <div className="min-h-screen lg:flex">
-        <header className="sticky top-0 z-30 flex h-16 items-center justify-between border-b border-line bg-canvas/95 px-4 backdrop-blur lg:hidden">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-2 border-b border-line bg-canvas/95 px-4 backdrop-blur lg:hidden">
           <Brand />
-          <div className="flex items-center gap-2">
+          <div className="flex shrink-0 items-center gap-2">
             <ThemeToggle />
-            <button
-              type="button"
-              aria-label={drawerOpen ? 'Close navigation' : 'Open navigation'}
-              aria-expanded={drawerOpen}
-              aria-controls="mobile-navigation"
-              className="grid size-10 place-items-center rounded-sm border border-line bg-panel text-ink"
-              onClick={() => setDrawerOpen((open) => !open)}
-            >
-              <MenuIcon open={drawerOpen} />
-            </button>
+            <JumpNav />
           </div>
         </header>
 
-        {drawerOpen && (
-          <button
-            type="button"
-            aria-label="Close navigation"
-            className="shell-backdrop fixed inset-0 z-30 bg-black/60 lg:hidden"
-            onClick={() => setDrawerOpen(false)}
-          />
-        )}
-
-        <aside
-          id="mobile-navigation"
-          className={`fixed inset-y-0 left-0 z-40 flex w-[min(19rem,88vw)] flex-col border-r border-line bg-canvas transition-transform lg:sticky lg:top-0 lg:h-screen lg:w-64 lg:translate-x-0 ${drawerOpen ? 'translate-x-0' : '-translate-x-full'}`}
-        >
+        <aside className="hidden border-r border-line bg-canvas lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-64 lg:shrink-0 lg:flex-col">
           <div className="flex h-16 shrink-0 items-center border-b border-line px-4">
             <Brand />
           </div>
           <GuildIdentity />
-          <Rail onNavigate={() => setDrawerOpen(false)} />
+          <Rail />
           <ShellFooter onSignOut={() => void session.logout()} />
         </aside>
 

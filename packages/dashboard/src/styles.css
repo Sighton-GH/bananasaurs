@@ -167,6 +167,36 @@
     backdrop-filter: blur(2px);
   }
 
+  /* The mobile jump sheet (ADR 0055): rises from the bottom edge behind a
+   * fading overlay. Short and calm - navigation chrome should feel instant,
+   * not animated. `prefers-reduced-motion` disables both through the global
+   * rule above. */
+  @keyframes jumpnav-sheet-in {
+    from {
+      transform: translateY(100%);
+    }
+    to {
+      transform: translateY(0);
+    }
+  }
+
+  @keyframes jumpnav-overlay-in {
+    from {
+      opacity: 0;
+    }
+    to {
+      opacity: 1;
+    }
+  }
+
+  .jumpnav-sheet {
+    animation: jumpnav-sheet-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+  }
+
+  .jumpnav-overlay {
+    animation: jumpnav-overlay-in 140ms ease-out;
+  }
+
   /* Long unbroken tokens (snowflakes, account ids, hashes) wrap instead of
    * widening the page, and grid/flex children may shrink below their content
    * width - without this a single 18-digit id pushes cards past a 390px

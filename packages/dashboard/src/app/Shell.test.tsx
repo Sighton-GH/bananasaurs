@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
@@ -191,18 +191,18 @@ describe('Shell', () => {
     ]);
   });
 
-  it('opens and closes the mobile navigation without changing the page', async () => {
+  it('opens and closes the mobile jump navigation without changing the page', async () => {
     renderAt('/');
-    const open = await screen.findByRole('button', { name: 'Open navigation' });
-    expect(open.getAttribute('aria-expanded')).toBe('false');
-    fireEvent.click(open);
-    expect(
-      screen
-        .getByRole('button', { name: 'Close navigation', expanded: true })
-        .getAttribute('aria-expanded'),
-    ).toBe('true');
-    fireEvent.keyDown(document, { key: 'Escape' });
-    expect(screen.getByRole('button', { name: 'Open navigation' })).toBeTruthy();
+    const trigger = await screen.findByRole('button', {
+      name: 'Open navigation - current page Overview',
+    });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(trigger);
+    const sheet = await screen.findByRole('dialog', { name: 'Jump to' });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(sheet, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
     expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy();
   });
 });

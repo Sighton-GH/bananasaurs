@@ -9,6 +9,13 @@ export interface NavEntry {
   readonly group: NavGroup;
 }
 
+/**
+ * ADR 0051 D6's rail groups, in order. The desktop rail and the mobile jump
+ * sheet both render this order; empty groups render nothing rather than a
+ * bare heading.
+ */
+export const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'] as const;
+
 export const NAV: readonly NavEntry[] = [
   { path: '/', label: 'Overview', status: 'built', group: 'Operate' },
   { path: '/safety', label: 'Safety', status: 'built', group: 'Operate' },
