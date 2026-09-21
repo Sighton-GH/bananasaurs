@@ -21,7 +21,9 @@ import { Button } from '../ui/Button.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
-import { Checkbox, Field, Input } from '../ui/Field.js';
+import { ChannelPicker } from '../ui/ChannelPicker.js';
+import { Checkbox, Field } from '../ui/Field.js';
+import { RolePicker } from '../ui/RolePicker.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { Card } from '../ui/Card.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -421,13 +423,21 @@ function RuleDetailView({
             </Field>
           </div>
           <div className="flex-1">
-            <Field label="ID" hint="a role or channel ID">
-              <Input
+            {exemptType === 'channel' ? (
+              <ChannelPicker
+                label="Channel"
+                hint="Pick the channel this rule ignores, or paste its snowflake ID."
                 value={exemptId}
-                onChange={(e) => setExemptId(e.target.value)}
-                placeholder="e.g. 1540816150026518620"
+                onChange={setExemptId}
               />
-            </Field>
+            ) : (
+              <RolePicker
+                label="Role"
+                hint="Pick the role this rule ignores, or paste its snowflake ID."
+                value={exemptId}
+                onChange={setExemptId}
+              />
+            )}
           </div>
           <Button type="submit" variant="primary" busy={exemptBusy}>
             Add exemption
