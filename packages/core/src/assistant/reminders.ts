@@ -83,15 +83,32 @@ export const REMINDER_RETRY_BACKOFF_MS = 60_000;
  */
 export const REMINDER_DELIVERY_STALE_MS = 5 * 60_000;
 
+/**
+ * The one validation every reminder write goes through, whatever path
+ * created it - the store helper below and the daemon's `/remind` slash path
+ * alike (review finding 8: the slash path used to carry its own half-copy).
+ * Returns the error, or the trimmed text on success.
+ */
+export const validateReminderDraft = (
+  input: { readonly dueAt: number; readonly text: string },
+  now: number,
+): { readonly ok: true; readonly text: string } | { readonly ok: false; readonly error: string } => {
+  if (!Number.isFinite(input.dueAt) || input.dueAt <= now)
+    return { ok: false, error: 'reminder time must be in the future' };
+  const text = input.text.trim();
+  if (text.length === 0 || text.length > 1_500)
+    return { ok: false, error: 'reminder text must be 1 to 1500 characters' };
+  return { ok: true, text };
+};
+
 export const createReminder = async (
   input: Omit<Reminder, 'status' | 'dedupeKey'>,
   store: ReminderStore,
   now = Date.now(),
 ): Promise<Reminder> => {
-  if (input.dueAt <= now) throw new Error('reminder time must be in the future');
-  const text = input.text.trim();
-  if (text.length === 0 || text.length > 1_500)
-    throw new Error('reminder text must be 1 to 1500 characters');
+  const draft = validateReminderDraft(input, now);
+  if (!draft.ok) throw new Error(draft.error);
+  const text = draft.text;
   const reminder: Reminder = {
     ...input,
     text,

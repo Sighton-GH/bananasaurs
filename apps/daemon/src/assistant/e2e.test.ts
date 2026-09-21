@@ -203,12 +203,14 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       command: 'ask',
       input: { question: 'needs admin' },
       source: 'mention',
+      invocationId: 'msg-1',
     });
     expect(escalation).toMatchObject({
       ok: true,
       escalation: { channelId: IT_CHANNEL, reviewerRoleIds: [REVIEWER_ROLE] },
     });
     expect(assistantRepo.listTickets(scope)).toHaveLength(1);
+    // A retry of the SAME message dedupes on the invocation anchor...
     const duplicate = await service.invoke({
       guildId: GUILD,
       channelId: CHANNEL,
@@ -218,9 +220,25 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       command: 'ask',
       input: { question: 'needs admin' },
       source: 'mention',
+      invocationId: 'msg-1',
     });
     expect(duplicate.content).toContain('already open');
     expect(assistantRepo.listTickets(scope)).toHaveLength(1);
+    // ...while a genuinely new invocation is a new request, never a false
+    // "already open" off byte-identical model text.
+    const fresh = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: it,
+      command: 'ask',
+      input: { question: 'needs admin' },
+      source: 'mention',
+      invocationId: 'msg-2',
+    });
+    expect(fresh).toMatchObject({ ok: true, escalation: { channelId: IT_CHANNEL } });
+    expect(assistantRepo.listTickets(scope)).toHaveLength(2);
   });
   it('fails provider safety and cost policy before a network provider can run', async () => {
     const scope = t.scopes.forGuild(GUILD);

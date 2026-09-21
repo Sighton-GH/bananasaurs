@@ -1,14 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import {
   assertProviderEligible,
-  compileAssistantContext,
   CLUB_ASSISTANT_SKILLS,
-  GeminiProvider,
+  compileAssistantContext,
   createNvidiaNimProvider,
   createOpenRouterProvider,
+  GeminiProvider,
   SafeProvider,
   type Config,
   type TextProvider,
+  validateReminderDraft
 } from '@bananasaurs/core';
 import { assistantRepo, eligibilityRepo, type GuildScope, type InstanceScope } from '@bananasaurs/storage';
 import type { AssistantCommandService, AssistantInvocation } from './commands.js';
@@ -132,12 +133,6 @@ export const createAssistantService = (
         };
       }
       if (input.command === 'remind') {
-        const dueAt = Date.parse(input.input.when ?? '');
-        if (!Number.isFinite(dueAt) || dueAt <= now())
-          return {
-            ok: false,
-            content: 'Use an unambiguous future date and time. No reminder was scheduled.',
-          };
         // A reminder needs a real destination channel. Falling back to the
         // user id produced a row that could never be delivered while the
         // reply said "Reminder scheduled" (finding 7).
@@ -146,12 +141,20 @@ export const createAssistantService = (
             ok: false,
             content: 'Reminders must run in a server channel. No reminder was scheduled.',
           };
-        const text = (input.input.text ?? '').trim();
-        if (text.length === 0 || text.length > 1_500)
+        // The same validation every reminder write goes through (finding 8)
+        // - the slash path shares `createReminder`'s checks instead of
+        // carrying its own copy.
+        const draft = validateReminderDraft(
+          { dueAt: Date.parse(input.input.when ?? ''), text: input.input.text ?? '' },
+          now(),
+        );
+        if (!draft.ok)
           return {
             ok: false,
-            content: 'Reminder text must be 1 to 1500 characters. No reminder was scheduled.',
+            content: `${draft.error.charAt(0).toUpperCase()}${draft.error.slice(1)}. No reminder was scheduled.`,
           };
+        const text = draft.text;
+        const dueAt = Date.parse(input.input.when ?? '');
         const id = randomUUID();
         // Hard rule 6: the dedupe key is the Discord interaction or message
         // that asked for the reminder, not a fresh UUID, so a retried
@@ -340,7 +343,12 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
           channelId: input.behaviour.ticketChannelId,
           requesterId: input.userId,
           summary,
-          dedupeKey: `it:${input.userId}:${input.channelId ?? 'none'}:${summary}`,
+          // Hard rule 6, same posture as reminders: the dedupe anchor is
+          // the Discord interaction or message that produced the
+          // escalation, so a retried invocation cannot open the ticket
+          // twice and two genuinely different requests never collide on
+          // byte-identical model text (review cosmetic).
+          dedupeKey: `it:${scope.guildId}:${input.invocationId ?? ticketId}`,
           at: now(),
         });
         if (!created)

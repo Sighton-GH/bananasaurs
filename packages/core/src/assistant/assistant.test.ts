@@ -141,6 +141,35 @@ describe('reminders', () => {
       1_000,
     );
     expect(reminder.dedupeKey).toBe('reminder:g1:x');
+
+    // The shared validator: past, non-finite and empty or oversized text are
+    // all refused, on this path and the daemon's /remind path alike
+    // (finding 8).
+    const rejectStore = {
+      create: vi.fn(),
+      cancel: vi.fn(),
+      claimDue: vi.fn(),
+      complete: vi.fn(),
+      fail: vi.fn(),
+      retry: vi.fn(),
+    };
+    const base = {
+      id: 'y',
+      guildId: 'g1',
+      creatorId: 'u1',
+      destinationId: 'c1',
+      createdAt: 1_000,
+    };
+    await expect(
+      createReminder({ ...base, text: 'ok', dueAt: Number.NaN }, rejectStore, 1_000),
+    ).rejects.toThrow('reminder time must be in the future');
+    await expect(
+      createReminder({ ...base, text: 'ok', dueAt: 500 }, rejectStore, 1_000),
+    ).rejects.toThrow('reminder time must be in the future');
+    await expect(
+      createReminder({ ...base, text: '   ', dueAt: 2_000 }, rejectStore, 1_000),
+    ).rejects.toThrow('reminder text must be 1 to 1500 characters');
+    expect(rejectStore.create).not.toHaveBeenCalled();
     const store = {
       create: vi.fn(),
       cancel: vi.fn(),
