@@ -210,6 +210,20 @@ export interface GuildChannelInfo {
   readonly kind: string;
 }
 
+/**
+ * One row of `GET /api/guild/roles`'s `roles` — mirrors `OpsGuildRoleInfo`
+ * plus the route's `optionable` join: Bananasaurs manages the role and
+ * Discord does not, so a panel option may point at it.
+ */
+export interface GuildRoleInfo {
+  readonly roleId: string;
+  readonly name: string;
+  readonly colour: number;
+  readonly position: number;
+  readonly managed: boolean;
+  readonly optionable: boolean;
+}
+
 // --- archive ----------------------------------------------------------------
 
 export type ArchiveAttachmentPolicy = 'none' | 'bytes';

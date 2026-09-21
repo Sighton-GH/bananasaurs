@@ -11,10 +11,12 @@ import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
+import { PanelBuilder } from './panel-builder.js';
 
 /**
- * `/panels`: `panel list` and `panel show` as a page, with the two actions
- * the operator CLI gates behind `--confirm` (ADR 0051 D3/D4). Publish posts
+ * `/panels`: `panel list` and `panel show` as a page, the role-panel builder
+ * as the production creation path (ADR 0053), and the two actions the
+ * operator CLI gates behind `--confirm` (ADR 0051 D3/D4). Publish posts
  * or edits the panel's Discord message right now — a live side effect, so it
  * states its scope first. Reconcile only enqueues a job: the worker
  * reconciles against Discord under the current kill switch and dry-run
@@ -26,21 +28,31 @@ export function PanelsPage() {
   const load = useCallback(() => session.read<PanelSummary[]>('/api/panels'), [session]);
   const panels = useResource('the role panels', load);
 
+  const [building, setBuilding] = useState(false);
   const [selected, setSelected] = useState<PanelDetail | undefined>(undefined);
   const [detailError, setDetailError] = useState<string | undefined>(undefined);
   const [publishing, setPublishing] = useState<PanelDetail | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
-  const view = async (panel: PanelSummary) => {
+  const viewById = async (panelId: string) => {
     setDetailError(undefined);
     try {
-      setSelected(
-        await session.read<PanelDetail>(`/api/panels/${encodeURIComponent(panel.panelId)}`),
-      );
+      setSelected(await session.read<PanelDetail>(`/api/panels/${encodeURIComponent(panelId)}`));
     } catch (err) {
       setSelected(undefined);
       setDetailError(err instanceof Error ? err.message : String(err));
     }
+  };
+
+  const view = (panel: PanelSummary) => viewById(panel.panelId);
+
+  // Straight from the builder's created state to the new panel's detail card,
+  // where the publish lever sits — creation and publishing stay two
+  // deliberate steps (ADR 0053).
+  const created = async (panelId: string) => {
+    setBuilding(false);
+    panels.reload();
+    await viewById(panelId);
   };
 
   const publish = async () => {
@@ -94,15 +106,32 @@ export function PanelsPage() {
     <>
       <PageHeader
         title="Role panels"
-        purpose="Self-service role menus posted in Discord: what is configured, whether Discord still agrees, and the publish and reconcile levers."
+        purpose="Self-service role menus posted in Discord: build them here, see whether Discord still agrees, and drive publish and reconcile."
+        actions={
+          building ? undefined : (
+            <Button variant="primary" onClick={() => setBuilding(true)}>
+              New panel
+            </Button>
+          )
+        }
       />
+      {building && (
+        <div className="mb-4">
+          <PanelBuilder onCreated={(panelId) => void created(panelId)} onCancel={() => setBuilding(false)} />
+        </div>
+      )}
       <DataState
         resource={panels.resource}
         isEmpty={(p) => p.length === 0}
         empty={
           <EmptyState
             title="No role panels configured"
-            detail="Panel creation has not shipped yet — the old note pointing at the operator CLI was wrong, because the CLI has no create command. When panels exist, this page lists them and drives publish and reconcile."
+            detail="Build the first one here — the builder walks channel, behaviour and options, and nothing reaches Discord until you publish."
+            action={
+              <Button variant="primary" onClick={() => setBuilding(true)}>
+                Build a role panel
+              </Button>
+            }
           />
         }
       >

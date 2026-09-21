@@ -72,7 +72,15 @@ export const registerOpsReadRoutes = (
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
     const ports = deps.portsFor(session.scope);
-    return reply.status(200).send({ roles: ports.listGuildRoles() });
+    return reply.status(200).send({
+      roles: ports.listGuildRoles().map((role) => ({
+        ...role,
+        // The panel builder's rule, resolved server-side so the picker never
+        // learns it from a refusal: an option must be a role Bananasaurs
+        // manages, and a Discord-managed role can never be granted by a bot.
+        optionable: !role.managed && ports.isManagedRole(role.roleId),
+      })),
+    });
   });
 
   app.get('/api/archive/status', (request, reply) => {
