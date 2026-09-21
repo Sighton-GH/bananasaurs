@@ -64,6 +64,41 @@ export const parseDuration = (input: string): number | undefined => {
 
 const iso = (ms: number): string => new Date(ms).toISOString().replace('T', ' ').slice(0, 19);
 
+/** One doctor finding, led by what an operator must do about it. */
+export interface DoctorProblem {
+  /** Plain-language statement of what is wrong. */
+  readonly title: string;
+  /** Why it matters - the silent failure or exposure it causes. */
+  readonly impact: string;
+  /** The exact fix: the Discord setting, the dashboard route, or the command. */
+  readonly fix: string;
+  /** Dashboard path with the direct control, when one exists. */
+  readonly route?: string;
+  /** Raw ids and states, secondary to the plain language above. */
+  readonly details?: string;
+}
+
+/** The gateway-half fields this command reads as structured findings. */
+const doctorGatewayDataSchema = z.object({
+  partials: z.object({ missing: z.array(z.string()) }),
+  guilds: z.array(
+    z.object({
+      guildId: z.string(),
+      present: z.boolean(),
+      name: z.string().optional(),
+      missingPermissions: z.array(z.string()),
+      extraPermissions: z.array(z.string()),
+      forbiddenPermissions: z.array(z.string()),
+    }),
+  ),
+  archiveGuildsNotAllowlisted: z.array(z.string()),
+  backup: z.object({
+    dirWritable: z.boolean(),
+    backupCount: z.number(),
+    stale: z.boolean(),
+  }),
+});
+
 // --- doctor ------------------------------------------------------------------
 
 export const doctorCommand = defineCommand<Record<string, never>>({
@@ -91,117 +126,231 @@ export const doctorCommand = defineCommand<Record<string, never>>({
     // breach of the exposure decision, not decoration under a green header.
     const surface = await ctx.instance.probePublicSurface();
 
-    const lines = [report.text, ''];
-    lines.push(
-      stale.length === 0
-        ? 'panels    every configured panel is enabled'
-        : `panels    ${String(stale.length)} disabled:\n` +
-            stale.map((p) => `            ${p.panelId}  ${p.status}`).join('\n'),
-    );
-    lines.push(
-      unassignable.length === 0
-        ? 'roles     every managed role is assignable'
-        : `roles     ${String(unassignable.length)} unassignable:\n` +
-            unassignable
-              .map((r) => `            ${r.roleId}  ${r.reason ?? 'reason not recorded'}`)
-              .join('\n'),
-    );
-    lines.push(
-      missingManageMessages.length === 0
-        ? 'automod    every enforce-mode keyword filter rule has Manage Messages'
-        : `automod    ${String(missingManageMessages.length)} rule(s) missing Manage Messages:\n` +
-            missingManageMessages
-              .map((r) => `            ${r.ruleId}  channel ${r.channelId}`)
-              .join('\n'),
-    );
-    lines.push(
-      unusable.length === 0
-        ? 'automod    every enabled automod rule compiles'
-        : `automod    ${String(unusable.length)} rule(s) cannot be compiled and will never match:\n` +
-            unusable
-              .map((r) => `            ${r.ruleId}  (${r.kind})  ${r.reason}: ${r.detail}`)
-              .join('\n'),
-    );
-    lines.push(
-      // ADR 0042 §3's first check: rows `setRuleMode` can no longer create —
-      // it refuses `mode: 'enforce'` outside `ready`/`cutover` — so a hit here
-      // predates this slice or was hand-edited straight into the database.
-      badCutoverState.length === 0
-        ? 'automod    every enforcing rule is in a cutover_state that permits it'
-        : `automod    ${String(badCutoverState.length)} rule(s) enforcing with a cutover_state that ` +
-            `does not permit it:\n` +
-            badCutoverState
-              .map((r) => `            ${r.ruleId}  cutover_state=${r.cutoverState}`)
-              .join('\n'),
-    );
-    lines.push(
-      // ADR 0042 §3's second check: an observe window that ran past docs/08's
-      // floor with matches nobody has reviewed. `doctor` reports it; nothing
-      // at the write path refuses on its account (there is nothing to write).
-      observePastWindow.length === 0
-        ? 'automod    no observing rule is both past its window and carrying an unreviewed backlog'
-        : `automod    ${String(observePastWindow.length)} rule(s) observing past their window with ` +
-            `an unreviewed backlog:\n` +
-            observePastWindow
-              .map(
-                (r) =>
-                  `            ${r.ruleId}  observing since ${iso(r.observeStartedAt)}, ` +
-                  `${String(r.unreviewedCount)} unreviewed match(es)`,
-              )
-              .join('\n'),
-    );
+    // Structured findings first: every problem leads with what is wrong in
+    // plain language, why it matters, and the exact fix - Discord setting,
+    // dashboard route, or host command - with raw ids as secondary details
+    // (Bryan's doctor lane). The gateway-half text and probe text stay, but
+    // demoted to raw diagnostics at the bottom.
+    const problems: DoctorProblem[] = [];
+    const advisories: string[] = [];
+    const clear: string[] = [];
 
-    lines.push(
-      // ADR 0046 D1's per-guild check: an enabled archive channel the bot
-      // cannot read archives nothing, silently. Same problem flag as the
-      // automod lines above — a silent no-op under a green header is the
-      // exact confusion `doctor` exists to prevent.
-      unreadableArchiveChannels.length === 0
-        ? 'archive    every enabled archive channel is readable'
-        : `archive    ${String(unreadableArchiveChannels.length)} channel(s) unreadable:\n` +
-            unreadableArchiveChannels
-              .map((c) => `    ARCHIVE CHANNEL UNREADABLE: ${c.channelId} (${c.reason})`)
-              .join('\n'),
-    );
+    // The gateway half's structured findings, when the daemon sent them.
+    const gateway = doctorGatewayDataSchema.safeParse(report.data);
+    if (gateway.success) {
+      const g = gateway.data;
+      if (g.partials.missing.length > 0) {
+        problems.push({
+          title: `Gateway partials are missing: ${g.partials.missing.join(', ')}`,
+          impact:
+            'A reaction on an uncached message produces no event at all, so self-granted roles silently stop working for old messages.',
+          fix: 'Add the missing partials to the discord.js client options and restart.',
+          details: `missing: ${g.partials.missing.join(', ')}`,
+        });
+      }
+      for (const guild of g.guilds) {
+        const label = guild.name === undefined ? guild.guildId : `${guild.name} (${guild.guildId})`;
+        if (!guild.present) {
+          problems.push({
+            title: `The bot is not in guild ${label}`,
+            impact: 'Nothing works in that server - no panels, no automod, no archive.',
+            fix: 'Invite the bot to the server, or remove the id from BANANASAURS_GUILD_ALLOWLIST.',
+          });
+          continue;
+        }
+        if (guild.missingPermissions.length > 0) {
+          problems.push({
+            title: `The bot is missing required permissions in ${label}`,
+            impact: 'Every feature that needs one of these silently fails.',
+            fix: `Discord: Server Settings -> Roles -> the bot's role -> enable ${guild.missingPermissions.join(', ')}.`,
+          });
+        }
+        if (guild.forbiddenPermissions.length > 0) {
+          problems.push({
+            title: `The bot holds forbidden permissions in ${label}`,
+            impact:
+              "docs/18's permission wall is the only limit a bug cannot defeat; these permissions dissolve it.",
+            fix: `Discord: Server Settings -> Roles -> the bot's role -> remove ${guild.forbiddenPermissions.join(', ')}.`,
+          });
+        }
+        // Extra permissions are NOT missing requirements: advisory, never a
+        // problem count, so the operator can tell "grants too much" apart
+        // from "cannot work".
+        if (guild.extraPermissions.length > 0) {
+          advisories.push(
+            `${label}: the bot holds extra permissions beyond the required set (${guild.extraPermissions.join(', ')}) - safe to remove in Discord (Server Settings -> Roles), not required for anything to work.`,
+          );
+        }
+      }
+      for (const guildId of g.archiveGuildsNotAllowlisted) {
+        problems.push({
+          title: `Archive guild ${guildId} is not in the guild allowlist`,
+          impact: 'A guild the bot never joins archives nothing - this is almost certainly a typo.',
+          fix: 'Add the id to BANANASAURS_GUILD_ALLOWLIST, or remove it from BANANASAURS_ARCHIVE_GUILDS.',
+        });
+      }
+      if (!g.backup.dirWritable) {
+        problems.push({
+          title: 'The backup directory is not writable',
+          impact: 'No backup can be written; a host failure would mean data loss.',
+          fix: 'Fix the directory permissions on the host (see BANANASAURS_BACKUP_DIR).',
+        });
+      } else if (g.backup.backupCount > 0 && g.backup.stale) {
+        advisories.push('Backups look stale - check that the backup timer is still running.');
+      }
+    }
 
-    lines.push(
-      // The FTS row count beside the `archive_messages` row count, both for
-      // this guild: a restored database disagrees until `archive reindex`
-      // runs. Same problem flag as the archive line above.
-      archiveIndex.indexed === archiveIndex.rows
-        ? 'archive    every archived message is indexed'
-        : `    ARCHIVE INDEX STALE: ${String(archiveIndex.indexed)} indexed, ` +
-            `${String(archiveIndex.rows)} archived — run 'archive reindex --confirm'`,
-    );
+    if (stale.length === 0) {
+      clear.push('panels: every configured panel is enabled');
+    }
+    for (const panel of stale) {
+      problems.push({
+        title: `Role panel ${panel.panelId} is ${panel.status}`,
+        impact: 'Members cannot get roles from it - the message sits in the channel doing nothing.',
+        fix: 'Enable the panel, or delete it if it is no longer needed.',
+        route: '/panels',
+        details: `panel ${panel.panelId}  status ${panel.status}`,
+      });
+    }
 
-    lines.push(
-      // ADR 0044 §7: a stale or not-`'no'` eligibility row is a promise
-      // `PRIVACY.md` makes that nobody recently verified. `doctor` is where
-      // an operator finds that out — the review date rides along as ISO so
-      // the warning says when the promise was last checked.
-      eligibilityWarnings.length === 0
-        ? 'training eligibility    every provider verified'
-        : `training eligibility    ${String(eligibilityWarnings.length)} provider(s) need review:\n` +
-            eligibilityWarnings
-              .map((w) =>
-                w.reason === 'unverified'
-                  ? `            ${w.provider}  unverified: configured but no eligibility record - the assistant is intentionally disabled until the owner verifies the terms and adds one`
-                  : `            ${w.provider}  ${w.reason}  reviewed ${iso(w.reviewedAt)}`,
-              )
-              .join('\n'),
-    );
+    if (unassignable.length === 0) {
+      clear.push('roles: every managed role is assignable');
+    }
+    for (const role of unassignable) {
+      problems.push({
+        title: `Managed role ${role.roleId} cannot be assigned`,
+        impact:
+          'Members who should get this role never receive it; panels and rules fail for it silently.',
+        fix: "Discord: Server Settings -> Roles -> drag the bot's role above this one. If it is an integration-managed role, remove it from the allowlist instead.",
+        details: role.reason ?? 'reason not recorded',
+      });
+    }
+
+    if (missingManageMessages.length === 0) {
+      clear.push('automod: every enforce-mode keyword filter rule has Manage Messages');
+    }
+    for (const rule of missingManageMessages) {
+      problems.push({
+        title: `Keyword filter rule ${rule.ruleId} cannot delete matching messages`,
+        impact:
+          'The rule is in enforce mode, but without Manage Messages its deletions fail and matching messages stay up.',
+        fix: "Grant the bot Manage Messages in Discord (Server Settings -> Roles -> the bot's role), or drop the rule back to observe mode.",
+        route: `/automod/${rule.ruleId}`,
+        details: `rule ${rule.ruleId}  channel ${rule.channelId}`,
+      });
+    }
+
+    if (unusable.length === 0) {
+      clear.push('automod: every enabled automod rule compiles');
+    }
+    for (const rule of unusable) {
+      problems.push({
+        title: `Automod rule ${rule.ruleId} will never match`,
+        impact: 'The rule cannot be compiled, so it silently does nothing.',
+        fix: 'Open the rule and fix the setting named in the details.',
+        route: `/automod/${rule.ruleId}`,
+        details: `${rule.kind}  ${rule.reason}: ${rule.detail}`,
+      });
+    }
+
+    if (badCutoverState.length === 0) {
+      clear.push('automod: every enforcing rule is in a cutover state that permits it');
+    }
+    for (const rule of badCutoverState) {
+      problems.push({
+        title: `Automod rule ${rule.ruleId} is enforcing without completing its observe window`,
+        impact: 'The safe roll-out order was bypassed - an untested rule is acting on members.',
+        fix: 'Move the rule back to observe, or complete the cutover properly.',
+        route: `/automod/${rule.ruleId}`,
+        details: `cutover_state=${rule.cutoverState}`,
+      });
+    }
+
+    if (observePastWindow.length === 0) {
+      clear.push(
+        'automod: no observing rule is both past its window and carrying an unreviewed backlog',
+      );
+    }
+    for (const rule of observePastWindow) {
+      problems.push({
+        title: `Automod rule ${rule.ruleId} finished observing with ${String(rule.unreviewedCount)} unreviewed match(es)`,
+        impact: 'The rule cannot move to enforce until someone reviews what it caught.',
+        fix: 'Review the matches, then enforce the rule or extend the window.',
+        route: `/automod/${rule.ruleId}`,
+        details: `observing since ${iso(rule.observeStartedAt)}`,
+      });
+    }
+
+    if (unreadableArchiveChannels.length === 0) {
+      clear.push('archive: every enabled archive channel is readable');
+    }
+    for (const channel of unreadableArchiveChannels) {
+      problems.push({
+        title: `Archive channel ${channel.channelId} is unreadable`,
+        impact: 'Nothing in that channel is archived - the archive silently misses it.',
+        fix: 'Grant the bot View Channel on the channel in Discord (channel settings -> Permissions), or disable archiving for it.',
+        route: '/archive',
+        details: channel.reason,
+      });
+    }
+
+    if (archiveIndex.indexed === archiveIndex.rows) {
+      clear.push('archive: every archived message is indexed');
+    } else {
+      problems.push({
+        title: 'The archive search index is behind',
+        impact: `Only ${String(archiveIndex.indexed)} of ${String(archiveIndex.rows)} archived messages are searchable; search misses the rest.`,
+        fix: "Run 'bananasaurs archive reindex --confirm' on the host.",
+      });
+    }
+
+    if (eligibilityWarnings.length === 0) {
+      clear.push('training eligibility: every provider verified');
+    }
+    for (const warning of eligibilityWarnings) {
+      const reviewed = `last reviewed ${iso(warning.reviewedAt)}`;
+      if (warning.reason === 'unverified') {
+        problems.push({
+          title: `AI provider ${warning.provider} is configured but unverified`,
+          impact:
+            'Assistant answers are intentionally disabled - no content leaves the server for this provider.',
+          fix: "Verify the provider's training-data terms and add the eligibility record by migration, then mark it reviewed. Until then the refusal is the intended state.",
+          route: '/providers',
+        });
+      } else if (warning.reason === 'stale') {
+        problems.push({
+          title: `The training-eligibility review for ${warning.provider} is stale`,
+          impact:
+            'The promise PRIVACY.md makes about this provider was last verified over 90 days ago.',
+          fix: 'Re-read the terms at the evidence link, then mark the provider reviewed.',
+          route: '/providers',
+          details: reviewed,
+        });
+      } else if (warning.reason === 'not-production') {
+        problems.push({
+          title: `Provider ${warning.provider} is not allowed for production use`,
+          impact:
+            'Member content must not be sent to it; the assistant refuses until this is resolved.',
+          fix: 'Move to a plan or provider whose terms allow production use, or set AI_PROVIDER=off.',
+          route: '/providers',
+          details: reviewed,
+        });
+      } else {
+        problems.push({
+          title: `Provider ${warning.provider} trains on input (or its policy is unknown)`,
+          impact:
+            'Member content must not be sent to it; the assistant refuses until this is resolved.',
+          fix: 'Set AI_PROVIDER=off, or switch to a provider that does not train on input.',
+          route: '/providers',
+          details: `trainsOnInput=${warning.trainsOnInput}  ${reviewed}`,
+        });
+      }
+    }
 
     // S13-D5: whether anyone can sign in at all. The data rides in the
-    // gateway-half report — computed by the daemon over the account tables,
-    // which this command cannot read itself — so it is parsed out of
-    // `report.data` and rendered here in the same `label    text` column
-    // form as every finding above. Absent data (an older or stubbed
-    // `doctor()` port) skips the finding: unassessed is not failed.
-    //
-    // On the expiry the third row cannot name: no in-scope repository
-    // function returns the live bootstrap token's expiry (only the count),
-    // and the accounts repository is out of scope for this slice — so the
-    // setup-pending line names the live token without a timestamp.
+    // gateway-half report - computed by the daemon over the account tables,
+    // which this command cannot read itself. Absent data (an older or
+    // stubbed `doctor()` port) skips the finding: unassessed is not failed.
     const dashboardAccess = dashboardAccessSchema.safeParse(
       (report.data as { dashboardAccess?: unknown } | null)?.dashboardAccess,
     );
@@ -209,46 +358,44 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       const access = dashboardAccess.data;
       if (access.enabledAccounts === 0) {
         if (access.liveBootstrapTokens > 0) {
-          lines.push(
-            `dashboard access    setup pending, not broken: no dashboard accounts yet, ` +
-              `but ${String(access.liveBootstrapTokens)} bootstrap token(s) still live — ` +
-              `complete setup before it expires`,
+          advisories.push(
+            `Dashboard setup is pending, not broken: no accounts yet, but ${String(access.liveBootstrapTokens)} bootstrap token(s) are still live - complete setup before expiry.`,
           );
         } else {
-          lines.push(
-            `dashboard access    nobody can sign in: no dashboard accounts and no live ` +
-              `bootstrap token — restart the daemon to mint one`,
-          );
+          problems.push({
+            title: 'Nobody can sign in to the dashboard',
+            impact: 'The whole operator surface is unreachable.',
+            fix: 'Restart the daemon to mint a new bootstrap token, then complete setup.',
+          });
         }
       } else if (access.unreachableGuilds.length === 0) {
-        lines.push('dashboard access    ok');
+        clear.push('dashboard access: ok');
       } else {
-        lines.push(
-          `dashboard access    ${String(access.unreachableGuilds.length)} allowlisted ` +
-            `guild(s) no enabled account can reach:\n` +
-            access.unreachableGuilds
-              .map(
-                (guildId) =>
-                  `            ${guildId}  run 'account grant-guild <username> ` +
-                  `--guild ${guildId} --confirm'`,
-              )
-              .join('\n'),
-        );
+        for (const guildId of access.unreachableGuilds) {
+          problems.push({
+            title: `No enabled dashboard account can reach guild ${guildId}`,
+            impact: 'Nobody can operate this server from the dashboard.',
+            fix: `Run 'bananasaurs account grant-guild <username> --guild ${guildId} --confirm' on the host.`,
+            route: '/accounts',
+          });
+        }
       }
     }
 
-    // The gateway half already decides `ok`; the eight guild-scoped findings
-    // here are just as capable of making a panel, an enforce-mode rule, or an
-    // automod rule that never gets as far as matching — silently do nothing,
-    // so they count the same way rather than being printed as decoration
-    // under a green header. The eligibility finding above it counts too: a
-    // stale promise about training is a silent breach of `PRIVACY.md`, not a
-    // footnote. The dashboard-access finding counts the same way: an
-    // allowlisted guild nobody can reach, or an instance nobody can sign in
-    // to, is a silent failure of the whole operator surface. And the
-    // public-surface probe counts most of all: an exposed dashboard is a
-    // silent breach of the whole exposure decision.
-    lines.push(surface.text);
+    if (surface.ok) {
+      clear.push('public surface: the dashboard is not publicly reachable');
+    } else {
+      problems.push({
+        title: 'The dashboard may be publicly reachable',
+        impact:
+          'An exposed dashboard breaches the exposure decision - anyone on the internet could reach the sign-in page.',
+        fix: 'Check the Cloudflare Access policy for the dashboard hostname; the dashboard must sit behind it.',
+      });
+    }
+
+    // The verdict counts the gateway half and every finding above the same
+    // way: a panel, an enforce-mode rule, or an archive channel that
+    // silently does nothing is a problem even under a green header.
     const ok =
       report.ok &&
       stale.length === 0 &&
@@ -262,12 +409,37 @@ export const doctorCommand = defineCommand<Record<string, never>>({
       eligibilityWarnings.length === 0 &&
       (!dashboardAccess.success || dashboardAccessVerdict(dashboardAccess.data)) &&
       surface.ok;
-    lines.push('', ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND');
+
+    const lines: string[] = [ok ? 'doctor: ok' : 'doctor: PROBLEMS FOUND', ''];
+    if (problems.length > 0) {
+      lines.push(`Problems (${String(problems.length)}):`, '');
+      problems.forEach((problem, index) => {
+        lines.push(`${String(index + 1)}. ${problem.title}`);
+        lines.push(`   Impact: ${problem.impact}`);
+        lines.push(`   Fix: ${problem.fix}`);
+        if (problem.route !== undefined) lines.push(`   Where: dashboard ${problem.route}`);
+        if (problem.details !== undefined) lines.push(`   Details: ${problem.details}`);
+        lines.push('');
+      });
+    }
+    if (advisories.length > 0) {
+      lines.push('Worth knowing (not counted as problems):');
+      for (const advisory of advisories) lines.push(`  - ${advisory}`);
+      lines.push('');
+    }
+    if (clear.length > 0) {
+      lines.push('Checks with no problems:');
+      for (const line of clear) lines.push(`  ${line}`);
+      lines.push('');
+    }
+    lines.push('Raw diagnostics:', report.text, '', surface.text);
 
     return {
       text: lines.join('\n'),
       data: {
         ok,
+        problems,
+        advisories,
         gateway: report.data,
         stalePanels: stale.map((p) => ({ panelId: p.panelId, status: p.status })),
         unassignableRoles: unassignable.map((r) => ({
