@@ -188,12 +188,32 @@ export const registerOpsWriteRoutes = (
       return reply.status(409).send({ error: 'already-exists' });
     }
 
-    const unmanaged = definition.options
+    // A role the owner picked but nobody allowlisted yet joins the allowlist
+    // here, provided the live hierarchy says the bot can manage it — the
+    // audited save is the allowlisting intent. A role the bot cannot manage
+    // (integration-owned, or at or above the bot's own highest role) is
+    // refused with its reason visible.
+    const botPosition = ports.botHighestRolePosition();
+    const rolesById = new Map(ports.listGuildRoles().map((role) => [role.roleId, role]));
+    const unmanageable = definition.options
+      .filter((option) => !ports.isManagedRole(option.roleId))
+      .filter((option) => {
+        const role = rolesById.get(option.roleId);
+        return (
+          role === undefined ||
+          role.managed ||
+          botPosition === undefined ||
+          role.position >= botPosition
+        );
+      })
+      .map((option) => option.roleId);
+    if (unmanageable.length > 0) {
+      return reply.status(400).send({ error: 'unmanageable-role', roleIds: unmanageable });
+    }
+    const newlyAllowlisted = definition.options
       .filter((option) => !ports.isManagedRole(option.roleId))
       .map((option) => option.roleId);
-    if (unmanaged.length > 0) {
-      return reply.status(400).send({ error: 'unmanaged-role', roleIds: unmanaged });
-    }
+    for (const roleId of newlyAllowlisted) ports.allowlistRole(roleId);
 
     ports.createPanel(definition);
     ports.recordAudit({
@@ -207,6 +227,7 @@ export const registerOpsWriteRoutes = (
         behaviour: definition.behaviour,
         component: definition.component,
         optionCount: definition.options.length,
+        newlyAllowlistedRoleIds: newlyAllowlisted,
       },
     });
     return reply.status(201).send({ ok: true, panelId: definition.panelId, published: false });

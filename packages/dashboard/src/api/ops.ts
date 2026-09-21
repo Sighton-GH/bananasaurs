@@ -239,6 +239,10 @@ export interface GuildRoleInfo {
   readonly colour: number;
   readonly position: number;
   readonly managed: boolean;
+  /** Live-hierarchy answer: below the bot's highest role and not integration-owned. */
+  readonly manageable: boolean;
+  /** Already on the bot's managed-role allowlist. */
+  readonly allowlisted: boolean;
   readonly optionable: boolean;
 }
 

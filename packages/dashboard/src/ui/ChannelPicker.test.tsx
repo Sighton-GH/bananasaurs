@@ -36,6 +36,22 @@ describe('ChannelPicker', () => {
     expect(await screen.findByText(/Selected: #general/)).toBeTruthy();
   });
 
+  it('lists every matching channel, not a capped few', async () => {
+    // The archive picker's six-option cap hid channels the bot could see
+    // (owner report 2026-09-21). Twelve channels must all be offered.
+    const many = {
+      channels: Array.from({ length: 12 }, (_, index) => ({
+        channelId: `3333333333333333${String(index).padStart(2, '0')}`,
+        name: `channel-${index}`,
+        kind: 'text',
+      })),
+    };
+    stubFetch([{ url: '/api/guild/channels', body: many }]);
+    renderWithSession(<Harness />);
+    expect(await screen.findByRole('button', { name: /#channel-11/ })).toBeTruthy();
+    expect(screen.getAllByRole('button', { name: /#channel-/ })).toHaveLength(12);
+  });
+
   it('filters the options by name or id as you type', async () => {
     stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
     renderWithSession(<Harness />);

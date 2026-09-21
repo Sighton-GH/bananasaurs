@@ -517,7 +517,7 @@ export function PanelBuilder({
                         ? ''
                         : role.managed
                           ? ' (Discord-managed)'
-                          : ' (not bot-managed)'}
+                          : " (above the bot's role)"}
                     </option>
                   ))}
                 </select>

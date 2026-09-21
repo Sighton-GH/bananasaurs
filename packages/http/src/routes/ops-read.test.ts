@@ -281,15 +281,19 @@ describe('GET /api/guild/roles', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       roles: [
-        // None of the fixture roles is allowlisted as bot-managed in this
-        // test's database, so none is optionable — the join is real.
+        // The fixture bot role sits at position 4: Mod and Member are below
+        // it and selectable (saving a panel allowlists them); Admin sits
+        // above the bot and the bot's own role is Discord-managed, so those
+        // two stay unselectable — the join is real.
         {
           roleId: '666666666666666666',
           name: 'Mod',
           colour: 0x3498db,
           position: 3,
           managed: false,
-          optionable: false,
+          manageable: true,
+          allowlisted: false,
+          optionable: true,
         },
         {
           roleId: '777777777777777777',
@@ -297,6 +301,18 @@ describe('GET /api/guild/roles', () => {
           colour: 0,
           position: 1,
           managed: false,
+          manageable: true,
+          allowlisted: false,
+          optionable: true,
+        },
+        {
+          roleId: '111111111111111119',
+          name: 'Admin',
+          colour: 0,
+          position: 5,
+          managed: false,
+          manageable: false,
+          allowlisted: false,
           optionable: false,
         },
         {
@@ -305,6 +321,8 @@ describe('GET /api/guild/roles', () => {
           colour: 0xf1c40f,
           position: 4,
           managed: true,
+          manageable: false,
+          allowlisted: false,
           optionable: false,
         },
       ],

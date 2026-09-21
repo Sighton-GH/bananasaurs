@@ -92,6 +92,7 @@ export const testPortsFor = (
   listGuildRoles: () => [
     { roleId: '666666666666666666', name: 'Mod', colour: 0x3498db, position: 3, managed: false },
     { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
+    { roleId: '111111111111111119', name: 'Admin', colour: 0, position: 5, managed: false },
     {
       roleId: '888888888888888888',
       name: 'Bananasaurs',
@@ -512,6 +513,9 @@ export const testPortsFor = (
 
   createPanel: (definition) => panelRepo.createPanel(scope, definition, now()),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
+  allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
+  // Matches the fixture hierarchy: the bot's own role sits at position 4.
+  botHighestRolePosition: () => 4,
   publishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },

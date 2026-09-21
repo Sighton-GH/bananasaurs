@@ -687,6 +687,14 @@ export interface OpsPorts {
    */
   listGuildRoles(): readonly OpsGuildRoleInfo[];
   /**
+   * The bot's own highest role position in the live hierarchy, from the
+   * gateway cache. Discord decides manageability from this number right now
+   * — a role is manageable exactly when it sits below it and is not
+   * integration-managed — so a remembered flag can never go stale when the
+   * owner reorders roles in Discord. Undefined when the guild is not cached.
+   */
+  botHighestRolePosition(): number | undefined;
+  /**
    * The guild's members, one paginated REST page at a time — the member
    * directory's source, and the dashboard's answer to the MCP `list_members`
    * tool. A paginated fetch, not a cache read: the gateway member cache is
@@ -1027,6 +1035,14 @@ export interface OpsPorts {
    * command and the builder refuse cleanly before the database has to.
    */
   isManagedRole(roleId: string): boolean;
+  /**
+   * Adds a role to the managed allowlist (docs/18 Layer 2). Idempotent. The
+   * panel builder calls this for a role the owner just selected, after the
+   * live hierarchy check has shown the bot can manage it — the audited
+   * dashboard action is the allowlisting intent, and the gateway still
+   * re-checks hierarchy before every mutation.
+   */
+  allowlistRole(roleId: string): void;
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**

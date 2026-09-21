@@ -617,16 +617,45 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     expect(body.problems).toContain('emojiKey');
   });
 
-  it('answers 400 naming the role when an option is not a managed role', async () => {
+  it('answers 400 naming the role when an option is not in the live hierarchy', async () => {
     const { cookie, csrf } = await signIn();
     grant(['panels.manage']);
     const response = await post(cookie, csrf, PANEL_BODY);
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({
-      error: 'unmanaged-role',
+      error: 'unmanageable-role',
       roleIds: ['333333333333333333', '333333333333333334'],
     });
     expect(deps.portsFor(t.scopes.forGuild(GUILD)).findPanel('colour-roles')).toBeUndefined();
+  });
+
+  it('refuses a role at or above the bot and allowlists a manageable picked role', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    // Admin (position 5) sits above the fixture bot role (position 4).
+    const above = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      options: [{ optionId: 'admin', roleId: '111111111111111119', label: 'Admin', position: 0 }],
+    });
+    expect(above.statusCode).toBe(400);
+    expect(above.json()).toEqual({
+      error: 'unmanageable-role',
+      roleIds: ['111111111111111119'],
+    });
+
+    // Member (position 1) is below the bot: selecting it allowlists it as
+    // part of the audited save.
+    const scope = t.scopes.forGuild(GUILD);
+    expect(deps.portsFor(scope).isManagedRole('777777777777777777')).toBe(false);
+    const picked = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      options: [
+        { optionId: 'member', roleId: '777777777777777777', label: 'Member', emojiKey: 'u:1f535', position: 0 },
+      ],
+    });
+    expect(picked.statusCode).toBe(201);
+    expect(deps.portsFor(scope).isManagedRole('777777777777777777')).toBe(true);
+    expect(deps.portsFor(scope).findPanel('colour-roles')).toBeDefined();
   });
 
   it('answers 409 for a duplicate panel id and writes nothing', async () => {

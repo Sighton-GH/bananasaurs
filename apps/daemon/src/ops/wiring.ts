@@ -478,6 +478,7 @@ export const opsPortsFor = (
   // here. Nothing reaches Discord — publishing stays publishPanel's job.
   createPanel: (definition) => operations.createPanel(definition),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
+  allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
@@ -646,6 +647,13 @@ export const opsPortsFor = (
         managed: role.managed,
       }))
       .sort((a, b) => b.position - a.position || a.name.localeCompare(b.name));
+  },
+  // Live hierarchy, not a remembered flag: the owner can reorder roles in
+  // Discord at any time, and the dashboard must answer for the hierarchy as
+  // it is now.
+  botHighestRolePosition: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    return guild?.members.me?.roles.highest.rawPosition;
   },
   // The same paginated REST read the MCP port makes (ruling M4-D10): the
   // 50-entry member cache would silently truncate, and `cache: false` keeps
