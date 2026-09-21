@@ -124,7 +124,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     seedAutomodDefaults(scope, config, logger, now());
     byGuild.set(guildId, {
       scope,
-      runtime: buildGuildRuntime({ scope, config, discord, client, logger, now }),
+      runtime: buildGuildRuntime({
+        scope,
+        instance: scopes.instance(),
+        config,
+        discord,
+        client,
+        logger,
+        now,
+      }),
     });
   }
 

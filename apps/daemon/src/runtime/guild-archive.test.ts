@@ -95,6 +95,7 @@ afterEach(() => {
 const runBackfill = async (channelId: string): Promise<void> => {
   const runtime = buildGuildRuntime({
     scope,
+    instance: t.scopes.instance(),
     config: parseConfig({
       DISCORD_BOT_TOKEN: 'NOT.A.REALTOKEN',
       DISCORD_APPLICATION_ID: BOT,

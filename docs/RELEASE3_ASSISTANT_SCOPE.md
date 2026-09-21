@@ -52,7 +52,20 @@ A reminder records creator, guild, destination, text, due time, state and a stab
 - **Providers**: free-only profile eligibility, privacy scan result, usage and degraded state.
 - **Evaluation**: golden questions, inaccessible-channel traps, prompt injection and citation leakage.
 
-No AI control is terminal-only. The current branch includes the first dashboard assistant workspace and activity view. Persistence/API wiring, Discord interaction routing, resource fetching, provider execution, `/ask`, `/find`, `/remind`, `/decision`, `/review-plan`, privacy commands and golden evaluations remain required before the release gate can be claimed.
+No AI control is terminal-only.
+
+## Live wiring on this branch (reconciled 2026-09-21)
+
+Exactly what is live, so the release gate is measured against reality:
+
+- **Persistence/API**: behaviours, resources, reminders, skill grants, activity, tickets and decisions persist per guild and are read/written through the dashboard API (`/api/assistant`, capability-gated and audited).
+- **Discord routing**: `createAssistantCommandSubscriber` is wired into the guild runtime's subscribers, so slash commands and `@bananasaurs`/`@it-services` mentions reach the assistant service. The mention router resolves the behaviour, enforces its caller roles and fails closed on ambiguity; the slash path applies the same caller-role gate.
+- **Commands**: `RELEASE_3_COMMANDS` is registered in every allowlisted guild at startup: `/status`, `/mod`, `/ask`, `/find`, `/remind`, `/decision`, `/review-plan`, `/onboard`, `/agenda`, `/summarise`, `/announce`, `/checklist` and `/handoff`. Privacy commands are intentionally **not** registered: Release 3 keeps privacy controls in the dashboard.
+- **Provider execution**: `createAssistantService` is constructed per guild in the runtime. Every provider — configured or test-injected — runs behind the SafeProvider spend and outbound-scan boundary, and the request path consults the instance-level `provider_eligibility` table, failing closed when the row is missing or ineligible (hard rule 5). `AI_PROVIDER=off` answers with a configured-refusal, never a 500.
+- **Resource fetching**: reviewed website/document/repository resources are fetched per invocation with HTTPS-only, credential-free, non-private-host validation; fetch outcomes are recorded per resource.
+- **Reminders**: `/remind` validates time and text, requires a real destination channel, dedupes on the Discord interaction id, and records skill activity. Delivery runs through the durable job with atomic claims, backoff retries and a terminal window measured from the due time. Cancellation is a dashboard action.
+- **Decisions and IT escalation**: `/decision` and `/review-plan` store drafts marked as analysis, never club policy; an IT `ESCALATE:` response opens a deduped ticket and notifies the reviewer channel with mentions restricted to reviewer roles.
+- **Known live limits**: `/find` fails closed until Discord channel visibility is verified for the request; confirmation-before-schedule is not yet an interactive step — the model is instructed to state drafts are unsaved, and durable records are only created by the deterministic paths above; golden evaluations run as a test suite, not a live gate.
 
 ## Release gate
 

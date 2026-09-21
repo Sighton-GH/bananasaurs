@@ -25,6 +25,7 @@ export {
   MOD_COMMAND,
   RELEASE_1_COMMANDS,
   RELEASE_2_COMMANDS,
+  RELEASE_3_COMMANDS,
   STATUS_COMMAND,
   registerGuildCommands,
   type GuildCommandDefinition,

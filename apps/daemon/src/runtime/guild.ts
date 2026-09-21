@@ -62,6 +62,7 @@ import {
   pipelineRepo,
   roleRepo,
   type GuildScope,
+  type InstanceScope,
 } from '@bananasaurs/storage';
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
@@ -73,6 +74,8 @@ import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
+import { createAssistantCommandSubscriber } from '../assistant/commands.js';
+import { createAssistantService } from '../assistant/service.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -102,6 +105,8 @@ export const SELF_MUTATION_WINDOW_MS = 60_000;
 
 export interface GuildRuntimeDeps {
   readonly scope: GuildScope;
+  /** Provider eligibility is instance-level (ADR 0027); the assistant gate reads it. */
+  readonly instance: InstanceScope;
   readonly config: Config;
   readonly discord: DiscordPort;
   /**
@@ -157,7 +162,7 @@ export interface GuildRuntime {
 const newPassId = (): string => `pass-${randomUUID()}`;
 
 export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
-  const { scope, config, discord, client, logger, now } = deps;
+  const { scope, instance, config, discord, client, logger, now } = deps;
   const guildId = parseGuildId(scope.guildId);
 
   /**
@@ -694,6 +699,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
+    // Release 3 assistant: slash commands and @behaviour mentions. The
+    // service owns permission, safety and provider eligibility; the Discord
+    // layer never calls a provider itself.
+    createAssistantCommandSubscriber({
+      guildId,
+      service: createAssistantService(scope, instance, config, now),
+      defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
+      logger,
+    }),
   ];
 
   const worker = new JobWorker({
