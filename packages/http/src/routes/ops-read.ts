@@ -261,34 +261,47 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ tokens: deps.instance.mcpTokens() });
   });
 
-  app.get<{ Querystring: { since?: string } }>('/api/mcp/sends', (request, reply) => {
-    const session = guard.require(request, reply);
-    if (session === undefined) return reply;
-    if (!requireCapability(session, 'audit.read', reply)) return reply;
+  app.get<{ Querystring: { since?: string; limit?: string } }>(
+    '/api/mcp/sends',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'audit.read', reply)) return reply;
 
-    let sinceMs: number | undefined;
-    if (request.query.since !== undefined && request.query.since !== '') {
-      const window = parseDuration(request.query.since);
-      if (window === undefined) {
-        return reply.status(400).send({
-          error: 'bad-since',
-          message: `since expects a duration like 2h, 45m or 7d, not "${request.query.since}"`,
-        });
+      let sinceMs: number | undefined;
+      if (request.query.since !== undefined && request.query.since !== '') {
+        const window = parseDuration(request.query.since);
+        if (window === undefined) {
+          return reply.status(400).send({
+            error: 'bad-since',
+            message: `since expects a duration like 2h, 45m or 7d, not "${request.query.since}"`,
+          });
+        }
+        sinceMs = deps.now() - window;
       }
-      sinceMs = deps.now() - window;
-    }
-    const rows = deps.portsFor(session.scope).listSends({ sinceMs });
-    // The ledger never carries message content, only ids and outcomes (M5).
-    return reply.status(200).send({
-      sends: rows.map((row) => ({
-        channelId: row.channelId,
-        messageId: row.messageId ?? null,
-        tokenId: row.tokenId,
-        sentAt: row.sentAt,
-        outcome: row.outcome,
-      })),
-    });
-  });
+      // Bounded like the sibling reads (members, archive history): default
+      // page of 25, capped at 200, so the page never ships the guild's
+      // whole-lifetime ledger on every visit.
+      const limitQuery = z.coerce.number().int().min(1).max(200).optional();
+      const parsedLimit = limitQuery.safeParse(
+        request.query.limit === '' ? undefined : request.query.limit,
+      );
+      if (!parsedLimit.success) return reply.status(400).send({ error: 'invalid-query' });
+      const rows = deps
+        .portsFor(session.scope)
+        .listSends({ sinceMs, limit: parsedLimit.data ?? 25 });
+      // The ledger never carries message content, only ids and outcomes (M5).
+      return reply.status(200).send({
+        sends: rows.map((row) => ({
+          channelId: row.channelId,
+          messageId: row.messageId ?? null,
+          tokenId: row.tokenId,
+          sentAt: row.sentAt,
+          outcome: row.outcome,
+        })),
+      });
+    },
+  );
 
   app.get('/api/providers/eligibility', (request, reply) => {
     const session = guard.require(request, reply);

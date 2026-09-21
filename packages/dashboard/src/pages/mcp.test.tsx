@@ -57,7 +57,7 @@ const STUBS = [
   { url: '/api/mcp/clients', body: CLIENTS },
   { url: '/api/mcp/tokens', body: TOKENS },
   { url: '/api/send-allowlist', body: ALLOWLIST },
-  { url: '/api/mcp/sends', body: SENDS },
+  { url: '/api/mcp/sends?since=7d', body: SENDS },
 ];
 
 afterEach(cleanup);
@@ -191,12 +191,22 @@ describe('McpPage', () => {
         url: '/api/send-allowlist',
         body: {
           entries: [
-            { channelId: 'cat-1', scopeKind: 'category', coverage: 4, addedByAccountId: 'acct-1', addedAt: 0 },
+            {
+              channelId: 'cat-1',
+              scopeKind: 'category',
+              coverage: 4,
+              addedByAccountId: 'acct-1',
+              addedAt: 0,
+            },
           ],
         },
       },
-      { url: '/api/mcp/sends', body: SENDS },
-      { method: 'DELETE', url: '/api/send-allowlist/categories/cat-1', body: { ok: true, outcome: 'removed' } },
+      { url: '/api/mcp/sends?since=7d', body: SENDS },
+      {
+        method: 'DELETE',
+        url: '/api/send-allowlist/categories/cat-1',
+        body: { ok: true, outcome: 'removed' },
+      },
     ]);
     renderWithSession(<McpPage />);
     expect(await screen.findByText(/category — covers 4 channels/)).toBeTruthy();
@@ -208,7 +218,8 @@ describe('McpPage', () => {
     });
     expect(
       mock.mock.calls.some(
-        (c) => (c[0] as string) === '/api/send-allowlist/categories/cat-1' && c[1]?.method === 'DELETE',
+        (c) =>
+          (c[0] as string) === '/api/send-allowlist/categories/cat-1' && c[1]?.method === 'DELETE',
       ),
     ).toBe(true);
   });

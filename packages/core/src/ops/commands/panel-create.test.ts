@@ -99,7 +99,13 @@ const harness = (options: { existing?: boolean; unmanaged?: string } = {}): Harn
     audit,
     created,
     run: (args, confirm = true) =>
-      dispatcher.dispatch({ v: 1, command: 'panel create', args, confirm, unixUserClaimed: 'bryan' }),
+      dispatcher.dispatch({
+        v: 1,
+        command: 'panel create',
+        args,
+        confirm,
+        unixUserClaimed: 'bryan',
+      }),
   };
 };
 

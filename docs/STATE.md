@@ -8,7 +8,7 @@
 The dashboard is now the full operator surface: shell (ADR-aligned rail: Operate / Moderation / Archive /
 Instance / Release 3, "Bananasaurs by Sighton Media" attribution), five Release 1 page rewrites, and nine new
 operator pages (Jobs, Doctor, Backups, Configuration, Accounts, MCP connector, Archive, Search, Providers)
-backed by new `packages/http` routes — `ops-read.ts` (12 GET routes) and `ops-write.ts` (31 write routes,
+backed by new `packages/http` routes — `ops-read.ts` (18 GET routes) and `ops-write.ts` (40 write routes,
 audited, refusal unions as 4xx answers). Writes confirm through a scope-quoting dialog; password resets print
 once and are never audited; `bootstrap reissue` stays CLI-only. Archive, Search and Providers are built pages
 now (D7 supersedes S10-D3); the Release 3 stubs are Resources, Memory, AI workspace and Proposals. The

@@ -58,8 +58,7 @@ export function MembersPage() {
                   header: 'Member',
                   cell: (m) => (
                     <span>
-                      {m.displayName}{' '}
-                      <span className="text-xs text-ink-muted">@{m.username}</span>
+                      {m.displayName} <span className="text-xs text-ink-muted">@{m.username}</span>
                     </span>
                   ),
                 },

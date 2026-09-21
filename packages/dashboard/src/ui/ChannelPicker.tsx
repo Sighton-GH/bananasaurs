@@ -52,9 +52,7 @@ export function ChannelPicker({
           .filter(
             (c) =>
               wanted.includes(c.kind) &&
-              (query === '' ||
-                c.name.toLowerCase().includes(query) ||
-                c.channelId.includes(query)),
+              (query === '' || c.name.toLowerCase().includes(query) || c.channelId.includes(query)),
           )
           .slice(0, MAX_OPTIONS);
   const selected = channels?.find((c) => wanted.includes(c.kind) && c.channelId === value.trim());
@@ -63,7 +61,7 @@ export function ChannelPicker({
     <div className="text-sm">
       <Field
         label={label}
-        hint={hint ?? "Pick a channel below or paste its snowflake ID."}
+        hint={hint ?? 'Pick a channel below or paste its snowflake ID.'}
         {...(error !== undefined ? { error } : {})}
       >
         <Input

@@ -95,10 +95,12 @@ const emojiToKey = (raw: string): string | undefined => {
   const trimmed = raw.trim();
   if (trimmed === '') return undefined;
   if (/^\d{17,20}$/.test(trimmed)) return customEmojiKey(trimmed);
-  // Cheap honesty check: a unicode emoji contains no printable ASCII. Without
-  // it, "banana" would convert to a structurally valid key for six Latin
-  // letters — the schema cannot tell the difference either.
-  if (/[\x20-\x7e]/.test(trimmed)) return `invalid:${trimmed}`;
+  // Honesty check: a unicode emoji needs at least one codepoint beyond
+  // printable ASCII — a pictograph, or the keycap/variation-selector marks
+  // that turn 1, # or * into a keycap emoji. Without it, "banana" would
+  // convert to a structurally valid key for six Latin letters — the schema
+  // cannot tell the difference either.
+  if (!/[^\x20-\x7e]/u.test(trimmed)) return `invalid:${trimmed}`;
   try {
     return unicodeEmojiKey(trimmed);
   } catch {
@@ -157,16 +159,11 @@ export function PanelBuilder({
   const isReaction = format === 'reaction';
 
   const roleList = roles.resource.state === 'ready' ? roles.resource.data.roles : undefined;
-  const roleById = useMemo(
-    () => new Map((roleList ?? []).map((r) => [r.roleId, r])),
-    [roleList],
-  );
+  const roleById = useMemo(() => new Map((roleList ?? []).map((r) => [r.roleId, r])), [roleList]);
   const roleName = (roleId: string) => roleById.get(roleId)?.name ?? roleId;
 
   const updateOption = (index: number, patch: Partial<DraftOption>) => {
-    setOptions((current) =>
-      current.map((o, i) => (i === index ? { ...o, ...patch } : o)),
-    );
+    setOptions((current) => current.map((o, i) => (i === index ? { ...o, ...patch } : o)));
   };
 
   const toggleBlocked = (roleId: string) => {
@@ -208,7 +205,11 @@ export function PanelBuilder({
       found.push(`Message text: at most ${String(MAX_CONTENT)} characters (Discord's limit).`);
     }
     const usable = options.filter(
-      (o) => o.optionId.trim() !== '' || o.roleId !== '' || o.label.trim() !== '' || o.emoji.trim() !== '',
+      (o) =>
+        o.optionId.trim() !== '' ||
+        o.roleId !== '' ||
+        o.label.trim() !== '' ||
+        o.emoji.trim() !== '',
     );
     if (usable.length === 0) found.push('Add at least one option.');
     if (usable.length > MAX_OPTIONS) found.push(`At most ${String(MAX_OPTIONS)} options.`);
@@ -236,8 +237,14 @@ export function PanelBuilder({
     for (const o of usable) {
       if (o.emoji.trim() === '') continue;
       const key = emojiToKey(o.emoji);
-      if (key === undefined || key.startsWith('invalid:') || !emojiKeySchema.safeParse(key).success) {
-        found.push(`"${o.emoji.trim()}" is not a usable emoji — paste one emoji or a custom emoji ID.`);
+      if (
+        key === undefined ||
+        key.startsWith('invalid:') ||
+        !emojiKeySchema.safeParse(key).success
+      ) {
+        found.push(
+          `"${o.emoji.trim()}" is not a usable emoji — paste one emoji or a custom emoji ID.`,
+        );
         break;
       }
     }
@@ -414,10 +421,7 @@ export function PanelBuilder({
               </div>
             </Field>
           </div>
-          <Field
-            label="Max roles per member"
-            hint="Optional. Leave empty for no limit."
-          >
+          <Field label="Max roles per member" hint="Optional. Leave empty for no limit.">
             <Input
               value={maxRoles}
               onChange={(e) => setMaxRoles(e.target.value)}
@@ -509,7 +513,11 @@ export function PanelBuilder({
                   {(roleList ?? []).map((role) => (
                     <option key={role.roleId} value={role.roleId} disabled={!role.optionable}>
                       {role.name}
-                      {role.optionable ? '' : role.managed ? ' (Discord-managed)' : ' (not bot-managed)'}
+                      {role.optionable
+                        ? ''
+                        : role.managed
+                          ? ' (Discord-managed)'
+                          : ' (not bot-managed)'}
                     </option>
                   ))}
                 </select>
@@ -581,8 +589,7 @@ export function PanelBuilder({
               {requiredRoleId === ''
                 ? 'everyone'
                 : `only members with the ${roleName(requiredRoleId)} role`}
-              {blockedRoleIds.length > 0 &&
-                `; blocked: ${blockedRoleIds.map(roleName).join(', ')}`}
+              {blockedRoleIds.length > 0 && `; blocked: ${blockedRoleIds.map(roleName).join(', ')}`}
             </dd>
           </dl>
           <DataTable

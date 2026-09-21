@@ -122,8 +122,8 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Archive',
     control: 'stop archiving, rows removed, confirmed',
   },
-  'archive preserve': { kind: 'covered', page: 'Search', control: 'preserve a hit indefinitely' },
-  'archive link-case': { kind: 'covered', page: 'Search', control: 'link a hit to an open case' },
+  'archive preserve': { kind: 'covered', page: 'Archive', control: 'preserve a hit indefinitely' },
+  'archive link-case': { kind: 'covered', page: 'Archive', control: 'link a hit to an open case' },
   'archive reindex': { kind: 'covered', page: 'Archive', control: 'rebuild the index, confirmed' },
   'archive enable-category': {
     kind: 'covered',

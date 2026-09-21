@@ -1,6 +1,12 @@
 import { useCallback, useState } from 'react';
 import { isCustomEmojiKey, unicodeEmojiChars } from '@bananasaurs/core';
-import type { Enqueued, GuildRoleInfo, PanelDetail, PanelSummary, PublishResult } from '../api/ops.js';
+import type {
+  Enqueued,
+  GuildRoleInfo,
+  PanelDetail,
+  PanelSummary,
+  PublishResult,
+} from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -128,7 +134,10 @@ export function PanelsPage() {
       />
       {building && (
         <div className="mb-4">
-          <PanelBuilder onCreated={(panelId) => void created(panelId)} onCancel={() => setBuilding(false)} />
+          <PanelBuilder
+            onCreated={(panelId) => void created(panelId)}
+            onCancel={() => setBuilding(false)}
+          />
         </div>
       )}
       <DataState
@@ -199,7 +208,9 @@ export function PanelsPage() {
               <dt className="text-ink-muted">Message</dt>
               <dd>{selected.messageId ?? 'not posted'}</dd>
               <dt className="text-ink-muted">Message text</dt>
-              <dd className="whitespace-pre-wrap">{selected.content ?? 'Pick your roles. (the default)'}</dd>
+              <dd className="whitespace-pre-wrap">
+                {selected.content ?? 'Pick your roles. (the default)'}
+              </dd>
               <dt className="text-ink-muted">Max roles per member</dt>
               <dd>{selected.maxRoles !== undefined ? String(selected.maxRoles) : 'no limit'}</dd>
               <dt className="text-ink-muted">Requires role first</dt>
@@ -250,15 +261,11 @@ export function PanelsPage() {
                     // What members see: the emoji itself for unicode keys, the
                     // key for custom ones (their image needs a live guild).
                     cell: (o) =>
-                      o.emojiKey !== undefined ? (
-                        isCustomEmojiKey(o.emojiKey) ? (
-                          o.emojiKey
-                        ) : (
-                          unicodeEmojiChars(o.emojiKey)
-                        )
-                      ) : (
-                        (o.label ?? <span className="text-ink-muted">—</span>)
-                      ),
+                      o.emojiKey !== undefined
+                        ? isCustomEmojiKey(o.emojiKey)
+                          ? o.emojiKey
+                          : unicodeEmojiChars(o.emojiKey)
+                        : (o.label ?? <span className="text-ink-muted">—</span>),
                   },
                 ]}
               />

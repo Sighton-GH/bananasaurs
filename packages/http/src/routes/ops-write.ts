@@ -536,6 +536,9 @@ export const registerOpsWriteRoutes = (
 
     const ports = deps.portsFor(session.scope);
     const outcome = ports.archiveLinkCase(parsed.data);
+    if (outcome === 'no-such-message' || outcome === 'no-such-case') {
+      return reply.status(404).send({ error: 'not-found' });
+    }
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'archive_message.case_linked',

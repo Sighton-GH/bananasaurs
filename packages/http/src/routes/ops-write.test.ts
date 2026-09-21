@@ -751,6 +751,26 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     ).toBe(false);
   });
 
+  it('link-case refusals are 404s with no audit row (audit B2)', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['moderation.act']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 50 }).length;
+    const refused = await app.inject({
+      method: 'POST',
+      url: '/api/archive/link-case',
+      headers,
+      payload: { messageId: '999999999999999999', caseId: 'case_1' },
+    });
+    expect(refused.statusCode).toBe(404);
+    expect(refused.json()).toEqual({ error: 'not-found' });
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 50 });
+    expect(rows.length).toBe(before);
+    expect(rows.map((row) => row.action)).not.toContain('archive_message.case_linked');
+  });
+
   it('allows and disallows a send category with audit attribution', async () => {
     await rebuildWithArchive();
     const { cookie, csrf } = await signIn();
@@ -770,9 +790,9 @@ describe('archive categories, threads and send-allowlist categories (threads mer
 
     const list = await app.inject({ method: 'GET', url: '/api/send-allowlist', headers });
     const listBody: { entries: { channelId: string; scopeKind?: string }[] } = list.json();
-    expect(
-      listBody.entries.find((e) => e.channelId === '999999999999999999')?.scopeKind,
-    ).toBe('category');
+    expect(listBody.entries.find((e) => e.channelId === '999999999999999999')?.scopeKind).toBe(
+      'category',
+    );
 
     const removed = await app.inject({
       method: 'DELETE',

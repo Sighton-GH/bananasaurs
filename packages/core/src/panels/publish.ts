@@ -73,10 +73,7 @@ export async function postManagedPanel(
   return ref;
 }
 
-export async function editManagedPanel(
-  panel: PanelConfig,
-  deps: PublishDeps,
-): Promise<void> {
+export async function editManagedPanel(panel: PanelConfig, deps: PublishDeps): Promise<void> {
   if (panel.kind !== 'managed') {
     // A bot cannot edit a message it did not write. Refusing here turns a
     // confusing 50013 into a stated reason.

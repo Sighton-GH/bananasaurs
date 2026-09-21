@@ -92,7 +92,13 @@ export const testPortsFor = (
   listGuildRoles: () => [
     { roleId: '666666666666666666', name: 'Mod', colour: 0x3498db, position: 3, managed: false },
     { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
-    { roleId: '888888888888888888', name: 'Bananasaurs', colour: 0xf1c40f, position: 4, managed: true },
+    {
+      roleId: '888888888888888888',
+      name: 'Bananasaurs',
+      colour: 0xf1c40f,
+      position: 4,
+      managed: true,
+    },
   ],
   // Two archived demo messages, newest first, paged like the repository's
   // `before` cursor: the second page starts below the cursor id.
@@ -119,9 +125,7 @@ export const testPortsFor = (
     ];
     if (input.channelId !== '333333333333333333') return [];
     const start =
-      input.before === undefined
-        ? 0
-        : all.findIndex((m) => m.messageId === input.before) + 1;
+      input.before === undefined ? 0 : all.findIndex((m) => m.messageId === input.before) + 1;
     const limit = input.limit ?? 20;
     return all.slice(start, start + limit).map((m) => ({ ...m }));
   },

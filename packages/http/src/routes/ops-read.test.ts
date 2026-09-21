@@ -4,7 +4,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { accountRepo, authzRepo, guildRepo, jobRepo } from '@bananasaurs/storage';
+import { accountRepo, authzRepo, guildRepo, jobRepo, mcpSendRepo } from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
@@ -383,11 +383,61 @@ describe('GET /api/guild/members', () => {
   it('answers 400 invalid-query for a bad cursor or limit', async () => {
     const { cookie } = await signIn();
     grant(['audit.read']);
-    for (const url of ['/api/guild/members?after=nope', '/api/guild/members?limit=0', '/api/guild/members?limit=101']) {
+    for (const url of [
+      '/api/guild/members?after=nope',
+      '/api/guild/members?limit=0',
+      '/api/guild/members?limit=101',
+    ]) {
       const response = await app.inject({ method: 'GET', url, headers: { cookie } });
       expect(response.statusCode, url).toBe(400);
       expect(response.json(), url).toEqual({ error: 'invalid-query' });
     }
+  });
+});
+
+describe('GET /api/mcp/sends (bounded ledger, audit S1)', () => {
+  const seedSends = (count: number): void => {
+    const scope = t.scopes.forGuild(GUILD);
+    for (let i = 0; i < count; i += 1) {
+      mcpSendRepo.claimSend(scope, {
+        idempotencyKey: `k${String(i)}`,
+        channelId: '333333333333333333',
+        contentHash: `h${String(i)}`,
+        tokenId: 't1',
+        now: clock - i * 1000,
+        outcome: 'sent',
+      });
+    }
+  };
+
+  it('defaults to the newest 25 rows, honours an explicit limit, and rejects a bad one', async () => {
+    seedSends(30);
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+
+    const unbounded = await app.inject({
+      method: 'GET',
+      url: '/api/mcp/sends',
+      headers: { cookie },
+    });
+    expect(unbounded.statusCode).toBe(200);
+    const body: { sends: unknown[] } = unbounded.json();
+    expect(body.sends).toHaveLength(25);
+
+    const five = await app.inject({
+      method: 'GET',
+      url: '/api/mcp/sends?limit=5',
+      headers: { cookie },
+    });
+    const fiveBody: { sends: unknown[] } = five.json();
+    expect(fiveBody.sends).toHaveLength(5);
+
+    const overCap = await app.inject({
+      method: 'GET',
+      url: '/api/mcp/sends?limit=201',
+      headers: { cookie },
+    });
+    expect(overCap.statusCode).toBe(400);
   });
 });
 

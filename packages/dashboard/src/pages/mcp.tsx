@@ -47,7 +47,7 @@ export function McpPage() {
   const tokens = useResource('the MCP tokens', loadTokens);
   const allowlist = useResource('the send allowlist', loadAllowlist);
   const loadSends = useCallback(
-    () => session.read<{ sends: McpSend[] }>('/api/mcp/sends').then((r) => r.sends),
+    () => session.read<{ sends: McpSend[] }>('/api/mcp/sends?since=7d').then((r) => r.sends),
     [session],
   );
   const sends = useResource('the send ledger', loadSends);
@@ -373,7 +373,9 @@ export function McpPage() {
           <DataState
             resource={sends.resource}
             isEmpty={(rows) => rows.length === 0}
-            empty={<p className="text-sm text-ink-muted">No connector messages recorded yet.</p>}
+            empty={
+              <p className="text-sm text-ink-muted">No connector messages in the last 7 days.</p>
+            }
           >
             {(rows) => (
               <DataTable
@@ -422,7 +424,9 @@ export function McpPage() {
             Nothing else changes — the allowlist alone decides where it may post.
           </p>
         }
-        confirmLabel={(removing?.scopeKind ?? 'channel') === 'category' ? 'Remove category' : 'Remove channel'}
+        confirmLabel={
+          (removing?.scopeKind ?? 'channel') === 'category' ? 'Remove category' : 'Remove channel'
+        }
         danger
         busy={busy}
         onConfirm={() => void disallow()}

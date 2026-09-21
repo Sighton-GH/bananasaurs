@@ -95,15 +95,20 @@ export function ArchivePage() {
     setDetail(undefined);
   };
 
+  // A sequence token per request: two rapid opens (or the mount deep-link
+  // racing a click) resolve out of order, and the slower older response
+  // must never overwrite the message the operator asked for last.
+  const openSeq = useRef(0);
   const openMessage = async (messageId: string) => {
+    const seq = (openSeq.current += 1);
     try {
-      setDetail(
-        await session.read<ArchiveMessage>(
-          `/api/archive/messages/${encodeURIComponent(messageId)}`,
-        ),
+      const message = await session.read<ArchiveMessage>(
+        `/api/archive/messages/${encodeURIComponent(messageId)}`,
       );
+      if (seq === openSeq.current) setDetail(message);
     } catch {
-      toast({ tone: 'danger', title: 'That message could not be loaded' });
+      if (seq === openSeq.current)
+        toast({ tone: 'danger', title: 'That message could not be loaded' });
     }
   };
 
@@ -481,8 +486,8 @@ export function ArchivePage() {
           <Card title={`Browsing ${browseId}`}>
             <div className="mb-2 flex items-center justify-between gap-2">
               <p className="text-sm text-ink-muted">
-                Newest first, 25 at a time. A purged message keeps its metadata; its text is
-                gone for good.
+                Newest first, 25 at a time. A purged message keeps its metadata; its text is gone
+                for good.
               </p>
               <Button onClick={() => setBrowseId(undefined)}>Close</Button>
             </div>
@@ -540,7 +545,9 @@ export function ArchivePage() {
                       {
                         key: 'actions',
                         header: '',
-                        cell: (m) => <Button onClick={() => void openMessage(m.messageId)}>Open</Button>,
+                        cell: (m) => (
+                          <Button onClick={() => void openMessage(m.messageId)}>Open</Button>
+                        ),
                       },
                     ]}
                   />
@@ -655,8 +662,11 @@ export function ArchivePage() {
         title={`Disable archiving for ${(disabling?.scopeKind ?? 'channel') === 'category' ? 'category' : 'channel'} ${disabling?.channelId ?? ''}?`}
         scope={
           <p>
-            Stops archiving the {(disabling?.scopeKind ?? 'channel') === 'category' ? 'category and the channels it covers' : 'channel'} AND
-            destroys its {String(disabling?.messageCount ?? 0)} archived messages, edits and
+            Stops archiving the{' '}
+            {(disabling?.scopeKind ?? 'channel') === 'category'
+              ? 'category and the channels it covers'
+              : 'channel'}{' '}
+            AND destroys its {String(disabling?.messageCount ?? 0)} archived messages, edits and
             attachments. The audit row is the only record that the destruction happened.
           </p>
         }

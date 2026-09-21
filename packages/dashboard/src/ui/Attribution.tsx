@@ -18,11 +18,7 @@ export function Attribution({ className }: { readonly className?: string | undef
         className="flex items-center gap-1.5 underline decoration-line underline-offset-2 hover:text-ink"
         href="https://sighton.ca"
       >
-        <img
-          src="/brand/sighton-mark-display.png"
-          alt=""
-          className="h-3.5 w-auto"
-        />
+        <img src="/brand/sighton-mark-display.png" alt="" className="h-3.5 w-auto" />
         <span>Sighton Media</span>
       </a>
     </p>
