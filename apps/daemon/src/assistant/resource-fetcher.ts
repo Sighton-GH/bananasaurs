@@ -1,7 +1,7 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import { validateResourceUrl } from '@bananasaurs/core';
+import { extractEvidenceText, validateResourceUrl } from '@bananasaurs/core';
 
 export const DEFAULT_RESOURCE_FETCH_LIMITS = {
   maxBytes: 1_000_000,
@@ -25,6 +25,12 @@ export interface PinnedResponse {
   readonly status: number;
   readonly headers: Readonly<Record<string, string | undefined>>;
   readonly body: AsyncIterable<Uint8Array>;
+  /**
+   * Releases the response without reading the body (round-2 low): every
+   * early return after headers must call this or the stream - and its
+   * socket and timeout - is left hanging.
+   */
+  readonly discard?: () => void;
 }
 export type PinnedRequest = (
   url: URL,
@@ -117,6 +123,7 @@ export const resolvePublicAddress: ResolveHost = async (hostname) => {
 
 export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs) =>
   new Promise((resolve, reject) => {
+    let response: import('node:http').IncomingMessage | undefined;
     const request = httpsRequest(
       url,
       {
@@ -126,15 +133,36 @@ export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs) =>
         lookup: (_hostname, _options, callback) => callback(null, pinned.address, pinned.family),
         servername: url.hostname,
       },
-      (response) => {
+      (res) => {
+        response = res;
         const headers: Record<string, string | undefined> = {};
-        for (const [name, value] of Object.entries(response.headers))
+        for (const [name, value] of Object.entries(res.headers))
           headers[name] = Array.isArray(value) ? value.join(', ') : value;
-        resolve({ status: response.statusCode ?? 0, headers, body: response });
+        // The timeout clears when the body finishes or the stream closes for
+        // any reason (including discard's destroy), so an early return never
+        // leaves a live timer holding a socket (round-2 low).
+        const clear = (): void => clearTimeout(timer);
+        res.once('end', clear);
+        res.once('close', clear);
+        resolve({
+          status: res.statusCode ?? 0,
+          headers,
+          body: res,
+          discard: () => {
+            clear();
+            res.destroy();
+          },
+        });
       },
     );
-    request.setTimeout(timeoutMs, () => request.destroy(new Error('resource fetch timed out')));
-    request.once('error', reject);
+    const timer = setTimeout(() => {
+      request.destroy(new Error('resource fetch timed out'));
+      response?.destroy();
+    }, timeoutMs);
+    request.once('error', (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
     request.end();
   });
 
@@ -213,6 +241,7 @@ export class ReviewedResourceFetcher {
       );
     }
     if (response.status >= 300 && response.status < 400) {
+      response.discard?.();
       if (redirects >= this.#limits.maxRedirects)
         return fail('redirect', 'The reviewed resource exceeded the redirect limit.');
       const location = redirectLocation(response);
@@ -229,27 +258,40 @@ export class ReviewedResourceFetcher {
       }
       return this.#fetchFrom(redirected, visited, redirects + 1);
     }
-    if (response.status < 200 || response.status >= 300)
+    if (response.status < 200 || response.status >= 300) {
+      response.discard?.();
       return fail('http-status', `The reviewed resource returned HTTP ${response.status}.`);
+    }
     const mediaType = mediaTypeOf(response.headers['content-type']);
-    if (!ALLOWED_TYPES.has(mediaType))
+    if (!ALLOWED_TYPES.has(mediaType)) {
+      response.discard?.();
       return fail('content-type', 'The reviewed resource did not return a supported text type.');
+    }
     const declaredLength = Number(response.headers['content-length']);
-    if (Number.isFinite(declaredLength) && declaredLength > this.#limits.maxBytes)
+    if (Number.isFinite(declaredLength) && declaredLength > this.#limits.maxBytes) {
+      response.discard?.();
       return fail('too-large', 'The reviewed resource exceeded the size limit.');
+    }
     const chunks: Uint8Array[] = [];
     let size = 0;
     try {
       for await (const chunk of response.body) {
         size += chunk.byteLength;
-        if (size > this.#limits.maxBytes)
+        if (size > this.#limits.maxBytes) {
+          response.discard?.();
           return fail('too-large', 'The reviewed resource exceeded the size limit.');
+        }
         chunks.push(chunk);
       }
     } catch {
       return fail('network', 'The reviewed resource body could not be read.');
     }
-    const text = Buffer.concat(chunks).toString('utf8').replaceAll('\u0000', '');
+    // Useful page text, not raw markup: raw HTML truncated at the byte cap
+    // used to deliver mostly <head> and no content (should-fix, round 2).
+    const text = extractEvidenceText(
+      mediaType,
+      Buffer.concat(chunks).toString('utf8').replaceAll('\u0000', ''),
+    );
     return {
       ok: true,
       evidence: {

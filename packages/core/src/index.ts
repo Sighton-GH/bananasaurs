@@ -552,6 +552,7 @@ export { assertProviderEligible, type ProviderAudience } from './providers/eligi
 export { GeminiProvider, type GeminiProviderOptions } from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,
+  redactEvidenceText,
   scanOutboundRequest,
   type OutboundSafetyResult,
   type SafetyFinding,

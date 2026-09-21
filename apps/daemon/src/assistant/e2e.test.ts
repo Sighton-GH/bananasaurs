@@ -240,6 +240,76 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     expect(fresh).toMatchObject({ ok: true, escalation: { channelId: IT_CHANNEL } });
     expect(assistantRepo.listTickets(scope)).toHaveLength(2);
   });
+  it('redacts contact details in public evidence and still answers (should-fix, round 2)', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    const behaviour = {
+      id: 'direct',
+      guildId: GUILD,
+      surface: 'direct-command' as const,
+      name: 'Club',
+      systemPrompt: 'Canadian English.',
+      promptVersion: 1,
+      callerRoleIds: [CLUB_ROLE],
+      reviewerRoleIds: [],
+      allowedSkillIds: ['search-club'],
+      resourceIds: ['site'],
+      enabled: true,
+    };
+    assistantRepo.putBehaviour(scope, behaviour, NOW);
+    assistantRepo.putResource(scope, {
+      id: 'site',
+      guildId: GUILD,
+      title: 'Club page',
+      url: 'https://sfuracerbot.ca',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(NOW).toISOString(),
+    });
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+    seedEligibility(t, 'fixture');
+    const fixture = provider();
+    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, {
+      provider: fixture.value,
+      fetchResource: async () => ({
+        ok: true,
+        cache: 'miss',
+        evidence: {
+          url: 'https://sfuracerbot.ca/',
+          mediaType: 'text/html',
+          // A public page that prints a contact point used to fail the whole
+          // request as "member PII" and leave no activity row.
+          text: 'Meetings Mondays 7 pm. Contact the lead at lead@club.ca or 604-555-0132.',
+          fetchedAt: NOW,
+          trust: 'untrusted-reviewed-resource',
+        },
+      }),
+    });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour,
+      command: 'ask',
+      input: { question: 'When are meetings?' },
+      source: 'slash-command',
+      invocationId: 'int-redact-1',
+    });
+    expect(result.ok).toBe(true);
+    const sent = fixture.generateText.mock.calls[0]?.[0].messages[0]?.text as string;
+    expect(sent).not.toContain('lead@club.ca');
+    expect(sent).not.toContain('604-555-0132');
+    expect(sent).toContain('Meetings Mondays 7 pm.');
+    // The fetch row says what was redacted; the completed activity row exists.
+    expect(assistantRepo.listResources(scope)[0]).toMatchObject({ fetchStatus: 'ok' });
+    const activity = assistantRepo.listSkillActivity(scope);
+    expect(activity.some((a) => a.outcome === 'completed')).toBe(true);
+  });
+
   it('fails provider safety and cost policy before a network provider can run', async () => {
     const scope = t.scopes.forGuild(GUILD);
     const behaviour = {

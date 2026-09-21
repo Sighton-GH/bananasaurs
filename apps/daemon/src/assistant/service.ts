@@ -6,6 +6,7 @@ import {
   createNvidiaNimProvider,
   createOpenRouterProvider,
   GeminiProvider,
+  redactEvidenceText,
   SafeProvider,
   type Config,
   type TextProvider,
@@ -258,31 +259,47 @@ export const createAssistantService = (
             result: await fetchResource(resource.url),
           })),
       );
-      for (const { resource, result } of fetched) {
+      // Evidence-appropriate safety policy (should-fix, round 2): fetched
+      // public evidence is redact-and-continue, never hard-refuse. A club
+      // page that prints a contact email used to fail the whole request at
+      // the provider preflight and leave no activity row.
+      const redactedEvidence = fetched.flatMap(({ resource, result }) => {
+        if (!result.ok) return [];
+        const redacted = redactEvidenceText(result.evidence.text);
+        return [
+          {
+            resource,
+            result,
+            text: redacted.text,
+            detectors: redacted.detectors,
+          },
+        ];
+      });
+      for (const { resource, result, detectors } of redactedEvidence) {
         assistantRepo.recordResourceFetch(scope, resource.id, {
-          status: result.ok
-            ? 'ok'
-            : result.code === 'private-address' || result.code === 'invalid-url'
-              ? 'blocked'
-              : 'failed',
+          status: 'ok',
           at: now(),
-          detail: result.ok
-            ? `${result.evidence.mediaType}; ${result.evidence.text.length.toLocaleString('en-CA')} characters; cache=${result.cache}`
-            : `${result.code}: ${result.message}`,
+          detail:
+            `${result.evidence.mediaType}; ${result.evidence.text.length.toLocaleString('en-CA')} characters; cache=${result.cache}` +
+            (detectors.length > 0 ? `; redacted: ${detectors.join(', ')}` : ''),
         });
       }
-      const evidence = fetched.flatMap(({ resource, result }) =>
-        result.ok
-          ? [
-              {
-                sourceId: resource.id,
-                title: resource.title,
-                text: result.evidence.text,
-                accessible: true,
-              },
-            ]
-          : [],
-      );
+      for (const { resource, result } of fetched) {
+        if (result.ok) continue;
+        assistantRepo.recordResourceFetch(scope, resource.id, {
+          status: result.code === 'private-address' || result.code === 'invalid-url'
+            ? 'blocked'
+            : 'failed',
+          at: now(),
+          detail: `${result.code}: ${result.message}`,
+        });
+      }
+      const evidence = redactedEvidence.map(({ resource, text }) => ({
+        sourceId: resource.id,
+        title: resource.title,
+        text,
+        accessible: true,
+      }));
       const context = compileAssistantContext({
         behaviour: input.behaviour,
         serverCard: 'Bananasaurs club assistant',

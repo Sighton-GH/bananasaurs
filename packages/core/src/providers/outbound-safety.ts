@@ -98,6 +98,9 @@ const DETECTORS: readonly Detector[] = [
     'api-key-assignment',
     /\b(?:api[_ -]?key|token|password|secret)\s*[:=]\s*['"]?[A-Za-z0-9_./+=-]{12,}/iu,
   ),
+  // Bare provider key shapes with no assignment around them (low, round 2):
+  // a member pasting their OpenAI/Anthropic-style key must still refuse.
+  regexDetector('secret', 'bare-api-key', /\b(?:sk|pk|gsk|xox[baprs])-[A-Za-z0-9_-]{16,}\b/iu),
   regexDetector(
     'prompt-injection',
     'instruction-override',
@@ -152,4 +155,86 @@ export function assertOutboundRequestSafe(request: GenerateTextRequest): void {
       false,
     );
   }
+}
+
+const EVIDENCE_REDACTION = '[redacted by the evidence safety filter]';
+
+/**
+ * The evidence-appropriate policy (should-fix, round 2).
+ *
+ * Reviewed public resources are evidence, not member input: a club handbook
+ * that prints a contact email made the whole request fail the member-PII
+ * preflight, and the member got a generic refusal with no activity row. For
+ * evidence the policy is redact-and-continue. Personal data and secrets are
+ * replaced, never passed through; prompt-injection-looking phrases are
+ * neutralised the same way (the untrusted-evidence envelope is the real
+ * boundary, but the phrase itself does not need to reach the provider
+ * verbatim). Member input never goes through here - it keeps the hard
+ * refusal in `assertOutboundRequestSafe`.
+ *
+ * Returns the redacted text and the names of every detector that fired, so
+ * the activity log can say what happened.
+ */
+export function redactEvidenceText(text: string): { text: string; detectors: readonly string[] } {
+  const detectors = new Set<string>();
+  let out = text;
+
+  const redact = (name: string, pattern: RegExp, replacement = EVIDENCE_REDACTION): void => {
+    pattern.lastIndex = 0;
+    if (pattern.test(out)) {
+      detectors.add(name);
+      pattern.lastIndex = 0;
+      out = out.replace(pattern, replacement);
+    }
+  };
+
+  redact('email-address', /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/giu);
+  redact('phone-number', new RegExp(PHONE_PATTERN.source, 'gu'));
+  redact('ipv4-address', /\b(?:\d{1,3}\.){3}\d{1,3}\b/gu);
+  redact('canadian-sin', /\b\d{3}[ -]?\d{3}[ -]?\d{3}\b/gu);
+
+  // Card numbers keep their Luhn check: candidates are replaced one at a
+  // time, and only the Luhn-valid ones count as redactions.
+  CARD_CANDIDATE_PATTERN.lastIndex = 0;
+  out = out.replace(CARD_CANDIDATE_PATTERN, (candidate: string) => {
+    const digits = candidate.replace(/[ -]/gu, '');
+    if (digits.length >= 13 && digits.length <= 19 && luhnValid(digits)) {
+      detectors.add('credit-card-number');
+      return EVIDENCE_REDACTION;
+    }
+    return candidate;
+  });
+
+  redact('authorization-header', /\bauthorization\s*:\s*(?:bearer|basic)\s+\S+/giu);
+  redact('private-key', /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/giu);
+  redact(
+    'api-key-assignment',
+    /\b(?:api[_ -]?key|token|password|secret)\s*[:=]\s*['"]?[A-Za-z0-9_./+=-]{12,}/giu,
+  );
+  // Bare provider key shapes (should-fix, low): sk-..., and the common
+  // vendor prefixes, whether or not they follow an assignment.
+  redact('bare-api-key', /\b(?:sk|pk|key|gsk|xox[baprs])-[A-Za-z0-9_-]{16,}\b/gu);
+
+  redact(
+    'instruction-override',
+    /\b(?:ignore|disregard|override)\s+(?:all\s+)?(?:previous|prior|system|developer)\s+(?:instructions?|prompts?|messages?)/giu,
+    '[instruction-like phrase removed by the evidence safety filter]',
+  );
+  redact(
+    'authority-claim',
+    /\b(?:system|developer)\s+message\s*:/giu,
+    '[authority claim removed by the evidence safety filter]:',
+  );
+  redact(
+    'secret-exfiltration',
+    /\b(?:reveal|print|return|send|exfiltrate)\b.{0,60}\b(?:system prompt|api key|password|secret|private data)\b/giu,
+    '[exfiltration-like phrase removed by the evidence safety filter]',
+  );
+  redact(
+    'tool-coercion',
+    /\b(?:call|use|invoke|run)\b.{0,40}\b(?:tool|function|command)\b.{0,40}\b(?:without|bypass|ignore)\b/giu,
+    '[coercion-like phrase removed by the evidence safety filter]',
+  );
+
+  return { text: out, detectors: [...detectors] };
 }
