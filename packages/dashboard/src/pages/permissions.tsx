@@ -26,7 +26,7 @@ import { useToast } from '../ui/Toast.js';
  *   keeps (`/api/archive/channels`, `/api/archive/categories`).
  * - **Send** decides where the MCP connector may post
  *   (`/api/send-allowlist`).
- * - **Excluded** channels are out of scope for logging and archiving
+ * - **Excluded** channels are out of scope for sending, logging, and archiving
  *   (`/api/log-exclusions`) and override everything else.
  *
  * Every row shows its EFFECTIVE state, not just its stored row: a channel
@@ -294,7 +294,7 @@ export function PermissionsPage() {
         tone: 'ok',
         title: row.excluded
           ? `#${row.name} is in scope again`
-          : `#${row.name} excluded from logging and archiving`,
+          : `#${row.name} excluded from sending, logging, and archiving`,
       });
       reloadAll();
     }
