@@ -4,6 +4,7 @@ import { OperatorPulse } from './overview-pulse.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
+import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 function CardLink({ href, children }: { readonly href: string; readonly children: string }) {
@@ -31,11 +32,17 @@ export function OverviewPage() {
       <DataState resource={health.resource}>
         {(h) => (
           <div className="grid max-w-4xl gap-3 sm:grid-cols-2 lg:grid-cols-3">
-            <Card title="Guild">
+            <Card title="Server">
               <p className="text-sm font-medium">{h.guildName ?? '(name not yet known)'}</p>
-              <p className="text-sm text-ink-muted">({h.guildId})</p>
+              <p className="text-sm text-ink-muted">
+                ID {h.guildId}
+                <HelpTip label="the server ID">
+                  Discord&apos;s numeric ID for this server; useful when talking to Discord support
+                  or reading logs.
+                </HelpTip>
+              </p>
             </Card>
-            <Card title="Gateway">
+            <Card title="Discord connection">
               <p className="text-sm">
                 {h.gateway.connected ? (
                   <Badge tone="ok">connected</Badge>
@@ -45,17 +52,44 @@ export function OverviewPage() {
                 {h.gateway.pingMs !== undefined && (
                   <span className="ml-2 text-ink-muted">{h.gateway.pingMs} ms</span>
                 )}
+                <HelpTip label="the Discord connection">
+                  The bot&apos;s live link to Discord. The number is the round-trip time; a lower
+                  number is healthier.
+                </HelpTip>
               </p>
               <p className="mt-1 text-sm text-ink-muted">
-                in {String(h.gateway.guildCount)} {h.gateway.guildCount === 1 ? 'guild' : 'guilds'}
+                in {String(h.gateway.guildCount)}{' '}
+                {h.gateway.guildCount === 1 ? 'server' : 'servers'}
               </p>
               <CardLink href="/doctor">Doctor checks this →</CardLink>
             </Card>
             <Card title="Safety">
-              <p className="flex flex-wrap gap-1 text-sm">
-                {h.safety?.dryRun === true && <Badge tone="hold">dry run on</Badge>}
-                {h.safety?.killswitch === true && <Badge tone="hold">kill switch on</Badge>}
-                {h.safety?.breakerOpen === true && <Badge tone="hold">breaker open</Badge>}
+              <p className="flex flex-wrap items-center gap-1 text-sm">
+                {h.safety?.dryRun === true && (
+                  <>
+                    <Badge tone="hold">dry run on</Badge>
+                    <HelpTip label="dry run">
+                      Actions are rehearsed and recorded, but nothing is sent to Discord.
+                    </HelpTip>
+                  </>
+                )}
+                {h.safety?.killswitch === true && (
+                  <>
+                    <Badge tone="hold">kill switch on</Badge>
+                    <HelpTip label="the kill switch">
+                      Every action is held until the switch is turned off on the Safety page.
+                    </HelpTip>
+                  </>
+                )}
+                {h.safety?.breakerOpen === true && (
+                  <>
+                    <Badge tone="hold">safety stop on</Badge>
+                    <HelpTip label="the automatic safety stop">
+                      The circuit breaker paused changes after repeated Discord failures. Fix the
+                      cause, then reset it from Configuration.
+                    </HelpTip>
+                  </>
+                )}
                 {h.safety !== undefined &&
                   !h.safety.dryRun &&
                   !h.safety.killswitch &&
@@ -69,13 +103,16 @@ export function OverviewPage() {
             <Card title="Jobs">
               <p className="text-sm">
                 {Object.entries(h.jobCounts)
-                  .map(([k, v]) => `${k}=${String(v)}`)
+                  .map(([k, v]) => `${String(v)} ${k}`)
                   .join(', ') || 'none'}
+                <HelpTip label="jobs">
+                  Background work the bot has scheduled, such as backfills and repairs, by state.
+                </HelpTip>
               </p>
               {h.oldestDueJobAtMs !== undefined && (
                 <p className="mt-1 text-sm">
                   <Badge tone="hold">
-                    scheduler lag since {new Date(h.oldestDueJobAtMs).toLocaleString()}
+                    running late since {new Date(h.oldestDueJobAtMs).toLocaleString()}
                   </Badge>
                 </p>
               )}

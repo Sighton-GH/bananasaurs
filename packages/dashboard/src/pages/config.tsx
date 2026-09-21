@@ -9,6 +9,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { Field, Input } from '../ui/Field.js';
+import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -147,7 +148,12 @@ export function ConfigPage() {
           ) : (
             <>
               <dl className="grid gap-x-4 gap-y-2 text-sm sm:grid-cols-[12rem_1fr]">
-                <dt className="text-ink-muted">Dry run</dt>
+                <dt className="text-ink-muted">
+                  Dry run
+                  <HelpTip label="dry run">
+                    While on, every action is rehearsed and recorded but nothing is sent to Discord.
+                  </HelpTip>
+                </dt>
                 <dd>
                   {safety.dryRun ? (
                     <Badge tone="hold">on — effects are rehearsed, not sent</Badge>
@@ -155,7 +161,13 @@ export function ConfigPage() {
                     'off'
                   )}
                 </dd>
-                <dt className="text-ink-muted">Circuit breaker</dt>
+                <dt className="text-ink-muted">
+                  Circuit breaker
+                  <HelpTip label="the circuit breaker">
+                    The automatic safety stop: after too many failed Discord actions in a row it
+                    opens and pauses further changes until it is reset.
+                  </HelpTip>
+                </dt>
                 <dd>
                   {safety.breakerOpen ? (
                     <>

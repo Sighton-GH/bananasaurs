@@ -143,7 +143,7 @@ export const modeScopeSentence = (
   let base: string;
   if (request.mode === 'enforce') {
     base =
-      'Enforces this rule for real. Its cutover state becomes cutover and the bot starts acting on matches.';
+      'Enforces this rule for real. Its stage becomes enforcing and the bot starts acting on matches.';
   } else if (
     request.mode === 'observe' &&
     (current.cutoverState === 'not_started' || current.cutoverState === 'rolled_back')
@@ -152,12 +152,12 @@ export const modeScopeSentence = (
     base = `Starts this rule's observe window now. The two-week floor elapses on ${elapses}.`;
   } else if (request.mode === 'test' && current.cutoverState === 'observing') {
     base =
-      'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its cutover state stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.';
+      'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its stage stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.';
   } else if (request.mode !== undefined && current.cutoverState === 'cutover') {
     base =
       'Rolls this rule back from enforcement and withdraws its sign-off; it must observe again before it can enforce.';
   } else if (request.mode !== undefined) {
-    base = `Changes mode from ${current.mode} to ${request.mode}; cutover state stays ${current.cutoverState}.`;
+    base = `Changes mode from ${current.mode} to ${request.mode}; its stage stays ${CUTOVER_STAGE_LABEL[current.cutoverState]}.`;
   } else if (request.enabled === false) {
     return 'Disables the rule. Its cutover state and clock are unchanged.';
   } else {
@@ -283,4 +283,113 @@ export const suppressionFor = (
     case 'regex':
       return undefined;
   }
+};
+
+/* --------------------------------------------------------------------------
+ * Plain-language renderings of the automod vocabulary (owner review:
+ * "cutover state" and "(2 fp)" read like internals, not product). The raw
+ * values stay visible in parentheses where the CLI uses the same word.
+ * Labels and copy only; behaviour stays above.
+ * ------------------------------------------------------------------------ */
+
+export const RULE_KIND_LABEL: Record<RuleKind, string> = {
+  keyword_filter: 'Keyword filter',
+  regex: 'Pattern (regex)',
+  invite: 'Invite links',
+  link_domain: 'Link domains',
+  caps: 'All caps',
+  emoji: 'Emoji flood',
+  attachment_type: 'Attachment types',
+  mention_spam: 'Mention spam',
+  rapid_spam: 'Rapid-fire spam',
+  duplicate_message: 'Duplicate messages',
+};
+
+/**
+ * Where a rule is on the path to enforcement. `cutover` is the server's word
+ * for "crossed over to acting", so the dashboard says "enforcing" instead.
+ */
+export const CUTOVER_STAGE_LABEL: Record<CutoverState, string> = {
+  not_started: 'not started',
+  observing: 'observing',
+  ready: 'ready to enforce',
+  cutover: 'enforcing',
+  rolled_back: 'rolled back',
+};
+
+export const RULE_MODE_LABEL: Record<RuleMode, string> = {
+  test: 'Test',
+  observe: 'Observe',
+  enforce: 'Enforce',
+};
+
+/** One sentence per mode, shared by the rules table and the detail radios. */
+export const RULE_MODE_HELP: Record<RuleMode, string> = {
+  test: 'matches and records, but deletes nothing. Use it while tuning.',
+  observe:
+    'records matches for a person to review. Enforcement can only be offered after the observe window.',
+  enforce: 'acts on matches for real.',
+};
+
+/** HelpTip body for the Stage / cutover column. */
+export const CUTOVER_STAGE_HELP =
+  'Where the rule sits on the path from watching to acting: not started, observing (collecting matches without acting), ready to enforce, enforcing. Rolled back means it enforced before and was withdrawn; it must observe again before it can enforce.';
+
+/** HelpTip body for the Observed column. */
+export const OBSERVED_HELP =
+  'Whole days since the observe window started. Enforcement cannot be offered before 14 days.';
+
+/** HelpTip body for the Reviewed column. */
+export const REVIEWED_HELP =
+  'Matches a person has ruled on. False positives are messages the rule caught but should not have; too many block enforcement.';
+
+/**
+ * A starting configuration per kind, grounded in each predicate's Zod schema
+ * (`packages/core/src/automod/predicates/`). Kinds whose schema is empty say
+ * so instead of inventing fields.
+ */
+export const RULE_CONFIG_EXAMPLE: Record<
+  RuleKind,
+  { readonly json: string; readonly note: string }
+> = {
+  keyword_filter: {
+    json: '{}',
+    note: 'This kind has no configuration of its own; the seeded word list drives it.',
+  },
+  invite: {
+    json: '{}',
+    note: 'This kind has no configuration; allowlisted invite codes are managed on the rule page.',
+  },
+  regex: {
+    json: '{\n  "pattern": "free\\\\s+nitro",\n  "flags": "i"\n}',
+    note: 'pattern is the regular expression; flags may only use i, m, s and u.',
+  },
+  link_domain: {
+    json: '{\n  "mode": "deny"\n}',
+    note: 'deny fires on listed domains; allow fires on every domain that is not listed. The lists themselves are managed on the rule page.',
+  },
+  caps: {
+    json: '{\n  "minLength": 8,\n  "maxRatio": 0.7\n}',
+    note: 'Fires when a message at least minLength characters long has a higher capital-letter ratio than maxRatio.',
+  },
+  emoji: {
+    json: '{\n  "maxCount": 10\n}',
+    note: 'Fires when a message carries more emoji than maxCount.',
+  },
+  attachment_type: {
+    json: '{\n  "blockedExtensions": ["exe", "scr"]\n}',
+    note: 'Needs at least one blocked extension or content type (blockedContentTypes).',
+  },
+  mention_spam: {
+    json: '{\n  "maxMentions": 5,\n  "countEveryoneAs": 5\n}',
+    note: 'Fires above maxMentions; one @everyone or @here counts as countEveryoneAs mentions.',
+  },
+  rapid_spam: {
+    json: '{\n  "maxMessages": 5,\n  "windowMs": 10000\n}',
+    note: 'Fires when one member sends more than maxMessages messages inside windowMs milliseconds.',
+  },
+  duplicate_message: {
+    json: '{\n  "maxRepeats": 3,\n  "windowMs": 60000,\n  "minLength": 10\n}',
+    note: 'Fires when the same text repeats more than maxRepeats times inside windowMs milliseconds; messages shorter than minLength are ignored.',
+  },
 };

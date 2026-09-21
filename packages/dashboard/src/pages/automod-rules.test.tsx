@@ -63,11 +63,12 @@ describe('AutomodRulesPage', () => {
     expect(rows).toHaveLength(2);
     const link = within(table).getByRole('link', { name: 'No invites' });
     expect(link.getAttribute('href')).toBe('/automod/no-invites');
-    expect(within(table).getByText('invite')).toBeTruthy();
+    expect(within(table).getByText('Invite links')).toBeTruthy();
+    expect(within(table).getByText('(invite)')).toBeTruthy();
     expect(within(table).getByText('observe')).toBeTruthy();
     expect(within(table).getByText('3 days')).toBeTruthy();
     expect(within(table).getByText('12')).toBeTruthy();
-    const reviewed = within(table).getByRole('link', { name: '7 (2 fp)' });
+    const reviewed = within(table).getByRole('link', { name: '7 (2 false positives)' });
     expect(reviewed.getAttribute('href')).toBe('/review?rule=no-invites');
   });
 

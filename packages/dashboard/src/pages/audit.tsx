@@ -6,7 +6,9 @@ import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { auditActorText, auditViaText } from '../ui/auditWords.js';
 import { Field, Input } from '../ui/Field.js';
+import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 interface AuditRow {
@@ -78,7 +80,7 @@ export function AuditPage() {
     <>
       <PageHeader
         title="Audit"
-        purpose="What the bot did or refused to do, and who asked — CLI, dashboard or the Discord gateway itself."
+        purpose="What the bot did or refused to do, and who asked — terminal, dashboard or the Discord gateway itself."
       />
       <form onSubmit={apply} className="mb-4 flex max-w-2xl flex-wrap items-end gap-3">
         <Field label="Rows">
@@ -122,19 +124,46 @@ export function AuditPage() {
               { key: 'when', header: 'When', cell: (r) => new Date(r.at).toLocaleString() },
               {
                 key: 'actor',
-                header: 'Actor',
-                cell: (r) =>
-                  `${r.actorType}${r.actorUnixUserClaimed !== null ? ` (${r.actorUnixUserClaimed}, claimed)` : ''}`,
+                header: (
+                  <>
+                    Actor
+                    <HelpTip label="the actor column">
+                      Who caused the row. A host user marked unverified is the account the process
+                      reported, not a checked sign-in.
+                    </HelpTip>
+                  </>
+                ),
+                mobileLabel: 'Actor',
+                cell: (r) => auditActorText(r),
               },
               {
                 key: 'via',
-                header: 'Via',
-                cell: (r) => r.via ?? <span className="text-ink-muted">—</span>,
+                header: (
+                  <>
+                    Through
+                    <HelpTip label="the through column">
+                      How the action reached the bot: the terminal over SSH, or this dashboard.
+                    </HelpTip>
+                  </>
+                ),
+                mobileLabel: 'Through',
+                cell: (r) => {
+                  const via = auditViaText(r.via);
+                  return via ?? <span className="text-ink-muted">—</span>;
+                },
               },
               { key: 'action', header: 'Action', cell: (r) => r.action },
               {
                 key: 'subject',
-                header: 'Subject',
+                header: (
+                  <>
+                    Target
+                    <HelpTip label="the target column">
+                      What the action touched, as type and id, for example channel:1540…
+                    </HelpTip>
+                  </>
+                ),
+                mobileLabel: 'Target',
                 cell: (r) => `${r.subjectType}${r.subjectId !== null ? `:${r.subjectId}` : ''}`,
               },
               {

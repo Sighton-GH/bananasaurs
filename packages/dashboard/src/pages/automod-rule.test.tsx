@@ -110,7 +110,8 @@ describe('AutomodRulePage', () => {
     const status = screen
       .getByRole('heading', { level: 2, name: 'Status' })
       .closest('section') as HTMLElement;
-    expect(within(status).getByText('keyword_filter')).toBeTruthy();
+    expect(within(status).getByText('Keyword filter')).toBeTruthy();
+    expect(within(status).getByText('(keyword_filter)')).toBeTruthy();
     expect(within(status).getByText('observe')).toBeTruthy();
     expect(within(status).getByText('observing')).toBeTruthy();
     expect(
@@ -121,29 +122,29 @@ describe('AutomodRulePage', () => {
     expect(
       within(status).getByText(`owner at ${new Date(NOW - DAY_MS).toLocaleString()}`),
     ).toBeTruthy();
-    expect(within(status).getByText('Enforcement is offerable.')).toBeTruthy();
+    expect(within(status).getByText('Enforcement is available for this rule.')).toBeTruthy();
   });
 
   it.each([
     [
       'cutover-state',
       { reason: 'cutover-state', state: 'observing' },
-      'Not offerable: cutover state is observing.',
+      'Enforcement is not available yet: the rule is still at the "observing" stage.',
     ],
     [
       'low-volume-unsigned',
       { reason: 'low-volume-unsigned', reviewed: 5, required: 20 },
-      'Not offerable: 5 of 20 matches reviewed and no sign-off.',
+      'Enforcement is not available yet: 5 of 20 matches reviewed, and no enforcement sign-off.',
     ],
     [
       'false-positive',
       { reason: 'false-positive', falsePositives: 2, reviewed: 25 },
-      'Not offerable: 2 false-positive or unclear verdicts among 25 reviewed.',
+      'Enforcement is not available yet: 2 false-positive or unclear verdicts among 25 reviewed matches.',
     ],
     [
       'rate-too-high',
       { reason: 'rate-too-high', rate: 0.06, threshold: 0.05 },
-      'Not offerable: false-positive rate 0.06 exceeds 0.05.',
+      'Enforcement is not available yet: the false-positive rate 0.06 is above the allowed 0.05.',
     ],
   ])('renders the eligibility sentence for the %s refusal', async (_name, refusal, sentence) => {
     stubFetch([
@@ -157,11 +158,11 @@ describe('AutomodRulePage', () => {
     stubFetch([{ url: '/api/automod/rules/kw-one', body: detail() }]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    fireEvent.click(screen.getByLabelText('test'));
+    fireEvent.click(screen.getByLabelText('Test'));
     fireEvent.click(screen.getByRole('button', { name: 'Apply mode' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain(
-      'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its cutover state stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.',
+      'Switches to test mode: the rule keeps matching and recording fixtures but stops deleting; its stage stays observing and its clock keeps running, so the window will elapse with a gap in its evidence.',
     );
   });
 
@@ -172,7 +173,7 @@ describe('AutomodRulePage', () => {
     ]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    fireEvent.click(screen.getByLabelText('test'));
+    fireEvent.click(screen.getByLabelText('Test'));
     fireEvent.click(screen.getByRole('button', { name: 'Apply mode' }));
     const dialog = await screen.findByRole('dialog');
     await act(async () => {
@@ -199,14 +200,16 @@ describe('AutomodRulePage', () => {
     ]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    fireEvent.click(screen.getByLabelText('test'));
+    fireEvent.click(screen.getByLabelText('Test'));
     fireEvent.click(screen.getByRole('button', { name: 'Apply mode' }));
     const dialog = await screen.findByRole('dialog');
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'Apply mode' }));
     });
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Not offerable: cutover state is observing.');
+    expect(alert.textContent).toContain(
+      'Enforcement is not available yet: the rule is still at the "observing" stage.',
+    );
   });
 
   it('config save with invalid JSON never fetches', async () => {
@@ -286,15 +289,15 @@ describe('AutomodRulePage', () => {
     const dry = screen
       .getByRole('heading', { level: 2, name: 'Dry run' })
       .closest('section') as HTMLElement;
-    expect(await within(dry).findByText('Corpus size')).toBeTruthy();
-    const counts = within(dry).getByText('Corpus size').closest('dl') as HTMLElement;
+    expect(await within(dry).findByText('Fixtures')).toBeTruthy();
+    const counts = within(dry).getByText('Fixtures').closest('dl') as HTMLElement;
     for (const label of [
-      'Corpus size',
+      'Fixtures',
       'Evaluated',
       'Matched',
       'False positives',
       'False negatives',
-      'Threw',
+      'Errors',
     ]) {
       expect(within(counts).getByText(label)).toBeTruthy();
     }
@@ -318,7 +321,7 @@ describe('AutomodRulePage', () => {
     ['rolled_back', { mode: 'observe' }, "Starts this rule's observe window"],
     ['observing', { mode: 'test' }, 'clock keeps running'],
     ['cutover', { mode: 'test' }, 'Rolls this rule back'],
-    ['ready', { mode: 'enforce' }, 'cutover'],
+    ['ready', { mode: 'enforce' }, 'stage becomes enforcing'],
     ['observing', { mode: 'observe' }, 'stays observing'],
     ['observing', { enabled: false }, 'Disables the rule'],
     ['observing', { enabled: true }, 'Enables the rule in its current mode'],
@@ -355,12 +358,12 @@ describe('AutomodRulePage', () => {
     ]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    expect(screen.getByLabelText('enforce')).toHaveProperty('disabled', true);
+    expect(screen.getByLabelText('Enforce')).toHaveProperty('disabled', true);
     cleanup();
     vi.unstubAllGlobals();
     stubFetch([{ url: '/api/automod/rules/kw-one', body: detail({ eligibility: { ok: true } }) }]);
     renderRule();
     await screen.findByRole('heading', { level: 2, name: 'Mode' });
-    expect(screen.getByLabelText('enforce')).toHaveProperty('disabled', false);
+    expect(screen.getByLabelText('Enforce')).toHaveProperty('disabled', false);
   });
 });

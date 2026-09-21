@@ -6,6 +6,12 @@ export interface Column<T> {
   readonly cell: (row: T) => ReactNode;
   /** Right-aligns the column; numbers already render with tabular figures. */
   readonly numeric?: boolean;
+  /**
+   * The label the stacked mobile card shows when `header` is not a plain
+   * string (a header carrying a HelpTip, for example). Without it a
+   * non-string header leaves mobile cells unlabelled.
+   */
+  readonly mobileLabel?: string;
 }
 
 /**
@@ -60,7 +66,9 @@ export function DataTable<T>({
                   key={c.key}
                   {...(typeof c.header === 'string' && c.header !== ''
                     ? { 'data-label': c.header }
-                    : {})}
+                    : c.mobileLabel !== undefined
+                      ? { 'data-label': c.mobileLabel }
+                      : {})}
                   className={`px-2 py-1.5 align-top max-sm:block max-sm:px-1.5 max-sm:py-1 max-sm:before:mb-0.5 max-sm:before:block max-sm:before:text-xs max-sm:before:text-ink-muted max-sm:before:content-[attr(data-label)] ${c.numeric === true ? 'text-right max-sm:text-left' : ''}`}
                 >
                   {c.cell(row)}

@@ -12,6 +12,7 @@ import type {
 import type { HealthInfo } from '../app/health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { auditActorCompact, auditViaText } from '../ui/auditWords.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
@@ -96,7 +97,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
   if (!health.gateway.connected) {
     items.push({
       tone: 'danger',
-      text: 'The gateway is disconnected — the bot cannot see or act on the guild.',
+      text: "The bot's connection to Discord is down; it cannot see or act on the server.",
       href: '/doctor',
       linkText: 'Doctor',
     });
@@ -112,7 +113,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
   if (health.safety?.breakerOpen === true) {
     items.push({
       tone: 'hold',
-      text: `The circuit breaker is open${health.safety.breakerReason != null && health.safety.breakerReason !== '' ? `: ${health.safety.breakerReason}` : ''}.`,
+      text: `The automatic safety stop is on${health.safety.breakerReason != null && health.safety.breakerReason !== '' ? `: ${health.safety.breakerReason}` : ''}.`,
       href: '/safety',
       linkText: 'Safety',
     });
@@ -120,7 +121,7 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
   if (health.oldestDueJobAtMs !== undefined) {
     items.push({
       tone: 'hold',
-      text: `The scheduler has been lagging since ${new Date(health.oldestDueJobAtMs).toLocaleString()}.`,
+      text: `Some jobs have been waiting to run since ${new Date(health.oldestDueJobAtMs).toLocaleString()}.`,
       href: '/jobs',
       linkText: 'Jobs',
     });
@@ -238,9 +239,8 @@ export function OperatorPulse({ health }: { readonly health: HealthInfo }): Reac
                   </span>
                   <span className="font-medium">{row.action}</span>
                   <span className="text-ink-muted">
-                    {row.actorType}
-                    {row.actorId !== null ? `:${row.actorId}` : ''}
-                    {row.via !== null ? ` via ${row.via}` : ''}
+                    {auditActorCompact(row)}
+                    {auditViaText(row.via) !== null ? ` via ${auditViaText(row.via)}` : ''}
                   </span>
                 </li>
               ))}

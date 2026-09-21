@@ -52,14 +52,14 @@ describe('OverviewPage', () => {
       </HealthProvider>,
     );
     expect(await screen.findByText('Bananasaurs dev')).toBeTruthy();
-    expect(screen.getByText('(1540816150026518620)')).toBeTruthy();
+    expect(screen.getByText(/1540816150026518620/)).toBeTruthy();
     expect(screen.getByText('connected')).toBeTruthy();
     expect(screen.getByText('42 ms')).toBeTruthy();
     expect(screen.getByText('dry run on')).toBeTruthy();
-    expect(screen.getByText('pending=2')).toBeTruthy();
+    expect(screen.getByText(/2 pending/)).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open the queue →' })).toBeTruthy();
     expect(screen.getByRole('link', { name: 'Open safety →' })).toBeTruthy();
-    expect(screen.queryByText(/scheduler lag/)).toBeNull();
+    expect(screen.queryByText(/running late/)).toBeNull();
     expect(mock.mock.calls.map((c) => c[0] as string).sort()).toEqual(
       ['/api/health', ...PULSE_STUBS.map((s) => s.url)].sort(),
     );
@@ -72,7 +72,7 @@ describe('OverviewPage', () => {
         <OverviewPage />
       </HealthProvider>,
     );
-    expect(await screen.findByText(/scheduler lag since/)).toBeTruthy();
+    expect(await screen.findByText(/running late since/)).toBeTruthy();
   });
 });
 
@@ -310,8 +310,8 @@ describe('AuditPage', () => {
   it('fetches /api/audit?limit=50 and formats actor, via and subject', async () => {
     const mock = stubFetch([{ url: '/api/audit?limit=50', body: [ROW] }]);
     renderWithSession(<AuditPage />);
-    expect(await screen.findByText('cli (bryan, claimed)')).toBeTruthy();
-    expect(screen.getByText('ssh')).toBeTruthy();
+    expect(await screen.findByText('operator (host user bryan, unverified)')).toBeTruthy();
+    expect(screen.getByText('terminal (SSH)')).toBeTruthy();
     expect(screen.getByText('guild:123')).toBeTruthy();
     expect(mock.mock.calls.map((c) => c[0] as string)).toEqual(['/api/audit?limit=50']);
   });

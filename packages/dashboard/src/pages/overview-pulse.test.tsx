@@ -105,7 +105,7 @@ describe('OperatorPulse', () => {
         health={{ ...HEALTH, gateway: { connected: false, pingMs: undefined, guildCount: 1 } }}
       />,
     );
-    expect(await screen.findByText(/gateway is disconnected/)).toBeTruthy();
+    expect(await screen.findByText(/connection to Discord is down/)).toBeTruthy();
     expect(screen.getByText('1 failed job waiting for a retry or a decision.')).toBeTruthy();
     expect(screen.getByText('3 moderation matches need a verdict.')).toBeTruthy();
     expect(screen.getByText('Provider openai review is stale.')).toBeTruthy();
@@ -132,7 +132,7 @@ describe('OperatorPulse', () => {
     ]);
     renderWithSession(<OperatorPulse health={HEALTH} />);
     expect(await screen.findByText('account.capability.granted')).toBeTruthy();
-    expect(screen.getByText('account:bryan via http')).toBeTruthy();
+    expect(screen.getByText('bryan via dashboard')).toBeTruthy();
     expect(screen.getByText('Full audit log →')).toBeTruthy();
   });
 
