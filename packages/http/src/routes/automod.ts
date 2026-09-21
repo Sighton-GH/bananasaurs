@@ -335,7 +335,7 @@ export const registerAutomodRoutes = (
     },
   );
 
-  app.get('/api/automod/review', (request, reply) => {
+  app.get('/api/automod/review', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.read', reply)) return reply;
@@ -361,7 +361,23 @@ export const registerAutomodRoutes = (
     for (const rule of ports.listAutomodRules()) {
       verdicts[rule.ruleId] = rule.verdicts;
     }
-    return reply.status(200).send({ matches, nativeHits, nativeBlocked, verdicts });
+    // Resolve who each member id is from live Discord, in one bulk fetch per
+    // page; an unknown or departed member comes back null and the table
+    // shows the bare id rather than a guess.
+    const directory = new Map(
+      (
+        await ports.fetchGuildMembers([
+          ...matches.map((m) => m.memberId),
+          ...nativeHits.map((h) => h.memberId),
+        ])
+      ).map((m) => [m.memberId, m]),
+    );
+    return reply.status(200).send({
+      matches: matches.map((m) => ({ ...m, member: directory.get(m.memberId) ?? null })),
+      nativeHits: nativeHits.map((h) => ({ ...h, member: directory.get(h.memberId) ?? null })),
+      nativeBlocked,
+      verdicts,
+    });
   });
 
   app.post<{ Params: { eventId: string } }>(

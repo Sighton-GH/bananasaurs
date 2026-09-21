@@ -16,6 +16,7 @@ import {
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
+import { MemberRef } from '../ui/MemberRef.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
@@ -365,11 +366,7 @@ export function ReviewPage() {
                         {
                           key: 'member',
                           header: 'Member',
-                          cell: (m) => (
-                            <Link href={`/members/${encodeURIComponent(m.memberId)}`}>
-                              {m.memberId}
-                            </Link>
-                          ),
+                          cell: (m) => <MemberRef id={m.memberId} member={m.member} />,
                         },
                         { key: 'category', header: 'Category', cell: (m) => m.matchedCategory },
                         {
@@ -456,11 +453,7 @@ export function ReviewPage() {
                         {
                           key: 'member',
                           header: 'Member',
-                          cell: (h) => (
-                            <Link href={`/members/${encodeURIComponent(h.memberId)}`}>
-                              {h.memberId}
-                            </Link>
-                          ),
+                          cell: (h) => <MemberRef id={h.memberId} member={h.member} />,
                         },
                         { key: 'category', header: 'Category', cell: (h) => h.matchedCategory },
                         {

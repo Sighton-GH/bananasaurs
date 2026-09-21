@@ -145,29 +145,7 @@ export const testPortsFor = (
   // Static demo members, paged like the daemon's REST read: `after` continues
   // past that id, and a full page carries its last id as the next cursor.
   listGuildMembers: (input) => {
-    const all = [
-      {
-        memberId: '100000000000000001',
-        username: 'bryan',
-        displayName: 'Bryan',
-        roleIds: ['666666666666666666'],
-        joinedAt: 1_600_000_000_000,
-      },
-      {
-        memberId: '100000000000000002',
-        username: 'sasha',
-        displayName: 'Sasha',
-        roleIds: ['777777777777777777'],
-        joinedAt: 1_650_000_000_000,
-      },
-      {
-        memberId: '100000000000000003',
-        username: 'kai',
-        displayName: 'Kai',
-        roleIds: [],
-        joinedAt: null,
-      },
-    ];
+    const all = [...FIXTURE_MEMBERS];
     const limit = input.limit ?? 25;
     const afterIndex = all.findIndex((m) => m.memberId === input.after);
     const start = afterIndex === -1 ? 0 : afterIndex + 1;
@@ -180,6 +158,8 @@ export const testPortsFor = (
           : undefined,
     });
   },
+  fetchGuildMembers: (userIds) =>
+    Promise.resolve(FIXTURE_MEMBERS.filter((m) => userIds.includes(m.memberId))),
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
       auditId: row.auditId,
@@ -696,6 +676,30 @@ export const testPortsFor = (
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */
+const FIXTURE_MEMBERS = [
+  {
+    memberId: '100000000000000001',
+    username: 'bryan',
+    displayName: 'Bryan',
+    roleIds: ['666666666666666666'],
+    joinedAt: 1_600_000_000_000,
+  },
+  {
+    memberId: '100000000000000002',
+    username: 'sasha',
+    displayName: 'Sasha',
+    roleIds: ['777777777777777777'],
+    joinedAt: 1_650_000_000_000,
+  },
+  {
+    memberId: '100000000000000003',
+    username: 'kai',
+    displayName: 'Kai',
+    roleIds: [],
+    joinedAt: null,
+  },
+] as const;
+
 const testAutomodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,

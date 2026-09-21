@@ -23,6 +23,7 @@ function modCase(overrides: Partial<ModCase> = {}): ModCase {
     violationCount: 2,
     escalationTier: 1,
     status: 'open',
+    member: { username: 'bryan', displayName: 'Bryan' },
     ...overrides,
   };
 }
@@ -80,6 +81,8 @@ describe('CasesPage', () => {
               caseId: '22222222-2222-4222-8222-222222222222',
               memberId: '666666666666666666',
               status: 'closed',
+              // Discord no longer knows this id: the table shows it bare.
+              member: null,
             }),
           ],
         },
@@ -90,8 +93,15 @@ describe('CasesPage', () => {
     const table = await screen.findByRole('table', { name: 'Moderation cases' });
     const caseLink = within(table).getByRole('link', { name: CASE_ID });
     expect(caseLink.getAttribute('href')).toBe(`/cases/${CASE_ID}`);
-    const memberLink = within(table).getByRole('link', { name: MEMBER_ID });
+    // The member renders as server nickname + username with the id kept,
+    // linking to member history; an id Discord no longer knows shows bare.
+    const memberLink = within(table).getByRole('link', {
+      name: `Bryan @bryan · ${MEMBER_ID}`,
+    });
     expect(memberLink.getAttribute('href')).toBe(`/members/${MEMBER_ID}`);
+    expect(
+      within(table).getByText('(not in the live member directory)'),
+    ).toBeTruthy();
     expect(within(table).getByText('open')).toBeTruthy();
     expect(within(table).getByText('closed')).toBeTruthy();
     expect(mock.mock.calls.map((c) => c[0] as string)).toContain('/api/mod/cases?limit=50');

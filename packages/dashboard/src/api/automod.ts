@@ -198,6 +198,8 @@ export interface ReviewableMatch {
   readonly trace: string | undefined;
   /** The fixture's whole message, when one was captured; `undefined` once `/forgetme` has removed it. */
   readonly fixtureContent: string | undefined;
+  /** Live server identity; null when Discord no longer knows the id. */
+  readonly member: { readonly username: string; readonly displayName: string } | null;
 }
 
 /** A native Discord AutoMod decision nobody has ruled on — mirror of `OpsNativeHit`. */
@@ -209,6 +211,8 @@ export interface NativeHit {
   readonly matchedCategory: string;
   readonly matchedSnippet: string;
   readonly actionTaken: string;
+  /** Live server identity; null when Discord no longer knows the id. */
+  readonly member: { readonly username: string; readonly displayName: string } | null;
 }
 
 /** The `GET /api/automod/review` body. */

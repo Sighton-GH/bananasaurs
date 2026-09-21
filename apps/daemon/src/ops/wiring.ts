@@ -658,6 +658,29 @@ export const opsPortsFor = (
   // The same paginated REST read the MCP port makes (ruling M4-D10): the
   // 50-entry member cache would silently truncate, and `cache: false` keeps
   // the listing from churning it. No presence, activity or status fields.
+  // Bulk, live, and absent-when-gone: moderation surfaces resolve the ids
+  // on screen in one REST call, and a departed member comes back missing so
+  // the dashboard shows the bare id rather than a stale name.
+  fetchGuildMembers: async (userIds) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    const wanted = [...new Set(userIds)].slice(0, 100);
+    if (wanted.length === 0) return [];
+    try {
+      const fetched = await guild.members.fetch({ user: wanted });
+      return [...fetched.values()].map((member) => ({
+        memberId: member.id,
+        username: member.user.username,
+        displayName: member.displayName,
+        roleIds: member.roles.cache
+          .filter((role) => role.id !== guild.id)
+          .map((role) => role.id),
+        joinedAt: member.joinedTimestamp,
+      }));
+    } catch {
+      return [];
+    }
+  },
   listGuildMembers: async (input) => {
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return { members: [], nextAfter: undefined };

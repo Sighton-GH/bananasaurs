@@ -705,6 +705,13 @@ export interface OpsPorts {
     after?: string | undefined;
     limit?: number | undefined;
   }): Promise<OpsGuildMemberPage>;
+  /**
+   * A live lookup of specific members by id, so moderation surfaces (review,
+   * cases) can show who a raw member id is. Bulk-fetched from Discord;
+   * members who left or ids Discord does not know are simply absent, and
+   * callers render the bare id honestly instead of a guess.
+   */
+  fetchGuildMembers(userIds: readonly string[]): Promise<readonly OpsGuildMemberInfo[]>;
   listJobs(query: OpsJobQuery): readonly OpsJobRow[];
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;

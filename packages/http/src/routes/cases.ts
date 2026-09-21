@@ -27,7 +27,7 @@ export const registerCaseRoutes = (
   guard: RouteGuard,
   deps: HttpDeps,
 ): void => {
-  app.get('/api/mod/cases', (request, reply) => {
+  app.get('/api/mod/cases', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'audit.read', reply)) return reply;
@@ -36,9 +36,16 @@ export const registerCaseRoutes = (
     if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
 
     const ports = deps.portsFor(session.scope);
-    return reply
-      .status(200)
-      .send({ cases: ports.listRecentCases({ limit: parsed.data.limit ?? 50 }) });
+    const cases = ports.listRecentCases({ limit: parsed.data.limit ?? 50 });
+    // Resolve who each member id is from live Discord, in one bulk fetch per
+    // page; a member Discord no longer knows comes back null and the table
+    // shows the bare id rather than a guess.
+    const directory = new Map(
+      (await ports.fetchGuildMembers(cases.map((c) => c.memberId))).map((m) => [m.memberId, m]),
+    );
+    return reply.status(200).send({
+      cases: cases.map((c) => ({ ...c, member: directory.get(c.memberId) ?? null })),
+    });
   });
 
   app.get<{ Params: { caseId: string } }>('/api/mod/cases/:caseId', (request, reply) => {
