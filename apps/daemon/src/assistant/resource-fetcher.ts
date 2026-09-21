@@ -1,3 +1,4 @@
+import type { IncomingMessage } from 'node:http';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
@@ -135,7 +136,7 @@ export const resolvePublicAddress: ResolveHost = async (hostname) => {
 
 export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs) =>
   new Promise((resolve, reject) => {
-    let response: import('node:http').IncomingMessage | undefined;
+    let response: IncomingMessage | undefined;
     const request = httpsRequest(
       url,
       {

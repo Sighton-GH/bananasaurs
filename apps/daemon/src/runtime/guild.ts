@@ -725,7 +725,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       enqueue: (input) => {
         jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
       },
-      sealToken: interactionTokenSealer.seal,
+      sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
       logger,
     }),
@@ -737,7 +737,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       assistantInvokeHandler({
         guildId,
         service: assistantService,
-        openToken: interactionTokenSealer.open,
+        openToken: (token) => interactionTokenSealer.open(token),
         respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
         send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
         logger,

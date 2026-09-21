@@ -304,7 +304,7 @@ describe('guild scope across the composition root', () => {
         { id: '222222222222222222', name: 'high', position: 7, permissions: '0', managed: false },
       ],
     });
-    daemon.stop();
+    void daemon.stop();
     daemon = start({ BANANASAURS_GUILD_ALLOWLIST: `${GUILD},${SECOND_GUILD}` });
 
     const roles = daemon.portsFor(t.scopes.forGuild(SECOND_GUILD)).listGuildRoles();

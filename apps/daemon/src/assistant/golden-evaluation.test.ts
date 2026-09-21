@@ -183,7 +183,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       enqueue: (input) => {
         queued.push(input.payload);
       },
-      sealToken: sealer.seal,
+      sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
     });
@@ -192,7 +192,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
     const handler = assistantInvokeHandler({
       guildId: guildA,
       service,
-      openToken: sealer.open,
+      openToken: (token) => sealer.open(token),
       respond,
       send,
       logger: pino({ level: 'silent' }),

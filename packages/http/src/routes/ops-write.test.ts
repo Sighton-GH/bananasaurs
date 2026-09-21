@@ -739,7 +739,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
       action: 'panel.created',
       actorType: 'dashboard',
     });
-    expect(JSON.parse(audit[0]!.after! as unknown as string)).toMatchObject({
+    expect(JSON.parse(audit[0]!.after!)).toMatchObject({
       kind: 'adopted',
       messageId: '555555555555555555',
     });

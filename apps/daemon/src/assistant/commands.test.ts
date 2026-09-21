@@ -65,7 +65,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
   const handler = assistantInvokeHandler({
     guildId,
     service,
-    openToken: sealer.open,
+    openToken: (token) => sealer.open(token),
     respond,
     send,
     logger: pino({ level: 'silent' }),
@@ -96,7 +96,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
       enqueue: (input) => {
         queued.push(input.payload);
       },
-      sealToken: sealer.seal,
+      sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
     }),
@@ -303,7 +303,7 @@ describe('assistant mention failure path', () => {
     const handler = assistantInvokeHandler({
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
-      openToken: sealer.open,
+      openToken: (token) => sealer.open(token),
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
@@ -400,7 +400,7 @@ describe('assistant mention failure path', () => {
     const handler = assistantInvokeHandler({
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
-      openToken: currentSealer.open,
+      openToken: (token) => currentSealer.open(token),
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
@@ -440,7 +440,7 @@ describe('assistant mention failure path', () => {
     const handler = assistantInvokeHandler({
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
-      openToken: sealer.open,
+      openToken: (token) => sealer.open(token),
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
@@ -498,7 +498,7 @@ describe('assistant mention failure path', () => {
     const handler = assistantInvokeHandler({
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [escBehaviour]), invoke: h.invoke },
-      openToken: sealer.open,
+      openToken: (token) => sealer.open(token),
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
