@@ -41,6 +41,7 @@ import {
   type ModerationRefusalReason,
   type NativeAutomodSubscriberDeps,
   type OpsPublishResult,
+  type PanelDefinition,
   type PurgePorts,
   type ReconcilePorts,
   type Subscriber,
@@ -117,6 +118,13 @@ export interface GuildRuntimeDeps {
  * a live allowance at all.
  */
 export interface GuildOperations {
+  /**
+   * Writes a validated panel definition — panel, options and blocked roles in
+   * one transaction. Storage only: nothing reaches Discord here, so a
+   * half-built panel cannot go live; publishing stays `publishPanel`'s job
+   * (ADR 0053).
+   */
+  createPanel(definition: PanelDefinition): void;
   /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
   grantAdoptionAllowance(count: number): void;
@@ -700,6 +708,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   };
 
   const ops: GuildOperations = {
+    createPanel: (definition) => {
+      panelRepo.createPanel(scope, definition, now());
+    },
     async publishPanel(panelId) {
       const panel = panelRepo.findPanel(scope, panelId);
       if (panel === undefined) throw new Error(`no panel ${panelId} in guild ${guildId}`);

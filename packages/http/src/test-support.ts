@@ -415,6 +415,7 @@ export const testPortsFor = (
     throw new Error('not used by the dashboard routes under test');
   },
 
+  createPanel: (definition) => panelRepo.createPanel(scope, definition, now()),
   publishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },

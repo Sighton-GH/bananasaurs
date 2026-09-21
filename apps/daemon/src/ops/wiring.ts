@@ -473,6 +473,10 @@ export const opsPortsFor = (
     return outcome.ok ? { ok: true } : outcome;
   },
 
+  // Storage-only write: `panel create` and the dashboard builder both land
+  // here. Nothing reaches Discord — publishing stays publishPanel's job.
+  createPanel: (definition) => operations.createPanel(definition),
+
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
   grantAdoptionAllowance: (count) => {

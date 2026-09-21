@@ -148,6 +148,11 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     page: 'Role panels',
     control: 'publish and reconcile with dry-run preview',
   },
+  'panel create': {
+    kind: 'covered',
+    page: 'Role panels',
+    control: 'role panel builder — channel, behaviour, options, review, then publish',
+  },
   'adoption allow': {
     kind: 'covered',
     page: 'Cutover',

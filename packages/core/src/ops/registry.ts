@@ -57,6 +57,7 @@ import {
 } from './commands/reads.js';
 import { statusCommand } from './commands/status.js';
 import { adoptionAllowCommand, panelSyncCommand, undoCommand } from './commands/effects.js';
+import { panelCreateCommand } from './commands/panel-create.js';
 import {
   configSetCommand,
   jobsRetryCommand,
@@ -119,6 +120,7 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpRevokeClientCommand,
   mcpAllowChannelCommand,
   mcpDisallowChannelCommand,
+  panelCreateCommand,
 
   // Writes that reach Discord. Each queues the unbounded part as a job rather
   // than holding the socket open past the CLI's timeout (ADR 0026).

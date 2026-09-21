@@ -1,6 +1,7 @@
 import type { DryRunReport } from '../automod/dry-run.js';
 import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { Capability } from '../authz.js';
+import type { PanelDefinition } from '../panels/model.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -924,6 +925,18 @@ export interface OpsPorts {
   /** Returns whether there was an exclusion to remove. */
   unexcludeChannel(channelId: string): boolean;
   retryJob(jobId: number): OpsRetryOutcome;
+
+  /**
+   * Writes a validated panel definition: the panel, its options and its
+   * blocked roles, in one transaction.
+   *
+   * The definition has already been through `panelDefinitionSchema` and the
+   * caller has already checked the id is free, so this port validates nothing
+   * itself. Storage only — nothing here reaches Discord. Publishing a built
+   * panel stays `publishPanel`'s job, so a half-built panel cannot go live by
+   * accident (ADR 0053).
+   */
+  createPanel(definition: PanelDefinition): void;
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**
