@@ -414,7 +414,7 @@ export function AccountsPage() {
                 key: 'status',
                 header: 'Status',
                 cell: (a) => (
-                  <span className="flex gap-1">
+                  <span className="flex gap-1 whitespace-nowrap">
                     {a.disabled ? <Badge tone="danger">disabled</Badge> : 'enabled'}
                     {a.lockedUntil !== null && a.lockedUntil > Date.now() && (
                       <Badge tone="hold">
