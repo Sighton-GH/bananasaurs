@@ -472,7 +472,11 @@ export function AccountsPage() {
               {
                 key: 'created',
                 header: 'Created',
-                cell: (a) => new Date(a.createdAt).toLocaleDateString(),
+                cell: (a) => (
+                  <span className="whitespace-nowrap">
+                    {new Date(a.createdAt).toLocaleDateString()}
+                  </span>
+                ),
               },
               {
                 key: 'actions',
