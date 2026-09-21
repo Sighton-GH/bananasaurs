@@ -258,9 +258,9 @@ export const registerOpsWriteRoutes = (
     const newlyAllowlisted = definition.options
       .filter((option) => !ports.isManagedRole(option.roleId))
       .map((option) => option.roleId);
-    for (const roleId of newlyAllowlisted) ports.allowlistRole(roleId);
-
-    ports.createPanel(definition);
+    // One storage transaction owns both effects. If any panel row or option
+    // insert fails, no managed-role grant survives the failed create.
+    ports.createPanel(definition, newlyAllowlisted);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'panel.created',
@@ -277,7 +277,12 @@ export const registerOpsWriteRoutes = (
         newlyAllowlistedRoleIds: newlyAllowlisted,
       },
     });
-    return reply.status(201).send({ ok: true, panelId: definition.panelId, published: false });
+    return reply.status(201).send({
+      ok: true,
+      panelId: definition.panelId,
+      published: false,
+      newlyAllowlistedRoleIds: newlyAllowlisted,
+    });
   });
 
   app.post<{ Params: { id: string } }>('/api/panels/:id/publish', async (request, reply) => {

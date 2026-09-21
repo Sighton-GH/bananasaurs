@@ -26,6 +26,8 @@ const ROLES = {
       colour: 0x3498db,
       position: 3,
       managed: false,
+      manageable: true,
+      allowlisted: false,
       optionable: true,
     },
     {
@@ -34,6 +36,8 @@ const ROLES = {
       colour: 0xe74c3c,
       position: 2,
       managed: false,
+      manageable: true,
+      allowlisted: false,
       optionable: true,
     },
     {
@@ -42,6 +46,8 @@ const ROLES = {
       colour: 0,
       position: 9,
       managed: true,
+      manageable: false,
+      allowlisted: false,
       optionable: false,
     },
   ],
@@ -149,7 +155,15 @@ describe('PanelBuilder', () => {
 
   it('panel: walks configure, review and create; the posted body is the assembled definition', async () => {
     const mock = stubAll({
-      post: { status: 201, body: { ok: true, panelId: 'colour-roles', published: false } },
+      post: {
+        status: 201,
+        body: {
+          ok: true,
+          panelId: 'colour-roles',
+          published: false,
+          newlyAllowlistedRoleIds: ['666666666666666666'],
+        },
+      },
     });
     const onCreated = vi.fn();
     renderWithSession(<PanelBuilder onCreated={onCreated} onCancel={() => undefined} />);
@@ -158,6 +172,9 @@ describe('PanelBuilder', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     expect(await screen.findByText('colour-roles')).toBeTruthy();
+    expect(screen.getByText(/Creating will add these roles/).textContent).toContain(
+      'Blue (666666666666666666)',
+    );
     expect(screen.getByText('Toggle')).toBeTruthy();
 
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -244,16 +261,16 @@ describe('PanelBuilder', () => {
     expect(screen.getByLabelText('Name')).toBeTruthy();
   });
 
-  it("shows the server's unmanaged-role answer and keeps the draft", async () => {
+  it("shows the server's unmanageable-role answer and keeps the draft", async () => {
     stubAll({
-      post: { status: 400, body: { error: 'unmanaged-role', roleIds: ['666666666666666666'] } },
+      post: { status: 400, body: { error: 'unmanageable-role', roleIds: ['666666666666666666'] } },
     });
     renderWithSession(<PanelBuilder onCreated={() => undefined} onCancel={() => undefined} />);
     await fillPanelForm();
     fireEvent.click(screen.getByRole('button', { name: 'Review' }));
     fireEvent.click(await screen.findByRole('button', { name: 'Create' }));
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Not managed by Bananasaurs: 666666666666666666');
+    expect(alert.textContent).toContain('cannot manage these roles in Discord: Blue');
     // The draft survived: going back shows the filled form.
     fireEvent.click(screen.getByRole('button', { name: 'Back' }));
     expect(screen.getByLabelText('Name')).toHaveProperty('value', 'colour-roles');

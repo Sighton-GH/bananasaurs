@@ -99,7 +99,7 @@ describe('PermissionsPage', () => {
   it('marks an excluded channel and overrides its rows', async () => {
     stubAll({ exclusions: ['333333333333333333'] });
     renderWithSession(<PermissionsPage />);
-    expect(await screen.findByText('Excluded')).toBeTruthy();
+    expect((await screen.findAllByText('Excluded')).length).toBe(2);
     expect(screen.getByRole('button', { name: 'Include again' })).toBeTruthy();
   });
 

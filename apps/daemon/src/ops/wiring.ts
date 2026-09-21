@@ -74,6 +74,23 @@ import type { GuildOperations } from '../runtime/guild.js';
  * else enqueues a job dated in the future that is never claimed. It shows up as
  * a row sitting in `jobs list` forever, with nothing anywhere saying why.
  */
+export const fetchInHundredIdChunks = async <T>(
+  userIds: readonly string[],
+  fetchChunk: (ids: readonly string[]) => Promise<readonly T[]>,
+): Promise<T[]> => {
+  const results: T[] = [];
+  for (let start = 0; start < userIds.length; start += 100) {
+    try {
+      results.push(...(await fetchChunk(userIds.slice(start, start + 100))));
+    } catch {
+      // Preserve confirmed members from earlier chunks. A later REST failure
+      // must not erase useful names already fetched.
+      break;
+    }
+  }
+  return results;
+};
+
 export const opsPortsFor = (
   scope: GuildScope,
   /** A separate parameter rather than derived from the guild scope: the two scopes are different types on purpose, and a derivation would be the cast this prevents. */
@@ -478,7 +495,8 @@ export const opsPortsFor = (
 
   // Storage-only write: `panel create` and the dashboard builder both land
   // here. Nothing reaches Discord — publishing stays publishPanel's job.
-  createPanel: (definition) => operations.createPanel(definition),
+  createPanel: (definition, newlyAllowlistedRoleIds) =>
+    operations.createPanel(definition, newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
 
@@ -701,16 +719,10 @@ export const opsPortsFor = (
       roleIds: member.roles.cache.filter((role) => role.id !== guild.id).map((role) => role.id),
       joinedAt: member.joinedTimestamp,
     });
-    const members: OpsGuildMemberInfo[] = [];
-    try {
-      for (let start = 0; start < wanted.length; start += 100) {
-        const fetched = await guild.members.fetch({ user: wanted.slice(start, start + 100) });
-        members.push(...[...fetched.values()].map(mapMember));
-      }
-      return members;
-    } catch {
-      return [];
-    }
+    return fetchInHundredIdChunks(wanted, async (ids) => {
+      const fetched = await guild.members.fetch({ user: [...ids] });
+      return [...fetched.values()].map(mapMember);
+    });
   },
   listGuildMembers: async (input) => {
     const guild = client.guilds.cache.get(scope.guildId);

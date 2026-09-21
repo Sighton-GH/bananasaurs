@@ -500,7 +500,8 @@ export const testPortsFor = (
     throw new Error('not used by the dashboard routes under test');
   },
 
-  createPanel: (definition) => panelRepo.createPanel(scope, definition, now()),
+  createPanel: (definition, newlyAllowlistedRoleIds = []) =>
+    panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
   // Matches the fixture hierarchy: the bot's own role sits at position 4.

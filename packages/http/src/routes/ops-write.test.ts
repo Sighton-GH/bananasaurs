@@ -665,7 +665,12 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     allowlistRoles();
     const response = await post(cookie, csrf, PANEL_BODY);
     expect(response.statusCode, JSON.stringify(response.json())).toBe(201);
-    expect(response.json()).toEqual({ ok: true, panelId: 'colour-roles', published: false });
+    expect(response.json()).toEqual({
+      ok: true,
+      panelId: 'colour-roles',
+      published: false,
+      newlyAllowlistedRoleIds: [],
+    });
 
     const scope = t.scopes.forGuild(GUILD);
     const stored = deps.portsFor(scope).findPanel('colour-roles');

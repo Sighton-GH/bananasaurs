@@ -147,7 +147,7 @@ export interface GuildOperations {
    * half-built panel cannot go live; publishing stays `publishPanel`'s job
    * (ADR 0053).
    */
-  createPanel(definition: PanelDefinition): void;
+  createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
   /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
   grantAdoptionAllowance(count: number): void;
@@ -780,8 +780,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   };
 
   const ops: GuildOperations = {
-    createPanel: (definition) => {
-      panelRepo.createPanel(scope, definition, now());
+    createPanel: (definition, newlyAllowlistedRoleIds = []) => {
+      panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds);
     },
     async publishPanel(panelId) {
       const panel = panelRepo.findPanel(scope, panelId);

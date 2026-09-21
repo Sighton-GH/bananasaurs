@@ -15,7 +15,7 @@ import {
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
-import { accountOpsFor, opsInstanceFor, opsPortsFor } from './wiring.js';
+import { accountOpsFor, fetchInHundredIdChunks, opsInstanceFor, opsPortsFor } from './wiring.js';
 // By relative path rather than the `@bananasaurs/http/test-support` subpath:
 // vitest aliases `@bananasaurs/http` to the package index, so the subpath
 // would resolve under it and break (see `mcp/wiring.test.ts`).
@@ -1263,5 +1263,31 @@ describe('probePublicSurface (ruling M6-D1)', () => {
     expect(report.probed).toBe(false);
     expect(report.ok).toBe(true);
     expect(report.text).toBe('public surface    not probed (MCP_PUBLIC_URL unset)');
+  });
+});
+
+describe('fetchInHundredIdChunks', () => {
+  it('fetches more than 100 ids in exact chunks', async () => {
+    const ids = Array.from({ length: 205 }, (_, i) => String(i));
+    const calls: readonly string[][] = [];
+    const mutable = calls as string[][];
+    const result = await fetchInHundredIdChunks(ids, (chunk) => {
+      mutable.push([...chunk]);
+      return Promise.resolve(chunk.map((id) => `member-${id}`));
+    });
+    expect(calls.map((call) => call.length)).toEqual([100, 100, 5]);
+    expect(result).toHaveLength(205);
+  });
+
+  it('keeps successful earlier chunks when a later chunk fails', async () => {
+    const ids = Array.from({ length: 150 }, (_, i) => String(i));
+    let call = 0;
+    const result = await fetchInHundredIdChunks(ids, (chunk) => {
+      call += 1;
+      if (call === 2) return Promise.reject(new Error('Discord unavailable'));
+      return Promise.resolve([...chunk]);
+    });
+    expect(call).toBe(2);
+    expect(result).toEqual(ids.slice(0, 100));
   });
 });

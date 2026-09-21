@@ -5,6 +5,7 @@ import type { GuildScope } from '../scope.js';
 import { managedRoles, panels as schemaPanels } from '../schema.js';
 import { write } from '../write.js';
 import { upsertGuild } from './guilds.js';
+import { findManagedRole } from './roles.js';
 import {
   createPanel,
   deletePanel,
@@ -127,6 +128,18 @@ describe('createPanel', () => {
     );
     expect(findPanel(a, 'roles')?.adoptionPassState).toBe('done');
     expect(findPanel(a, 'roles')?.messageId).toBeUndefined();
+  });
+
+  it('rolls back newly allowlisted roles when panel creation fails', () => {
+    createPanel(a, definition(), 900);
+    const role = '888888888888888888';
+    const duplicatePanel = definition({
+      options: [{ optionId: 'new', roleId: role, emojiKey: 'u:1f600', position: 0 }],
+    });
+    // The managed-role insert runs first, then the duplicate panel id fails.
+    // Both belong to the same transaction, so the scope grant rolls back.
+    expect(() => createPanel(a, duplicatePanel, 1000, [role])).toThrow(/UNIQUE/i);
+    expect(findManagedRole(a, role)).toBeUndefined();
   });
 
   it('is atomic: a panel is never visible with only some of its options', () => {

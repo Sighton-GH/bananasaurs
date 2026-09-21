@@ -112,6 +112,7 @@ const emojiToKey = (raw: string): string | undefined => {
 
 interface CreatedState {
   readonly panelId: string;
+  readonly newlyAllowlistedRoleIds: readonly string[];
 }
 
 export function PanelBuilder({
@@ -330,20 +331,26 @@ export function PanelBuilder({
     setBusy(true);
     setSubmitError(undefined);
     try {
-      const result = await session.writeOrThrow<{ ok: boolean; panelId: string }>(
-        '/api/panels',
-        assemble(),
-      );
-      if (result !== undefined) setCreated({ panelId: result.panelId });
+      const result = await session.writeOrThrow<{
+        ok: boolean;
+        panelId: string;
+        newlyAllowlistedRoleIds?: readonly string[];
+      }>('/api/panels', assemble());
+      if (result !== undefined) {
+        setCreated({
+          panelId: result.panelId,
+          newlyAllowlistedRoleIds: result.newlyAllowlistedRoleIds ?? [],
+        });
+      }
     } catch (err) {
       // writeOrThrow lets the server's 400/409 answers through; everything
       // else already became a toast. Render the answer, keep the draft.
       if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
         const body = err.body as { error?: string; problems?: string; roleIds?: string[] };
-        if (body.error === 'unmanaged-role') {
+        if (body.error === 'unmanageable-role') {
           setSubmitError(
-            `Not managed by Bananasaurs: ${(body.roleIds ?? []).join(', ')}. ` +
-              'Go back and pick different roles.',
+            `Bananasaurs cannot manage these roles in Discord: ${(body.roleIds ?? []).map(roleName).join(', ')}. ` +
+              "Move them below the bot's highest role or pick different roles.",
           );
         } else if (body.error === 'invalid-definition') {
           setSubmitError(body.problems ?? 'The definition failed validation.');
@@ -370,6 +377,15 @@ export function PanelBuilder({
           <strong>{created.panelId}</strong> is configured. Publishing posts its message in Discord
           and starts granting roles — a separate, confirmed action on its page.
         </p>
+        {created.newlyAllowlistedRoleIds.length > 0 && (
+          <p className="mt-2 text-sm text-ink-muted">
+            Added to Bananasaurs&apos; managed-role scope:{' '}
+            {created.newlyAllowlistedRoleIds
+              .map((roleId) => `${roleName(roleId)} (${roleId})`)
+              .join(', ')}
+            .
+          </p>
+        )}
         <div className="mt-3 flex gap-2">
           <Button variant="primary" onClick={() => onCreated(created.panelId)}>
             Open it
@@ -773,6 +789,18 @@ export function PanelBuilder({
               },
             ]}
           />
+          {assemble().options.some(
+            (option) => roleById.get(option.roleId)?.allowlisted === false,
+          ) && (
+            <p className="text-sm text-ink-muted">
+              Creating will add these roles to Bananasaurs&apos; managed-role scope:{' '}
+              {assemble()
+                .options.filter((option) => roleById.get(option.roleId)?.allowlisted === false)
+                .map((option) => `${roleName(option.roleId)} (${option.roleId})`)
+                .join(', ')}
+              .
+            </p>
+          )}
           <p className="text-sm text-ink-muted">
             Creating saves the configuration only.{' '}
             <HelpTip label="when this goes live">

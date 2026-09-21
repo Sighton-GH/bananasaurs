@@ -53,7 +53,7 @@ interface ScopeRow {
   readonly archiveVia?: string;
   /** Own-row message count, for the destroy confirmation. */
   readonly archiveMessages?: number;
-  readonly send: 'on' | 'via-category' | 'off';
+  readonly send: 'on' | 'via-category' | 'off' | 'excluded';
   readonly sendVia?: string;
   readonly excluded: boolean;
   readonly depth: 0 | 1;
@@ -101,8 +101,16 @@ const buildRows = (
             : 'off',
       ...(viaArchive !== undefined ? { archiveVia: nameOf(viaArchive) } : {}),
       ...(ownRow && own !== undefined ? { archiveMessages: own.messageCount } : {}),
-      send: allowOwn !== undefined ? 'on' : viaSend !== undefined ? 'via-category' : 'off',
-      ...(viaSend !== undefined && allowOwn === undefined ? { sendVia: nameOf(viaSend) } : {}),
+      send: excluded
+        ? 'excluded'
+        : allowOwn !== undefined
+          ? 'on'
+          : viaSend !== undefined
+            ? 'via-category'
+            : 'off',
+      ...(!excluded && viaSend !== undefined && allowOwn === undefined
+        ? { sendVia: nameOf(viaSend) }
+        : {}),
       excluded,
       depth,
     };
@@ -363,7 +371,9 @@ export function PermissionsPage() {
                   key: 'send',
                   header: 'Send',
                   cell: (row) =>
-                    row.send === 'on' ? (
+                    row.send === 'excluded' ? (
+                      <Badge tone="hold">Excluded</Badge>
+                    ) : row.send === 'on' ? (
                       <Badge tone="ok">On</Badge>
                     ) : row.send === 'via-category' ? (
                       <Badge tone="ok">On, via {row.sendVia}</Badge>

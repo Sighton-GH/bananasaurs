@@ -12,7 +12,7 @@ import {
 } from '@bananasaurs/core';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
-import { panelBlockedRoles, panelOptions, panels } from '../schema.js';
+import { managedRoles, panelBlockedRoles, panelOptions, panels } from '../schema.js';
 
 /**
  * Panels, their options and their blocked roles.
@@ -130,14 +130,26 @@ const hydrate = (scope: GuildScope, row: PanelHeaderRow): PanelConfig =>
   });
 
 /**
- * Creates a panel, its options and its blocked roles atomically.
+ * Creates a panel, any newly approved managed roles, its options and its blocked roles atomically.
  *
  * One `write()`, so a panel is never visible with half its options. That is not
  * tidiness: a panel read mid-insert has a smaller desired set than it should,
  * and convergence would revoke the roles whose options had not landed yet.
  */
-export const createPanel = (scope: GuildScope, definition: PanelDefinition, now: number): void =>
+export const createPanel = (
+  scope: GuildScope,
+  definition: PanelDefinition,
+  now: number,
+  newlyAllowlistedRoleIds: readonly string[] = [],
+): void =>
   write(scope, ({ db }) => {
+    for (const roleId of newlyAllowlistedRoleIds) {
+      db.insert(managedRoles)
+        .values({ guildId: scope.guildId, roleId })
+        .onConflictDoNothing()
+        .run();
+    }
+
     db.insert(panels)
       .values({
         guildId: scope.guildId,

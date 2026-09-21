@@ -1070,7 +1070,7 @@ export interface OpsPorts {
    * panel stays `publishPanel`'s job, so a half-built panel cannot go live by
    * accident (ADR 0053).
    */
-  createPanel(definition: PanelDefinition): void;
+  createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
 
   /**
    * Whether the role is one Bananasaurs manages — the precondition for making

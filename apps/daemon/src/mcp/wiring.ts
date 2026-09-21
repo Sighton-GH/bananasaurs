@@ -32,6 +32,7 @@ import {
   automodAdminRepo,
   effectRepo,
   guildRepo,
+  loggingRepo,
   mcpSendRepo,
   modCaseRepo,
   panelRepo,
@@ -596,7 +597,7 @@ const sendPortFor = (
         isPrivateThread: resolved.isPrivateThread,
         hasOwnRow: (id) => mcpSendRepo.isChannelAllowed(scope, id),
         hasCategoryRow: (id) => mcpSendRepo.isScopeAllowed(scope, id, 'category'),
-        isExcluded: () => false,
+        isExcluded: (id) => loggingRepo.isChannelExcluded(scope, id),
         parentIncludesThreads: () => true,
       });
       const derivedGrant = grantId !== undefined && grantId !== input.channelId;
