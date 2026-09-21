@@ -634,6 +634,19 @@ export const opsPortsFor = (
       .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
       .sort((a, b) => a.name.localeCompare(b.name));
   },
+  findGuildMessage: async (channelId, messageId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return 'channel-not-found';
+    const channel = guild.channels.cache.get(channelId);
+    if (channel === undefined) return 'channel-not-found';
+    if (!channel.isTextBased()) return 'not-text-channel';
+    try {
+      await channel.messages.fetch(messageId);
+      return 'ok';
+    } catch {
+      return 'message-not-found';
+    }
+  },
   // Same gateway-cache honesty as listGuildChannels: the guild's roles,
   // `@everyone` excluded (it is not a panel option), highest rank first.
   // `rawPosition`, deliberately: discord.js's `Role.position` is the role's

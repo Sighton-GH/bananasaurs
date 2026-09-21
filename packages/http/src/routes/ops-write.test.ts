@@ -704,6 +704,84 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     });
   });
 
+  it('adopts an existing message for a reaction role after validating it live', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    allowlistRoles();
+    // The builder's attach-to-existing-message flow: the route asks live
+    // Discord before writing, so the stub says the message exists.
+    const real = deps.portsFor;
+    deps.portsFor = (scope) => ({
+      ...real(scope),
+      findGuildMessage: () => Promise.resolve('ok' as const),
+    });
+    const response = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      kind: 'adopted',
+      component: 'reaction',
+      messageId: '555555555555555555',
+      options: [
+        { optionId: 'red', roleId: '333333333333333333', emojiKey: 'u:1f534', position: 0 },
+      ],
+    });
+    expect(response.statusCode, JSON.stringify(response.json())).toBe(201);
+
+    const scope = t.scopes.forGuild(GUILD);
+    const stored = deps.portsFor(scope).findPanel('colour-roles');
+    expect(stored).toMatchObject({
+      panelId: 'colour-roles',
+      kind: 'adopted',
+      messageId: '555555555555555555',
+    });
+
+    const audit = effectRepo.tailAudit(scope, { limit: 5 });
+    expect(audit[0]).toMatchObject({
+      action: 'panel.created',
+      actorType: 'dashboard',
+    });
+    expect(JSON.parse(audit[0]!.after! as unknown as string)).toMatchObject({
+      kind: 'adopted',
+      messageId: '555555555555555555',
+    });
+  });
+
+  it('refuses an adopted panel whose message id fails the live check', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    allowlistRoles();
+    // testPortsFor's default findGuildMessage answers 'message-not-found'.
+    const response = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      kind: 'adopted',
+      component: 'reaction',
+      messageId: '555555555555555555',
+      options: [
+        { optionId: 'red', roleId: '333333333333333333', emojiKey: 'u:1f534', position: 0 },
+      ],
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'message-unusable',
+      problems: 'No message with that id exists in the picked channel - check the message id.',
+    });
+    expect(deps.portsFor(t.scopes.forGuild(GUILD)).findPanel('colour-roles')).toBeUndefined();
+  });
+
+  it('refuses an adopted panel that is not reaction-driven', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    allowlistRoles();
+    const response = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      kind: 'adopted',
+      messageId: '555555555555555555',
+    });
+    // Buttons on somebody else's message: the shared schema refuses before
+    // any live check runs.
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid-definition' });
+  });
+
   it('answers 400 for a body the form could not have produced', async () => {
     const { cookie, csrf } = await signIn();
     grant(['panels.manage']);

@@ -89,6 +89,14 @@ const archiveLinkCaseBodySchema = z.object({
 const panelCreateBodySchema = z.object({
   panelId: z.string().min(1).max(64),
   channelId: snowflakeIdSchema,
+  /**
+   * `managed` (default): the bot posts the panel message on publish.
+   * `adopted`: a reaction role attached to a message that already exists -
+   * the self-granted roles builder's "attach to an existing message" flow,
+   * validated against live Discord below before anything is written.
+   */
+  kind: z.enum(['managed', 'adopted']).optional(),
+  messageId: snowflakeIdSchema.optional(),
   // The message the panel posts; blank or absent falls back to default copy.
   content: z.string().trim().min(1).max(2000).optional(),
   behaviour: z.enum(PANEL_BEHAVIOURS),
@@ -182,7 +190,7 @@ export const registerOpsWriteRoutes = (
   // the same schema, into the same audit action. Creating never publishes —
   // going live stays POST /api/panels/:id/publish, so a half-built panel
   // cannot reach Discord.
-  app.post('/api/panels', (request, reply) => {
+  app.post('/api/panels', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'panels.manage', reply)) return reply;
@@ -206,6 +214,23 @@ export const registerOpsWriteRoutes = (
     const ports = deps.portsFor(session.scope);
     if (ports.findPanel(definition.panelId) !== undefined) {
       return reply.status(409).send({ error: 'already-exists' });
+    }
+
+    // An adopted panel attaches to a message that already exists: validate
+    // the target against live Discord so a typo'd channel or message id
+    // fails here with a plain answer instead of becoming a panel that can
+    // never reconcile (Bryan's roles lane: safe channel/message validation).
+    if (definition.kind === 'adopted') {
+      const lookup = await ports.findGuildMessage(definition.channelId, definition.messageId!);
+      if (lookup !== 'ok') {
+        const problems =
+          lookup === 'channel-not-found'
+            ? 'That channel is not in this server - pick the channel from the list.'
+            : lookup === 'not-text-channel'
+              ? 'Reactions only work on a text channel - pick a text channel.'
+              : 'No message with that id exists in the picked channel - check the message id.';
+        return reply.status(400).send({ error: 'message-unusable', problems });
+      }
     }
 
     // A role the owner picked but nobody allowlisted yet joins the allowlist
@@ -243,7 +268,9 @@ export const registerOpsWriteRoutes = (
       subjectId: definition.panelId,
       before: undefined,
       after: {
+        kind: definition.kind,
         channelId: definition.channelId,
+        ...(definition.messageId !== undefined && { messageId: definition.messageId }),
         behaviour: definition.behaviour,
         component: definition.component,
         optionCount: definition.options.length,

@@ -61,6 +61,9 @@ export const testPortsFor = (
 ): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
+  // No Discord client in route tests: the default is an honest miss, and a
+  // test that exercises the adopted-panel path stubs its own verdict.
+  findGuildMessage: () => Promise.resolve('message-not-found' as const),
   jobCounts: () => jobRepo.countByState(scope),
   oldestDueJobAtMs: (nowMs) => jobRepo.oldestDueAt(scope, nowMs),
   recordAudit: (input) =>

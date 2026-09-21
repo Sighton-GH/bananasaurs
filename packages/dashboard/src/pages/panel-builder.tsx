@@ -21,13 +21,15 @@ import { Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 
 /**
- * The role-assignment builder (ADRs 0053 and 0054): the dashboard's
- * production creation path for managed panels, offered in plain language as
- * reaction roles and role menus. Two steps — configure, then review — and
- * the submit is `POST /api/panels`, which validates the assembled definition
- * with the same `panelDefinitionSchema` the CLI's `panel create` uses. This
- * component validates against that schema too, at "review" time, so the
- * answer the operator reads here is the answer the server would give.
+ * The self-granted roles builder (ADRs 0053 and 0054, Bryan's roles lane):
+ * the dashboard's creation path, offered in plain language. The first
+ * question is the type - a **reaction role** (members react with an emoji
+ * on a message that already exists, attached by channel + message id and
+ * validated against live Discord before anything is written) or a **role
+ * panel** (the bot posts a message with buttons or a dropdown) - and each
+ * type gets its own form instead of one mixed form. Configure, then review;
+ * the submit is `POST /api/panels`, validated with the same
+ * `panelDefinitionSchema` the CLI's `panel create` uses.
  *
  * Creating never publishes. The created state points at the publish lever
  * rather than pulling it: going live stays a separate, confirmed action.
@@ -137,8 +139,16 @@ export function PanelBuilder({
       ? channels.resource.data.channels.find((c) => c.channelId === id)?.name
       : undefined) ?? id;
 
+  // The first question: which kind of self-granted role setup (Bryan's
+  // lane). `undefined` shows the type-choice step.
+  const [choice, setChoice] = useState<'reaction' | 'panel' | undefined>(undefined);
   const [panelId, setPanelId] = useState('');
   const [channelId, setChannelId] = useState('');
+  // Reaction role: the existing message members react to, plus the live
+  // check's verdict. 'failed' blocks review - attaching to a guessed id is
+  // exactly what the check exists to prevent.
+  const [messageId, setMessageId] = useState('');
+  const [messageCheck, setMessageCheck] = useState<'idle' | 'checking' | 'ok' | 'failed'>('idle');
   const [content, setContent] = useState('');
   const [behaviour, setBehaviour] = useState<PanelBehaviour>('toggle');
   const [format, setFormat] = useState<PanelComponent>('reaction');
@@ -156,7 +166,26 @@ export function PanelBuilder({
   // unreachable but keeps the types honest under noUncheckedIndexedAccess.
   const behaviourHelp = BEHAVIOURS.find((b) => b.value === behaviour)?.help ?? '';
   const formatHelp = FORMATS.find((f) => f.value === format)?.help ?? '';
-  const isReaction = format === 'reaction';
+  const isReaction = choice === 'reaction';
+  // single_choice cannot work on somebody else's message: clearing a stale
+  // reaction needs Manage Messages, which the bot deliberately does not hold.
+  const behaviours = isReaction
+    ? BEHAVIOURS.filter((b) => b.value !== 'single_choice')
+    : BEHAVIOURS;
+  const formats = FORMATS.filter((f) => f.value !== 'reaction');
+
+  /** The live target check for a reaction role's existing message. */
+  const checkMessage = async (): Promise<void> => {
+    setMessageCheck('checking');
+    try {
+      const result = await session.read<{ lookup: string }>(
+        `/api/guild/channels/${channelId.trim()}/messages/${messageId.trim()}`,
+      );
+      setMessageCheck(result?.lookup === 'ok' ? 'ok' : 'failed');
+    } catch {
+      setMessageCheck('failed');
+    }
+  };
 
   const roleList = roles.resource.state === 'ready' ? roles.resource.data.roles : undefined;
   const roleById = useMemo(() => new Map((roleList ?? []).map((r) => [r.roleId, r])), [roleList]);
@@ -175,11 +204,14 @@ export function PanelBuilder({
   /** Assemble the definition exactly as the submit will send it. */
   const assemble = () => ({
     panelId: panelId.trim(),
-    kind: 'managed' as const,
+    kind: isReaction ? ('adopted' as const) : ('managed' as const),
     channelId: channelId.trim(),
     behaviour,
-    component: format,
-    ...(content.trim() !== '' ? { content: content.trim() } : {}),
+    component: isReaction ? ('reaction' as const) : format,
+    ...(isReaction ? { messageId: messageId.trim() } : {}),
+    // An adopted message keeps its own text; content is the bot-posted
+    // panel's copy only.
+    ...(!isReaction && content.trim() !== '' ? { content: content.trim() } : {}),
     ...(maxRoles.trim() !== '' ? { maxRoles: Number(maxRoles) } : {}),
     ...(requiredRoleId !== '' ? { requiredRoleId } : {}),
     blockedRoleIds: [...blockedRoleIds],
@@ -200,6 +232,16 @@ export function PanelBuilder({
     }
     if (!SNOWFLAKE.test(channelId.trim())) {
       found.push('Channel: pick a channel or paste its snowflake ID.');
+    }
+    if (isReaction && !SNOWFLAKE.test(messageId.trim())) {
+      found.push(
+        'Message ID: the numeric id of the existing message members react to - in Discord, right-click the message and Copy Message ID.',
+      );
+    }
+    if (isReaction && messageCheck === 'failed') {
+      found.push(
+        'That message was not found in the picked channel - check the message id and run the check again.',
+      );
     }
     if (content.length > MAX_CONTENT) {
       found.push(`Message text: at most ${String(MAX_CONTENT)} characters (Discord's limit).`);
@@ -336,7 +378,10 @@ export function PanelBuilder({
             onClick={() => {
               setCreated(undefined);
               setStep('edit');
+              setChoice(undefined);
               setPanelId('');
+              setMessageId('');
+              setMessageCheck('idle');
               setContent('');
               setRequiredRoleId('');
               setBlockedRoleIds([]);
@@ -350,8 +395,58 @@ export function PanelBuilder({
     );
   }
 
+  if (step === 'edit' && choice === undefined) {
+    // The type comes first, then the type-specific form (Bryan's lane): no
+    // mixed form where a message-text field quietly does nothing for one
+    // kind and an emoji field is required for another.
+    return (
+      <Card title="New self-granted role setup">
+        <div className="grid max-w-2xl gap-3 sm:grid-cols-2">
+          <button
+            type="button"
+            onClick={() => setChoice('reaction')}
+            className="grid gap-1 rounded border border-line p-4 text-left hover:border-accent"
+          >
+            <span className="text-sm font-medium">Reaction role</span>
+            <span className="text-sm text-ink-muted">
+              Members add an emoji reaction on a message that already exists. You attach it by
+              channel and message ID; each option is an emoji.
+            </span>
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              setChoice('panel');
+              // The panel format select no longer offers reactions; land on
+              // a real option.
+              setFormat('button');
+            }}
+            className="grid gap-1 rounded border border-line p-4 text-left hover:border-accent"
+          >
+            <span className="text-sm font-medium">Role panel</span>
+            <span className="text-sm text-ink-muted">
+              The bot posts a new message with buttons or a dropdown. Best when the message should
+              say something specific.
+            </span>
+          </button>
+        </div>
+        <div className="mt-3">
+          <Button onClick={onCancel}>Cancel</Button>
+        </div>
+      </Card>
+    );
+  }
+
   return (
-    <Card title={step === 'edit' ? 'New reaction role or role menu' : 'Review before creating'}>
+    <Card
+      title={
+        step === 'edit'
+          ? isReaction
+            ? 'New reaction role'
+            : 'New role panel'
+          : 'Review before creating'
+      }
+    >
       {step === 'edit' ? (
         <form onSubmit={review} className="grid max-w-2xl gap-4">
           <Field
@@ -367,42 +462,91 @@ export function PanelBuilder({
           </Field>
           <ChannelPicker
             label="Channel"
-            hint="Where the message will be posted when you publish."
+            hint={
+              isReaction
+                ? 'The channel the existing message lives in.'
+                : 'Where the message will be posted when you publish.'
+            }
             value={channelId}
-            onChange={setChannelId}
+            onChange={(id) => {
+              setChannelId(id);
+              setMessageCheck('idle');
+            }}
           />
-          <Field
-            label="Message text"
-            hint="What the message says above the reactions or buttons. Leave empty for a short default."
-          >
-            <textarea
-              aria-label="Message text"
-              value={content}
-              onChange={(e) => setContent(e.target.value)}
-              rows={3}
-              maxLength={MAX_CONTENT}
-              placeholder="Pick your colour below!"
-              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-            />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field label="How members pick">
-              <div className="flex items-center gap-1">
-                <select
-                  aria-label="How members pick"
-                  value={format}
-                  onChange={(e) => setFormat(e.target.value as PanelComponent)}
-                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-                >
-                  {FORMATS.map((f) => (
-                    <option key={f.value} value={f.value}>
-                      {f.label}
-                    </option>
-                  ))}
-                </select>
-                <HelpTip label="how members pick">{formatHelp}</HelpTip>
+          {isReaction && (
+            <Field
+              label="Message ID"
+              hint="The existing message members react to. In Discord: right-click the message, Copy Message ID."
+            >
+              <div>
+                <div className="flex items-center gap-2">
+                  <Input
+                    value={messageId}
+                    onChange={(e) => {
+                      setMessageId(e.target.value);
+                      setMessageCheck('idle');
+                    }}
+                    inputMode="numeric"
+                    placeholder="1234567890123456789"
+                    autoComplete="off"
+                  />
+                  <Button
+                    onClick={() => void checkMessage()}
+                    disabled={
+                      !SNOWFLAKE.test(messageId.trim()) || !SNOWFLAKE.test(channelId.trim())
+                    }
+                    busy={messageCheck === 'checking'}
+                  >
+                    Check
+                  </Button>
+                </div>
+                {messageCheck === 'ok' && (
+                  <p className="mt-1 text-sm text-ok">Found - the bot can see that message.</p>
+                )}
+                {messageCheck === 'failed' && (
+                  <p role="alert" className="mt-1 text-sm text-danger">
+                    Not found in the picked channel - check the message ID.
+                  </p>
+                )}
               </div>
             </Field>
+          )}
+          {!isReaction && (
+            <>
+              <Field
+                label="Message text"
+                hint="What the message says above the buttons or dropdown. Leave empty for a short default."
+              >
+                <textarea
+                  aria-label="Message text"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  rows={3}
+                  maxLength={MAX_CONTENT}
+                  placeholder="Pick your colour below!"
+                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                />
+              </Field>
+              <Field label="How members pick">
+                <div className="flex items-center gap-1">
+                  <select
+                    aria-label="How members pick"
+                    value={format}
+                    onChange={(e) => setFormat(e.target.value as PanelComponent)}
+                    className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                  >
+                    {formats.map((f) => (
+                      <option key={f.value} value={f.value}>
+                        {f.label}
+                      </option>
+                    ))}
+                  </select>
+                  <HelpTip label="how members pick">{formatHelp}</HelpTip>
+                </div>
+              </Field>
+            </>
+          )}
+          <div className="grid gap-4 sm:grid-cols-2">
             <Field label="Behaviour">
               <div className="flex items-center gap-1">
                 <select
@@ -411,7 +555,7 @@ export function PanelBuilder({
                   onChange={(e) => setBehaviour(e.target.value as PanelBehaviour)}
                   className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
                 >
-                  {BEHAVIOURS.map((b) => (
+                  {behaviours.map((b) => (
                     <option key={b.value} value={b.value}>
                       {b.label}
                     </option>
@@ -574,12 +718,23 @@ export function PanelBuilder({
             <dd>{panelId.trim()}</dd>
             <dt className="text-ink-muted">Channel</dt>
             <dd>#{channelName(channelId.trim())}</dd>
-            <dt className="text-ink-muted">Message text</dt>
-            <dd className="whitespace-pre-wrap">
-              {content.trim() === '' ? 'Pick your roles. (the default)' : content.trim()}
-            </dd>
-            <dt className="text-ink-muted">How members pick</dt>
-            <dd>{FORMATS.find((f) => f.value === format)?.label}</dd>
+            {isReaction ? (
+              <>
+                <dt className="text-ink-muted">Attaches to</dt>
+                <dd>the existing message {messageId.trim()} — verified the bot can see it</dd>
+                <dt className="text-ink-muted">How members pick</dt>
+                <dd>Emoji reactions on that message</dd>
+              </>
+            ) : (
+              <>
+                <dt className="text-ink-muted">Message text</dt>
+                <dd className="whitespace-pre-wrap">
+                  {content.trim() === '' ? 'Pick your roles. (the default)' : content.trim()}
+                </dd>
+                <dt className="text-ink-muted">How members pick</dt>
+                <dd>{FORMATS.find((f) => f.value === format)?.label}</dd>
+              </>
+            )}
             <dt className="text-ink-muted">Behaviour</dt>
             <dd>{BEHAVIOURS.find((b) => b.value === behaviour)?.label}</dd>
             <dt className="text-ink-muted">Max roles per member</dt>
@@ -622,7 +777,10 @@ export function PanelBuilder({
             Creating saves the configuration only.{' '}
             <HelpTip label="when this goes live">
               Nothing reaches Discord yet. Publishing — a separate, confirmed action on the saved
-              page — posts the message and starts granting and removing roles as members use it.
+              page —{' '}
+              {isReaction
+                ? 'starts granting and removing roles as members react to that message.'
+                : 'posts the message and starts granting and removing roles as members use it.'}
             </HelpTip>
           </p>
           {submitError !== undefined && (

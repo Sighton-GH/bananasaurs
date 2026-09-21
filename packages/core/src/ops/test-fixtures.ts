@@ -30,6 +30,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   setKillswitch: unstubbed('setKillswitch'),
   tailAudit: unstubbed('tailAudit'),
   listGuildChannels: unstubbed('listGuildChannels'),
+  findGuildMessage: unstubbed('findGuildMessage'),
   listGuildRoles: unstubbed('listGuildRoles'),
   listGuildMembers: unstubbed('listGuildMembers'),
   listJobs: unstubbed('listJobs'),

@@ -649,6 +649,10 @@ export interface OpsGuildMemberPage {
   readonly nextAfter?: string | undefined;
 }
 
+/** `findGuildMessage`'s verdict, in the order the form reports it. */
+export type OpsMessageLookup =
+  'ok' | 'channel-not-found' | 'not-text-channel' | 'message-not-found';
+
 export interface OpsGuildRoleInfo {
   readonly roleId: string;
   readonly name: string;
@@ -696,6 +700,14 @@ export interface OpsPorts {
    * which the picker shows as an honest loading state, never a fake list.
    */
   listGuildChannels(): readonly OpsGuildChannelInfo[];
+  /**
+   * The target check for an adopted reaction panel (the builder's
+   * self-granted roles flow): does this channel exist in the guild, is it
+   * text-based, and does the message exist in it? Live Discord read - the
+   * channel from the gateway cache, the message fetched - so the form never
+   * attaches to a guessed id.
+   */
+  findGuildMessage(channelId: string, messageId: string): Promise<OpsMessageLookup>;
   /**
    * The guild's roles (minus `@everyone`) with name, colour and hierarchy
    * position — the role pickers' source, and the dashboard's answer to the

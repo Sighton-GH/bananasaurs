@@ -66,6 +66,26 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ channels: ports.listGuildChannels() });
   });
 
+  // The self-granted roles builder's message check (Bryan's roles lane): a
+  // reaction role attaches to an existing Discord message by id, and the
+  // form validates the target before anything is written. Same answer the
+  // submit makes, so a "found" here cannot 400 there.
+  app.get<{ Params: { channelId: string; messageId: string } }>(
+    '/api/guild/channels/:channelId/messages/:messageId',
+    async (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'panels.manage', reply)) return reply;
+
+      const ports = deps.portsFor(session.scope);
+      const lookup = await ports.findGuildMessage(
+        request.params.channelId,
+        request.params.messageId,
+      );
+      return reply.status(200).send({ lookup });
+    },
+  );
+
   // The MCP `read_channel_history` / `get_message` answers as routes
   // (ADR 0051): archived content, so `audit.read` like archive search. The
   // visibility set lives in the repository — a channel outside the guild's

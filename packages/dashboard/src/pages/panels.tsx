@@ -122,12 +122,12 @@ export function PanelsPage() {
   return (
     <>
       <PageHeader
-        title="Reaction roles"
-        purpose="Let members give themselves roles: by reacting with an emoji, or by clicking buttons or a dropdown. Build them here, see whether Discord still agrees, and drive publish and reconcile."
+        title="Self-granted roles"
+        purpose="Members give themselves roles here: by reacting with an emoji on a message that already exists, or by using buttons or a dropdown on one the bot posts. Build them here, see whether Discord still agrees, and drive publish and reconcile."
         actions={
           building ? undefined : (
             <Button variant="primary" onClick={() => setBuilding(true)}>
-              New reaction role or role menu
+              New reaction role or role panel
             </Button>
           )
         }
@@ -146,7 +146,7 @@ export function PanelsPage() {
         empty={
           <EmptyState
             title="Nothing set up yet"
-            detail="Build the first one here — pick a channel, a format and the roles, and nothing reaches Discord until you publish."
+            detail="Build the first one here — pick a reaction role or a role panel, and nothing reaches Discord until you publish."
             action={
               <Button variant="primary" onClick={() => setBuilding(true)}>
                 Build the first one
@@ -157,7 +157,7 @@ export function PanelsPage() {
       >
         {(rows) => (
           <DataTable
-            caption="Reaction roles and role panels"
+            caption="Self-granted role setups"
             rows={rows}
             rowKey={(p) => p.panelId}
             columns={[
