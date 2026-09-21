@@ -4,11 +4,11 @@ export interface AssistantBehaviour {
   readonly id: string;
   readonly guildId: string;
   readonly surface: AssistantSurface;
-  readonly mentionRoleId?: string;
+  readonly mentionRoleId?: string | undefined;
   /** Discord roles allowed to invoke this behaviour. Empty means nobody. */
   readonly callerRoleIds: readonly string[];
   /** IT escalation destination; required for ticket creation, otherwise fail closed. */
-  readonly ticketChannelId?: string;
+  readonly ticketChannelId?: string | undefined;
   readonly reviewerRoleIds: readonly string[];
   readonly name: string;
   readonly systemPrompt: string;

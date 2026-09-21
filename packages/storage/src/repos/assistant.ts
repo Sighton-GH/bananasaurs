@@ -50,14 +50,18 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         guildId: scope.guildId,
         behaviourId: input.id,
         surface: input.surface,
-        mentionRoleId: input.mentionRoleId,
+        // Drizzle's update builder drops `undefined` from a set clause, which
+        // turned "cleared" into "unchanged" (the stale channel kept routing
+        // while the UI said fails-closed). Nullable columns, so normalise to
+        // NULL here: a saved behaviour without the value means cleared.
+        mentionRoleId: input.mentionRoleId ?? null,
         name: input.name,
         systemPrompt: input.systemPrompt,
         promptVersion: input.promptVersion,
         enabled: input.enabled ? 1 : 0,
         skillIdsJson: JSON.stringify(input.allowedSkillIds),
         callerRoleIdsJson: JSON.stringify(input.callerRoleIds),
-        ticketChannelId: input.ticketChannelId,
+        ticketChannelId: input.ticketChannelId ?? null,
         reviewerRoleIdsJson: JSON.stringify(input.reviewerRoleIds),
         resourceIdsJson: JSON.stringify(input.resourceIds),
         createdAt: now,
@@ -67,14 +71,14 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         target: [assistantBehaviours.guildId, assistantBehaviours.behaviourId],
         set: {
           surface: input.surface,
-          mentionRoleId: input.mentionRoleId,
+          mentionRoleId: input.mentionRoleId ?? null,
           name: input.name,
           systemPrompt: input.systemPrompt,
           promptVersion: input.promptVersion,
           enabled: input.enabled ? 1 : 0,
           skillIdsJson: JSON.stringify(input.allowedSkillIds),
           callerRoleIdsJson: JSON.stringify(input.callerRoleIds),
-          ticketChannelId: input.ticketChannelId,
+          ticketChannelId: input.ticketChannelId ?? null,
           reviewerRoleIdsJson: JSON.stringify(input.reviewerRoleIds),
           resourceIdsJson: JSON.stringify(input.resourceIds),
           updatedAt: now,

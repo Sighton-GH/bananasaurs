@@ -16,12 +16,17 @@ export interface ClubResource {
 const privateHost = (host: string): boolean => {
   const lower = host.toLowerCase();
   if (lower === 'localhost' || lower.endsWith('.local') || lower.endsWith('.internal')) return true;
-  if (isIP(lower) === 0) return false;
+  // WHATWG URL keeps the brackets on an IPv6 hostname ("[::1]"); isIP then
+  // returns 0 and the address escaped the private-range checks below only by
+  // accident (review finding 6). Strip the brackets before classifying.
+  const bare = lower.startsWith('[') && lower.endsWith(']') ? lower.slice(1, -1) : lower;
+  if (isIP(bare) === 0) return false;
   return (
-    /^(127\.|10\.|0\.|169\.254\.|192\.168\.|::1$|fc|fd|fe80)/i.test(lower) ||
-    /^172\.(1[6-9]|2\d|3[01])\./.test(lower)
+    /^(127\.|10\.|0\.|169\.254\.|192\.168\.|::1$|fc|fd|fe80)/i.test(bare) ||
+    /^172\.(1[6-9]|2\d|3[01])\./.test(bare)
   );
 };
+
 
 /** First SSRF boundary. The fetcher must additionally pin public DNS results through the request. */
 export const validateResourceUrl = (raw: string): URL => {

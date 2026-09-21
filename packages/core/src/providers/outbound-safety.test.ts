@@ -42,3 +42,49 @@ describe('scanOutboundRequest', () => {
     expect(message).not.toContain('abc123456789secret');
   });
 });
+
+describe('scanOutboundRequest false-positive regressions (review finding 2)', () => {
+  it.each([
+    ['a date stamp', 'Last updated 2026-09-19'],
+    [
+      'a Discord channel URL',
+      'Club chat lives at https://discord.com/channels/1430056097305198705/1430056097305198706',
+    ],
+    ['a bare snowflake', 'archived channel 1462636505955569774 last night'],
+    ['a version string', 'running release 3.2.1 since 2026.09.19'],
+  ] as const)('allows %s', (_name, text) => {
+    expect(scanOutboundRequest(request(text))).toEqual({ safe: true, findings: [] });
+  });
+
+  it.each([
+    ['NANP with punctuation', 'call +1 (604) 555-0123'],
+    ['NANP dashed', '604-555-0123'],
+    ['NANP dotted', '604.555.0123'],
+    ['international', '+44 20 7946 0958'],
+  ] as const)('still detects phone number: %s', (_name, text) => {
+    expect(scanOutboundRequest(request(text)).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'personal-data', detector: 'phone-number' }),
+      ]),
+    );
+  });
+
+  it.each([
+    ['spaced', '4242 4242 4242 4242'],
+    ['dashed', '4242-4242-4242-4242'],
+    ['contiguous', '4242424242424242'],
+  ] as const)('still detects a Luhn-valid card number: %s', (_name, text) => {
+    expect(scanOutboundRequest(request(text)).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'personal-data', detector: 'credit-card-number' }),
+      ]),
+    );
+  });
+
+  it('ignores a 13-19 digit run that fails Luhn', () => {
+    expect(scanOutboundRequest(request('reference 4242424242424241 here'))).toEqual({
+      safe: true,
+      findings: [],
+    });
+  });
+});

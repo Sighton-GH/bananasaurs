@@ -90,3 +90,36 @@ it('round-trips guild-scoped assistant settings and activity', () => {
   expect(transitionDecision(s, 'd', 'reviewed', 'saved')).toBe(false);
   expect(listDecisions(s)[0]?.status).toBe('saved');
 });
+it('clears mentionRoleId and ticketChannelId when a re-put omits them', () => {
+  const s = t.scopes.forGuild(G);
+  const base = {
+    id: 'club',
+    guildId: G,
+    surface: 'bananasaurs' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English',
+    allowedSkillIds: [] as const,
+    reviewerRoleIds: [] as const,
+    callerRoleIds: [] as const,
+    resourceIds: [] as const,
+    enabled: true,
+  };
+  putBehaviour(
+    s,
+    { ...base, promptVersion: 1, mentionRoleId: '222222222222222222', ticketChannelId: '666666666666666666' },
+    10,
+  );
+  expect(listBehaviours(s)[0]).toMatchObject({
+    mentionRoleId: '222222222222222222',
+    ticketChannelId: '666666666666666666',
+  });
+  // Second save without either value: "cleared" must survive the upsert
+  // (Drizzle drops undefined from update sets, so the repo normalises to
+  // NULL). A stale value here kept routing to a channel the UI no longer
+  // showed (review finding 5).
+  putBehaviour(s, { ...base, promptVersion: 2 }, 20);
+  const saved = listBehaviours(s)[0];
+  expect(saved?.promptVersion).toBe(2);
+  expect(saved?.mentionRoleId).toBeUndefined();
+  expect(saved?.ticketChannelId).toBeUndefined();
+});

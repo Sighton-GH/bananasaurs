@@ -108,17 +108,16 @@ export const registerAssistantRoutes = (
         id: parsed.data.id,
         guildId: session.guildId,
         surface: parsed.data.surface,
-        ...(parsed.data.mentionRoleId === undefined
-          ? {}
-          : { mentionRoleId: parsed.data.mentionRoleId }),
+        // A behaviour PUT is a full replace: an absent optional id means the
+        // operator cleared it, so it must reach the repo as absent rather
+        // than be dropped here (dropping it kept the stale value stored).
+        mentionRoleId: parsed.data.mentionRoleId,
         name: parsed.data.name,
         systemPrompt: parsed.data.systemPrompt,
         promptVersion: (existing?.promptVersion ?? 0) + 1,
         allowedSkillIds: parsed.data.allowedSkillIds,
         callerRoleIds: parsed.data.callerRoleIds,
-        ...(parsed.data.ticket?.channelId === undefined
-          ? {}
-          : { ticketChannelId: parsed.data.ticket.channelId }),
+        ticketChannelId: parsed.data.ticket?.channelId,
         reviewerRoleIds: parsed.data.ticket?.reviewerRoleIds ?? [],
         resourceIds: parsed.data.resourceIds,
         enabled: parsed.data.enabled,
