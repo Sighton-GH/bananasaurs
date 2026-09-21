@@ -6,6 +6,7 @@ import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
+import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
 function ReportBody({ text, data }: { readonly text: string; readonly data: unknown }) {
@@ -56,6 +57,13 @@ export function DoctorPage() {
       />
       <div className="grid max-w-4xl gap-3">
         <Card title="Bot and server checks">
+          <p className="mb-2 text-sm text-ink-muted">
+            What this runs{' '}
+            <HelpTip label="the bot and server checks">
+              The same checks as the bananasaurs doctor command on the host: gateway connection, bot
+              permissions, role messages and archive health. Running them changes nothing.
+            </HelpTip>
+          </p>
           <DataState resource={doctor.resource}>
             {(report) => (
               <>
@@ -72,6 +80,14 @@ export function DoctorPage() {
           </DataState>
         </Card>
         <Card title="Internet access check">
+          <p className="mb-2 text-sm text-ink-muted">
+            Why a separate probe{' '}
+            <HelpTip label="the internet access check">
+              Checks the public hostname from outside, through Cloudflare Access, to confirm it
+              exposes exactly what was intended. It is the only check of configuration that lives
+              entirely in Cloudflare.
+            </HelpTip>
+          </p>
           <DataState resource={publicSurface.resource}>
             {(report) => (
               <>
