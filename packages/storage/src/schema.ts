@@ -1873,3 +1873,65 @@ export const assistantSkillActivity = sqliteTable(
     index('assistant_skill_activity_recent').on(t.guildId, t.at),
   ],
 );
+
+export const assistantSkillGrants = sqliteTable(
+  'assistant_skill_grants',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    skillId: text('skill_id').notNull(),
+    roleIdsJson: text('role_ids_json').notNull().default('[]'),
+    userIdsJson: text('user_ids_json').notNull().default('[]'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.skillId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_skill_grants_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+export const assistantTickets = sqliteTable(
+  'assistant_tickets',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    ticketId: text('ticket_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    requesterId: snowflake('requester_id').notNull(),
+    summary: text('summary').notNull(),
+    status: text('status').notNull().default('open'),
+    dedupeKey: text('dedupe_key').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.ticketId] }),
+    unique('assistant_tickets_dedupe').on(t.guildId, t.dedupeKey),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_tickets_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_tickets_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('assistant_tickets_requester_id_snowflake', snowflakeCheck(t.requesterId)),
+    check('assistant_tickets_status', sql`${t.status} IN ('open','claimed','resolved')`),
+  ],
+);
+
+export const assistantDecisions = sqliteTable(
+  'assistant_decisions',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    decisionId: text('decision_id').notNull(),
+    kind: text('kind').notNull(),
+    summary: text('summary').notNull(),
+    status: text('status').notNull().default('draft'),
+    requesterId: snowflake('requester_id').notNull(),
+    provenance: text('provenance').notNull(),
+    createdAt: integer('created_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.decisionId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_decisions_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_decisions_requester_id_snowflake', snowflakeCheck(t.requesterId)),
+    check('assistant_decisions_kind', sql`${t.kind} IN ('decision','review-plan')`),
+    check('assistant_decisions_status', sql`${t.status} IN ('draft','reviewed','saved')`),
+  ],
+);

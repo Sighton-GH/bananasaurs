@@ -99,7 +99,8 @@ export interface OutgoingMessage {
    * posts and log messages do is a behaviour change, and two guilds are
    * being observed.
    */
-  allowedMentions?: { readonly parse: readonly [] } | undefined;
+  allowedMentions?:
+    { readonly parse: readonly []; readonly roles?: readonly string[] | undefined } | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */

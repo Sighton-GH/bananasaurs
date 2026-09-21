@@ -36,6 +36,8 @@ export const NAV: readonly NavEntry[] = [
   { path: '/accounts', label: 'Accounts', status: 'built', group: 'Instance' },
   { path: '/mcp', label: 'MCP connector', status: 'built', group: 'Instance' },
   { path: '/providers', label: 'Providers', status: 'built', group: 'Instance' },
+  { path: '/assistant', label: 'Assistant', status: 'built', group: 'Release 3' },
+  { path: '/assistant/activity', label: 'Skill activity', status: 'built', group: 'Release 3' },
   { path: '/resources', label: 'Resources', status: 'stub', group: 'Release 3' },
   { path: '/memory', label: 'Memory', status: 'stub', group: 'Release 3' },
   { path: '/ai', label: 'AI workspace', status: 'stub', group: 'Release 3' },

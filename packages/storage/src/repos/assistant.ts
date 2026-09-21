@@ -5,6 +5,9 @@ import {
   assistantReminders,
   assistantResources,
   assistantSkillActivity,
+  assistantSkillGrants,
+  assistantTickets,
+  assistantDecisions,
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
@@ -352,3 +355,108 @@ export const recordSkillActivity = (scope: GuildScope, a: SkillActivity): void =
       })
       .run();
   });
+
+export interface AssistantSkillGrant {
+  readonly skillId: string;
+  readonly roleIds: readonly string[];
+  readonly userIds: readonly string[];
+}
+export const listSkillGrants = (scope: GuildScope): readonly AssistantSkillGrant[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantSkillGrants)
+      .where(scope.only(assistantSkillGrants))
+      .orderBy(asc(assistantSkillGrants.skillId))
+      .all()
+      .map((r) => ({
+        skillId: r.skillId,
+        roleIds: array(r.roleIdsJson),
+        userIds: array(r.userIdsJson),
+      })),
+  );
+export const putSkillGrant = (scope: GuildScope, input: AssistantSkillGrant, now: number): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantSkillGrants)
+      .values({
+        guildId: scope.guildId,
+        skillId: input.skillId,
+        roleIdsJson: JSON.stringify(input.roleIds),
+        userIdsJson: JSON.stringify(input.userIds),
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [assistantSkillGrants.guildId, assistantSkillGrants.skillId],
+        set: {
+          roleIdsJson: JSON.stringify(input.roleIds),
+          userIdsJson: JSON.stringify(input.userIds),
+          updatedAt: now,
+        },
+      })
+      .run();
+  });
+export const listTickets = (scope: GuildScope) =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantTickets)
+      .where(scope.only(assistantTickets))
+      .orderBy(desc(assistantTickets.createdAt))
+      .all()
+      .map((r) => ({
+        id: r.ticketId,
+        behaviourId: r.behaviourId,
+        channelId: r.channelId,
+        requesterId: r.requesterId,
+        summary: r.summary,
+        status: r.status,
+        at: r.createdAt,
+      })),
+  );
+export const listDecisions = (scope: GuildScope) =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantDecisions)
+      .where(scope.only(assistantDecisions))
+      .orderBy(desc(assistantDecisions.createdAt))
+      .all()
+      .map((r) => ({
+        id: r.decisionId,
+        kind: r.kind,
+        summary: r.summary,
+        status: r.status,
+        requesterId: r.requesterId,
+        provenance: r.provenance,
+        at: r.createdAt,
+      })),
+  );
+export interface NewAssistantTicket {
+  readonly id: string;
+  readonly behaviourId: string;
+  readonly channelId: string;
+  readonly requesterId: string;
+  readonly summary: string;
+  readonly dedupeKey: string;
+  readonly at: number;
+}
+export const insertTicket = (scope: GuildScope, input: NewAssistantTicket): boolean =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .insert(assistantTickets)
+        .values({
+          guildId: scope.guildId,
+          ticketId: input.id,
+          behaviourId: input.behaviourId,
+          channelId: input.channelId,
+          requesterId: input.requesterId,
+          summary: input.summary,
+          status: 'open',
+          dedupeKey: input.dedupeKey,
+          createdAt: input.at,
+        })
+        .onConflictDoNothing()
+        .run().changes > 0,
+  );

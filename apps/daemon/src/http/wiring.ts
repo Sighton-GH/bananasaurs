@@ -123,6 +123,23 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     readonly: deps.readonly,
     portsFor: deps.portsFor,
     instance: deps.instance,
+    assistantDirectories: async (guildId) => {
+      const guild = deps.client.guilds.cache.get(guildId);
+      if (guild === undefined) throw new Error('guild directory unavailable');
+      const memberPage = await guild.members.list({ limit: 100, cache: false });
+      return {
+        roles: [...guild.roles.cache.values()]
+          .filter((role) => role.id !== guild.id)
+          .map((role) => ({ id: role.id, name: role.name, position: role.position })),
+        members: [...memberPage.values()].map((member) => ({
+          id: member.id,
+          name: member.displayName,
+        })),
+        channels: [...guild.channels.cache.values()]
+          .filter((channel) => channel.isTextBased())
+          .map((channel) => ({ id: channel.id, name: channel.name })),
+      };
+    },
     mcpPublicUrl: deps.mcpPublicUrl,
   };
   const app = createServer({
@@ -187,6 +204,23 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     readonly: deps.config.BANANASAURS_READONLY,
     portsFor: deps.portsFor,
     instance: deps.instance,
+    assistantDirectories: async (guildId) => {
+      const guild = deps.client.guilds.cache.get(guildId);
+      if (guild === undefined) throw new Error('guild directory unavailable');
+      const memberPage = await guild.members.list({ limit: 100, cache: false });
+      return {
+        roles: [...guild.roles.cache.values()]
+          .filter((role) => role.id !== guild.id)
+          .map((role) => ({ id: role.id, name: role.name, position: role.position })),
+        members: [...memberPage.values()].map((member) => ({
+          id: member.id,
+          name: member.displayName,
+        })),
+        channels: [...guild.channels.cache.values()]
+          .filter((channel) => channel.isTextBased())
+          .map((channel) => ({ id: channel.id, name: channel.name })),
+      };
+    },
     mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
   };
 
