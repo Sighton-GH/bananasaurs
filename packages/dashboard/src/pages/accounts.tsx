@@ -2,6 +2,7 @@ import { useCallback, useState } from 'react';
 import { CAPABILITIES } from '@bananasaurs/core';
 import type {
   Account,
+  AccountCreateResult,
   AccountCapabilityOutcome,
   AccountDeleteResult,
   AccountsResponse,
@@ -13,10 +14,12 @@ import type {
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
+import { Card } from '../ui/Card.js';
 import { Button } from '../ui/Button.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { Checkbox, Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { PrintOnceDialog } from '../ui/PrintOnceDialog.js';
 import { useToast } from '../ui/Toast.js';
@@ -100,6 +103,63 @@ export function AccountsPage() {
   const [pending, setPending] = useState<PendingAction | undefined>(undefined);
   const [newPassword, setNewPassword] = useState<AccountSetPasswordResult | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+
+  // --- create ---------------------------------------------------------------
+  // The draft is the reviewable scope: username, whether the account reaches
+  // this guild, and exactly which capabilities inside it. Nothing is written
+  // until the confirmation quotes that scope back.
+  const [draftName, setDraftName] = useState('');
+  const [draftGuild, setDraftGuild] = useState(false);
+  const [draftCaps, setDraftCaps] = useState<readonly string[]>([]);
+  const [createReview, setCreateReview] = useState<
+    | {
+        readonly username: string;
+        readonly grantThisGuild: boolean;
+        readonly capabilities: readonly string[];
+      }
+    | undefined
+  >(undefined);
+  const [createBusy, setCreateBusy] = useState(false);
+  const [created, setCreated] = useState<AccountCreateResult | undefined>(undefined);
+
+  const draftNameOk = /^[a-z0-9][a-z0-9._-]{2,63}$/.test(draftName);
+
+  const draftScope = (
+    username: string,
+    grantThisGuild: boolean,
+    capabilities: readonly string[],
+  ): string => {
+    const access = grantThisGuild
+      ? `access to guild ${session.info.guildId}${
+          capabilities.length > 0
+            ? ` with the capabilities ${capabilities.join(', ')}`
+            : ' and no capabilities yet'
+        }`
+      : 'no guild access and no capabilities — it reaches nothing until you grant both below';
+    return `Creates ${username} as a non-owner account with ${access}. The generated password shows exactly once; every grant is recorded in the audit trail, and the table below edits all of it afterwards.`;
+  };
+
+  const create = async (): Promise<void> => {
+    if (createReview === undefined) return;
+    setCreateBusy(true);
+    try {
+      const result = await session.write<AccountCreateResult>('/api/accounts', {
+        username: createReview.username,
+        grantThisGuild: createReview.grantThisGuild,
+        capabilities: [...createReview.capabilities],
+      });
+      if (result !== undefined) {
+        // No toast: the plaintext lives in the PrintOnceDialog only.
+        setCreated(result);
+        setDraftName('');
+        setDraftGuild(false);
+        setDraftCaps([]);
+      }
+    } finally {
+      setCreateBusy(false);
+      setCreateReview(undefined);
+    }
+  };
 
   const run = async () => {
     if (pending === undefined) return;
@@ -263,6 +323,71 @@ export function AccountsPage() {
         title="Accounts"
         purpose="Every dashboard account: owner, enabled or disabled, lockouts — and the levers over its sessions, tokens and guild access."
       />
+      <Card title="Create an account">
+        <form
+          className="mt-2 grid max-w-lg gap-3 text-sm"
+          onSubmit={(e) => {
+            e.preventDefault();
+            if (!draftNameOk) return;
+            setCreateReview({
+              username: draftName,
+              grantThisGuild: draftGuild,
+              capabilities: draftGuild ? draftCaps : [],
+            });
+          }}
+        >
+          <Field
+            label="Username"
+            hint="Lowercase letters, digits, dot, dash, underscore; 3-64 characters, never a leading dash."
+          >
+            <Input
+              value={draftName}
+              onChange={(e) => setDraftName(e.target.value)}
+              placeholder="e.g. mod-casey"
+              autoComplete="off"
+            />
+          </Field>
+          <Checkbox
+            label={`Give the account access to this guild (${session.info.guildId})`}
+            checked={draftGuild}
+            onChange={(e) => {
+              setDraftGuild(e.target.checked);
+              if (!e.target.checked) setDraftCaps([]);
+            }}
+          />
+          {draftGuild && (
+            <fieldset className="grid gap-1 rounded-sm border border-line p-2">
+              <legend className="px-1 text-xs text-ink-muted">
+                Capabilities in this guild — none is the safe start
+              </legend>
+              {CAPABILITIES.map((capability) => (
+                <Checkbox
+                  key={capability}
+                  label={capability}
+                  checked={draftCaps.includes(capability)}
+                  onChange={(e) =>
+                    setDraftCaps(
+                      e.target.checked
+                        ? [...draftCaps, capability]
+                        : draftCaps.filter((c) => c !== capability),
+                    )
+                  }
+                />
+              ))}
+            </fieldset>
+          )}
+          {draftNameOk && (
+            <p className="text-xs text-ink-muted">
+              {draftScope(draftName, draftGuild, draftGuild ? draftCaps : [])}
+            </p>
+          )}
+          <div>
+            <Button type="submit" variant="primary" disabled={!draftNameOk}>
+              Review and create
+            </Button>
+          </div>
+        </form>
+      </Card>
       <DataState
         resource={accounts.resource}
         isEmpty={(r) => r.accounts.length === 0}
@@ -395,6 +520,36 @@ export function AccountsPage() {
         busy={busy}
         onConfirm={() => void run()}
         onCancel={() => setPending(undefined)}
+      />
+      <ConfirmDialog
+        open={createReview !== undefined}
+        title={createReview === undefined ? '' : `Create ${createReview.username}?`}
+        scope={
+          <p>
+            {createReview === undefined
+              ? ''
+              : draftScope(
+                  createReview.username,
+                  createReview.grantThisGuild,
+                  createReview.capabilities,
+                )}
+          </p>
+        }
+        confirmLabel="Create account"
+        danger={false}
+        busy={createBusy}
+        onConfirm={() => void create()}
+        onCancel={() => setCreateReview(undefined)}
+      />
+      <PrintOnceDialog
+        open={created !== undefined}
+        title="Account created"
+        secretLabel={created === undefined ? '' : `Generated password for ${created.username}`}
+        secret={created?.password}
+        onDone={() => {
+          setCreated(undefined);
+          accounts.reload();
+        }}
       />
       <PrintOnceDialog
         open={newPassword !== undefined}

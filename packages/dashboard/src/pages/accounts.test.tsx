@@ -175,4 +175,103 @@ describe('AccountsPage capabilities (account grant parity)', () => {
       expect(bodyOf(post!)).toEqual({ capability: 'config.read' });
     });
   });
+
+  it('creates an account at the least-privilege floor after a quoted review', async () => {
+    const mock = stubFetch([
+      { url: '/api/accounts', body: ACCOUNTS },
+      {
+        method: 'POST',
+        url: '/api/accounts',
+        body: {
+          accountId: 'acct-9',
+          username: 'mod-casey',
+          password: 'generated-secret',
+          guildAccess: false,
+          capabilities: [],
+        },
+      },
+    ]);
+    renderWithSession(<AccountsPage />);
+    await screen.findByText('bryan');
+
+    // Capability picks stay hidden until guild access is on.
+    expect(screen.queryByLabelText('audit.read')).toBeNull();
+
+    fireEvent.change(screen.getByLabelText('Username'), {
+      target: { value: 'mod-casey' },
+    });
+    // The live review line states the floor before anything is written.
+    expect(screen.getByText(/reaches nothing until you grant both/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Review and create' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('non-owner account');
+    expect(dialog.textContent).toContain('no guild access and no capabilities');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create account' }));
+    });
+
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
+    )!;
+    expect(bodyOf(post)).toEqual({
+      username: 'mod-casey',
+      grantThisGuild: false,
+      capabilities: [],
+    });
+
+    // The generated password crosses the screen exactly once.
+    const printOnce = await screen.findByRole('dialog', { name: 'Account created' });
+    expect(printOnce.textContent).toContain('Generated password for mod-casey');
+    expect(printOnce.textContent).toContain('generated-secret');
+  });
+
+  it('scopes a new account with this guild and picked capabilities', async () => {
+    const mock = stubFetch([
+      { url: '/api/accounts', body: ACCOUNTS },
+      {
+        method: 'POST',
+        url: '/api/accounts',
+        body: {
+          accountId: 'acct-10',
+          username: 'mod-jules',
+          password: 'generated-secret-2',
+          guildAccess: true,
+          capabilities: ['audit.read'],
+        },
+      },
+    ]);
+    renderWithSession(<AccountsPage />);
+    await screen.findByText('bryan');
+
+    fireEvent.change(screen.getByLabelText('Username'), {
+      target: { value: 'mod-jules' },
+    });
+    fireEvent.click(
+      screen.getByLabelText(/Give the account access to this guild/),
+    );
+    fireEvent.click(screen.getByLabelText('audit.read'));
+    expect(
+      screen.getByText(/access to guild 1540816150026518620 with the capabilities audit\.read/),
+    ).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Review and create' }));
+
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('with the capabilities audit.read');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Create account' }));
+    });
+
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
+    )!;
+    expect(bodyOf(post)).toEqual({
+      username: 'mod-jules',
+      grantThisGuild: true,
+      capabilities: ['audit.read'],
+    });
+    expect(
+      (await screen.findByRole('dialog', { name: 'Account created' })).textContent,
+    ).toContain('Generated password for mod-jules');
+  });
 });

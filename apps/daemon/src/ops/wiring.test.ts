@@ -416,6 +416,32 @@ describe('accountOpsFor', () => {
     });
   };
 
+  it('accountCreate makes a non-owner account with no guild access and a working password', async () => {
+    const created = await ops().accountCreate('mod-one');
+    expect(created).not.toBe('username-taken');
+    if (created === 'username-taken') return;
+
+    const row = accountRepo.findAccountByUsername(instance(), 'mod-one');
+    expect(row).toBeDefined();
+    expect(row!.accountId).toBe(created.accountId);
+    expect(row!.isOwner).toBe(false);
+    expect(row!.disabled).toBe(false);
+    expect(row!.createdAt).toBe(NOW);
+    // Least privilege: no guild access, so no capability either.
+    expect(accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId)).toBe(false);
+    // The returned plaintext verifies against the stored hash; the hash
+    // itself never crosses the port.
+    expect(JSON.stringify(created)).not.toContain(row!.passwordHash);
+    expect(await verifyPassword(row!.passwordHash, created.password)).toBe(true);
+  });
+
+  it("accountCreate('owner') returns username-taken and writes nothing", async () => {
+    seedAccount('acct_owner00000000000000000000000001', 'owner', { isOwner: true });
+
+    expect(await ops().accountCreate('owner')).toBe('username-taken');
+    expect(accountRepo.countAccounts(instance())).toBe(1);
+  });
+
   it('accountList never exposes a password hash', () => {
     seedAccount('acct_sentinel00000000000000000000001', 'sentinel', {
       passwordHash: '$argon2id$v=19$SENTINEL',

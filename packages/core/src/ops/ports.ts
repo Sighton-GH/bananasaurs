@@ -534,6 +534,18 @@ export interface OpsAccount {
 }
 
 /**
+ * What `account create` made. The plaintext `password` crosses this boundary
+ * exactly once - into the response or terminal line that shows it once. It
+ * is never stored, never audited, never in `data`.
+ */
+export interface OpsAccountCreateResult {
+  readonly accountId: string;
+  readonly username: string;
+  readonly password: string;
+  readonly createdAt: number;
+}
+
+/**
  * What `account disable|enable` did. `'no-such-account'` is a distinct
  * outcome from `changed: false`: one is a usage mistake, the other is an
  * account that was already in the state asked for, and an operator needs
@@ -1440,6 +1452,17 @@ export interface OpsInstance {
    * exactly what crosses the boundary.
    */
   accountList(): readonly OpsAccount[];
+  /**
+   * Creates one NON-owner dashboard account with no guild access and no
+   * capabilities - least privilege by construction, so a new account can
+   * reach nothing until an explicit, audited grant says otherwise
+   * (`accountGrantGuild` / `grantAccountCapability`, the same levers that
+   * edit it afterwards). Async like `accountSetPassword`: the generated
+   * password is hashed with Argon2id in the wiring, the plaintext is
+   * returned exactly once and never stored. `'username-taken'` is the usage
+   * answer for a name an existing account already holds.
+   */
+  accountCreate(username: string): Promise<OpsAccountCreateResult | 'username-taken'>;
   /**
    * Disables or re-enables one dashboard account by username (ADR 0045 D6).
    *

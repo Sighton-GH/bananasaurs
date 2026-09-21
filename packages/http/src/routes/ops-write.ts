@@ -44,6 +44,26 @@ const settingsBodySchema = z.discriminatedUnion('key', [
   z.object({ key: z.literal('breaker'), value: z.literal('closed') }),
 ]);
 
+const accountCreateSchema = z.object({
+  // The same shape `bananasaurs account` accepts (packages/core
+  // ops/commands/account.ts): lowercase, digit, dot, dash, underscore, and
+  // never a leading dash the CLI would read as a flag.
+  username: z
+    .string()
+    .min(3)
+    .max(64)
+    .regex(
+      /^[a-z0-9][a-z0-9._-]*$/,
+      'a username must start with a lowercase letter or digit, and may then contain ' +
+        'lowercase letters, digits, dot, dash, underscore',
+    ),
+  // Explicit scope, reviewable before creation: access to THIS guild and
+  // which capabilities inside it. Defaults are the least-privilege floor -
+  // a fresh account reaches nothing.
+  grantThisGuild: z.boolean().default(false),
+  capabilities: z.array(z.enum(CAPABILITIES)).default([]),
+});
+
 const accountCapabilityGrantSchema = z.object({
   capability: z.enum(CAPABILITIES),
 });
@@ -1018,6 +1038,74 @@ export const registerOpsWriteRoutes = (
       return reply.status(200).send(result);
     },
   );
+
+  // Owner-provisioned account creation, web half: the account starts
+  // non-owner with nothing, and the guild access and capabilities the form
+  // named are granted here as real grants (the same levers the page edits
+  // with afterwards). The generated password is returned exactly once and
+  // appears in no audit row.
+  app.post('/api/accounts', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+
+    const parsed = accountCreateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'bad-request', issues: parsed.error.issues });
+    }
+    // A capability lives inside a guild, so granting one without the guild
+    // is a form mistake, not a state - refuse it before anything is created.
+    if (parsed.data.capabilities.length > 0 && !parsed.data.grantThisGuild) {
+      return reply.status(400).send({
+        error: 'capabilities-need-guild-access',
+        message:
+          'capabilities live inside a guild: grant this guild to the new account, or create it with no capabilities',
+      });
+    }
+
+    const created = await deps.instance.accountCreate(parsed.data.username);
+    if (created === 'username-taken') {
+      return reply.status(409).send({ error: 'username-taken' });
+    }
+
+    const ports = deps.portsFor(session.scope);
+    let guildAccess = false;
+    if (parsed.data.grantThisGuild) {
+      guildAccess = ports.accountGrantGuild(parsed.data.username) === 'granted';
+    }
+    const grantedCapabilities: string[] = [];
+    if (guildAccess) {
+      for (const capability of parsed.data.capabilities) {
+        const outcome = ports.grantAccountCapability({
+          username: parsed.data.username,
+          capability,
+          grantedBy: session.accountId,
+        });
+        if (outcome === 'granted' || outcome === 'already-held') {
+          grantedCapabilities.push(capability);
+        }
+      }
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'account.created',
+      subjectType: 'account',
+      subjectId: parsed.data.username,
+      before: undefined,
+      after: {
+        isOwner: false,
+        guildAccess,
+        capabilities: grantedCapabilities,
+      },
+    });
+    return reply.status(201).send({
+      accountId: created.accountId,
+      username: created.username,
+      password: created.password,
+      guildAccess,
+      capabilities: grantedCapabilities,
+    });
+  });
 
   app.delete<{ Params: { username: string } }>('/api/accounts/:username', (request, reply) => {
     const session = guard.require(request, reply);

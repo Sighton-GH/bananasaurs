@@ -148,6 +148,19 @@ export interface AccountRevokeResult {
  * `OpsAccountSetPasswordResult`. `password` is shown exactly once, in the
  * PrintOnceDialog, and nowhere else: never a toast, never a log line.
  */
+/**
+ * `POST /api/accounts`'s answer. `password` is shown exactly once, in the
+ * PrintOnceDialog; the scope echoes what the form asked for and the route
+ * granted.
+ */
+export interface AccountCreateResult {
+  readonly accountId: string;
+  readonly username: string;
+  readonly password: string;
+  readonly guildAccess: boolean;
+  readonly capabilities: readonly string[];
+}
+
 export interface AccountSetPasswordResult {
   readonly username: string;
   readonly accountId: string;

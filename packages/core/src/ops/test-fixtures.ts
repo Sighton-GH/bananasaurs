@@ -159,6 +159,7 @@ export const fakeOpsInstance = (over: Partial<OpsInstance> = {}): OpsInstance =>
   providerEligibilityWarnings: () => [],
   providerReview: unstubbed('providerReview'),
   accountList: unstubbed('accountList'),
+  accountCreate: unstubbed('accountCreate'),
   accountSetDisabled: unstubbed('accountSetDisabled'),
   accountDelete: unstubbed('accountDelete'),
   accountRevokeCredentials: unstubbed('accountRevokeCredentials'),

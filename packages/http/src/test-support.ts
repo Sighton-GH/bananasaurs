@@ -27,6 +27,7 @@ import {
   type OpsInstance,
   type OpsPorts,
 } from '@bananasaurs/core';
+import { generateToken, hashPassword } from './secrets.js';
 
 /**
  * Test-only `OpsPorts` and `OpsInstance`, built directly against the repos —
@@ -897,6 +898,26 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
       accountsRemaining: accountRepo.countAccounts(instanceScope),
     };
+  },
+  // The web half of account creation, against the test database: same
+  // least-privilege shape as the canonical `accountOpsFor` - non-owner, no
+  // guild access, no capabilities, generated password hashed with Argon2id.
+  accountCreate: async (username) => {
+    if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
+      return 'username-taken';
+    }
+    const password = generateToken();
+    const passwordHash = await hashPassword(password);
+    const accountId = `acct_test_${username}`;
+    const at = now();
+    accountRepo.createAccount(instanceScope, {
+      accountId,
+      username,
+      passwordHash,
+      isOwner: false,
+      now: at,
+    });
+    return { accountId, username, password, createdAt: at };
   },
   accountRevokeCredentials: () => {
     throw new Error('not used by the dashboard routes under test');

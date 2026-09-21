@@ -167,6 +167,7 @@ const ALL_CALLS: readonly Call[] = [
   { method: 'DELETE', url: '/api/automod/rules/r1/link-domains/example.com' },
   { method: 'POST', url: '/api/backup-now' },
   { method: 'POST', url: '/api/providers/unknown-provider/review' },
+  { method: 'POST', url: '/api/accounts', payload: { username: 'newacct' } },
   { method: 'POST', url: '/api/accounts/nobody/disabled', payload: { disabled: true } },
   { method: 'DELETE', url: '/api/accounts/nobody' },
   { method: 'POST', url: '/api/accounts/nobody/revoke-credentials' },
@@ -237,8 +238,8 @@ describe('ops-write routes', () => {
     // of the gate: config.write alone must not reach password reset, which
     // hands back working credentials for a more privileged account.
     grant(CAPABILITIES.filter((capability) => capability !== 'accounts.manage'));
-    const accountCalls = ALL_CALLS.filter((call) => call.url.startsWith('/api/accounts/'));
-    expect(accountCalls).toHaveLength(7);
+    const accountCalls = ALL_CALLS.filter((call) => call.url.startsWith('/api/accounts'));
+    expect(accountCalls).toHaveLength(8);
     for (const call of accountCalls) {
       const response = await app.inject({
         method: call.method,
@@ -424,6 +425,119 @@ describe('ops-write routes', () => {
     const actions = rows.map((row) => row.action);
     expect(actions).toContain('account.disabled');
     expect(actions).toContain('account.deleted');
+  });
+
+  it('creates an account at the least-privilege floor and audits it', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['accounts.manage']);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { username: 'mod-one' },
+    });
+    expect(response.statusCode).toBe(201);
+    const body: {
+      accountId: string;
+      username: string;
+      password: string;
+      guildAccess: boolean;
+      capabilities: string[];
+    } = response.json();
+    expect(body.username).toBe('mod-one');
+    expect(body.password.length).toBeGreaterThan(20);
+    expect(body.guildAccess).toBe(false);
+    expect(body.capabilities).toEqual([]);
+
+    // Non-owner, no guild access, no capabilities: a fresh account reaches
+    // nothing until an explicit grant says otherwise.
+    const instance = t.scopes.instance();
+    const row = accountRepo.findAccountByUsername(instance, 'mod-one');
+    expect(row).toBeDefined();
+    expect(row!.isOwner).toBe(false);
+    expect(
+      accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId),
+    ).toBe(false);
+    expect(
+      authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), row!.accountId),
+    ).toEqual([]);
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
+    const created = rows.find((r) => r.action === 'account.created');
+    expect(created).toBeDefined();
+    expect(created!.actorType).toBe('dashboard');
+    expect(created!.via).toBe('http');
+    // The plaintext password never lands in the audit trail.
+    expect(JSON.stringify(created)).not.toContain(body.password);
+  });
+
+  it('creates an account pre-scoped with this guild and named capabilities', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['accounts.manage']);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { cookie, [CSRF]: csrf },
+      payload: {
+        username: 'mod-two',
+        grantThisGuild: true,
+        capabilities: ['audit.read', 'config.read'],
+      },
+    });
+    expect(response.statusCode).toBe(201);
+    const body: { guildAccess: boolean; capabilities: string[] } = response.json();
+    expect(body.guildAccess).toBe(true);
+    expect(body.capabilities).toEqual(['audit.read', 'config.read']);
+
+    const instance = t.scopes.instance();
+    const row = accountRepo.findAccountByUsername(instance, 'mod-two');
+    expect(row).toBeDefined();
+    expect(
+      accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId),
+    ).toBe(true);
+    expect(
+      authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), row!.accountId).sort(),
+    ).toEqual(['audit.read', 'config.read']);
+  });
+
+  it('refuses capabilities without guild access, duplicates, and bad usernames', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['accounts.manage']);
+
+    const noGuild = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { username: 'mod-three', capabilities: ['audit.read'] },
+    });
+    expect(noGuild.statusCode).toBe(400);
+    expect(noGuild.json()).toEqual({
+      error: 'capabilities-need-guild-access',
+      message:
+        'capabilities live inside a guild: grant this guild to the new account, or create it with no capabilities',
+    });
+
+    const badName = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { username: '-mod' },
+    });
+    expect(badName.statusCode).toBe(400);
+
+    const taken = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { username: 'owner' },
+    });
+    expect(taken.statusCode).toBe(409);
+    expect(taken.json()).toEqual({ error: 'username-taken' });
+
+    // None of the refusals created anything.
+    const instance = t.scopes.instance();
+    expect(accountRepo.findAccountByUsername(instance, 'mod-three')).toBeUndefined();
+    expect(accountRepo.findAccountByUsername(instance, '-mod')).toBeUndefined();
   });
 
   it('refuses archive writes when the guild is not archive-enabled', async () => {

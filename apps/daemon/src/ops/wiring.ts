@@ -1,3 +1,4 @@
+import { randomBytes } from 'node:crypto';
 import { ChannelType, PermissionsBitField, type Client } from 'discord.js';
 import {
   archiveBackfillDedupeKey,
@@ -1232,6 +1233,7 @@ export const accountOpsFor = (
 ): Pick<
   OpsInstance,
   | 'accountList'
+  | 'accountCreate'
   | 'accountSetDisabled'
   | 'accountDelete'
   | 'accountRevokeCredentials'
@@ -1249,6 +1251,28 @@ export const accountOpsFor = (
       lockedUntil: row.lockedUntil,
       createdAt: row.createdAt,
     })),
+  accountCreate: async (username) => {
+    if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
+      return 'username-taken';
+    }
+    // Generated, never chosen (S13-D3's rule applied to creation): the
+    // secret lands in no shell history and no form field. The account
+    // starts non-owner with no guild access and no capabilities - least
+    // privilege by construction, with every later grant an explicit,
+    // audited step.
+    const password = generateToken();
+    const passwordHash = await hashPassword(password);
+    const accountId = `acct_${randomBytes(16).toString('hex')}`;
+    const at = now();
+    accountRepo.createAccount(instanceScope, {
+      accountId,
+      username,
+      passwordHash,
+      isOwner: false,
+      now: at,
+    });
+    return { accountId, username, password, createdAt: at };
+  },
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
     if (row === undefined) return 'no-such-account';
