@@ -69,10 +69,42 @@ describe('assistant behaviour and permissions', () => {
 });
 
 describe('resources and context', () => {
-  it('blocks local resource URLs and keeps resources guild-scoped', () => {
+  it('blocks local resource URLs', () => {
     expect(() => validateResourceUrl('http://sfuracerbot.ca')).toThrow('HTTPS');
     expect(() => validateResourceUrl('https://127.0.0.1/private')).toThrow('private');
     expect(validateResourceUrl('https://sfuracerbot.ca').href).toBe('https://sfuracerbot.ca/');
+  });
+
+  it('rejects private targets in every IPv6 spelling and allows public ones', () => {
+    const blocked = [
+      'https://[::1]/',
+      'https://[fd00::1]/',
+      'https://[fe80::1]/',
+      // IPv4-mapped, dotted and hex forms (review round 2).
+      'https://[::ffff:127.0.0.1]/',
+      'https://[::ffff:7f00:1]/',
+      'https://[::ffff:10.1.2.3]/',
+      // NAT64 64:ff9b::/96, dotted and hex forms.
+      'https://[64:ff9b::127.0.0.1]/',
+      'https://[64:ff9b::7f00:1]/',
+      'https://[64:ff9b::a02:1]/',
+    ];
+    for (const url of blocked) {
+      expect(() => validateResourceUrl(url), url).toThrow('private');
+    }
+    const allowed = [
+      'https://[::ffff:8.8.8.8]/',
+      'https://[64:ff9b::808:808]/',
+      'https://[2606:4700:4700::1111]/',
+    ];
+    for (const url of allowed) {
+      // WHATWG normalises the dotted quad inside IPv6 to hex, so assert the
+      // outcome (not refused), not the spelling.
+      expect(() => validateResourceUrl(url), url).not.toThrow();
+    }
+  });
+
+  it('keeps resources guild-scoped', () => {
     expect(
       enabledResourcesForGuild(
         [
