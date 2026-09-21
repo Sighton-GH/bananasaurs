@@ -237,6 +237,8 @@ export interface GuildChannelInfo {
   readonly channelId: string;
   readonly name: string;
   readonly kind: string;
+  /** The category this channel sits under; absent on servers that predate the field. */
+  readonly parentId?: string | undefined;
 }
 
 /**

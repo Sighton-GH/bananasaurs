@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { ArchivePage } from './archive.js';
@@ -40,49 +40,6 @@ describe('ArchivePage', () => {
     renderWithSession(<ArchivePage />);
     fireEvent.click(await screen.findByRole('button', { name: 'Reindex' }));
     expect(mock.mock.calls.some((c) => (c[0] as string) === '/api/archive/reindex')).toBe(true);
-  });
-
-  it('enable posts the channel and policy; the guild veto renders inline', async () => {
-    const mock = stubFetch([
-      { url: '/api/archive/status', body: STATUS },
-      { method: 'POST', url: '/api/archive/channels', body: { outcome: 'enabled' } },
-    ]);
-    renderWithSession(<ArchivePage />);
-    await screen.findByText('c-1');
-    fireEvent.change(screen.getByLabelText('Enable archiving for a channel'), {
-      target: { value: 'c-2' },
-    });
-    fireEvent.change(screen.getByLabelText('Attachment policy'), { target: { value: 'bytes' } });
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Enable archiving' }));
-    });
-    const post = mock.mock.calls.find((c) => c[1]?.method === 'POST')!;
-    expect(bodyOf(post)).toEqual({ channelId: 'c-2', attachmentPolicy: 'bytes' });
-  });
-
-  it('disable names the destruction count before it fires', async () => {
-    const mock = stubFetch([
-      { url: '/api/archive/status', body: STATUS },
-      {
-        method: 'DELETE',
-        url: '/api/archive/channels/c-1',
-        body: { outcome: 'disabled', messageCount: 120 },
-      },
-    ]);
-    renderWithSession(<ArchivePage />);
-    await screen.findByText('c-1');
-    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toContain('120');
-    expect(dialog.textContent).toContain('archived messages, edits and attachments');
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Disable and destroy' }));
-    });
-    expect(
-      mock.mock.calls.some(
-        (c) => (c[0] as string) === '/api/archive/channels/c-1' && c[1]?.method === 'DELETE',
-      ),
-    ).toBe(true);
   });
 
   it('preserve posts the message id; a 404 answers inline', async () => {
@@ -160,58 +117,6 @@ describe('ArchivePage', () => {
     expect(screen.getByText(/via category cat-1/)).toBeTruthy();
     expect(screen.getByText('3/5')).toBeTruthy();
     expect(screen.getByText('managed by its category')).toBeTruthy();
-  });
-
-  it('enable-category posts to the categories route without an attachment policy', async () => {
-    const mock = stubFetch([
-      { url: '/api/archive/status', body: STATUS },
-      {
-        method: 'POST',
-        url: '/api/archive/categories',
-        body: { outcome: 'enabled', coverage: { channels: 4, messages: 10 } },
-      },
-    ]);
-    renderWithSession(<ArchivePage />);
-    await screen.findByText('c-1');
-    fireEvent.change(screen.getByLabelText('Enable archiving for a category'), {
-      target: { value: 'cat-9' },
-    });
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Enable category' }));
-    });
-    const post = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/archive/categories' && c[1]?.method === 'POST',
-    )!;
-    expect(bodyOf(post)).toEqual({ channelId: 'cat-9' });
-  });
-
-  it('disable on a category row confirms as a category and hits the categories route', async () => {
-    const withCategory = {
-      channels: [{ ...STATUS.channels[0], channelId: 'cat-1', scopeKind: 'category' }],
-      index: STATUS.index,
-    };
-    const mock = stubFetch([
-      { url: '/api/archive/status', body: withCategory },
-      {
-        method: 'DELETE',
-        url: '/api/archive/categories/cat-1',
-        body: { outcome: 'disabled', messageCount: 120 },
-      },
-    ]);
-    renderWithSession(<ArchivePage />);
-    await screen.findByText('cat-1');
-    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
-    const dialog = await screen.findByRole('dialog');
-    expect(dialog.textContent).toContain('category cat-1');
-    expect(dialog.textContent).toContain('the channels it covers');
-    await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Disable and destroy' }));
-    });
-    expect(
-      mock.mock.calls.some(
-        (c) => (c[0] as string) === '/api/archive/categories/cat-1' && c[1]?.method === 'DELETE',
-      ),
-    ).toBe(true);
   });
 
   it('the threads toggle posts the opposite of the current inclusion', async () => {

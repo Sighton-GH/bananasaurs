@@ -631,7 +631,12 @@ export const opsPortsFor = (
           channel.type === ChannelType.GuildCategory ||
           (channel.isTextBased() && !channel.isThread()),
       )
-      .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
+      .map((channel) => ({
+        channelId: channel.id,
+        name: channel.name,
+        kind: kindOf(channel.type),
+        ...(channel.parentId !== null ? { parentId: channel.parentId } : {}),
+      }))
       .sort((a, b) => a.name.localeCompare(b.name));
   },
   findGuildMessage: async (channelId, messageId) => {

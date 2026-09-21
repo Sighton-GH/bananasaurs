@@ -260,7 +260,12 @@ describe('GET /api/guild/channels', () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       channels: [
-        { channelId: '333333333333333333', name: 'general', kind: 'text' },
+        {
+          channelId: '333333333333333333',
+          name: 'general',
+          kind: 'text',
+          parentId: '999999999999999999',
+        },
         { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
         { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
         { channelId: '999999999999999999', name: 'Community', kind: 'category' },

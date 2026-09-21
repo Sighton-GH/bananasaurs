@@ -1,11 +1,6 @@
 import { useCallback, useState } from 'react';
-import type {
-  McpClient,
-  McpSend,
-  McpToken,
-  SendAllowlistEntry,
-  SendAllowOutcome,
-} from '../api/ops.js';
+import { Link } from 'wouter';
+import type { McpClient, McpSend, McpToken, SendAllowlistEntry } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -14,18 +9,20 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
-import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
 /**
  * `/mcp`: the connector's standing state as a page (ADR 0051 D3) —
- * `mcp clients`, `mcp tokens`, the send allowlist (`mcp allowlist`,
- * `allow-channel`/`allow-category`, `disallow-channel`/`disallow-category`),
- * revocation (`mcp revoke`,
- * `mcp revoke-client`) and the send ledger (`mcp sends`). Nothing is
- * allowlisted by default, and the allowlist is the only thing that decides
- * where the connector may post.
+ * `mcp clients`, `mcp tokens`, revocation (`mcp revoke`,
+ * `mcp revoke-client`), the send allowlist as READ-ONLY state, and the send
+ * ledger (`mcp sends`). Nothing is allowlisted by default, and the
+ * allowlist is the only thing that decides where the connector may post.
+ *
+ * The allowlist's writers moved to the central Permissions section
+ * (Bryan's lane): one page owns every operating-scope change so no second
+ * surface can quietly conflict with it. This page links there instead of
+ * duplicating the controls.
  */
 export function McpPage() {
   const session = useSession();
@@ -52,9 +49,6 @@ export function McpPage() {
   );
   const sends = useResource('the send ledger', loadSends);
 
-  const [channelId, setChannelId] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [removing, setRemoving] = useState<SendAllowlistEntry | undefined>(undefined);
   const [revokingToken, setRevokingToken] = useState<McpToken | undefined>(undefined);
   const [revokingClient, setRevokingClient] = useState<McpClient | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -99,76 +93,6 @@ export function McpPage() {
     } finally {
       setBusy(false);
       setRevokingClient(undefined);
-    }
-  };
-
-  const allow = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    // A 404 `no-such-channel` is the session's toast contract, the same as
-    // every other write on this surface — only 400/409 answers render inline.
-    const result = await session.write<{ outcome: SendAllowOutcome }>('/api/send-allowlist', {
-      channelId: channelId.trim(),
-      accountId: session.info.accountId,
-    });
-    setBusy(false);
-    if (result !== undefined) {
-      toast({
-        tone: 'ok',
-        title:
-          result.outcome === 'already-allowed'
-            ? 'That channel was already allowlisted'
-            : 'Channel allowlisted',
-      });
-      setChannelId('');
-      allowlist.reload();
-    }
-  };
-
-  const allowCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setBusy(true);
-    const result = await session.write<{ outcome: SendAllowOutcome }>(
-      '/api/send-allowlist/categories',
-      { channelId: categoryId.trim(), accountId: session.info.accountId },
-    );
-    setBusy(false);
-    if (result !== undefined) {
-      toast({
-        tone: 'ok',
-        title:
-          result.outcome === 'already-allowed'
-            ? 'That category was already allowlisted'
-            : 'Category allowlisted — every channel under it may receive connector posts',
-      });
-      setCategoryId('');
-      allowlist.reload();
-    }
-  };
-
-  const disallow = async () => {
-    if (removing === undefined) return;
-    setBusy(true);
-    try {
-      const isCategory = (removing.scopeKind ?? 'channel') === 'category';
-      const result = await session.write<{ ok: boolean; removed?: boolean; outcome?: string }>(
-        `/api/send-allowlist/${isCategory ? 'categories/' : ''}${encodeURIComponent(removing.channelId)}`,
-        undefined,
-        'DELETE',
-      );
-      if (result !== undefined) {
-        const removed = result.removed ?? result.outcome === 'removed';
-        toast({
-          tone: removed ? 'ok' : 'neutral',
-          title: removed
-            ? `${isCategory ? 'Category' : 'Channel'} removed from the allowlist`
-            : `That ${isCategory ? 'category' : 'channel'} was not on the allowlist`,
-        });
-        allowlist.reload();
-      }
-    } finally {
-      setBusy(false);
-      setRemoving(undefined);
     }
   };
 
@@ -222,55 +146,17 @@ export function McpPage() {
                       </span>
                     ),
                   },
-                  {
-                    key: 'actions',
-                    header: '',
-                    cell: (e2) => <Button onClick={() => setRemoving(e2)}>Remove</Button>,
-                  },
                 ]}
               />
             )}
           </DataState>
-          <form onSubmit={(e) => void allow(e)} className="mt-3 grid max-w-md gap-3">
-            <ChannelPicker
-              label="Allow a channel"
-              hint="Pick a channel or paste its Discord channel ID. Mentions never notify people. The server allows at most ten connector messages per hour."
-              value={channelId}
-              onChange={setChannelId}
-            />
-            <div>
-              <Button
-                type="submit"
-                variant="primary"
-                busy={busy}
-                disabled={channelId.trim() === ''}
-              >
-                Allow channel
-              </Button>
-            </div>
-          </form>
-          <form
-            onSubmit={(e) => void allowCategory(e)}
-            className="mt-3 grid max-w-md gap-3 border-t border-line pt-3"
-          >
-            <ChannelPicker
-              label="Allow a category"
-              hint="Every channel under the category may receive connector posts, including channels added to it later."
-              value={categoryId}
-              onChange={setCategoryId}
-              kinds={['category']}
-            />
-            <div>
-              <Button
-                type="submit"
-                variant="primary"
-                busy={busy}
-                disabled={categoryId.trim() === ''}
-              >
-                Allow category
-              </Button>
-            </div>
-          </form>
+          <p className="mt-3 text-sm text-ink-muted">
+            Where the connector may post is managed on the{' '}
+            <Link href="/permissions" className="text-accent underline">
+              Permissions
+            </Link>{' '}
+            page, alongside the archive scope - one place owns every operating-scope change.
+          </p>
         </Card>
         <Card title="Registered clients">
           <DataState
@@ -413,25 +299,6 @@ export function McpPage() {
           </DataState>
         </Card>
       </div>
-      <ConfirmDialog
-        open={removing !== undefined}
-        title={`Remove ${removing?.channelId ?? ''} from the allowlist?`}
-        scope={
-          <p>
-            {(removing?.scopeKind ?? 'channel') === 'category'
-              ? `The connector can no longer post to the channels under category ${removing?.channelId ?? ''}.`
-              : `The connector can no longer post to channel ${removing?.channelId ?? ''}.`}{' '}
-            Nothing else changes — the allowlist alone decides where it may post.
-          </p>
-        }
-        confirmLabel={
-          (removing?.scopeKind ?? 'channel') === 'category' ? 'Remove category' : 'Remove channel'
-        }
-        danger
-        busy={busy}
-        onConfirm={() => void disallow()}
-        onCancel={() => setRemoving(undefined)}
-      />
       <ConfirmDialog
         open={revokingToken !== undefined}
         title={`Revoke token ${revokingToken?.tokenId ?? ''}?`}

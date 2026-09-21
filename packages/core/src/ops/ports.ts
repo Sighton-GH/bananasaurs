@@ -631,6 +631,13 @@ export interface OpsGuildChannelInfo {
   readonly name: string;
   /** Discord's channel kind as a small label: `text`, `announcement`, `forum`. */
   readonly kind: string;
+  /**
+   * The category this channel sits under, when it does. Lets the
+   * Permissions centre show effective state (a channel covered by a
+   * category row) without a second guild read. Absent on servers that
+   * predate the field.
+   */
+  readonly parentId?: string | undefined;
 }
 
 export interface OpsGuildMemberInfo {

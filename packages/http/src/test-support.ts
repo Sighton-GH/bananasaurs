@@ -86,7 +86,12 @@ export const testPortsFor = (
   // static demo set beside the seeded archive fixture channel; the daemon's
   // wiring reads the live gateway cache instead.
   listGuildChannels: () => [
-    { channelId: '333333333333333333', name: 'general', kind: 'text' },
+    {
+      channelId: '333333333333333333',
+      name: 'general',
+      kind: 'text',
+      parentId: '999999999999999999',
+    },
     { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
     { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
     { channelId: '999999999999999999', name: 'Community', kind: 'category' },

@@ -25,6 +25,7 @@ import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
+import { PermissionsPage } from '../pages/permissions.js';
 import { StubPage } from '../pages/stub.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
@@ -137,6 +138,7 @@ function Pages() {
     <Switch>
       <Route path="/" component={OverviewPage} />
       <Route path="/safety" component={SafetyPage} />
+      <Route path="/permissions" component={PermissionsPage} />
       <Route path="/logging" component={LoggingPage} />
       <Route path="/panels" component={PanelsPage} />
       <Route path="/audit" component={AuditPage} />

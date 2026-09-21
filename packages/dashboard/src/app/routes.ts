@@ -19,8 +19,9 @@ export const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 
 export const NAV: readonly NavEntry[] = [
   { path: '/', label: 'Overview', status: 'built', group: 'Operate' },
   { path: '/safety', label: 'Safety', status: 'built', group: 'Operate' },
+  { path: '/permissions', label: 'Permissions', status: 'built', group: 'Operate' },
   { path: '/logging', label: 'Logging', status: 'built', group: 'Operate' },
-  { path: '/panels', label: 'Reaction roles', status: 'built', group: 'Operate' },
+  { path: '/panels', label: 'Self-granted roles', status: 'built', group: 'Operate' },
   { path: '/automod', label: 'Automod', status: 'built', group: 'Moderation' },
   { path: '/review', label: 'Review', status: 'built', group: 'Moderation' },
   { path: '/cases', label: 'Cases', status: 'built', group: 'Moderation' },
