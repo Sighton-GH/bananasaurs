@@ -8,6 +8,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -99,9 +100,10 @@ export function PanelsPage() {
         resource={panels.resource}
         isEmpty={(p) => p.length === 0}
         empty={
-          <p className="text-sm text-ink-muted">
-            No panels configured. Create one with the operator CLI.
-          </p>
+          <EmptyState
+            title="No role panels configured"
+            detail="Panel creation has not shipped yet — the old note pointing at the operator CLI was wrong, because the CLI has no create command. When panels exist, this page lists them and drives publish and reconcile."
+          />
         }
       >
         {(rows) => (
