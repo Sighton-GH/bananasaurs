@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import type { AssistantBehaviour, DomainEvent } from '@bananasaurs/core';
-import { createAssistantCommandSubscriber, type AssistantCommandService } from './commands.js';
+import {
+  createAssistantCommandSubscriber,
+  type AssistantCommandService,
+  type AssistantInvocationResult,
+} from './commands.js';
 
 const guildId = '234567890123456789';
 const channelId = '345678901234567890';
@@ -33,7 +37,12 @@ const club: AssistantBehaviour = {
 };
 
 const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => {
-  const invoke = vi.fn(async () => ({ ok: true as const, content: 'Grounded answer.' }));
+  const invoke = vi.fn<AssistantCommandService['invoke']>(
+    async (): Promise<AssistantInvocationResult> => ({
+      ok: true,
+      content: 'Grounded answer.',
+    }),
+  );
   const service: AssistantCommandService = {
     behavioursForGuild: vi.fn(async () => behaviours),
     invoke,
@@ -94,6 +103,42 @@ describe('assistant command subscriber', () => {
       expect.objectContaining({
         content: 'Grounded answer.',
         allowedMentions: { parse: [] },
+      }),
+    );
+  });
+
+  it('posts one safe IT escalation to the configured channel and reviewer roles', async () => {
+    const h = harness([{ ...club, surface: 'it-services', callerRoleIds: ['987654321098765432'] }]);
+    h.invoke.mockResolvedValueOnce({
+      ok: true as const,
+      content: 'Reset the lab account permission.',
+      escalation: {
+        channelId: '987654321098765430',
+        reviewerRoleIds: ['987654321098765431'],
+        ticketId: 'it-1',
+      },
+    });
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> reset it`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.send).toHaveBeenLastCalledWith(
+      '987654321098765430',
+      expect.objectContaining({
+        content: expect.stringContaining('IT request it-1'),
+        allowedMentions: { parse: [], roles: ['987654321098765431'] },
       }),
     );
   });
