@@ -13,7 +13,7 @@ import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
 import type { AssistantCommandService, AssistantInvocation } from './commands.js';
 import { ReviewedResourceFetcher } from './resource-fetcher.js';
 
-const providerFor = (config: Config): TextProvider | undefined => {
+export const providerFor = (config: Config): TextProvider | undefined => {
   if (config.AI_PROVIDER === 'off' || config.AI_MODEL === undefined) return undefined;
   if (config.AI_PROVIDER === 'gemini' && config.GEMINI_API_KEY !== undefined)
     return new SafeProvider(
@@ -38,13 +38,20 @@ const providerFor = (config: Config): TextProvider | undefined => {
   return undefined;
 };
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
+export interface AssistantServiceTestPorts {
+  readonly provider?: TextProvider | undefined;
+  readonly fetchResource?:
+    ((url: string) => ReturnType<ReviewedResourceFetcher['fetch']>) | undefined;
+}
 export const createAssistantService = (
   scope: GuildScope,
   config: Config,
   now: () => number,
+  testPorts: AssistantServiceTestPorts = {},
 ): AssistantCommandService => {
-  const provider = providerFor(config);
+  const provider = testPorts.provider ?? providerFor(config);
   const resourceFetcher = new ReviewedResourceFetcher({ now });
+  const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
@@ -140,7 +147,7 @@ export const createAssistantService = (
           .filter((resource) => ['website', 'document', 'repository'].includes(resource.kind))
           .map(async (resource) => ({
             resource,
-            result: await resourceFetcher.fetch(resource.url),
+            result: await fetchResource(resource.url),
           })),
       );
       for (const { resource, result } of fetched) {
@@ -186,7 +193,12 @@ export const createAssistantService = (
           (input.command === 'decision' || input.command === 'review-plan'
             ? '\nReturn analysis as a DRAFT. State that it is not club policy and has not been saved. Do not claim persistence.'
             : ''),
-        messages: [{ role: 'user', text: textOf(input.input) }],
+        messages: [
+          {
+            role: 'user',
+            text: [textOf(input.input), context.evidenceEnvelope].filter(Boolean).join('\n\n'),
+          },
+        ],
         maxOutputTokens: 800,
         temperature: 0.2,
       });
