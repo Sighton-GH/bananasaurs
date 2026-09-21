@@ -1078,6 +1078,58 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
       .run(value, provider);
   };
 
+  it("warns 'unverified' for the configured provider when no eligibility row exists", () => {
+    // The intentionally-disabled state surfaced honestly: `AI_PROVIDER` is
+    // set, but no migration ever seeded a verified row for it, so the
+    // assistant fails closed on every invoke and doctor must say exactly
+    // that instead of "every provider verified" (round-2 audit).
+    const ops = opsInstanceFor({
+      config: {
+        BANANASAURS_READONLY: false,
+        BANANASAURS_ENV: 'test',
+        AI_PROVIDER: 'gemini',
+      } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    });
+    const warnings = ops.providerEligibilityWarnings(NOW);
+    expect(warnings).toContainEqual({
+      provider: 'gemini',
+      reason: 'unverified',
+      trainsOnInput: 'unknown',
+      reviewedAt: 0,
+    });
+    // 'off' means no provider is configured: no warning.
+    const offOps = opsInstanceFor({
+      config: {
+        BANANASAURS_READONLY: false,
+        BANANASAURS_ENV: 'test',
+        AI_PROVIDER: 'off',
+      } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+    });
+    expect(
+      offOps.providerEligibilityWarnings(NOW).filter((w) => w.reason === 'unverified'),
+    ).toEqual([]);
+  });
+
   it("warns 'stale' for a row reviewed 91 days before now, and nothing for 89 days", () => {
     setReviewedAt(SEEDED, NOW - 91 * DAY_MS);
     expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([

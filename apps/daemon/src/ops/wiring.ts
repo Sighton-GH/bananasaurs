@@ -1633,6 +1633,24 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // core's index does not re-export every member shape (cf. `OpsMcpClient`,
     // likewise structural here), and this file must not reach past the root.
     const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
+    // The configured provider with no row: without this line `doctor` prints
+    // "every provider verified" while the assistant refuses every invoke.
+    // The state is intentional - no row exists until an owner verifies the
+    // provider's terms and seeds one by migration (ruling M4-D16) - and the
+    // surface must say exactly that, never invent an approval.
+    const configuredProvider = deps.config.AI_PROVIDER;
+    if (
+      configuredProvider !== undefined &&
+      configuredProvider !== 'off' &&
+      eligibilityRepo.findEligibility(deps.instanceScope, configuredProvider) === undefined
+    ) {
+      warnings.push({
+        provider: configuredProvider,
+        reason: 'unverified',
+        trainsOnInput: 'unknown',
+        reviewedAt: 0,
+      });
+    }
     for (const row of eligibilityRepo.listEligibility(deps.instanceScope)) {
       if (!eligibilityRepo.isEligible(row)) {
         warnings.push({

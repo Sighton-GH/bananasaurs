@@ -24,8 +24,13 @@ const privateV4 = (a: number, b: number): boolean =>
 /**
  * Expands an IPv6 address to its 16 bytes, handling '::' compression and an
  * embedded dotted-quad tail. `undefined` when the input is not IPv6.
+ *
+ * Exported for the fetcher's DNS-answer boundary: a resolver can return the
+ * same private target in expanded or hex form (`0:0:0:0:0:ffff:7f00:1`,
+ * `::ffff:7f00:1`, `64:ff9b::7f00:1`), and only a byte-level read classifies
+ * them all (round-2 audit).
  */
-const ipv6Bytes = (addr: string): readonly number[] | undefined => {
+export const ipv6Bytes = (addr: string): readonly number[] | undefined => {
   if (isIP(addr) !== 6) return undefined;
   // An embedded dotted quad contributes its four bytes as the last two groups.
   let hex = addr;
@@ -54,6 +59,24 @@ const ipv6Bytes = (addr: string): readonly number[] | undefined => {
   return [...bytes, ...tailBytes];
 };
 
+/**
+ * The IPv4 target embedded in an IPv4-mapped (::ffff:0:0/96) or NAT64
+ * (64:ff9b::/96) address, as dotted-quad text; `undefined` for any other
+ * address. Byte-level, so expanded and hex-tail forms cannot slip past.
+ */
+export const embeddedIpv4 = (v6: readonly number[]): string | undefined => {
+  if (v6.length !== 16) return undefined;
+  const mapped = v6.slice(0, 10).every((b) => b === 0) && v6[10] === 0xff && v6[11] === 0xff;
+  const nat64 =
+    v6[0] === 0x00 &&
+    v6[1] === 0x64 &&
+    v6[2] === 0xff &&
+    v6[3] === 0x9b &&
+    v6.slice(4, 12).every((b) => b === 0);
+  if (!mapped && !nat64) return undefined;
+  return `${String(v6[12])}.${String(v6[13])}.${String(v6[14])}.${String(v6[15])}`;
+};
+
 const privateHost = (host: string): boolean => {
   const lower = host.toLowerCase();
   if (lower === 'localhost' || lower.endsWith('.local') || lower.endsWith('.internal')) return true;
@@ -64,14 +87,14 @@ const privateHost = (host: string): boolean => {
   if (isIP(bare) === 0) return false;
   const v6 = ipv6Bytes(bare);
   if (v6 !== undefined) {
-    // IPv4-mapped (::ffff:0:0/96) and NAT64 (64:ff9b::/96) embed an IPv4
-    // target the IPv4 rules already classify; an unmapped literal like
-    // https://[::ffff:127.0.0.1]/ sailed through before (review round 2).
-    const mapped = v6.slice(0, 10).every((b) => b === 0) && v6[10] === 0xff && v6[11] === 0xff;
-    const nat64 =
-      v6[0] === 0x00 && v6[1] === 0x64 && v6[2] === 0xff && v6[3] === 0x9b &&
-      v6.slice(4, 12).every((b) => b === 0);
-    if (mapped || nat64) return privateV4(v6[12]!, v6[13]!);
+    // IPv4-mapped and NAT64 addresses embed an IPv4 target the IPv4 rules
+    // already classify; an unmapped literal like https://[::ffff:127.0.0.1]/
+    // sailed through before (review round 2).
+    const embedded = embeddedIpv4(v6);
+    if (embedded !== undefined) {
+      const [a, b] = embedded.split('.').map(Number);
+      return privateV4(a!, b!);
+    }
     return (
       v6.every((b, i) => (i < 15 ? b === 0 : b === 1)) || // ::1
       (v6[0]! & 0xfe) === 0xfc || // fc00::/7 (ULA: fc..fd)

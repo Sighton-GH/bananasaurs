@@ -38,6 +38,7 @@ const PROVIDER_REASON: Record<EligibilityWarning['reason'], string> = {
   'not-no': 'has not opted out of training',
   stale: 'review is stale',
   'not-production': 'is not the production provider',
+  unverified: 'is configured but unverified, so assistant answers are intentionally disabled',
 };
 
 /**

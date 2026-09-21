@@ -71,7 +71,7 @@ export interface BackupRunOutcome {
 /** One row of `GET /api/providers/eligibility` — mirrors `OpsEligibilityWarning`. */
 export interface EligibilityWarning {
   readonly provider: string;
-  readonly reason: 'not-no' | 'stale' | 'not-production';
+  readonly reason: 'not-no' | 'stale' | 'not-production' | 'unverified';
   readonly trainsOnInput: string;
   readonly reviewedAt: number;
 }

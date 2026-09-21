@@ -1,7 +1,12 @@
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import { extractEvidenceText, validateResourceUrl } from '@bananasaurs/core';
+import {
+  embeddedIpv4,
+  extractEvidenceText,
+  ipv6Bytes,
+  validateResourceUrl,
+} from '@bananasaurs/core';
 
 export const DEFAULT_RESOURCE_FETCH_LIMITS = {
   maxBytes: 1_000_000,
@@ -95,24 +100,31 @@ const NON_PUBLIC_V4: readonly [string, number][] = [
   ['224.0.0.0', 4],
   ['240.0.0.0', 4],
 ];
-const normaliseV6 = (address: string): string => address.toLowerCase().split('%')[0]!;
 export const isPublicAddress = (address: string): boolean => {
-  const family = isIP(address);
+  // A zone id ("fe80::1%eth0") never survives a public DNS answer; strip it
+  // before classification rather than letting it defeat the parser.
+  const bare = address.toLowerCase().split('%')[0]!;
+  const family = isIP(bare);
   if (family === 4) {
-    const value = ipv4Number(address);
+    const value = ipv4Number(bare);
     return value !== undefined && !NON_PUBLIC_V4.some(([base, bits]) => inV4(value, base, bits));
   }
   if (family !== 6) return false;
-  const value = normaliseV6(address);
-  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(value)?.[1];
-  if (mapped !== undefined) return isPublicAddress(mapped);
+  // Byte-level, like the URL-host boundary in core: a DNS answer can spell
+  // the same private target expanded (`0:0:0:0:0:ffff:7f00:1`), hex-tailed
+  // (`::ffff:7f00:1`), or as NAT64 (`64:ff9b::7f00:1`), and the old
+  // textual `::ffff:` regex only caught the dotted spelling (round-2 audit).
+  const v6 = ipv6Bytes(bare);
+  if (v6 === undefined) return false;
+  const embedded = embeddedIpv4(v6);
+  if (embedded !== undefined) return isPublicAddress(embedded);
   return !(
-    value === '::' ||
-    value === '::1' ||
-    /^f[cd]/.test(value) ||
-    /^fe[89ab]/.test(value) ||
-    /^ff/.test(value) ||
-    value.startsWith('2001:db8:')
+    v6.every((b) => b === 0) || // ::
+    v6.every((b, i) => (i < 15 ? b === 0 : b === 1)) || // ::1
+    (v6[0]! & 0xfe) === 0xfc || // fc00::/7 (ULA)
+    (v6[0] === 0xfe && (v6[1]! & 0xc0) === 0x80) || // fe80::/10 link-local
+    v6[0] === 0xff || // ff00::/8 multicast
+    (v6[0] === 0x20 && v6[1] === 0x01 && v6[2] === 0x0d && v6[3] === 0xb8) // 2001:db8::/32 documentation
   );
 };
 

@@ -506,7 +506,12 @@ export interface OpsMcpToken {
  */
 export interface OpsEligibilityWarning {
   readonly provider: string;
-  readonly reason: 'not-no' | 'stale' | 'not-production';
+  /**
+   * `unverified` is the configured provider with NO eligibility row at all:
+   * the assistant fails closed on every invoke (hard rule 5), so this is the
+   * intentionally-disabled state being surfaced, not a promise gone stale.
+   */
+  readonly reason: 'not-no' | 'stale' | 'not-production' | 'unverified';
   readonly trainsOnInput: string;
   readonly reviewedAt: number;
 }

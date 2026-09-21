@@ -31,13 +31,24 @@ describe('reviewed resource fetcher', () => {
     'fc00::1',
     'fe80::1',
     '::ffff:127.0.0.1',
+    // The same private targets in the spellings a DNS answer can use, which
+    // the old textual ::ffff: regex never matched (round-2 audit):
+    '0:0:0:0:0:ffff:7f00:1', // expanded IPv4-mapped loopback
+    '::ffff:7f00:1', // hex-tailed IPv4-mapped loopback
+    '::ffff:a00:1', // hex-tailed IPv4-mapped 10.0.0.1
+    '64:ff9b::7f00:1', // NAT64 loopback
+    '64:ff9b::a9fe:a9fe', // NAT64 169.254.169.254
     '2001:db8::1',
+    'ff02::1',
   ])('rejects non-public address %s', (address) => expect(isPublicAddress(address)).toBe(false));
 
-  it.each(['8.8.8.8', '93.184.216.34', '2606:4700:4700::1111'])(
-    'accepts public address %s',
-    (address) => expect(isPublicAddress(address)).toBe(true),
-  );
+  it.each([
+    '8.8.8.8',
+    '93.184.216.34',
+    '2606:4700:4700::1111',
+    '::ffff:808:808',
+    '64:ff9b::808:808',
+  ])('accepts public address %s', (address) => expect(isPublicAddress(address)).toBe(true));
 
   it('rejects DNS rebinding if any answer is private and never opens a request', async () => {
     const request = vi.fn<PinnedRequest>();

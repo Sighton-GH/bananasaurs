@@ -183,7 +183,11 @@ export const doctorCommand = defineCommand<Record<string, never>>({
         ? 'training eligibility    every provider verified'
         : `training eligibility    ${String(eligibilityWarnings.length)} provider(s) need review:\n` +
             eligibilityWarnings
-              .map((w) => `            ${w.provider}  ${w.reason}  reviewed ${iso(w.reviewedAt)}`)
+              .map((w) =>
+                w.reason === 'unverified'
+                  ? `            ${w.provider}  unverified: configured but no eligibility record - the assistant is intentionally disabled until the owner verifies the terms and adds one`
+                  : `            ${w.provider}  ${w.reason}  reviewed ${iso(w.reviewedAt)}`,
+              )
               .join('\n'),
     );
 
