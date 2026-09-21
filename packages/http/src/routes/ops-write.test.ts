@@ -13,7 +13,7 @@ import {
   oauthRepo,
   roleRepo,
 } from '@bananasaurs/storage';
-import { parseGuildId, type Capability } from '@bananasaurs/core';
+import { CAPABILITIES, parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
@@ -188,6 +188,7 @@ const ALL_GRANTS: readonly Capability[] = [
   'moderation.act',
   'undo.execute',
   'roles.mutate',
+  'accounts.manage',
 ];
 
 describe('ops-write routes', () => {
@@ -219,6 +220,26 @@ describe('ops-write routes', () => {
   it('answers 403 no-grant with CSRF but without capabilities on every route', async () => {
     const { cookie, csrf } = await signIn();
     for (const call of ALL_CALLS) {
+      const response = await app.inject({
+        method: call.method,
+        url: call.url,
+        headers: { cookie, [CSRF]: csrf },
+        ...(call.payload !== undefined ? { payload: call.payload } : {}),
+      });
+      expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
+      expect(response.json(), `${call.method} ${call.url}`).toEqual({ error: 'no-grant' });
+    }
+  });
+
+  it('account lifecycle routes need accounts.manage, not config.write (ADR 0056)', async () => {
+    const { cookie, csrf } = await signIn();
+    // Every capability the instance knows EXCEPT accounts.manage. The point
+    // of the gate: config.write alone must not reach password reset, which
+    // hands back working credentials for a more privileged account.
+    grant(CAPABILITIES.filter((capability) => capability !== 'accounts.manage'));
+    const accountCalls = ALL_CALLS.filter((call) => call.url.startsWith('/api/accounts/'));
+    expect(accountCalls).toHaveLength(7);
+    for (const call of accountCalls) {
       const response = await app.inject({
         method: call.method,
         url: call.url,
@@ -371,7 +392,7 @@ describe('ops-write routes', () => {
 
   it('disables and deletes a real account with audit attribution', async () => {
     const { cookie, csrf } = await signIn();
-    grant(['config.write']);
+    grant(['accounts.manage']);
     const instance = t.scopes.instance();
     accountRepo.createAccount(instance, {
       accountId: 'acct_ffffffffffffffffffffffffffffffff',

@@ -61,6 +61,12 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `account revoke-credentials` | Accounts page | `POST /api/accounts/:username/revoke-credentials` |
 | `account grant-guild` / `revoke-guild` | Accounts page | `POST /api/accounts/:username/grant-guild`, `…/revoke-guild` |
 | `account grant <capability>` | Accounts page (per-account capability chips + grant) | `POST /api/accounts/:username/capabilities` |
+
+The seven `account …` write routes above are gated on `accounts.manage`, not
+`config.write` (ADR 0056): their effects are instance-wide and set-password
+returns working credentials, so a guild-level configuration grant must not
+reach them. Owners hold `accounts.manage` from bootstrap (or migration 0027
+on an instance that predates it).
 | provider review | Providers page | `POST /api/providers/:provider/review` |
 
 ## Safe boundary: restores

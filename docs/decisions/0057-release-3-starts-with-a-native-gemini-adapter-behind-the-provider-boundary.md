@@ -1,4 +1,4 @@
-# 0051. Release 3 starts with a native Gemini adapter behind the provider boundary
+# 0057. Release 3 starts with a native Gemini adapter behind the provider boundary
 
 Date: 2026-09-20
 Status: accepted
