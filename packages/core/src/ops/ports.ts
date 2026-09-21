@@ -113,6 +113,8 @@ export interface OpsPanelDetail extends OpsPanelSummary {
   readonly maxRoles: number | undefined;
   readonly requiredRoleId: string | undefined;
   readonly blockedRoleIds: readonly string[];
+  /** The message body a managed panel posts; absent uses the default copy. */
+  readonly content?: string | undefined;
   readonly adoptionPassState: string;
   readonly adoptionBlockedCount: number;
   readonly options: readonly {

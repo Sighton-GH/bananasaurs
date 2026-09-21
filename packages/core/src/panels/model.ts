@@ -91,6 +91,13 @@ export interface PanelConfig {
   readonly channelId: SnowflakeId;
   /** NULL until a managed panel is posted. Always set on an adopted panel. */
   readonly messageId: SnowflakeId | undefined;
+  /**
+   * The message body a managed panel posts. Undefined falls back to the
+   * default copy in `renderPanelMessage`. Adopted panels keep whatever the
+   * existing message already says — Bananasaurs does not edit other bots'
+   * messages.
+   */
+  readonly content?: string | undefined;
   readonly behaviour: PanelBehaviour;
   readonly component: PanelComponent;
   /** Per-panel ceiling on roles held from this panel. Undefined means none. */
@@ -121,6 +128,8 @@ const baseDefinitionSchema = z.object({
   kind: z.enum(PANEL_KINDS),
   channelId: snowflakeIdSchema,
   messageId: snowflakeIdSchema.optional(),
+  // Discord's message body limit is 2000 characters.
+  content: z.string().trim().min(1).max(2000).optional(),
   behaviour: z.enum(PANEL_BEHAVIOURS),
   component: z.enum(PANEL_COMPONENTS),
   maxRoles: z.number().int().positive().optional(),

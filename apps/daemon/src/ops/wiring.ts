@@ -140,6 +140,7 @@ export const opsPortsFor = (
       maxRoles: panel.maxRoles,
       requiredRoleId: panel.requiredRoleId,
       blockedRoleIds: panel.blockedRoleIds,
+      content: panel.content,
       adoptionPassState: panel.adoptionPassState,
       adoptionBlockedCount: panel.adoptionBlockedCount,
       options: panel.options.map((option) => ({

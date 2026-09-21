@@ -61,6 +61,8 @@ const archiveLinkCaseBodySchema = z.object({
 const panelCreateBodySchema = z.object({
   panelId: z.string().min(1).max(64),
   channelId: snowflakeIdSchema,
+  // The message the panel posts; blank or absent falls back to default copy.
+  content: z.string().trim().min(1).max(2000).optional(),
   behaviour: z.enum(PANEL_BEHAVIOURS),
   component: z.enum(PANEL_COMPONENTS),
   maxRoles: z.number().int().positive().optional(),

@@ -311,6 +311,7 @@ export interface PanelDetail extends PanelSummary {
   readonly maxRoles: number | undefined;
   readonly requiredRoleId: string | undefined;
   readonly blockedRoleIds: readonly string[];
+  readonly content?: string | undefined;
   readonly adoptionPassState: string;
   readonly adoptionBlockedCount: number;
   readonly options: readonly {

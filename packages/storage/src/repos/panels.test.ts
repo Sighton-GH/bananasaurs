@@ -87,6 +87,14 @@ describe('createPanel', () => {
     expect(panel?.options.find((o) => o.optionId === 'a')?.emojiKey).toBe('u:1f9e0');
   });
 
+  it('round-trips message content, and leaves it undefined when unset', () => {
+    createPanel(a, definition({ content: 'Pick your colour below.' }), 1000);
+    expect(findPanel(a, 'roles')?.content).toBe('Pick your colour below.');
+
+    createPanel(b, definition(), 1000);
+    expect(findPanel(b, 'roles')?.content).toBeUndefined();
+  });
+
   it('round-trips blocked roles', () => {
     createPanel(a, definition({ blockedRoleIds: [BLOCKED] }), 1000);
     expect(findPanel(a, 'roles')?.blockedRoleIds).toEqual([BLOCKED]);

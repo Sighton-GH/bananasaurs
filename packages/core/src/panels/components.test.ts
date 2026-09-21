@@ -7,6 +7,7 @@ import {
   buildSelectCustomId,
   isSelectCustomId,
   parseCustomId,
+  renderPanelMessage,
 } from './components.js';
 
 const ROLE = (n: number) => parseSnowflakeId(String(100000000000000000n + BigInt(n)));
@@ -162,5 +163,17 @@ describe('select menus', () => {
       components: { max_values: number }[];
     }[];
     expect(rows[0]?.components[0]?.max_values).toBe(2);
+  });
+});
+
+describe('the posted message', () => {
+  it("uses the panel's own content when set", () => {
+    const message = renderPanelMessage(panelWith(), 'React to pick up a role!');
+    expect(message.content).toBe('React to pick up a role!');
+  });
+
+  it('falls back to plain default copy when no content is set', () => {
+    const message = renderPanelMessage(panelWith(), undefined);
+    expect(message.content).toBe('Pick your roles.');
   });
 });

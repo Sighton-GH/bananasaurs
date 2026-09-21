@@ -535,6 +535,26 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     });
   });
 
+  it('stores message content and the allow/block gates (ADR 0054)', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    allowlistRoles();
+    const response = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      content: 'Pick a colour — react below and the role is yours.',
+      requiredRoleId: '777777777777777777',
+      blockedRoleIds: ['888888888888888888'],
+    });
+    expect(response.statusCode, JSON.stringify(response.json())).toBe(201);
+
+    const stored = deps.portsFor(t.scopes.forGuild(GUILD)).findPanel('colour-roles');
+    expect(stored).toMatchObject({
+      content: 'Pick a colour — react below and the role is yours.',
+      requiredRoleId: '777777777777777777',
+      blockedRoleIds: ['888888888888888888'],
+    });
+  });
+
   it('answers 400 for a body the form could not have produced', async () => {
     const { cookie, csrf } = await signIn();
     grant(['panels.manage']);

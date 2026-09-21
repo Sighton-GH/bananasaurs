@@ -258,3 +258,25 @@ describe('helpers', () => {
     expect(optionById(panel, 'b')?.roleId).toBe(ROLE_B);
   });
 });
+
+describe('managed panel message content', () => {
+  it('accepts message content on a managed panel', () => {
+    const result = panelDefinitionSchema.safeParse(managed({ content: 'Pick a colour!' }));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.content).toBe('Pick a colour!');
+  });
+
+  it('trims surrounding whitespace', () => {
+    const result = panelDefinitionSchema.safeParse(managed({ content: '  hello  ' }));
+    expect(result.success).toBe(true);
+    if (result.success) expect(result.data.content).toBe('hello');
+  });
+
+  it('refuses blank content, which would post an empty message', () => {
+    expect(errorFor(managed({ content: '   ' }))).toMatch(/too_small|min|1/);
+  });
+
+  it("refuses content past Discord's 2000-character message limit", () => {
+    expect(errorFor(managed({ content: 'x'.repeat(2001) }))).toMatch(/2000/);
+  });
+});

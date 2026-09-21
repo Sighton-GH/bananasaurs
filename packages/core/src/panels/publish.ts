@@ -35,7 +35,6 @@ export interface PublishDeps {
 export async function postManagedPanel(
   panel: PanelConfig,
   deps: PublishDeps,
-  content?: string,
 ): Promise<DiscordMessageRef> {
   if (panel.kind !== 'managed') {
     throw new Error(
@@ -51,7 +50,7 @@ export async function postManagedPanel(
   const ref = await deps.discord.sendMessage(
     deps.guildId,
     panel.channelId,
-    renderPanelMessage(panel, content),
+    renderPanelMessage(panel, panel.content),
   );
 
   // Recorded immediately. Until this lands, an interaction on the message
@@ -77,7 +76,6 @@ export async function postManagedPanel(
 export async function editManagedPanel(
   panel: PanelConfig,
   deps: PublishDeps,
-  content?: string,
 ): Promise<void> {
   if (panel.kind !== 'managed') {
     // A bot cannot edit a message it did not write. Refusing here turns a
@@ -91,7 +89,7 @@ export async function editManagedPanel(
   await deps.discord.editMessage(
     deps.guildId,
     { channelId: panel.channelId, messageId: panel.messageId },
-    renderPanelMessage(panel, content),
+    renderPanelMessage(panel, panel.content),
   );
 
   deps.logger.info(
