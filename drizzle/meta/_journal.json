@@ -183,6 +183,13 @@
       "when": 1789946326151,
       "tag": "0025_legal_gambit",
       "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "6",
+      "when": 1789955462053,
+      "tag": "0026_outstanding_talon",
+      "breakpoints": true
     }
   ]
 }
