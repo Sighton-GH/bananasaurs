@@ -2,7 +2,9 @@ import { useCallback, useMemo, useState } from 'react';
 import {
   customEmojiKey,
   emojiKeySchema,
+  isCustomEmojiKey,
   panelDefinitionSchema,
+  unicodeEmojiChars,
   unicodeEmojiKey,
   type PanelBehaviour,
 } from '@bananasaurs/core';
@@ -470,7 +472,15 @@ export function PanelBuilder({
               {
                 key: 'face',
                 header: 'Shown as',
-                cell: (o) => o.emojiKey ?? o.label ?? '—',
+                // Review shows what members will see: the emoji itself for
+                // unicode keys, the key for custom ones (their image needs a
+                // live guild), the label otherwise.
+                cell: (o) =>
+                  o.emojiKey !== undefined
+                    ? isCustomEmojiKey(o.emojiKey)
+                      ? o.emojiKey
+                      : unicodeEmojiChars(o.emojiKey)
+                    : (o.label ?? '—'),
               },
             ]}
           />

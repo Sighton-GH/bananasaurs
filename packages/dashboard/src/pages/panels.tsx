@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { isCustomEmojiKey, unicodeEmojiChars } from '@bananasaurs/core';
 import type { Enqueued, PanelDetail, PanelSummary, PublishResult } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -212,7 +213,18 @@ export function PanelsPage() {
                   {
                     key: 'face',
                     header: 'Shown as',
-                    cell: (o) => o.emojiKey ?? o.label ?? <span className="text-ink-muted">—</span>,
+                    // What members see: the emoji itself for unicode keys, the
+                    // key for custom ones (their image needs a live guild).
+                    cell: (o) =>
+                      o.emojiKey !== undefined ? (
+                        isCustomEmojiKey(o.emojiKey) ? (
+                          o.emojiKey
+                        ) : (
+                          unicodeEmojiChars(o.emojiKey)
+                        )
+                      ) : (
+                        (o.label ?? <span className="text-ink-muted">—</span>)
+                      ),
                   },
                 ]}
               />
