@@ -410,6 +410,8 @@ export interface OpsArchiveChannelStatus {
   readonly backfillState: ArchiveBackfillState;
   readonly threadsFound?: number | undefined;
   readonly threadsDone?: number;
+  /** Whether public threads under the channel are archived; `archive set-threads` flips it. */
+  readonly includeThreads?: boolean | undefined;
   readonly messageCount: number;
 }
 

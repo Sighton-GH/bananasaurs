@@ -194,6 +194,10 @@ export interface McpSend {
 /** One row of `GET /api/send-allowlist` — mirrors `OpsSendAllowlistEntry`. */
 export interface SendAllowlistEntry {
   readonly channelId: string;
+  /** Absent on servers that predate the threads merge — treat as `channel`. */
+  readonly scopeKind?: 'channel' | 'category' | undefined;
+  /** Live count of channels a category row currently covers. */
+  readonly coverage?: number | undefined;
   readonly addedByAccountId: string;
   readonly addedAt: number;
 }
@@ -246,10 +250,23 @@ export type ArchiveBackfillState = 'pending' | 'running' | 'done';
 /** One row of `GET /api/archive/status`'s `channels` — mirrors `OpsArchiveChannelStatus`. */
 export interface ArchiveChannelStatus {
   readonly channelId: string;
+  /**
+   * How the row got into scope: an operator-enabled `channel` or `category`,
+   * or a channel `derived` from an enabled category. Absent on servers that
+   * predate the threads merge — treat as `channel`.
+   */
+  readonly scopeKind?: 'channel' | 'category' | 'derived' | undefined;
+  /** The category a `derived` row was materialised from. */
+  readonly derivedFrom?: string | undefined;
   readonly attachmentPolicy: ArchiveAttachmentPolicy;
   readonly enabledAt: number;
   readonly cursorMessageId: string | undefined;
   readonly backfillState: ArchiveBackfillState;
+  /** Thread backfill progress; `found` is undefined until the sweep counts them. */
+  readonly threadsFound?: number | undefined;
+  readonly threadsDone?: number | undefined;
+  /** Whether threads under the channel are archived. Absent on older servers — treat as on. */
+  readonly includeThreads?: boolean | undefined;
   readonly messageCount: number;
 }
 
@@ -281,7 +298,15 @@ export interface ArchiveSearchResult {
 /** `DELETE /api/archive/channels/:channelId` — mirrors `OpsArchiveDisableOutcome`. */
 export type ArchiveDisableOutcome =
   | { readonly outcome: 'disabled'; readonly messageCount: number }
-  | { readonly outcome: 'not-enabled' };
+  | { readonly outcome: 'not-enabled' }
+  | { readonly outcome: 'wrong-kind' }
+  | { readonly outcome: 'covered-by-category'; readonly categoryId: string };
+
+/** `POST /api/archive/categories`; `no-such-channel` is a 404, `guild-not-archive-enabled` a 409. */
+export type ArchiveCategoryEnableOutcome = 'enabled' | 'already-enabled';
+
+/** `POST /api/archive/channels/:channelId/threads`; `not-archived` is a 404, `forum-requires-all` a 409. */
+export type ArchiveThreadsValue = 'all' | 'none';
 
 /** `POST /api/archive/messages/:messageId/preserve`; `no-such-message` arrives as a 404. */
 export type ArchivePreserveOutcome = 'preserved' | 'already-preserved';

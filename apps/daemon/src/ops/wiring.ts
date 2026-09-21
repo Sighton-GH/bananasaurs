@@ -614,12 +614,20 @@ export const opsPortsFor = (
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return [];
     const kindOf = (type: ChannelType): string => {
+      if (type === ChannelType.GuildCategory) return 'category';
       if (type === ChannelType.GuildForum || type === ChannelType.GuildMedia) return 'forum';
       if (type === ChannelType.GuildAnnouncement) return 'announcement';
       return 'text';
     };
+    // Categories ride along with the text-capable channels: the category
+    // pickers (archive scope, MCP send allowlist) filter on kind, and the
+    // text pickers exclude them, so one cache read serves both.
     return [...guild.channels.cache.values()]
-      .filter((channel) => channel.isTextBased() && !channel.isThread())
+      .filter(
+        (channel) =>
+          channel.type === ChannelType.GuildCategory ||
+          (channel.isTextBased() && !channel.isThread()),
+      )
       .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
       .sort((a, b) => a.name.localeCompare(b.name));
   },

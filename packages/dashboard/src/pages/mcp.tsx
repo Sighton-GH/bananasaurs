@@ -21,7 +21,8 @@ import { useToast } from '../ui/Toast.js';
 /**
  * `/mcp`: the connector's standing state as a page (ADR 0051 D3) —
  * `mcp clients`, `mcp tokens`, the send allowlist (`mcp allowlist`,
- * `allow-channel`, `disallow-channel`), revocation (`mcp revoke`,
+ * `allow-channel`/`allow-category`, `disallow-channel`/`disallow-category`),
+ * revocation (`mcp revoke`,
  * `mcp revoke-client`) and the send ledger (`mcp sends`). Nothing is
  * allowlisted by default, and the allowlist is the only thing that decides
  * where the connector may post.
@@ -52,6 +53,7 @@ export function McpPage() {
   const sends = useResource('the send ledger', loadSends);
 
   const [channelId, setChannelId] = useState('');
+  const [categoryId, setCategoryId] = useState('');
   const [removing, setRemoving] = useState<SendAllowlistEntry | undefined>(undefined);
   const [revokingToken, setRevokingToken] = useState<McpToken | undefined>(undefined);
   const [revokingClient, setRevokingClient] = useState<McpClient | undefined>(undefined);
@@ -123,21 +125,44 @@ export function McpPage() {
     }
   };
 
+  const allowCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    const result = await session.write<{ outcome: SendAllowOutcome }>(
+      '/api/send-allowlist/categories',
+      { channelId: categoryId.trim(), accountId: session.info.accountId },
+    );
+    setBusy(false);
+    if (result !== undefined) {
+      toast({
+        tone: 'ok',
+        title:
+          result.outcome === 'already-allowed'
+            ? 'That category was already allowlisted'
+            : 'Category allowlisted — every channel under it may receive connector posts',
+      });
+      setCategoryId('');
+      allowlist.reload();
+    }
+  };
+
   const disallow = async () => {
     if (removing === undefined) return;
     setBusy(true);
     try {
-      const result = await session.write<{ ok: boolean; removed: boolean }>(
-        `/api/send-allowlist/${encodeURIComponent(removing.channelId)}`,
+      const isCategory = (removing.scopeKind ?? 'channel') === 'category';
+      const result = await session.write<{ ok: boolean; removed?: boolean; outcome?: string }>(
+        `/api/send-allowlist/${isCategory ? 'categories/' : ''}${encodeURIComponent(removing.channelId)}`,
         undefined,
         'DELETE',
       );
       if (result !== undefined) {
+        const removed = result.removed ?? result.outcome === 'removed';
         toast({
-          tone: result.removed ? 'ok' : 'neutral',
-          title: result.removed
-            ? 'Channel removed from the allowlist'
-            : 'That channel was not on the allowlist',
+          tone: removed ? 'ok' : 'neutral',
+          title: removed
+            ? `${isCategory ? 'Category' : 'Channel'} removed from the allowlist`
+            : `That ${isCategory ? 'category' : 'channel'} was not on the allowlist`,
         });
         allowlist.reload();
       }
@@ -171,6 +196,14 @@ export function McpPage() {
                 rowKey={(e2) => e2.channelId}
                 columns={[
                   { key: 'channel', header: 'Channel', cell: (e2) => e2.channelId },
+                  {
+                    key: 'kind',
+                    header: 'Kind',
+                    cell: (e2) =>
+                      (e2.scopeKind ?? 'channel') === 'category'
+                        ? `category — covers ${String(e2.coverage ?? 0)} channels`
+                        : 'channel',
+                  },
                   { key: 'addedBy', header: 'Added by', cell: (e2) => e2.addedByAccountId },
                   {
                     key: 'addedAt',
@@ -201,6 +234,28 @@ export function McpPage() {
                 disabled={channelId.trim() === ''}
               >
                 Allow channel
+              </Button>
+            </div>
+          </form>
+          <form
+            onSubmit={(e) => void allowCategory(e)}
+            className="mt-3 grid max-w-md gap-3 border-t border-line pt-3"
+          >
+            <ChannelPicker
+              label="Allow a category"
+              hint="Every channel under the category may receive connector posts, including channels added to it later."
+              value={categoryId}
+              onChange={setCategoryId}
+              kinds={['category']}
+            />
+            <div>
+              <Button
+                type="submit"
+                variant="primary"
+                busy={busy}
+                disabled={categoryId.trim() === ''}
+              >
+                Allow category
               </Button>
             </div>
           </form>
@@ -349,11 +404,13 @@ export function McpPage() {
         title={`Remove ${removing?.channelId ?? ''} from the allowlist?`}
         scope={
           <p>
-            The connector can no longer post to channel {removing?.channelId ?? ''}. Nothing else
-            changes — the allowlist alone decides where it may post.
+            {(removing?.scopeKind ?? 'channel') === 'category'
+              ? `The connector can no longer post to the channels under category ${removing?.channelId ?? ''}.`
+              : `The connector can no longer post to channel ${removing?.channelId ?? ''}.`}{' '}
+            Nothing else changes — the allowlist alone decides where it may post.
           </p>
         }
-        confirmLabel="Remove channel"
+        confirmLabel={(removing?.scopeKind ?? 'channel') === 'category' ? 'Remove category' : 'Remove channel'}
         danger
         busy={busy}
         onConfirm={() => void disallow()}

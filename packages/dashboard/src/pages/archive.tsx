@@ -2,12 +2,14 @@ import { useCallback, useState } from 'react';
 import { ApiError } from '../api.js';
 import type {
   ArchiveAttachmentPolicy,
+  ArchiveCategoryEnableOutcome,
   ArchiveChannelStatus,
   ArchiveDisableOutcome,
   ArchiveEnableOutcome,
   ArchiveLinkCaseOutcome,
   ArchivePreserveOutcome,
   ArchiveStatus,
+  ArchiveThreadsValue,
   Enqueued,
 } from '../api/ops.js';
 import { useSession } from '../app/session.js';
@@ -48,6 +50,8 @@ export function ArchivePage() {
   const status = useResource('the archive status', load);
 
   const [channelId, setChannelId] = useState('');
+  const [categoryId, setCategoryId] = useState('');
+  const [categoryError, setCategoryError] = useState<string | undefined>(undefined);
   const [policy, setPolicy] = useState<ArchiveAttachmentPolicy>('none');
   const [enableError, setEnableError] = useState<string | undefined>(undefined);
   const [disabling, setDisabling] = useState<ArchiveChannelStatus | undefined>(undefined);
@@ -89,12 +93,65 @@ export function ArchivePage() {
     }
   };
 
+  const enableCategory = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setCategoryError(undefined);
+    setBusy(true);
+    try {
+      const result = await session.writeOrThrow<{
+        outcome: ArchiveCategoryEnableOutcome;
+        coverage: { channels: number; messages: number };
+      }>('/api/archive/categories', { channelId: categoryId.trim() });
+      if (result === undefined) return;
+      toast({
+        tone: 'ok',
+        title:
+          result.outcome === 'already-enabled'
+            ? 'That category was already archiving'
+            : `Category archiving enabled — covers ${String(result.coverage.channels)} channels`,
+      });
+      setCategoryId('');
+      status.reload();
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 409) {
+        setCategoryError(
+          'This guild is not archive-enabled. The server-side allowlist decides that — the UI cannot widen it.',
+        );
+      } else {
+        throw err;
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setThreads = async (channel: ArchiveChannelStatus, value: ArchiveThreadsValue) => {
+    const result = await session.write<{ outcome: 'updated' }>(
+      `/api/archive/channels/${encodeURIComponent(channel.channelId)}/threads`,
+      { value },
+    );
+    if (result !== undefined) {
+      toast({
+        tone: 'ok',
+        title:
+          value === 'all'
+            ? `Threads under ${channel.channelId} will be archived`
+            : `Threads under ${channel.channelId} are no longer archived`,
+      });
+      status.reload();
+    }
+  };
+
   const disable = async () => {
     if (disabling === undefined) return;
     setBusy(true);
     try {
+      const base =
+        (disabling.scopeKind ?? 'channel') === 'category'
+          ? '/api/archive/categories'
+          : '/api/archive/channels';
       const result = await session.write<ArchiveDisableOutcome>(
-        `/api/archive/channels/${encodeURIComponent(disabling.channelId)}`,
+        `${base}/${encodeURIComponent(disabling.channelId)}`,
         undefined,
         'DELETE',
       );
@@ -219,6 +276,28 @@ export function ArchivePage() {
                 columns={[
                   { key: 'channel', header: 'Channel', cell: (c) => c.channelId },
                   {
+                    key: 'scope',
+                    header: 'Scope',
+                    cell: (c) =>
+                      (c.scopeKind ?? 'channel') === 'category' ? (
+                        <Badge tone="neutral">category</Badge>
+                      ) : c.scopeKind === 'derived' ? (
+                        <span className="text-xs text-ink-muted">
+                          via category {c.derivedFrom ?? ''}
+                        </span>
+                      ) : (
+                        'channel'
+                      ),
+                  },
+                  {
+                    key: 'threads',
+                    header: 'Threads',
+                    cell: (c) =>
+                      c.threadsDone === undefined
+                        ? '—'
+                        : `${String(c.threadsDone)}/${c.threadsFound === undefined ? '?' : String(c.threadsFound)}`,
+                  },
+                  {
                     key: 'policy',
                     header: 'Attachments',
                     cell: (c) => (c.attachmentPolicy === 'bytes' ? 'bytes kept' : 'none'),
@@ -244,14 +323,29 @@ export function ArchivePage() {
                   {
                     key: 'actions',
                     header: '',
-                    cell: (c) => (
-                      <span className="flex gap-1">
-                        <Button onClick={() => void backfill(c)}>Backfill</Button>
-                        <Button variant="danger" onClick={() => setDisabling(c)}>
-                          Disable
-                        </Button>
-                      </span>
-                    ),
+                    cell: (c) =>
+                      // A derived row is coverage materialised under a
+                      // category: nothing here is the operator's to chase, so
+                      // the actions stay on the rows they own.
+                      c.scopeKind === 'derived' ? (
+                        <span className="text-xs text-ink-muted">managed by its category</span>
+                      ) : (
+                        <span className="flex gap-1">
+                          {(c.scopeKind ?? 'channel') === 'channel' && (
+                            <Button
+                              onClick={() =>
+                                void setThreads(c, (c.includeThreads ?? true) ? 'none' : 'all')
+                              }
+                            >
+                              {(c.includeThreads ?? true) ? 'Exclude threads' : 'Include threads'}
+                            </Button>
+                          )}
+                          <Button onClick={() => void backfill(c)}>Backfill</Button>
+                          <Button variant="danger" onClick={() => setDisabling(c)}>
+                            Disable
+                          </Button>
+                        </span>
+                      ),
                   },
                 ]}
               />
@@ -286,6 +380,29 @@ export function ArchivePage() {
                 disabled={channelId.trim() === ''}
               >
                 Enable archiving
+              </Button>
+            </div>
+          </form>
+          <form
+            onSubmit={(e) => void enableCategory(e)}
+            className="mt-3 grid max-w-md gap-3 border-t border-line pt-3"
+          >
+            <ChannelPicker
+              label="Enable archiving for a category"
+              hint="Every channel under the category is archived, including channels added to it later."
+              {...(categoryError !== undefined ? { error: categoryError } : {})}
+              value={categoryId}
+              onChange={setCategoryId}
+              kinds={['category']}
+            />
+            <div>
+              <Button
+                type="submit"
+                variant="primary"
+                busy={busy}
+                disabled={categoryId.trim() === ''}
+              >
+                Enable category
               </Button>
             </div>
           </form>
@@ -340,12 +457,12 @@ export function ArchivePage() {
       </div>
       <ConfirmDialog
         open={disabling !== undefined}
-        title={`Disable archiving for ${disabling?.channelId ?? ''}?`}
+        title={`Disable archiving for ${(disabling?.scopeKind ?? 'channel') === 'category' ? 'category' : 'channel'} ${disabling?.channelId ?? ''}?`}
         scope={
           <p>
-            Stops archiving the channel AND destroys its {String(disabling?.messageCount ?? 0)}{' '}
-            archived messages, edits and attachments. The audit row is the only record that the
-            destruction happened.
+            Stops archiving the {(disabling?.scopeKind ?? 'channel') === 'category' ? 'category and the channels it covers' : 'channel'} AND
+            destroys its {String(disabling?.messageCount ?? 0)} archived messages, edits and
+            attachments. The audit row is the only record that the destruction happened.
           </p>
         }
         confirmLabel="Disable and destroy"

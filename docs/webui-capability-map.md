@@ -42,11 +42,14 @@ Pages live under `packages/dashboard/src/pages`, routes under
 | `jobs retry` | Jobs page | `POST /api/jobs/:id/retry` |
 | `backup now` | Backups page | `POST /api/backup-now` |
 | `archive enable-channel` / `disable-channel` | Archive page (backfill state visible) | `POST/DELETE /api/archive/channels[/:channelId]` |
+| `archive enable-category` / `disable-category` | Archive page (category scope, derived coverage marked) | `POST/DELETE /api/archive/categories[/:channelId]` |
+| `archive set-threads` / `archive threads` | Archive page (per-channel threads toggle and done/found progress) | `POST /api/archive/channels/:channelId/threads`, `GET /api/archive/status` |
 | `archive preserve` | Search page, per hit | `POST /api/archive/messages/:messageId/preserve` |
 | `archive link-case` | Search page, per hit | `POST /api/archive/link-case` |
 | `archive reindex` | Archive page | `POST /api/archive/reindex` |
 | `mcp revoke` / `mcp revoke-client` | Connector page | `POST /api/mcp/tokens/:tokenId/revoke`, `POST /api/mcp/clients/:clientId/revoke` |
 | `mcp allow-channel` / `disallow-channel` | Connector page | `POST/DELETE /api/send-allowlist[/:channelId]` |
+| `mcp allow-category` / `disallow-category` | Connector page (category rows show live coverage) | `POST/DELETE /api/send-allowlist/categories[/:channelId]` |
 | `panel sync` | Role panels page (publish + reconcile, dry-run preview) | `POST /api/panels/:id/publish`, `…/reconcile` |
 | `adoption allow` | Cutover page | `POST /api/adoption-allowance` |
 | `undo` | Audit page (reverse one batch) | `POST /api/undo` |

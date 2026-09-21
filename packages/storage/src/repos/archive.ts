@@ -49,6 +49,8 @@ export interface ArchiveChannel {
   readonly backfillState: BackfillState;
   readonly threadsFound: number | undefined;
   readonly threadsDone: number;
+  /** Whether public threads under this channel are archived (schema default: on). */
+  readonly includeThreads: boolean;
 }
 
 export interface ArchiveAttachmentInput {
@@ -95,6 +97,7 @@ const toArchiveChannel = (row: typeof archiveChannels.$inferSelect): ArchiveChan
   backfillState: row.backfillState as BackfillState,
   threadsFound: row.threadsFound ?? undefined,
   threadsDone: row.threadsDone,
+  includeThreads: row.includeThreads !== 0,
 });
 
 /** Inserts the channel row; a replayed enable is a no-op reported as such. */

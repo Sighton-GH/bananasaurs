@@ -125,6 +125,26 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
   'archive preserve': { kind: 'covered', page: 'Search', control: 'preserve a hit indefinitely' },
   'archive link-case': { kind: 'covered', page: 'Search', control: 'link a hit to an open case' },
   'archive reindex': { kind: 'covered', page: 'Archive', control: 'rebuild the index, confirmed' },
+  'archive enable-category': {
+    kind: 'covered',
+    page: 'Archive',
+    control: 'enable a category; its channels archive dynamically',
+  },
+  'archive disable-category': {
+    kind: 'covered',
+    page: 'Archive',
+    control: 'remove a category, rows destroyed, confirmed',
+  },
+  'archive set-threads': {
+    kind: 'covered',
+    page: 'Archive',
+    control: 'per-channel include/exclude threads toggle',
+  },
+  'archive threads': {
+    kind: 'covered',
+    page: 'Archive',
+    control: 'threads progress column (done/found per channel)',
+  },
   'mcp clients': { kind: 'covered', page: 'Connector', control: 'registered OAuth clients' },
   'mcp tokens': { kind: 'covered', page: 'Connector', control: 'token rows, live and revoked' },
   'mcp revoke': {
@@ -142,6 +162,16 @@ export const CLI_WEB_PARITY: Readonly<Record<string, CliParityEntry>> = {
     kind: 'covered',
     page: 'Connector',
     control: 'remove a channel from the send allowlist',
+  },
+  'mcp allow-category': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'allow sends to every channel under a category',
+  },
+  'mcp disallow-category': {
+    kind: 'covered',
+    page: 'Connector',
+    control: 'remove a category from the send allowlist',
   },
   'panel sync': {
     kind: 'covered',

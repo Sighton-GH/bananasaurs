@@ -20,12 +20,19 @@ export function ChannelPicker({
   error,
   value,
   onChange,
+  kinds,
 }: {
   readonly label: string;
   readonly hint?: string | undefined;
   readonly error?: string | undefined;
   readonly value: string;
   readonly onChange: (channelId: string) => void;
+  /**
+   * Which channel kinds the list offers. Defaults to the text-capable kinds,
+   * so a caller that wants categories (archive scope, send allowlist) says
+   * so; pasting an id bypasses the filter as before.
+   */
+  readonly kinds?: readonly string[] | undefined;
 }) {
   const session = useSession();
   const load = useCallback(
@@ -37,18 +44,20 @@ export function ChannelPicker({
 
   const channels = resource.state === 'ready' ? resource.data.channels : undefined;
   const query = value.trim().toLowerCase();
+  const wanted = kinds ?? ['text', 'announcement', 'forum'];
   const matches =
     channels === undefined
       ? undefined
       : channels
           .filter(
             (c) =>
-              query === '' ||
-              c.name.toLowerCase().includes(query) ||
-              c.channelId.includes(query),
+              wanted.includes(c.kind) &&
+              (query === '' ||
+                c.name.toLowerCase().includes(query) ||
+                c.channelId.includes(query)),
           )
           .slice(0, MAX_OPTIONS);
-  const selected = channels?.find((c) => c.channelId === value.trim());
+  const selected = channels?.find((c) => wanted.includes(c.kind) && c.channelId === value.trim());
 
   return (
     <div className="text-sm">

@@ -165,4 +165,51 @@ describe('McpPage', () => {
       ),
     ).toBe(true);
   });
+
+  it('allow-category posts to the categories route with the session account', async () => {
+    const mock = stubFetch([
+      ...STUBS,
+      { method: 'POST', url: '/api/send-allowlist/categories', body: { outcome: 'allowed' } },
+    ]);
+    renderWithSession(<McpPage />);
+    await screen.findAllByText('c-9');
+    fireEvent.change(screen.getByLabelText('Allow a category'), { target: { value: 'cat-1' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Allow category' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/send-allowlist/categories' && c[1]?.method === 'POST',
+    )!;
+    expect(bodyOf(post)).toEqual({ channelId: 'cat-1', accountId: 'acct-1' });
+  });
+
+  it('a category row shows its coverage and removes through the categories route', async () => {
+    const mock = stubFetch([
+      { url: '/api/mcp/clients', body: CLIENTS },
+      { url: '/api/mcp/tokens', body: TOKENS },
+      {
+        url: '/api/send-allowlist',
+        body: {
+          entries: [
+            { channelId: 'cat-1', scopeKind: 'category', coverage: 4, addedByAccountId: 'acct-1', addedAt: 0 },
+          ],
+        },
+      },
+      { url: '/api/mcp/sends', body: SENDS },
+      { method: 'DELETE', url: '/api/send-allowlist/categories/cat-1', body: { ok: true, outcome: 'removed' } },
+    ]);
+    renderWithSession(<McpPage />);
+    expect(await screen.findByText(/category — covers 4 channels/)).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Remove' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('channels under category cat-1');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove category' }));
+    });
+    expect(
+      mock.mock.calls.some(
+        (c) => (c[0] as string) === '/api/send-allowlist/categories/cat-1' && c[1]?.method === 'DELETE',
+      ),
+    ).toBe(true);
+  });
 });

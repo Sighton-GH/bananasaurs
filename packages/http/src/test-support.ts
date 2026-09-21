@@ -85,6 +85,7 @@ export const testPortsFor = (
     { channelId: '333333333333333333', name: 'general', kind: 'text' },
     { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
     { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
+    { channelId: '999999999999999999', name: 'Community', kind: 'category' },
   ],
   // Same constraint as the channel fixture: no Discord cache here, so the
   // role picker gets a static demo set; the daemon reads the live cache.
@@ -542,13 +543,7 @@ export const testPortsFor = (
     if (!opts.archiveGuildEnabled === true) return 'guild-not-archive-enabled';
     return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
   },
-  archiveDisableCategory: (channelId) => {
-    const messageCount = archiveRepo.countMessages(scope, channelId);
-    const outcome = archiveRepo.disableChannel(scope, channelId);
-    if (outcome === 'disabled') return { outcome, messageCount };
-    if (outcome === 'derived') return { outcome: 'wrong-kind' };
-    return { outcome };
-  },
+  archiveDisableCategory: (channelId) => archiveRepo.disableCategory(scope, channelId),
   archiveSetThreads: (channelId, include) =>
     archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
   archiveThreads: (channelId) => {

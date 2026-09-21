@@ -121,4 +121,123 @@ describe('ArchivePage', () => {
     const post = mock.mock.calls.find((c) => (c[0] as string) === '/api/archive/link-case')!;
     expect(bodyOf(post)).toEqual({ messageId: 'm-1', caseId: 'case-7' });
   });
+
+  it('renders scope, thread progress and no actions on a derived row', async () => {
+    stubFetch([
+      {
+        url: '/api/archive/status',
+        body: {
+          channels: [
+            {
+              channelId: 'cat-1',
+              scopeKind: 'category',
+              attachmentPolicy: 'none',
+              enabledAt: 0,
+              cursorMessageId: undefined,
+              backfillState: 'running',
+              messageCount: 0,
+            },
+            {
+              channelId: 'c-9',
+              scopeKind: 'derived',
+              derivedFrom: 'cat-1',
+              attachmentPolicy: 'none',
+              enabledAt: 0,
+              cursorMessageId: undefined,
+              backfillState: 'done',
+              threadsFound: 5,
+              threadsDone: 3,
+              includeThreads: true,
+              messageCount: 12,
+            },
+          ],
+          index: { indexed: 12, rows: 12 },
+        },
+      },
+    ]);
+    renderWithSession(<ArchivePage />);
+    expect(await screen.findByText('category')).toBeTruthy();
+    expect(screen.getByText(/via category cat-1/)).toBeTruthy();
+    expect(screen.getByText('3/5')).toBeTruthy();
+    expect(screen.getByText('managed by its category')).toBeTruthy();
+  });
+
+  it('enable-category posts to the categories route without an attachment policy', async () => {
+    const mock = stubFetch([
+      { url: '/api/archive/status', body: STATUS },
+      {
+        method: 'POST',
+        url: '/api/archive/categories',
+        body: { outcome: 'enabled', coverage: { channels: 4, messages: 10 } },
+      },
+    ]);
+    renderWithSession(<ArchivePage />);
+    await screen.findByText('c-1');
+    fireEvent.change(screen.getByLabelText('Enable archiving for a category'), {
+      target: { value: 'cat-9' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Enable category' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/archive/categories' && c[1]?.method === 'POST',
+    )!;
+    expect(bodyOf(post)).toEqual({ channelId: 'cat-9' });
+  });
+
+  it('disable on a category row confirms as a category and hits the categories route', async () => {
+    const withCategory = {
+      channels: [{ ...STATUS.channels[0], channelId: 'cat-1', scopeKind: 'category' }],
+      index: STATUS.index,
+    };
+    const mock = stubFetch([
+      { url: '/api/archive/status', body: withCategory },
+      {
+        method: 'DELETE',
+        url: '/api/archive/categories/cat-1',
+        body: { outcome: 'disabled', messageCount: 120 },
+      },
+    ]);
+    renderWithSession(<ArchivePage />);
+    await screen.findByText('cat-1');
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('category cat-1');
+    expect(dialog.textContent).toContain('the channels it covers');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Disable and destroy' }));
+    });
+    expect(
+      mock.mock.calls.some(
+        (c) => (c[0] as string) === '/api/archive/categories/cat-1' && c[1]?.method === 'DELETE',
+      ),
+    ).toBe(true);
+  });
+
+  it('the threads toggle posts the opposite of the current inclusion', async () => {
+    const withThreads = {
+      channels: [
+        {
+          ...STATUS.channels[0],
+          threadsFound: 2,
+          threadsDone: 2,
+          includeThreads: true,
+        },
+      ],
+      index: STATUS.index,
+    };
+    const mock = stubFetch([
+      { url: '/api/archive/status', body: withThreads },
+      { method: 'POST', url: '/api/archive/channels/c-1/threads', body: { outcome: 'updated' } },
+    ]);
+    renderWithSession(<ArchivePage />);
+    await screen.findByText('c-1');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Exclude threads' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/archive/channels/c-1/threads' && c[1]?.method === 'POST',
+    )!;
+    expect(bodyOf(post)).toEqual({ value: 'none' });
+  });
 });

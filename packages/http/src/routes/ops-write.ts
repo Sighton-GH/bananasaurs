@@ -53,6 +53,14 @@ const archiveEnableBodySchema = z.object({
   attachmentPolicy: z.enum(['none', 'bytes']),
 });
 
+const archiveCategoryBodySchema = z.object({
+  channelId: snowflakeIdSchema,
+});
+
+const archiveThreadsBodySchema = z.object({
+  value: z.enum(['all', 'none']),
+});
+
 const archiveLinkCaseBodySchema = z.object({
   messageId: snowflakeIdSchema,
   caseId: z.string().min(1),
@@ -393,6 +401,104 @@ export const registerOpsWriteRoutes = (
     },
   );
 
+  // `archive enable-category` / `disable-category` / `set-threads` (the
+  // threads-merge commands): category scope and per-channel thread inclusion,
+  // mirroring the channel routes' refusal shapes. A category enable carries
+  // no attachment-policy choice because the CLI does not offer one either.
+  app.post('/api/archive/categories', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = archiveCategoryBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.archiveEnableCategory({
+      channelId: parsed.data.channelId,
+      attachmentPolicy: 'none',
+    });
+    if (outcome === 'no-such-channel') {
+      return reply.status(404).send({ error: 'no-such-channel' });
+    }
+    if (outcome === 'guild-not-archive-enabled') {
+      return reply.status(409).send({ error: 'guild-not-archive-enabled' });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'archive_category.enabled',
+      subjectType: 'archive_category',
+      subjectId: parsed.data.channelId,
+      before: { enabled: outcome === 'already-enabled' },
+      after: { enabled: true },
+    });
+    return reply
+      .status(200)
+      .send({ outcome, coverage: ports.archiveCategoryCoverage(parsed.data.channelId) });
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    '/api/archive/categories/:channelId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.archiveDisableCategory(parsed.data);
+      if (outcome.outcome === 'disabled') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'archive_category.disabled',
+          subjectType: 'archive_category',
+          subjectId: parsed.data,
+          before: { enabled: true },
+          after: { enabled: false, messagesDestroyed: outcome.messageCount },
+        });
+      }
+      return reply.status(200).send(outcome);
+    },
+  );
+
+  app.post<{ Params: { channelId: string } }>(
+    '/api/archive/channels/:channelId/threads',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const id = snowflakeIdSchema.safeParse(request.params.channelId);
+      const parsed = archiveThreadsBodySchema.safeParse(request.body);
+      if (!id.success || !parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      // Read the current inclusion before the write: a repeat set must not
+      // record a change that never happened.
+      const prior = ports
+        .archiveStatus()
+        .find((channel) => channel.channelId === id.data)?.includeThreads;
+      const outcome = ports.archiveSetThreads(id.data, parsed.data.value === 'all');
+      if (outcome === 'not-enabled') {
+        return reply.status(404).send({ error: 'not-archived' });
+      }
+      if (outcome === 'forum-requires-all') {
+        return reply.status(409).send({ error: 'forum-requires-all' });
+      }
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'archive_channel.threads_set',
+        subjectType: 'channel',
+        subjectId: id.data,
+        before: { threads: prior === false ? 'none' : 'all' },
+        after: { threads: parsed.data.value },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
   app.post<{ Params: { messageId: string } }>(
     '/api/archive/messages/:messageId/preserve',
     (request, reply) => {
@@ -557,6 +663,59 @@ export const registerOpsWriteRoutes = (
         });
       }
       return reply.status(200).send({ ok: true, removed });
+    },
+  );
+
+  // `mcp allow-category` / `disallow-category`: the same allowlist at
+  // category scope. Fastify's static segment wins over the `:channelId`
+  // parameter above, so these sit beside the channel routes safely.
+  app.post('/api/send-allowlist/categories', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+
+    const parsed = sendAllowBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+    const ports = deps.portsFor(session.scope);
+    const outcome = ports.allowSendCategory(parsed.data);
+    if (outcome === 'no-such-channel') {
+      return reply.status(404).send({ error: 'no-such-channel' });
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'send_category.allowed',
+      subjectType: 'send_category',
+      subjectId: parsed.data.channelId,
+      before: { allowed: outcome === 'already-allowed' },
+      after: { allowed: true, accountId: parsed.data.accountId },
+    });
+    return reply.status(200).send({ outcome });
+  });
+
+  app.delete<{ Params: { channelId: string } }>(
+    '/api/send-allowlist/categories/:channelId',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'config.write', reply)) return reply;
+
+      const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.disallowSendCategory(parsed.data);
+      if (outcome === 'removed') {
+        ports.recordAudit({
+          ...dashboardAuditBase(session, deps.now()),
+          action: 'send_category.disallowed',
+          subjectType: 'send_category',
+          subjectId: parsed.data,
+          before: { allowed: true },
+          after: { allowed: false },
+        });
+      }
+      return reply.status(200).send({ ok: true, outcome });
     },
   );
 

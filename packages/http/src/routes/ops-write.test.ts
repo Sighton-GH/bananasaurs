@@ -17,6 +17,7 @@ import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
+import { registerOpsReadRoutes } from './ops-read.js';
 import { registerOpsWriteRoutes } from './ops-write.js';
 
 const GUILD = parseGuildId('111111111111111111');
@@ -119,6 +120,13 @@ const ALL_CALLS: readonly Call[] = [
     payload: { channelId: '333333333333333333', attachmentPolicy: 'none' },
   },
   { method: 'DELETE', url: '/api/archive/channels/333333333333333333' },
+  { method: 'POST', url: '/api/archive/categories', payload: { channelId: '333333333333333333' } },
+  { method: 'DELETE', url: '/api/archive/categories/333333333333333333' },
+  {
+    method: 'POST',
+    url: '/api/archive/channels/333333333333333333/threads',
+    payload: { value: 'all' },
+  },
   { method: 'POST', url: '/api/archive/messages/333333333333333333/preserve' },
   {
     method: 'POST',
@@ -134,6 +142,12 @@ const ALL_CALLS: readonly Call[] = [
     payload: { channelId: '333333333333333333', accountId: ACCOUNT },
   },
   { method: 'DELETE', url: '/api/send-allowlist/333333333333333333' },
+  {
+    method: 'POST',
+    url: '/api/send-allowlist/categories',
+    payload: { channelId: '333333333333333333', accountId: ACCOUNT },
+  },
+  { method: 'DELETE', url: '/api/send-allowlist/categories/333333333333333333' },
   { method: 'POST', url: '/api/mcp/tokens/t1/revoke' },
   { method: 'POST', url: '/api/mcp/clients/c1/revoke' },
   { method: 'POST', url: '/api/adoption-allowance', payload: { count: 5 } },
@@ -222,6 +236,12 @@ describe('ops-write routes', () => {
     const bad: readonly Call[] = [
       { method: 'POST', url: '/api/settings', payload: { key: 'nope', value: 1 } },
       { method: 'POST', url: '/api/log-exclusions', payload: { channelId: 'not-a-snowflake' } },
+      { method: 'POST', url: '/api/archive/categories', payload: { channelId: 'nope' } },
+      {
+        method: 'POST',
+        url: '/api/archive/channels/333333333333333333/threads',
+        payload: { value: 'some' },
+      },
       { method: 'POST', url: '/api/undo', payload: { batchId: '', reason: '' } },
       { method: 'POST', url: '/api/adoption-allowance', payload: { count: -1 } },
       { method: 'POST', url: '/api/accounts/x/disabled', payload: {} },
@@ -602,5 +622,174 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
       .tailAudit(scope, { limit: 10 })
       .filter((row) => row.action === 'panel.created');
     expect(created).toHaveLength(1);
+  });
+});
+
+describe('archive categories, threads and send-allowlist categories (threads merge parity)', () => {
+  const rebuildWithArchive = async (): Promise<void> => {
+    await app.close();
+    deps = {
+      ...deps,
+      portsFor: (scope) =>
+        testPortsFor(scope, () => clock, {
+          archiveGuildEnabled: true,
+          instanceScope: t.scopes.instance(),
+        }),
+    };
+    app = createServer({
+      deps,
+      registerRoutes: (instance, guard, d) => {
+        registerOpsReadRoutes(instance, guard, d);
+        registerOpsWriteRoutes(instance, guard, d);
+      },
+    });
+  };
+
+  it('enables and disables an archive category with audit attribution', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories',
+      headers,
+      payload: { channelId: '999999999999999999' },
+    });
+    expect(enabled.statusCode).toBe(200);
+    const enabledBody: { outcome: string; coverage: { channels: number } } = enabled.json();
+    expect(enabledBody.outcome).toBe('enabled');
+
+    const again = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories',
+      headers,
+      payload: { channelId: '999999999999999999' },
+    });
+    expect(again.json()).toMatchObject({ outcome: 'already-enabled' });
+
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain('archive_category.enabled');
+    expect(rows[0]?.actorType).toBe('dashboard');
+
+    const disabled = await app.inject({
+      method: 'DELETE',
+      url: '/api/archive/categories/999999999999999999',
+      headers,
+    });
+    expect(disabled.statusCode).toBe(200);
+    expect(disabled.json()).toMatchObject({ outcome: 'disabled' });
+    const rowsAfter = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rowsAfter.map((row) => row.action)).toContain('archive_category.disabled');
+
+    // A repeat disable changes nothing and audits nothing.
+    const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length;
+    const repeat = await app.inject({
+      method: 'DELETE',
+      url: '/api/archive/categories/999999999999999999',
+      headers,
+    });
+    expect(repeat.json()).toMatchObject({ outcome: 'not-enabled' });
+    expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length).toBe(before);
+  });
+
+  it('refuses category writes when the guild is not archive-enabled', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['config.write']);
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/archive/categories',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { channelId: '999999999999999999' },
+    });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: 'guild-not-archive-enabled' });
+  });
+
+  it('sets thread inclusion on an archived channel; unknown channels are 404', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write', 'config.read']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const unknown = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels/333333333333333333/threads',
+      headers,
+      payload: { value: 'none' },
+    });
+    expect(unknown.statusCode).toBe(404);
+    expect(unknown.json()).toEqual({ error: 'not-archived' });
+
+    const enabled = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels',
+      headers,
+      payload: { channelId: '333333333333333333', attachmentPolicy: 'none' },
+    });
+    expect(enabled.statusCode).toBe(200);
+
+    const updated = await app.inject({
+      method: 'POST',
+      url: '/api/archive/channels/333333333333333333/threads',
+      headers,
+      payload: { value: 'none' },
+    });
+    expect(updated.statusCode).toBe(200);
+    expect(updated.json()).toEqual({ outcome: 'updated' });
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain('archive_channel.threads_set');
+
+    // And the status read carries the flag for the page's toggle.
+    const status = await app.inject({ method: 'GET', url: '/api/archive/status', headers });
+    const statusBody: {
+      channels: { channelId: string; includeThreads?: boolean }[];
+    } = status.json();
+    expect(
+      statusBody.channels.find((c) => c.channelId === '333333333333333333')?.includeThreads,
+    ).toBe(false);
+  });
+
+  it('allows and disallows a send category with audit attribution', async () => {
+    await rebuildWithArchive();
+    const { cookie, csrf } = await signIn();
+    grant(['config.write', 'config.read']);
+    const headers = { cookie, [CSRF]: csrf };
+
+    const allowed = await app.inject({
+      method: 'POST',
+      url: '/api/send-allowlist/categories',
+      headers,
+      payload: { channelId: '999999999999999999', accountId: ACCOUNT },
+    });
+    expect(allowed.statusCode).toBe(200);
+    expect(allowed.json()).toEqual({ outcome: 'allowed' });
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain('send_category.allowed');
+
+    const list = await app.inject({ method: 'GET', url: '/api/send-allowlist', headers });
+    const listBody: { entries: { channelId: string; scopeKind?: string }[] } = list.json();
+    expect(
+      listBody.entries.find((e) => e.channelId === '999999999999999999')?.scopeKind,
+    ).toBe('category');
+
+    const removed = await app.inject({
+      method: 'DELETE',
+      url: '/api/send-allowlist/categories/999999999999999999',
+      headers,
+    });
+    expect(removed.json()).toEqual({ ok: true, outcome: 'removed' });
+    const rowsAfter = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rowsAfter.map((row) => row.action)).toContain('send_category.disallowed');
+
+    const before = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length;
+    const repeat = await app.inject({
+      method: 'DELETE',
+      url: '/api/send-allowlist/categories/999999999999999999',
+      headers,
+    });
+    expect(repeat.json()).toEqual({ ok: true, outcome: 'not-allowed' });
+    expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length).toBe(before);
   });
 });
