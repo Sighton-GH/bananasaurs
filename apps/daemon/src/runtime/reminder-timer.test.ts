@@ -29,6 +29,9 @@ let nowMs: number;
 const depsFor = (over: Partial<ReminderDeliveryTimerDeps> = {}): ReminderDeliveryTimerDeps => ({
   guilds: () => [{ scope: a }, { scope: b }],
   enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+  // Tests default to "due work exists" so the historical enqueue behaviour is
+  // what is exercised; the peek itself gets its own cases below.
+  hasDueWork: () => true,
   now: () => nowMs,
   logger,
   ...over,
@@ -70,6 +73,15 @@ describe('reminder delivery timer', () => {
     nowMs += REMINDER_DELIVERY_INTERVAL_MS;
     timer.runOnce();
     expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(2);
+  });
+
+  it('enqueues nothing for a guild with no due work (should-fix: no empty jobs)', () => {
+    const timer = createReminderDeliveryTimer(
+      depsFor({ hasDueWork: (scope) => scope.guildId === b.guildId }),
+    );
+    timer.runOnce();
+    expect(jobsFor(a).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(0);
+    expect(jobsFor(b).filter((j) => j.kind === JOB_KINDS.deliverReminders)).toHaveLength(1);
   });
 
   it('start runs immediately, then fires on the interval until stopped', () => {

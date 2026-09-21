@@ -17,6 +17,7 @@ import { routeAssistantMention } from '@bananasaurs/discord';
 import { pino } from 'pino';
 import { createAssistantCommandSubscriber, type AssistantCommandService } from './commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
+import { createInteractionTokenSealer } from './interaction-token.js';
 import { SAFE_GOLDENS, SAFETY_GOLDENS } from './__fixtures__/golden-evaluation.js';
 
 const guildA = '234567890123456789';
@@ -171,6 +172,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
     const respond = vi.fn(async () => undefined);
     // B2: the subscriber enqueues; the cap and mention-safety live where the
     // provider output is answered — the job handler. Run the real pair.
+    const sealer = createInteractionTokenSealer();
     const queued: Parameters<ReturnType<typeof assistantInvokeHandler>['run']>[0][] = [];
     const subscriber = createAssistantCommandSubscriber({
       guildId: guildA,
@@ -181,6 +183,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       enqueue: (input) => {
         queued.push(input.payload);
       },
+      sealToken: sealer.seal,
       now: () => 1,
       logger: pino({ level: 'silent' }),
     });
@@ -189,6 +192,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
     const handler = assistantInvokeHandler({
       guildId: guildA,
       service,
+      openToken: sealer.open,
       respond,
       send,
       logger: pino({ level: 'silent' }),

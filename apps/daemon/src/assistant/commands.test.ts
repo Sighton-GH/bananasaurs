@@ -7,6 +7,7 @@ import {
   type AssistantInvocationResult,
 } from './commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
+import { createInteractionTokenSealer } from './interaction-token.js';
 
 const guildId = '234567890123456789';
 const channelId = '345678901234567890';
@@ -60,9 +61,11 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
   const respond = vi.fn(async () => undefined);
   const send = vi.fn(async () => undefined);
   const queued: AssistantInvokePayload[] = [];
+  const sealer = createInteractionTokenSealer();
   const handler = assistantInvokeHandler({
     guildId,
     service,
+    openToken: sealer.open,
     respond,
     send,
     logger: pino({ level: 'silent' }),
@@ -93,6 +96,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
       enqueue: (input) => {
         queued.push(input.payload);
       },
+      sealToken: sealer.seal,
       now: () => 1,
       logger: pino({ level: 'silent' }),
     }),
@@ -273,6 +277,67 @@ describe('assistant mention failure path', () => {
     );
   });
 
+  it('never re-invokes when answer delivery fails after the invoke succeeded', async () => {
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    const payload = h.queued[0]!;
+    const sealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
+      openToken: sealer.open,
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    // Attempt 1: invoke succeeds, the answer send throws (Discord blip).
+    let cursor: string | null = null;
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    await expect(
+      handler.run(handler.payload.parse(payload), {
+        jobId: 1,
+        attempts: 1,
+        cursor: null,
+        saveCursor: (c) => {
+          cursor = c;
+        },
+      }),
+    ).rejects.toThrow('discord 500');
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(cursor).not.toBeNull();
+    // Attempt 2 (the worker's retry): the stored result is delivered; the
+    // provider is NOT called again and no duplicate effects can occur.
+    await handler.run(handler.payload.parse(payload), {
+      jobId: 1,
+      attempts: 2,
+      cursor,
+      saveCursor: () => undefined,
+    });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({ content: 'Grounded answer.' }),
+    );
+  });
+
   it('answers the member when the behaviour was deleted between enqueue and run', async () => {
     const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
     await h.subscriber.handle({
@@ -302,6 +367,7 @@ describe('assistant mention failure path', () => {
     const handler = assistantInvokeHandler({
       guildId,
       service: { behavioursForGuild: vi.fn(async () => []), invoke: h.invoke },
+      openToken: (t) => t,
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),

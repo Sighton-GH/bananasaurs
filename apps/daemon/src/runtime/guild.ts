@@ -76,6 +76,7 @@ import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
+import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -675,9 +676,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
-    const assistantService = createAssistantService(scope, instance, config, now);
+  const assistantService = createAssistantService(scope, instance, config, now);
+  // One sealer per process: interaction tokens reach the durable job table
+  // only as ciphertext (SECURITY, independent audit).
+  const interactionTokenSealer = createInteractionTokenSealer();
 
-const subscribers: Subscriber[] = [
+  const subscribers: Subscriber[] = [
     createConnectionSubscriber(
       {
         recordGap: (input) => pipelineRepo.recordGap(scope, input),
@@ -716,6 +720,7 @@ const subscribers: Subscriber[] = [
       enqueue: (input) => {
         jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
       },
+      sealToken: interactionTokenSealer.seal,
       now,
       logger,
     }),
@@ -727,6 +732,7 @@ const subscribers: Subscriber[] = [
       assistantInvokeHandler({
         guildId,
         service: assistantService,
+        openToken: interactionTokenSealer.open,
         respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
         send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
         logger,

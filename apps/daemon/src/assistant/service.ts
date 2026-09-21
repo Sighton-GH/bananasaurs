@@ -177,11 +177,18 @@ export const createAssistantService = (
             status: 'scheduled',
             dedupeKey,
           });
-        } catch {
-          return {
-            ok: true,
-            content: 'That reminder is already scheduled. I did not create a duplicate.',
-          };
+        } catch (err) {
+          // Only the dedupe-key unique conflict is the benign idempotency
+          // case. Reporting any other failure (disk, schema, FK) as "already
+          // scheduled" would turn a real create failure into a success the
+          // member believes (should-fix).
+          if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
+            return {
+              ok: true,
+              content: 'That reminder is already scheduled. I did not create a duplicate.',
+            };
+          }
+          throw err;
         }
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),

@@ -38,6 +38,12 @@ export interface ReminderDeliveryTimer {
 export interface ReminderDeliveryTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
   readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
+  /**
+   * Cheap peek before enqueueing: without it the timer queues one empty job
+   * per guild every thirty seconds around the clock (should-fix). A false
+   * negative only delays a pass by one tick.
+   */
+  readonly hasDueWork: (scope: GuildScope) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
 }
@@ -49,18 +55,23 @@ export function createReminderDeliveryTimer(
 
   const runOnce = (): void => {
     const now = deps.now();
+    let enqueued = 0;
     for (const { scope } of deps.guilds()) {
+      if (!deps.hasDueWork(scope)) continue;
       deps.enqueue(scope, {
         kind: JOB_KINDS.deliverReminders,
         payload: JSON.stringify({}),
         dedupeKey: deliverRemindersDedupeKey(),
         now,
       });
+      enqueued += 1;
     }
-    deps.logger.info(
-      safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.deliverReminders }),
-      'reminders: delivery pass enqueued',
-    );
+    if (enqueued > 0) {
+      deps.logger.info(
+        safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.deliverReminders }),
+        'reminders: delivery pass enqueued',
+      );
+    }
   };
 
   return {

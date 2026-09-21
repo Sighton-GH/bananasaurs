@@ -6,6 +6,7 @@ import {
   OPERATOR_COMMANDS,
   parseGuildId,
   Pipeline,
+  REMINDER_DELIVERY_STALE_MS,
   safeLogFields,
   seedDefaultWordList,
   type Config,
@@ -19,6 +20,7 @@ import {
 } from '@bananasaurs/core';
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
 import {
+  assistantRepo,
   automodRuleRepo,
   guildRepo,
   jobRepo,
@@ -148,6 +150,10 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const reminderDeliveryTimer = createReminderDeliveryTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    // Same stale threshold the claim pass uses, so the peek and the claim
+    // agree on what counts as deliverable.
+    hasDueWork: (scope) =>
+      assistantRepo.hasDeliverableReminders(scope, now(), REMINDER_DELIVERY_STALE_MS),
     now,
     logger,
   });

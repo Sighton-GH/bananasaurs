@@ -216,14 +216,18 @@ describe('AssistantPage', () => {
     expect((bodyOf(put) as { enabled: boolean }).enabled).toBe(false);
   });
 
-  it('never carries one behaviour\'s edited prompt onto another (B3)', async () => {
+  it("never carries one behaviour's edited prompt onto another (B3)", async () => {
     const mock = renderPage();
     // Edit behaviour A's prompt, then switch to behaviour B WITHOUT saving.
-    const editor = (await screen.findByRole('textbox', { name: 'System prompt' })) as HTMLTextAreaElement;
+    const editor = (await screen.findByRole('textbox', {
+      name: 'System prompt',
+    })) as HTMLTextAreaElement;
     fireEvent.change(editor, { target: { value: 'Unsaved rewrite of the club prompt.' } });
     fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
     // The editor must show B's prompt, not A's unsaved text.
-    const switched = (await screen.findByRole('textbox', { name: 'System prompt' })) as HTMLTextAreaElement;
+    const switched = (await screen.findByRole('textbox', {
+      name: 'System prompt',
+    })) as HTMLTextAreaElement;
     expect(switched.value).toBe('Answer infrastructure questions.');
     // Saving now writes B's object to B's endpoint — A's text cannot land on B.
     fireEvent.change(switched, { target: { value: 'New IT prompt.' } });

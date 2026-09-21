@@ -223,6 +223,46 @@ export const insertReminder = (scope: GuildScope, r: Reminder): void =>
  * The returned rows keep the original `dueAt`; the claim time is stamped in
  * `claimedAt`, matching what a re-read would return.
  */
+/**
+ * A cheap existence check for the delivery timer: is there anything a pass
+ * would claim right now? Without it the timer enqueues one empty job per
+ * guild every thirty seconds around the clock (should-fix). Same predicate
+ * as `claimDueReminders` — due `scheduled` rows, or `delivering` rows whose
+ * claim went stale — but one `LIMIT 1` read and no write.
+ */
+export const hasDeliverableReminders = (scope: GuildScope, now: number, staleMs: number): boolean =>
+  read(scope, (db) => {
+    const due = db
+      .select({ reminderId: assistantReminders.reminderId })
+      .from(assistantReminders)
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.status, 'scheduled'),
+          or(
+            lte(assistantReminders.nextAttemptAt, now),
+            and(isNull(assistantReminders.nextAttemptAt), lte(assistantReminders.dueAt, now)),
+          ),
+        ),
+      )
+      .limit(1)
+      .all();
+    if (due.length > 0) return true;
+    const stranded = db
+      .select({ reminderId: assistantReminders.reminderId })
+      .from(assistantReminders)
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.status, 'delivering'),
+          lte(assistantReminders.claimedAt, now - staleMs),
+        ),
+      )
+      .limit(1)
+      .all();
+    return stranded.length > 0;
+  });
+
 export const claimDueReminders = (
   scope: GuildScope,
   now: number,

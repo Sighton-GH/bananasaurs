@@ -75,6 +75,12 @@ export interface AssistantCommandDeps {
   ) => Promise<void>;
   readonly send: (channelId: string, message: OutgoingMessage) => Promise<unknown>;
   /**
+   * Seals an interaction token for the durable job payload (SECURITY: the
+   * raw token is a bearer credential and the payload is listed on the
+   * dashboard Jobs page).
+   */
+  readonly sealToken: (token: string) => string;
+  /**
    * Hands the invocation to the job queue (B2). The provider call is far too
    * slow for the serial per-guild dispatch chain: awaiting it here would
    * stall reaction roles, automod and /mod behind one /ask.
@@ -195,7 +201,10 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
         command: event.commandName as AssistantCommand,
         input,
         source: 'slash-command',
-        interaction: { interactionId: event.interactionId, token: event.token },
+        interaction: {
+          interactionId: event.interactionId,
+          sealedToken: deps.sealToken(event.token),
+        },
         invocationId: event.interactionId,
       },
       dedupeKey: assistantInvokeDedupeKey(event.interactionId),

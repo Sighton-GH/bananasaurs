@@ -330,9 +330,14 @@ export const assistantInvokePayload = z.object({
   source: z.enum(['slash-command', 'mention']),
   /**
    * Slash invocations answer through the deferred interaction; mention
-   * invocations answer in the channel. Absent means mention.
+   * invocations answer in the channel. Absent means mention. The token is
+   * ALWAYS sealed (apps/daemon/src/assistant/interaction-token.ts): this
+   * payload is durable and listed on the dashboard Jobs page, and a raw
+   * interaction token is a bearer credential.
    */
-  interaction: z.object({ interactionId: z.string().min(1), token: z.string().min(1) }).optional(),
+  interaction: z
+    .object({ interactionId: z.string().min(1), sealedToken: z.string().min(1) })
+    .optional(),
   /**
    * The Discord interaction or message id that produced this invocation,
    * forwarded to the service as the dedupe anchor (IT-ticket keys are
