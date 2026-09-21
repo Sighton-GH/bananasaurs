@@ -635,6 +635,11 @@ export const opsPortsFor = (
   },
   // Same gateway-cache honesty as listGuildChannels: the guild's roles,
   // `@everyone` excluded (it is not a panel option), highest rank first.
+  // `rawPosition`, deliberately: discord.js's `Role.position` is the role's
+  // index in the sorted cache, NOT Discord's position field, and the
+  // manageability check in `/api/guild/roles` compares this number against
+  // the bot's rawPosition - mixing the two scales can report an above-bot
+  // role as manageable (should-fix, review round 2).
   listGuildRoles: () => {
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return [];
@@ -644,7 +649,7 @@ export const opsPortsFor = (
         roleId: role.id,
         name: role.name,
         colour: role.color,
-        position: role.position,
+        position: role.rawPosition,
         managed: role.managed,
       }))
       .sort((a, b) => b.position - a.position || a.name.localeCompare(b.name));
