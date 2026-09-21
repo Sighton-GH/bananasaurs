@@ -793,6 +793,94 @@ export function AssistantPage() {
   );
 }
 
+/**
+ * The prompt editor for ONE behaviour. Rendered with `key={behaviour.id}` so
+ * switching behaviours remounts it: an editor whose state outlived the
+ * selection would save behaviour A's prompt onto behaviour B (B3). Every
+ * piece of draft state in here belongs to exactly one behaviour id.
+ */
+function BehaviourPromptCard({
+  behaviour,
+  session,
+  reload,
+  onToggle,
+}: {
+  readonly behaviour: AssistantData['behaviours'][number];
+  readonly session: Session;
+  readonly reload: () => void;
+  readonly onToggle: () => void;
+}) {
+  const toast = useToast();
+  const [prompt, setPrompt] = useState(behaviour.systemPrompt);
+  const [promptBusy, setPromptBusy] = useState(false);
+  const savePrompt = async () => {
+    const cleaned = prompt.trim();
+    if (cleaned.length < 1 || cleaned.length > 4_000) {
+      toast({ tone: 'danger', title: 'Prompt not saved', message: 'Use 1 to 4,000 characters.' });
+      return;
+    }
+    setPromptBusy(true);
+    try {
+      const result = await session.writeOrThrow(
+        behaviourUrl(behaviour.id),
+        behaviourBody(behaviour, { systemPrompt: cleaned }),
+        'PUT',
+      );
+      if (result !== undefined) {
+        toast({
+          tone: 'ok',
+          title: `${behaviour.name} prompt saved`,
+          message: `Saved as revision ${String(behaviour.promptVersion + 1)}.`,
+        });
+        reload();
+      }
+    } catch {
+      toast({
+        tone: 'hold',
+        title: 'Prompt changed elsewhere',
+        message: 'Reloaded the latest revision. Review it before saving again.',
+      });
+      reload();
+    } finally {
+      setPromptBusy(false);
+    }
+  };
+
+  return (
+    <Card title={`${behaviour.name} behaviour`}>
+      <p className="text-sm text-ink-muted">
+        Selected by one configured tag. Ambiguous tags are refused rather than mixed.
+      </p>
+      <Field
+        label="System prompt"
+        hint="Reviewed instructions only. Retrieved content cannot change these instructions."
+      >
+        <textarea
+          value={prompt}
+          maxLength={4_000}
+          onChange={(event) => setPrompt(event.target.value)}
+          className="mt-3 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
+        />
+      </Field>
+      <p className="mt-1 text-xs text-ink-muted">
+        Revision {behaviour.promptVersion} · {prompt.length.toLocaleString('en-CA')}/4,000
+      </p>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button className="max-w-full shrink-0 whitespace-nowrap" onClick={onToggle}>
+          {behaviour.enabled ? 'Disable behaviour' : 'Enable behaviour'}
+        </Button>
+        <Button
+          busy={promptBusy}
+          disabled={prompt === behaviour.systemPrompt}
+          onClick={() => void savePrompt()}
+        >
+          Save prompt
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function AssistantReady({
   data,
   session,
@@ -828,41 +916,6 @@ function AssistantReady({
     }
   };
 
-  const [prompt, setPrompt] = useState(current.systemPrompt);
-  const [promptBusy, setPromptBusy] = useState(false);
-  const savePrompt = async () => {
-    const cleaned = prompt.trim();
-    if (cleaned.length < 1 || cleaned.length > 4_000) {
-      toast({ tone: 'danger', title: 'Prompt not saved', message: 'Use 1 to 4,000 characters.' });
-      return;
-    }
-    setPromptBusy(true);
-    try {
-      const result = await session.writeOrThrow(
-        behaviourUrl(current.id),
-        behaviourBody(current, { systemPrompt: cleaned }),
-        'PUT',
-      );
-      if (result !== undefined) {
-        toast({
-          tone: 'ok',
-          title: `${current.name} prompt saved`,
-          message: `Saved as revision ${String(current.promptVersion + 1)}.`,
-        });
-        reload();
-      }
-    } catch {
-      toast({
-        tone: 'hold',
-        title: 'Prompt changed elsewhere',
-        message: 'Reloaded the latest revision. Review it before saving again.',
-      });
-      reload();
-    } finally {
-      setPromptBusy(false);
-    }
-  };
-
   return (
     <div className="space-y-5">
       <section aria-label="Invocation behaviours" className="grid gap-3 md:grid-cols-2">
@@ -888,40 +941,13 @@ function AssistantReady({
         ))}
       </section>
       <div className="grid gap-5 xl:grid-cols-[minmax(0,1.3fr)_minmax(18rem,.7fr)]">
-        <Card title={`${current.name} behaviour`}>
-          <p className="text-sm text-ink-muted">
-            Selected by one configured tag. Ambiguous tags are refused rather than mixed.
-          </p>
-          <Field
-            label="System prompt"
-            hint="Reviewed instructions only. Retrieved content cannot change these instructions."
-          >
-            <textarea
-              value={prompt}
-              maxLength={4_000}
-              onChange={(event) => setPrompt(event.target.value)}
-              className="mt-3 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
-            />
-          </Field>
-          <p className="mt-1 text-xs text-ink-muted">
-            Revision {current.promptVersion} · {prompt.length.toLocaleString('en-CA')}/4,000
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            <Button
-              className="max-w-full shrink-0 whitespace-nowrap"
-              onClick={() => void toggleEnabled()}
-            >
-              {current.enabled ? 'Disable behaviour' : 'Enable behaviour'}
-            </Button>
-            <Button
-              busy={promptBusy}
-              disabled={prompt === current.systemPrompt}
-              onClick={() => void savePrompt()}
-            >
-              Save prompt
-            </Button>
-          </div>
-        </Card>
+        <BehaviourPromptCard
+          key={current.id}
+          behaviour={current}
+          session={session}
+          reload={reload}
+          onToggle={() => void toggleEnabled()}
+        />
         <Card title="Available skills">
           <p className="text-sm text-ink-muted">
             The model sees only this allowlist, further narrowed by grants and the member's
