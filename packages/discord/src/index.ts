@@ -26,3 +26,4 @@ export {
   type CacheSettings,
   type SweeperSettings,
 } from './client.js';
+export { routeAssistantMention, type MentionRoute } from './assistant-routing.js';

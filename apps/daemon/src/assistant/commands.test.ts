@@ -128,6 +128,9 @@ describe('assistant command subscriber', () => {
     });
     await h.subscriber.handle({
       kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       guildId,
       receivedAtMs: 1,
       channelId,
@@ -169,6 +172,9 @@ describe('assistant command subscriber', () => {
     const h = harness([direct, club, it]);
     await h.subscriber.handle({
       kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       guildId,
       receivedAtMs: 1,
       channelId,

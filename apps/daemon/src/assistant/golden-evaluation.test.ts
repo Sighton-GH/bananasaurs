@@ -47,6 +47,9 @@ const behaviour = (
 
 const message = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   kind: 'messageCreate',
+  parentChannelId: undefined,
+  categoryId: undefined,
+  isPrivateThread: false,
   guildId: guildA,
   receivedAtMs: 1,
   channelId,

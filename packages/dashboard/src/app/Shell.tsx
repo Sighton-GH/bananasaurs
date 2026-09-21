@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
+import { AssistantActivityPage } from '../pages/assistant-activity.js';
+import { AssistantPage } from '../pages/assistant.js';
 import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
 import { BackupsPage } from '../pages/backups.js';
@@ -155,6 +157,8 @@ function Pages() {
       <Route path="/accounts" component={AccountsPage} />
       <Route path="/mcp" component={McpPage} />
       <Route path="/providers" component={ProvidersPage} />
+      <Route path="/assistant" component={AssistantPage} />
+      <Route path="/assistant/activity" component={AssistantActivityPage} />
       <Route path="/resources">
         {() => (
           <StubPage

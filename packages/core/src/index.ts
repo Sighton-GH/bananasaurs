@@ -535,3 +535,35 @@ export {
 } from './ops/commands/reads.js';
 
 export * from './channels/scope.js';
+export type {
+  GenerateTextRequest,
+  GenerateTextResponse,
+  GenerationMessage,
+  ProviderCapability,
+  ProviderEligibility,
+  ProviderUsage,
+  TextProvider,
+} from './providers/contracts.js';
+export { ProviderError, type ProviderErrorKind } from './providers/errors.js';
+export { assertProviderEligible, type ProviderAudience } from './providers/eligibility.js';
+export { GeminiProvider, type GeminiProviderOptions } from './providers/gemini.js';
+export {
+  assertOutboundRequestSafe,
+  scanOutboundRequest,
+  type OutboundSafetyResult,
+  type SafetyFinding,
+  type SafetyFindingKind,
+} from './providers/outbound-safety.js';
+export {
+  OpenAiCompatibleProvider,
+  createNvidiaNimProvider,
+  createOpenRouterProvider,
+  type OpenAiCompatibleProviderOptions,
+} from './providers/openai-compatible.js';
+export { SafeProvider } from './providers/safe-provider.js';
+export {
+  assertSpendAllowed,
+  type ProviderCostClass,
+  type SpendPolicy,
+} from './providers/spend-policy.js';
+export * from './assistant/index.js';

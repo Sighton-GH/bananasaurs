@@ -14,6 +14,7 @@ import type { GuildScope, ScopeFactory } from '@bananasaurs/storage';
 import {
   createServer,
   issueBootstrapTokenIfNeeded,
+  registerAssistantRoutes,
   registerAutomodRoutes,
   registerCaseRoutes,
   registerOAuthRoutes,
@@ -152,6 +153,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     // takes the deps and not the guard.
     registerRoutes: (instance, guard, routeDeps) => {
       registerReadRoutes(instance, guard, routeDeps);
+      registerAssistantRoutes(instance, guard, routeDeps);
       registerOpsReadRoutes(instance, guard, routeDeps);
       registerOpsWriteRoutes(instance, guard, routeDeps);
       registerWriteRoutes(instance, guard, routeDeps);

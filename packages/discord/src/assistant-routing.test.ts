@@ -37,6 +37,9 @@ const behaviours: AssistantBehaviour[] = [
 ];
 const event = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   kind: 'messageCreate',
+  parentChannelId: undefined,
+  categoryId: undefined,
+  isPrivateThread: false,
   guildId,
   receivedAtMs: 1,
   channelId: '567890123456789012',
