@@ -215,6 +215,14 @@ export function Shell() {
   const session = useSession();
   const [drawerOpen, setDrawerOpen] = useState(false);
 
+  // The composed backdrop anchors its leaves to the viewport corner; while
+  // the shell is mounted they belong to the content canvas, clear of the
+  // sidebar (see the `shell-with-sidebar` rule in styles.css).
+  useEffect(() => {
+    document.body.classList.add('shell-with-sidebar');
+    return () => document.body.classList.remove('shell-with-sidebar');
+  }, []);
+
   useEffect(() => {
     if (!drawerOpen) return;
     const close = (event: KeyboardEvent) => {

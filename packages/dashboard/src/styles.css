@@ -115,7 +115,7 @@
     background-image: url('/brand/leaves.svg'), url('/brand/bananasaur.png');
     background-repeat: no-repeat, no-repeat;
     background-position:
-      left -10vmin top -12vmin,
+      left calc(var(--art-inset-x, 0px) - 10vmin) top -12vmin,
       right -6vmin bottom -7vmin;
     background-size: 40vmin, 47vmin;
     opacity: var(--backdrop-art-opacity);
@@ -165,5 +165,15 @@
 
   .shell-backdrop {
     backdrop-filter: blur(2px);
+  }
+
+  /* The operator shell has a persistent 16rem sidebar from lg up, so the
+   * leaves' top-left corner is the content canvas, not the viewport: shift
+   * the composition clear of the sidebar while the shell is mounted (the
+   * login screen keeps the full-viewport corner). */
+  @media (min-width: 1024px) {
+    body.shell-with-sidebar {
+      --art-inset-x: 16rem;
+    }
   }
 }
