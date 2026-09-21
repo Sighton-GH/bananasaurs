@@ -578,6 +578,17 @@ export interface OpsGuildChannelInfo {
   readonly kind: string;
 }
 
+export interface OpsGuildRoleInfo {
+  readonly roleId: string;
+  readonly name: string;
+  /** Discord's integer colour; 0 is Discord's default (no colour). */
+  readonly colour: number;
+  /** Discord's hierarchy position; higher outranks. */
+  readonly position: number;
+  /** Integration- or bot-owned roles cannot be granted by the bot; pickers flag them. */
+  readonly managed: boolean;
+}
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -614,6 +625,13 @@ export interface OpsPorts {
    * which the picker shows as an honest loading state, never a fake list.
    */
   listGuildChannels(): readonly OpsGuildChannelInfo[];
+  /**
+   * The guild's roles (minus `@everyone`) with name, colour and hierarchy
+   * position — the role pickers' source, and the dashboard's answer to the
+   * MCP `list_roles` tool. From the live gateway cache; empty when the guild
+   * is not cached yet, which the picker shows as an honest loading state.
+   */
+  listGuildRoles(): readonly OpsGuildRoleInfo[];
   listJobs(query: OpsJobQuery): readonly OpsJobRow[];
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;
@@ -937,6 +955,13 @@ export interface OpsPorts {
    * accident (ADR 0053).
    */
   createPanel(definition: PanelDefinition): void;
+
+  /**
+   * Whether the role is one Bananasaurs manages — the precondition for making
+   * it a panel option. `panel_options` enforces it with a foreign key; the
+   * command and the builder refuse cleanly before the database has to.
+   */
+  isManagedRole(roleId: string): boolean;
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**

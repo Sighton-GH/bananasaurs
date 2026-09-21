@@ -1,6 +1,14 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { CAPABILITIES, LOG_EVENT_KINDS, snowflakeIdSchema } from '@bananasaurs/core';
+import {
+  CAPABILITIES,
+  LOG_EVENT_KINDS,
+  MAX_PANEL_OPTIONS,
+  PANEL_BEHAVIOURS,
+  PANEL_COMPONENTS,
+  panelDefinitionSchema,
+  snowflakeIdSchema,
+} from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
@@ -48,6 +56,28 @@ const archiveEnableBodySchema = z.object({
 const archiveLinkCaseBodySchema = z.object({
   messageId: snowflakeIdSchema,
   caseId: z.string().min(1),
+});
+
+const panelCreateBodySchema = z.object({
+  panelId: z.string().min(1).max(64),
+  channelId: snowflakeIdSchema,
+  behaviour: z.enum(PANEL_BEHAVIOURS),
+  component: z.enum(PANEL_COMPONENTS),
+  maxRoles: z.number().int().positive().optional(),
+  requiredRoleId: snowflakeIdSchema.optional(),
+  blockedRoleIds: z.array(snowflakeIdSchema).optional(),
+  options: z
+    .array(
+      z.object({
+        optionId: z.string().min(1).max(64),
+        roleId: snowflakeIdSchema,
+        emojiKey: z.string().min(1).optional(),
+        label: z.string().min(1).max(80).optional(),
+        position: z.number().int().nonnegative(),
+      }),
+    )
+    .min(1)
+    .max(MAX_PANEL_OPTIONS),
 });
 
 const undoBodySchema = z.object({
@@ -115,6 +145,61 @@ export const registerOpsWriteRoutes = (
       after: { retried: true },
     });
     return reply.status(200).send({ ok: true });
+  });
+
+  // The role-panel builder's submit (ADR 0053): the form's fields become
+  // the same definition the CLI's `panel create --definition` takes, through
+  // the same schema, into the same audit action. Creating never publishes —
+  // going live stays POST /api/panels/:id/publish, so a half-built panel
+  // cannot reach Discord.
+  app.post('/api/panels', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'panels.manage', reply)) return reply;
+
+    const body = panelCreateBodySchema.safeParse(request.body);
+    if (!body.success) return reply.status(400).send({ error: 'invalid-body' });
+
+    const parsed = panelDefinitionSchema.safeParse({ kind: 'managed', ...body.data });
+    if (!parsed.success) {
+      const problems = parsed.error.issues
+        .slice(0, 3)
+        .map((issue) => {
+          const where = issue.path.join('.');
+          return where === '' ? issue.message : `${where}: ${issue.message}`;
+        })
+        .join('; ');
+      return reply.status(400).send({ error: 'invalid-definition', problems });
+    }
+
+    const definition = parsed.data;
+    const ports = deps.portsFor(session.scope);
+    if (ports.findPanel(definition.panelId) !== undefined) {
+      return reply.status(409).send({ error: 'already-exists' });
+    }
+
+    const unmanaged = definition.options
+      .filter((option) => !ports.isManagedRole(option.roleId))
+      .map((option) => option.roleId);
+    if (unmanaged.length > 0) {
+      return reply.status(400).send({ error: 'unmanaged-role', roleIds: unmanaged });
+    }
+
+    ports.createPanel(definition);
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'panel.created',
+      subjectType: 'panel',
+      subjectId: definition.panelId,
+      before: undefined,
+      after: {
+        channelId: definition.channelId,
+        behaviour: definition.behaviour,
+        component: definition.component,
+        optionCount: definition.options.length,
+      },
+    });
+    return reply.status(201).send({ ok: true, panelId: definition.panelId, published: false });
   });
 
   app.post<{ Params: { id: string } }>('/api/panels/:id/publish', async (request, reply) => {

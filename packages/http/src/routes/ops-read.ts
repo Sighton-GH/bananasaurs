@@ -66,6 +66,15 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ channels: ports.listGuildChannels() });
   });
 
+  app.get('/api/guild/roles', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+
+    const ports = deps.portsFor(session.scope);
+    return reply.status(200).send({ roles: ports.listGuildRoles() });
+  });
+
   app.get('/api/archive/status', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;

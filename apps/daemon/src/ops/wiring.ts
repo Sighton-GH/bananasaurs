@@ -476,6 +476,7 @@ export const opsPortsFor = (
   // Storage-only write: `panel create` and the dashboard builder both land
   // here. Nothing reaches Discord — publishing stays publishPanel's job.
   createPanel: (definition) => operations.createPanel(definition),
+  isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
@@ -538,6 +539,22 @@ export const opsPortsFor = (
       .filter((channel) => channel.isTextBased() && !channel.isThread())
       .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  },
+  // Same gateway-cache honesty as listGuildChannels: the guild's roles,
+  // `@everyone` excluded (it is not a panel option), highest rank first.
+  listGuildRoles: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    return [...guild.roles.cache.values()]
+      .filter((role) => role.id !== guild.id)
+      .map((role) => ({
+        roleId: role.id,
+        name: role.name,
+        colour: role.color,
+        position: role.position,
+        managed: role.managed,
+      }))
+      .sort((a, b) => b.position - a.position || a.name.localeCompare(b.name));
   },
   archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
   // The operator sees what the archive holds, nothing wider: the visibility

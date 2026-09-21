@@ -11,6 +11,7 @@ import {
   guildRepo,
   loggingRepo,
   oauthRepo,
+  roleRepo,
 } from '@bananasaurs/storage';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
 import { createServer, type HttpDeps } from '../server.js';
@@ -95,6 +96,17 @@ interface Call {
 
 const ALL_CALLS: readonly Call[] = [
   { method: 'POST', url: '/api/jobs/1/retry' },
+  {
+    method: 'POST',
+    url: '/api/panels',
+    payload: {
+      panelId: 'colour-roles',
+      channelId: '444444444444444444',
+      behaviour: 'toggle',
+      component: 'button',
+      options: [{ optionId: 'red', roleId: '333333333333333333', label: 'Red', position: 0 }],
+    },
+  },
   { method: 'POST', url: '/api/panels/p1/publish' },
   { method: 'POST', url: '/api/panels/p1/reconcile' },
   { method: 'POST', url: '/api/settings', payload: { key: 'dry_run', value: true } },
@@ -461,5 +473,114 @@ describe('POST /api/accounts/:username/capabilities (account grant parity)', () 
     grant(ALL_GRANTS);
     accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), MOD);
     expect((await call(cookie, csrf, 'mod', 'everything.please')).statusCode).toBe(400);
+  });
+});
+
+describe('POST /api/panels (ADR 0053, the builder)', () => {
+  const PANEL_BODY = {
+    panelId: 'colour-roles',
+    channelId: '444444444444444444',
+    behaviour: 'toggle',
+    component: 'button',
+    options: [
+      { optionId: 'red', roleId: '333333333333333333', label: 'Red', position: 0 },
+      {
+        optionId: 'blue',
+        roleId: '333333333333333334',
+        label: 'Blue',
+        emojiKey: 'u:1f535',
+        position: 1,
+      },
+    ],
+  };
+
+  // A panel option must be a role Bananasaurs manages — the panel_options
+  // foreign key enforces it, and the route refuses cleanly before it fires.
+  const allowlistRoles = (): void => {
+    const scope = t.scopes.forGuild(GUILD);
+    roleRepo.allowlistRole(scope, '333333333333333333');
+    roleRepo.allowlistRole(scope, '333333333333333334');
+  };
+
+  const post = (cookie: string, csrf: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/panels',
+      headers: { cookie, [CSRF]: csrf },
+      payload,
+    });
+
+  it('creates the panel, audits it as a dashboard write, and publishes nothing', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    allowlistRoles();
+    const response = await post(cookie, csrf, PANEL_BODY);
+    expect(response.statusCode, JSON.stringify(response.json())).toBe(201);
+    expect(response.json()).toEqual({ ok: true, panelId: 'colour-roles', published: false });
+
+    const scope = t.scopes.forGuild(GUILD);
+    const stored = deps.portsFor(scope).findPanel('colour-roles');
+    expect(stored).toMatchObject({ panelId: 'colour-roles', kind: 'managed', optionCount: 2 });
+    // No message id: creating never reaches Discord.
+    expect(stored?.messageId).toBeUndefined();
+
+    const audit = effectRepo.tailAudit(scope, { limit: 5 });
+    expect(audit[0]).toMatchObject({
+      action: 'panel.created',
+      subjectType: 'panel',
+      subjectId: 'colour-roles',
+      actorType: 'dashboard',
+      actorId: ACCOUNT,
+      via: 'http',
+    });
+  });
+
+  it('answers 400 for a body the form could not have produced', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    const response = await post(cookie, csrf, { ...PANEL_BODY, options: [] });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'invalid-body' });
+  });
+
+  it('answers 400 naming the problem when the shared schema refuses the definition', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    const response = await post(cookie, csrf, {
+      ...PANEL_BODY,
+      options: [{ optionId: 'red', roleId: '333333333333333333', emojiKey: 'banana', position: 0 }],
+    });
+    expect(response.statusCode).toBe(400);
+    const body: { error: string; problems: string } = response.json();
+    expect(body.error).toBe('invalid-definition');
+    expect(body.problems).toContain('emojiKey');
+  });
+
+  it('answers 400 naming the role when an option is not a managed role', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    const response = await post(cookie, csrf, PANEL_BODY);
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({
+      error: 'unmanaged-role',
+      roleIds: ['333333333333333333', '333333333333333334'],
+    });
+    expect(deps.portsFor(t.scopes.forGuild(GUILD)).findPanel('colour-roles')).toBeUndefined();
+  });
+
+  it('answers 409 for a duplicate panel id and writes nothing', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['panels.manage']);
+    allowlistRoles();
+    expect((await post(cookie, csrf, PANEL_BODY)).statusCode).toBe(201);
+    const again = await post(cookie, csrf, PANEL_BODY);
+    expect(again.statusCode).toBe(409);
+    expect(again.json()).toEqual({ error: 'already-exists' });
+
+    const scope = t.scopes.forGuild(GUILD);
+    const created = effectRepo
+      .tailAudit(scope, { limit: 10 })
+      .filter((row) => row.action === 'panel.created');
+    expect(created).toHaveLength(1);
   });
 });

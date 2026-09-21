@@ -83,6 +83,7 @@ const signIn = async (): Promise<{ cookie: string }> => {
 
 const GUILD_ROUTES = [
   '/api/guild/channels',
+  '/api/guild/roles',
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
@@ -259,6 +260,32 @@ describe('GET /api/guild/channels', () => {
         { channelId: '333333333333333333', name: 'general', kind: 'text' },
         { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
         { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
+      ],
+    });
+  });
+});
+
+describe('GET /api/guild/roles', () => {
+  it('answers the guild role list with colour, rank and managed flags for the pickers', async () => {
+    const { cookie } = await signIn();
+    grant(['config.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/guild/roles',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      roles: [
+        { roleId: '666666666666666666', name: 'Mod', colour: 0x3498db, position: 3, managed: false },
+        { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
+        {
+          roleId: '888888888888888888',
+          name: 'Bananasaurs',
+          colour: 0xf1c40f,
+          position: 4,
+          managed: true,
+        },
       ],
     });
   });

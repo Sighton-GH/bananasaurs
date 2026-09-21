@@ -69,7 +69,7 @@ interface Harness {
   readonly created: PanelDefinition[];
 }
 
-const harness = (options: { existing?: boolean } = {}): Harness => {
+const harness = (options: { existing?: boolean; unmanaged?: string } = {}): Harness => {
   const audit: OpsAuditWrite[] = [];
   const created: PanelDefinition[] = [];
 
@@ -81,6 +81,7 @@ const harness = (options: { existing?: boolean } = {}): Harness => {
     createPanel: (definition) => {
       created.push(definition);
     },
+    isManagedRole: (roleId) => options.unmanaged !== roleId,
   };
 
   const dispatcher = createDispatcher({
@@ -186,6 +187,17 @@ describe('panel create', () => {
     }
     expect(h.created).toEqual([]);
     expect(h.audit[0]?.after).toMatchObject({ outcome: 'adopted-not-buildable' });
+  });
+
+  it('refuses a role the bot does not manage', async () => {
+    const h = harness({ unmanaged: '333333333333333334' });
+    const response = await h.run({ definition: json(MANAGED) });
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.data).toMatchObject({ ok: false, reason: 'unmanaged-role' });
+      expect(response.text).toContain('333333333333333334');
+    }
+    expect(h.created).toEqual([]);
   });
 
   it('refuses a duplicate panel id', async () => {

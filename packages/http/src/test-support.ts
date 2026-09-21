@@ -17,6 +17,7 @@ import {
   modMatchReviewRepo,
   oauthRepo,
   panelRepo,
+  roleRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -84,6 +85,13 @@ export const testPortsFor = (
     { channelId: '333333333333333333', name: 'general', kind: 'text' },
     { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
     { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
+  ],
+  // Same constraint as the channel fixture: no Discord cache here, so the
+  // role picker gets a static demo set; the daemon reads the live cache.
+  listGuildRoles: () => [
+    { roleId: '666666666666666666', name: 'Mod', colour: 0x3498db, position: 3, managed: false },
+    { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
+    { roleId: '888888888888888888', name: 'Bananasaurs', colour: 0xf1c40f, position: 4, managed: true },
   ],
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
@@ -416,6 +424,7 @@ export const testPortsFor = (
   },
 
   createPanel: (definition) => panelRepo.createPanel(scope, definition, now()),
+  isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   publishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },

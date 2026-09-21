@@ -106,6 +106,20 @@ export const panelCreateCommand = defineCommand<PanelCreateArgs>({
       );
     }
 
+    // Only a role Bananasaurs manages can be a panel option. The
+    // panel_options foreign key enforces it, but a constraint error surfaces
+    // as a 500 — this is a usage mistake, worth a clean audited answer.
+    const unmanaged = definition.options
+      .filter((option) => !ctx.ports.isManagedRole(option.roleId))
+      .map((option) => option.roleId);
+    if (unmanaged.length > 0) {
+      return refuse(
+        'unmanaged-role',
+        `not managed by Bananasaurs: ${unmanaged.join(', ')} — a panel option must be ` +
+          'a role the bot manages',
+      );
+    }
+
     ctx.ports.createPanel(definition);
 
     const optionCount = definition.options.length;
