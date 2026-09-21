@@ -73,7 +73,6 @@ export interface AssistantCommandDeps {
     ref: { interactionId: string; token: string },
     message: OutgoingMessage,
   ) => Promise<void>;
-  readonly send: (channelId: string, message: OutgoingMessage) => Promise<unknown>;
   /**
    * Seals an interaction token for the durable job payload (SECURITY: the
    * raw token is a bearer credential and the payload is listed on the
@@ -224,7 +223,18 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
   const route = routeAssistantMention(event, behaviours);
   if (route.kind === 'not-addressed') return;
   if (route.kind === 'ambiguous') {
-    await deps.send(event.channelId, reply(route.message));
+    // Hard rule 6: this subscriber holds no idempotency key of its own, and
+    // a gateway replay of the message would post the refusal twice. Fail
+    // closed and silent; the message is logged, not sent.
+    deps.logger.info(
+      safeLogFields({
+        component: 'assistant-mention',
+        guildId: event.guildId,
+        messageId: event.messageId,
+        reason: route.message,
+      }),
+      'assistant mention refused: ambiguous tags',
+    );
     return;
   }
 
@@ -248,13 +258,11 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
       now: deps.now(),
     });
   } catch (err) {
+    // Same rule: no unkeyed public reply from the subscriber. The enqueue
+    // failure is local (storage), so the log line is the durable record.
     deps.logger.error(
       safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
       'assistant mention could not be queued',
-    );
-    await deps.send(
-      event.channelId,
-      reply('I could not complete that request. No action was taken.'),
     );
   }
 }

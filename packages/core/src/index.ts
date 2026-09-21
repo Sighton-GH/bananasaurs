@@ -88,6 +88,8 @@ export {
   assistantInvokeDedupeKey,
   assistantInvokePayload,
   type AssistantInvokePayload,
+  assistantInvokeCursor,
+  type AssistantInvokeCursor,
   adoptDedupeKey,
   adoptPanelPayload,
   archiveBackfillDedupeKey,

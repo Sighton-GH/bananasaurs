@@ -721,7 +721,6 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       service: assistantService,
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
       respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
-      send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
       enqueue: (input) => {
         jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
       },

@@ -179,7 +179,6 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       service,
       defer: vi.fn(async () => undefined),
       respond,
-      send,
       enqueue: (input) => {
         queued.push(input.payload);
       },

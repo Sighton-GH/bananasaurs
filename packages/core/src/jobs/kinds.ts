@@ -348,6 +348,30 @@ export const assistantInvokePayload = z.object({
 export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
 
 /**
+ * The invoke job's progress cursor. It is our own prior write, but hard
+ * rule 3 still applies: a row that does not validate is treated as no
+ * progress rather than trusted into the answer path on every retry.
+ */
+export const assistantInvokeCursor = z.object({
+  stage: z.enum(['invoke-done', 'answered', 'escalation-sent']),
+  result: z.discriminatedUnion('ok', [
+    z.object({
+      ok: z.literal(true),
+      content: z.string(),
+      escalation: z
+        .object({
+          channelId: z.string().min(1),
+          reviewerRoleIds: z.array(z.string()),
+          ticketId: z.string().min(1),
+        })
+        .optional(),
+    }),
+    z.object({ ok: z.literal(false), content: z.string() }),
+  ]),
+});
+export type AssistantInvokeCursor = z.infer<typeof assistantInvokeCursor>;
+
+/**
  * One job per Discord interaction or message: the invocation id is the
  * idempotency anchor the rest of Release 3 already dedupes on, so a gateway
  * replay of the same interaction cannot queue a second provider call.

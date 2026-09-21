@@ -1,6 +1,8 @@
 import {
+  assistantInvokeCursor,
   assistantInvokePayload,
   JOB_KINDS,
+  ProviderError,
   safeLogFields,
   type AssistantInvokePayload,
   type JobHandler,
@@ -48,21 +50,32 @@ const stageRank = (stage: CursorStage): number => STAGES.indexOf(stage);
 const parseCursor = (cursor: string | null): StagedCursor | undefined => {
   if (cursor === null) return undefined;
   try {
-    const parsed: unknown = JSON.parse(cursor);
-    if (
-      typeof parsed === 'object' &&
-      parsed !== null &&
-      'stage' in parsed &&
-      'result' in parsed &&
-      STAGES.includes((parsed as { stage: CursorStage }).stage)
-    ) {
-      return parsed as StagedCursor;
-    }
-    return undefined;
+    // Own prior write, still validated (hard rule 3): a malformed row is
+    // "no progress", never a TypeError on every retry.
+    const parsed = assistantInvokeCursor.safeParse(JSON.parse(cursor));
+    if (!parsed.success) return undefined;
+    const { stage, result } = parsed.data;
+    if (!result.ok) return { stage, result: { ok: false, content: result.content } };
+    return {
+      stage,
+      result:
+        result.escalation === undefined
+          ? { ok: true, content: result.content }
+          : { ok: true, content: result.content, escalation: result.escalation },
+    };
   } catch {
     return undefined;
   }
 };
+
+/**
+ * A retryable provider failure (429, 5xx, timeout) is what the job table is
+ * for: rethrow so the worker backs off and tries again. Bounded below the
+ * store's default `maxAttempts` (5) so the member always gets an answer,
+ * and inside Discord's 15-minute interaction-token window (backoff is
+ * 1 s, 2 s, 4 s...). Non-retryable failures answer at once.
+ */
+const PROVIDER_RETRY_CEILING = 3;
 
 export const assistantInvokeHandler = (deps: {
   guildId: string;
@@ -82,7 +95,7 @@ export const assistantInvokeHandler = (deps: {
     const answer = async (content: string): Promise<void> => {
       if (payload.interaction !== undefined) {
         const token = deps.openToken(payload.interaction.sealedToken);
-        if (token === undefined) return; // checked before the invoke; unreachable after it
+        if (token === undefined) return; // fresh runs fail closed above; a stranded cursor skips the answer only
         await deps.respond(
           { interactionId: payload.interaction.interactionId, token },
           reply(content),
@@ -96,7 +109,15 @@ export const assistantInvokeHandler = (deps: {
     // delivered: a restart forgets the sealing key, and invoking anyway
     // would spend provider quota and write durable ticket/activity effects
     // nobody hears about (independent audit, round 2).
+    //
+    // Only BEFORE the invoke, though: once a cursor records `invoke-done`,
+    // the durable effects (ticket row, activity) already exist, and stage 3
+    // needs no token - a restart must still page the reviewers rather than
+    // leave an open ticket nobody was told about.
+    const prior = parseCursor(context.cursor);
+    const reached = prior === undefined ? -1 : stageRank(prior.stage);
     if (
+      prior === undefined &&
       payload.interaction !== undefined &&
       deps.openToken(payload.interaction.sealedToken) === undefined
     ) {
@@ -108,8 +129,6 @@ export const assistantInvokeHandler = (deps: {
     }
 
     // Stage 1: the invoke. Skipped on a retry that already finished it.
-    const prior = parseCursor(context.cursor);
-    const reached = prior === undefined ? -1 : stageRank(prior.stage);
     let result: AssistantInvocationResult;
     if (prior !== undefined) {
       result = prior.result;
@@ -133,8 +152,24 @@ export const assistantInvokeHandler = (deps: {
           invocationId: payload.invocationId,
         });
       } catch (err) {
-        // Mirror the subscriber's failure contract: a provider or storage
-        // failure answers the member instead of vanishing into a job retry.
+        if (
+          err instanceof ProviderError &&
+          err.retryable &&
+          context.attempts < PROVIDER_RETRY_CEILING
+        ) {
+          deps.logger.warn(
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              attempt: context.attempts,
+              err,
+            }),
+            'assistant invocation hit a retryable provider error; job will retry',
+          );
+          throw err;
+        }
+        // Anything else - or the last permitted attempt - answers the member
+        // instead of vanishing into a job retry.
         deps.logger.error(
           safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
           'assistant invocation failed before a response was produced',
