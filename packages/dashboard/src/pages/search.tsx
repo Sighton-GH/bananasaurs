@@ -7,6 +7,7 @@ import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 
@@ -75,9 +76,12 @@ export function SearchPage() {
           />
         </Field>
         <div className="grid gap-3 sm:grid-cols-3">
-          <Field label="Channel ID" hint="Optional">
-            <Input value={draft.channelId} onChange={(e) => set({ channelId: e.target.value })} />
-          </Field>
+          <ChannelPicker
+            label="Channel"
+            hint="Optional - pick a channel or paste its snowflake ID."
+            value={draft.channelId}
+            onChange={(channelId) => set({ channelId })}
+          />
           <Field label="Author ID" hint="Optional">
             <Input value={draft.authorId} onChange={(e) => set({ authorId: e.target.value })} />
           </Field>
