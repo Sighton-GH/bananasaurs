@@ -4,7 +4,7 @@
 >
 > **Release 1 dashboard is one page:** health, log routing config, role-panel config, audit table, kill switch. Authentication is owner-provisioned local accounts (ADR 0012) — Discord Administrator grants nothing here, because other club members hold it.
 >
-> Release 2 adds automod rules, fixtures, testing mode, and cases. Release 3 adds the AI workspace, archive, memory, providers, and resources. Everything else below is backlog. Do not build ahead of the current release in `docs/08`.
+> Release 2 adds automod rules, fixtures, testing mode, and cases. The web-UI overhaul branch (ADR 0051, `oc/webui-overhaul`, unmerged pending owner review) pulled the operator pages forward: Archive, Search, Providers, Jobs, Doctor, Backups, Configuration, Accounts and the MCP connector are built pages against the operator HTTP surface, superseding ruling S10-D3 for those three. Release 3 still owns the AI workspace, memory, resources and proposals. Everything else below is backlog. Do not build ahead of the current release in `docs/08`.
 
 The dashboard is the owner’s control plane and a second interface to the same assistant—not a separate chatbot.
 

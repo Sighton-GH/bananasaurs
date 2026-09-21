@@ -66,6 +66,7 @@ const operations: GuildOperations = {
     reactionsSeeded: 0,
     reactionsFailed: [],
   }),
+  createPanel: () => {},
   grantAdoptionAllowance: () => {},
   adoptionAllowance: () => 0,
 };

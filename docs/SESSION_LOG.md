@@ -2475,3 +2475,20 @@ on both guilds and `UseApplicationCommands` on the club, all in Release 2's
 `REQUIRED_PERMISSIONS`, so doctor reports `PROBLEMS FOUND` on both — harmless
 to an observe-only window, an owner action to fix. `/mydata` and `/forgetme`
 were a recorded precondition on allowlisting the real server and are now owed.
+
+## Web UI overhaul — the dashboard is the full operator surface — 2026-09-20
+
+**Branch `oc/webui-overhaul`, unmerged.** ADR 0051. Work ran in three lanes (shell, operator pages,
+integration) from bundles, integrated at `5d6d9a7`. Shell: ADR-aligned navigation rail (Operate / Moderation /
+Archive / Instance / Release 3 with empty groups hidden), login page, attribution "Bananasaurs by Sighton
+Media" linking sighton.ca, light/dark themes, amber reserved to state. Pages: rewrites of Overview, Safety,
+Logging, Role panels and Audit; new pages Jobs (list/detail/retry), Doctor (report + public-surface check),
+Backups (list + backup-now), Configuration (killswitch, dry run, breaker reset, settings writes), Accounts
+(full lifecycle; set-password returns the plaintext once via a print-once dialog and is never written to the
+audit trail), MCP connector (clients, token mint/revoke), Archive (policies, backfill status, search),
+Search (FTS with citations), Providers (eligibility). HTTP: `ops-read.ts` 12 GET routes under
+`config.read`/`audit.read`, `ops-write.ts` 31 write routes audited as `actor_type='dashboard'` with refusal
+unions returned as 4xx answers, not thrown 500s. Observe freeze verified: no page offers a path to
+`mode='enforce'` beyond ADR 0042's existing signed gate; cutover and config pages report only. Gates: 172/172
+dashboard tests, 892 http+daemon tests, tsc, per-package eslint, dashboard prettier, vite build. Owner review
+via screenshot set precedes any merge talk; Claude audit follows the owner's go.

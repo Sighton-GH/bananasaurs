@@ -534,6 +534,7 @@ export const panelShowCommand = defineCommand<z.infer<typeof panelShowArgs>>({
       `status    ${panel.status}`,
       `channel   ${panel.channelId}`,
       `message   ${panel.messageId ?? '(not posted)'}`,
+      `content   ${panel.content === undefined ? '(default copy)' : `${String(panel.content.length)} chars`}`,
       `adoption  ${panel.adoptionPassState}${panel.adoptionBlockedCount > 0 ? ` — ${String(panel.adoptionBlockedCount)} change(s) waiting on an allowance` : ''}`,
       `required  ${panel.requiredRoleId ?? '(none)'}`,
       `blocked   ${panel.blockedRoleIds.length === 0 ? '(none)' : panel.blockedRoleIds.join(', ')}`,
@@ -550,6 +551,7 @@ export const panelShowCommand = defineCommand<z.infer<typeof panelShowArgs>>({
       data: {
         ...panel,
         messageId: panel.messageId ?? null,
+        content: panel.content ?? null,
         maxRoles: panel.maxRoles ?? null,
         requiredRoleId: panel.requiredRoleId ?? null,
         blockedRoleIds: [...panel.blockedRoleIds],

@@ -1,31 +1,43 @@
-/**
- * Navigation is data (ADR 0043 D3). Slice 8 adds rows; Slice 10 adds `stub`
- * rows for the Release 3 areas so the roadmap is visible without the UI
- * pretending anything exists. Nothing else about the rail changes.
- */
+/** Navigation remains data so access, labelling and future states stay consistent across layouts. */
 export type NavStatus = 'built' | 'stub';
+export type NavGroup = 'Operate' | 'Moderation' | 'Archive' | 'Instance' | 'Release 3';
 
 export interface NavEntry {
   readonly path: string;
   readonly label: string;
   readonly status: NavStatus;
+  readonly group: NavGroup;
 }
 
+/**
+ * ADR 0051 D6's rail groups, in order. The desktop rail and the mobile jump
+ * sheet both render this order; empty groups render nothing rather than a
+ * bare heading.
+ */
+export const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'] as const;
+
 export const NAV: readonly NavEntry[] = [
-  { path: '/', label: 'Overview', status: 'built' },
-  { path: '/safety', label: 'Safety', status: 'built' },
-  { path: '/logging', label: 'Logging', status: 'built' },
-  { path: '/panels', label: 'Role panels', status: 'built' },
-  { path: '/audit', label: 'Audit', status: 'built' },
-  { path: '/automod', label: 'Automod', status: 'built' },
-  { path: '/review', label: 'Review', status: 'built' },
-  { path: '/cases', label: 'Cases', status: 'built' },
-  { path: '/cutover', label: 'Cutover', status: 'built' },
-  { path: '/archive', label: 'Archive', status: 'stub' },
-  { path: '/search', label: 'Search', status: 'stub' },
-  { path: '/resources', label: 'Resources', status: 'stub' },
-  { path: '/providers', label: 'Providers', status: 'stub' },
-  { path: '/memory', label: 'Memory', status: 'stub' },
-  { path: '/ai', label: 'AI workspace', status: 'stub' },
-  { path: '/proposals', label: 'Proposals', status: 'stub' },
+  { path: '/', label: 'Overview', status: 'built', group: 'Operate' },
+  { path: '/safety', label: 'Safety', status: 'built', group: 'Operate' },
+  { path: '/logging', label: 'Logging', status: 'built', group: 'Operate' },
+  { path: '/panels', label: 'Reaction roles', status: 'built', group: 'Operate' },
+  { path: '/automod', label: 'Automod', status: 'built', group: 'Moderation' },
+  { path: '/review', label: 'Review', status: 'built', group: 'Moderation' },
+  { path: '/cases', label: 'Cases', status: 'built', group: 'Moderation' },
+  { path: '/members', label: 'Members', status: 'built', group: 'Moderation' },
+  { path: '/jobs', label: 'Jobs', status: 'built', group: 'Operate' },
+  { path: '/audit', label: 'Audit', status: 'built', group: 'Instance' },
+  { path: '/cutover', label: 'Cutover', status: 'built', group: 'Moderation' },
+  { path: '/archive', label: 'Archive', status: 'built', group: 'Archive' },
+  { path: '/search', label: 'Search', status: 'built', group: 'Archive' },
+  { path: '/doctor', label: 'Doctor', status: 'built', group: 'Instance' },
+  { path: '/backups', label: 'Backups', status: 'built', group: 'Instance' },
+  { path: '/config', label: 'Configuration', status: 'built', group: 'Instance' },
+  { path: '/accounts', label: 'Accounts', status: 'built', group: 'Instance' },
+  { path: '/mcp', label: 'MCP connector', status: 'built', group: 'Instance' },
+  { path: '/providers', label: 'Providers', status: 'built', group: 'Instance' },
+  { path: '/resources', label: 'Resources', status: 'stub', group: 'Release 3' },
+  { path: '/memory', label: 'Memory', status: 'stub', group: 'Release 3' },
+  { path: '/ai', label: 'AI workspace', status: 'stub', group: 'Release 3' },
+  { path: '/proposals', label: 'Proposals', status: 'stub', group: 'Release 3' },
 ];

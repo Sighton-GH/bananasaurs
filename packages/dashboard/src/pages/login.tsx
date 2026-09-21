@@ -1,13 +1,27 @@
 import { useState } from 'react';
+import { Attribution } from '../ui/Attribution.js';
+import { Brand } from '../ui/Brand.js';
 import { Button } from '../ui/Button.js';
 import { Field, Input } from '../ui/Field.js';
+import { ThemeToggle } from '../ui/ThemeToggle.js';
 
 function Card({ title, children }: { readonly title: string; readonly children: React.ReactNode }) {
   return (
-    <div className="mx-auto mt-24 w-[22rem] max-w-[calc(100vw-2rem)] rounded-md border border-line bg-panel p-5">
-      <h1 className="text-xl">{title}</h1>
-      {children}
-    </div>
+    <main className="login-backdrop relative grid min-h-screen place-items-center px-4 py-10">
+      <div className="absolute right-4 top-4">
+        <ThemeToggle />
+      </div>
+      <div className="w-full max-w-[25rem]">
+        <div className="mb-6 flex justify-center">
+          <Brand />
+        </div>
+        <div className="rounded-md border border-line bg-panel/95 p-6 shadow-2xl shadow-black/20">
+          <h1 className="text-xl tracking-[-0.02em]">{title}</h1>
+          {children}
+        </div>
+        <Attribution className="mt-5 text-center text-xs text-ink-muted" />
+      </div>
+    </main>
   );
 }
 

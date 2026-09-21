@@ -62,6 +62,7 @@ const panelColumns = {
   kind: panels.kind,
   channelId: panels.channelId,
   messageId: panels.messageId,
+  content: panels.content,
   behaviour: panels.behaviour,
   component: panels.component,
   maxRoles: panels.maxRoles,
@@ -76,6 +77,7 @@ type PanelHeaderRow = {
   kind: string;
   channelId: string;
   messageId: string | null;
+  content: string | null;
   behaviour: string;
   component: string;
   maxRoles: number | null;
@@ -113,6 +115,7 @@ const hydrate = (scope: GuildScope, row: PanelHeaderRow): PanelConfig =>
       kind: row.kind as PanelKind,
       channelId: parseSnowflakeId(row.channelId),
       messageId: row.messageId === null ? undefined : parseSnowflakeId(row.messageId),
+      content: row.content ?? undefined,
       behaviour: row.behaviour as PanelBehaviour,
       component: row.component as PanelComponent,
       maxRoles: row.maxRoles ?? undefined,
@@ -142,6 +145,7 @@ export const createPanel = (scope: GuildScope, definition: PanelDefinition, now:
         kind: definition.kind,
         channelId: definition.channelId,
         messageId: definition.messageId ?? null,
+        content: definition.content ?? null,
         behaviour: definition.behaviour,
         component: definition.component,
         maxRoles: definition.maxRoles ?? null,

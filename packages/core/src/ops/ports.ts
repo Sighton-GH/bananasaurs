@@ -1,6 +1,7 @@
 import type { DryRunReport } from '../automod/dry-run.js';
 import type { AutomodRule, FixtureRecord, RuleKind } from '../automod/predicates/types.js';
 import type { Capability } from '../authz.js';
+import type { PanelDefinition } from '../panels/model.js';
 import type { JsonValue } from './protocol.js';
 import type { OpsSettingChange } from './settings.js';
 /**
@@ -112,6 +113,8 @@ export interface OpsPanelDetail extends OpsPanelSummary {
   readonly maxRoles: number | undefined;
   readonly requiredRoleId: string | undefined;
   readonly blockedRoleIds: readonly string[];
+  /** The message body a managed panel posts; absent uses the default copy. */
+  readonly content?: string | undefined;
   readonly adoptionPassState: string;
   readonly adoptionBlockedCount: number;
   readonly options: readonly {
@@ -407,6 +410,8 @@ export interface OpsArchiveChannelStatus {
   readonly backfillState: ArchiveBackfillState;
   readonly threadsFound?: number | undefined;
   readonly threadsDone?: number;
+  /** Whether public threads under the channel are archived; `archive set-threads` flips it. */
+  readonly includeThreads?: boolean | undefined;
   readonly messageCount: number;
 }
 
@@ -443,6 +448,21 @@ export interface OpsArchiveSearchHit {
   readonly authorId: string | undefined;
   readonly createdAt: number;
   readonly excerpt: string;
+}
+
+/**
+ * One archived message, as the MCP `get_message` / `read_channel_history`
+ * answers render it. `content: null` is a purged tombstone: the metadata
+ * survives, the text is gone (ADR 0046).
+ */
+export interface OpsArchiveMessage {
+  readonly messageId: string;
+  readonly channelId: string;
+  readonly authorId: string | undefined;
+  readonly content: string | null;
+  readonly createdAt: number;
+  readonly editedAt: number | undefined;
+  readonly deletedAt: number | undefined;
 }
 
 /**
@@ -588,6 +608,41 @@ export type OpsAccountSetPasswordResult =
       readonly guildsTouched: number;
     };
 
+/** One guild channel as the pickers show it: display name plus the snowflake. */
+export interface OpsGuildChannelInfo {
+  readonly channelId: string;
+  readonly name: string;
+  /** Discord's channel kind as a small label: `text`, `announcement`, `forum`. */
+  readonly kind: string;
+}
+
+export interface OpsGuildMemberInfo {
+  readonly memberId: string;
+  readonly username: string;
+  readonly displayName: string;
+  /** Excludes `@everyone`, matching the roles list's rule. */
+  readonly roleIds: readonly string[];
+  /** Unix ms, or null when Discord did not send a join time. */
+  readonly joinedAt: number | null;
+}
+
+export interface OpsGuildMemberPage {
+  readonly members: readonly OpsGuildMemberInfo[];
+  /** Pass as `after` for the next page; undefined when this page came back short. */
+  readonly nextAfter?: string | undefined;
+}
+
+export interface OpsGuildRoleInfo {
+  readonly roleId: string;
+  readonly name: string;
+  /** Discord's integer colour; 0 is Discord's default (no colour). */
+  readonly colour: number;
+  /** Discord's hierarchy position; higher outranks. */
+  readonly position: number;
+  /** Integration- or bot-owned roles cannot be granted by the bot; pickers flag them. */
+  readonly managed: boolean;
+}
+
 export interface OpsPorts {
   /** The guild's display name, or `undefined` before the first `GUILD_CREATE`. */
   guildName(): string | undefined;
@@ -617,6 +672,31 @@ export interface OpsPorts {
 
   // --- read commands (13c) ---------------------------------------------------
   tailAudit(query: OpsAuditQuery): readonly OpsAuditRow[];
+  /**
+   * The guild's text-family channels (text, announcement, forum) with their
+   * display names, for the named pickers that replace raw-snowflake inputs.
+   * From the live gateway cache; empty when the guild is not cached yet,
+   * which the picker shows as an honest loading state, never a fake list.
+   */
+  listGuildChannels(): readonly OpsGuildChannelInfo[];
+  /**
+   * The guild's roles (minus `@everyone`) with name, colour and hierarchy
+   * position — the role pickers' source, and the dashboard's answer to the
+   * MCP `list_roles` tool. From the live gateway cache; empty when the guild
+   * is not cached yet, which the picker shows as an honest loading state.
+   */
+  listGuildRoles(): readonly OpsGuildRoleInfo[];
+  /**
+   * The guild's members, one paginated REST page at a time — the member
+   * directory's source, and the dashboard's answer to the MCP `list_members`
+   * tool. A paginated fetch, not a cache read: the gateway member cache is
+   * capped and would silently truncate (ruling M4-D10). Empty page when the
+   * guild is unreachable, which the page shows as an honest loading state.
+   */
+  listGuildMembers(input: {
+    after?: string | undefined;
+    limit?: number | undefined;
+  }): Promise<OpsGuildMemberPage>;
   listJobs(query: OpsJobQuery): readonly OpsJobRow[];
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;
@@ -929,6 +1009,25 @@ export interface OpsPorts {
   unexcludeChannel(channelId: string): boolean;
   retryJob(jobId: number): OpsRetryOutcome;
 
+  /**
+   * Writes a validated panel definition: the panel, its options and its
+   * blocked roles, in one transaction.
+   *
+   * The definition has already been through `panelDefinitionSchema` and the
+   * caller has already checked the id is free, so this port validates nothing
+   * itself. Storage only — nothing here reaches Discord. Publishing a built
+   * panel stays `publishPanel`'s job, so a half-built panel cannot go live by
+   * accident (ADR 0053).
+   */
+  createPanel(definition: PanelDefinition): void;
+
+  /**
+   * Whether the role is one Bananasaurs manages — the precondition for making
+   * it a panel option. `panel_options` enforces it with a foreign key; the
+   * command and the builder refuse cleanly before the database has to.
+   */
+  isManagedRole(roleId: string): boolean;
+
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**
    * Posts or edits a managed panel's message and re-seeds its reactions.
@@ -1036,6 +1135,19 @@ export interface OpsPorts {
   }): { readonly hits: readonly OpsArchiveSearchHit[]; readonly total: number };
   /** Rebuilds the FTS index from archive_messages. Returns the indexed row count. */
   archiveReindex(): number;
+  /**
+   * One channel's archived messages, newest first, paged by a
+   * `before` message-id cursor — the MCP `read_channel_history` answer.
+   * A channel outside the guild's archive-enabled set returns empty,
+   * never an error, so the call cannot reveal whether it exists.
+   */
+  archiveChannelHistory(input: {
+    readonly channelId: string;
+    readonly before?: string | undefined;
+    readonly limit?: number | undefined;
+  }): readonly OpsArchiveMessage[];
+  /** One archived message by id — the MCP `get_message` answer. */
+  archiveFindMessage(messageId: string): OpsArchiveMessage | undefined;
 
   /**
    * ADR 0028 / ADR 0045: grant a dashboard account a capability IN THIS
@@ -1048,6 +1160,9 @@ export interface OpsPorts {
     readonly capability: Capability;
     readonly grantedBy: string;
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
+
+  /** The capabilities one account holds in THIS guild — the read half of the grant above. */
+  listAccountCapabilities(accountId: string): readonly string[];
 
   /**
    * S13-D1: grants the account access to THIS guild. `--guild` selects what

@@ -35,4 +35,21 @@ describe('DataTable', () => {
     expect(screen.getAllByRole('row')).toHaveLength(3);
     expect(screen.getByText('Bob')).toBeTruthy();
   });
+
+  it('labels stacked cells with their column header for the mobile card layout', () => {
+    render(
+      <DataTable
+        caption="One person"
+        columns={[
+          { key: 'name', header: 'Name', cell: (r: { id: string; name: string }) => r.name },
+          { key: 'actions', header: '', cell: () => 'buttons' },
+        ]}
+        rows={[{ id: 'a', name: 'Ada' }]}
+        rowKey={(r) => r.id}
+      />,
+    );
+    expect(screen.getByText('Ada').closest('td')?.getAttribute('data-label')).toBe('Name');
+    // An empty header (an actions column) gets no label.
+    expect(screen.getByText('buttons').closest('td')?.hasAttribute('data-label')).toBe(false);
+  });
 });

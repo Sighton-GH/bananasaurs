@@ -1,5 +1,15 @@
+import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
+import { AccountsPage } from '../pages/accounts.js';
+import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
+import { BackupsPage } from '../pages/backups.js';
+import { ConfigPage } from '../pages/config.js';
+import { DoctorPage } from '../pages/doctor.js';
+import { JobsPage } from '../pages/jobs.js';
+import { McpPage } from '../pages/mcp.js';
+import { ProvidersPage } from '../pages/providers.js';
+import { SearchPage } from '../pages/search.js';
 import { AutomodRulePage } from '../pages/automod-rule.js';
 import { AutomodRulesPage } from '../pages/automod-rules.js';
 import { CasePage } from '../pages/case.js';
@@ -7,45 +17,62 @@ import { CasesPage } from '../pages/cases.js';
 import { CutoverPage } from '../pages/cutover.js';
 import { LoggingPage } from '../pages/logging.js';
 import { MemberPage } from '../pages/member.js';
+import { MembersPage } from '../pages/members.js';
 import { NotFoundPage } from '../pages/not-found.js';
 import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { StubPage } from '../pages/stub.js';
-import { Button } from '../ui/Button.js';
+import { Brand } from '../ui/Brand.js';
+import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
-import { NAV } from './routes.js';
+import { JumpNav } from './JumpNav.js';
+import { GROUPS, NAV } from './routes.js';
 import { useSession } from './session.js';
+import { GuildIdentity, ShellFooter } from './shell-chrome.js';
 import { StateStrip } from './StateStrip.js';
 
-function GuildIdentity() {
+function DesktopHeader() {
   const session = useSession();
   const health = useHealth();
-  const name = health.resource.state === 'ready' ? health.resource.data.guildName : null;
-  const reachable = session.info.reachableGuilds;
+  const [refreshedAt, setRefreshedAt] = useState<Date | undefined>(undefined);
+
+  useEffect(() => {
+    if (health.resource.state === 'ready') setRefreshedAt(new Date());
+  }, [health.resource]);
+
+  const guildName =
+    health.resource.state === 'ready'
+      ? (health.resource.data.guildName ?? 'Unnamed server')
+      : 'Loading server';
+  const freshness =
+    health.resource.state === 'loading'
+      ? 'Refreshing data…'
+      : health.resource.state === 'error'
+        ? 'Data unavailable'
+        : refreshedAt === undefined
+          ? 'Current data'
+          : `Updated ${refreshedAt.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`;
+
   return (
-    <div className="border-b border-line px-4 py-3">
-      <p className="text-xs text-ink-muted">Bananasaurs</p>
-      {reachable !== undefined && reachable.length > 1 ? (
-        <label className="block">
-          <span className="mb-1 block text-xs text-ink-muted">Server</span>
-          <select
-            value={session.info.guildId}
-            onChange={(e) => void session.switchGuild(e.target.value)}
-            className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-base font-medium text-ink"
-          >
-            {reachable.map((guild) => (
-              <option key={guild.guildId} value={guild.guildId}>
-                {guild.name ?? guild.guildId}
-              </option>
-            ))}
-          </select>
-        </label>
-      ) : (
-        <p className="text-base font-medium">{name ?? 'Guild'}</p>
-      )}
-      <p className="text-xs text-ink-muted">{session.info.guildId}</p>
+    <div className="hidden h-16 items-center justify-between border-b border-line bg-canvas/82 px-6 backdrop-blur lg:flex">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2">
+          <p className="truncate text-sm font-medium text-ink">{guildName}</p>
+          <span className="rounded-full border border-line px-2 py-0.5 text-[0.625rem] uppercase tracking-[0.1em] text-ink-muted">
+            Active server
+          </span>
+        </div>
+        <p className="mt-0.5 truncate text-xs text-ink-muted">{session.info.guildId}</p>
+      </div>
+      <div className="flex items-center gap-4">
+        <div className="text-right">
+          <p className="text-xs font-medium text-ink">{freshness}</p>
+          <p className="text-[0.6875rem] text-ink-muted">Health summary · Observe-first controls</p>
+        </div>
+        <ThemeToggle />
+      </div>
     </div>
   );
 }
@@ -53,51 +80,55 @@ function GuildIdentity() {
 function Rail() {
   const [location] = useLocation();
   return (
-    <>
-      <nav aria-label="Areas" className="flex-1 py-2">
-        <ul>
-          {NAV.filter((entry) => entry.status === 'built').map((entry) => {
-            const active = location === entry.path;
-            return (
-              <li key={entry.path}>
-                <Link
-                  href={entry.path}
-                  aria-current={active ? 'page' : undefined}
-                  className={`block px-4 py-1.5 text-sm ${active ? 'bg-panel text-ink' : 'text-ink-muted hover:text-ink'}`}
-                >
-                  {entry.label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
+    <div className="flex min-h-0 flex-1 flex-col">
+      <nav aria-label="Areas" className="flex-1 overflow-y-auto px-3 py-2">
+        {GROUPS.map((group) => {
+          const entries = NAV.filter((entry) => entry.group === group);
+          if (entries.length === 0) return null;
+          return (
+            <section
+              key={group}
+              className="mb-4"
+              aria-labelledby={`nav-${group.replace(' ', '-')}`}
+            >
+              <h2
+                id={`nav-${group.replace(' ', '-')}`}
+                className="mb-1 px-2 text-[0.6875rem] font-medium uppercase tracking-[0.12em] text-ink-muted"
+              >
+                {group}
+              </h2>
+              <ul className="grid gap-0.5">
+                {entries.map((entry) => {
+                  const active = location === entry.path;
+                  return (
+                    <li key={entry.path}>
+                      <Link
+                        href={entry.path}
+                        aria-current={active ? 'page' : undefined}
+                        className={`flex min-h-9 items-center justify-between rounded-sm px-2.5 py-1.5 text-sm transition-colors ${
+                          active
+                            ? 'bg-panel font-medium text-ink shadow-[inset_2px_0_0_var(--color-ink)]'
+                            : 'text-ink-muted hover:bg-panel/60 hover:text-ink'
+                        }`}
+                      >
+                        <span>{entry.label}</span>
+                        {entry.status === 'stub' && (
+                          <span className="rounded-sm border border-line px-1.5 py-0.5 text-[0.625rem] uppercase tracking-wide text-ink-muted">
+                            Future
+                          </span>
+                        )}
+                      </Link>
+                    </li>
+                  );
+                })}
+              </ul>
+            </section>
+          );
+        })}
       </nav>
-      <nav aria-label="Planned" className="border-t border-line py-2">
-        <p className="px-4 py-1 text-xs text-ink-muted">Release 3</p>
-        <ul>
-          {NAV.filter((entry) => entry.status === 'stub').map((entry) => {
-            const active = location === entry.path;
-            return (
-              <li key={entry.path}>
-                <Link
-                  href={entry.path}
-                  aria-current={active ? 'page' : undefined}
-                  className={`block px-4 py-1.5 text-sm ${active ? 'bg-panel text-ink' : 'text-ink-muted'}`}
-                >
-                  {entry.label}
-                </Link>
-              </li>
-            );
-          })}
-        </ul>
-      </nav>
-    </>
+    </div>
   );
 }
-
-/** Ruling S10-D3: Archive and Search live in Release 2 as CLI/MCP only; the pages arrive with Release 3. */
-const ARCHIVE_SEARCH_TODAY =
-  'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.';
 
 function Pages() {
   return (
@@ -113,38 +144,22 @@ function Pages() {
       <Route path="/cases" component={CasesPage} />
       <Route path="/cases/:caseId" component={CasePage} />
       <Route path="/members/:memberId" component={MemberPage} />
+      <Route path="/members" component={MembersPage} />
       <Route path="/cutover" component={CutoverPage} />
-      <Route path="/archive">
-        {() => (
-          <StubPage
-            title="Archive"
-            purpose="Every message from the channels the owner enabled, kept under the retention policy."
-            availableToday={ARCHIVE_SEARCH_TODAY}
-          />
-        )}
-      </Route>
-      <Route path="/search">
-        {() => (
-          <StubPage
-            title="Search"
-            purpose="Full-text search over the archive, with citations."
-            availableToday={ARCHIVE_SEARCH_TODAY}
-          />
-        )}
-      </Route>
+      <Route path="/archive" component={ArchivePage} />
+      <Route path="/search" component={SearchPage} />
+      <Route path="/jobs" component={JobsPage} />
+      <Route path="/doctor" component={DoctorPage} />
+      <Route path="/backups" component={BackupsPage} />
+      <Route path="/config" component={ConfigPage} />
+      <Route path="/accounts" component={AccountsPage} />
+      <Route path="/mcp" component={McpPage} />
+      <Route path="/providers" component={ProvidersPage} />
       <Route path="/resources">
         {() => (
           <StubPage
             title="Resources"
             purpose="Files, links and notes the club keeps, findable from Discord."
-          />
-        )}
-      </Route>
-      <Route path="/providers">
-        {() => (
-          <StubPage
-            title="Providers"
-            purpose="Which AI providers are configured, their eligibility and their cost."
           />
         )}
       </Route>
@@ -177,22 +192,42 @@ function Pages() {
   );
 }
 
-/** Rail, header, state strip, page. Must render inside `SessionProvider` and a wouter `Router`. */
+/** Responsive operator shell. Must render inside `SessionProvider` and a wouter `Router`. */
 export function Shell() {
   const session = useSession();
+
+  // The composed backdrop anchors its leaves to the viewport corner; while
+  // the shell is mounted they belong to the content canvas, clear of the
+  // sidebar (see the `shell-with-sidebar` rule in styles.css).
+  useEffect(() => {
+    document.body.classList.add('shell-with-sidebar');
+    return () => document.body.classList.remove('shell-with-sidebar');
+  }, []);
+
   return (
     <HealthProvider>
-      <div className="flex min-h-screen">
-        <aside className="flex w-56 shrink-0 flex-col border-r border-line bg-canvas">
+      <div className="min-h-screen lg:flex">
+        <header className="sticky top-0 z-30 flex h-16 items-center justify-between gap-2 border-b border-line bg-canvas/95 px-4 backdrop-blur lg:hidden">
+          <Brand />
+          <div className="flex shrink-0 items-center gap-2">
+            <ThemeToggle />
+            <JumpNav />
+          </div>
+        </header>
+
+        <aside className="hidden border-r border-line bg-canvas lg:sticky lg:top-0 lg:flex lg:h-screen lg:w-64 lg:shrink-0 lg:flex-col">
+          <div className="flex h-16 shrink-0 items-center border-b border-line px-4">
+            <Brand />
+          </div>
           <GuildIdentity />
           <Rail />
-          <div className="border-t border-line px-4 py-3">
-            <Button onClick={() => void session.logout()}>Sign out</Button>
-          </div>
+          <ShellFooter onSignOut={() => void session.logout()} />
         </aside>
-        <div className="flex min-w-0 flex-1 flex-col">
+
+        <div className="flex min-h-screen min-w-0 flex-1 flex-col">
           <StateStrip />
-          <main className="w-full max-w-[1400px] px-6 py-5">
+          <DesktopHeader />
+          <main className="mx-auto w-full max-w-[1400px] flex-1 px-4 py-5 sm:px-6 lg:px-8 lg:py-7">
             <Pages />
           </main>
         </div>

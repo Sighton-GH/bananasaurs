@@ -395,3 +395,70 @@ describe('migration 0024 adds thread and category scope without losing archive s
     raw.close();
   });
 });
+
+describe('migration 0027 grants accounts.manage to existing owners (ADR 0056)', () => {
+  it('owners with guild access gain the capability; non-owners do not; older grants are untouched', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const migrationsFolderUpTo = (lastIdx: number): string => {
+      const journal = JSON.parse(
+        fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+      ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'accounts-manage-migration-'));
+      fs.mkdirSync(path.join(dir, 'meta'));
+      const entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
+      fs.writeFileSync(
+        path.join(dir, 'meta', '_journal.json'),
+        JSON.stringify({ ...journal, entries }),
+      );
+      for (const entry of entries)
+        fs.copyFileSync(
+          path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+          path.join(dir, `${entry.tag}.sql`),
+        );
+      return dir;
+    };
+    // The shape a real upgrade takes: bootstrap issued every capability the
+    // instance knew at the time, and `accounts.manage` was not one of them.
+    runMigrations(raw, db, migrationsFolderUpTo(26));
+    const guild = '111111111111111111';
+    const owner = 'acct_owner';
+    const member = 'acct_member';
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(guild);
+    const insertAccount = raw.prepare(
+      `INSERT INTO dashboard_accounts (account_id, username, password_hash, is_owner, created_at) VALUES (?, ?, 'h', ?, 0)`,
+    );
+    insertAccount.run(owner, 'owner', 1);
+    insertAccount.run(member, 'member', 0);
+    const insertAccess = raw.prepare(
+      `INSERT INTO account_guild_access (guild_id, account_id) VALUES (?, ?)`,
+    );
+    insertAccess.run(guild, owner);
+    insertAccess.run(guild, member);
+    raw
+      .prepare(
+        `INSERT INTO account_capabilities (guild_id, account_id, capability, granted_at, granted_by) VALUES (?, ?, 'config.write', 0, 'bootstrap')`,
+      )
+      .run(guild, owner);
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const holders = raw
+      .prepare(
+        `SELECT account_id, granted_by FROM account_capabilities WHERE guild_id = ? AND capability = 'accounts.manage' ORDER BY account_id`,
+      )
+      .all(guild) as { account_id: string; granted_by: string }[];
+    expect(holders).toEqual([{ account_id: owner, granted_by: 'migration-0027' }]);
+
+    const configWrite = raw
+      .prepare(
+        `SELECT granted_by FROM account_capabilities WHERE guild_id = ? AND account_id = ? AND capability = 'config.write'`,
+      )
+      .get(guild, owner) as { granted_by: string };
+    expect(configWrite.granted_by).toBe('bootstrap');
+    raw.close();
+  });
+});

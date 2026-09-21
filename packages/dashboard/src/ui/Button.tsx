@@ -32,7 +32,7 @@ export function Button({
       type={type}
       aria-busy={busy || undefined}
       disabled={disabled === true || busy}
-      className={`inline-flex items-center gap-1.5 rounded-sm border px-2.5 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50 ${VARIANT[variant]} ${className}`}
+      className={`inline-flex items-center gap-1.5 whitespace-nowrap rounded-sm border px-2.5 py-1 text-sm disabled:cursor-not-allowed disabled:opacity-50 ${VARIANT[variant]} ${className}`}
       {...rest}
     >
       {children}

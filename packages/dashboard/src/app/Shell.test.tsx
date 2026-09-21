@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { act, cleanup, fireEvent, screen, waitFor, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
@@ -7,6 +7,7 @@ import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-supp
 import { NOT_BUILT } from '../pages/stub.js';
 import { NAV } from './routes.js';
 import { Shell } from './Shell.js';
+import { ThemeProvider } from './theme.js';
 
 const HEALTH = {
   guildId: '1540816150026518620',
@@ -32,9 +33,11 @@ function renderAt(path: string) {
   ]);
   const { hook } = memoryLocation({ path });
   renderWithSession(
-    <Router hook={hook}>
-      <Shell />
-    </Router>,
+    <ThemeProvider>
+      <Router hook={hook}>
+        <Shell />
+      </Router>
+    </ThemeProvider>,
   );
   return mock;
 }
@@ -47,7 +50,7 @@ describe('Shell', () => {
     ['/', 'Overview'],
     ['/safety', 'Safety'],
     ['/logging', 'Logging'],
-    ['/panels', 'Role panels'],
+    ['/panels', 'Reaction roles'],
     ['/audit', 'Audit'],
     ['/automod', 'Automod'],
     ['/review', 'Review'],
@@ -66,13 +69,33 @@ describe('Shell', () => {
     expect(screen.queryByRole('link', { current: 'page' })).toBeNull();
   });
 
-  it('the rail lists every built NAV entry and no others, and names the guild', async () => {
+  it('the rail groups every NAV entry and names the guild', async () => {
     renderAt('/');
     const nav = screen.getByRole('navigation', { name: 'Areas' });
-    const labels = Array.from(nav.querySelectorAll('a')).map((a) => a.textContent);
-    expect(labels).toEqual(NAV.filter((n) => n.status === 'built').map((n) => n.label));
+    const labels = Array.from(nav.querySelectorAll('a')).map((a) =>
+      a.textContent?.replace('Future', ''),
+    );
+    // Rendered order follows the rail groups (ADR 0051 D6), not the NAV
+    // array: every entry appears exactly once, in group order.
+    const groupOrder = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'];
+    const expected = groupOrder.flatMap((group) =>
+      NAV.filter((n) => n.group === group).map((n) => n.label),
+    );
+    expect(labels).toEqual(expected);
+    expect(within(nav).getByRole('heading', { name: 'Operate' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Moderation' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Instance' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Release 3' })).toBeTruthy();
     const aside = screen.getByRole('complementary');
     expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();
+  });
+
+  it('names the active server and health freshness in the desktop header', async () => {
+    renderAt('/');
+    expect(await screen.findByText('Updated', { exact: false })).toBeTruthy();
+    expect(screen.getAllByText('Bananasaurs dev')).toHaveLength(3);
+    expect(screen.getAllByText('Active server')).toHaveLength(2);
+    expect(screen.getByText('Health summary · Observe-first controls')).toBeTruthy();
   });
 
   it('Sign out posts /api/logout', async () => {
@@ -109,9 +132,11 @@ describe('Shell', () => {
     const onLoggedOut = vi.fn();
     const { hook } = memoryLocation({ path: '/' });
     renderWithSession(
-      <Router hook={hook}>
-        <Shell />
-      </Router>,
+      <ThemeProvider>
+        <Router hook={hook}>
+          <Shell />
+        </Router>
+      </ThemeProvider>,
       {
         session: {
           ...TEST_SESSION,
@@ -140,11 +165,10 @@ describe('Shell', () => {
     expect(onLoggedOut).toHaveBeenCalledTimes(1);
   });
 
+  // ADR 0051 D7 supersedes S10-D3: Archive, Search and Providers are real pages now;
+  // only the Release 3 four remain stubs.
   it.each([
-    ['/archive', 'Archive'],
-    ['/search', 'Search'],
     ['/resources', 'Resources'],
-    ['/providers', 'Providers'],
     ['/memory', 'Memory'],
     ['/ai', 'AI workspace'],
     ['/proposals', 'Proposals'],
@@ -154,31 +178,31 @@ describe('Shell', () => {
     expect(await screen.findByText(NOT_BUILT)).toBeTruthy();
   });
 
-  it.each([['/archive'], ['/search']])(
-    'the %s stub says where the feature lives today (S10-D3)',
-    async (path) => {
-      renderAt(path);
-      expect(
-        await screen.findByText(
-          'The archive and search exist in Release 2 as operator CLI commands (`archive`, `mcp`) and through the MCP connector; the page arrives with Release 3.',
-        ),
-      ).toBeTruthy();
-    },
-  );
-
-  it('the Planned nav group lists exactly the seven stub labels', async () => {
+  it('marks exactly the four Release 3 entries as future', async () => {
     renderAt('/');
-    const nav = screen.getByRole('navigation', { name: 'Planned' });
-    const labels = Array.from(nav.querySelectorAll('a')).map((a) => a.textContent);
-    expect(labels).toEqual([
-      'Archive',
-      'Search',
+    const nav = screen.getByRole('navigation', { name: 'Areas' });
+    const future = within(nav).getAllByText('Future');
+    expect(future).toHaveLength(4);
+    expect(NAV.filter((n) => n.status === 'stub').map((n) => n.label)).toEqual([
       'Resources',
-      'Providers',
       'Memory',
       'AI workspace',
       'Proposals',
     ]);
-    expect(labels).toEqual(NAV.filter((n) => n.status === 'stub').map((n) => n.label));
+  });
+
+  it('opens and closes the mobile jump navigation without changing the page', async () => {
+    renderAt('/');
+    const trigger = await screen.findByRole('button', {
+      name: 'Open navigation - current page Overview',
+    });
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    fireEvent.click(trigger);
+    const sheet = await screen.findByRole('dialog', { name: 'Jump to' });
+    expect(trigger.getAttribute('aria-expanded')).toBe('true');
+    fireEvent.keyDown(sheet, { key: 'Escape' });
+    await waitFor(() => expect(screen.queryByRole('dialog')).toBeNull());
+    expect(trigger.getAttribute('aria-expanded')).toBe('false');
+    expect(screen.getByRole('heading', { level: 1, name: 'Overview' })).toBeTruthy();
   });
 });

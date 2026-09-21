@@ -2,8 +2,13 @@ import { useCallback, useState } from 'react';
 import { useParams } from 'wouter';
 import { ApiError } from '../api.js';
 import {
+  CUTOVER_STAGE_HELP,
+  CUTOVER_STAGE_LABEL,
   daysObserved,
   modeScopeSentence,
+  RULE_KIND_LABEL,
+  RULE_MODE_HELP,
+  RULE_MODE_LABEL,
   type DryRunReport,
   type ModeRequest,
   type RuleDetail,
@@ -11,33 +16,41 @@ import {
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { RuleConfigExample } from './automod-config-example.js';
 import { Button } from '../ui/Button.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
+import { HelpTip } from '../ui/HelpTip.js';
+import { Card } from '../ui/Card.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
 type Refusal = { readonly reason: string; readonly [k: string]: unknown };
 
-const refusalSentence = (refusal: Refusal): string => {
+const refusalReason = (refusal: Refusal): string => {
   switch (refusal.reason) {
     case 'cutover-state':
-      return `Not offerable: cutover state is ${String(refusal.state)}.`;
+      return `the rule is still at the "${
+        CUTOVER_STAGE_LABEL[refusal.state as keyof typeof CUTOVER_STAGE_LABEL] ??
+        String(refusal.state)
+      }" stage`;
     case 'low-volume-unsigned':
-      return `Not offerable: ${String(refusal.reviewed)} of ${String(refusal.required)} matches reviewed and no sign-off.`;
+      return `${String(refusal.reviewed)} of ${String(refusal.required)} matches reviewed, and no enforcement sign-off`;
     case 'false-positive':
-      return `Not offerable: ${String(refusal.falsePositives)} false-positive or unclear verdicts among ${String(refusal.reviewed)} reviewed.`;
+      return `${String(refusal.falsePositives)} false-positive or unclear verdicts among ${String(refusal.reviewed)} reviewed matches`;
     case 'rate-too-high':
-      return `Not offerable: false-positive rate ${String(refusal.rate)} exceeds ${String(refusal.threshold)}.`;
+      return `the false-positive rate ${String(refusal.rate)} is above the allowed ${String(refusal.threshold)}`;
     default:
-      return `Not offerable: ${refusal.reason}.`;
+      return refusal.reason;
   }
 };
 
 const eligibilitySentence = (eligibility: RuleDetail['eligibility']): string =>
-  eligibility.ok ? 'Enforcement is offerable.' : refusalSentence(eligibility.refusal);
+  eligibility.ok
+    ? 'Enforcement is available for this rule.'
+    : `Enforcement is not available yet: ${refusalReason(eligibility.refusal)}.`;
 
 const signoffText = (detail: RuleDetail): string =>
   detail.enforceSignedOffBy !== null && detail.enforceSignedOffAt !== null
@@ -98,7 +111,10 @@ function RuleDetailView({
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         const refusal = (err.body as { refusal?: Refusal }).refusal;
-        const sentence = refusal !== undefined ? refusalSentence(refusal) : err.message;
+        const sentence =
+          refusal !== undefined
+            ? `Enforcement is not available yet: ${refusalReason(refusal)}.`
+            : err.message;
         setModeRefusal(sentence);
         toast({ tone: 'danger', title: 'Mode not applied', message: sentence });
         setModeOpen(false);
@@ -231,17 +247,21 @@ function RuleDetailView({
 
   return (
     <>
-      <section>
-        <h2 className="text-lg">Status</h2>
+      <Card title="Status">
         <dl className="mt-2 grid max-w-lg grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
           <dt className="text-ink-muted">Kind</dt>
-          <dd>{detail.kind}</dd>
+          <dd>
+            {RULE_KIND_LABEL[detail.kind]} <span className="text-ink-muted">({detail.kind})</span>
+          </dd>
           <dt className="text-ink-muted">Enabled</dt>
           <dd>{detail.enabled ? 'On' : 'Off'}</dd>
           <dt className="text-ink-muted">Mode</dt>
           <dd>{detail.mode}</dd>
-          <dt className="text-ink-muted">Cutover state</dt>
-          <dd>{detail.cutoverState}</dd>
+          <dt className="text-ink-muted">
+            Stage
+            <HelpTip label="the rule's stage">{CUTOVER_STAGE_HELP}</HelpTip>
+          </dt>
+          <dd>{CUTOVER_STAGE_LABEL[detail.cutoverState]}</dd>
           <dt className="text-ink-muted">Observed since</dt>
           <dd>{observedText(detail)}</dd>
           <dt className="text-ink-muted">Matches</dt>
@@ -257,12 +277,17 @@ function RuleDetailView({
             {modeRefusal}
           </p>
         )}
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Mode</h2>
+      <Card title="Mode">
         <fieldset className="mt-2">
-          <legend className="text-sm text-ink-muted">Mode</legend>
+          <legend className="text-sm text-ink-muted">
+            Mode
+            <HelpTip label="rule modes">
+              test {RULE_MODE_HELP.test} observe {RULE_MODE_HELP.observe} enforce{' '}
+              {RULE_MODE_HELP.enforce}
+            </HelpTip>
+          </legend>
           <div className="mt-1 flex gap-4">
             {MODES.map((mode) => (
               <label key={mode} className="inline-flex items-center gap-1.5 text-sm">
@@ -274,14 +299,14 @@ function RuleDetailView({
                   onChange={() => setModeSel(mode)}
                   disabled={mode === 'enforce' && !detail.eligibility.ok}
                 />
-                {mode}
+                {RULE_MODE_LABEL[mode]}
               </label>
             ))}
           </div>
         </fieldset>
         {!detail.eligibility.ok && (
           <p className="mt-1 text-sm text-ink-muted">
-            Enforce is unavailable: {eligibilitySentence(detail.eligibility)}
+            Enforce is unavailable: {refusalReason(detail.eligibility.refusal)}.
           </p>
         )}
         <div className="mt-2">
@@ -311,10 +336,9 @@ function RuleDetailView({
           onConfirm={() => void applyMode()}
           onCancel={() => setModeOpen(false)}
         />
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Configuration</h2>
+      <Card title="Configuration">
         <div className="mt-2 max-w-lg">
           <Field
             label="Configuration"
@@ -328,6 +352,13 @@ function RuleDetailView({
               className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
             />
           </Field>
+          <RuleConfigExample
+            kind={detail.kind}
+            onUse={(json) => {
+              setConfigText(json);
+              setConfigError(undefined);
+            }}
+          />
         </div>
         <div className="mt-3">
           <Button variant="primary" busy={configBusy} onClick={openConfigConfirm}>
@@ -349,10 +380,9 @@ function RuleDetailView({
           onConfirm={() => void saveConfig()}
           onCancel={() => setConfigOpen(false)}
         />
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Exemptions</h2>
+      <Card title="Exemptions">
         {detail.exemptions.length === 0 ? (
           <p className="mt-2 text-sm text-ink-muted">No exemptions yet. Add one below.</p>
         ) : (
@@ -403,10 +433,9 @@ function RuleDetailView({
             Add exemption
           </Button>
         </form>
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Lists</h2>
+      <Card title="Lists">
         <div className="mt-2 text-sm">
           {detail.kind === 'keyword_filter' &&
             (detail.terms.length > 0 || detail.allowlist.length > 0) && (
@@ -460,10 +489,16 @@ function RuleDetailView({
               detail.kind !== 'invite' &&
               detail.kind !== 'link_domain')) && <p className="text-ink-muted">No lists.</p>}
         </div>
-      </section>
+      </Card>
 
-      <section className="mt-6">
-        <h2 className="text-lg">Dry run</h2>
+      <Card title="Dry run">
+        <p className="mt-2 text-sm text-ink-muted">
+          Replays recorded matches against the current configuration without acting on anything.
+          <HelpTip label="fixtures">
+            Fixtures are real matches the rule recorded while observing. Replaying them shows what
+            the current configuration would have caught, so tuning is safe.
+          </HelpTip>
+        </p>
         <div className="mt-2">
           <Button busy={dryBusy} onClick={() => void runDryRun()}>
             Run against fixtures
@@ -485,7 +520,7 @@ function RuleDetailView({
             ) : (
               <>
                 <dl className="mt-2 grid max-w-lg grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-sm">
-                  <dt className="text-ink-muted">Corpus size</dt>
+                  <dt className="text-ink-muted">Fixtures</dt>
                   <dd>{report.corpusSize}</dd>
                   <dt className="text-ink-muted">Evaluated</dt>
                   <dd>{report.total}</dd>
@@ -495,7 +530,7 @@ function RuleDetailView({
                   <dd>{report.falsePositives}</dd>
                   <dt className="text-ink-muted">False negatives</dt>
                   <dd>{report.falseNegatives}</dd>
-                  <dt className="text-ink-muted">Threw</dt>
+                  <dt className="text-ink-muted">Errors</dt>
                   <dd>{report.threw}</dd>
                 </dl>
                 <div className="mt-3">
@@ -505,14 +540,22 @@ function RuleDetailView({
                     rowKey={(r) => r.fixtureId}
                     columns={[
                       { key: 'fixture', header: 'Fixture', cell: (r) => r.fixtureId },
-                      { key: 'label', header: 'Label', cell: (r) => r.label },
+                      {
+                        key: 'label',
+                        header: 'Label',
+                        cell: (r) => r.label.replaceAll('_', ' '),
+                      },
                       {
                         key: 'matched',
                         header: 'Matched',
                         cell: (r) => (r.matched ? 'yes' : 'no'),
                       },
                       { key: 'agreement', header: 'Agreement', cell: (r) => r.agreement },
-                      { key: 'outcome', header: 'Outcome', cell: (r) => r.outcome },
+                      {
+                        key: 'outcome',
+                        header: 'Outcome',
+                        cell: (r) => (r.outcome === 'threw' ? 'error' : r.outcome),
+                      },
                     ]}
                   />
                 </div>
@@ -520,7 +563,7 @@ function RuleDetailView({
             )}
           </div>
         )}
-      </section>
+      </Card>
     </>
   );
 }

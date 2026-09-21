@@ -1,8 +1,22 @@
 # Current state
 
-**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-09-16 (M4 fix wave B: `provider review`, `not-production` warning).
+**Living document.** Update it at the end of each working session so a fresh conversation can pick up without re-reading everything. Last updated 2026-09-20 (web UI overhaul branch, ADR 0051).
 
 ---
+
+**Web UI overhaul (ADR 0051) — built on `oc/webui-overhaul`, unmerged pending owner review and Claude audit.**
+The dashboard is now the full operator surface: shell (ADR-aligned rail: Operate / Moderation / Archive /
+Instance / Release 3, "Bananasaurs by Sighton Media" attribution), five Release 1 page rewrites, and nine new
+operator pages (Jobs, Doctor, Backups, Configuration, Accounts, MCP connector, Archive, Search, Providers)
+backed by new `packages/http` routes — `ops-read.ts` (18 GET routes) and `ops-write.ts` (40 write routes,
+audited, refusal unions as 4xx answers). Writes confirm through a scope-quoting dialog; password resets print
+once and are never audited; `bootstrap reissue` stays CLI-only; the seven account lifecycle routes are gated on the
+new `accounts.manage` capability rather than `config.write` (ADR 0056), with migration 0027 granting it to existing
+owners — **run `db:migrate` before starting the daemon**. Archive, Search and Providers are built pages
+now (D7 supersedes S10-D3); the Release 3 stubs are Resources, Memory, AI workspace and Proposals. The
+observe-phase freeze held: no route reaches `mode='enforce'`, and the automod mode gate is ADR 0042's existing
+one. Threads-and-forums compatibility is on `oc/threads-and-forums` (also unmerged); new channel fields accept
+any snowflake.
 
 **Slice M5 — `send_message`, the allowlist and audit — built 2026-09-16**, on
 `oc/m5-send-message`. The MCP connector can post to allowlisted channels

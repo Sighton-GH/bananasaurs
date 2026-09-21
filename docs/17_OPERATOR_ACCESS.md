@@ -14,6 +14,13 @@ If a club member's action causes the `claude` binary to run, something is wrong.
 
 That is the whole compliance story. Everything below is mechanics.
 
+The same operator surface also exists over HTTPS (ADR 0051, branch `oc/webui-overhaul`, unmerged pending owner
+review): every CLI capability below is exposed through the web UI as `packages/http` `ops-read` (GET) and
+`ops-write` (POST, audited, `actor_type='dashboard'`) routes behind the same dashboard scopes. Reads under
+`config.read` or `audit.read`; writes confirm through a scope-quoting dialog. `bootstrap reissue` stays CLI-only
+by design (ADR 0051 D4), and `list-unreadable-archive-channels` needs the Discord client, so it stays in
+`doctor` rather than its own route.
+
 ---
 
 ## 1. The operator CLI

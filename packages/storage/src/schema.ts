@@ -127,6 +127,8 @@ export const panels = sqliteTable(
     kind: text('kind').notNull(),
     channelId: snowflake('channel_id').notNull(),
     messageId: snowflake('message_id'),
+    /** Managed panels only: the message body to post. NULL uses the default copy. */
+    content: text('content'),
     behaviour: text('behaviour').notNull(),
     component: text('component').notNull(),
     /** Per-panel ceiling. NULL means unlimited. */

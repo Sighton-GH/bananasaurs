@@ -140,6 +140,7 @@ export const opsPortsFor = (
       maxRoles: panel.maxRoles,
       requiredRoleId: panel.requiredRoleId,
       blockedRoleIds: panel.blockedRoleIds,
+      content: panel.content,
       adoptionPassState: panel.adoptionPassState,
       adoptionBlockedCount: panel.adoptionBlockedCount,
       options: panel.options.map((option) => ({
@@ -473,6 +474,11 @@ export const opsPortsFor = (
     return outcome.ok ? { ok: true } : outcome;
   },
 
+  // Storage-only write: `panel create` and the dashboard builder both land
+  // here. Nothing reaches Discord — publishing stays publishPanel's job.
+  createPanel: (definition) => operations.createPanel(definition),
+  isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
+
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
   grantAdoptionAllowance: (count) => {
@@ -600,6 +606,74 @@ export const opsPortsFor = (
     });
   },
   listUnreadableArchiveChannels: () => unreadableArchiveChannels(scope, client),
+  // The named pickers' channel list, straight from the gateway cache: text,
+  // announcement and forum channels with their display names. Empty before
+  // READY (or after leaving), which the picker shows as its honest loading
+  // state rather than a fabricated list.
+  listGuildChannels: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    const kindOf = (type: ChannelType): string => {
+      if (type === ChannelType.GuildCategory) return 'category';
+      if (type === ChannelType.GuildForum || type === ChannelType.GuildMedia) return 'forum';
+      if (type === ChannelType.GuildAnnouncement) return 'announcement';
+      return 'text';
+    };
+    // Categories ride along with the text-capable channels: the category
+    // pickers (archive scope, MCP send allowlist) filter on kind, and the
+    // text pickers exclude them, so one cache read serves both.
+    return [...guild.channels.cache.values()]
+      .filter(
+        (channel) =>
+          channel.type === ChannelType.GuildCategory ||
+          (channel.isTextBased() && !channel.isThread()),
+      )
+      .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  },
+  // Same gateway-cache honesty as listGuildChannels: the guild's roles,
+  // `@everyone` excluded (it is not a panel option), highest rank first.
+  listGuildRoles: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    return [...guild.roles.cache.values()]
+      .filter((role) => role.id !== guild.id)
+      .map((role) => ({
+        roleId: role.id,
+        name: role.name,
+        colour: role.color,
+        position: role.position,
+        managed: role.managed,
+      }))
+      .sort((a, b) => b.position - a.position || a.name.localeCompare(b.name));
+  },
+  // The same paginated REST read the MCP port makes (ruling M4-D10): the
+  // 50-entry member cache would silently truncate, and `cache: false` keeps
+  // the listing from churning it. No presence, activity or status fields.
+  listGuildMembers: async (input) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return { members: [], nextAfter: undefined };
+    const limit = input.limit ?? 25;
+    const page = await guild.members.list({
+      limit,
+      ...(input.after !== undefined ? { after: input.after } : {}),
+      cache: false,
+    });
+    const members = [...page.values()].map((member) => ({
+      memberId: member.id,
+      username: member.user.username,
+      displayName: member.displayName,
+      // The role cache always contains @everyone; dropped so no member shows
+      // a role that appears nowhere in the roles list.
+      roleIds: [...member.roles.cache.keys()].filter((id) => id !== guild.id).sort(),
+      joinedAt: member.joinedAt?.getTime() ?? null,
+    }));
+    const last = members[members.length - 1];
+    return {
+      members,
+      nextAfter: members.length === limit && last !== undefined ? last.memberId : undefined,
+    };
+  },
   archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
   // The operator sees what the archive holds, nothing wider: the visibility
   // set is every archive-enabled channel in this guild, built here from
@@ -627,6 +701,38 @@ export const opsPortsFor = (
     };
   },
   archiveReindex: () => archiveSearchRepo.rebuildSearchIndex(scope),
+  // Same visibility rule as archiveSearch: the repository itself refuses
+  // channels outside the guild's archive-enabled set, so the wiring passes
+  // the caller's channel id straight through.
+  archiveChannelHistory: (input) =>
+    archiveRepo
+      .listChannelHistory(scope, {
+        channelId: input.channelId,
+        ...(input.before !== undefined && { beforeMessageId: input.before }),
+        ...(input.limit !== undefined && { limit: input.limit }),
+      })
+      .map((message) => ({
+        messageId: message.messageId,
+        channelId: message.channelId,
+        authorId: message.authorId,
+        content: message.content,
+        createdAt: message.createdAt,
+        editedAt: message.editedAt,
+        deletedAt: message.deletedAt,
+      })),
+  archiveFindMessage: (messageId) => {
+    const message = archiveRepo.findMessage(scope, messageId);
+    if (message === undefined) return undefined;
+    return {
+      messageId: message.messageId,
+      channelId: message.channelId,
+      authorId: message.authorId,
+      content: message.content,
+      createdAt: message.createdAt,
+      editedAt: message.editedAt,
+      deletedAt: message.deletedAt,
+    };
+  },
 
   // Slice M5 (ADR 0044 §4): the channels this guild's MCP connector may post
   // to, and the ledger of what it posted. The clock is this composition
@@ -711,6 +817,7 @@ export const opsPortsFor = (
     });
     return 'granted';
   },
+  listAccountCapabilities: (accountId) => authzRepo.listAccountCapabilities(scope, accountId),
 
   // Slice 13 (S13-D1/D2): guild access itself, granted and revoked. The exact
   // pattern `grantAccountCapability` above uses: the account lookup is

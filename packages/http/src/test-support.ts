@@ -17,6 +17,7 @@ import {
   modMatchReviewRepo,
   oauthRepo,
   panelRepo,
+  roleRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -77,6 +78,107 @@ export const testPortsFor = (
     }),
   setKillswitch: (on) => guildRepo.setKillswitch(scope, on, now()),
 
+  // The Discord cache cannot exist here, so the pickers' channel list is a
+  // static demo set beside the seeded archive fixture channel; the daemon's
+  // wiring reads the live gateway cache instead.
+  listGuildChannels: () => [
+    { channelId: '333333333333333333', name: 'general', kind: 'text' },
+    { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
+    { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
+    { channelId: '999999999999999999', name: 'Community', kind: 'category' },
+  ],
+  // Same constraint as the channel fixture: no Discord cache here, so the
+  // role picker gets a static demo set; the daemon reads the live cache.
+  listGuildRoles: () => [
+    { roleId: '666666666666666666', name: 'Mod', colour: 0x3498db, position: 3, managed: false },
+    { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
+    {
+      roleId: '888888888888888888',
+      name: 'Bananasaurs',
+      colour: 0xf1c40f,
+      position: 4,
+      managed: true,
+    },
+  ],
+  // Two archived demo messages, newest first, paged like the repository's
+  // `before` cursor: the second page starts below the cursor id.
+  archiveChannelHistory: (input) => {
+    const all = [
+      {
+        messageId: '900000000000000002',
+        channelId: '333333333333333333',
+        authorId: '100000000000000001',
+        content: 'Movie night poll is up in the roles channel.',
+        createdAt: 1_700_000_100_000,
+        editedAt: undefined,
+        deletedAt: undefined,
+      },
+      {
+        messageId: '900000000000000001',
+        channelId: '333333333333333333',
+        authorId: '100000000000000002',
+        content: null,
+        createdAt: 1_700_000_000_000,
+        editedAt: undefined,
+        deletedAt: 1_700_000_050_000,
+      },
+    ];
+    if (input.channelId !== '333333333333333333') return [];
+    const start =
+      input.before === undefined ? 0 : all.findIndex((m) => m.messageId === input.before) + 1;
+    const limit = input.limit ?? 20;
+    return all.slice(start, start + limit).map((m) => ({ ...m }));
+  },
+  archiveFindMessage: (messageId) => {
+    if (messageId !== '900000000000000002') return undefined;
+    return {
+      messageId: '900000000000000002',
+      channelId: '333333333333333333',
+      authorId: '100000000000000001',
+      content: 'Movie night poll is up in the roles channel.',
+      createdAt: 1_700_000_100_000,
+      editedAt: undefined,
+      deletedAt: undefined,
+    };
+  },
+  // Static demo members, paged like the daemon's REST read: `after` continues
+  // past that id, and a full page carries its last id as the next cursor.
+  listGuildMembers: (input) => {
+    const all = [
+      {
+        memberId: '100000000000000001',
+        username: 'bryan',
+        displayName: 'Bryan',
+        roleIds: ['666666666666666666'],
+        joinedAt: 1_600_000_000_000,
+      },
+      {
+        memberId: '100000000000000002',
+        username: 'sasha',
+        displayName: 'Sasha',
+        roleIds: ['777777777777777777'],
+        joinedAt: 1_650_000_000_000,
+      },
+      {
+        memberId: '100000000000000003',
+        username: 'kai',
+        displayName: 'Kai',
+        roleIds: [],
+        joinedAt: null,
+      },
+    ];
+    const limit = input.limit ?? 25;
+    const afterIndex = all.findIndex((m) => m.memberId === input.after);
+    const start = afterIndex === -1 ? 0 : afterIndex + 1;
+    const members = all.slice(start, start + limit);
+    return Promise.resolve({
+      members,
+      nextAfter:
+        members.length === limit && start + limit < all.length
+          ? members[members.length - 1]?.memberId
+          : undefined,
+    });
+  },
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
       auditId: row.auditId,
@@ -131,6 +233,7 @@ export const testPortsFor = (
       maxRoles: panel.maxRoles,
       requiredRoleId: panel.requiredRoleId,
       blockedRoleIds: panel.blockedRoleIds,
+      content: panel.content,
       adoptionPassState: panel.adoptionPassState,
       adoptionBlockedCount: panel.adoptionBlockedCount,
       options: panel.options.map((option) => ({
@@ -407,6 +510,8 @@ export const testPortsFor = (
     throw new Error('not used by the dashboard routes under test');
   },
 
+  createPanel: (definition) => panelRepo.createPanel(scope, definition, now()),
+  isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
   publishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },
@@ -442,13 +547,7 @@ export const testPortsFor = (
     if (!opts.archiveGuildEnabled === true) return 'guild-not-archive-enabled';
     return archiveRepo.enableChannel(scope, { ...input, scopeKind: 'category', now: now() });
   },
-  archiveDisableCategory: (channelId) => {
-    const messageCount = archiveRepo.countMessages(scope, channelId);
-    const outcome = archiveRepo.disableChannel(scope, channelId);
-    if (outcome === 'disabled') return { outcome, messageCount };
-    if (outcome === 'derived') return { outcome: 'wrong-kind' };
-    return { outcome };
-  },
+  archiveDisableCategory: (channelId) => archiveRepo.disableCategory(scope, channelId),
   archiveSetThreads: (channelId, include) =>
     archiveRepo.setIncludeThreads(scope, channelId, include) ? 'updated' : 'not-enabled',
   archiveThreads: (channelId) => {
@@ -562,6 +661,7 @@ export const testPortsFor = (
     });
     return 'granted';
   },
+  listAccountCapabilities: (accountId) => authzRepo.listAccountCapabilities(scope, accountId),
   // Slice 13 (S13-D1/D2): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires — `findAccountByUsername` through
   // `opts.instanceScope`, then the guild-scoped access write. The pre-check

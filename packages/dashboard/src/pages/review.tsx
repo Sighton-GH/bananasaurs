@@ -15,7 +15,9 @@ import {
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
+import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
@@ -264,13 +266,28 @@ export function ReviewPage() {
 
           return (
             <>
-              <h2 className="mt-2 text-lg">Reviewed matches per rule</h2>
-              <p className="mt-1 text-sm text-ink-muted">
-                Release 2&apos;s gate is measured from these numbers (ADR 0042 §4): zero
-                false-positive or unclear verdicts for a rule that feeds the escalation counter; at
-                most 5% for a delete-only rule; at least 20 reviewed or a sign-off.
-              </p>
-              <div className="mt-3">
+              <div className="mb-4 flex flex-wrap items-center gap-3">
+                <p className="text-sm">
+                  <span className="text-2xl font-semibold">{queue.matches.length}</span>{' '}
+                  <span className="text-ink-muted">
+                    {queue.matches.length === 1 ? 'match' : 'matches'} waiting for a verdict
+                  </span>
+                </p>
+                {ruleFilter !== undefined && (
+                  <span className="flex items-center gap-2 text-sm">
+                    <Badge tone="hold">filtered to {ruleFilter}</Badge>
+                    <Link href="/review" className="text-ink-muted underline">
+                      Show every rule
+                    </Link>
+                  </span>
+                )}
+              </div>
+              <Card title="Reviewed matches per rule">
+                <p className="mb-3 text-sm text-ink-muted">
+                  Release 2&apos;s gate is measured from these numbers (ADR 0042 §4): zero
+                  false-positive or unclear verdicts for a rule that feeds the escalation counter;
+                  at most 5% for a delete-only rule; at least 20 reviewed or a sign-off.
+                </p>
                 <DataTable
                   caption="Reviewed matches per rule"
                   rows={tally}
@@ -310,7 +327,7 @@ export function ReviewPage() {
                     },
                   ]}
                 />
-              </div>
+              </Card>
               {showNativeWarning && (
                 <p role="note" className="mt-4 rounded-sm border border-hold px-3 py-2 text-sm">
                   Native AutoMod has blocked {queue.nativeBlocked} messages before any rule here
@@ -319,102 +336,106 @@ export function ReviewPage() {
                 </p>
               )}
 
-              <h2 className="mt-6 text-lg">Unreviewed matches</h2>
-              {queue.matches.length === 0 ? (
-                <p className="mt-2 text-sm text-ink-muted">
-                  Nothing to review. Matches recorded during the observe window appear here.
-                </p>
-              ) : (
-                <div className="mt-3">
-                  <DataTable
-                    caption="Unreviewed matches"
-                    rows={[...queue.matches].sort((a, b) => a.at - b.at)}
-                    rowKey={(m: ReviewableMatch) => m.eventId}
-                    columns={[
-                      {
-                        key: 'when',
-                        header: 'When',
-                        cell: (m) => new Date(m.at).toLocaleString(),
-                      },
-                      {
-                        key: 'rule',
-                        header: 'Rule',
-                        cell: (m) => (
-                          <Link href={`/automod/${encodeURIComponent(m.ruleId)}`}>{m.ruleId}</Link>
-                        ),
-                      },
-                      {
-                        key: 'member',
-                        header: 'Member',
-                        cell: (m) => (
-                          <Link href={`/members/${encodeURIComponent(m.memberId)}`}>
-                            {m.memberId}
-                          </Link>
-                        ),
-                      },
-                      { key: 'category', header: 'Category', cell: (m) => m.matchedCategory },
-                      {
-                        key: 'evidence',
-                        header: 'Evidence',
-                        cell: (m) => (
-                          <EvidenceCell
-                            fixtureContent={m.fixtureContent}
-                            matchedSnippet={m.matchedSnippet}
-                          />
-                        ),
-                      },
-                      {
-                        key: 'trace',
-                        header: 'Trace',
-                        cell: (m) =>
-                          m.trace === undefined ? (
-                            '—'
-                          ) : (
-                            <details>
-                              <summary>Trace</summary>
-                              <p className="max-w-md text-sm break-words whitespace-pre-wrap">
-                                {m.trace}
-                              </p>
-                            </details>
-                          ),
-                      },
-                      {
-                        key: 'verdict',
-                        header: 'Verdict',
-                        cell: (m) => verdictButtons(m.eventId),
-                      },
-                      {
-                        key: 'suppress',
-                        header: 'Suppress',
-                        cell: (m) => {
-                          const kind = ruleKindOf.get(m.ruleId);
-                          if (kind === undefined) return null;
-                          const action = suppressionFor(kind);
-                          if (action === undefined) {
-                            return (
-                              <Link href={`/automod/${encodeURIComponent(m.ruleId)}`}>
-                                Narrow the pattern
-                              </Link>
-                            );
-                          }
-                          return (
-                            <Button onClick={() => openSuppress(m, action)}>{action.label}</Button>
-                          );
+              <div className="mt-4">
+                <Card title="Unreviewed matches">
+                  {queue.matches.length === 0 ? (
+                    <p className="text-sm text-ink-muted">
+                      Nothing to review. Matches recorded during the observe window appear here.
+                    </p>
+                  ) : (
+                    <DataTable
+                      caption="Unreviewed matches"
+                      rows={[...queue.matches].sort((a, b) => a.at - b.at)}
+                      rowKey={(m: ReviewableMatch) => m.eventId}
+                      columns={[
+                        {
+                          key: 'when',
+                          header: 'When',
+                          cell: (m) => new Date(m.at).toLocaleString(),
                         },
-                      },
-                    ]}
-                  />
-                </div>
-              )}
+                        {
+                          key: 'rule',
+                          header: 'Rule',
+                          cell: (m) => (
+                            <Link href={`/automod/${encodeURIComponent(m.ruleId)}`}>
+                              {m.ruleId}
+                            </Link>
+                          ),
+                        },
+                        {
+                          key: 'member',
+                          header: 'Member',
+                          cell: (m) => (
+                            <Link href={`/members/${encodeURIComponent(m.memberId)}`}>
+                              {m.memberId}
+                            </Link>
+                          ),
+                        },
+                        { key: 'category', header: 'Category', cell: (m) => m.matchedCategory },
+                        {
+                          key: 'evidence',
+                          header: 'Evidence',
+                          cell: (m) => (
+                            <EvidenceCell
+                              fixtureContent={m.fixtureContent}
+                              matchedSnippet={m.matchedSnippet}
+                            />
+                          ),
+                        },
+                        {
+                          key: 'trace',
+                          header: 'Trace',
+                          cell: (m) =>
+                            m.trace === undefined ? (
+                              '—'
+                            ) : (
+                              <details>
+                                <summary>Trace</summary>
+                                <p className="max-w-md text-sm break-words whitespace-pre-wrap">
+                                  {m.trace}
+                                </p>
+                              </details>
+                            ),
+                        },
+                        {
+                          key: 'verdict',
+                          header: 'Verdict',
+                          cell: (m) => verdictButtons(m.eventId),
+                        },
+                        {
+                          key: 'suppress',
+                          header: 'Suppress',
+                          cell: (m) => {
+                            const kind = ruleKindOf.get(m.ruleId);
+                            if (kind === undefined) return null;
+                            const action = suppressionFor(kind);
+                            if (action === undefined) {
+                              return (
+                                <Link href={`/automod/${encodeURIComponent(m.ruleId)}`}>
+                                  Narrow the pattern
+                                </Link>
+                              );
+                            }
+                            return (
+                              <Button onClick={() => openSuppress(m, action)}>
+                                {action.label}
+                              </Button>
+                            );
+                          },
+                        },
+                      ]}
+                    />
+                  )}
+                </Card>
+              </div>
 
               {queue.nativeHits.length > 0 && (
-                <>
-                  <h2 className="mt-6 text-lg">Native AutoMod hits</h2>
-                  <p className="mt-1 text-sm text-ink-muted">
-                    Discord blocked these before any rule here saw them; a verdict records whether
-                    native was right.
-                  </p>
-                  <div className="mt-3">
+                <div className="mt-4">
+                  <Card title="Native AutoMod hits">
+                    <p className="mb-3 text-sm text-ink-muted">
+                      Discord blocked these before any rule here saw them; a verdict records whether
+                      native was right.
+                    </p>
                     <DataTable
                       caption="Native AutoMod hits"
                       rows={[...queue.nativeHits].sort((a, b) => a.at - b.at)}
@@ -459,8 +480,8 @@ export function ReviewPage() {
                         },
                       ]}
                     />
-                  </div>
-                </>
+                  </Card>
+                </div>
               )}
             </>
           );

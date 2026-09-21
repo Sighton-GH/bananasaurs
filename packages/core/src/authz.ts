@@ -59,6 +59,13 @@ export const CAPABILITIES = [
   'moderation.act',
   /** ADR 0045: may approve an OAuth client at the consent page and mint a token. */
   'mcp.authorize',
+  /**
+   * ADR 0056: may disable, delete, re-credential or re-scope dashboard
+   * accounts. Separate from `config.write` because these effects are
+   * instance-wide and password reset hands back working credentials —
+   * a guild-level config grant must not be able to become the owner.
+   */
+  'accounts.manage',
 ] as const;
 
 export type Capability = (typeof CAPABILITIES)[number];
