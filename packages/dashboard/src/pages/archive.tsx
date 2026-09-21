@@ -120,7 +120,6 @@ export function ArchivePage() {
     if (channel !== null) openBrowse(channel);
     if (message !== null) void openMessage(message);
     // Mount-only: later browse state is the operator's, not the URL's.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [urlSearch]);
 
   const enable = async (e: React.FormEvent) => {
