@@ -19,6 +19,7 @@ import { DoctorPage } from '../pages/doctor.js';
 import { JobsPage } from '../pages/jobs.js';
 import { LoggingPage } from '../pages/logging.js';
 import { McpPage } from '../pages/mcp.js';
+import { MembersPage } from '../pages/members.js';
 import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
 import { ProvidersPage } from '../pages/providers.js';
@@ -46,6 +47,7 @@ export const BUILT_PAGE_ROUTES: readonly BuiltRoute[] = [
   { path: '/safety', label: 'Safety', status: 'built', component: SafetyPage },
   { path: '/logging', label: 'Logging', status: 'built', component: LoggingPage },
   { path: '/panels', label: 'Role panels', status: 'built', component: PanelsPage },
+  { path: '/members', label: 'Members', status: 'built', component: MembersPage },
   { path: '/audit', label: 'Audit', status: 'built', component: AuditPage },
   { path: '/jobs', label: 'Jobs', status: 'built', component: JobsPage },
   { path: '/doctor', label: 'Doctor', status: 'built', component: DoctorPage },

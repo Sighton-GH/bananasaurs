@@ -31,6 +31,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   tailAudit: unstubbed('tailAudit'),
   listGuildChannels: unstubbed('listGuildChannels'),
   listGuildRoles: unstubbed('listGuildRoles'),
+  listGuildMembers: unstubbed('listGuildMembers'),
   listJobs: unstubbed('listJobs'),
   listPanels: unstubbed('listPanels'),
   findPanel: unstubbed('findPanel'),

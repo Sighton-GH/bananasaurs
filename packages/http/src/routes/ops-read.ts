@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { parseDuration } from '@bananasaurs/core';
+import { parseDuration, snowflakeIdSchema } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { requireCapability } from './capability.js';
 
@@ -64,6 +64,29 @@ export const registerOpsReadRoutes = (
 
     const ports = deps.portsFor(session.scope);
     return reply.status(200).send({ channels: ports.listGuildChannels() });
+  });
+
+  app.get('/api/guild/members', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'audit.read', reply)) return reply;
+
+    // Default page of 25, capped at 100 — the MCP `list_members` tool's own
+    // bounds, so the directory and the tool page through the same way.
+    const query = z
+      .object({
+        after: snowflakeIdSchema.optional(),
+        limit: z.coerce.number().int().min(1).max(100).optional(),
+      })
+      .safeParse(request.query);
+    if (!query.success) return reply.status(400).send({ error: 'invalid-query' });
+
+    const ports = deps.portsFor(session.scope);
+    const page = await ports.listGuildMembers({
+      after: query.data.after,
+      limit: query.data.limit,
+    });
+    return reply.status(200).send(page);
   });
 
   app.get('/api/guild/roles', (request, reply) => {

@@ -93,6 +93,44 @@ export const testPortsFor = (
     { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
     { roleId: '888888888888888888', name: 'Bananasaurs', colour: 0xf1c40f, position: 4, managed: true },
   ],
+  // Static demo members, paged like the daemon's REST read: `after` continues
+  // past that id, and a full page carries its last id as the next cursor.
+  listGuildMembers: (input) => {
+    const all = [
+      {
+        memberId: '100000000000000001',
+        username: 'bryan',
+        displayName: 'Bryan',
+        roleIds: ['666666666666666666'],
+        joinedAt: 1_600_000_000_000,
+      },
+      {
+        memberId: '100000000000000002',
+        username: 'sasha',
+        displayName: 'Sasha',
+        roleIds: ['777777777777777777'],
+        joinedAt: 1_650_000_000_000,
+      },
+      {
+        memberId: '100000000000000003',
+        username: 'kai',
+        displayName: 'Kai',
+        roleIds: [],
+        joinedAt: null,
+      },
+    ];
+    const limit = input.limit ?? 25;
+    const afterIndex = all.findIndex((m) => m.memberId === input.after);
+    const start = afterIndex === -1 ? 0 : afterIndex + 1;
+    const members = all.slice(start, start + limit);
+    return Promise.resolve({
+      members,
+      nextAfter:
+        members.length === limit && start + limit < all.length
+          ? members[members.length - 1]?.memberId
+          : undefined,
+    });
+  },
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
       auditId: row.auditId,

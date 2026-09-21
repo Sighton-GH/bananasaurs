@@ -215,6 +215,20 @@ export interface GuildChannelInfo {
  * plus the route's `optionable` join: Bananasaurs manages the role and
  * Discord does not, so a panel option may point at it.
  */
+/** One row of `GET /api/guild/members`'s `members` — mirrors `OpsGuildMemberInfo`. */
+export interface GuildMemberInfo {
+  readonly memberId: string;
+  readonly username: string;
+  readonly displayName: string;
+  readonly roleIds: readonly string[];
+  readonly joinedAt: number | null;
+}
+
+export interface GuildMemberPage {
+  readonly members: readonly GuildMemberInfo[];
+  readonly nextAfter?: string | undefined;
+}
+
 export interface GuildRoleInfo {
   readonly roleId: string;
   readonly name: string;

@@ -578,6 +578,22 @@ export interface OpsGuildChannelInfo {
   readonly kind: string;
 }
 
+export interface OpsGuildMemberInfo {
+  readonly memberId: string;
+  readonly username: string;
+  readonly displayName: string;
+  /** Excludes `@everyone`, matching the roles list's rule. */
+  readonly roleIds: readonly string[];
+  /** Unix ms, or null when Discord did not send a join time. */
+  readonly joinedAt: number | null;
+}
+
+export interface OpsGuildMemberPage {
+  readonly members: readonly OpsGuildMemberInfo[];
+  /** Pass as `after` for the next page; undefined when this page came back short. */
+  readonly nextAfter?: string | undefined;
+}
+
 export interface OpsGuildRoleInfo {
   readonly roleId: string;
   readonly name: string;
@@ -632,6 +648,17 @@ export interface OpsPorts {
    * is not cached yet, which the picker shows as an honest loading state.
    */
   listGuildRoles(): readonly OpsGuildRoleInfo[];
+  /**
+   * The guild's members, one paginated REST page at a time — the member
+   * directory's source, and the dashboard's answer to the MCP `list_members`
+   * tool. A paginated fetch, not a cache read: the gateway member cache is
+   * capped and would silently truncate (ruling M4-D10). Empty page when the
+   * guild is unreachable, which the page shows as an honest loading state.
+   */
+  listGuildMembers(input: {
+    after?: string | undefined;
+    limit?: number | undefined;
+  }): Promise<OpsGuildMemberPage>;
   listJobs(query: OpsJobQuery): readonly OpsJobRow[];
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;

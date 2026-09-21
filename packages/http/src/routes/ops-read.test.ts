@@ -84,6 +84,7 @@ const signIn = async (): Promise<{ cookie: string }> => {
 const GUILD_ROUTES = [
   '/api/guild/channels',
   '/api/guild/roles',
+  '/api/guild/members',
   '/api/archive/status',
   '/api/archive/search?q=hello',
   '/api/send-allowlist',
@@ -305,5 +306,84 @@ describe('GET /api/guild/roles', () => {
         },
       ],
     });
+  });
+});
+
+describe('GET /api/guild/members', () => {
+  it('answers the first page of the member directory with joined dates', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/guild/members',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      members: [
+        {
+          memberId: '100000000000000001',
+          username: 'bryan',
+          displayName: 'Bryan',
+          roleIds: ['666666666666666666'],
+          joinedAt: 1_600_000_000_000,
+        },
+        {
+          memberId: '100000000000000002',
+          username: 'sasha',
+          displayName: 'Sasha',
+          roleIds: ['777777777777777777'],
+          joinedAt: 1_650_000_000_000,
+        },
+        {
+          memberId: '100000000000000003',
+          username: 'kai',
+          displayName: 'Kai',
+          roleIds: [],
+          joinedAt: null,
+        },
+      ],
+      nextAfter: undefined,
+    });
+  });
+
+  it('walks the cursor: after continues past that member', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/guild/members?after=100000000000000001',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body: { members: { memberId: string }[] } = response.json();
+    expect(body.members.map((m) => m.memberId)).toEqual([
+      '100000000000000002',
+      '100000000000000003',
+    ]);
+  });
+
+  it('honours a limit and carries the next cursor on a full page', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/guild/members?limit=2',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body: { members: { memberId: string }[]; nextAfter?: string } = response.json();
+    expect(body.members).toHaveLength(2);
+    expect(body.nextAfter).toBe('100000000000000002');
+  });
+
+  it('answers 400 invalid-query for a bad cursor or limit', async () => {
+    const { cookie } = await signIn();
+    grant(['audit.read']);
+    for (const url of ['/api/guild/members?after=nope', '/api/guild/members?limit=0', '/api/guild/members?limit=101']) {
+      const response = await app.inject({ method: 'GET', url, headers: { cookie } });
+      expect(response.statusCode, url).toBe(400);
+      expect(response.json(), url).toEqual({ error: 'invalid-query' });
+    }
   });
 });

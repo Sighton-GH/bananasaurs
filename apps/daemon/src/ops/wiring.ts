@@ -556,6 +556,33 @@ export const opsPortsFor = (
       }))
       .sort((a, b) => b.position - a.position || a.name.localeCompare(b.name));
   },
+  // The same paginated REST read the MCP port makes (ruling M4-D10): the
+  // 50-entry member cache would silently truncate, and `cache: false` keeps
+  // the listing from churning it. No presence, activity or status fields.
+  listGuildMembers: async (input) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return { members: [], nextAfter: undefined };
+    const limit = input.limit ?? 25;
+    const page = await guild.members.list({
+      limit,
+      ...(input.after !== undefined ? { after: input.after } : {}),
+      cache: false,
+    });
+    const members = [...page.values()].map((member) => ({
+      memberId: member.id,
+      username: member.user.username,
+      displayName: member.displayName,
+      // The role cache always contains @everyone; dropped so no member shows
+      // a role that appears nowhere in the roles list.
+      roleIds: [...member.roles.cache.keys()].filter((id) => id !== guild.id).sort(),
+      joinedAt: member.joinedAt?.getTime() ?? null,
+    }));
+    const last = members[members.length - 1];
+    return {
+      members,
+      nextAfter: members.length === limit && last !== undefined ? last.memberId : undefined,
+    };
+  },
   archiveIndexHealth: () => archiveSearchRepo.indexHealth(scope),
   // The operator sees what the archive holds, nothing wider: the visibility
   // set is every archive-enabled channel in this guild, built here from

@@ -17,6 +17,7 @@ import { CasesPage } from '../pages/cases.js';
 import { CutoverPage } from '../pages/cutover.js';
 import { LoggingPage } from '../pages/logging.js';
 import { MemberPage } from '../pages/member.js';
+import { MembersPage } from '../pages/members.js';
 import { NotFoundPage } from '../pages/not-found.js';
 import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
@@ -181,6 +182,7 @@ function Pages() {
       <Route path="/cases" component={CasesPage} />
       <Route path="/cases/:caseId" component={CasePage} />
       <Route path="/members/:memberId" component={MemberPage} />
+      <Route path="/members" component={MembersPage} />
       <Route path="/cutover" component={CutoverPage} />
       <Route path="/archive" component={ArchivePage} />
       <Route path="/search" component={SearchPage} />
