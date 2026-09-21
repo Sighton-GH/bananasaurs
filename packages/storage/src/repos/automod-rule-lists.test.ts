@@ -223,6 +223,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   grantAccountCapability: notNeeded('grantAccountCapability'),
   listAccountCapabilities: notNeeded('listAccountCapabilities'),
   listGuildChannels: notNeeded('listGuildChannels'),
+  findGuildMessage: notNeeded('findGuildMessage'),
   accountGrantGuild: notNeeded('accountGrantGuild'),
   accountRevokeGuild: notNeeded('accountRevokeGuild'),
   allowSendChannel: notNeeded('allowSendChannel'),

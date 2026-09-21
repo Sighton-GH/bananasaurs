@@ -539,7 +539,7 @@ describe('assistant mention failure path', () => {
     await handler.run(payload, { ...context, attempts: 2, cursor: cursors.at(-1)! });
     expect(h.invoke).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(3);
-    expect(h.send.mock.calls[2]?.[1]).toMatchObject({
+    expect((h.send.mock.calls[2] as unknown[] | undefined)?.[1]).toMatchObject({
       allowedMentions: { parse: [], roles: ['111222333444555666'] },
     });
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([

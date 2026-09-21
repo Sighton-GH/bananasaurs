@@ -711,7 +711,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     // The builder's attach-to-existing-message flow: the route asks live
     // Discord before writing, so the stub says the message exists.
     const real = deps.portsFor;
-    deps.portsFor = (scope) => ({
+    (deps as { portsFor: typeof real }).portsFor = (scope: Parameters<typeof real>[0]) => ({
       ...real(scope),
       findGuildMessage: () => Promise.resolve('ok' as const),
     });
