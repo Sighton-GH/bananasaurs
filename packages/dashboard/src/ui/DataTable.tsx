@@ -42,7 +42,7 @@ export function DataTable<T>({
               <th
                 key={c.key}
                 scope="col"
-                className={`px-2 py-1.5 font-normal ${c.numeric === true ? 'text-right' : ''}`}
+                className={`whitespace-nowrap px-2 py-1.5 font-normal ${c.numeric === true ? 'text-right' : ''}`}
               >
                 {c.header}
               </th>

@@ -195,7 +195,11 @@ export function McpPage() {
                 rows={rows}
                 rowKey={(e2) => e2.channelId}
                 columns={[
-                  { key: 'channel', header: 'Channel', cell: (e2) => e2.channelId },
+                  {
+                    key: 'channel',
+                    header: 'Channel',
+                    cell: (e2) => <span className="whitespace-nowrap">{e2.channelId}</span>,
+                  },
                   {
                     key: 'kind',
                     header: 'Kind',
@@ -204,11 +208,19 @@ export function McpPage() {
                         ? `category — covers ${String(e2.coverage ?? 0)} channels`
                         : 'channel',
                   },
-                  { key: 'addedBy', header: 'Added by', cell: (e2) => e2.addedByAccountId },
+                  {
+                    key: 'addedBy',
+                    header: 'Added by',
+                    cell: (e2) => <span className="whitespace-nowrap">{e2.addedByAccountId}</span>,
+                  },
                   {
                     key: 'addedAt',
                     header: 'Added',
-                    cell: (e2) => new Date(e2.addedAt).toLocaleString(),
+                    cell: (e2) => (
+                      <span className="whitespace-nowrap">
+                        {new Date(e2.addedAt).toLocaleString()}
+                      </span>
+                    ),
                   },
                   {
                     key: 'actions',

@@ -241,7 +241,7 @@ export function ArchivePage() {
         title="Archive"
         purpose="The channels being archived, the search index over them, and the retention and case tools that act on what is stored."
       />
-      <div className="grid max-w-4xl gap-3">
+      <div className="grid max-w-6xl gap-3">
         <Card title="Search index">
           <DataState resource={status.resource}>
             {(data) => (
@@ -274,7 +274,11 @@ export function ArchivePage() {
                 rows={data.channels}
                 rowKey={(c) => c.channelId}
                 columns={[
-                  { key: 'channel', header: 'Channel', cell: (c) => c.channelId },
+                  {
+                    key: 'channel',
+                    header: 'Channel',
+                    cell: (c) => <span className="whitespace-nowrap">{c.channelId}</span>,
+                  },
                   {
                     key: 'scope',
                     header: 'Scope',
@@ -305,7 +309,11 @@ export function ArchivePage() {
                   {
                     key: 'enabledAt',
                     header: 'Enabled',
-                    cell: (c) => new Date(c.enabledAt).toLocaleDateString(),
+                    cell: (c) => (
+                      <span className="whitespace-nowrap">
+                        {new Date(c.enabledAt).toLocaleDateString()}
+                      </span>
+                    ),
                   },
                   {
                     key: 'backfill',

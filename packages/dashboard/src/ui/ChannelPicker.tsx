@@ -104,6 +104,10 @@ export function ChannelPicker({
                 onMouseDown={(e) => {
                   e.preventDefault();
                   onChange(c.channelId);
+                  // Close the list on a pick: it sits in flow, so staying
+                  // open pushes the submit button down and the next click's
+                  // blur-and-shift eats the click entirely.
+                  setFocused(false);
                 }}
                 className="flex w-full items-baseline justify-between gap-2 px-2 py-1.5 text-left text-ink hover:bg-canvas"
               >
