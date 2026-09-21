@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import {
+  assertProviderEligible,
   compileAssistantContext,
   CLUB_ASSISTANT_SKILLS,
   GeminiProvider,
@@ -9,7 +10,7 @@ import {
   type Config,
   type TextProvider,
 } from '@bananasaurs/core';
-import { assistantRepo, type GuildScope } from '@bananasaurs/storage';
+import { assistantRepo, eligibilityRepo, type GuildScope, type InstanceScope } from '@bananasaurs/storage';
 import type { AssistantCommandService, AssistantInvocation } from './commands.js';
 import { ReviewedResourceFetcher } from './resource-fetcher.js';
 
@@ -56,11 +57,20 @@ export interface AssistantServiceTestPorts {
 }
 export const createAssistantService = (
   scope: GuildScope,
+  instance: InstanceScope,
   config: Config,
   now: () => number,
   testPorts: AssistantServiceTestPorts = {},
 ): AssistantCommandService => {
-  const provider = testPorts.provider ?? providerFor(config);
+  // The safety/spend boundary wraps whatever provider is in play, including a
+  // test-injected one: no caller may bypass the pre-API scan (finding 2).
+  const rawProvider = testPorts.provider ?? providerFor(config);
+  const provider =
+    rawProvider === undefined || rawProvider instanceof SafeProvider
+      ? rawProvider
+      : new SafeProvider(rawProvider, config.AI_PROFILE_COST_CLASS, {
+          monthlyCapUsdMicros: 0,
+        });
   const resourceFetcher = new ReviewedResourceFetcher({ now });
   const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
   return {
@@ -80,6 +90,13 @@ export const createAssistantService = (
         handoff: 'draft-handoff',
       };
       const skill = commandSkill[input.command];
+      // The behaviour's caller role gate applies on every path. The mention
+      // router already enforced it; the slash path did not (finding 9).
+      if (!input.behaviour.callerRoleIds.some((roleId) => input.callerRoleIds.includes(roleId)))
+        return {
+          ok: false,
+          content: 'This behaviour is not available to your server roles. No action was taken.',
+        };
       if (!input.behaviour.allowedSkillIds.includes(skill))
         return {
           ok: false,
@@ -121,17 +138,50 @@ export const createAssistantService = (
             ok: false,
             content: 'Use an unambiguous future date and time. No reminder was scheduled.',
           };
+        // A reminder needs a real destination channel. Falling back to the
+        // user id produced a row that could never be delivered while the
+        // reply said "Reminder scheduled" (finding 7).
+        if (input.channelId === undefined)
+          return {
+            ok: false,
+            content: 'Reminders must run in a server channel. No reminder was scheduled.',
+          };
+        const text = (input.input.text ?? '').trim();
+        if (text.length === 0 || text.length > 1_500)
+          return {
+            ok: false,
+            content: 'Reminder text must be 1 to 1500 characters. No reminder was scheduled.',
+          };
         const id = randomUUID();
-        assistantRepo.insertReminder(scope, {
-          id,
-          guildId: scope.guildId,
-          creatorId: input.userId,
-          destinationId: input.channelId ?? input.userId,
-          text: input.input.text ?? '',
-          dueAt,
-          createdAt: now(),
-          status: 'scheduled',
-          dedupeKey: `reminder:${scope.guildId}:${id}`,
+        // Hard rule 6: the dedupe key is the Discord interaction or message
+        // that asked for the reminder, not a fresh UUID, so a retried
+        // interaction cannot book the same reminder twice (finding 7).
+        const dedupeKey = `reminder:${scope.guildId}:${input.invocationId ?? id}`;
+        try {
+          assistantRepo.insertReminder(scope, {
+            id,
+            guildId: scope.guildId,
+            creatorId: input.userId,
+            destinationId: input.channelId,
+            text,
+            dueAt,
+            createdAt: now(),
+            status: 'scheduled',
+            dedupeKey,
+          });
+        } catch {
+          return {
+            ok: true,
+            content: 'That reminder is already scheduled. I did not create a duplicate.',
+          };
+        }
+        assistantRepo.recordSkillActivity(scope, {
+          id: randomUUID(),
+          at: now(),
+          behaviourId: input.behaviour.id,
+          skillId: skill,
+          actorId: input.userId,
+          outcome: 'completed',
         });
         return {
           ok: true,
@@ -150,6 +200,38 @@ export const createAssistantService = (
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
+      // Hard rule 5: the provider_eligibility table is consulted on the
+      // request path, and a missing or ineligible row fails closed before
+      // any member content crosses the provider boundary (finding 1).
+      const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
+      try {
+        if (eligibilityRow === undefined)
+          throw new Error(`no provider_eligibility row for ${provider.id}`);
+        assertProviderEligible(
+          {
+            trainsOnInput: eligibilityRow.trainsOnInput,
+            productionUseAllowed: eligibilityRow.productionUseAllowed,
+            evidenceUrl: eligibilityRow.evidenceUrl,
+            reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
+          },
+          'club',
+        );
+      } catch {
+        assistantRepo.recordSkillActivity(scope, {
+          id: randomUUID(),
+          at: now(),
+          behaviourId: input.behaviour.id,
+          skillId: skill,
+          actorId: input.userId,
+          outcome: 'denied',
+          detail: 'Provider training-data eligibility is not verified.',
+        });
+        return {
+          ok: false,
+          content:
+            "The AI provider's training-data eligibility is not verified, so no content was sent outside the server.",
+        };
+      }
       const resources = assistantRepo
         .listResources(scope)
         .filter((r) => input.behaviour.resourceIds.includes(r.id) && r.enabled);

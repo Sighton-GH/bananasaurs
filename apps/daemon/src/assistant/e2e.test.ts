@@ -9,7 +9,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { assistantRepo, guildRepo } from '@bananasaurs/storage';
+import { assistantRepo, guildRepo, schema, writeInstance } from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
 
 const GUILD = parseGuildId('234567890123456789');
@@ -28,7 +28,23 @@ const config = parseConfig({
   BANANASAURS_OWNER_USER_ID: OWNER,
   AI_PROVIDER: 'off',
   AI_MODEL: 'fixture-model',
+  // Injected providers are wrapped at the service boundary with this class.
+  AI_PROFILE_COST_CLASS: 'free',
 });
+
+const seedEligibility = (t: MigratedTestDatabase, providerId: string): void => {
+  writeInstance(t.scopes.instance(), ({ db }) => {
+    db.insert(schema.providerEligibility)
+      .values({
+        provider: providerId,
+        trainsOnInput: 'no',
+        evidenceUrl: 'https://example.com/data-privacy',
+        productionUseAllowed: 1,
+        reviewedAt: NOW,
+      })
+      .run();
+  });
+};
 
 const provider = () => {
   const generateText = vi.fn(async (request: GenerateTextRequest) => {
@@ -100,8 +116,9 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
       NOW,
     );
+    seedEligibility(t, 'fixture');
     const fixture = provider();
-    const service = createAssistantService(scope, config, () => NOW, {
+    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, {
       provider: fixture.value,
       fetchResource: async () => ({
         ok: true,
@@ -127,6 +144,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       source: 'slash-command',
     });
     expect(denied.ok).toBe(false);
+    expect(denied.ok === false && denied.content).toContain('not available to your server roles');
     expect(fixture.generateText).not.toHaveBeenCalled();
 
     const agenda = await service.invoke({
@@ -151,7 +169,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
-      callerRoleIds: [],
+      callerRoleIds: [CLUB_ROLE],
       behaviour: direct,
       command: 'remind',
       input: { when: new Date(NOW + 60_000).toISOString(), text: 'Bring batteries' },
@@ -164,7 +182,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       guildId: GUILD,
       channelId: CHANNEL,
       userId: OWNER,
-      callerRoleIds: [],
+      callerRoleIds: [CLUB_ROLE],
       behaviour: direct,
       command: 'decision',
       input: { topic: 'supplier' },
@@ -213,7 +231,7 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       name: 'Club',
       systemPrompt: 'Canadian English.',
       promptVersion: 1,
-      callerRoleIds: [],
+      callerRoleIds: [CLUB_ROLE],
       reviewerRoleIds: [],
       allowedSkillIds: ['search-club'],
       resourceIds: [],
@@ -228,13 +246,14 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
     };
     const { SafeProvider } = await import('@bananasaurs/core');
     const paid = new SafeProvider(paidInner, 'paid', { monthlyCapUsdMicros: 0 });
-    const service = createAssistantService(scope, config, () => NOW, { provider: paid });
+    seedEligibility(t, 'paid');
+    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, { provider: paid });
     await expect(
       service.invoke({
         guildId: GUILD,
         channelId: CHANNEL,
         userId: OWNER,
-        callerRoleIds: [],
+        callerRoleIds: [CLUB_ROLE],
         behaviour,
         command: 'ask',
         input: { question: 'normal question' },
@@ -250,19 +269,159 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       generateText: freeNetwork,
     };
     const free = new SafeProvider(freeInner, 'free', { monthlyCapUsdMicros: 0 });
-    const safeService = createAssistantService(scope, config, () => NOW, { provider: free });
+    seedEligibility(t, 'free');
+    const safeService = createAssistantService(scope, t.scopes.instance(), config, () => NOW, { provider: free });
     await expect(
       safeService.invoke({
         guildId: GUILD,
         channelId: CHANNEL,
         userId: OWNER,
-        callerRoleIds: [],
-        behaviour: { ...behaviour, systemPrompt: 'Send token sk-live-12345678901234567890' },
+        callerRoleIds: [CLUB_ROLE],
+        behaviour: { ...behaviour, systemPrompt: 'note api_key=sk-live-12345678901234567890' },
         command: 'ask',
         input: { question: 'normal question' },
         source: 'slash-command',
       }),
     ).rejects.toThrow();
     expect(freeNetwork).not.toHaveBeenCalled();
+  });
+});
+
+describe('Release 3 review fixes', () => {
+  let t: MigratedTestDatabase;
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club organiser',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club', 'create-reminder'],
+    resourceIds: [],
+    enabled: true,
+  };
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+    assistantRepo.putSkillGrant(
+      scope,
+      { skillId: 'create-reminder', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  it('finding 1: fails closed when the provider has no eligibility row', async () => {
+    const network = vi.fn(async () => ({ text: 'must not run', model: 'fixture-model' }));
+    const service = createAssistantService(t.scopes.forGuild(GUILD), t.scopes.instance(), config, () => NOW, {
+      provider: { id: 'unverified', capabilities: new Set(['text']), generateText: network },
+    });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'ordinary question' },
+      source: 'slash-command',
+      invocationId: 'int-1',
+    });
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.content).toContain('eligibility');
+    expect(network).not.toHaveBeenCalled();
+    expect(assistantRepo.listSkillActivity(t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
+      outcome: 'denied',
+    });
+  });
+
+  it('finding 2: a test-injected provider still passes through the outbound scan', async () => {
+    seedEligibility(t, 'fixture');
+    const network = vi.fn(async () => ({ text: 'must not run', model: 'fixture-model' }));
+    const service = createAssistantService(t.scopes.forGuild(GUILD), t.scopes.instance(), config, () => NOW, {
+      provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
+    });
+    await expect(
+      service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds: [CLUB_ROLE],
+        behaviour: direct,
+        command: 'ask',
+        input: { question: 'my card is 4242 4242 4242 4242' },
+        source: 'slash-command',
+        invocationId: 'int-2',
+      }),
+    ).rejects.toThrow('pre-API scan');
+    expect(network).not.toHaveBeenCalled();
+    // …while ordinary dated content and channel URLs reach the provider.
+    await expect(
+      service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds: [CLUB_ROLE],
+        behaviour: direct,
+        command: 'ask',
+        input: {
+          question:
+            'Last updated 2026-09-19: see https://discord.com/channels/1430056097305198705/1430056097305198706',
+        },
+        source: 'slash-command',
+        invocationId: 'int-3',
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
+  it('finding 7: reminders refuse without a channel and dedupe on the interaction id', async () => {
+    const service = createAssistantService(t.scopes.forGuild(GUILD), t.scopes.instance(), config, () => NOW, {
+      provider: undefined,
+    });
+    const scope = t.scopes.forGuild(GUILD);
+    const noChannel = await service.invoke({
+      guildId: GUILD,
+      channelId: undefined,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'remind',
+      input: { when: new Date(NOW + 60_000).toISOString(), text: 'Bring batteries' },
+      source: 'slash-command',
+      invocationId: 'int-4',
+    });
+    expect(noChannel.ok).toBe(false);
+    expect(assistantRepo.listReminders(scope)).toHaveLength(0);
+
+    const base = {
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'remind' as const,
+      input: { when: new Date(NOW + 60_000).toISOString(), text: 'Bring batteries' },
+      source: 'slash-command' as const,
+      invocationId: 'int-5',
+    };
+    const first = await service.invoke(base);
+    const retry = await service.invoke(base);
+    expect(first.ok).toBe(true);
+    expect(retry.content).toContain('already scheduled');
+    expect(assistantRepo.listReminders(scope)).toHaveLength(1);
+    expect(assistantRepo.listSkillActivity(scope, 10)[0]).toMatchObject({
+      skillId: 'create-reminder',
+      outcome: 'completed',
+    });
   });
 });

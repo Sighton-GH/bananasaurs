@@ -33,6 +33,8 @@ export interface AssistantInvocation {
   readonly command: AssistantCommand;
   readonly input: Readonly<Record<string, string>>;
   readonly source: 'slash-command' | 'mention';
+  /** Discord interaction or message id that produced this invocation; the dedupe anchor. */
+  readonly invocationId?: string | undefined;
 }
 
 export type AssistantInvocationResult =
@@ -176,6 +178,7 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
       command: event.commandName as AssistantCommand,
       input,
       source: 'slash-command',
+      invocationId: event.interactionId,
     });
     await deps.respond(ref, reply(result.content));
   } catch (err) {
@@ -207,6 +210,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
       command: 'ask',
       input: { question: route.prompt },
       source: 'mention',
+      invocationId: event.messageId,
     });
   } catch (err) {
     // Mirror handleSlash: a provider or storage failure answers the member
