@@ -27,6 +27,8 @@ export const JOB_KINDS = {
   archiveBackfill: 'archive_backfill',
   /** The daily three-tier archive content expiry (ADR 0046 D3, PR-70). */
   archiveExpiry: 'archive_expiry',
+  /** One due-reminder delivery pass (Release 3, docs/RELEASE3_ASSISTANT_SCOPE.md). */
+  deliverReminders: 'deliver_reminders',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -272,3 +274,20 @@ export type ArchiveExpiryPayload = z.infer<typeof archiveExpiryPayload>;
  * a second `runOnce` on the same day enqueues nothing anywhere.
  */
 export const archiveExpiryDedupeKey = (day: string): string => `${JOB_KINDS.archiveExpiry}:${day}`;
+
+export const deliverRemindersPayload = z.object({
+  /** At most this many reminders are claimed in one pass. Defaults apply when absent. */
+  limit: z.number().int().positive().max(100).optional(),
+});
+export type DeliverRemindersPayload = z.infer<typeof deliverRemindersPayload>;
+
+/**
+ * One pending delivery pass per guild is enough.
+ *
+ * A pass claims every due reminder the store hands it, so a second queued pass
+ * behind the first would only find an empty claim set — the timer re-enqueues
+ * on every tick and the `(guild_id, dedupe_key)` partial unique index
+ * collapses the duplicates (ADR 0016). The next tick picks up anything a pass
+ * returned to `scheduled` for retry.
+ */
+export const deliverRemindersDedupeKey = (): string => JOB_KINDS.deliverReminders;

@@ -1,4 +1,4 @@
-import { asc, desc } from 'drizzle-orm';
+import { asc, desc, eq, inArray, lte } from 'drizzle-orm';
 import type { AssistantBehaviour, ClubResource, Reminder, ReminderStatus } from '@bananasaurs/core';
 import {
   assistantBehaviours,
@@ -159,6 +159,155 @@ export const insertReminder = (scope: GuildScope, r: Reminder): void =>
         dedupeKey: r.dedupeKey,
       })
       .run();
+  });
+
+/**
+ * Claims due reminders for one delivery pass.
+ *
+ * Select-then-update inside one `write()` — better-sqlite3 is synchronous and
+ * `write()` forbids an await, so nothing interleaves between the read and the
+ * claim, the same argument `jobRepo.claimNext` makes. Every transition in this
+ * file names the status it expects, so two passes racing the same row see one
+ * winner: the loser's `UPDATE` matches zero rows.
+ *
+ * Two claim sources, in due order:
+ *
+ * - `scheduled` rows at or past their due time.
+ * - `delivering` rows whose claim is at least `staleMs` old. Claiming stamps
+ *   the claim time into `due_at` (the row has no other writable timestamp),
+ *   so a stranded row's staleness is readable without a schema change — and
+ *   why a `delivering` row is never re-claimed immediately, only past the
+ *   explicit threshold. Per-guild passes are serial (one `deliver_reminders`
+ *   job at a time under the dedupe index, one worker draining it), so a row
+ *   still younger than the threshold belongs to a pass that is running right
+ *   now and must be left alone.
+ *
+ * The returned rows carry the stamped `dueAt` (claim time), matching what a
+ * re-read would return.
+ */
+export const claimDueReminders = (
+  scope: GuildScope,
+  now: number,
+  limit: number,
+  staleMs: number,
+): StoredReminder[] =>
+  write(scope, ({ db }) => {
+    const due = db
+      .select()
+      .from(assistantReminders)
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.status, 'scheduled'),
+          lte(assistantReminders.dueAt, now),
+        ),
+      )
+      .orderBy(asc(assistantReminders.dueAt), asc(assistantReminders.reminderId))
+      .limit(limit)
+      .all();
+    const stranded =
+      due.length >= limit
+        ? []
+        : db
+            .select()
+            .from(assistantReminders)
+            .where(
+              scope.only(
+                assistantReminders,
+                eq(assistantReminders.status, 'delivering'),
+                lte(assistantReminders.dueAt, now - staleMs),
+              ),
+            )
+            .orderBy(asc(assistantReminders.dueAt), asc(assistantReminders.reminderId))
+            .limit(limit - due.length)
+            .all();
+    const rows = [...due, ...stranded];
+    if (rows.length === 0) return [];
+    db.update(assistantReminders)
+      .set({ status: 'delivering', dueAt: now })
+      .where(
+        scope.only(
+          assistantReminders,
+          inArray(
+            assistantReminders.reminderId,
+            rows.map((r) => r.reminderId),
+          ),
+          inArray(assistantReminders.status, ['scheduled', 'delivering']),
+        ),
+      )
+      .run();
+    return rows.map((r) => toReminder({ ...r, status: 'delivering', dueAt: now }));
+  });
+
+/**
+ * A state-guarded transition: the `WHERE` names the one status the row must
+ * be in, and zero changed rows means some other pass moved it first — thrown,
+ * because silently "succeeding" would hide a double-delivery bug exactly the
+ * way an unguarded update would.
+ */
+const transitionReminder = (
+  scope: GuildScope,
+  id: string,
+  from: ReminderStatus,
+  set: {
+    status?: ReminderStatus | undefined;
+    failureReason?: string | null | undefined;
+    dueAt?: number | undefined;
+  },
+): void =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(assistantReminders)
+      .set(set)
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.status, from),
+        ),
+      )
+      .run();
+    if (result.changes !== 1)
+      throw new Error(`reminder ${id} is not ${from}; transition ${set.status ?? ''} refused`);
+  });
+
+export const completeReminder = (scope: GuildScope, id: string): void =>
+  transitionReminder(scope, id, 'delivering', { status: 'delivered', failureReason: null });
+
+export const failReminder = (scope: GuildScope, id: string, reason: string): void =>
+  transitionReminder(scope, id, 'delivering', { status: 'failed', failureReason: reason });
+
+export const retryReminder = (
+  scope: GuildScope,
+  id: string,
+  reason: string,
+  retryAt: number,
+): void =>
+  transitionReminder(scope, id, 'delivering', {
+    status: 'scheduled',
+    failureReason: reason,
+    dueAt: retryAt,
+  });
+
+/**
+ * Cancels a reminder that has not been claimed yet. Returns false for a row
+ * in any other state — cancelling a reminder mid-send is not a thing this
+ * store can do, and a false tells the caller exactly that.
+ */
+export const cancelReminder = (scope: GuildScope, id: string): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(assistantReminders)
+      .set({ status: 'cancelled' })
+      .where(
+        scope.only(
+          assistantReminders,
+          eq(assistantReminders.reminderId, id),
+          eq(assistantReminders.status, 'scheduled'),
+        ),
+      )
+      .run();
+    return result.changes === 1;
   });
 export interface SkillActivity {
   readonly id: string;

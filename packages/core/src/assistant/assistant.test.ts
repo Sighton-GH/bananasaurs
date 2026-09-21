@@ -119,7 +119,14 @@ describe('reminders', () => {
         dueAt: 2_000,
         createdAt: 1_000,
       },
-      { create, cancel: vi.fn(), claimDue: vi.fn(), complete: vi.fn(), fail: vi.fn() },
+      {
+        create,
+        cancel: vi.fn(),
+        claimDue: vi.fn(),
+        complete: vi.fn(),
+        fail: vi.fn(),
+        retry: vi.fn(),
+      },
       1_000,
     );
     expect(reminder.dedupeKey).toBe('reminder:g1:x');
@@ -129,11 +136,13 @@ describe('reminders', () => {
       claimDue: vi.fn(async () => [reminder]),
       complete: vi.fn(async () => undefined),
       fail: vi.fn(async () => undefined),
+      retry: vi.fn(async () => undefined),
     };
     const delivery = { send: vi.fn(async () => undefined) };
     await expect(deliverDueReminders(store, delivery, 2_000)).resolves.toEqual({
       delivered: 1,
       failed: 0,
+      retried: 0,
     });
     expect(store.complete).toHaveBeenCalledWith('x');
   });

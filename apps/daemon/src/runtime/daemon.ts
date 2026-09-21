@@ -30,6 +30,7 @@ import {
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
+import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 
@@ -136,6 +137,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // ADR 0046, Slice M1 Task 5 (PR-70): the daily archive-expiry producer. One
   // expiry job per guild per UTC day, beside the backup timer — the job table
   // has no scheduler, so this `setInterval` is what says when.
+  const reminderDeliveryTimer = createReminderDeliveryTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
   const archiveExpiryTimer = createArchiveExpiryTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
@@ -434,6 +442,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer.unref();
       backupTimer.start();
       archiveExpiryTimer.start();
+      reminderDeliveryTimer.start();
     },
 
     async stop() {
@@ -441,6 +450,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer = undefined;
       backupTimer.stop();
       archiveExpiryTimer.stop();
+      reminderDeliveryTimer.stop();
       await settle();
     },
 

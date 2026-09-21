@@ -71,6 +71,8 @@ import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
+import { deliverRemindersHandler } from '../jobs/reminders.js';
+import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -704,6 +706,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       archiveBackfillHandler(archiveBackfillPorts),
       archiveExpiryHandler(archiveExpiryPorts),
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
+      deliverRemindersHandler({
+        store: reminderStoreFor(scope),
+        delivery: createReminderDelivery(guildId, discord),
+        now,
+        logger,
+      }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this
       // slice does not build (ADR 0020).
