@@ -35,6 +35,7 @@ import { createBackupTimer } from './backup-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
+import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 
 /**
  * The composition root.
@@ -119,6 +120,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const guildIds = config.BANANASAURS_GUILD_ALLOWLIST.map((id) => parseGuildId(id));
   const allowlist = new Set<string>(guildIds);
 
+  // One sealer per process, lifted here from the per-guild runtime: the key is
+  // process-lifetime state, and minting it per guild invited the two to drift
+  // (independent audit, round 2).
+  const interactionTokenSealer = createInteractionTokenSealer();
+
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();
   for (const guildId of guildIds) {
     const scope = scopes.forGuild(guildId);
@@ -134,6 +140,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         client,
         logger,
         now,
+        interactionTokenSealer,
       }),
     });
   }

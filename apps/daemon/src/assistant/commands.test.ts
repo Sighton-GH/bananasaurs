@@ -386,4 +386,170 @@ describe('assistant mention failure path', () => {
       }),
     );
   });
+
+  it('drops a slash job before the invoke when the sealed token is from a previous process', async () => {
+    // Restart semantics: the sealer's key is per-process, so a queued job
+    // surviving a restart carries a token this process cannot open. Running
+    // the invoke anyway would spend provider quota and write durable
+    // ticket/activity effects whose answer can never be delivered (audit,
+    // round 2). The job must fail closed BEFORE the invoke, and complete
+    // (the token is long expired; no retry can help).
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    const staleSealer = createInteractionTokenSealer();
+    const currentSealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
+      openToken: currentSealer.open,
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    const payload = handler.payload.parse({
+      schemaVersion: 1,
+      invocationId: 'int-stale-token',
+      behaviourId: club.id,
+      command: 'ask',
+      channelId,
+      userId,
+      callerRoleIds: ['987654321098765432'],
+      input: { question: 'When are meetings?' },
+      source: 'slash-command',
+      interaction: {
+        interactionId: '678901234567890123',
+        sealedToken: staleSealer.seal('secret-token-from-before-restart'),
+      },
+    });
+    await handler.run(payload, {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.respond).not.toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('does not repeat the member answer when a completed job is retried', async () => {
+    // Completion retry: the worker finished the job but the completion write
+    // was lost, so the job fires again with the final cursor. Nothing may be
+    // re-sent.
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    const sealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
+      openToken: sealer.open,
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    const payload = handler.payload.parse({
+      schemaVersion: 1,
+      invocationId: 'int-completion-retry',
+      behaviourId: club.id,
+      command: 'ask',
+      channelId,
+      userId,
+      callerRoleIds: ['987654321098765432'],
+      input: { question: 'When are meetings?' },
+      source: 'mention',
+    });
+    const cursors: string[] = [];
+    const context = {
+      jobId: 1,
+      attempts: 1,
+      cursor: null as string | null,
+      saveCursor: (c: string): void => {
+        cursors.push(c);
+      },
+    };
+    await handler.run(payload, context);
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    // Every stage was persisted, ending at 'answered' for a plain result.
+    expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
+      'answered',
+    ]);
+    // The completion retry: the provider is not called and nothing is re-sent.
+    await handler.run(payload, { ...context, attempts: 2, cursor: cursors.at(-1)! });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes an escalation result after the answer without re-sending it or duplicating the post', async () => {
+    // Crash between the member answer and the escalation post, then a
+    // completion retry after everything landed.
+    const escBehaviour = {
+      ...club,
+      callerRoleIds: ['987654321098765432'],
+      escalation: undefined,
+    };
+    const h = harness([escBehaviour]);
+    const escalateResult: AssistantInvocationResult = {
+      ok: true,
+      content: 'I could not confirm that.',
+      escalation: { ticketId: 'ticket-1', channelId, reviewerRoleIds: ['111222333444555666'] },
+    };
+    h.invoke.mockResolvedValue(escalateResult);
+    const sealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [escBehaviour]), invoke: h.invoke },
+      openToken: sealer.open,
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    const payload = handler.payload.parse({
+      schemaVersion: 1,
+      invocationId: 'int-esc-retry',
+      behaviourId: club.id,
+      command: 'ask',
+      channelId,
+      userId,
+      callerRoleIds: ['987654321098765432'],
+      input: { question: 'Refund my membership.' },
+      source: 'mention',
+    });
+    const cursors: string[] = [];
+    const context = {
+      jobId: 1,
+      attempts: 1,
+      cursor: null as string | null,
+      saveCursor: (c: string): void => {
+        cursors.push(c);
+      },
+    };
+    // Attempt 1: the answer lands, the escalation send throws.
+    let calls = 0;
+    h.send.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) throw new Error('discord 500');
+    });
+    await expect(handler.run(payload, context)).rejects.toThrow('discord 500');
+    expect(h.send).toHaveBeenCalledTimes(2);
+    expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
+      'answered',
+    ]);
+    // Attempt 2: only the escalation post is sent.
+    await handler.run(payload, { ...context, attempts: 2, cursor: cursors.at(-1)! });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(3);
+    expect(h.send.mock.calls[2]?.[1]).toMatchObject({
+      allowedMentions: { parse: [], roles: ['111222333444555666'] },
+    });
+    expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
+      'answered',
+      'escalation-sent',
+    ]);
+    // Completion retry: nothing at all.
+    await handler.run(payload, { ...context, attempts: 3, cursor: cursors.at(-1)! });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(3);
+  });
 });

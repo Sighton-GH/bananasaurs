@@ -35,18 +35,17 @@ const reply = (content: string): OutgoingMessage => ({
   allowedMentions: { parse: [] },
 });
 
-/** Cursor stage: invoke finished, answer not yet attempted. */
-interface InvokeDoneCursor {
-  readonly stage: 'invoke-done';
+/** Every delivery stage the worker may retry through. */
+type CursorStage = 'invoke-done' | 'answered' | 'escalation-sent';
+interface StagedCursor {
+  readonly stage: CursorStage;
   readonly result: AssistantInvocationResult;
 }
-/** Cursor stage: the answer landed, only the escalation post remains. */
-interface AnsweredCursor {
-  readonly stage: 'answered';
-  readonly result: AssistantInvocationResult;
-}
+const STAGES: readonly CursorStage[] = ['invoke-done', 'answered', 'escalation-sent'];
+/** Total order over stages: a retry resumes AFTER the furthest stage reached. */
+const stageRank = (stage: CursorStage): number => STAGES.indexOf(stage);
 
-const parseCursor = (cursor: string | null): InvokeDoneCursor | AnsweredCursor | undefined => {
+const parseCursor = (cursor: string | null): StagedCursor | undefined => {
   if (cursor === null) return undefined;
   try {
     const parsed: unknown = JSON.parse(cursor);
@@ -55,10 +54,9 @@ const parseCursor = (cursor: string | null): InvokeDoneCursor | AnsweredCursor |
       parsed !== null &&
       'stage' in parsed &&
       'result' in parsed &&
-      ((parsed as { stage: unknown }).stage === 'invoke-done' ||
-        (parsed as { stage: unknown }).stage === 'answered')
+      STAGES.includes((parsed as { stage: CursorStage }).stage)
     ) {
-      return parsed as InvokeDoneCursor | AnsweredCursor;
+      return parsed as StagedCursor;
     }
     return undefined;
   } catch {
@@ -84,15 +82,7 @@ export const assistantInvokeHandler = (deps: {
     const answer = async (content: string): Promise<void> => {
       if (payload.interaction !== undefined) {
         const token = deps.openToken(payload.interaction.sealedToken);
-        if (token === undefined) {
-          // A restart forgot the sealing key; the old interaction cannot be
-          // answered and its token has expired by now anyway. Fail closed.
-          deps.logger.warn(
-            safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
-            'assistant answer dropped: interaction token is not from this process',
-          );
-          return;
-        }
+        if (token === undefined) return; // checked before the invoke; unreachable after it
         await deps.respond(
           { interactionId: payload.interaction.interactionId, token },
           reply(content),
@@ -102,8 +92,24 @@ export const assistantInvokeHandler = (deps: {
       }
     };
 
+    // Fail closed BEFORE any side effect when the answer can never be
+    // delivered: a restart forgets the sealing key, and invoking anyway
+    // would spend provider quota and write durable ticket/activity effects
+    // nobody hears about (independent audit, round 2).
+    if (
+      payload.interaction !== undefined &&
+      deps.openToken(payload.interaction.sealedToken) === undefined
+    ) {
+      deps.logger.warn(
+        safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+        'assistant invocation dropped: interaction token is not from this process',
+      );
+      return;
+    }
+
     // Stage 1: the invoke. Skipped on a retry that already finished it.
     const prior = parseCursor(context.cursor);
+    const reached = prior === undefined ? -1 : stageRank(prior.stage);
     let result: AssistantInvocationResult;
     if (prior !== undefined) {
       result = prior.result;
@@ -138,21 +144,25 @@ export const assistantInvokeHandler = (deps: {
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here
       // on retries with this cursor and never re-invokes.
-      context.saveCursor(
-        JSON.stringify({ stage: 'invoke-done', result } satisfies InvokeDoneCursor),
-      );
+      context.saveCursor(JSON.stringify({ stage: 'invoke-done', result } satisfies StagedCursor));
     }
 
-    // Stage 2: the answer. Skipped on a retry where it already landed.
-    if (prior?.stage !== 'answered') {
+    // Stage 2: the answer. Persisted for EVERY result, not only escalation
+    // ones: a crash or completion retry after the send must not repeat the
+    // member-facing answer (independent audit, round 2).
+    if (reached < stageRank('answered')) {
       await answer(result.content);
-      if (result.ok && result.escalation !== undefined) {
-        context.saveCursor(JSON.stringify({ stage: 'answered', result } satisfies AnsweredCursor));
-      }
+      context.saveCursor(JSON.stringify({ stage: 'answered', result } satisfies StagedCursor));
     }
 
-    // Stage 3: the escalation post.
-    if (result.ok && result.escalation !== undefined && payload.channelId !== undefined) {
+    // Stage 3: the escalation post, with its own sent marker for the same
+    // reason.
+    if (
+      reached < stageRank('escalation-sent') &&
+      result.ok &&
+      result.escalation !== undefined &&
+      payload.channelId !== undefined
+    ) {
       const reviewers = result.escalation.reviewerRoleIds.map((id) => `<@&${id}>`).join(' ');
       await deps.send(result.escalation.channelId, {
         content:
@@ -162,6 +172,9 @@ export const assistantInvokeHandler = (deps: {
           ),
         allowedMentions: { parse: [], roles: result.escalation.reviewerRoleIds },
       });
+      context.saveCursor(
+        JSON.stringify({ stage: 'escalation-sent', result } satisfies StagedCursor),
+      );
     }
   },
 });

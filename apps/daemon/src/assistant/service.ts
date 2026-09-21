@@ -166,30 +166,26 @@ export const createAssistantService = (
         // that asked for the reminder, not a fresh UUID, so a retried
         // interaction cannot book the same reminder twice (finding 7).
         const dedupeKey = `reminder:${scope.guildId}:${input.invocationId ?? id}`;
-        try {
-          assistantRepo.insertReminder(scope, {
-            id,
-            guildId: scope.guildId,
-            creatorId: input.userId,
-            destinationId: input.channelId,
-            text,
-            dueAt,
-            createdAt: now(),
-            status: 'scheduled',
-            dedupeKey,
-          });
-        } catch (err) {
-          // Only the dedupe-key unique conflict is the benign idempotency
-          // case. Reporting any other failure (disk, schema, FK) as "already
-          // scheduled" would turn a real create failure into a success the
-          // member believes (should-fix).
-          if (err instanceof Error && err.message.includes('UNIQUE constraint failed')) {
-            return {
-              ok: true,
-              content: 'That reminder is already scheduled. I did not create a duplicate.',
-            };
-          }
-          throw err;
+        // The dedupe-key conflict comes back as a typed repo result: only
+        // that exact replay is the benign "already scheduled" answer, and a
+        // real write failure still throws instead of reading as success
+        // (should-fix; typed per the independent audit, round 2).
+        const insert = assistantRepo.insertReminder(scope, {
+          id,
+          guildId: scope.guildId,
+          creatorId: input.userId,
+          destinationId: input.channelId,
+          text,
+          dueAt,
+          createdAt: now(),
+          status: 'scheduled',
+          dedupeKey,
+        });
+        if (insert === 'duplicate') {
+          return {
+            ok: true,
+            content: 'That reminder is already scheduled. I did not create a duplicate.',
+          };
         }
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),
@@ -287,9 +283,10 @@ export const createAssistantService = (
       for (const { resource, result } of fetched) {
         if (result.ok) continue;
         assistantRepo.recordResourceFetch(scope, resource.id, {
-          status: result.code === 'private-address' || result.code === 'invalid-url'
-            ? 'blocked'
-            : 'failed',
+          status:
+            result.code === 'private-address' || result.code === 'invalid-url'
+              ? 'blocked'
+              : 'failed',
           at: now(),
           detail: `${result.code}: ${result.message}`,
         });

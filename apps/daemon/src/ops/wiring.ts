@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto';
-import { ChannelType, PermissionsBitField, type Client } from 'discord.js';
+import { ChannelType, PermissionsBitField, type Client, type GuildMember } from 'discord.js';
 import {
   archiveBackfillDedupeKey,
   compileRule,
@@ -9,6 +9,7 @@ import {
   runDryRun,
   undoDedupeKey,
   type Config,
+  type OpsGuildMemberInfo,
   type OpsInstance,
   type OpsPorts,
   type OpsSettingChange,
@@ -670,17 +671,25 @@ export const opsPortsFor = (
   fetchGuildMembers: async (userIds) => {
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return [];
-    const wanted = [...new Set(userIds)].slice(0, 100);
+    const wanted = [...new Set(userIds)];
     if (wanted.length === 0) return [];
+    // The bulk endpoint takes at most 100 ids per call; chunk rather than
+    // truncate, so a surface handing over 100 ids does not silently lose the
+    // rest (low, independent audit).
+    const mapMember = (member: GuildMember): OpsGuildMemberInfo => ({
+      memberId: member.id,
+      username: member.user.username,
+      displayName: member.displayName,
+      roleIds: member.roles.cache.filter((role) => role.id !== guild.id).map((role) => role.id),
+      joinedAt: member.joinedTimestamp,
+    });
+    const members: OpsGuildMemberInfo[] = [];
     try {
-      const fetched = await guild.members.fetch({ user: wanted });
-      return [...fetched.values()].map((member) => ({
-        memberId: member.id,
-        username: member.user.username,
-        displayName: member.displayName,
-        roleIds: member.roles.cache.filter((role) => role.id !== guild.id).map((role) => role.id),
-        joinedAt: member.joinedTimestamp,
-      }));
+      for (let start = 0; start < wanted.length; start += 100) {
+        const fetched = await guild.members.fetch({ user: wanted.slice(start, start + 100) });
+        members.push(...[...fetched.values()].map(mapMember));
+      }
+      return members;
     } catch {
       return [];
     }

@@ -7,6 +7,7 @@ import { archiveRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/s
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
 import { buildGuildRuntime } from './guild.js';
+import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 
 /**
  * Forum backfill through the live wiring (review B3).
@@ -108,6 +109,7 @@ const runBackfill = async (channelId: string): Promise<void> => {
     client,
     logger,
     now: () => NOW,
+    interactionTokenSealer: createInteractionTokenSealer(),
   });
   jobRepo.enqueue(scope, {
     kind: JOB_KINDS.archiveBackfill,

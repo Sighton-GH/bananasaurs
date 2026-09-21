@@ -76,7 +76,7 @@ import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
-import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
+import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -120,6 +120,13 @@ export interface GuildRuntimeDeps {
   readonly logger: Logger;
   /** A property, not a method: it is destructured and passed on by value. */
   readonly now: () => number;
+  /**
+   * Sealed at the composition root (`runtime/daemon.ts`), one per process:
+   * interaction tokens reach the durable job table only as ciphertext
+   * (SECURITY, independent audit), and every guild in the process must open
+   * the same envelope the queue hands back.
+   */
+  readonly interactionTokenSealer: InteractionTokenSealer;
 }
 
 /**
@@ -677,9 +684,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   };
 
   const assistantService = createAssistantService(scope, instance, config, now);
-  // One sealer per process: interaction tokens reach the durable job table
-  // only as ciphertext (SECURITY, independent audit).
-  const interactionTokenSealer = createInteractionTokenSealer();
+  const { interactionTokenSealer } = deps;
 
   const subscribers: Subscriber[] = [
     createConnectionSubscriber(

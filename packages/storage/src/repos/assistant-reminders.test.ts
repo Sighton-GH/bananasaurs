@@ -7,6 +7,7 @@ import {
   claimDueReminders,
   completeReminder,
   failReminder,
+  hasDeliverableReminders,
   insertReminder,
   listReminders,
   retryReminder,
@@ -87,6 +88,48 @@ describe('claimDueReminders', () => {
     insertReminder(scope(), reminder('c', { dueAt: 100, status: 'delivering' }));
     const claimed = claimDueReminders(scope(), 1_000 + STALE_MS, 2, STALE_MS);
     expect(claimed.map((r) => r.id)).toEqual(['a', 'b']);
+  });
+});
+
+describe('insertReminder', () => {
+  it('reports a dedupe-key replay as a typed duplicate instead of throwing', () => {
+    // The typed result is what lets the service answer "already scheduled"
+    // for exactly the idempotency case while real write failures still throw
+    // (independent audit, round 2).
+    expect(insertReminder(scope(), reminder('a'))).toBe('created');
+    expect(insertReminder(scope(), reminder('b', { dedupeKey: `reminder:${G}:a` }))).toBe(
+      'duplicate',
+    );
+    expect(listReminders(scope()).map((r) => r.id)).toEqual(['a']);
+  });
+});
+
+describe('hasDeliverableReminders', () => {
+  it('mirrors the claim predicates: due scheduled rows and stranded delivering rows only', () => {
+    const NOW = 1_000;
+    // Nothing scheduled at all.
+    expect(hasDeliverableReminders(scope(), NOW, STALE_MS)).toBe(false);
+    // A future row does not make work. (Far enough out to stay future
+    // through every clock step below.)
+    insertReminder(scope(), reminder('future', { dueAt: NOW + STALE_MS * 3 }));
+    expect(hasDeliverableReminders(scope(), NOW, STALE_MS)).toBe(false);
+    // A due row does.
+    insertReminder(scope(), reminder('due', { dueAt: NOW }));
+    expect(hasDeliverableReminders(scope(), NOW, STALE_MS)).toBe(true);
+    // A fresh delivering claim belongs to its pass - no extra delivery job.
+    claimDueReminders(scope(), NOW, 25, STALE_MS);
+    expect(hasDeliverableReminders(scope(), NOW + 1, STALE_MS)).toBe(false);
+    // Past the stale threshold the stranded row is deliverable again.
+    expect(hasDeliverableReminders(scope(), NOW + STALE_MS, STALE_MS)).toBe(true);
+    // A reminder waiting on its retry time is not deliverable before it.
+    cancelReminder(scope(), 'future');
+    retryReminder(scope(), 'due', 'rate limited', NOW + STALE_MS + 60_000);
+    expect(hasDeliverableReminders(scope(), NOW + STALE_MS + 59_999, STALE_MS)).toBe(false);
+    expect(hasDeliverableReminders(scope(), NOW + STALE_MS + 60_000, STALE_MS)).toBe(true);
+    // Terminal states never make work.
+    claimDueReminders(scope(), NOW + STALE_MS + 60_000, 25, STALE_MS);
+    completeReminder(scope(), 'due');
+    expect(hasDeliverableReminders(scope(), NOW + STALE_MS + 60_000, STALE_MS)).toBe(false);
   });
 });
 

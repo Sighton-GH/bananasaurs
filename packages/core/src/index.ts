@@ -487,6 +487,7 @@ export type {
   OpsGatewayState,
   OpsInstance,
   OpsJobQuery,
+  OpsGuildMemberInfo,
   OpsJobRow,
   OpsNativeHit,
   OpsPanelDetail,

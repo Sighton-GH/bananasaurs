@@ -182,9 +182,19 @@ export const listReminders = (scope: GuildScope): readonly StoredReminder[] =>
       .all()
       .map(toReminder),
   );
-export const insertReminder = (scope: GuildScope, r: Reminder): void =>
+/**
+ * Creates a reminder, or reports the dedupe-key duplicate without throwing.
+ *
+ * The result is typed at the repo boundary: callers distinguish the benign
+ * idempotency replay from real write failures (disk, schema, FK) without
+ * matching on a driver's error message (independent audit, round 2).
+ */
+export type InsertReminderResult = 'created' | 'duplicate';
+
+export const insertReminder = (scope: GuildScope, r: Reminder): InsertReminderResult =>
   write(scope, ({ db }) => {
-    db.insert(assistantReminders)
+    const inserted = db
+      .insert(assistantReminders)
       .values({
         guildId: scope.guildId,
         reminderId: r.id,
@@ -196,7 +206,11 @@ export const insertReminder = (scope: GuildScope, r: Reminder): void =>
         status: r.status,
         dedupeKey: r.dedupeKey,
       })
-      .run();
+      // Exactly the dedupe constraint, named - any other constraint failure
+      // still throws out of `write()`.
+      .onConflictDoNothing({ target: [assistantReminders.guildId, assistantReminders.dedupeKey] })
+      .run().changes;
+    return inserted === 0 ? 'duplicate' : 'created';
   });
 
 /**
@@ -211,14 +225,13 @@ export const insertReminder = (scope: GuildScope, r: Reminder): void =>
  * Two claim sources, in due order:
  *
  * - `scheduled` rows at or past their due time.
- * - `delivering` rows whose claim is at least `staleMs` old. Claiming stamps
- *   the claim time into `due_at` (the row has no other writable timestamp),
- *   so a stranded row's staleness is readable without a schema change — and
- *   why a `delivering` row is never re-claimed immediately, only past the
- *   explicit threshold. Per-guild passes are serial (one `deliver_reminders`
- *   job at a time under the dedupe index, one worker draining it), so a row
- *   still younger than the threshold belongs to a pass that is running right
- *   now and must be left alone.
+ * - `delivering` rows whose claim is at least `staleMs` old. Staleness is
+ *   measured off `claimed_at` (the claim stamps it; `due_at` keeps the
+ *   original due time), and a `delivering` row is never re-claimed before
+ *   the explicit threshold. Per-guild passes are serial (one
+ *   `deliver_reminders` job at a time under the dedupe index, one worker
+ *   draining it), so a row still younger than the threshold belongs to a
+ *   pass that is running right now and must be left alone.
  *
  * The returned rows keep the original `dueAt`; the claim time is stamped in
  * `claimedAt`, matching what a re-read would return.
