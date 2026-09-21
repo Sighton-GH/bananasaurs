@@ -77,7 +77,7 @@ describe('posting', () => {
   });
 
   it("uses the caller's content when given one", async () => {
-    await postManagedPanel(managed(), deps, 'Pick a team');
+    await postManagedPanel(managed({ content: 'Pick a team' }), deps);
     const message = discord.restCalls('sendMessage')[0]?.args[2] as { content: string };
     expect(message.content).toBe('Pick a team');
   });
@@ -114,7 +114,7 @@ describe('editing', () => {
       ],
     });
 
-    await editManagedPanel(posted, deps, 'Now with more roles');
+    await editManagedPanel({ ...posted, content: 'Now with more roles' }, deps);
 
     const edited = discord.restCalls('editMessage');
     expect(edited).toHaveLength(1);

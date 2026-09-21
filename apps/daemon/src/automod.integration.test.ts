@@ -408,6 +408,7 @@ describe('automod, end to end on the fake gateway', () => {
     };
     const operations: GuildOperations = {
       publishPanel: notUsedByDoctor('publishPanel'),
+      createPanel: notUsedByDoctor('createPanel'),
       grantAdoptionAllowance: notUsedByDoctor('grantAdoptionAllowance'),
       adoptionAllowance: notUsedByDoctor('adoptionAllowance'),
     };

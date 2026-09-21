@@ -1,6 +1,6 @@
 /**
- * Plain words for the audit trail's two jargon columns (owner review:
- * "actor", "via" and a claimed host user meant nothing on first read).
+ * Plain words for the audit trail's two jargon columns: "actor", "via"
+ * and a claimed host user are internals, not product language.
  * The stored values are the server's vocabulary; these maps are the
  * dashboard's translation, kept beside the table so the Audit page and the
  * Overview's recent-activity list never drift apart.

@@ -286,8 +286,8 @@ export const suppressionFor = (
 };
 
 /* --------------------------------------------------------------------------
- * Plain-language renderings of the automod vocabulary (owner review:
- * "cutover state" and "(2 fp)" read like internals, not product). The raw
+ * Plain-language renderings of the automod vocabulary: "cutover state"
+ * and "(2 fp)" read like internals, not product. The raw
  * values stay visible in parentheses where the CLI uses the same word.
  * Labels and copy only; behaviour stays above.
  * ------------------------------------------------------------------------ */
