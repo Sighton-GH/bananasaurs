@@ -32,6 +32,7 @@ export const MCP_READ_GET_HEALTH = 'mcp.read.get_health';
 export const MCP_READ_LIST_CHANNELS = 'mcp.read.list_channels';
 export const MCP_READ_LIST_ROLES = 'mcp.read.list_roles';
 export const MCP_READ_LIST_MEMBERS = 'mcp.read.list_members';
+export const MCP_READ_LIST_THREADS = 'mcp.read.list_threads';
 export const MCP_READ_GET_SERVER_OVERVIEW = 'mcp.read.get_server_overview';
 
 /**

@@ -44,6 +44,9 @@ const messageEvent = (
   ...base,
   kind,
   channelId: '222222222222222222',
+  parentChannelId: undefined,
+  categoryId: undefined,
+  isPrivateThread: false,
   messageId: '333333333333333333',
   authorId: '444444444444444444',
   authorIsBot: false,
@@ -203,6 +206,9 @@ describe('message bulk deletions', () => {
       ...base,
       kind: 'messageDeleteBulk',
       channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       messageIds,
     });
     expect(fingerprintOf(bulk('C', ['3', '1', '2']))).toBe(

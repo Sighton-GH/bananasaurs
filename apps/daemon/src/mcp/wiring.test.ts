@@ -282,7 +282,7 @@ describe('/mcp behind the bearer guard', () => {
     }
   });
 
-  it('answers a valid read-scope token with tools/list containing all eleven tools', async () => {
+  it('answers a valid read-scope token with tools/list containing all twelve tools', async () => {
     const accessToken = await mintToken();
     const response = await toolsList(accessToken);
     expect(response.statusCode).toBe(200);
@@ -290,13 +290,14 @@ describe('/mcp behind the bearer guard', () => {
     expect(bodies.length).toBeGreaterThan(0);
     const result = bodies[0] as { result?: { tools?: Array<{ name: string }> } };
     const names = result.result?.tools?.map((tool) => tool.name);
-    expect(names).toHaveLength(11);
+    expect(names).toHaveLength(12);
     expect(names).toEqual([
       'get_health',
       'search_messages',
       'read_channel_history',
       'get_message',
       'list_channels',
+      'list_threads',
       'list_roles',
       'list_members',
       'list_mod_cases',
@@ -438,6 +439,9 @@ describe('/mcp behind the bearer guard', () => {
 describe('/mcp send_message through the real composition', () => {
   const CHANNEL = '444444444444444444';
   const OTHER_CHANNEL = '455555555555555555';
+  const CATEGORY = '466666666666666666';
+  const THREAD = '488888888888888888';
+  const PRIVATE_THREAD = '499999999999999999';
   /** Allowlisted but in no guild's channel cache: the stale-row shape C2 is about. */
   const OUTSIDE_CHANNEL = '477777777777777777';
   /** Distinctive text: must reach Discord, must never reach the audit row. */
@@ -461,12 +465,54 @@ describe('/mcp send_message through the real composition', () => {
       owner_id: '345678901234567890',
       channels: [
         {
+          id: CATEGORY,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildCategory,
+          name: 'category',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
           id: CHANNEL,
           guild_id: GUILD_A,
           type: ChannelType.GuildText,
           name: 'planning',
           position: 0,
           permission_overwrites: [],
+          parent_id: CATEGORY,
+        },
+        {
+          id: THREAD,
+          guild_id: GUILD_A,
+          parent_id: CHANNEL,
+          owner_id: ACCOUNT,
+          type: ChannelType.PublicThread,
+          name: 'public-thread',
+          position: 0,
+          permission_overwrites: [],
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: new Date().toISOString(),
+            locked: false,
+          },
+        },
+        {
+          id: PRIVATE_THREAD,
+          guild_id: GUILD_A,
+          parent_id: CHANNEL,
+          owner_id: ACCOUNT,
+          type: ChannelType.PrivateThread,
+          name: 'private-thread',
+          position: 0,
+          permission_overwrites: [],
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: new Date().toISOString(),
+            locked: false,
+            invitable: true,
+          },
         },
         {
           id: OTHER_CHANNEL,
@@ -568,6 +614,55 @@ describe('/mcp send_message through the real composition', () => {
     expect(audit?.actorId).toBe(after['tokenId']);
     // The absence assertion, not only the presence one.
     expect(JSON.stringify(trail)).not.toContain(CONTENT);
+  });
+
+  it('a public thread inherits its parent and audits the derived grant', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (await sendCall(accessToken, sendArgs({ channelId: THREAD, idempotencyKey: 'thread-send' })))
+        .body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(fakeDiscord.restCalls('sendMessage')[0]?.args[1]).toBe(THREAD);
+    const audit = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD_A), { limit: 25 })
+      .find((entry) => entry.action === 'mcp.message.sent');
+    const after = JSON.parse(audit?.after ?? '{}') as Record<string, unknown>;
+    expect(after['authorization']).toBe('derived');
+    expect(after['grantedByChannelId']).toBe(CHANNEL);
+  });
+
+  it('a channel inherits an allowlisted category', async () => {
+    seedSendGuild();
+    mcpSendRepo.allowChannel(t.scopes.forGuild(GUILD_A), {
+      channelId: CATEGORY,
+      scopeKind: 'category',
+      addedByAccountId: ACCOUNT,
+      now: clock,
+    });
+    guildRepo.setDryRun(t.scopes.forGuild(GUILD_A), false, clock);
+    const accessToken = await mintToken('bananasaurs:send');
+    const found = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'category-send' }))).body,
+    );
+    expect(found.isError).not.toBe(true);
+  });
+
+  it('a private thread never inherits its parent', async () => {
+    allow();
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (
+        await sendCall(
+          accessToken,
+          sendArgs({ channelId: PRIVATE_THREAD, idempotencyKey: 'private-send' }),
+        )
+      ).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('private thread');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
   });
 
   it('a non-allowlisted channel is refused and Discord is never called', async () => {
@@ -848,6 +943,65 @@ describe('/mcp archive tools across two guilds', () => {
     expect(history.text).not.toContain('alpha plans');
   });
 
+  it("read_channel_history rolls a forum's posts up under the forum id (M1)", async () => {
+    const FORUM = '599999999999999999';
+    const POST_A = '911111111111111111';
+    const POST_B = '922222222222222222';
+    (deps.client as unknown as { guilds: { _add: (data: object) => unknown } }).guilds._add({
+      id: GUILD_A,
+      name: 'guild a',
+      owner_id: '345678901234567890',
+      channels: [
+        {
+          id: FORUM,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildForum,
+          name: 'forum',
+          position: 0,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD_A, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    const scopeA = t.scopes.forGuild(GUILD_A);
+    archiveRepo.enableChannel(scopeA, { channelId: FORUM, attachmentPolicy: 'none', now: clock });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: POST_A,
+      channelId: FORUM,
+      threadId: '933333333333333333',
+      authorId: MEMBER,
+      content: 'forum post alpha',
+      createdAt: clock,
+      editedAt: undefined,
+      attachments: [],
+    });
+    archiveRepo.upsertMessage(scopeA, {
+      messageId: POST_B,
+      channelId: FORUM,
+      threadId: '944444444444444444',
+      authorId: MEMBER,
+      content: 'forum post beta',
+      createdAt: clock + 1,
+      editedAt: undefined,
+      attachments: [],
+    });
+    const accessToken = await mintToken();
+    const found = callText(
+      (
+        await mcpCall(accessToken, 'read_channel_history', {
+          guildId: '111111111111111111',
+          channelId: FORUM,
+        })
+      ).body,
+    );
+    expect(found.isError).not.toBe(true);
+    expect(found.text).toContain('forum post alpha');
+    expect(found.text).toContain('forum post beta');
+  });
+
   it('a guild the bot is not in is a refusal, never an empty result', async () => {
     authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD_B), {
       accountId: ACCOUNT,
@@ -997,6 +1151,8 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
   const ROLE_MANAGED = '344444444444444444';
   const ROLE_PLAIN = '355555555555555555';
   const CACHED_MEMBER = '366666666666666666';
+  const PUBLIC_THREAD = '388888888888888888';
+  const PRIVATE_THREAD = '399999999999999999';
   const REST_MEMBER_A = '377777777777777777';
   const REST_MEMBER_B = '388888888888888888';
 
@@ -1061,6 +1217,32 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
           permission_overwrites: [],
         },
         {
+          id: PUBLIC_THREAD,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPublicThread,
+          name: 'public-thread',
+          parent_id: PLANNING,
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: '2026-09-01T00:00:00.000Z',
+            locked: false,
+          },
+        },
+        {
+          id: PRIVATE_THREAD,
+          guild_id: GUILD_A,
+          type: ChannelType.GuildPrivateThread,
+          name: 'private-thread',
+          parent_id: PLANNING,
+          thread_metadata: {
+            archived: false,
+            auto_archive_duration: 60,
+            archive_timestamp: '2026-09-01T00:00:00.000Z',
+            locked: false,
+          },
+        },
+        {
           id: LOUNGE,
           guild_id: GUILD_A,
           type: ChannelType.GuildVoice,
@@ -1105,18 +1287,16 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
   };
 
   /** The same `createServer` call production uses, with the fake client. */
-  const buildGuildApp = (discordClient: Client): FastifyInstance =>
+  const buildGuildApp = (
+    discordClient: Client,
+    discord: FakeDiscord = new FakeDiscord({ guildId: GUILD_A }),
+  ): FastifyInstance =>
     createServer({
       deps: { ...deps, mcpPublicUrl: PUBLIC_URL },
       registerRoutes: (instance, _guard, routeDeps) => {
         // A port that is never called by the guild tools pinned here — but
         // required (ruling M5-D11), so it is threaded even so.
-        registerMcpRoutes(
-          instance,
-          routeDeps,
-          discordClient,
-          new FakeDiscord({ guildId: GUILD_A }),
-        );
+        registerMcpRoutes(instance, routeDeps, discordClient, discord);
       },
     });
 
@@ -1217,6 +1397,71 @@ describe('/mcp guild tools over a fake discord.js guild', () => {
       expect(found.text).toContain('club');
       expect(found.text).toContain('archive-enabled: yes');
       expect(found.text).toContain('archive-enabled: no');
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('list_threads returns public threads and never private ones (B4)', async () => {
+    seedStorage();
+    const { client: discordClient } = buildDiscordClient();
+    const guildApp = buildGuildApp(discordClient);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_threads', {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(found.text).toContain(PUBLIC_THREAD);
+      expect(found.text).not.toContain(PRIVATE_THREAD);
+      expect(found.text).not.toContain('private-thread');
+    } finally {
+      await guildApp.close();
+    }
+  });
+
+  it('list_threads with includeArchived pages the REST port, not the cache (S4)', async () => {
+    seedStorage();
+    const ARCHIVED_THREAD = '400000000000000001';
+    const { client: discordClient } = buildDiscordClient();
+    // The archived thread is not in any cache — the default sweeper evicts
+    // archived threads — so only a port that asks Discord can return it.
+    class ArchivedThreadDiscord extends FakeDiscord {
+      restListCalls = 0;
+      override async listPublicThreads(
+        _guildId: string,
+        _channelId: string,
+      ): Promise<readonly { id: string; name: string; isPrivate: boolean; archived: boolean }[]> {
+        this.restListCalls += 1;
+        return [
+          { id: PUBLIC_THREAD, name: 'public thread', isPrivate: false, archived: false },
+          { id: ARCHIVED_THREAD, name: 'archived thread', isPrivate: false, archived: true },
+        ];
+      }
+    }
+    const discord = new ArchivedThreadDiscord({ guildId: GUILD_A });
+    const guildApp = buildGuildApp(discordClient, discord);
+    try {
+      const accessToken = await mintToken();
+      const found = callText(
+        (
+          await guildCall(guildApp, accessToken, 'list_threads', {
+            guildId: '111111111111111111',
+            channelId: PLANNING,
+            includeArchived: true,
+          })
+        ).body,
+      );
+      expect(found.isError).not.toBe(true);
+      expect(discord.restListCalls).toBe(1);
+      expect(found.text).toContain(ARCHIVED_THREAD);
+      expect(found.text).toContain(PUBLIC_THREAD);
+      expect(found.text).not.toContain(PRIVATE_THREAD);
     } finally {
       await guildApp.close();
     }

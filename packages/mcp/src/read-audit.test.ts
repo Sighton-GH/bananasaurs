@@ -84,6 +84,7 @@ const archivePort = (): McpArchivePort => ({
     {
       messageId: MESSAGE,
       channelId: CHANNEL,
+      threadId: undefined,
       authorId: undefined,
       content: null,
       createdAt: 1,
@@ -145,6 +146,7 @@ const guildPort = (): McpGuildPort => ({
       archiveEnabled: true,
     },
   ],
+  listThreads: async () => [],
   listRoles: () => [
     { id: '555555555555555555', name: 'dev', position: 1, color: 0, managedByBananasaurs: false },
   ],
@@ -372,6 +374,7 @@ const contentfulArchivePort = (): McpArchivePort => ({
   findMessage: () => ({
     messageId: MESSAGE,
     channelId: CHANNEL,
+    threadId: undefined,
     authorId: '666666666666666666',
     content: SECRET_MESSAGE_TEXT,
     createdAt: 1,

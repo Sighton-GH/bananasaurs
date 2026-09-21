@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "db212fa2-31d0-4f29-a1d0-66dc615ea049",
+  "id": "be8ae625-0581-4c23-a235-204650f2ab06",
   "prevId": "9258a538-706d-4522-a0a3-f84496fba9aa",
   "tables": {
     "account_capabilities": {
@@ -264,6 +264,37 @@
           "notNull": true,
           "autoincrement": false
         },
+        "scope_kind": {
+          "name": "scope_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'channel'"
+        },
+        "include_threads": {
+          "name": "include_threads",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 1
+        },
+        "threads_found": {
+          "name": "threads_found",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "threads_done": {
+          "name": "threads_done",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
         "attachment_policy": {
           "name": "attachment_policy",
           "type": "text",
@@ -329,6 +360,14 @@
         "archive_channels_channel_id_snowflake": {
           "name": "archive_channels_channel_id_snowflake",
           "value": "(\"archive_channels\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"archive_channels\".\"channel_id\") BETWEEN 17 AND 20)"
+        },
+        "archive_channels_scope_kind": {
+          "name": "archive_channels_scope_kind",
+          "value": "\"archive_channels\".\"scope_kind\" IN ('channel','category')"
+        },
+        "archive_channels_include_threads_bool": {
+          "name": "archive_channels_include_threads_bool",
+          "value": "\"archive_channels\".\"include_threads\" IN (0,1)"
         },
         "archive_channels_attachment_policy": {
           "name": "archive_channels_attachment_policy",
@@ -443,6 +482,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "thread_id": {
+          "name": "thread_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "author_id": {
           "name": "author_id",
           "type": "text",
@@ -507,6 +553,15 @@
           "columns": [
             "guild_id",
             "channel_id",
+            "created_at"
+          ],
+          "isUnique": false
+        },
+        "archive_messages_thread_created": {
+          "name": "archive_messages_thread_created",
+          "columns": [
+            "guild_id",
+            "thread_id",
             "created_at"
           ],
           "isUnique": false
@@ -2308,6 +2363,14 @@
           "notNull": true,
           "autoincrement": false
         },
+        "scope_kind": {
+          "name": "scope_kind",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'channel'"
+        },
         "added_by_account_id": {
           "name": "added_by_account_id",
           "type": "text",
@@ -2357,6 +2420,10 @@
         "mcp_send_allowlist_channel_id_snowflake": {
           "name": "mcp_send_allowlist_channel_id_snowflake",
           "value": "(\"mcp_send_allowlist\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"mcp_send_allowlist\".\"channel_id\") BETWEEN 17 AND 20)"
+        },
+        "mcp_send_allowlist_scope_kind": {
+          "name": "mcp_send_allowlist_scope_kind",
+          "value": "\"mcp_send_allowlist\".\"scope_kind\" IN ('channel','category')"
         }
       }
     },
@@ -2603,6 +2670,13 @@
           "notNull": true,
           "autoincrement": false
         },
+        "channel_id": {
+          "name": "channel_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "at": {
           "name": "at",
           "type": "integer",
@@ -2703,6 +2777,10 @@
         "mod_case_events_member_id_snowflake": {
           "name": "mod_case_events_member_id_snowflake",
           "value": "(\"mod_case_events\".\"member_id\" NOT GLOB '*[^0-9]*' AND length(\"mod_case_events\".\"member_id\") BETWEEN 17 AND 20)"
+        },
+        "mod_case_events_channel_id_snowflake": {
+          "name": "mod_case_events_channel_id_snowflake",
+          "value": "(\"mod_case_events\".\"channel_id\" IS NULL OR (\"mod_case_events\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"mod_case_events\".\"channel_id\") BETWEEN 17 AND 20))"
         },
         "mod_case_events_action_taken": {
           "name": "mod_case_events_action_taken",
@@ -3841,13 +3919,6 @@
         },
         "message_id": {
           "name": "message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "content": {
-          "name": "content",
           "type": "text",
           "primaryKey": false,
           "notNull": false,

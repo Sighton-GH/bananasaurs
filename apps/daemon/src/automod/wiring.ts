@@ -347,6 +347,7 @@ export const automodPortsFor = (
         caseId: input.caseId,
         ruleId: input.ruleId,
         memberId: input.memberId,
+        channelId: input.channelId,
         matchedCategory: input.matchedCategory,
         matchedSnippet: input.matchedSnippet,
         actionTaken: input.actionTaken,

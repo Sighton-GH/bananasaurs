@@ -136,6 +136,45 @@ export const archiveDisableChannelCommand = defineCommand<
   args: archiveDisableChannelArgs,
   run(ctx: OpsContext, args): OpsWriteResult {
     const result = ctx.ports.archiveDisableChannel(args.channelId);
+    if (result.outcome === 'wrong-kind') {
+      return {
+        text: `channel ${args.channelId} is archived as a category; use archive disable-category`,
+        data: { ok: false, reason: result.outcome, channelId: args.channelId },
+        audit: {
+          action: 'archive.channel_disabled',
+          subjectType: 'archive_channel',
+          subjectId: args.channelId,
+          after: { outcome: result.outcome, channelId: args.channelId },
+        },
+      };
+    }
+    if (result.outcome === 'covered-by-category') {
+      // Review 2 N1: naming the category is the whole point. Saying
+      // "archived as a category" here was false of a derived row, and
+      // `disable-category` refused it back, so the operator had no verb.
+      return {
+        text:
+          `channel ${args.channelId} is not archived in its own right: it is covered by ` +
+          `category ${result.categoryId}. Use \`archive disable-category ${result.categoryId}\` ` +
+          'to drop the whole category, or exclude this channel from logging to stop it alone.',
+        data: {
+          ok: false,
+          reason: result.outcome,
+          channelId: args.channelId,
+          categoryId: result.categoryId,
+        },
+        audit: {
+          action: 'archive.channel_disabled',
+          subjectType: 'archive_channel',
+          subjectId: args.channelId,
+          after: {
+            outcome: result.outcome,
+            channelId: args.channelId,
+            categoryId: result.categoryId,
+          },
+        },
+      };
+    }
     if (result.outcome === 'not-enabled') {
       return {
         text: `channel ${args.channelId} is not archived; nothing changed`,
@@ -181,19 +220,36 @@ export const archiveStatusCommand = defineCommand<Record<string, never>>({
     const lines = channels.map(
       (channel) =>
         `${channel.channelId}  ${channel.attachmentPolicy}  ` +
+        // Review 2 N2: a derived row is coverage under a category, not a
+        // channel the operator enabled. Naming it — and the category it
+        // came from — is the difference between a status line an operator
+        // can act on and one that invites them to chase a backfill that
+        // will never be queued.
+        (channel.scopeKind === undefined || channel.scopeKind === 'channel'
+          ? ''
+          : channel.scopeKind === 'derived'
+            ? `derived from ${channel.derivedFrom ?? '?'}  `
+            : `${channel.scopeKind}  `) +
         `backfill:${channel.backfillState}  ` +
         `cursor:${channel.cursorMessageId ?? '-'}  ` +
-        `messages:${String(channel.messageCount)}`,
+        `messages:${String(channel.messageCount)}` +
+        (channel.threadsFound === undefined
+          ? ''
+          : `  threads:${String(channel.threadsDone ?? 0)}/${String(channel.threadsFound)}`),
     );
     return {
       text: lines.join('\n'),
       data: {
         channels: channels.map((channel) => ({
           channelId: channel.channelId,
+          scopeKind: channel.scopeKind ?? 'channel',
+          derivedFrom: channel.derivedFrom ?? null,
           attachmentPolicy: channel.attachmentPolicy,
           enabledAt: channel.enabledAt,
           cursorMessageId: channel.cursorMessageId ?? null,
           backfillState: channel.backfillState,
+          threadsFound: channel.threadsFound ?? null,
+          threadsDone: channel.threadsDone ?? 0,
           messageCount: channel.messageCount,
         })),
       },
@@ -376,5 +432,106 @@ export const archiveReindexCommand = defineCommand<Record<string, never>>({
         after: { indexedRows, scope: 'database-wide' },
       },
     };
+  },
+});
+
+const archiveCategoryArgs = z.object({ channelId: channelIdArg });
+export const archiveEnableCategoryCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive enable-category',
+  write: true,
+  summary: 'archive channels dynamically covered by a category',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to archive' }],
+  args: archiveCategoryArgs,
+  run(ctx, args): OpsWriteResult {
+    const coverage = ctx.ports.archiveCategoryCoverage(args.channelId);
+    const outcome = ctx.ports.archiveEnableCategory({
+      channelId: args.channelId,
+      attachmentPolicy: 'none',
+    });
+    return {
+      text:
+        outcome === 'enabled'
+          ? `category ${args.channelId} is enabled for archive scope; ${String(coverage.channels)} channels and ${String(coverage.messages)} archived messages currently covered; backfill queued`
+          : outcome === 'no-such-channel'
+            ? `${args.channelId} is not a category of this guild`
+            : `category ${args.channelId}: ${outcome}`,
+      data: { channelId: args.channelId, outcome, coverage },
+      audit: {
+        action: 'archive.category_enabled',
+        subjectType: 'archive_category',
+        subjectId: args.channelId,
+        after: { outcome },
+      },
+    };
+  },
+});
+export const archiveDisableCategoryCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive disable-category',
+  write: true,
+  summary: 'remove a category from archive scope',
+  positional: [{ name: 'channelId', required: true, describe: 'the category to remove' }],
+  args: archiveCategoryArgs,
+  run(ctx, args): OpsWriteResult {
+    const result = ctx.ports.archiveDisableCategory(args.channelId);
+    return {
+      text:
+        result.outcome === 'disabled'
+          ? `category ${args.channelId} is no longer archived (${String(result.messageCount)} archived message(s) removed)`
+          : result.outcome === 'wrong-kind'
+            ? `category ${args.channelId} is archived as a channel; use archive disable-channel`
+            : `category ${args.channelId} was not archived`,
+      data: { channelId: args.channelId, ...result },
+      audit: {
+        action: 'archive.category_disabled',
+        subjectType: 'archive_category',
+        subjectId: args.channelId,
+        after: result,
+      },
+    };
+  },
+});
+const setThreadsArgs = z.object({ channelId: channelIdArg, value: z.enum(['all', 'none']) });
+export const archiveSetThreadsCommand = defineCommand<z.infer<typeof setThreadsArgs>>({
+  name: 'archive set-threads',
+  write: true,
+  summary: 'include all public threads under an archived channel, or none',
+  positional: [
+    { name: 'channelId', required: true, describe: 'the archived channel' },
+    { name: 'value', required: true, describe: 'all | none' },
+  ],
+  args: setThreadsArgs,
+  run(ctx, args): OpsWriteResult {
+    const outcome = ctx.ports.archiveSetThreads(args.channelId, args.value === 'all');
+    return {
+      text:
+        outcome === 'updated'
+          ? `thread inheritance for ${args.channelId} set to ${args.value}`
+          : outcome === 'forum-requires-all'
+            ? 'forums always include their posts; none is refused'
+            : `channel ${args.channelId} is not archived`,
+      data: { channelId: args.channelId, value: args.value, outcome },
+      audit: {
+        action: 'archive.threads_set',
+        subjectType: 'archive_channel',
+        subjectId: args.channelId,
+        after: { value: args.value, outcome },
+      },
+    };
+  },
+});
+export const archiveThreadsCommand = defineCommand<z.infer<typeof archiveCategoryArgs>>({
+  name: 'archive threads',
+  write: false,
+  summary: 'show public-thread backfill progress for an archived channel',
+  positional: [{ name: 'channelId', required: true, describe: 'the archived channel' }],
+  args: archiveCategoryArgs,
+  run(ctx, args): OpsCommandResult {
+    const row = ctx.ports.archiveThreads(args.channelId);
+    return row === undefined
+      ? { text: `channel ${args.channelId} is not archived`, data: null }
+      : {
+          text: `threads: ${String(row.done)}/${row.found === undefined ? '?' : String(row.found)}`,
+          data: { found: row.found ?? null, done: row.done },
+        };
   },
 });

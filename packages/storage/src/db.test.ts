@@ -331,3 +331,67 @@ describe('migration 0012 adds the fixture corpus without disturbing existing cas
     raw.close();
   });
 });
+
+describe('migration 0024 adds thread and category scope without losing archive structure', () => {
+  it('preserves old rows, the archive FK and all message indexes', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const migrationsFolderUpTo = (lastIdx: number): string => {
+      const journal = JSON.parse(
+        fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+      ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'threads-migration-'));
+      fs.mkdirSync(path.join(dir, 'meta'));
+      const entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
+      fs.writeFileSync(
+        path.join(dir, 'meta', '_journal.json'),
+        JSON.stringify({ ...journal, entries }),
+      );
+      for (const entry of entries)
+        fs.copyFileSync(
+          path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+          path.join(dir, `${entry.tag}.sql`),
+        );
+      return dir;
+    };
+    runMigrations(raw, db, migrationsFolderUpTo(23));
+    const guild = '111111111111111111';
+    const channel = '222222222222222222';
+    raw
+      .prepare(`INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`)
+      .run(guild);
+    raw
+      .prepare(`INSERT INTO archive_channels (guild_id, channel_id, enabled_at) VALUES (?, ?, 0)`)
+      .run(guild, channel);
+    raw
+      .prepare(
+        `INSERT INTO archive_messages (guild_id, message_id, channel_id, created_at) VALUES (?, '333333333333333333', ?, 0)`,
+      )
+      .run(guild, channel);
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+    expect(
+      raw
+        .prepare(
+          `SELECT scope_kind, include_threads, threads_found, threads_done FROM archive_channels`,
+        )
+        .get(),
+    ).toEqual({ scope_kind: 'channel', include_threads: 1, threads_found: null, threads_done: 0 });
+    expect(raw.prepare(`SELECT thread_id FROM archive_messages`).get()).toEqual({
+      thread_id: null,
+    });
+    const fks = raw.prepare(`PRAGMA foreign_key_list(archive_messages)`).all() as {
+      table: string;
+    }[];
+    expect(fks.some((fk) => fk.table === 'archive_channels')).toBe(true);
+    const indexes = raw.prepare(`PRAGMA index_list(archive_messages)`).all() as { name: string }[];
+    expect(indexes.map((index) => index.name)).toEqual(
+      expect.arrayContaining([
+        'archive_messages_channel_created',
+        'archive_messages_deleted',
+        'archive_messages_thread_created',
+      ]),
+    );
+    raw.close();
+  });
+});

@@ -1,6 +1,10 @@
 import type { RegisteredCommand } from './dispatch.js';
 import {
   archiveDisableChannelCommand,
+  archiveEnableCategoryCommand,
+  archiveDisableCategoryCommand,
+  archiveSetThreadsCommand,
+  archiveThreadsCommand,
   archiveEnableChannelCommand,
   archiveLinkCaseCommand,
   archivePreserveCommand,
@@ -41,6 +45,8 @@ import {
 } from './commands/mcp.js';
 import {
   mcpAllowChannelCommand,
+  mcpAllowCategoryCommand,
+  mcpDisallowCategoryCommand,
   mcpAllowlistCommand,
   mcpDisallowChannelCommand,
   mcpSendsCommand,
@@ -111,6 +117,10 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   backupNowCommand,
   archiveEnableChannelCommand,
   archiveDisableChannelCommand,
+  archiveEnableCategoryCommand,
+  archiveDisableCategoryCommand,
+  archiveSetThreadsCommand,
+  archiveThreadsCommand,
   archivePreserveCommand,
   archiveLinkCaseCommand,
   archiveReindexCommand,
@@ -119,6 +129,8 @@ export const OPERATOR_COMMANDS: readonly RegisteredCommand[] = [
   mcpRevokeCommand,
   mcpRevokeClientCommand,
   mcpAllowChannelCommand,
+  mcpAllowCategoryCommand,
+  mcpDisallowCategoryCommand,
   mcpDisallowChannelCommand,
   panelCreateCommand,
 

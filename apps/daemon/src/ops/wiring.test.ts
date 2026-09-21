@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { ChannelType, Client, PermissionsBitField, Status, type Guild } from 'discord.js';
-import { parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
+import { JOB_KINDS, parseConfig, parseGuildId, type Config } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import { REQUIRED_PERMISSIONS } from '../runtime/doctor.js';
 import {
   accountRepo,
   archiveRepo,
   guildRepo,
+  jobRepo,
   mcpSendRepo,
   oauthRepo,
   sessionRepo,
@@ -200,6 +201,102 @@ describe('listUnreadableArchiveChannels', () => {
       { channelId: NO_VIEW, reason: 'no-view' },
       { channelId: NO_HISTORY, reason: 'no-history' },
     ]);
+  });
+});
+
+describe('archiveEnableCategory (review S2 + B2)', () => {
+  const CATEGORY = '661111111111111111';
+  const CHILD_A = '662222222222222222';
+  const CHILD_B = '663333333333333333';
+
+  /** A fresh client whose guild has a category with two text children. */
+  const categoryClient = (): Client => {
+    const c = new Client(buildClientOptions(() => BOT));
+    internals(c).guilds._add({
+      id: GUILD,
+      name: 'test guild',
+      owner_id: OWNER,
+      member_count: 30,
+      channels: [
+        {
+          id: CATEGORY,
+          guild_id: GUILD,
+          type: ChannelType.GuildCategory,
+          name: 'category',
+          position: 0,
+          permission_overwrites: [],
+        },
+        {
+          id: CHILD_A,
+          guild_id: GUILD,
+          type: ChannelType.GuildText,
+          name: 'child-a',
+          parent_id: CATEGORY,
+          position: 1,
+          permission_overwrites: [],
+        },
+        {
+          id: CHILD_B,
+          guild_id: GUILD,
+          type: ChannelType.GuildText,
+          name: 'child-b',
+          parent_id: CATEGORY,
+          position: 2,
+          permission_overwrites: [],
+        },
+      ],
+      roles: [{ id: GUILD, name: '@everyone', position: 0, permissions: '0', managed: false }],
+      members: [],
+      emojis: [],
+      unavailable: false,
+    });
+    return c;
+  };
+
+  const portsFor = (c: Client) =>
+    opsPortsFor(scope, t.scopes.instance(), operations, () => NOW, c, true);
+
+  it('refuses an id that is not a category of the guild and writes no row', () => {
+    const ports = portsFor(categoryClient());
+    // A text channel of the guild, and a snowflake in no cache at all.
+    expect(ports.archiveEnableCategory({ channelId: CHILD_A, attachmentPolicy: 'none' })).toBe(
+      'no-such-channel',
+    );
+    expect(
+      ports.archiveEnableCategory({ channelId: '699999999999999999', attachmentPolicy: 'none' }),
+    ).toBe('no-such-channel');
+    expect(archiveRepo.findChannel(scope, CHILD_A)).toBeUndefined();
+    expect(archiveRepo.findChannel(scope, '699999999999999999')).toBeUndefined();
+  });
+
+  it('enabling a category materializes derived rows and backfill jobs for its channels', () => {
+    const ports = portsFor(categoryClient());
+    expect(ports.archiveEnableCategory({ channelId: CATEGORY, attachmentPolicy: 'none' })).toBe(
+      'enabled',
+    );
+
+    for (const childId of [CHILD_A, CHILD_B]) {
+      const row = archiveRepo.findChannel(scope, childId);
+      expect(row?.scopeKind).toBe('derived');
+      expect(row?.derivedFrom).toBe(CATEGORY);
+    }
+    const jobs = jobRepo.listJobs(scope, {});
+    const backfilled = jobs
+      .filter((job) => job.kind === JOB_KINDS.archiveBackfill)
+      .map((job) => JSON.parse(job.payload) as { channelId: string })
+      .map((p) => p.channelId);
+    expect(backfilled.sort()).toEqual([CHILD_A, CHILD_B].sort());
+  });
+
+  it('allowSendCategory also refuses an id that is not a category of the guild (S2)', () => {
+    const ports = portsFor(categoryClient());
+    expect(ports.allowSendCategory({ channelId: CHILD_A, accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
+    expect(ports.allowSendCategory({ channelId: '699999999999999999', accountId: 'tester' })).toBe(
+      'no-such-channel',
+    );
+    expect(ports.allowSendCategory({ channelId: CATEGORY, accountId: 'tester' })).toBe('allowed');
   });
 });
 

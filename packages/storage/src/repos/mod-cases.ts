@@ -175,6 +175,7 @@ export interface RecordCaseEventInput {
   readonly caseId: string;
   readonly ruleId: string;
   readonly memberId: string;
+  readonly channelId?: string;
   readonly at: number;
   readonly matchedCategory: string;
   readonly matchedSnippet: string;
@@ -255,6 +256,7 @@ export const recordCaseEvent = (scope: GuildScope, input: RecordCaseEventInput):
         caseId: input.caseId,
         ruleId: input.ruleId,
         memberId: input.memberId,
+        channelId: input.channelId ?? null,
         at: input.at,
         matchedCategory: input.matchedCategory,
         matchedSnippet: input.matchedSnippet,

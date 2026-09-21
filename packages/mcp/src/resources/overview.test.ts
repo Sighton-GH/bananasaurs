@@ -68,6 +68,7 @@ const stubGuild = (): McpGuildPort => ({
       archiveEnabled: true,
     },
   ],
+  listThreads: async () => [],
   listRoles: () => [
     {
       id: '666666666666666666',

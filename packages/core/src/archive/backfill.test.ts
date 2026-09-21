@@ -3,6 +3,7 @@ import { pino } from 'pino';
 import { DiscordApiError, DiscordErrorCode } from '../discord/errors.js';
 import type { FetchedMessage, RecentMessagesPage, Snowflake } from '../discord/port.js';
 import type { JobContext } from '../jobs/worker.js';
+import { archiveBackfillPayload } from '../jobs/kinds.js';
 import { archiveBackfillHandler, type ArchiveChannel, type BackfillPorts } from './backfill.js';
 import type { UpsertMessageInput } from './ports.js';
 
@@ -37,7 +38,7 @@ interface SourceMessage {
 /** In-memory channel, newest-first, cursor on full pages only. */
 class FakeMessageSource {
   readonly messages = new Map<string, SourceMessage & { channelId: string }>();
-  readonly calls: { before: string | undefined }[] = [];
+  readonly calls: { channelId: string; before: string | undefined }[] = [];
   failure: DiscordApiError | undefined = undefined;
 
   seed(channelId: string, count: number, startIndex = 0): void {
@@ -56,7 +57,7 @@ class FakeMessageSource {
   }
 
   async fetch(channelId: string, before: string | undefined): Promise<RecentMessagesPage> {
-    this.calls.push({ before });
+    this.calls.push({ channelId, before });
     if (this.failure !== undefined) {
       const error = this.failure;
       this.failure = undefined;
@@ -88,7 +89,12 @@ interface Harness {
   ports: BackfillPorts;
   source: FakeMessageSource;
   rows: Map<string, UpsertMessageInput>;
-  continuations: { channelId: string; jobId: number; runAfter: number }[];
+  continuations: {
+    channelId: string;
+    threadWalk?: { threadIds: readonly string[]; index: number; before: string | undefined };
+    jobId: number;
+    runAfter: number;
+  }[];
   channel: {
     live: boolean;
     cursorMessageId: string | undefined;
@@ -100,7 +106,12 @@ interface Harness {
 const harness = (): Harness => {
   const source = new FakeMessageSource();
   const rows = new Map<string, UpsertMessageInput>();
-  const continuations: { channelId: string; jobId: number; runAfter: number }[] = [];
+  const continuations: {
+    channelId: string;
+    threadWalk?: { threadIds: readonly string[]; index: number; before: string | undefined };
+    jobId: number;
+    runAfter: number;
+  }[] = [];
   const channel = {
     live: true,
     cursorMessageId: undefined as string | undefined,
@@ -110,10 +121,17 @@ const harness = (): Harness => {
     guildArchiveEnabled: true,
     isChannelExcluded: () => false,
     fetchRecentMessages: (channelId, before) => source.fetch(channelId, before),
+    listThreads: async () => [],
+    isForum: () => false,
+    hasCategoryRow: () => false,
+    categoryOf: () => undefined,
+    setThreadProgress: () => {},
     findChannel: (channelId) =>
       channel.live && channelId === CHANNEL
         ? {
             channelId,
+            scopeKind: 'channel' as const,
+            derivedFrom: undefined,
             cursorMessageId: channel.cursorMessageId,
             backfillState: channel.state,
           }
@@ -148,12 +166,70 @@ const rateLimited = (): DiscordApiError =>
   });
 
 describe('archive backfill paging', () => {
+  it('backfills public threads under the channel and records the parent beside thread ids', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 1);
+    h.source.seed('777777777777777777', 2, 100);
+    h.source.seed('888888888888888888', 1, 200);
+    h.ports.listThreads = async () => [
+      { id: '777777777777777777', isPrivate: false },
+      { id: '888888888888888888', isPrivate: false },
+      { id: '999999999999999999', isPrivate: true },
+    ];
+    const handler = archiveBackfillHandler(h.ports);
+    // Tick 1: the channel's own page, then the walk is queued (M2). The
+    // private thread never reaches the walk: listThreads' filter drops it.
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
+    expect(h.continuations).toHaveLength(1);
+    // Ticks 2 and 3: one thread per tick.
+    await handler.run(
+      archiveBackfillPayload.parse({
+        channelId: CHANNEL,
+        threadWalk: h.continuations[0]?.threadWalk,
+      }),
+      h.context,
+    );
+    await handler.run(
+      archiveBackfillPayload.parse({
+        channelId: CHANNEL,
+        threadWalk: h.continuations[1]?.threadWalk,
+      }),
+      h.context,
+    );
+    expect(
+      [...h.rows.values()].filter((row) => row.threadId !== undefined).map((row) => row.threadId),
+    ).toEqual(['777777777777777777', '777777777777777777', '888888888888888888']);
+    expect(h.source.calls).not.toContainEqual(
+      expect.objectContaining({ channelId: '999999999999999999' }),
+    );
+  });
+
+  it('a forum skips parent history and backfills only its public posts', async () => {
+    const h = harness();
+    h.source.seed(CHANNEL, 1);
+    h.source.seed('777777777777777777', 1, 100);
+    h.ports.isForum = () => true;
+    h.ports.listThreads = async () => [{ id: '777777777777777777', isPrivate: false }];
+    const handler = archiveBackfillHandler(h.ports);
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
+    await handler.run(
+      archiveBackfillPayload.parse({
+        channelId: CHANNEL,
+        threadWalk: h.continuations[0]?.threadWalk,
+      }),
+      h.context,
+    );
+    expect(h.source.calls).not.toContainEqual(expect.objectContaining({ channelId: CHANNEL }));
+    expect([...h.rows.values()]).toEqual([
+      expect.objectContaining({ channelId: CHANNEL, threadId: '777777777777777777' }),
+    ]);
+  });
   it('three runs land 250 rows; the cursor after run 1 is the 100th id; done after run 3', async () => {
     const h = harness();
     h.source.seed(CHANNEL, 250);
     const handler = archiveBackfillHandler(h.ports);
 
-    await handler.run({ channelId: CHANNEL }, h.context);
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
     expect(h.rows.size).toBe(100);
     // Page 1 holds the newest 100; the cursor is its oldest — the 100th id.
     expect(h.channel.cursorMessageId).toBe(idAt(150));
@@ -161,13 +237,13 @@ describe('archive backfill paging', () => {
     expect(h.continuations).toHaveLength(1);
     expect(h.continuations[0]).toEqual({ channelId: CHANNEL, jobId: 1, runAfter: NOW });
 
-    await handler.run({ channelId: CHANNEL }, h.context);
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
     expect(h.rows.size).toBe(200);
     expect(h.channel.cursorMessageId).toBe(idAt(50));
     expect(h.channel.state).toBe('running');
     expect(h.continuations).toHaveLength(2);
 
-    await handler.run({ channelId: CHANNEL }, h.context);
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
     expect(h.rows.size).toBe(250);
     expect(h.channel.cursorMessageId).toBeUndefined();
     expect(h.channel.state).toBe('done');
@@ -179,12 +255,18 @@ describe('archive backfill paging', () => {
     const h = harness();
     h.source.seed(CHANNEL, 250);
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
     const cursor = h.channel.cursorMessageId;
     expect(cursor).toBe(idAt(150));
 
     // A new handler over the same store: what a restarted process builds.
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.source.calls).toHaveLength(2);
     expect(h.source.calls[0]?.before).toBeUndefined();
@@ -197,13 +279,13 @@ describe('archive backfill paging', () => {
     h.source.seed(CHANNEL, 250);
     const handler = archiveBackfillHandler(h.ports);
 
-    await handler.run({ channelId: CHANNEL }, h.context);
+    await handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context);
     const cursor = h.channel.cursorMessageId;
 
     h.source.failure = rateLimited();
-    const error = await Promise.resolve(handler.run({ channelId: CHANNEL }, h.context)).catch(
-      (err: unknown) => err,
-    );
+    const error = await Promise.resolve(
+      handler.run(archiveBackfillPayload.parse({ channelId: CHANNEL }), h.context),
+    ).catch((err: unknown) => err);
     expect(error).toBeInstanceOf(DiscordApiError);
     expect((error as DiscordApiError).isRateLimit).toBe(true);
 
@@ -218,7 +300,10 @@ describe('archive backfill paging', () => {
     h.source.seed(CHANNEL, 250);
     h.channel.live = false;
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.source.calls).toHaveLength(0);
     expect(h.rows.size).toBe(0);
@@ -230,7 +315,10 @@ describe('archive backfill paging', () => {
     h.source.seed(CHANNEL, 250);
     (h.ports as { guildArchiveEnabled: boolean }).guildArchiveEnabled = false;
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.source.calls).toHaveLength(0);
     expect(h.rows.size).toBe(0);
@@ -242,7 +330,10 @@ describe('archive backfill paging', () => {
     const h = harness();
     h.source.seed(CHANNEL, 10);
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.source.calls).toHaveLength(1);
     expect(h.rows.size).toBe(10);
@@ -253,7 +344,10 @@ describe('archive backfill paging', () => {
     h.source.seed(CHANNEL, 250);
     h.ports.isChannelExcluded = () => true;
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.source.calls).toHaveLength(0);
     expect(h.rows.size).toBe(0);
@@ -266,7 +360,10 @@ describe('archive backfill paging', () => {
     h.source.seed(CHANNEL, 10);
     h.ports.isChannelExcluded = () => false;
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.source.calls).toHaveLength(1);
     expect(h.rows.size).toBe(10);
@@ -289,7 +386,10 @@ describe('archive backfill paging', () => {
       { fileName: 'ghost.png', contentType: undefined, sizeBytes: 10 },
     ];
 
-    await archiveBackfillHandler(h.ports).run({ channelId: CHANNEL }, h.context);
+    await archiveBackfillHandler(h.ports).run(
+      archiveBackfillPayload.parse({ channelId: CHANNEL }),
+      h.context,
+    );
 
     expect(h.rows.size).toBe(1);
     expect(h.rows.get(idAt(0))).toEqual({

@@ -1,1 +1,0 @@
-ALTER TABLE `panels` ADD `content` text;

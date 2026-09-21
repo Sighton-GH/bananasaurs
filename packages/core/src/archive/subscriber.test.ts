@@ -42,6 +42,8 @@ interface FakeOptions {
   guildArchiveEnabled?: boolean;
   enabledChannels?: readonly string[];
   excludedChannels?: readonly string[];
+  categoryRows?: readonly string[];
+  includeThreads?: Readonly<Record<string, boolean>>;
 }
 
 /** Hand-rolled fake `ArchivePorts`: a Map-backed store plus a call list. */
@@ -50,10 +52,13 @@ const fakePorts = (over: FakeOptions = {}) => {
   const calls: Array<{ method: string; input: unknown }> = [];
   const enabled = new Set(over.enabledChannels ?? [CHANNEL]);
   const excluded = new Set(over.excludedChannels ?? []);
+  const categories = new Set(over.categoryRows ?? []);
   const capture = capturingLogger();
   const ports: ArchivePorts = {
     guildArchiveEnabled: over.guildArchiveEnabled ?? true,
     isChannelEnabled: (channelId) => enabled.has(channelId),
+    hasCategoryRow: (channelId) => categories.has(channelId),
+    parentIncludesThreads: (channelId) => over.includeThreads?.[channelId] ?? true,
     isChannelExcluded: (channelId) => excluded.has(channelId),
     upsertMessage: (input) => {
       calls.push({ method: 'upsertMessage', input });
@@ -101,6 +106,9 @@ const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
   guildId: GUILD,
   receivedAtMs: NOW_MS,
   channelId: CHANNEL,
+  parentChannelId: undefined,
+  categoryId: undefined,
+  isPrivateThread: false,
   messageId: MESSAGE,
   authorId: AUTHOR,
   authorIsBot: false,
@@ -151,6 +159,9 @@ describe('archive subscriber vetoes', () => {
       guildId: GUILD,
       receivedAtMs: NOW_MS,
       channelId: CHANNEL,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       messageIds: [MESSAGE],
     });
 
@@ -177,6 +188,37 @@ describe('archive subscriber vetoes', () => {
 });
 
 describe('archive subscriber ingestion', () => {
+  it('archives public threads and forum posts under the authorized parent', async () => {
+    const f = fakePorts({ enabledChannels: ['P'] });
+    await createArchiveSubscriber(f.ports).handle(
+      messageCreate({ channelId: 'T', parentChannelId: 'P', messageId: 'm1' }),
+    );
+    expect(f.calls[0]?.input).toMatchObject({ channelId: 'P', threadId: 'T', messageId: 'm1' });
+  });
+
+  it('never archives a private thread inherited from its parent', async () => {
+    const f = fakePorts({ enabledChannels: ['P'] });
+    await createArchiveSubscriber(f.ports).handle(
+      messageCreate({ channelId: 'T', parentChannelId: 'P', isPrivateThread: true }),
+    );
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('does not inherit archive scope when include_threads is off', async () => {
+    const f = fakePorts({ enabledChannels: ['P'], includeThreads: { P: false } });
+    await createArchiveSubscriber(f.ports).handle(
+      messageCreate({ channelId: 'T', parentChannelId: 'P' }),
+    );
+    expect(f.calls).toHaveLength(0);
+  });
+
+  it('inherits an enabled category dynamically', async () => {
+    const f = fakePorts({ enabledChannels: [], categoryRows: ['CAT'] });
+    await createArchiveSubscriber(f.ports).handle(
+      messageCreate({ channelId: 'C', categoryId: 'CAT' }),
+    );
+    expect(f.calls).toHaveLength(1);
+  });
   it('upserts a create with content, author, timestamps and mapped attachments', async () => {
     const f = fakePorts();
     const subscriber = createArchiveSubscriber(f.ports);
@@ -283,6 +325,9 @@ describe('archive subscriber ingestion', () => {
       guildId: GUILD,
       receivedAtMs: NOW_MS + 1_000,
       channelId: CHANNEL,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       messageId: MESSAGE,
       authorId: AUTHOR,
       authorIsBot: false,
@@ -304,6 +349,9 @@ describe('archive subscriber ingestion', () => {
       guildId: GUILD,
       receivedAtMs: NOW_MS + 2_000,
       channelId: CHANNEL,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       messageId: OTHER_CHANNEL,
       authorId: undefined,
       authorIsBot: false,
@@ -331,6 +379,9 @@ describe('archive subscriber ingestion', () => {
       guildId: GUILD,
       receivedAtMs: NOW_MS + 3_000,
       channelId: CHANNEL,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
       messageIds: [MESSAGE, second],
     });
 

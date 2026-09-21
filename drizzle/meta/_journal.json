@@ -173,8 +173,15 @@
     {
       "idx": 24,
       "version": "6",
-      "when": 1789953803179,
-      "tag": "0024_mysterious_firebrand",
+      "when": 1789932707493,
+      "tag": "0024_large_clint_barton",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "6",
+      "when": 1789946326151,
+      "tag": "0025_legal_gambit",
       "breakpoints": true
     }
   ]

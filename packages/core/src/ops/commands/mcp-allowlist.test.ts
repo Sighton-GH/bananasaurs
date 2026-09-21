@@ -4,8 +4,10 @@ import { fakeOpsInstance, fakeOpsPorts, FIXTURE_GUILD_ID } from '../test-fixture
 import type { OpsAuditWrite, OpsPorts, OpsSendRecord } from '../ports.js';
 import { OPERATOR_COMMANDS } from '../registry.js';
 import {
+  mcpAllowCategoryCommand,
   mcpAllowChannelCommand,
   mcpAllowlistCommand,
+  mcpDisallowCategoryCommand,
   mcpDisallowChannelCommand,
   mcpSendsCommand,
 } from './mcp-allowlist.js';
@@ -26,6 +28,8 @@ const harness = (overPorts: Partial<OpsPorts> = {}): Harness => {
     commands: [
       mcpAllowChannelCommand,
       mcpDisallowChannelCommand,
+      mcpAllowCategoryCommand,
+      mcpDisallowCategoryCommand,
       mcpAllowlistCommand,
       mcpSendsCommand,
     ],
@@ -174,7 +178,7 @@ describe('mcp disallow-channel', () => {
     const h = harness({
       disallowSendChannel: (channelId) => {
         seen.push(channelId);
-        return true;
+        return 'removed';
       },
     });
     const response = await h.run('mcp disallow-channel', { channelId: CHANNEL });
@@ -197,7 +201,7 @@ describe('mcp disallow-channel', () => {
   });
 
   it('a channel that was never allowlisted is a usage answer with an audit row', async () => {
-    const h = harness({ disallowSendChannel: () => false });
+    const h = harness({ disallowSendChannel: () => 'not-allowed' });
     const response = await h.run('mcp disallow-channel', { channelId: CHANNEL });
     expect(response.ok).toBe(true);
     expect(response.ok && response.text).toContain('was not allowlisted');
@@ -208,12 +212,24 @@ describe('mcp disallow-channel', () => {
     });
   });
 
+  it('a category-allowlisted id is wrong-kind to disallow-channel (S1)', async () => {
+    const h = harness({ disallowSendChannel: () => 'wrong-kind' });
+    const response = await h.run('mcp disallow-channel', { channelId: CHANNEL });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('mcp disallow-category');
+    expect(h.audit).toHaveLength(1);
+    expect(h.audit[0]).toMatchObject({
+      action: 'mcp.send_channel.disallowed',
+      after: { allowed: true, changed: false },
+    });
+  });
+
   it('refuses without --confirm and never calls the port', async () => {
     let calls = 0;
     const h = harness({
       disallowSendChannel: () => {
         calls += 1;
-        return true;
+        return 'removed';
       },
     });
     const response = await h.run('mcp disallow-channel', { channelId: CHANNEL }, false);
@@ -244,6 +260,40 @@ describe('mcp allowlist', () => {
     expect(response.ok && response.text).toContain(CHANNEL);
     expect(response.ok && response.text).toContain('acct_1');
     expect(response.ok && response.text).toContain(new Date(NOW - 86_400_000).toISOString());
+  });
+
+  it('the JSON data carries scopeKind and coverage alongside the text (M4)', async () => {
+    const h = harness({
+      listSendAllowlist: () => [
+        { channelId: CHANNEL, addedByAccountId: 'acct_1', addedAt: NOW, scopeKind: 'channel' },
+        {
+          channelId: '555555555555555555',
+          addedByAccountId: 'acct_2',
+          addedAt: NOW,
+          scopeKind: 'category' as const,
+          coverage: 7,
+        },
+      ],
+      sendScopeCoverage: () => 7,
+    });
+    const response = await h.run('mcp allowlist');
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.data).toEqual([
+      {
+        channelId: CHANNEL,
+        addedByAccountId: 'acct_1',
+        addedAt: NOW,
+        scopeKind: 'channel',
+        coverage: 1,
+      },
+      {
+        channelId: '555555555555555555',
+        addedByAccountId: 'acct_2',
+        addedAt: NOW,
+        scopeKind: 'category',
+        coverage: 7,
+      },
+    ]);
   });
 
   it('never asks for --confirm, since nothing changes', async () => {
@@ -356,10 +406,30 @@ describe('mcp sends', () => {
     expect(response.ok).toBe(false);
     expect(response.ok === false && response.message).toContain('--since expects a duration');
   });
-
   it('never asks for --confirm, since nothing changes', async () => {
     const h = harness({ listSends: () => [] });
     const response = await h.run('mcp sends', {}, false);
     expect(response.ok).toBe(true);
+  });
+});
+
+describe('mcp allow-category / disallow-category (S1 + S2)', () => {
+  it('allow-category refuses an id that is not a category of the guild', async () => {
+    const h = harness({ allowSendCategory: () => 'no-such-channel' });
+    const response = await h.run('mcp allow-category', { channelId: CHANNEL });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('not a category of this guild');
+    expect(response.ok && response.data).toMatchObject({
+      ok: false,
+      reason: 'no-such-channel',
+      channelId: CHANNEL,
+    });
+  });
+
+  it('disallow-category reports wrong-kind for a channel-allowlisted id', async () => {
+    const h = harness({ disallowSendCategory: () => 'wrong-kind' });
+    const response = await h.run('mcp disallow-category', { channelId: CHANNEL });
+    expect(response.ok).toBe(true);
+    expect(response.ok && response.text).toContain('mcp disallow-channel');
   });
 });

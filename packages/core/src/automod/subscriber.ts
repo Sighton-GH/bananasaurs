@@ -116,7 +116,15 @@ export interface AutomodSubscriberDeps {
    * guild, on the latency path in front of a deletion.
    */
   hasRoleExemption(ruleId: string): boolean;
-  isExempt(ruleId: string, input: { authorRoleIds: readonly string[]; channelId: string }): boolean;
+  isExempt(
+    ruleId: string,
+    input: {
+      authorRoleIds: readonly string[];
+      channelId: string;
+      parentChannelId: string | undefined;
+      categoryId: string | undefined;
+    },
+  ): boolean;
   deleteMessage(channelId: string, messageId: string, reason: string): Promise<void>;
   /**
    * Records this message as review evidence, and returns the fixture id — or
@@ -167,6 +175,7 @@ export interface AutomodSubscriberDeps {
     caseId: string;
     ruleId: string;
     memberId: string;
+    channelId: string;
     matchedCategory: string;
     matchedSnippet: string;
     actionTaken: AutomodActionTaken;
@@ -281,7 +290,14 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
 
       for (const rule of rules) {
         const authorRoleIds = deps.hasRoleExemption(rule.ruleId) ? await roleIdsOnce() : [];
-        if (deps.isExempt(rule.ruleId, { authorRoleIds, channelId: event.channelId })) {
+        if (
+          deps.isExempt(rule.ruleId, {
+            authorRoleIds,
+            channelId: event.channelId,
+            parentChannelId: event.parentChannelId,
+            categoryId: event.categoryId,
+          })
+        ) {
           continue;
         }
 
@@ -372,6 +388,7 @@ export const createAutomodSubscriber = (deps: AutomodSubscriberDeps): Subscriber
             caseId,
             ruleId: rule.ruleId,
             memberId: authorId,
+            channelId: event.channelId,
             matchedCategory: hit.categoryId,
             matchedSnippet: hit.snippet,
             actionTaken,
