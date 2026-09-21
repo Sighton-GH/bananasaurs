@@ -1,9 +1,10 @@
 /**
  * "Bananasaurs by Sighton Media" with the owner-supplied Sighton mark
- * (`public/brand/sighton-mark.jpg`, byte-exact; the display copy is a sized
- * derivative on its original light tile - `branding/BRAND.md`). The credit
- * wording is the owner's 2026-09-20 decision: Sighton Media only, no
- * personal name, linking https://sighton.ca.
+ * (`public/brand/sighton-mark.jpg`, byte-exact source; the display copies
+ * are sized PNG derivatives keyed off the white tile so the mark floats on
+ * either theme - owner request 2026-09-20). The credit wording is the
+ * owner's 2026-09-20 decision: Sighton Media only, no personal name,
+ * linking https://sighton.ca.
  */
 export function Attribution({ className }: { readonly className?: string | undefined }) {
   // One flex line with every item centred on the same axis: the mark image,
@@ -18,9 +19,9 @@ export function Attribution({ className }: { readonly className?: string | undef
         href="https://sighton.ca"
       >
         <img
-          src="/brand/sighton-mark-display.jpg"
+          src="/brand/sighton-mark-display.png"
           alt=""
-          className="h-3.5 w-auto rounded-sm border border-line"
+          className="h-3.5 w-auto"
         />
         <span>Sighton Media</span>
       </a>

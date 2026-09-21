@@ -12,7 +12,7 @@ it points to.
 | `brand-mark.jpg`   | Derived from `logo.jpg` (512px).                             | The display copy the rail header and login screen load.                                                                                          |
 | `favicon.png`      | Derived from `logo.jpg` (48px) for this project.             | Sized down from the mark; the source stays untouched.                                                                                            |
 
-| `sighton-mark.jpg` | Owner-supplied Sighton Media mark (2026-09-20).    | Rides next to the "Bananasaurs by Sighton Media" attribution only. `sighton-mark-display.jpg` is the 96px display derivative. |
+| `sighton-mark.jpg` | Owner-supplied Sighton Media mark (2026-09-20).    | Rides next to the "Bananasaurs by Sighton Media" attribution only. `sighton-mark-display.png` is the 96px display derivative, keyed off the white tile so the mark floats on both themes (owner request 2026-09-20). |
 
 Still owed: the dark/light shell backdrop art from ADR 0051 D5 (lost with
 the sandbox, not yet regenerated).
