@@ -426,14 +426,14 @@ function RuleDetailView({
             {exemptType === 'channel' ? (
               <ChannelPicker
                 label="Channel"
-                hint="Pick the channel this rule ignores, or paste its snowflake ID."
+                hint="Search for the channel this rule ignores."
                 value={exemptId}
                 onChange={setExemptId}
               />
             ) : (
               <RolePicker
                 label="Role"
-                hint="Pick the role this rule ignores, or paste its snowflake ID."
+                hint="Search for the role this rule ignores."
                 value={exemptId}
                 onChange={setExemptId}
               />

@@ -173,6 +173,17 @@ it('stores a sectioned curated memory, server card, and member opt-out', () => {
   expect(forgetMember(s, '333333333333333333', 13)).toBe(1);
   expect(listMemories(s)).toEqual([]);
 });
+it('updates the section when an existing curated memory is saved', () => {
+  const s = t.scopes.forGuild(G);
+  putMemory(s, { id: 'moved', section: 'Old', content: 'Keep this' }, 10);
+  putMemory(s, { id: 'moved', section: 'New', content: 'Keep this' }, 11);
+  expect(listMemories(s)[0]).toMatchObject({
+    id: 'moved',
+    section: 'New',
+    content: 'Keep this',
+    updatedAt: 11,
+  });
+});
 it('stores a memory proposal without changing memory before review', () => {
   const s = t.scopes.forGuild(G);
   insertDecisionDraft(s, {

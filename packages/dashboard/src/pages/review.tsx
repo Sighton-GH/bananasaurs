@@ -70,7 +70,7 @@ const suppressionDoneTitle = (kind: SuppressionKind): string => {
   }
 };
 
-/** Evidence: the fixture's whole message when one was captured, else the snippet with a note that it is not the whole message. */
+/** Evidence: the saved test example's whole message when one was captured, else the snippet with a note that it is not the whole message. */
 function EvidenceCell({
   fixtureContent,
   matchedSnippet,
@@ -199,7 +199,7 @@ export function ReviewPage() {
           toast({
             tone: 'hold',
             title:
-              "Verdict recorded — the fixture's label was reset because another rule's verdict on the same message disagrees",
+              "Verdict recorded — the saved test example's label was reset because another rule's verdict on the same message disagrees",
           });
         } else {
           toast({ tone: 'ok', title: 'Verdict recorded' });
@@ -220,16 +220,21 @@ export function ReviewPage() {
     (eventId: string) => {
       const busy = busyIds.has(eventId);
       return (
-        <div className="flex flex-wrap gap-1.5">
-          <Button busy={busy} onClick={() => void castVerdict(eventId, 'false_positive')}>
-            False positive
-          </Button>
-          <Button busy={busy} onClick={() => void castVerdict(eventId, 'true_positive')}>
-            True positive
-          </Button>
-          <Button busy={busy} onClick={() => void castVerdict(eventId, 'unclear')}>
-            Unclear
-          </Button>
+        <div>
+          <p className="mb-1 text-xs text-ink-muted">
+            Choose “Should be allowed” when the rule caught an acceptable message.
+          </p>
+          <div className="flex flex-wrap gap-1.5">
+            <Button busy={busy} onClick={() => void castVerdict(eventId, 'false_positive')}>
+              Should be allowed
+            </Button>
+            <Button busy={busy} onClick={() => void castVerdict(eventId, 'true_positive')}>
+              Should be blocked
+            </Button>
+            <Button busy={busy} onClick={() => void castVerdict(eventId, 'unclear')}>
+              Unclear
+            </Button>
+          </div>
         </div>
       );
     },
@@ -240,7 +245,7 @@ export function ReviewPage() {
     <>
       <PageHeader
         title="Review"
-        purpose="Every match nobody has ruled on yet. A verdict here is the evidence the release gate counts, and it labels the fixture the match came from."
+        purpose="Review messages the rule matched. Mark messages that should have been allowed so Bananasaurs can show whether the rule is ready to turn on."
       />
       <DataState resource={review.resource}>
         {({ queue, rules }) => {
@@ -303,13 +308,13 @@ export function ReviewPage() {
                     },
                     {
                       key: 'falsePositive',
-                      header: 'False positive',
+                      header: 'Should be allowed',
                       numeric: true,
                       cell: ([, counts]) => counts.falsePositive,
                     },
                     {
                       key: 'truePositive',
-                      header: 'True positive',
+                      header: 'Should be blocked',
                       numeric: true,
                       cell: ([, counts]) => counts.truePositive,
                     },

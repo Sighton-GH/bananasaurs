@@ -67,12 +67,17 @@ function DesktopHeader() {
             Active server
           </span>
         </div>
-        <p className="mt-0.5 truncate text-xs text-ink-muted">{session.info.guildId}</p>
+        <details className="mt-0.5 text-xs text-ink-muted">
+          <summary className="cursor-pointer">Server details</summary>
+          <p className="font-mono">{session.info.guildId}</p>
+        </details>
       </div>
       <div className="flex items-center gap-4">
         <div className="text-right">
           <p className="text-xs font-medium text-ink">{freshness}</p>
-          <p className="text-[0.6875rem] text-ink-muted">Health summary · Observe-first controls</p>
+          <Link href="/safety" className="text-[0.6875rem] text-ink-muted underline">
+            Safety mode: changes are logged, not applied
+          </Link>
         </div>
         <ThemeToggle />
       </div>

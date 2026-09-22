@@ -38,7 +38,7 @@ describe('ArchivePage', () => {
       { method: 'POST', url: '/api/archive/reindex', body: { indexed: 120 } },
     ]);
     renderWithSession(<ArchivePage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Reindex' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Update search results' }));
     expect(mock.mock.calls.some((c) => (c[0] as string) === '/api/archive/reindex')).toBe(true);
   });
 

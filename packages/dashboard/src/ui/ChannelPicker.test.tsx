@@ -52,7 +52,7 @@ describe('ChannelPicker', () => {
     expect(screen.getAllByRole('button', { name: /#channel-/ })).toHaveLength(12);
   });
 
-  it('filters the options by name or id as you type', async () => {
+  it('filters the options by name as you type', async () => {
     stubFetch([{ url: '/api/guild/channels', body: CHANNELS }]);
     renderWithSession(<Harness />);
     await screen.findByRole('button', { name: /#general/ });
@@ -63,10 +63,6 @@ describe('ChannelPicker', () => {
     });
     expect(screen.queryByRole('button', { name: /#general/ })).toBeNull();
     expect(screen.getByRole('button', { name: /#mod-log/ })).toBeTruthy();
-    fireEvent.change(input, {
-      target: { value: '555555' },
-    });
-    expect(screen.getByRole('button', { name: /#announcements/ })).toBeTruthy();
   });
 
   it('stays a usable id input when the list request fails', async () => {
@@ -82,6 +78,6 @@ describe('ChannelPicker', () => {
   it('says when no channels have reached the cache yet', async () => {
     stubFetch([{ url: '/api/guild/channels', body: { channels: [] } }]);
     renderWithSession(<Harness />);
-    expect(await screen.findByText(/No channels have reached the bot/)).toBeTruthy();
+    expect(await screen.findByText(/No channels are available yet/)).toBeTruthy();
   });
 });

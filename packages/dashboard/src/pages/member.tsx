@@ -24,7 +24,10 @@ export function MemberPage() {
 
   return (
     <>
-      <PageHeader title={memberId} purpose="Every case for this member, open first." />
+      <PageHeader
+        title="Member moderation history"
+        purpose="Every case for this member, open first."
+      />
       <DataState
         resource={cases.resource}
         isEmpty={(c) => c.length === 0}

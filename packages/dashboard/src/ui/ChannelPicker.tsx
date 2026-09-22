@@ -47,9 +47,7 @@ export function ChannelPicker({
     channels === undefined
       ? undefined
       : channels.filter(
-          (c) =>
-            wanted.includes(c.kind) &&
-            (query === '' || c.name.toLowerCase().includes(query) || c.channelId.includes(query)),
+          (c) => wanted.includes(c.kind) && (query === '' || c.name.toLowerCase().includes(query)),
         );
   const selected = channels?.find((c) => wanted.includes(c.kind) && c.channelId === value.trim());
 
@@ -57,7 +55,7 @@ export function ChannelPicker({
     <div className="text-sm">
       <Field
         label={label}
-        hint={hint ?? 'Pick a channel below or paste its snowflake ID.'}
+        hint={hint ?? 'Search by channel name and choose a result.'}
         {...(error !== undefined ? { error } : {})}
       >
         <Input
@@ -65,7 +63,7 @@ export function ChannelPicker({
           onChange={(e) => onChange(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          placeholder="Channel name or ID"
+          placeholder="Search channel names"
           autoComplete="off"
         />
       </Field>
@@ -76,12 +74,12 @@ export function ChannelPicker({
       )}
       {resource.state === 'error' && (
         <p className="mt-1 text-xs text-ink-muted">
-          The channel list is unavailable — paste the channel ID above.
+          The channel list is unavailable. Try again after Discord reconnects.
         </p>
       )}
       {resource.state === 'ready' && channels?.length === 0 && (
         <p className="mt-1 text-xs text-ink-muted">
-          No channels have reached the bot&apos;s cache yet — paste the channel ID above.
+          No channels are available yet. Check the bot's channel access.
         </p>
       )}
       {matches !== undefined && matches.length > 0 && (focused || query === '') && (
@@ -108,7 +106,6 @@ export function ChannelPicker({
                 <span className="truncate">
                   #{c.name} <span className="text-xs text-ink-muted">{c.kind}</span>
                 </span>
-                <span className="shrink-0 text-xs text-ink-muted">{c.channelId}</span>
               </button>
             </li>
           ))}

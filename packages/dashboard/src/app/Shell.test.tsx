@@ -55,7 +55,7 @@ describe('Shell', () => {
     ['/automod', 'Automod'],
     ['/review', 'Review'],
     ['/cases', 'Cases'],
-    ['/cutover', 'Cutover'],
+    ['/cutover', 'Turn on moderation'],
   ])('renders the %s page titled %s and marks its rail entry current', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
@@ -77,14 +77,14 @@ describe('Shell', () => {
     );
     // Rendered order follows the rail groups (ADR 0051 D6), not the NAV
     // array: every entry appears exactly once, in group order.
-    const groupOrder = ['Operate', 'Moderation', 'Archive', 'Instance', 'Assistant'];
+    const groupOrder = ['Start here', 'Moderation', 'Messages', 'Assistant', 'Advanced / System'];
     const expected = groupOrder.flatMap((group) =>
       NAV.filter((n) => n.group === group).map((n) => n.label),
     );
     expect(labels).toEqual(expected);
-    expect(within(nav).getByRole('heading', { name: 'Operate' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Start here' })).toBeTruthy();
     expect(within(nav).getByRole('heading', { name: 'Moderation' })).toBeTruthy();
-    expect(within(nav).getByRole('heading', { name: 'Instance' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Advanced / System' })).toBeTruthy();
     expect(within(nav).getByRole('heading', { name: 'Assistant' })).toBeTruthy();
     const aside = screen.getByRole('complementary');
     expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();
@@ -95,7 +95,7 @@ describe('Shell', () => {
     expect(await screen.findByText('Updated', { exact: false })).toBeTruthy();
     expect(screen.getAllByText('Bananasaurs dev')).toHaveLength(3);
     expect(screen.getAllByText('Active server')).toHaveLength(2);
-    expect(screen.getByText('Health summary · Observe-first controls')).toBeTruthy();
+    expect(screen.getByText('Safety mode: changes are logged, not applied')).toBeTruthy();
   });
 
   it('Sign out posts /api/logout', async () => {

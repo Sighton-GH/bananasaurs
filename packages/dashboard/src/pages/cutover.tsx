@@ -49,8 +49,8 @@ export function CutoverPage() {
   return (
     <>
       <PageHeader
-        title="Cutover"
-        purpose="Where each rule stands on its way from observe to enforce."
+        title="Turn on moderation"
+        purpose="Review each rule before it starts taking action in Discord."
       />
       <p className="mb-4 text-sm text-ink-muted">
         Enforcement is offered only by the release gate (ADR 0042); this board reports, it does not
@@ -76,20 +76,20 @@ export function CutoverPage() {
                 <Card title="Rules on the board">
                   <p className="text-2xl font-semibold">{rows.length}</p>
                 </Card>
-                <Card title="Still observing">
+                <Card title="Still learning - no action is taken">
                   <p className="text-2xl font-semibold">{observing}</p>
                 </Card>
-                <Card title="Past the observe floor">
+                <Card title="Ready for your review">
                   <p className="text-2xl font-semibold">{pastFloor}</p>
                   <p className="mt-1 text-xs text-ink-muted">
-                    the floor is necessary, not sufficient: the release gate also reads the review
-                    tally (ADR 0042)
+                    Next: review matched messages. Turning a rule on begins the Discord action shown
+                    for that rule. Read the review tally (ADR 0042)
                   </p>
                 </Card>
               </div>
               <Card title="Every rule">
                 <DataTable
-                  caption="Cutover board"
+                  caption="Moderation readiness"
                   rows={rows}
                   rowKey={(r) => r.ruleId}
                   columns={[
@@ -101,7 +101,7 @@ export function CutoverPage() {
                     },
                     {
                       key: 'state',
-                      header: 'Cutover state',
+                      header: 'Status',
                       cell: (r) => <Badge tone={stateTone(r.cutoverState)}>{r.cutoverState}</Badge>,
                     },
                     { key: 'observed', header: 'Observed', cell: observedCell },
@@ -123,6 +123,18 @@ export function CutoverPage() {
                       header: 'Unclear',
                       numeric: true,
                       cell: (r) => r.verdicts.unclear,
+                    },
+                    {
+                      key: 'next',
+                      header: 'Next step',
+                      cell: (r) =>
+                        r.cutoverState === 'observing'
+                          ? 'Keep reviewing matched messages. No Discord action is taken.'
+                          : r.cutoverState === 'ready'
+                            ? 'Review the evidence, then open the rule to turn it on. Its configured Discord action will begin.'
+                            : r.cutoverState === 'cutover'
+                              ? 'On: the configured Discord action is applied to new matches.'
+                              : 'Open the rule to see what is needed next.',
                     },
                     { key: 'signoff', header: 'Sign-off', cell: signoffCell },
                   ]}

@@ -79,10 +79,9 @@ describe('AutomodRulesPage', () => {
     ]);
     renderWithSession(<AutomodRulesPage />);
     await screen.findByText('No rules yet. Create one below.');
-    fireEvent.change(screen.getByLabelText('Rule ID'), { target: { value: 'no-links' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'No links' } });
     fireEvent.change(screen.getByLabelText('Kind'), { target: { value: 'regex' } });
-    fireEvent.change(screen.getByLabelText('Configuration'), {
+    fireEvent.change(screen.getByLabelText('Configuration data'), {
       target: { value: '{"pattern":"x"}' },
     });
     await act(async () => {
@@ -113,7 +112,6 @@ describe('AutomodRulesPage', () => {
     ]);
     renderWithSession(<AutomodRulesPage />);
     await screen.findByText('No rules yet. Create one below.');
-    fireEvent.change(screen.getByLabelText('Rule ID'), { target: { value: 'no-links' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'No links' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create rule' }));
@@ -129,7 +127,6 @@ describe('AutomodRulesPage', () => {
     ]);
     renderWithSession(<AutomodRulesPage />);
     await screen.findByText('No rules yet. Create one below.');
-    fireEvent.change(screen.getByLabelText('Rule ID'), { target: { value: 'no-links' } });
     fireEvent.change(screen.getByLabelText('Name'), { target: { value: 'No links' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create rule' }));

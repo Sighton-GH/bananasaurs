@@ -74,7 +74,7 @@ describe('McpPage', () => {
     expect(screen.getAllByText('c-9').length).toBeGreaterThan(0);
     // The send ledger is a page section now, not a "still on the CLI" note.
     expect(screen.getByText('Send ledger')).toBeTruthy();
-    expect(screen.getByRole('heading', { level: 1, name: 'External app connector' })).toBeTruthy();
+    expect(screen.getByRole('heading', { level: 1, name: 'Connected apps' })).toBeTruthy();
     expect(screen.getByText('m-1')).toBeTruthy();
     expect(screen.queryByText(/no HTTP route yet/)).toBeNull();
   });

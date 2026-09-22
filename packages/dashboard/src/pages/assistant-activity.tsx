@@ -35,7 +35,7 @@ export function AssistantActivityPage() {
   return (
     <>
       <PageHeader
-        title="Skill activity"
+        title="Assistant history"
         purpose="What the assistant tried (answers, tickets, refusals), which reviewed skill it used, and what happened."
         actions={
           <Link href="/assistant">

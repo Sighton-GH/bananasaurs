@@ -54,7 +54,9 @@ describe('AssistantActivityPage', () => {
   it('resolves behaviour and skill names and keeps refusal reasons visible', async () => {
     stubFetch([{ url: '/api/assistant', body: PAYLOAD }]);
     renderWithSession(<AssistantActivityPage />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Skill activity' })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Assistant history' }),
+    ).toBeTruthy();
     expect(screen.getByText('Club assistant')).toBeTruthy();
     expect(screen.getAllByText('Search club knowledge')).toHaveLength(2);
     // A row that outlives its behaviour falls back to the raw id.

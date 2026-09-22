@@ -99,7 +99,7 @@ export function McpPage() {
   return (
     <>
       <PageHeader
-        title="External app connector"
+        title="Connected apps"
         purpose="Control which connected apps may use Bananasaurs and which Discord channels they may post in. New apps cannot post anywhere until you allow a channel."
       />
       <div className="grid max-w-4xl gap-3">

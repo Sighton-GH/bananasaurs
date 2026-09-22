@@ -12,9 +12,10 @@ import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
 const REASON_TEXT: Record<EligibilityWarning['reason'], string> = {
-  'not-no': 'Trains on input (or unknown — unknown is treated as yes)',
-  stale: 'Review is stale — re-read the terms and mark reviewed',
-  'not-production': 'Not allowed to serve production traffic',
+  'not-no':
+    'This service has not confirmed that it will keep your server data out of model training',
+  stale: 'The terms review is old. Check the source again before using this service',
+  'not-production': 'This service is not approved for live member questions',
   unverified:
     'No verified eligibility record — assistant answers are intentionally disabled until the owner verifies this provider’s terms and adds the record',
 };
@@ -24,7 +25,7 @@ const trainsTone = (trainsOnInput: string): 'hold' | 'danger' | 'ok' =>
 
 /**
  * `/providers`: the training-eligibility rows `doctor` warns about
- * (`bananasaurs provider status` / `provider review`). "Mark reviewed"
+ * (`bananasaurs provider status` / `provider review`). "I checked these terms today"
  * records that the owner re-checked the row as it stands — it writes the
  * review date, never the row's claims (docs/17). Changing a provider's
  * training flag or production eligibility stays a config change on the host.
@@ -73,8 +74,8 @@ export function ProvidersPage() {
   return (
     <>
       <PageHeader
-        title="API providers"
-        purpose="Which AI providers may see server content: the training-eligibility rows that need attention, and the review that clears them."
+        title="AI setup"
+        purpose="Bananasaurs sends member questions and any allowed server context to this company. Choose one only after checking its terms and cost."
       />
       <DataState
         resource={warnings.resource}
@@ -83,9 +84,8 @@ export function ProvidersPage() {
           <div className="max-w-2xl">
             <Card title="Eligibility">
               <p className="text-sm">
-                No eligibility warnings. Every configured provider is flagged{' '}
-                <code className="text-xs">trainsOnInput: &quot;no&quot;</code> with a fresh review,
-                as the Discord Developer Policy requires.
+                The configured AI service says it will not use your server's data to train its
+                models. Recheck when its terms change.
               </p>
             </Card>
           </div>
@@ -101,8 +101,16 @@ export function ProvidersPage() {
                 { key: 'provider', header: 'Provider', cell: (w) => w.provider },
                 {
                   key: 'trains',
-                  header: 'Trains on input',
-                  cell: (w) => <Badge tone={trainsTone(w.trainsOnInput)}>{w.trainsOnInput}</Badge>,
+                  header: 'Uses server data for training',
+                  cell: (w) => (
+                    <Badge tone={trainsTone(w.trainsOnInput)}>
+                      {w.trainsOnInput === 'no'
+                        ? 'No'
+                        : w.trainsOnInput === 'yes'
+                          ? 'Yes'
+                          : 'Not confirmed'}
+                    </Badge>
+                  ),
                 },
                 { key: 'reason', header: 'Why it is listed', cell: (w) => REASON_TEXT[w.reason] },
                 {
@@ -116,11 +124,11 @@ export function ProvidersPage() {
                 {
                   key: 'actions',
                   header: '',
-                  // Nothing to review without a row: "Mark reviewed" writes
+                  // Nothing to review without a row: "I checked these terms today" writes
                   // the review date of a record, and this one does not exist.
                   cell: (w) =>
                     w.reason === 'unverified' ? null : (
-                      <Button onClick={() => setReviewing(w)}>Mark reviewed</Button>
+                      <Button onClick={() => setReviewing(w)}>I checked these terms today</Button>
                     ),
                 },
               ]}
@@ -129,11 +137,85 @@ export function ProvidersPage() {
         )}
       </DataState>
       <div className="mt-4 max-w-4xl">
-        <Card title="Provider setup">
+        <Card title="Choose an AI service">
           <p className="mb-3 text-sm">
             API keys are encrypted at rest and write-only. After save, the API returns only whether
             a key exists. Eligibility still gates traffic.
           </p>
+          <div className="mb-4 grid gap-2 text-sm sm:grid-cols-3">
+            <p>
+              <strong>Google Gemini</strong>
+              <br />
+              Sends questions and allowed context.{' '}
+              <a
+                className="underline"
+                href="https://ai.google.dev/gemini-api/terms"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Terms
+              </a>{' '}
+              ·{' '}
+              <a
+                className="underline"
+                href="https://aistudio.google.com/app/apikey"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Get a key
+              </a>
+              <br />
+              Suggested: Gemini 2.5 Flash. Usage may cost money.
+            </p>
+            <p>
+              <strong>OpenRouter</strong>
+              <br />
+              Sends data through OpenRouter to the chosen model.{' '}
+              <a
+                className="underline"
+                href="https://openrouter.ai/terms"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Terms
+              </a>{' '}
+              ·{' '}
+              <a
+                className="underline"
+                href="https://openrouter.ai/settings/keys"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Get a key
+              </a>
+              <br />
+              Choose a no-training model. Prices vary.
+            </p>
+            <p>
+              <strong>NVIDIA NIM</strong>
+              <br />
+              Sends questions and allowed context.{' '}
+              <a
+                className="underline"
+                href="https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Terms
+              </a>{' '}
+              ·{' '}
+              <a
+                className="underline"
+                href="https://build.nvidia.com/"
+                target="_blank"
+                rel="noreferrer"
+              >
+                Get a key
+              </a>
+              <br />
+              Choose a supported instruct model. Limits and cost vary.
+            </p>
+          </div>
           <form
             className="grid gap-3"
             onSubmit={(event) => {
@@ -203,9 +285,18 @@ export function ProvidersPage() {
               />
               Enable provider after save (eligibility still required)
             </label>
-            <Button variant="primary" busy={busy}>
-              Save provider
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="primary" busy={busy}>
+                Save AI setup
+              </Button>
+              <Button
+                type="button"
+                disabled
+                title="Save the AI setup before testing the connection"
+              >
+                Test connection after saving
+              </Button>
+            </div>
           </form>
         </Card>
       </div>
@@ -219,7 +310,7 @@ export function ProvidersPage() {
             change.
           </p>
         }
-        confirmLabel="Mark reviewed"
+        confirmLabel="I checked these terms today"
         busy={busy}
         onConfirm={() => void review()}
         onCancel={() => setReviewing(undefined)}

@@ -65,7 +65,7 @@ describe('JumpNav', () => {
     const labels = Array.from(nav.querySelectorAll('a')).map((a) =>
       a.textContent?.replace(/Current|Future/g, ''),
     );
-    const groupOrder = ['Operate', 'Moderation', 'Archive', 'Instance', 'Assistant'];
+    const groupOrder = ['Start here', 'Moderation', 'Messages', 'Assistant', 'Advanced / System'];
     expect(labels).toEqual(
       groupOrder.flatMap((group) => NAV.filter((n) => n.group === group).map((n) => n.label)),
     );

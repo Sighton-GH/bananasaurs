@@ -59,7 +59,7 @@ describe('SearchPage', () => {
     renderWithSession(<SearchPage />);
     fireEvent.change(screen.getByLabelText('Search for'), { target: { value: 'compressor' } });
     fireEvent.change(screen.getByLabelText('Channel'), { target: { value: ' c9 ' } });
-    fireEvent.change(screen.getByLabelText('Author ID'), { target: { value: 'a7' } });
+    fireEvent.change(screen.getByLabelText('Author'), { target: { value: 'a7' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Search' }));
     });

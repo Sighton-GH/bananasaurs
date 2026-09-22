@@ -714,7 +714,12 @@ export const putMemory = (
       })
       .onConflictDoUpdate({
         target: [assistantMemories.guildId, assistantMemories.memoryId],
-        set: { content: input.content, subjectId: input.subjectId ?? null, updatedAt: now },
+        set: {
+          section: input.section,
+          content: input.content,
+          subjectId: input.subjectId ?? null,
+          updatedAt: now,
+        },
       })
       .run();
   });

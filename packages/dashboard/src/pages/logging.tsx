@@ -259,7 +259,7 @@ export function LoggingPage() {
           <form onSubmit={(e) => void exclude(e)} className="mt-3 grid max-w-md gap-3">
             <ChannelPicker
               label="Exclude a channel"
-              hint="Pick the channel logging never touches, or paste its snowflake ID."
+              hint="Search for the channel logging never touches."
               value={excludeId}
               onChange={setExcludeId}
             />

@@ -1,3 +1,4 @@
+import { Link } from 'wouter';
 import { useHealth } from './health.js';
 import { useSession } from './session.js';
 
@@ -13,13 +14,11 @@ export function StateStrip() {
   const holds: string[] = [];
   if (session.info.readonly) holds.push('Read-only instance: writes are refused');
   if (health.resource.state === 'error')
-    holds.push(
-      'Health unknown: the health summary could not be loaded, so dry run, kill switch and breaker state cannot be shown',
-    );
+    holds.push('Safety status unavailable: open Safety before making changes');
   if (health.resource.state === 'ready') {
     const safety = health.resource.data.safety;
     if (safety?.dryRun === true)
-      holds.push('Dry run: Discord side effects are logged, not executed');
+      holds.push('Preview mode: Discord changes are logged, not applied');
     if (safety?.killswitch === true)
       holds.push('Kill switch on: every side effect for this guild is stopped');
     if (safety?.breakerOpen === true) holds.push('Circuit breaker open: Discord writes are paused');
@@ -38,6 +37,9 @@ export function StateStrip() {
           <li key={h}>{h}</li>
         ))}
       </ul>
+      <Link href="/safety" className="ml-4 font-medium underline">
+        Review Safety settings
+      </Link>
     </section>
   );
 }

@@ -7,6 +7,7 @@ import {
   daysObserved,
   OBSERVED_HELP,
   REVIEWED_HELP,
+  RULE_CONFIG_EXAMPLE,
   RULE_KIND_LABEL,
   RULE_KINDS,
   RULE_MODE_HELP,
@@ -53,7 +54,6 @@ export function AutomodRulesPage() {
   );
   const rules = useResource('the automod rules', load);
 
-  const [ruleId, setRuleId] = useState('');
   const [name, setName] = useState('');
   const [kind, setKind] = useState<RuleKind>('keyword_filter');
   const [configText, setConfigText] = useState('{}');
@@ -79,14 +79,17 @@ export function AutomodRulesPage() {
     setBusy(true);
     try {
       const result = await session.writeOrThrow<{ ok: boolean }>('/api/automod/rules', {
-        ruleId,
+        ruleId: name
+          .trim()
+          .toLowerCase()
+          .replace(/[^a-z0-9]+/g, '-')
+          .replace(/^-|-$/g, ''),
         kind,
         name,
         config,
       });
       if (result === undefined) return;
       toast({ tone: 'ok', title: 'Rule created' });
-      setRuleId('');
       setName('');
       setKind('keyword_filter');
       setConfigText('{}');
@@ -236,13 +239,6 @@ export function AutomodRulesPage() {
       <div className="mt-6 max-w-md">
         <Card title="New rule">
           <form onSubmit={(e) => void submit(e)} className="grid gap-3">
-            <Field label="Rule ID" hint="lowercase, digits and dashes">
-              <Input
-                value={ruleId}
-                onChange={(e) => setRuleId(e.target.value)}
-                placeholder="e.g. no-invites"
-              />
-            </Field>
             <Field label="Name">
               <Input
                 value={name}
@@ -253,36 +249,47 @@ export function AutomodRulesPage() {
             <Field label="Kind">
               <select
                 value={kind}
-                onChange={(e) => setKind(e.target.value as RuleKind)}
+                onChange={(e) => {
+                  const next = e.target.value as RuleKind;
+                  setKind(next);
+                  setConfigText(RULE_CONFIG_EXAMPLE[next].json);
+                }}
                 className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
               >
                 {RULE_KINDS.map((k) => (
                   <option key={k} value={k}>
-                    {RULE_KIND_LABEL[k]} ({k})
+                    {RULE_KIND_LABEL[k]}
                   </option>
                 ))}
               </select>
             </Field>
-            <Field
-              label="Configuration"
-              hint="JSON; validated against the kind's schema when you save"
-              {...(configError !== undefined ? { error: configError } : {})}
-            >
-              <textarea
-                value={configText}
-                onChange={(e) => setConfigText(e.target.value)}
-                rows={4}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+            <p className="text-sm text-ink-muted">
+              A safe starting configuration is filled in for this rule type. You can change it after
+              creating the rule.
+            </p>
+            <details>
+              <summary className="cursor-pointer text-sm">Advanced configuration</summary>
+              <Field
+                label="Configuration data"
+                hint="For experienced operators only"
+                {...(configError !== undefined ? { error: configError } : {})}
+              >
+                <textarea
+                  value={configText}
+                  onChange={(e) => setConfigText(e.target.value)}
+                  rows={4}
+                  className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                />
+              </Field>
+              <RuleConfigExample
+                key={kind}
+                kind={kind}
+                onUse={(json) => {
+                  setConfigText(json);
+                  setConfigError(undefined);
+                }}
               />
-            </Field>
-            <RuleConfigExample
-              key={kind}
-              kind={kind}
-              onUse={(json) => {
-                setConfigText(json);
-                setConfigError(undefined);
-              }}
-            />
+            </details>
             {formError !== undefined && (
               <p role="alert" className="text-sm text-danger">
                 {formError}

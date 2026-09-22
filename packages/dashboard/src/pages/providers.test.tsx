@@ -19,15 +19,15 @@ describe('ProvidersPage', () => {
     stubFetch([{ url: '/api/providers/eligibility', body: WARNINGS }]);
     renderWithSession(<ProvidersPage />);
     expect(await screen.findByText('nim-free')).toBeTruthy();
-    expect(screen.getByText(/Review is stale/)).toBeTruthy();
-    expect(screen.getByText(/Trains on input \(or unknown/)).toBeTruthy();
-    expect(screen.getByText('unknown')).toBeTruthy();
+    expect(screen.getByText(/terms review is old/)).toBeTruthy();
+    expect(screen.getByText(/service has not confirmed/)).toBeTruthy();
+    expect(screen.getByText('Not confirmed')).toBeTruthy();
   });
 
   it('says what a clean bill means when there are no warnings', async () => {
     stubFetch([{ url: '/api/providers/eligibility', body: { warnings: [] } }]);
     renderWithSession(<ProvidersPage />);
-    expect(await screen.findByText(/No eligibility warnings/)).toBeTruthy();
+    expect(await screen.findByText(/configured AI service says it will not use/)).toBeTruthy();
   });
 
   it('mark reviewed states that only the review date changes, posts and reloads', async () => {
@@ -48,11 +48,11 @@ describe('ProvidersPage', () => {
     ]);
     renderWithSession(<ProvidersPage />);
     await screen.findByText('nim-free');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Mark reviewed' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'I checked these terms today' })[0]!);
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain('writes the review date only');
     await act(async () => {
-      fireEvent.click(within(dialog).getByRole('button', { name: 'Mark reviewed' }));
+      fireEvent.click(within(dialog).getByRole('button', { name: 'I checked these terms today' }));
     });
     const post = mock.mock.calls.find((c) => c[1]?.method === 'POST')!;
     expect(post[0] as string).toBe('/api/providers/nim-free/review');

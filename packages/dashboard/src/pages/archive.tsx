@@ -140,7 +140,7 @@ export function ArchivePage() {
       {},
     );
     if (result !== undefined) {
-      toast({ tone: 'ok', title: `Backfill enqueued for ${channel.channelId}` });
+      toast({ tone: 'ok', title: `Saving older messages started for ${channel.channelId}` });
       status.reload();
     }
   };
@@ -202,7 +202,7 @@ export function ArchivePage() {
     <>
       <PageHeader
         title="Archive"
-        purpose="Archive means Bananasaurs collects and keeps a searchable copy of messages. It is separate from READ, which only lets the bot see current content. Manage retention, backfill and cases here."
+        purpose="Archive means Bananasaurs collects and keeps a searchable copy of messages. It is separate from READ, which only lets the bot see current content. Choose what to save, browse saved messages, manage deletion, or repair search."
       />
       <div className="grid max-w-6xl gap-3">
         <Card title="Search index">
@@ -216,7 +216,7 @@ export function ArchivePage() {
                     <Badge tone="hold">behind — reindex to catch up</Badge>
                   )}
                 </p>
-                <Button onClick={() => void reindex()}>Reindex</Button>
+                <Button onClick={() => void reindex()}>Update search results</Button>
               </div>
             )}
           </DataState>
@@ -314,7 +314,7 @@ export function ArchivePage() {
                                 : 'Include threads'}
                             </Button>
                           )}
-                          <Button onClick={() => void backfill(c)}>Backfill</Button>
+                          <Button onClick={() => void backfill(c)}>Save older messages now</Button>
                         </span>
                       ),
                   },

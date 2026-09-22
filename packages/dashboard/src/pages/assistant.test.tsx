@@ -152,7 +152,7 @@ describe('AssistantPage', () => {
     expect(club.getAttribute('aria-pressed')).toBe('true');
     expect(screen.getByDisplayValue('Answer with reviewed club knowledge only.')).toBeTruthy();
     expect(screen.getAllByText('Search club knowledge').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('confirmation').length).toBeGreaterThan(0);
+    expect(screen.getAllByText('Asks an operator first').length).toBeGreaterThan(0);
     expect(screen.getByText('Bring the robot battery')).toBeTruthy();
     expect(screen.getByText('failed')).toBeTruthy();
     expect(screen.getByText('https://example.com/handbook')).toBeTruthy();
@@ -208,7 +208,9 @@ describe('AssistantPage', () => {
 
   it('toggles behaviour enablement through the same whole-object write', async () => {
     const mock = renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Disable behaviour' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Turn off - members will get no answer' }),
+    );
     await screen.findByText('Club assistant disabled');
     const put = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/assistant/behaviours/club' && c[1]?.method === 'PUT',
@@ -220,18 +222,18 @@ describe('AssistantPage', () => {
     const mock = renderPage();
     // Edit behaviour A's prompt, then switch to behaviour B WITHOUT saving.
     const editor = await screen.findByRole<HTMLTextAreaElement>('textbox', {
-      name: 'System prompt',
+      name: 'Instructions the assistant follows',
     });
     fireEvent.change(editor, { target: { value: 'Unsaved rewrite of the club prompt.' } });
     fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
     // The editor must show B's prompt, not A's unsaved text.
     const switched = await screen.findByRole<HTMLTextAreaElement>('textbox', {
-      name: 'System prompt',
+      name: 'Instructions the assistant follows',
     });
     expect(switched.value).toBe('Answer infrastructure questions.');
     // Saving now writes B's object to B's endpoint — A's text cannot land on B.
     fireEvent.change(switched, { target: { value: 'New IT prompt.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save prompt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save instructions' }));
     await screen.findByText('IT services prompt saved');
     const put = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/assistant/behaviours/it' && c[1]?.method === 'PUT',
@@ -367,7 +369,9 @@ describe('AssistantPage', () => {
     for (const label of [/Edit behaviour/, /Run test scenario/, /New reminder/]) {
       expect(screen.queryByRole('button', { name: label })).toBeNull();
     }
-    expect(screen.getByRole('button', { name: 'Save prompt' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save instructions' }).hasAttribute('disabled')).toBe(
+      true,
+    );
   });
 
   it('renders the error state when the load fails', async () => {

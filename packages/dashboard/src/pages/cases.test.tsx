@@ -111,7 +111,7 @@ describe('CasesPage', () => {
       { url: '/api/mod/cases?limit=50', body: { cases: [] } },
     ]);
     renderCasesPage();
-    expect(await screen.findByRole('region', { name: 'No moderation cases' })).toBeTruthy();
+    expect(await screen.findByRole('region', { name: 'No moderation cases yet' })).toBeTruthy();
     expect(screen.queryByRole('table')).toBeNull();
   });
 
@@ -173,7 +173,7 @@ describe('CasePage', () => {
   it('renders the case and its events oldest first with a trace details per event', async () => {
     stubFetch([{ url: `/api/mod/cases/${CASE_ID}`, body: detail() }]);
     renderCasePage();
-    expect(await screen.findByRole('heading', { level: 1, name: CASE_ID })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Moderation case' })).toBeTruthy();
     const table = await screen.findByRole('table', { name: 'Case events' });
     const text = table.textContent ?? '';
     // Oldest first: the older snippet precedes the newer one.
@@ -198,7 +198,9 @@ describe('MemberPage', () => {
       { url: `/api/mod/members/${MEMBER_ID}/cases`, body: { cases: [modCase()] } },
     ]);
     renderMemberPage();
-    expect(await screen.findByRole('heading', { level: 1, name: MEMBER_ID })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Member moderation history' }),
+    ).toBeTruthy();
     const table = await screen.findByRole('table', { name: 'Member cases' });
     const caseLink = within(table).getByRole('link', { name: CASE_ID });
     expect(caseLink.getAttribute('href')).toBe(`/cases/${CASE_ID}`);

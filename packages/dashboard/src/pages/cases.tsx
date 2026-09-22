@@ -59,8 +59,8 @@ export function CasesPage() {
         isEmpty={(c) => c.length === 0}
         empty={
           <EmptyState
-            title="No moderation cases"
-            detail="Nothing has matched or been actioned. Review Automod to see which rules are observing this server."
+            title="No moderation cases yet"
+            detail="Cases appear when a rule flags a message or an operator opens one."
             action={
               <Link href="/automod" className="text-sm font-medium underline underline-offset-4">
                 Review Automod rules

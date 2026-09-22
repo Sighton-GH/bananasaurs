@@ -202,7 +202,7 @@ describe('ReviewPage', () => {
     ).toBeTruthy();
   });
 
-  it('clicking False positive posts the verdict to the right URL and reloads', async () => {
+  it('clicking Should be allowed posts the verdict to the right URL and reloads', async () => {
     const mock = stubFetch([
       {
         url: '/api/automod/review?limit=50',
@@ -221,7 +221,7 @@ describe('ReviewPage', () => {
       (c) => (c[0] as string) === '/api/automod/review?limit=50',
     ).length;
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'False positive' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Should be allowed' }));
     });
     const post = mock.mock.calls.find(
       (c) =>
@@ -248,8 +248,8 @@ describe('ReviewPage', () => {
     renderAt('/review');
     const nativeTable = await screen.findByRole('table', { name: 'Native AutoMod hits' });
     expect(within(nativeTable).getByText('buy now buy now')).toBeTruthy();
-    expect(within(nativeTable).getByRole('button', { name: 'False positive' })).toBeTruthy();
-    expect(within(nativeTable).getByRole('button', { name: 'True positive' })).toBeTruthy();
+    expect(within(nativeTable).getByRole('button', { name: 'Should be allowed' })).toBeTruthy();
+    expect(within(nativeTable).getByRole('button', { name: 'Should be blocked' })).toBeTruthy();
     expect(within(nativeTable).getByRole('button', { name: 'Unclear' })).toBeTruthy();
   });
 

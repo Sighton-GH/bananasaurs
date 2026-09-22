@@ -212,7 +212,7 @@ function BehaviourAccessEditor({
   return (
     <Card title="Access and routing">
       <section aria-label="Caller roles">
-        <h3 className="text-sm font-medium">Roles that may tag this behaviour</h3>
+        <h3 className="text-sm font-medium">Who can ask the assistant</h3>
         {behaviour.callerRoleIds === undefined ? (
           <p className="mt-2 text-xs text-ink-muted">
             Role allowlists are not exposed by this server build yet; the server's current policy
@@ -221,7 +221,7 @@ function BehaviourAccessEditor({
         ) : (
           <>
             <RoleChecklist
-              label="Roles that may tag this behaviour"
+              label="Who can ask the assistant"
               roles={data.roles}
               selected={roleIds}
               onToggle={(id) => setRoleIds((ids) => toggleIn(ids, id))}
@@ -233,7 +233,7 @@ function BehaviourAccessEditor({
         )}
       </section>
       <section aria-label="Allowed skills" className="mt-4">
-        <h3 className="text-sm font-medium">Skills this behaviour may use</h3>
+        <h3 className="text-sm font-medium">Things the assistant can do</h3>
         <ul className="mt-2 grid gap-1 sm:grid-cols-2">
           {data.skills.map((skill) => (
             <li key={skill.id}>
@@ -247,7 +247,7 @@ function BehaviourAccessEditor({
                   <span className="block">{skill.name}</span>
                   <span className="text-xs text-ink-muted">
                     {skill.effect}
-                    {skill.requiresConfirmation ? ' · confirmation required' : ''}
+                    {skill.requiresConfirmation ? ' · asks an operator first' : ''}
                   </span>
                 </span>
               </label>
@@ -256,7 +256,7 @@ function BehaviourAccessEditor({
         </ul>
       </section>
       <section aria-label="Attached resources" className="mt-4">
-        <h3 className="text-sm font-medium">Resources this behaviour may use</h3>
+        <h3 className="text-sm font-medium">Information the assistant may use</h3>
         {data.resources.length === 0 ? (
           <p className="mt-2 text-xs text-ink-muted">
             No resources configured yet. Add them under Resources below, then attach them here.
@@ -381,7 +381,7 @@ function SkillGrantRow({
         <span className="flex shrink-0 gap-1">
           {skill.ownerOnly === true && <Badge tone="neutral">owner only</Badge>}
           <Badge tone={skill.requiresConfirmation ? 'hold' : 'ok'}>
-            {skill.requiresConfirmation ? 'confirmation' : 'allowed'}
+            {skill.requiresConfirmation ? 'Asks an operator first' : 'Can do automatically'}
           </Badge>
         </span>
       </div>
@@ -841,20 +841,46 @@ export function AssistantPage() {
     <>
       <PageHeader
         title="Assistant"
-        purpose="Behaviours, access, skills, schedules and reviewed context for this server."
+        purpose="Set who can use the assistant, what it can do, and the instructions it follows."
         actions={
           <Link href="/assistant/activity">
-            <Button>Skill activity</Button>
+            <Button>Assistant history</Button>
           </Link>
         }
       />
+      <Card title="Set up the assistant">
+        <ol className="grid gap-2 text-sm sm:grid-cols-4">
+          <li>
+            <strong>1. Connect an AI service</strong>
+            <br />
+            <Link className="underline" href="/providers">
+              Open AI setup
+            </Link>
+          </li>
+          <li>
+            <strong>2. Choose who can ask it</strong>
+            <br />
+            Select server roles below.
+          </li>
+          <li>
+            <strong>3. Choose what it can do</strong>
+            <br />
+            Allow only the tasks members need.
+          </li>
+          <li>
+            <strong>4. Test it</strong>
+            <br />
+            Ask a safe question in Discord before wider use.
+          </li>
+        </ol>
+      </Card>
       {assistant.resource.state === 'ready' && (
-        <div className="mb-5 grid gap-3 md:grid-cols-3">
+        <div className="my-5 grid gap-3 md:grid-cols-3">
           <Card title="AI status">
             <Badge tone={assistant.resource.data.aiStatus?.enabled === true ? 'ok' : 'hold'}>
               {assistant.resource.data.aiStatus?.enabled === true
                 ? 'Enabled'
-                : 'Off - fails closed'}
+                : 'Off - the assistant will not answer'}
             </Badge>
             <p className="mt-2 text-sm text-ink-muted">
               Provider: {assistant.resource.data.aiStatus?.provider ?? 'unknown'}. Configure a
@@ -865,10 +891,10 @@ export function AssistantPage() {
               Configure API provider
             </Link>
           </Card>
-          <Card title="Product skills">
+          <Card title="Things the assistant can do">
             <p className="text-2xl font-semibold">{assistant.resource.data.skills.length}</p>
             <p className="text-sm text-ink-muted">
-              Built in and available without enabling AI. Each behaviour chooses its allowlist.
+              Choose which things the assistant may do for each way members use it.
             </p>
           </Card>
           <Card title="Reviewed context">
@@ -999,8 +1025,8 @@ function BehaviourPromptCard({
         and untrusted evidence envelope. Ambiguous tags are refused rather than mixed.
       </p>
       <Field
-        label="System prompt"
-        hint="Reviewed instructions only. Retrieved content cannot change these instructions."
+        label="Instructions the assistant follows"
+        hint="Members do not see these operator instructions. Saved resources and messages cannot change them."
       >
         <textarea
           value={prompt}
@@ -1014,14 +1040,14 @@ function BehaviourPromptCard({
       </p>
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button className="max-w-full shrink-0 whitespace-nowrap" onClick={onToggle}>
-          {behaviour.enabled ? 'Disable behaviour' : 'Enable behaviour'}
+          {behaviour.enabled ? 'Turn off - members will get no answer' : 'Turn on assistant'}
         </Button>
         <Button
           busy={promptBusy}
           disabled={prompt === behaviour.systemPrompt}
           onClick={() => void savePrompt()}
         >
-          Save prompt
+          Save instructions
         </Button>
       </div>
     </Card>
@@ -1095,7 +1121,7 @@ function AssistantReady({
           reload={reload}
           onToggle={() => void toggleEnabled()}
         />
-        <Card title="Available skills">
+        <Card title="Things the assistant can do">
           <p className="text-sm text-ink-muted">
             The model sees only this allowlist, further narrowed by grants and the member's
             permissions.
@@ -1110,7 +1136,7 @@ function AssistantReady({
                 <span className="flex shrink-0 gap-1">
                   {skill.ownerOnly === true && <Badge tone="neutral">owner only</Badge>}
                   <Badge tone={skill.requiresConfirmation ? 'hold' : 'ok'}>
-                    {skill.requiresConfirmation ? 'confirmation' : 'allowed'}
+                    {skill.requiresConfirmation ? 'Asks an operator first' : 'Can do automatically'}
                   </Badge>
                 </span>
               </li>
