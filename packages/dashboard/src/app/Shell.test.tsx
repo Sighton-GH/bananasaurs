@@ -166,9 +166,13 @@ describe('Shell', () => {
   });
 
   // ADR 0051 D7 supersedes S10-D3: Archive, Search and Providers are real pages now;
-  // only the Release 3 four remain stubs.
+  // only the Release 3 four remain stubs. ADR 0060: /resources is the new
+  // Resources page; /ai and /proposals stay aliases of Assistant.
   it.each([
-    ['/resources', 'Assistant'],
+    ['/resources', 'Resources'],
+    ['/assistant/skills', 'Skills'],
+    ['/assistant/schedules', 'Schedules'],
+    ['/assistant/resources', 'Resources'],
     ['/memory', 'Memory'],
     ['/ai', 'Assistant'],
     ['/proposals', 'Assistant'],

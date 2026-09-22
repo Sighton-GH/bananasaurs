@@ -42,13 +42,16 @@ export const NAV: readonly NavEntry[] = [
   { path: '/config', label: 'Configuration', status: 'built', group: 'Advanced / System' },
   { path: '/accounts', label: 'Accounts', status: 'built', group: 'Advanced / System' },
   { path: '/mcp', label: 'Connected apps', status: 'built', group: 'Advanced / System' },
-  { path: '/providers', label: 'AI setup', status: 'built', group: 'Assistant' },
   { path: '/assistant', label: 'Assistant', status: 'built', group: 'Assistant' },
+  { path: '/assistant/skills', label: 'Skills', status: 'built', group: 'Assistant' },
+  { path: '/assistant/schedules', label: 'Schedules', status: 'built', group: 'Assistant' },
+  { path: '/assistant/resources', label: 'Resources', status: 'built', group: 'Assistant' },
+  { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
+  { path: '/providers', label: 'AI setup', status: 'built', group: 'Assistant' },
   {
     path: '/assistant/activity',
     label: 'Assistant history',
     status: 'built',
     group: 'Advanced / System',
   },
-  { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
 ];

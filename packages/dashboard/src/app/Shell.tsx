@@ -3,6 +3,9 @@ import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
 import { AssistantActivityPage } from '../pages/assistant-activity.js';
 import { AssistantPage } from '../pages/assistant.js';
+import { AssistantResourcesPage } from '../pages/assistant-resources.js';
+import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
+import { AssistantSkillsPage } from '../pages/assistant-skills.js';
 import { AssistantMemoryPage } from '../pages/assistant-memory.js';
 import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
@@ -165,8 +168,11 @@ function Pages() {
       <Route path="/mcp" component={McpPage} />
       <Route path="/providers" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
+      <Route path="/assistant/skills" component={AssistantSkillsPage} />
+      <Route path="/assistant/schedules" component={AssistantSchedulesPage} />
+      <Route path="/assistant/resources" component={AssistantResourcesPage} />
       <Route path="/assistant/activity" component={AssistantActivityPage} />
-      <Route path="/resources" component={AssistantPage} />
+      <Route path="/resources" component={AssistantResourcesPage} />
       <Route path="/memory" component={AssistantMemoryPage} />
       <Route path="/ai" component={AssistantPage} />
       <Route path="/proposals" component={AssistantPage} />
