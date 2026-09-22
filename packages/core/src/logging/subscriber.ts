@@ -60,6 +60,11 @@ const ROUTE_KIND = {
   roleCreate: 'role_create',
   roleUpdate: 'role_update',
   roleDelete: 'role_delete',
+  memberUpdate: 'member_update',
+  messageCreate: 'message_create',
+  guildCreate: 'guild_available',
+  guildDelete: 'guild_unavailable',
+  autoModerationAction: 'automod_action',
 } as const;
 
 /**
@@ -172,16 +177,21 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
     const route = ports.findRoute(routeKind);
     if (route === undefined || !route.enabled) return;
 
-    const fingerprint = fingerprintFor(event);
-    if (fingerprint === undefined) return; // unreachable for the six kinds above
+    const fingerprint =
+      fingerprintFor(event) ??
+      `${event.kind}:${event.receivedAtMs}:${'userId' in event ? event.userId : 'messageId' in event ? (event.messageId ?? 'none') : event.guildId}`;
 
     const dedupeKind = `log:${routeKind}`;
     if (!ports.claim({ eventKind: dedupeKind, fingerprint })) return;
 
     const content = ((): string => {
       switch (event.kind) {
+        case 'messageCreate':
+          return `Message created in <#${event.channelId}> by ${event.authorId === undefined ? 'an unknown member' : `<@${event.authorId}>`}${route.includeContent && event.content !== undefined ? `\nContent: ${event.content}` : ''}`;
         case 'messageUpdate':
           return formatMessageEdit(event, route.includeContent);
+        case 'memberUpdate':
+          return `Member updated: <@${event.userId}>`;
         case 'memberAdd':
           return formatMemberJoin(event);
         case 'memberRemove':
@@ -192,6 +202,12 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
           return formatRoleUpdate(event);
         case 'roleDelete':
           return formatRoleDelete(event);
+        case 'guildCreate':
+          return 'Server became available to Bananasaurs.';
+        case 'guildDelete':
+          return 'Server became unavailable to Bananasaurs.';
+        case 'autoModerationAction':
+          return `Discord AutoMod action ${event.actionType} for <@${event.userId}> under rule ${event.ruleId}.`;
         default:
           throw new Error(`unreachable log event kind: ${event.kind}`);
       }

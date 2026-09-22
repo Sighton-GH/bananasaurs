@@ -465,6 +465,23 @@ export function PermissionsPage() {
         )}
       </DataState>
 
+      <Card title="Assistant permissions">
+        <p className="text-sm">
+          Who may tag the assistant and which skills each role/member may use are permission-bearing
+          controls. Manage them on the Assistant page, where the live role and member directories
+          prevent raw-ID mistakes.
+        </p>
+        <Link href="/assistant" className="mt-2 inline-block text-sm text-accent underline">
+          Open assistant access and skill grants
+        </Link>
+      </Card>
+      <Card title="MCP permissions">
+        <p className="text-sm">
+          The WRITE column above is the MCP send allowlist. Turning WRITE on permits the connector
+          to post there; off means it cannot. Connector clients and tokens stay on MCP.
+        </p>
+      </Card>
+
       <Card title="Specialised controls">
         <ul className="grid gap-2 text-sm">
           <li>
