@@ -45,6 +45,7 @@ Fill in, from the [Discord Developer Portal](https://discord.com/developers/appl
 | `BANANASAURS_GUILD_ALLOWLIST` | **Your test guild id only.** Right-click the server → Copy Server ID (needs Developer Mode on: User Settings → Advanced → Developer Mode). |
 | `BANANASAURS_OWNER_USER_ID` | Right-click yourself → Copy User ID |
 | `DASHBOARD_SESSION_SECRET` | `openssl rand -base64 48` |
+| `ASSISTANT_PROVIDER_SECRET_KEY` | `openssl rand -base64 48` (required only for write-only provider-key setup in the WebUI; keep stable across restarts) |
 
 Leave `BANANASAURS_DRY_RUN=1` for now. You will turn it off deliberately, in
 exercise 3, and not before.
