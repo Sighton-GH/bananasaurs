@@ -506,7 +506,12 @@ export interface OpsMcpToken {
  */
 export interface OpsEligibilityWarning {
   readonly provider: string;
-  readonly reason: 'not-no' | 'stale' | 'not-production';
+  /**
+   * `unverified` is the configured provider with NO eligibility row at all:
+   * the assistant fails closed on every invoke (hard rule 5), so this is the
+   * intentionally-disabled state being surfaced, not a promise gone stale.
+   */
+  readonly reason: 'not-no' | 'stale' | 'not-production' | 'unverified';
   readonly trainsOnInput: string;
   readonly reviewedAt: number;
 }
@@ -530,6 +535,18 @@ export interface OpsAccount {
   readonly isOwner: boolean;
   readonly disabled: boolean;
   readonly lockedUntil: number | null;
+  readonly createdAt: number;
+}
+
+/**
+ * What `account create` made. The plaintext `password` crosses this boundary
+ * exactly once - into the response or terminal line that shows it once. It
+ * is never stored, never audited, never in `data`.
+ */
+export interface OpsAccountCreateResult {
+  readonly accountId: string;
+  readonly username: string;
+  readonly password: string;
   readonly createdAt: number;
 }
 
@@ -614,6 +631,13 @@ export interface OpsGuildChannelInfo {
   readonly name: string;
   /** Discord's channel kind as a small label: `text`, `announcement`, `forum`. */
   readonly kind: string;
+  /**
+   * The category this channel sits under, when it does. Lets the
+   * Permissions centre show effective state (a channel covered by a
+   * category row) without a second guild read. Absent on servers that
+   * predate the field.
+   */
+  readonly parentId?: string | undefined;
 }
 
 export interface OpsGuildMemberInfo {
@@ -631,6 +655,10 @@ export interface OpsGuildMemberPage {
   /** Pass as `after` for the next page; undefined when this page came back short. */
   readonly nextAfter?: string | undefined;
 }
+
+/** `findGuildMessage`'s verdict, in the order the form reports it. */
+export type OpsMessageLookup =
+  'ok' | 'channel-not-found' | 'not-text-channel' | 'message-not-found';
 
 export interface OpsGuildRoleInfo {
   readonly roleId: string;
@@ -680,12 +708,28 @@ export interface OpsPorts {
    */
   listGuildChannels(): readonly OpsGuildChannelInfo[];
   /**
+   * The target check for an adopted reaction panel (the builder's
+   * self-granted roles flow): does this channel exist in the guild, is it
+   * text-based, and does the message exist in it? Live Discord read - the
+   * channel from the gateway cache, the message fetched - so the form never
+   * attaches to a guessed id.
+   */
+  findGuildMessage(channelId: string, messageId: string): Promise<OpsMessageLookup>;
+  /**
    * The guild's roles (minus `@everyone`) with name, colour and hierarchy
    * position — the role pickers' source, and the dashboard's answer to the
    * MCP `list_roles` tool. From the live gateway cache; empty when the guild
    * is not cached yet, which the picker shows as an honest loading state.
    */
   listGuildRoles(): readonly OpsGuildRoleInfo[];
+  /**
+   * The bot's own highest role position in the live hierarchy, from the
+   * gateway cache. Discord decides manageability from this number right now
+   * — a role is manageable exactly when it sits below it and is not
+   * integration-managed — so a remembered flag can never go stale when the
+   * owner reorders roles in Discord. Undefined when the guild is not cached.
+   */
+  botHighestRolePosition(): number | undefined;
   /**
    * The guild's members, one paginated REST page at a time — the member
    * directory's source, and the dashboard's answer to the MCP `list_members`
@@ -697,6 +741,13 @@ export interface OpsPorts {
     after?: string | undefined;
     limit?: number | undefined;
   }): Promise<OpsGuildMemberPage>;
+  /**
+   * A live lookup of specific members by id, so moderation surfaces (review,
+   * cases) can show who a raw member id is. Bulk-fetched from Discord;
+   * members who left or ids Discord does not know are simply absent, and
+   * callers render the bare id honestly instead of a guess.
+   */
+  fetchGuildMembers(userIds: readonly string[]): Promise<readonly OpsGuildMemberInfo[]>;
   listJobs(query: OpsJobQuery): readonly OpsJobRow[];
   listPanels(): readonly OpsPanelSummary[];
   findPanel(panelId: string): OpsPanelDetail | undefined;
@@ -1019,7 +1070,7 @@ export interface OpsPorts {
    * panel stays `publishPanel`'s job, so a half-built panel cannot go live by
    * accident (ADR 0053).
    */
-  createPanel(definition: PanelDefinition): void;
+  createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
 
   /**
    * Whether the role is one Bananasaurs manages — the precondition for making
@@ -1027,6 +1078,14 @@ export interface OpsPorts {
    * command and the builder refuse cleanly before the database has to.
    */
   isManagedRole(roleId: string): boolean;
+  /**
+   * Adds a role to the managed allowlist (docs/18 Layer 2). Idempotent. The
+   * panel builder calls this for a role the owner just selected, after the
+   * live hierarchy check has shown the bot can manage it — the audited
+   * dashboard action is the allowlisting intent, and the gateway still
+   * re-checks hierarchy before every mutation.
+   */
+  allowlistRole(roleId: string): void;
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   /**
@@ -1417,6 +1476,17 @@ export interface OpsInstance {
    * exactly what crosses the boundary.
    */
   accountList(): readonly OpsAccount[];
+  /**
+   * Creates one NON-owner dashboard account with no guild access and no
+   * capabilities - least privilege by construction, so a new account can
+   * reach nothing until an explicit, audited grant says otherwise
+   * (`accountGrantGuild` / `grantAccountCapability`, the same levers that
+   * edit it afterwards). Async like `accountSetPassword`: the generated
+   * password is hashed with Argon2id in the wiring, the plaintext is
+   * returned exactly once and never stored. `'username-taken'` is the usage
+   * answer for a name an existing account already holds.
+   */
+  accountCreate(username: string): Promise<OpsAccountCreateResult | 'username-taken'>;
   /**
    * Disables or re-enables one dashboard account by username (ADR 0045 D6).
    *

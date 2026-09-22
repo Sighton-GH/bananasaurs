@@ -1,0 +1,725 @@
+import { describe, expect, it, vi } from 'vitest';
+import { pino } from 'pino';
+import type { AssistantBehaviour, AssistantInvokePayload, DomainEvent } from '@bananasaurs/core';
+import { ProviderError } from '@bananasaurs/core';
+import {
+  createAssistantCommandSubscriber,
+  type AssistantCommandService,
+  type AssistantInvocationResult,
+} from './commands.js';
+import { assistantInvokeHandler } from '../jobs/assistant.js';
+import { createInteractionTokenSealer } from './interaction-token.js';
+
+const guildId = '234567890123456789';
+const channelId = '345678901234567890';
+const userId = '456789012345678901';
+const direct: AssistantBehaviour = {
+  id: 'direct',
+  guildId,
+  surface: 'direct-command',
+  name: 'Direct',
+  reviewerRoleIds: [],
+  callerRoleIds: [],
+  systemPrompt: 'direct',
+  promptVersion: 1,
+  allowedSkillIds: ['club-search', 'reminder-create'],
+  resourceIds: [],
+  enabled: true,
+};
+const club: AssistantBehaviour = {
+  id: 'club',
+  guildId,
+  surface: 'bananasaurs',
+  mentionRoleId: '567890123456789012',
+  name: 'Club',
+  reviewerRoleIds: [],
+  callerRoleIds: [],
+  systemPrompt: 'club',
+  promptVersion: 1,
+  allowedSkillIds: ['club-search'],
+  resourceIds: [],
+  enabled: true,
+};
+
+/**
+ * The B2 split under test: the subscriber does cheap routing inline and
+ * enqueues; the job handler does the invoke and answers. `flush()` drains
+ * the captured queue through the real handler, so these tests exercise the
+ * whole path a production event travels.
+ */
+const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => {
+  const invoke = vi.fn<AssistantCommandService['invoke']>(
+    async (): Promise<AssistantInvocationResult> => ({
+      ok: true,
+      content: 'Grounded answer.',
+    }),
+  );
+  const service: AssistantCommandService = {
+    behavioursForGuild: vi.fn(async () => behaviours),
+    invoke,
+  };
+  const defer = vi.fn(async () => undefined);
+  const respond = vi.fn(async () => undefined);
+  const send = vi.fn(async () => undefined);
+  const queued: AssistantInvokePayload[] = [];
+  const sealer = createInteractionTokenSealer();
+  const handler = assistantInvokeHandler({
+    guildId,
+    service,
+    openToken: (token) => sealer.open(token),
+    respond,
+    send,
+    logger: pino({ level: 'silent' }),
+  });
+  const flush = async (): Promise<void> => {
+    for (const payload of queued.splice(0)) {
+      await handler.run(handler.payload.parse(payload), {
+        jobId: 1,
+        attempts: 1,
+        cursor: null,
+        saveCursor: () => undefined,
+      });
+    }
+  };
+  return {
+    invoke,
+    defer,
+    respond,
+    send,
+    queued,
+    flush,
+    subscriber: createAssistantCommandSubscriber({
+      guildId,
+      service,
+      defer,
+      respond,
+      enqueue: (input) => {
+        queued.push(input.payload);
+      },
+      sealToken: (ref) => sealer.seal(ref),
+      now: () => 1,
+      logger: pino({ level: 'silent' }),
+    }),
+  };
+};
+const slash = (name: string, options: { name: string; value: string }[]): DomainEvent => ({
+  kind: 'slashCommand',
+  guildId,
+  receivedAtMs: 1,
+  interactionId: '678901234567890123',
+  token: 'secret',
+  commandName: name,
+  subcommandPath: [],
+  options,
+  channelId,
+  userId,
+});
+
+describe('assistant command subscriber', () => {
+  it.each([
+    ['ask', [{ name: 'question', value: 'When is the meeting?' }]],
+    ['find', [{ name: 'query', value: 'handbook' }]],
+    [
+      'remind',
+      [
+        { name: 'when', value: 'Monday 9 am' },
+        { name: 'text', value: 'Bring cones' },
+      ],
+    ],
+    ['decision', [{ name: 'topic', value: 'Battery supplier' }]],
+    ['review-plan', [{ name: 'plan', value: 'Test on Friday' }]],
+    ['onboard', [{ name: 'request', value: 'What should a new member do?' }]],
+    ['agenda', [{ name: 'request', value: 'Monday tech meeting' }]],
+    ['summarise', [{ name: 'request', value: 'Notes from the build session' }]],
+    ['announce', [{ name: 'request', value: 'Battery workshop moved' }]],
+    ['checklist', [{ name: 'request', value: 'Competition packing' }]],
+    ['handoff', [{ name: 'request', value: 'Electrical to software' }]],
+  ])('defers and routes /%s through the queue to the service', async (name, options) => {
+    const h = harness();
+    await h.subscriber.handle(slash(name, options));
+    expect(h.defer).toHaveBeenCalledTimes(1);
+    // The invoke must NOT happen inline (B2): the serial dispatch chain is
+    // already free, and the queued job carries the whole invocation.
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(1);
+    expect(h.queued[0]).toEqual(
+      expect.objectContaining({ command: name, source: 'slash-command' }),
+    );
+    await h.flush();
+    expect(h.invoke).toHaveBeenCalledWith(
+      expect.objectContaining({ command: name, source: 'slash-command' }),
+    );
+    expect(h.respond).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        content: 'Grounded answer.',
+        allowedMentions: { parse: [] },
+      }),
+    );
+  });
+
+  it('posts one safe IT escalation to the configured channel and reviewer roles', async () => {
+    const h = harness([{ ...club, surface: 'it-services', callerRoleIds: ['987654321098765432'] }]);
+    h.invoke.mockResolvedValueOnce({
+      ok: true as const,
+      content: 'Reset the lab account permission.',
+      escalation: {
+        channelId: '987654321098765430',
+        reviewerRoleIds: ['987654321098765431'],
+        ticketId: 'it-1',
+      },
+    });
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> reset it`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    await h.flush();
+    expect(h.send).toHaveBeenLastCalledWith(
+      '987654321098765430',
+      expect.objectContaining({
+        content: expect.stringContaining('IT request it-1'),
+        allowedMentions: { parse: [], roles: ['987654321098765431'] },
+      }),
+    );
+  });
+
+  it('does not expose removed privacy commands', async () => {
+    const h = harness();
+    await h.subscriber.handle(slash('mydata', []));
+    await h.subscriber.handle(slash('forgetme', []));
+    expect(h.defer).not.toHaveBeenCalled();
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(0);
+  });
+
+  it('fails closed on an ambiguous mention without calling the service', async () => {
+    const it: AssistantBehaviour = {
+      ...club,
+      id: 'it',
+      surface: 'it-services',
+      mentionRoleId: '789012345678901234',
+    };
+    const h = harness([direct, club, it]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> <@&${it.mentionRoleId}> help`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!, it.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.queued).toHaveLength(0);
+    // Hard rule 6: the subscriber has no idempotency key of its own, so it
+    // may not post. A gateway replay of the same message must stay silent too.
+    expect(h.send).not.toHaveBeenCalled();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 2,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> <@&${it.mentionRoleId}> help`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!, it.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('swallows an enqueue failure without posting or throwing', async () => {
+    const subscriber = createAssistantCommandSubscriber({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [club]), invoke: vi.fn() },
+      defer: vi.fn(async () => undefined),
+      respond: vi.fn(async () => undefined),
+      enqueue: () => {
+        throw new Error('disk full');
+      },
+      sealToken: (token) => token,
+      now: () => 1,
+      logger: pino({ level: 'silent' }),
+    });
+    const handled = subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    // The subscriber no longer has a send port at all (hard rule 6), so the
+    // only observable is that the failure does not escape into the chain.
+    await expect(handled).resolves.toBeUndefined();
+  });
+});
+
+describe('assistant mention failure path', () => {
+  it('answers the member when the service throws instead of going silent', async () => {
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    h.invoke.mockRejectedValueOnce(new Error('provider outage'));
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    await h.flush();
+    expect(h.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({
+        content: expect.stringContaining('could not complete'),
+      }),
+    );
+  });
+
+  it('never re-invokes when answer delivery fails after the invoke succeeded', async () => {
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    const payload = h.queued[0]!;
+    const sealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
+      openToken: (token) => sealer.open(token),
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    // Attempt 1: invoke succeeds, the answer send throws (Discord blip).
+    let cursor: string | null = null;
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    await expect(
+      handler.run(handler.payload.parse(payload), {
+        jobId: 1,
+        attempts: 1,
+        cursor: null,
+        saveCursor: (c) => {
+          cursor = c;
+        },
+      }),
+    ).rejects.toThrow('discord 500');
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(cursor).not.toBeNull();
+    // Attempt 2 (the worker's retry): the stored result is delivered; the
+    // provider is NOT called again and no duplicate effects can occur.
+    await handler.run(handler.payload.parse(payload), {
+      jobId: 1,
+      attempts: 2,
+      cursor,
+      saveCursor: () => undefined,
+    });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({ content: 'Grounded answer.' }),
+    );
+  });
+
+  it('answers the member when the behaviour was deleted between enqueue and run', async () => {
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId!}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: ['987654321098765432'],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    // The behaviour vanishes before the worker picks the job up: fail closed,
+    // never act on the stale copy.
+    h.invoke.mockClear();
+    const payload = h.queued[0]!;
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => []), invoke: h.invoke },
+      openToken: (t) => t,
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    await handler.run(handler.payload.parse(payload), {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({
+        content: expect.stringContaining('no longer available'),
+      }),
+    );
+  });
+
+  it('drops a slash job before the invoke when the sealed token is from a previous process', async () => {
+    // Restart semantics: the sealer's key is per-process, so a queued job
+    // surviving a restart carries a token this process cannot open. Running
+    // the invoke anyway would spend provider quota and write durable
+    // ticket/activity effects whose answer can never be delivered (audit,
+    // round 2). The job must fail closed BEFORE the invoke, and complete
+    // (the token is long expired; no retry can help).
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    const staleSealer = createInteractionTokenSealer();
+    const currentSealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
+      openToken: (token) => currentSealer.open(token),
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    const payload = handler.payload.parse({
+      schemaVersion: 1,
+      invocationId: 'int-stale-token',
+      behaviourId: club.id,
+      command: 'ask',
+      channelId,
+      userId,
+      callerRoleIds: ['987654321098765432'],
+      input: { question: 'When are meetings?' },
+      source: 'slash-command',
+      interaction: {
+        interactionId: '678901234567890123',
+        sealedToken: staleSealer.seal('secret-token-from-before-restart'),
+      },
+    });
+    await handler.run(payload, {
+      jobId: 1,
+      attempts: 1,
+      cursor: null,
+      saveCursor: () => undefined,
+    });
+    expect(h.invoke).not.toHaveBeenCalled();
+    expect(h.respond).not.toHaveBeenCalled();
+    expect(h.send).not.toHaveBeenCalled();
+  });
+
+  it('does not repeat the member answer when a completed job is retried', async () => {
+    // Completion retry: the worker finished the job but the completion write
+    // was lost, so the job fires again with the final cursor. Nothing may be
+    // re-sent.
+    const h = harness([{ ...club, callerRoleIds: ['987654321098765432'] }]);
+    const sealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [{ ...club }]), invoke: h.invoke },
+      openToken: (token) => sealer.open(token),
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    const payload = handler.payload.parse({
+      schemaVersion: 1,
+      invocationId: 'int-completion-retry',
+      behaviourId: club.id,
+      command: 'ask',
+      channelId,
+      userId,
+      callerRoleIds: ['987654321098765432'],
+      input: { question: 'When are meetings?' },
+      source: 'mention',
+    });
+    const cursors: string[] = [];
+    const context = {
+      jobId: 1,
+      attempts: 1,
+      cursor: null as string | null,
+      saveCursor: (c: string): void => {
+        cursors.push(c);
+      },
+    };
+    await handler.run(payload, context);
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(1);
+    // Every stage was persisted, ending at 'answered' for a plain result.
+    expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
+      'answered',
+    ]);
+    // The completion retry: the provider is not called and nothing is re-sent.
+    await handler.run(payload, { ...context, attempts: 2, cursor: cursors.at(-1)! });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('resumes an escalation result after the answer without re-sending it or duplicating the post', async () => {
+    // Crash between the member answer and the escalation post, then a
+    // completion retry after everything landed.
+    const escBehaviour = {
+      ...club,
+      callerRoleIds: ['987654321098765432'],
+      escalation: undefined,
+    };
+    const h = harness([escBehaviour]);
+    const escalateResult: AssistantInvocationResult = {
+      ok: true,
+      content: 'I could not confirm that.',
+      escalation: { ticketId: 'ticket-1', channelId, reviewerRoleIds: ['111222333444555666'] },
+    };
+    h.invoke.mockResolvedValue(escalateResult);
+    const sealer = createInteractionTokenSealer();
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [escBehaviour]), invoke: h.invoke },
+      openToken: (token) => sealer.open(token),
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+    });
+    const payload = handler.payload.parse({
+      schemaVersion: 1,
+      invocationId: 'int-esc-retry',
+      behaviourId: club.id,
+      command: 'ask',
+      channelId,
+      userId,
+      callerRoleIds: ['987654321098765432'],
+      input: { question: 'Refund my membership.' },
+      source: 'mention',
+    });
+    const cursors: string[] = [];
+    const context = {
+      jobId: 1,
+      attempts: 1,
+      cursor: null as string | null,
+      saveCursor: (c: string): void => {
+        cursors.push(c);
+      },
+    };
+    // Attempt 1: the answer lands, the escalation send throws.
+    let calls = 0;
+    h.send.mockImplementation(async () => {
+      calls += 1;
+      if (calls === 2) throw new Error('discord 500');
+    });
+    await expect(handler.run(payload, context)).rejects.toThrow('discord 500');
+    expect(h.send).toHaveBeenCalledTimes(2);
+    expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
+      'answered',
+    ]);
+    // Attempt 2: only the escalation post is sent.
+    await handler.run(payload, { ...context, attempts: 2, cursor: cursors.at(-1)! });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(3);
+    expect((h.send.mock.calls[2] as unknown[] | undefined)?.[1]).toMatchObject({
+      allowedMentions: { parse: [], roles: ['111222333444555666'] },
+    });
+    expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
+      'answered',
+      'escalation-sent',
+    ]);
+    // Completion retry: nothing at all.
+    await handler.run(payload, { ...context, attempts: 3, cursor: cursors.at(-1)! });
+    expect(h.invoke).toHaveBeenCalledTimes(1);
+    expect(h.send).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('assistant invoke job: retries, cursor hygiene and stranded stages', () => {
+  const mentionPayload: AssistantInvokePayload = {
+    channelId,
+    userId,
+    callerRoleIds: [],
+    behaviourId: club.id,
+    command: 'ask',
+    input: { question: 'where is the handbook?' },
+    source: 'mention',
+    invocationId: '890123456789012345',
+  };
+  const jobDeps = (invoke: AssistantCommandService['invoke']) => {
+    const send = vi.fn(async () => undefined);
+    const respond = vi.fn(async () => undefined);
+    const saved: (string | null)[] = [];
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [club]), invoke },
+      openToken: () => undefined,
+      respond,
+      send,
+      logger: pino({ level: 'silent' }),
+    });
+    const run = (attempts: number, cursor: string | null) =>
+      handler.run(handler.payload.parse(mentionPayload), {
+        jobId: 1,
+        attempts,
+        cursor,
+        saveCursor: (c) => {
+          saved.push(c);
+        },
+      });
+    return { send, respond, saved, run };
+  };
+
+  it('rethrows a retryable provider error below the ceiling so the job retries', async () => {
+    const invoke = vi.fn(async () => {
+      throw new ProviderError('rate-limit', '429', true);
+    });
+    const d = jobDeps(invoke);
+    await expect(d.run(1, null)).rejects.toBeInstanceOf(ProviderError);
+    expect(d.send).not.toHaveBeenCalled();
+    expect(d.saved).toHaveLength(0);
+  });
+
+  it('answers the member on the last permitted attempt instead of retrying forever', async () => {
+    const invoke = vi.fn(async () => {
+      throw new ProviderError('rate-limit', '429', true);
+    });
+    const d = jobDeps(invoke);
+    await d.run(3, null);
+    expect(d.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({ content: expect.stringContaining('could not complete') }),
+    );
+  });
+
+  it('answers immediately on a non-retryable provider error', async () => {
+    const invoke = vi.fn(async () => {
+      throw new ProviderError('safety-refusal', 'refused', false);
+    });
+    const d = jobDeps(invoke);
+    await d.run(1, null);
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(d.send).toHaveBeenCalledTimes(1);
+  });
+
+  it('treats a malformed cursor as no cursor rather than crashing every retry', async () => {
+    const invoke = vi.fn(async () => ({ ok: true as const, content: 'Grounded answer.' }));
+    const d = jobDeps(invoke);
+    await d.run(2, JSON.stringify({ stage: 'answered', result: { ok: true } }));
+    expect(invoke).toHaveBeenCalledTimes(1);
+    expect(d.send).toHaveBeenCalledWith(
+      channelId,
+      expect.objectContaining({ content: 'Grounded answer.' }),
+    );
+  });
+
+  it('still posts the escalation from a stranded invoke-done cursor when the token is gone', async () => {
+    const invoke = vi.fn();
+    const d = jobDeps(invoke);
+    const result = {
+      ok: true as const,
+      content: 'Escalated.',
+      escalation: { channelId: '111111111111111111', reviewerRoleIds: [], ticketId: 't1' },
+    };
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [club]), invoke },
+      openToken: () => undefined,
+      respond: d.respond,
+      send: d.send,
+      logger: pino({ level: 'silent' }),
+    });
+    await handler.run(
+      handler.payload.parse({
+        ...mentionPayload,
+        source: 'slash-command',
+        interaction: { interactionId: '678901234567890123', sealedToken: 'not-ours' },
+      }),
+      {
+        jobId: 1,
+        attempts: 2,
+        cursor: JSON.stringify({ stage: 'invoke-done', result }),
+        saveCursor: () => undefined,
+      },
+    );
+    expect(invoke).not.toHaveBeenCalled();
+    expect(d.respond).not.toHaveBeenCalled();
+    expect(d.send).toHaveBeenCalledWith(
+      '111111111111111111',
+      expect.objectContaining({ content: expect.stringContaining('IT request t1') }),
+    );
+  });
+});

@@ -390,6 +390,21 @@ describe('messages and reactions', () => {
     });
   });
 
+  it('carries allowedMentions roles to the wire (IT escalation reviewer ping)', async () => {
+    // The integration once dropped `roles`, so the escalation posted the
+    // reviewer role as plain text and nobody was notified.
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: '<@&555555555555555555> IT request it-1',
+      allowedMentions: { parse: [], roles: ['555555555555555555'] },
+    });
+    expect(last(requests).body).toMatchObject({
+      allowed_mentions: { parse: [], roles: ['555555555555555555'] },
+    });
+  });
+
   it('sends no allowed_mentions key at all when the message does not set it (M5-D2)', async () => {
     // Opt-in: panel posts and log messages never set `allowedMentions`, and a
     // default here would change what they send while two guilds are observed.

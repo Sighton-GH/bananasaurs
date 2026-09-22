@@ -268,6 +268,95 @@ export const RELEASE_2_COMMANDS: readonly GuildCommandDefinition[] = [
   MOD_COMMAND,
 ];
 
+const requiredText = (
+  name: string,
+  description: string,
+  maxLength = 2_000,
+): GuildCommandOption => ({
+  name,
+  description,
+  type: ApplicationCommandOptionType.String,
+  required: true,
+  max_length: maxLength,
+});
+
+export const ASK_COMMAND: GuildCommandDefinition = {
+  name: 'ask',
+  description: 'Ask the club assistant a grounded question',
+  type: ApplicationCommandType.ChatInput,
+  options: [requiredText('question', 'What you want to know')],
+};
+export const FIND_COMMAND: GuildCommandDefinition = {
+  name: 'find',
+  description: 'Find information in club sources you can access',
+  type: ApplicationCommandType.ChatInput,
+  options: [requiredText('query', 'What to find')],
+};
+export const REMIND_COMMAND: GuildCommandDefinition = {
+  name: 'remind',
+  description: 'Schedule a reminder after reviewing its destination',
+  type: ApplicationCommandType.ChatInput,
+  options: [
+    requiredText('when', 'When to send it, including date or time zone'),
+    requiredText('text', 'Reminder text'),
+  ],
+};
+export const DECISION_COMMAND: GuildCommandDefinition = {
+  name: 'decision',
+  description: 'Draft a club decision from the evidence you provide',
+  type: ApplicationCommandType.ChatInput,
+  options: [
+    requiredText('topic', 'Decision topic'),
+    {
+      name: 'context',
+      description: 'Optional context or constraints',
+      type: ApplicationCommandOptionType.String,
+      max_length: 2_000,
+    },
+  ],
+};
+export const REVIEW_PLAN_COMMAND: GuildCommandDefinition = {
+  name: 'review-plan',
+  description: 'Review a club plan without taking action',
+  type: ApplicationCommandType.ChatInput,
+  options: [requiredText('plan', 'Plan to review', 4_000)],
+};
+
+const assistantDraftCommand = (name: string, description: string): GuildCommandDefinition => ({
+  name,
+  description,
+  type: ApplicationCommandType.ChatInput,
+  options: [requiredText('request', 'What you need', 4_000)],
+});
+export const ONBOARD_COMMAND = assistantDraftCommand('onboard', 'Get sourced onboarding guidance');
+export const AGENDA_COMMAND = assistantDraftCommand('agenda', 'Draft a meeting agenda');
+export const SUMMARISE_COMMAND = assistantDraftCommand(
+  'summarise',
+  'Summarise supplied meeting notes',
+);
+export const ANNOUNCE_COMMAND = assistantDraftCommand('announce', 'Draft a club announcement');
+export const CHECKLIST_COMMAND = assistantDraftCommand(
+  'checklist',
+  'Draft an event or project checklist',
+);
+export const HANDOFF_COMMAND = assistantDraftCommand('handoff', 'Draft a team handoff');
+
+/** Release 3 keeps the privacy controls in the dashboard; it does not register /mydata or /forgetme. */
+export const RELEASE_3_COMMANDS: readonly GuildCommandDefinition[] = [
+  ...RELEASE_2_COMMANDS,
+  ASK_COMMAND,
+  FIND_COMMAND,
+  REMIND_COMMAND,
+  DECISION_COMMAND,
+  REVIEW_PLAN_COMMAND,
+  ONBOARD_COMMAND,
+  AGENDA_COMMAND,
+  SUMMARISE_COMMAND,
+  ANNOUNCE_COMMAND,
+  CHECKLIST_COMMAND,
+  HANDOFF_COMMAND,
+];
+
 /** What one guild's registration did, so the caller can log it per guild. */
 export type GuildRegistration =
   | { readonly guildId: Snowflake; readonly ok: true; readonly count: number }

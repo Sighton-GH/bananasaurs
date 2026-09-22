@@ -1,11 +1,12 @@
 import { useCallback, useState } from 'react';
-import { LOG_EVENT_KINDS, type LogRoutesResponse } from '../api/ops.js';
+import { LOG_EVENT_KINDS, type GuildChannelInfo, type LogRoutesResponse } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
-import { Checkbox, Field, Input } from '../ui/Field.js';
+import { ChannelPicker } from '../ui/ChannelPicker.js';
+import { Checkbox, Field } from '../ui/Field.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -24,10 +25,23 @@ export function LoggingPage() {
   const toast = useToast();
   const load = useCallback(() => session.read<LogRoutesResponse>('/api/log-routes'), [session]);
   const routes = useResource('the log routes', load);
+  const loadChannels = useCallback(
+    () => session.read<{ channels: readonly GuildChannelInfo[] }>('/api/guild/channels'),
+    [session],
+  );
+  const channelDirectory = useResource('the channel list', loadChannels);
+  const channelName = (id: string): string => {
+    if (channelDirectory.resource.state !== 'ready') return id;
+    const found = channelDirectory.resource.data.channels.find((c) => c.channelId === id);
+    return found === undefined ? id : `#${found.name}`;
+  };
 
   const [eventKind, setEventKind] = useState(LOG_EVENT_KINDS[0] ?? '');
   const [channelId, setChannelId] = useState('');
-  const [includeContent, setIncludeContent] = useState(false);
+  // On by default (owner decision 2026-09-21): a route exists so the log is
+  // useful, and the checkbox + the table's included/redacted column keep the
+  // privacy choice visible either way.
+  const [includeContent, setIncludeContent] = useState(true);
   const [excludeId, setExcludeId] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -125,7 +139,20 @@ export function LoggingPage() {
                 rowKey={(r) => r.eventKind}
                 columns={[
                   { key: 'event', header: 'Event', cell: (r) => r.eventKind },
-                  { key: 'channel', header: 'Channel', cell: (r) => r.channelId },
+                  {
+                    key: 'channel',
+                    header: 'Channel',
+                    cell: (r) => (
+                      <span title={r.channelId}>
+                        {channelName(r.channelId)}
+                        {channelName(r.channelId) === r.channelId ? (
+                          ''
+                        ) : (
+                          <span className="text-xs text-ink-muted"> {r.channelId}</span>
+                        )}
+                      </span>
+                    ),
+                  },
                   {
                     key: 'content',
                     header: 'Content',
@@ -168,14 +195,18 @@ export function LoggingPage() {
                 ))}
               </select>
             </Field>
-            <Field label="Channel ID">
-              <Input value={channelId} onChange={(e) => setChannelId(e.target.value)} />
-            </Field>
-            <Checkbox
-              label="Include message content"
-              checked={includeContent}
-              onChange={(e) => setIncludeContent(e.target.checked)}
-            />
+            <ChannelPicker label="Channel" value={channelId} onChange={setChannelId} />
+            <div>
+              <Checkbox
+                label="Include message content"
+                checked={includeContent}
+                onChange={(e) => setIncludeContent(e.target.checked)}
+              />
+              <p className="mt-1 text-xs text-ink-muted">
+                On by default so the log is useful. Unticked, the route posts the event with the
+                message text redacted.
+              </p>
+            </div>
             <div>
               <Button
                 type="submit"
@@ -201,7 +232,20 @@ export function LoggingPage() {
                   rows={data.excludedChannels ?? []}
                   rowKey={(id) => id}
                   columns={[
-                    { key: 'channel', header: 'Channel', cell: (id) => id },
+                    {
+                      key: 'channel',
+                      header: 'Channel',
+                      cell: (id) => (
+                        <span title={id}>
+                          {channelName(id)}
+                          {channelName(id) === id ? (
+                            ''
+                          ) : (
+                            <span className="text-xs text-ink-muted"> {id}</span>
+                          )}
+                        </span>
+                      ),
+                    },
                     {
                       key: 'actions',
                       header: '',
@@ -213,9 +257,12 @@ export function LoggingPage() {
             }
           </DataState>
           <form onSubmit={(e) => void exclude(e)} className="mt-3 grid max-w-md gap-3">
-            <Field label="Exclude a channel" hint="The channel's snowflake ID.">
-              <Input value={excludeId} onChange={(e) => setExcludeId(e.target.value)} />
-            </Field>
+            <ChannelPicker
+              label="Exclude a channel"
+              hint="Pick the channel logging never touches, or paste its snowflake ID."
+              value={excludeId}
+              onChange={setExcludeId}
+            />
             <div>
               <Button type="submit" busy={busy} disabled={excludeId.trim() === ''}>
                 Exclude channel

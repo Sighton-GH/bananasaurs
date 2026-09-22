@@ -147,27 +147,32 @@ describe('LoggingPage', () => {
     excludedChannels: ['77'],
   };
 
-  it('lists routes and posts the same body the old form did', async () => {
+  it('lists routes with channel names and posts the same body the old form did', async () => {
     const mock = stubFetch([
       { url: '/api/log-routes', body: ROUTES },
+      {
+        url: '/api/guild/channels',
+        body: { channels: [{ channelId: '42', name: 'mod-log', kind: 'text' }] },
+      },
       { method: 'POST', url: '/api/log-routes', body: { ok: true } },
     ]);
     renderWithSession(<LoggingPage />);
     // Wait on table-only text: the Event kind select renders `message_delete`
     // before the routes load, so it cannot be the readiness signal.
     expect(await screen.findByText('redacted')).toBeTruthy();
-    expect(screen.getByText('42')).toBeTruthy();
+    // The route's channel resolves to its live name, id kept for precision
+    // (the picker's option lists the same name, so there may be two).
+    expect((await screen.findAllByText('#mod-log')).length).toBeGreaterThan(0);
+    expect(screen.getAllByText('42').length).toBeGreaterThan(0);
     expect(screen.getAllByText('message_delete')).toHaveLength(2);
     fireEvent.change(screen.getByLabelText('Event kind'), { target: { value: 'member_join' } });
-    fireEvent.change(screen.getByLabelText('Channel ID'), { target: { value: '99' } });
-    fireEvent.click(screen.getByLabelText('Include message content'));
+    fireEvent.change(screen.getByLabelText('Channel'), { target: { value: '99' } });
+    // Include content is on by default (owner decision): no click needed.
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Set route' }));
     });
     const post = mock.mock.calls.find((c) => c[1]?.method === 'POST')!;
     expect(post[0] as string).toBe('/api/log-routes');
-    // The form defaults to redacted (the privacy-favourable default); the
-    // click opted this route into content.
     expect(bodyOf(post)).toEqual({
       eventKind: 'member_join',
       channelId: '99',

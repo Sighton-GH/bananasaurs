@@ -7,7 +7,28 @@ import { DoctorPage } from './doctor.js';
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
-const DOCTOR = { ok: false, text: 'PROBLEMS FOUND\n- stale panel: welcome', data: { stale: 1 } };
+const DOCTOR = {
+  ok: false,
+  text: 'PROBLEMS FOUND\n- stale panel: welcome',
+  data: {
+    stale: 1,
+    problems: [
+      {
+        title: 'Role panel welcome-roles is disabled',
+        impact: 'Members cannot get roles from it.',
+        fix: 'Enable the panel, or delete it if it is no longer needed.',
+        route: '/panels',
+        details: 'panel welcome-roles  status disabled',
+      },
+      {
+        title: 'The bot is missing required permissions in Club (123)',
+        impact: 'Every feature that needs one of these silently fails.',
+        fix: "Discord: Server Settings -> Roles -> the bot's role -> enable Manage Messages.",
+      },
+    ],
+    advisories: ['Club (123): the bot holds extra permissions (Administrator) - safe to remove.'],
+  },
+};
 const PUBLIC = { probed: true, ok: true, text: 'public surface as intended', data: {} };
 
 describe('DoctorPage', () => {
@@ -17,7 +38,14 @@ describe('DoctorPage', () => {
       { url: '/api/doctor/public-surface', body: PUBLIC },
     ]);
     renderWithSession(<DoctorPage />);
-    expect(await screen.findByText(/stale panel: welcome/)).toBeTruthy();
+    // Problems lead, each with its fix and direct route; raw text is
+    // secondary inside the collapsed diagnostics.
+    expect(await screen.findByText('Role panel welcome-roles is disabled')).toBeTruthy();
+    expect(screen.getAllByText(/Enable the panel, or delete it/).length).toBeGreaterThan(0);
+    expect(screen.getByRole('link', { name: 'Open /panels' }).getAttribute('href')).toBe('/panels');
+    expect(screen.getByText('The bot is missing required permissions in Club (123)')).toBeTruthy();
+    expect(screen.getAllByText(/extra permissions \(Administrator\)/).length).toBeGreaterThan(0);
+    expect(screen.getByText(/stale panel: welcome/)).toBeTruthy();
     expect(screen.getByText('problems found')).toBeTruthy();
     expect(screen.getByText('as intended')).toBeTruthy();
     expect(screen.getByText(/public surface as intended/)).toBeTruthy();

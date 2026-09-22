@@ -14,6 +14,7 @@ import {
 } from '@bananasaurs/core';
 import { buildClientOptions } from '@bananasaurs/discord';
 import {
+  assistantRepo,
   automodRuleRepo,
   guildRepo,
   jobRepo,
@@ -284,6 +285,33 @@ describe('guild scope across the composition root', () => {
 
     expect(daemon.portsFor(t.scopes.forGuild(GUILD)).guildName()).toBe('first guild');
     expect(daemon.portsFor(t.scopes.forGuild(SECOND_GUILD)).guildName()).toBe('second guild');
+  });
+
+  /**
+   * Should-fix, review round 2: `listGuildRoles` must report Discord's raw
+   * position, because `/api/guild/roles` compares it against the bot's
+   * rawPosition. discord.js's `Role#position` getter is the role's RANK in
+   * the sorted cache — roles at raw 3 and 7 read back as 1 and 2 — so the
+   * raw field is the only scale the comparison may use.
+   */
+  it('listGuildRoles reports raw Discord positions, not sorted-cache ranks', async () => {
+    daemon = start();
+    internals(client).guilds._add({
+      ...guildPayload(SECOND_GUILD, 'sparse roles'),
+      roles: [
+        { id: SECOND_GUILD, name: '@everyone', position: 0, permissions: '0', managed: false },
+        { id: '111111111111111111', name: 'low', position: 3, permissions: '0', managed: false },
+        { id: '222222222222222222', name: 'high', position: 7, permissions: '0', managed: false },
+      ],
+    });
+    void daemon.stop();
+    daemon = start({ BANANASAURS_GUILD_ALLOWLIST: `${GUILD},${SECOND_GUILD}` });
+
+    const roles = daemon.portsFor(t.scopes.forGuild(SECOND_GUILD)).listGuildRoles();
+    expect(roles.map((r) => [r.name, r.position])).toEqual([
+      ['high', 7],
+      ['low', 3],
+    ]);
   });
 });
 
@@ -645,6 +673,19 @@ describe('/status, end to end', () => {
    */
   it('answers an ordinary member ephemerally, having deferred first', async () => {
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'test guild', now: 0 });
+    // One due reminder: the startup tick peeks for due work (no more empty
+    // jobs every 30s) and enqueues its bounded pass only because this exists.
+    assistantRepo.insertReminder(t.scopes.forGuild(GUILD), {
+      id: 'rem-1',
+      guildId: GUILD,
+      creatorId: ALICE,
+      destinationId: CHANNEL,
+      text: 'stretch',
+      dueAt: 0,
+      createdAt: 0,
+      status: 'scheduled',
+      dedupeKey: 'rem-1',
+    });
     daemon = start();
 
     invokeStatus();
@@ -654,10 +695,9 @@ describe('/status, end to end', () => {
     expect(discord.wasEphemeral(INTERACTION)).toBe(true);
     expect(statusReply()).toContain('**Not connected**');
     expect(statusReply()).toContain('Role changes are **enabled**');
-    // None queued: no archive channel is enabled, so the startup timer
-    // enqueues no archive_expiry job — the "0 queued" signal reads
-    // meaningfully again.
-    expect(statusReply()).toContain('0 queued, 0 running, 0 failed');
+    // Reminder delivery enqueues one bounded pass at startup so reminders that
+    // became due while the process was down are not delayed.
+    expect(statusReply()).toContain('1 queued, 0 running, 0 failed');
   });
 
   /**

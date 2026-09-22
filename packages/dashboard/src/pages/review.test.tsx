@@ -45,6 +45,7 @@ function match(overrides: Partial<ReviewableMatch> = {}): ReviewableMatch {
     actionTaken: 'would_delete',
     trace: undefined,
     fixtureContent: undefined,
+    member: { username: 'sasha', displayName: 'Sasha' },
     ...overrides,
   };
 }
@@ -58,6 +59,7 @@ function nativeHit(overrides: Partial<NativeHit> = {}): NativeHit {
     matchedCategory: 'spam',
     matchedSnippet: 'buy now buy now',
     actionTaken: 'blocked',
+    member: null,
     ...overrides,
   };
 }

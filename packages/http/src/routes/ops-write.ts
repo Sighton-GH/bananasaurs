@@ -44,6 +44,26 @@ const settingsBodySchema = z.discriminatedUnion('key', [
   z.object({ key: z.literal('breaker'), value: z.literal('closed') }),
 ]);
 
+const accountCreateSchema = z.object({
+  // The same shape `bananasaurs account` accepts (packages/core
+  // ops/commands/account.ts): lowercase, digit, dot, dash, underscore, and
+  // never a leading dash the CLI would read as a flag.
+  username: z
+    .string()
+    .min(3)
+    .max(64)
+    .regex(
+      /^[a-z0-9][a-z0-9._-]*$/,
+      'a username must start with a lowercase letter or digit, and may then contain ' +
+        'lowercase letters, digits, dot, dash, underscore',
+    ),
+  // Explicit scope, reviewable before creation: access to THIS guild and
+  // which capabilities inside it. Defaults are the least-privilege floor -
+  // a fresh account reaches nothing.
+  grantThisGuild: z.boolean().default(false),
+  capabilities: z.array(z.enum(CAPABILITIES)).default([]),
+});
+
 const accountCapabilityGrantSchema = z.object({
   capability: z.enum(CAPABILITIES),
 });
@@ -69,6 +89,14 @@ const archiveLinkCaseBodySchema = z.object({
 const panelCreateBodySchema = z.object({
   panelId: z.string().min(1).max(64),
   channelId: snowflakeIdSchema,
+  /**
+   * `managed` (default): the bot posts the panel message on publish.
+   * `adopted`: a reaction role attached to a message that already exists -
+   * the self-granted roles builder's "attach to an existing message" flow,
+   * validated against live Discord below before anything is written.
+   */
+  kind: z.enum(['managed', 'adopted']).optional(),
+  messageId: snowflakeIdSchema.optional(),
   // The message the panel posts; blank or absent falls back to default copy.
   content: z.string().trim().min(1).max(2000).optional(),
   behaviour: z.enum(PANEL_BEHAVIOURS),
@@ -162,7 +190,7 @@ export const registerOpsWriteRoutes = (
   // the same schema, into the same audit action. Creating never publishes —
   // going live stays POST /api/panels/:id/publish, so a half-built panel
   // cannot reach Discord.
-  app.post('/api/panels', (request, reply) => {
+  app.post('/api/panels', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'panels.manage', reply)) return reply;
@@ -188,14 +216,51 @@ export const registerOpsWriteRoutes = (
       return reply.status(409).send({ error: 'already-exists' });
     }
 
-    const unmanaged = definition.options
-      .filter((option) => !ports.isManagedRole(option.roleId))
-      .map((option) => option.roleId);
-    if (unmanaged.length > 0) {
-      return reply.status(400).send({ error: 'unmanaged-role', roleIds: unmanaged });
+    // An adopted panel attaches to a message that already exists: validate
+    // the target against live Discord so a typo'd channel or message id
+    // fails here with a plain answer instead of becoming a panel that can
+    // never reconcile (Bryan's roles lane: safe channel/message validation).
+    if (definition.kind === 'adopted') {
+      const lookup = await ports.findGuildMessage(definition.channelId, definition.messageId!);
+      if (lookup !== 'ok') {
+        const problems =
+          lookup === 'channel-not-found'
+            ? 'That channel is not in this server - pick the channel from the list.'
+            : lookup === 'not-text-channel'
+              ? 'Reactions only work on a text channel - pick a text channel.'
+              : 'No message with that id exists in the picked channel - check the message id.';
+        return reply.status(400).send({ error: 'message-unusable', problems });
+      }
     }
 
-    ports.createPanel(definition);
+    // A role the owner picked but nobody allowlisted yet joins the allowlist
+    // here, provided the live hierarchy says the bot can manage it — the
+    // audited save is the allowlisting intent. A role the bot cannot manage
+    // (integration-owned, or at or above the bot's own highest role) is
+    // refused with its reason visible.
+    const botPosition = ports.botHighestRolePosition();
+    const rolesById = new Map(ports.listGuildRoles().map((role) => [role.roleId, role]));
+    const unmanageable = definition.options
+      .filter((option) => !ports.isManagedRole(option.roleId))
+      .filter((option) => {
+        const role = rolesById.get(option.roleId);
+        return (
+          role === undefined ||
+          role.managed ||
+          botPosition === undefined ||
+          role.position >= botPosition
+        );
+      })
+      .map((option) => option.roleId);
+    if (unmanageable.length > 0) {
+      return reply.status(400).send({ error: 'unmanageable-role', roleIds: unmanageable });
+    }
+    const newlyAllowlisted = definition.options
+      .filter((option) => !ports.isManagedRole(option.roleId))
+      .map((option) => option.roleId);
+    // One storage transaction owns both effects. If any panel row or option
+    // insert fails, no managed-role grant survives the failed create.
+    ports.createPanel(definition, newlyAllowlisted);
     ports.recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'panel.created',
@@ -203,13 +268,21 @@ export const registerOpsWriteRoutes = (
       subjectId: definition.panelId,
       before: undefined,
       after: {
+        kind: definition.kind,
         channelId: definition.channelId,
+        ...(definition.messageId !== undefined && { messageId: definition.messageId }),
         behaviour: definition.behaviour,
         component: definition.component,
         optionCount: definition.options.length,
+        newlyAllowlistedRoleIds: newlyAllowlisted,
       },
     });
-    return reply.status(201).send({ ok: true, panelId: definition.panelId, published: false });
+    return reply.status(201).send({
+      ok: true,
+      panelId: definition.panelId,
+      published: false,
+      newlyAllowlistedRoleIds: newlyAllowlisted,
+    });
   });
 
   app.post<{ Params: { id: string } }>('/api/panels/:id/publish', async (request, reply) => {
@@ -997,6 +1070,74 @@ export const registerOpsWriteRoutes = (
       return reply.status(200).send(result);
     },
   );
+
+  // Owner-provisioned account creation, web half: the account starts
+  // non-owner with nothing, and the guild access and capabilities the form
+  // named are granted here as real grants (the same levers the page edits
+  // with afterwards). The generated password is returned exactly once and
+  // appears in no audit row.
+  app.post('/api/accounts', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+
+    const parsed = accountCreateSchema.safeParse(request.body);
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'bad-request', issues: parsed.error.issues });
+    }
+    // A capability lives inside a guild, so granting one without the guild
+    // is a form mistake, not a state - refuse it before anything is created.
+    if (parsed.data.capabilities.length > 0 && !parsed.data.grantThisGuild) {
+      return reply.status(400).send({
+        error: 'capabilities-need-guild-access',
+        message:
+          'capabilities live inside a guild: grant this guild to the new account, or create it with no capabilities',
+      });
+    }
+
+    const created = await deps.instance.accountCreate(parsed.data.username);
+    if (created === 'username-taken') {
+      return reply.status(409).send({ error: 'username-taken' });
+    }
+
+    const ports = deps.portsFor(session.scope);
+    let guildAccess = false;
+    if (parsed.data.grantThisGuild) {
+      guildAccess = ports.accountGrantGuild(parsed.data.username) === 'granted';
+    }
+    const grantedCapabilities: string[] = [];
+    if (guildAccess) {
+      for (const capability of parsed.data.capabilities) {
+        const outcome = ports.grantAccountCapability({
+          username: parsed.data.username,
+          capability,
+          grantedBy: session.accountId,
+        });
+        if (outcome === 'granted' || outcome === 'already-held') {
+          grantedCapabilities.push(capability);
+        }
+      }
+    }
+    ports.recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'account.created',
+      subjectType: 'account',
+      subjectId: parsed.data.username,
+      before: undefined,
+      after: {
+        isOwner: false,
+        guildAccess,
+        capabilities: grantedCapabilities,
+      },
+    });
+    return reply.status(201).send({
+      accountId: created.accountId,
+      username: created.username,
+      password: created.password,
+      guildAccess,
+      capabilities: grantedCapabilities,
+    });
+  });
 
   app.delete<{ Params: { username: string } }>('/api/accounts/:username', (request, reply) => {
     const session = guard.require(request, reply);

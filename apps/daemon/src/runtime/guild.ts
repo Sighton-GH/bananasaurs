@@ -62,6 +62,7 @@ import {
   pipelineRepo,
   roleRepo,
   type GuildScope,
+  type InstanceScope,
 } from '@bananasaurs/storage';
 import { nativeAutomodPortsFor } from '../automod/native-wiring.js';
 import { automodAuthorization, automodGatewayFor, automodPortsFor } from '../automod/wiring.js';
@@ -71,6 +72,12 @@ import { logMessageDeleteHandler } from '../jobs/logging.js';
 import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
+import { deliverRemindersHandler } from '../jobs/reminders.js';
+import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
+import { createAssistantCommandSubscriber } from '../assistant/commands.js';
+import { assistantInvokeHandler } from '../jobs/assistant.js';
+import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
+import { createAssistantService } from '../assistant/service.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -100,6 +107,8 @@ export const SELF_MUTATION_WINDOW_MS = 60_000;
 
 export interface GuildRuntimeDeps {
   readonly scope: GuildScope;
+  /** Provider eligibility is instance-level (ADR 0027); the assistant gate reads it. */
+  readonly instance: InstanceScope;
   readonly config: Config;
   readonly discord: DiscordPort;
   /**
@@ -111,6 +120,13 @@ export interface GuildRuntimeDeps {
   readonly logger: Logger;
   /** A property, not a method: it is destructured and passed on by value. */
   readonly now: () => number;
+  /**
+   * Sealed at the composition root (`runtime/daemon.ts`), one per process:
+   * interaction tokens reach the durable job table only as ciphertext
+   * (SECURITY, independent audit), and every guild in the process must open
+   * the same envelope the queue hands back.
+   */
+  readonly interactionTokenSealer: InteractionTokenSealer;
 }
 
 /**
@@ -131,7 +147,7 @@ export interface GuildOperations {
    * half-built panel cannot go live; publishing stays `publishPanel`'s job
    * (ADR 0053).
    */
-  createPanel(definition: PanelDefinition): void;
+  createPanel(definition: PanelDefinition, newlyAllowlistedRoleIds?: readonly string[]): void;
   /** `panel sync`'s bounded half: post or edit the message, re-seed reactions. */
   publishPanel(panelId: string): Promise<OpsPublishResult>;
   grantAdoptionAllowance(count: number): void;
@@ -155,7 +171,7 @@ export interface GuildRuntime {
 const newPassId = (): string => `pass-${randomUUID()}`;
 
 export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
-  const { scope, config, discord, client, logger, now } = deps;
+  const { scope, instance, config, discord, client, logger, now } = deps;
   const guildId = parseGuildId(scope.guildId);
 
   /**
@@ -667,6 +683,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  const assistantService = createAssistantService(scope, instance, config, now);
+  const { interactionTokenSealer } = deps;
+
   const subscribers: Subscriber[] = [
     createConnectionSubscriber(
       {
@@ -692,11 +711,36 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     createNativeAutomodSubscriber(nativeAutomodPorts),
     createModCommandSubscriber(modCommandDeps),
     createModConfirmationSubscriber(modConfirmationDeps),
+    // Release 3 assistant: slash commands and @behaviour mentions. The
+    // service owns permission, safety and provider eligibility; the Discord
+    // layer never calls a provider itself. One service instance is shared by
+    // the subscriber (cheap inline routing) and the job handler (the
+    // expensive invoke, off the serial dispatch chain — B2).
+    createAssistantCommandSubscriber({
+      guildId,
+      service: assistantService,
+      defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
+      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      enqueue: (input) => {
+        jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
+      },
+      sealToken: (ref) => interactionTokenSealer.seal(ref),
+      now,
+      logger,
+    }),
   ];
 
   const worker = new JobWorker({
     store: jobStoreFor(scope),
     handlers: [
+      assistantInvokeHandler({
+        guildId,
+        service: assistantService,
+        openToken: (token) => interactionTokenSealer.open(token),
+        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+        send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
+        logger,
+      }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
       logMessageDeleteHandler(deletionAttributionPorts),
@@ -704,6 +748,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       archiveBackfillHandler(archiveBackfillPorts),
       archiveExpiryHandler(archiveExpiryPorts),
       undoBatchHandler(scope, { guildId, gateway, logger, now }),
+      deliverRemindersHandler({
+        store: reminderStoreFor(scope),
+        delivery: createReminderDelivery(guildId, discord),
+        now,
+        logger,
+      }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this
       // slice does not build (ADR 0020).
@@ -729,8 +779,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
   };
 
   const ops: GuildOperations = {
-    createPanel: (definition) => {
-      panelRepo.createPanel(scope, definition, now());
+    createPanel: (definition, newlyAllowlistedRoleIds = []) => {
+      panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds);
     },
     async publishPanel(panelId) {
       const panel = panelRepo.findPanel(scope, panelId);

@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
+import { AssistantActivityPage } from '../pages/assistant-activity.js';
+import { AssistantPage } from '../pages/assistant.js';
 import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
 import { BackupsPage } from '../pages/backups.js';
@@ -23,6 +25,7 @@ import { OverviewPage } from '../pages/overview.js';
 import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
+import { PermissionsPage } from '../pages/permissions.js';
 import { StubPage } from '../pages/stub.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
@@ -135,6 +138,7 @@ function Pages() {
     <Switch>
       <Route path="/" component={OverviewPage} />
       <Route path="/safety" component={SafetyPage} />
+      <Route path="/permissions" component={PermissionsPage} />
       <Route path="/logging" component={LoggingPage} />
       <Route path="/panels" component={PanelsPage} />
       <Route path="/audit" component={AuditPage} />
@@ -155,6 +159,8 @@ function Pages() {
       <Route path="/accounts" component={AccountsPage} />
       <Route path="/mcp" component={McpPage} />
       <Route path="/providers" component={ProvidersPage} />
+      <Route path="/assistant" component={AssistantPage} />
+      <Route path="/assistant/activity" component={AssistantActivityPage} />
       <Route path="/resources">
         {() => (
           <StubPage

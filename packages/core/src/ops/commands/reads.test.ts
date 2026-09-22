@@ -437,7 +437,7 @@ describe('bananasaurs doctor', () => {
     const res = await drive(doctorCommand, healthy, {}, { providerEligibilityWarnings: () => [] });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('training eligibility    every provider verified');
+    expect(res.text).toContain('training eligibility: every provider verified');
     expect(res.data).toMatchObject({ ok: true });
   });
 
@@ -461,7 +461,7 @@ describe('bananasaurs doctor', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     expect(res.text).toContain('anthropic-consumer-mcp');
-    expect(res.text).toContain('not-production');
+    expect(res.text).toContain('not allowed for production use');
     expect(res.text).toContain('doctor: PROBLEMS FOUND');
     expect(res.data).toMatchObject({ ok: false });
   });
@@ -642,7 +642,7 @@ describe('bananasaurs doctor', () => {
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('every enforcing rule is in a cutover_state that permits it');
+    expect(res.text).toContain('every enforcing rule is in a cutover state that permits it');
   });
 
   it('flags an observing rule past its window with an unreviewed backlog', async () => {
@@ -698,7 +698,9 @@ describe('bananasaurs doctor', () => {
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('    ARCHIVE CHANNEL UNREADABLE: 777 (no-view)');
+    expect(res.text).toContain('Archive channel 777 is unreadable');
+    expect(res.text).toContain('View Channel');
+    expect(res.text).toContain('no-view');
     expect(res.text).toContain('doctor: PROBLEMS FOUND');
     expect(res.data).toMatchObject({
       ok: false,
@@ -724,9 +726,8 @@ describe('bananasaurs doctor', () => {
     });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain(
-      "    ARCHIVE INDEX STALE: 1 indexed, 3 archived — run 'archive reindex --confirm'",
-    );
+    expect(res.text).toContain('The archive search index is behind');
+    expect(res.text).toContain('archive reindex --confirm');
     expect(res.text).toContain('doctor: PROBLEMS FOUND');
     expect(res.data).toMatchObject({
       ok: false,
@@ -841,7 +842,7 @@ describe('bananasaurs doctor dashboard access (S13-D5)', () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('dashboard access    ok');
+    expect(res.text).toContain('dashboard access: ok');
     expect(res.data).toMatchObject({ ok: true });
   });
 
@@ -866,7 +867,7 @@ describe('bananasaurs doctor dashboard access (S13-D5)', () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('dashboard access');
+    expect(res.text).toContain('Dashboard setup is pending');
     expect(res.text).toContain('bootstrap token');
     expect(res.text).not.toContain('PROBLEMS FOUND');
     expect(res.data).toMatchObject({ ok: true });
@@ -880,8 +881,8 @@ describe('bananasaurs doctor dashboard access (S13-D5)', () => {
     );
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(res.text).toContain('dashboard access');
-    expect(res.text).toContain('nobody can sign in');
+    expect(res.text).toContain('Nobody can sign in to the dashboard');
+    expect(res.text).toContain('Restart the daemon to mint a new bootstrap token');
     expect(res.text).toContain('doctor: PROBLEMS FOUND');
     expect(res.data).toMatchObject({ ok: false });
   });

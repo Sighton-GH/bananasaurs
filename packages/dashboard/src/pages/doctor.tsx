@@ -1,5 +1,6 @@
 import { useCallback } from 'react';
-import type { DoctorReport, PublicSurfaceReport } from '../api/ops.js';
+import { Link } from 'wouter';
+import type { DoctorProblem, DoctorReport, PublicSurfaceReport } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -11,15 +12,37 @@ import { PageHeader } from '../ui/PageHeader.js';
 
 function ReportBody({ text, data }: { readonly text: string; readonly data: unknown }) {
   return (
-    <>
-      <pre className="text-sm break-words whitespace-pre-wrap">{text}</pre>
-      <details className="mt-2">
-        <summary className="cursor-pointer text-sm text-ink-muted">Raw report</summary>
-        <pre className="mt-1 overflow-x-auto text-xs break-words whitespace-pre-wrap">
-          {JSON.stringify(data, null, 2)}
-        </pre>
-      </details>
-    </>
+    <details className="mt-2">
+      <summary className="cursor-pointer text-sm text-ink-muted">Raw diagnostics</summary>
+      <pre className="mt-1 text-sm break-words whitespace-pre-wrap">{text}</pre>
+      <pre className="mt-1 overflow-x-auto text-xs break-words whitespace-pre-wrap">
+        {JSON.stringify(data, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+/**
+ * One finding, led by what to do about it: what is wrong, why it matters,
+ * the exact fix, and a direct link to the dashboard control when one exists.
+ */
+function ProblemCard({ problem }: { readonly problem: DoctorProblem }) {
+  return (
+    <li className="rounded border border-line p-3">
+      <p className="text-sm font-medium">{problem.title}</p>
+      <p className="mt-1 text-sm text-ink-muted">Why it matters: {problem.impact}</p>
+      <p className="mt-1 text-sm">Fix: {problem.fix}</p>
+      {problem.route !== undefined && (
+        <p className="mt-1 text-sm">
+          <Link href={problem.route} className="text-accent underline">
+            Open {problem.route}
+          </Link>
+        </p>
+      )}
+      {problem.details !== undefined && (
+        <p className="mt-1 text-xs text-ink-muted">{problem.details}</p>
+      )}
+    </li>
   );
 }
 
@@ -74,6 +97,23 @@ export function DoctorPage() {
                     <Badge tone="danger">problems found</Badge>
                   )}
                 </p>
+                {(report.data.problems?.length ?? 0) > 0 && (
+                  <ol className="mb-3 grid gap-2">
+                    {report.data.problems!.map((problem, index) => (
+                      <ProblemCard key={`${problem.title}:${String(index)}`} problem={problem} />
+                    ))}
+                  </ol>
+                )}
+                {(report.data.advisories?.length ?? 0) > 0 && (
+                  <div className="mb-3">
+                    <p className="text-sm font-medium">Worth knowing (not problems)</p>
+                    <ul className="mt-1 list-disc pl-5 text-sm text-ink-muted">
+                      {report.data.advisories!.map((advisory) => (
+                        <li key={advisory}>{advisory}</li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <ReportBody text={report.text} data={report.data} />
               </>
             )}

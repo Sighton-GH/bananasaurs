@@ -6,6 +6,7 @@ import {
   MOD_COMMAND,
   RELEASE_1_COMMANDS,
   RELEASE_2_COMMANDS,
+  RELEASE_3_COMMANDS,
   STATUS_COMMAND,
   registerGuildCommands,
 } from './commands.js';
@@ -70,6 +71,29 @@ describe('the Release 1 command set', () => {
      * recorded, and one a guild admin could silently change in Server Settings.
      */
     expect(STATUS_COMMAND.default_member_permissions).toBeUndefined();
+  });
+});
+
+describe('the Release 3 command set', () => {
+  it('adds the member assistant commands and no privacy commands', () => {
+    expect(RELEASE_3_COMMANDS.map((command) => command.name)).toEqual([
+      'status',
+      'mod',
+      'ask',
+      'find',
+      'remind',
+      'decision',
+      'review-plan',
+      'onboard',
+      'agenda',
+      'summarise',
+      'announce',
+      'checklist',
+      'handoff',
+    ]);
+    expect(
+      RELEASE_3_COMMANDS.some((command) => ['mydata', 'forgetme'].includes(command.name)),
+    ).toBe(false);
   });
 });
 

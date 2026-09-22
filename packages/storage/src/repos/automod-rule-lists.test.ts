@@ -94,6 +94,9 @@ const notNeeded = (name: string) => (): never => {
 
 const portsFor = (s: GuildScope): OpsPorts => ({
   guildName: notNeeded('guildName'),
+  botHighestRolePosition: notNeeded('botHighestRolePosition'),
+  fetchGuildMembers: notNeeded('fetchGuildMembers'),
+  allowlistRole: notNeeded('allowlistRole'),
   safetyState: notNeeded('safetyState'),
   jobCounts: notNeeded('jobCounts'),
   oldestDueJobAtMs: notNeeded('oldestDueJobAtMs'),
@@ -220,6 +223,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   grantAccountCapability: notNeeded('grantAccountCapability'),
   listAccountCapabilities: notNeeded('listAccountCapabilities'),
   listGuildChannels: notNeeded('listGuildChannels'),
+  findGuildMessage: notNeeded('findGuildMessage'),
   accountGrantGuild: notNeeded('accountGrantGuild'),
   accountRevokeGuild: notNeeded('accountRevokeGuild'),
   allowSendChannel: notNeeded('allowSendChannel'),
@@ -258,6 +262,7 @@ const instance: OpsInstance = {
   accountSetDisabled: notNeeded('accountSetDisabled'),
   accountDelete: notNeeded('accountDelete'),
   accountRevokeCredentials: notNeeded('accountRevokeCredentials'),
+  accountCreate: notNeeded('accountCreate'),
   accountSetPassword: notNeeded('accountSetPassword'),
 };
 

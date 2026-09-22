@@ -19,6 +19,9 @@ export const SECRET_CONFIG_KEYS = [
   'DISCORD_BOT_TOKEN',
   'DISCORD_PUBLIC_KEY',
   'DASHBOARD_SESSION_SECRET',
+  'GEMINI_API_KEY',
+  'OPENROUTER_API_KEY',
+  'NVIDIA_NIM_API_KEY',
 ] as const;
 
 export type SecretConfigKey = (typeof SECRET_CONFIG_KEYS)[number];
@@ -155,6 +158,12 @@ export const configSchema = z.object({
   /** Daily by default — see ADR 0034 for why this database's size doesn't argue for more often. */
   BANANASAURS_BACKUP_INTERVAL_MIN: z.coerce.number().int().positive().default(1440),
   BANANASAURS_BACKUP_RETAIN: z.coerce.number().int().positive().default(14),
+  AI_PROVIDER: z.enum(['off', 'gemini', 'openrouter', 'nvidia-nim']).default('off'),
+  AI_MODEL: z.string().min(1).optional(),
+  AI_PROFILE_COST_CLASS: z.enum(['free', 'paid', 'unknown']).default('unknown'),
+  GEMINI_API_KEY: z.string().min(1).optional(),
+  OPENROUTER_API_KEY: z.string().min(1).optional(),
+  NVIDIA_NIM_API_KEY: z.string().min(1).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

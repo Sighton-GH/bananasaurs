@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { MemberRef } from '../ui/MemberRef.js';
 import { Link } from 'wouter';
 import { useHealth } from '../app/health.js';
 import { useSession } from '../app/session.js';
@@ -18,6 +19,8 @@ export interface ModCase {
   readonly violationCount: number;
   readonly escalationTier: number;
   readonly status: 'open' | 'closed';
+  /** Live server identity; null when Discord no longer knows the id. */
+  readonly member: { readonly username: string; readonly displayName: string } | null;
 }
 
 export const CASES_DEGRADED =
@@ -86,7 +89,7 @@ export function CasesPage() {
                   {
                     key: 'member',
                     header: 'Member',
-                    cell: (c) => <Link href={`/members/${c.memberId}`}>{c.memberId}</Link>,
+                    cell: (c) => <MemberRef id={c.memberId} member={c.member} />,
                   },
                   {
                     key: 'opened',

@@ -322,6 +322,10 @@ function toSlashCommandEvent(
     // the reply is addressed by the token, not by the channel.
     channelId: interaction.channelId ?? undefined,
     userId: interaction.user.id,
+    userRoleIds: Array.isArray(interaction.member?.roles)
+      ? interaction.member.roles.filter((id) => id !== guildId)
+      : (interaction.member?.roles.cache.map((role) => role.id).filter((id) => id !== guildId) ??
+        []),
   };
 }
 
@@ -437,6 +441,7 @@ function toMessageEvent(
     editedTimestampMs: message.editedTimestamp ?? undefined,
     mentionedUserIds: mentions ? [...mentions.users.keys()] : [],
     mentionedRoleIds: mentions ? [...mentions.roles.keys()] : [],
+    authorRoleIds: message.partial || message.member === null ? [] : roleIdsOf(message.member),
     mentionsEveryone: mentions?.everyone ?? false,
     attachments: message.partial
       ? []

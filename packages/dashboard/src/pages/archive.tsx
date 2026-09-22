@@ -1,13 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { useSearch } from 'wouter';
-import { ApiError } from '../api.js';
+import { Link, useSearch } from 'wouter';
 import type {
-  ArchiveAttachmentPolicy,
-  ArchiveCategoryEnableOutcome,
   ArchiveChannelStatus,
   ArchiveMessage,
-  ArchiveDisableOutcome,
-  ArchiveEnableOutcome,
   ArchiveLinkCaseOutcome,
   ArchivePreserveOutcome,
   ArchiveStatus,
@@ -19,10 +14,8 @@ import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
-import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
-import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
@@ -38,12 +31,15 @@ const LINK_CASE_TEXT: Record<ArchiveLinkCaseOutcome, string> = {
 };
 
 /**
- * `/archive`: the archive controls as a page (ADR 0051 D7) — exactly what
- * `archive status`, `enable-channel`, `disable-channel`, `preserve`,
- * `link-case`, `reindex` and the backfill enqueue do today, no more. The
- * three vetoes of ADR 0046 (guild allowlist, per-channel enable,
- * log-exclusion) stay server-side; disabling a channel destroys its archived
- * messages, so that confirmation names the count.
+ * `/archive`: the archive's specialised controls as a page (ADR 0051 D7) —
+ * browse, backfill, per-channel thread inclusion, `preserve`, `link-case`
+ * and `reindex`, no more. The three vetoes of ADR 0046 (guild allowlist,
+ * per-channel enable, log-exclusion) stay server-side.
+ *
+ * Which channels and categories archive at all is owned by the central
+ * Permissions section (Bryan's lane): one page makes every operating-scope
+ * change, so no second surface can quietly conflict with it. This page
+ * links there instead of duplicating enable/disable.
  */
 export function ArchivePage() {
   const session = useSession();
@@ -51,12 +47,6 @@ export function ArchivePage() {
   const load = useCallback(() => session.read<ArchiveStatus>('/api/archive/status'), [session]);
   const status = useResource('the archive status', load);
 
-  const [channelId, setChannelId] = useState('');
-  const [categoryId, setCategoryId] = useState('');
-  const [categoryError, setCategoryError] = useState<string | undefined>(undefined);
-  const [policy, setPolicy] = useState<ArchiveAttachmentPolicy>('none');
-  const [enableError, setEnableError] = useState<string | undefined>(undefined);
-  const [disabling, setDisabling] = useState<ArchiveChannelStatus | undefined>(undefined);
   const [preserveId, setPreserveId] = useState('');
   const [linkMessageId, setLinkMessageId] = useState('');
   const [linkCaseId, setLinkCaseId] = useState('');
@@ -127,70 +117,6 @@ export function ArchivePage() {
     // Mount-only: later browse state is the operator's, not the URL's.
   }, [urlSearch]);
 
-  const enable = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setEnableError(undefined);
-    setBusy(true);
-    try {
-      const result = await session.writeOrThrow<{ outcome: ArchiveEnableOutcome }>(
-        '/api/archive/channels',
-        { channelId: channelId.trim(), attachmentPolicy: policy },
-      );
-      if (result === undefined) return;
-      toast({
-        tone: 'ok',
-        title:
-          result.outcome === 'already-enabled'
-            ? 'That channel was already archiving'
-            : 'Channel archiving enabled',
-      });
-      setChannelId('');
-      status.reload();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setEnableError(
-          'This guild is not archive-enabled. The server-side allowlist decides that — the UI cannot widen it.',
-        );
-      } else {
-        throw err;
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const enableCategory = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setCategoryError(undefined);
-    setBusy(true);
-    try {
-      const result = await session.writeOrThrow<{
-        outcome: ArchiveCategoryEnableOutcome;
-        coverage: { channels: number; messages: number };
-      }>('/api/archive/categories', { channelId: categoryId.trim() });
-      if (result === undefined) return;
-      toast({
-        tone: 'ok',
-        title:
-          result.outcome === 'already-enabled'
-            ? 'That category was already archiving'
-            : `Category archiving enabled — covers ${String(result.coverage.channels)} channels`,
-      });
-      setCategoryId('');
-      status.reload();
-    } catch (err) {
-      if (err instanceof ApiError && err.status === 409) {
-        setCategoryError(
-          'This guild is not archive-enabled. The server-side allowlist decides that — the UI cannot widen it.',
-        );
-      } else {
-        throw err;
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
   const setThreads = async (channel: ArchiveChannelStatus, value: ArchiveThreadsValue) => {
     const result = await session.write<{ outcome: 'updated' }>(
       `/api/archive/channels/${encodeURIComponent(channel.channelId)}/threads`,
@@ -205,35 +131,6 @@ export function ArchivePage() {
             : `Threads under ${channel.channelId} are no longer archived`,
       });
       status.reload();
-    }
-  };
-
-  const disable = async () => {
-    if (disabling === undefined) return;
-    setBusy(true);
-    try {
-      const base =
-        (disabling.scopeKind ?? 'channel') === 'category'
-          ? '/api/archive/categories'
-          : '/api/archive/channels';
-      const result = await session.write<ArchiveDisableOutcome>(
-        `${base}/${encodeURIComponent(disabling.channelId)}`,
-        undefined,
-        'DELETE',
-      );
-      if (result !== undefined) {
-        toast({
-          tone: result.outcome === 'disabled' ? 'danger' : 'neutral',
-          title:
-            result.outcome === 'disabled'
-              ? `Archiving disabled — ${String(result.messageCount)} archived messages destroyed`
-              : 'That channel was not archiving',
-        });
-        status.reload();
-      }
-    } finally {
-      setBusy(false);
-      setDisabling(undefined);
     }
   };
 
@@ -416,9 +313,6 @@ export function ArchivePage() {
                             </Button>
                           )}
                           <Button onClick={() => void backfill(c)}>Backfill</Button>
-                          <Button variant="danger" onClick={() => setDisabling(c)}>
-                            Disable
-                          </Button>
                         </span>
                       ),
                   },
@@ -426,61 +320,13 @@ export function ArchivePage() {
               />
             )}
           </DataState>
-          <form onSubmit={(e) => void enable(e)} className="mt-3 grid max-w-md gap-3">
-            <ChannelPicker
-              label="Enable archiving for a channel"
-              {...(enableError !== undefined ? { error: enableError } : {})}
-              value={channelId}
-              onChange={setChannelId}
-            />
-            <Field
-              label="Attachment policy"
-              hint="'none' keeps text only; 'bytes' stores attachment bytes."
-            >
-              <select
-                aria-label="Attachment policy"
-                value={policy}
-                onChange={(e) => setPolicy(e.target.value as ArchiveAttachmentPolicy)}
-                className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
-              >
-                <option value="none">none</option>
-                <option value="bytes">bytes</option>
-              </select>
-            </Field>
-            <div>
-              <Button
-                type="submit"
-                variant="primary"
-                busy={busy}
-                disabled={channelId.trim() === ''}
-              >
-                Enable archiving
-              </Button>
-            </div>
-          </form>
-          <form
-            onSubmit={(e) => void enableCategory(e)}
-            className="mt-3 grid max-w-md gap-3 border-t border-line pt-3"
-          >
-            <ChannelPicker
-              label="Enable archiving for a category"
-              hint="Every channel under the category is archived, including channels added to it later."
-              {...(categoryError !== undefined ? { error: categoryError } : {})}
-              value={categoryId}
-              onChange={setCategoryId}
-              kinds={['category']}
-            />
-            <div>
-              <Button
-                type="submit"
-                variant="primary"
-                busy={busy}
-                disabled={categoryId.trim() === ''}
-              >
-                Enable category
-              </Button>
-            </div>
-          </form>
+          <p className="mt-3 text-sm text-ink-muted">
+            Which channels and categories archive is managed on the{' '}
+            <Link href="/permissions" className="text-accent underline">
+              Permissions
+            </Link>{' '}
+            page, alongside the send scope - one place owns every operating-scope change.
+          </p>
         </Card>
         {browseId !== undefined && (
           <Card title={`Browsing ${browseId}`}>
@@ -657,25 +503,6 @@ export function ArchivePage() {
           </div>
         </Card>
       </div>
-      <ConfirmDialog
-        open={disabling !== undefined}
-        title={`Disable archiving for ${(disabling?.scopeKind ?? 'channel') === 'category' ? 'category' : 'channel'} ${disabling?.channelId ?? ''}?`}
-        scope={
-          <p>
-            Stops archiving the{' '}
-            {(disabling?.scopeKind ?? 'channel') === 'category'
-              ? 'category and the channels it covers'
-              : 'channel'}{' '}
-            AND destroys its {String(disabling?.messageCount ?? 0)} archived messages, edits and
-            attachments. The audit row is the only record that the destruction happened.
-          </p>
-        }
-        confirmLabel="Disable and destroy"
-        danger
-        busy={busy}
-        onConfirm={() => void disable()}
-        onCancel={() => setDisabling(undefined)}
-      />
     </>
   );
 }

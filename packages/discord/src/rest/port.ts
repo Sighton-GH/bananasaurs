@@ -508,7 +508,14 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     // panel posts and log messages send.
     ...(message.allowedMentions === undefined
       ? {}
-      : { allowed_mentions: { parse: [...message.allowedMentions.parse] } }),
+      : {
+          allowed_mentions: {
+            parse: [...message.allowedMentions.parse],
+            ...(message.allowedMentions.roles === undefined
+              ? {}
+              : { roles: [...message.allowedMentions.roles] }),
+          },
+        }),
   };
 }
 

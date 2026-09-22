@@ -31,11 +31,23 @@ export type JobRetryRefusal =
 
 // --- doctor -----------------------------------------------------------------
 
+/** One doctor finding — mirrors `DoctorProblem` in core's reads command. */
+export interface DoctorProblem {
+  readonly title: string;
+  readonly impact: string;
+  readonly fix: string;
+  readonly route?: string;
+  readonly details?: string;
+}
+
 /** `GET /api/doctor` — mirrors `OpsDoctorReport`. */
 export interface DoctorReport {
   readonly ok: boolean;
   readonly text: string;
-  readonly data: unknown;
+  readonly data: {
+    readonly problems?: readonly DoctorProblem[];
+    readonly advisories?: readonly string[];
+  };
 }
 
 /** `GET /api/doctor/public-surface` — mirrors `OpsPublicSurfaceReport`. */
@@ -71,7 +83,7 @@ export interface BackupRunOutcome {
 /** One row of `GET /api/providers/eligibility` — mirrors `OpsEligibilityWarning`. */
 export interface EligibilityWarning {
   readonly provider: string;
-  readonly reason: 'not-no' | 'stale' | 'not-production';
+  readonly reason: 'not-no' | 'stale' | 'not-production' | 'unverified';
   readonly trainsOnInput: string;
   readonly reviewedAt: number;
 }
@@ -148,6 +160,19 @@ export interface AccountRevokeResult {
  * `OpsAccountSetPasswordResult`. `password` is shown exactly once, in the
  * PrintOnceDialog, and nowhere else: never a toast, never a log line.
  */
+/**
+ * `POST /api/accounts`'s answer. `password` is shown exactly once, in the
+ * PrintOnceDialog; the scope echoes what the form asked for and the route
+ * granted.
+ */
+export interface AccountCreateResult {
+  readonly accountId: string;
+  readonly username: string;
+  readonly password: string;
+  readonly guildAccess: boolean;
+  readonly capabilities: readonly string[];
+}
+
 export interface AccountSetPasswordResult {
   readonly username: string;
   readonly accountId: string;
@@ -212,6 +237,8 @@ export interface GuildChannelInfo {
   readonly channelId: string;
   readonly name: string;
   readonly kind: string;
+  /** The category this channel sits under; absent on servers that predate the field. */
+  readonly parentId?: string | undefined;
 }
 
 /**
@@ -239,6 +266,10 @@ export interface GuildRoleInfo {
   readonly colour: number;
   readonly position: number;
   readonly managed: boolean;
+  /** Live-hierarchy answer: below the bot's highest role and not integration-owned. */
+  readonly manageable: boolean;
+  /** Already on the bot's managed-role allowlist. */
+  readonly allowlisted: boolean;
   readonly optionable: boolean;
 }
 

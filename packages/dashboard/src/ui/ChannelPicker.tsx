@@ -4,8 +4,6 @@ import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Field, Input } from './Field.js';
 
-const MAX_OPTIONS = 6;
-
 /**
  * A named channel picker replacing a bare snowflake input. The guild's
  * channels come from `GET /api/guild/channels` (the live Discord cache on the
@@ -48,13 +46,11 @@ export function ChannelPicker({
   const matches =
     channels === undefined
       ? undefined
-      : channels
-          .filter(
-            (c) =>
-              wanted.includes(c.kind) &&
-              (query === '' || c.name.toLowerCase().includes(query) || c.channelId.includes(query)),
-          )
-          .slice(0, MAX_OPTIONS);
+      : channels.filter(
+          (c) =>
+            wanted.includes(c.kind) &&
+            (query === '' || c.name.toLowerCase().includes(query) || c.channelId.includes(query)),
+        );
   const selected = channels?.find((c) => wanted.includes(c.kind) && c.channelId === value.trim());
 
   return (
@@ -91,7 +87,7 @@ export function ChannelPicker({
       {matches !== undefined && matches.length > 0 && (focused || query === '') && (
         <ul
           aria-label={`${label} choices`}
-          className="mt-1 divide-y divide-line overflow-hidden rounded-sm border border-line bg-panel"
+          className="mt-1 max-h-64 divide-y divide-line overflow-y-auto rounded-sm border border-line bg-panel"
         >
           {matches.map((c) => (
             <li key={c.channelId}>

@@ -15,6 +15,8 @@ const REASON_TEXT: Record<EligibilityWarning['reason'], string> = {
   'not-no': 'Trains on input (or unknown — unknown is treated as yes)',
   stale: 'Review is stale — re-read the terms and mark reviewed',
   'not-production': 'Not allowed to serve production traffic',
+  unverified:
+    'No verified eligibility record — assistant answers are intentionally disabled until the owner verifies this provider’s terms and adds the record',
 };
 
 const trainsTone = (trainsOnInput: string): 'hold' | 'danger' | 'ok' =>
@@ -102,12 +104,20 @@ export function ProvidersPage() {
                 {
                   key: 'reviewed',
                   header: 'Last reviewed',
-                  cell: (w) => new Date(w.reviewedAt).toLocaleDateString(),
+                  cell: (w) =>
+                    w.reason === 'unverified'
+                      ? 'never — no record exists'
+                      : new Date(w.reviewedAt).toLocaleDateString(),
                 },
                 {
                   key: 'actions',
                   header: '',
-                  cell: (w) => <Button onClick={() => setReviewing(w)}>Mark reviewed</Button>,
+                  // Nothing to review without a row: "Mark reviewed" writes
+                  // the review date of a record, and this one does not exist.
+                  cell: (w) =>
+                    w.reason === 'unverified' ? null : (
+                      <Button onClick={() => setReviewing(w)}>Mark reviewed</Button>
+                    ),
                 },
               ]}
             />

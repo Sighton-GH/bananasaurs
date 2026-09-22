@@ -27,6 +27,7 @@ import {
   type OpsInstance,
   type OpsPorts,
 } from '@bananasaurs/core';
+import { generateToken, hashPassword } from './secrets.js';
 
 /**
  * Test-only `OpsPorts` and `OpsInstance`, built directly against the repos —
@@ -60,6 +61,9 @@ export const testPortsFor = (
 ): OpsPorts => ({
   guildName: () => guildRepo.findGuild(scope)?.name,
   safetyState: () => guildRepo.readSafetyState(scope),
+  // No Discord client in route tests: the default is an honest miss, and a
+  // test that exercises the adopted-panel path stubs its own verdict.
+  findGuildMessage: () => Promise.resolve('message-not-found' as const),
   jobCounts: () => jobRepo.countByState(scope),
   oldestDueJobAtMs: (nowMs) => jobRepo.oldestDueAt(scope, nowMs),
   recordAudit: (input) =>
@@ -82,7 +86,12 @@ export const testPortsFor = (
   // static demo set beside the seeded archive fixture channel; the daemon's
   // wiring reads the live gateway cache instead.
   listGuildChannels: () => [
-    { channelId: '333333333333333333', name: 'general', kind: 'text' },
+    {
+      channelId: '333333333333333333',
+      name: 'general',
+      kind: 'text',
+      parentId: '999999999999999999',
+    },
     { channelId: '444444444444444444', name: 'mod-log', kind: 'text' },
     { channelId: '555555555555555555', name: 'announcements', kind: 'announcement' },
     { channelId: '999999999999999999', name: 'Community', kind: 'category' },
@@ -92,6 +101,7 @@ export const testPortsFor = (
   listGuildRoles: () => [
     { roleId: '666666666666666666', name: 'Mod', colour: 0x3498db, position: 3, managed: false },
     { roleId: '777777777777777777', name: 'Member', colour: 0, position: 1, managed: false },
+    { roleId: '111111111111111119', name: 'Admin', colour: 0, position: 5, managed: false },
     {
       roleId: '888888888888888888',
       name: 'Bananasaurs',
@@ -144,29 +154,7 @@ export const testPortsFor = (
   // Static demo members, paged like the daemon's REST read: `after` continues
   // past that id, and a full page carries its last id as the next cursor.
   listGuildMembers: (input) => {
-    const all = [
-      {
-        memberId: '100000000000000001',
-        username: 'bryan',
-        displayName: 'Bryan',
-        roleIds: ['666666666666666666'],
-        joinedAt: 1_600_000_000_000,
-      },
-      {
-        memberId: '100000000000000002',
-        username: 'sasha',
-        displayName: 'Sasha',
-        roleIds: ['777777777777777777'],
-        joinedAt: 1_650_000_000_000,
-      },
-      {
-        memberId: '100000000000000003',
-        username: 'kai',
-        displayName: 'Kai',
-        roleIds: [],
-        joinedAt: null,
-      },
-    ];
+    const all = [...FIXTURE_MEMBERS];
     const limit = input.limit ?? 25;
     const afterIndex = all.findIndex((m) => m.memberId === input.after);
     const start = afterIndex === -1 ? 0 : afterIndex + 1;
@@ -179,6 +167,8 @@ export const testPortsFor = (
           : undefined,
     });
   },
+  fetchGuildMembers: (userIds) =>
+    Promise.resolve(FIXTURE_MEMBERS.filter((m) => userIds.includes(m.memberId))),
   tailAudit: (query) =>
     effectRepo.tailAudit(scope, { limit: query.limit, sinceMs: query.sinceMs }).map((row) => ({
       auditId: row.auditId,
@@ -510,8 +500,12 @@ export const testPortsFor = (
     throw new Error('not used by the dashboard routes under test');
   },
 
-  createPanel: (definition) => panelRepo.createPanel(scope, definition, now()),
+  createPanel: (definition, newlyAllowlistedRoleIds = []) =>
+    panelRepo.createPanel(scope, definition, now(), newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
+  allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
+  // Matches the fixture hierarchy: the bot's own role sits at position 4.
+  botHighestRolePosition: () => 4,
   publishPanel: () => {
     throw new Error('not used by the dashboard routes under test — needs a real Discord client');
   },
@@ -692,6 +686,30 @@ export const testPortsFor = (
 });
 
 /** One dashboard rule summary: the admin row plus this guild's match tallies. */
+const FIXTURE_MEMBERS = [
+  {
+    memberId: '100000000000000001',
+    username: 'bryan',
+    displayName: 'Bryan',
+    roleIds: ['666666666666666666'],
+    joinedAt: 1_600_000_000_000,
+  },
+  {
+    memberId: '100000000000000002',
+    username: 'sasha',
+    displayName: 'Sasha',
+    roleIds: ['777777777777777777'],
+    joinedAt: 1_650_000_000_000,
+  },
+  {
+    memberId: '100000000000000003',
+    username: 'kai',
+    displayName: 'Kai',
+    roleIds: [],
+    joinedAt: null,
+  },
+] as const;
+
 const testAutomodRuleSummary = (
   rule: ReturnType<typeof automodAdminRepo.listRules>[number],
   matchCounts: Readonly<Record<string, number>>,
@@ -889,6 +907,26 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
       accountsRemaining: accountRepo.countAccounts(instanceScope),
     };
+  },
+  // The web half of account creation, against the test database: same
+  // least-privilege shape as the canonical `accountOpsFor` - non-owner, no
+  // guild access, no capabilities, generated password hashed with Argon2id.
+  accountCreate: async (username) => {
+    if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
+      return 'username-taken';
+    }
+    const password = generateToken();
+    const passwordHash = await hashPassword(password);
+    const accountId = `acct_test_${username}`;
+    const at = now();
+    accountRepo.createAccount(instanceScope, {
+      accountId,
+      username,
+      passwordHash,
+      isOwner: false,
+      now: at,
+    });
+    return { accountId, username, password, createdAt: at };
   },
   accountRevokeCredentials: () => {
     throw new Error('not used by the dashboard routes under test');

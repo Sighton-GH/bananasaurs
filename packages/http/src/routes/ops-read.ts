@@ -66,6 +66,26 @@ export const registerOpsReadRoutes = (
     return reply.status(200).send({ channels: ports.listGuildChannels() });
   });
 
+  // The self-granted roles builder's message check (Bryan's roles lane): a
+  // reaction role attaches to an existing Discord message by id, and the
+  // form validates the target before anything is written. Same answer the
+  // submit makes, so a "found" here cannot 400 there.
+  app.get<{ Params: { channelId: string; messageId: string } }>(
+    '/api/guild/channels/:channelId/messages/:messageId',
+    async (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'panels.manage', reply)) return reply;
+
+      const ports = deps.portsFor(session.scope);
+      const lookup = await ports.findGuildMessage(
+        request.params.channelId,
+        request.params.messageId,
+      );
+      return reply.status(200).send({ lookup });
+    },
+  );
+
   // The MCP `read_channel_history` / `get_message` answers as routes
   // (ADR 0051): archived content, so `audit.read` like archive search. The
   // visibility set lives in the repository — a channel outside the guild's
@@ -144,14 +164,25 @@ export const registerOpsReadRoutes = (
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
     const ports = deps.portsFor(session.scope);
+    const botPosition = ports.botHighestRolePosition();
     return reply.status(200).send({
-      roles: ports.listGuildRoles().map((role) => ({
-        ...role,
-        // The panel builder's rule, resolved server-side so the picker never
-        // learns it from a refusal: an option must be a role Bananasaurs
-        // manages, and a Discord-managed role can never be granted by a bot.
-        optionable: !role.managed && ports.isManagedRole(role.roleId),
-      })),
+      roles: ports.listGuildRoles().map((role) => {
+        // Manageability is Discord's live hierarchy, not a remembered flag:
+        // below the bot's own highest role and not integration-owned. The
+        // owner can reorder roles in Discord at any time and the picker must
+        // reflect that on the next load.
+        const manageable =
+          !role.managed && botPosition !== undefined && role.position < botPosition;
+        return {
+          ...role,
+          manageable,
+          allowlisted: ports.isManagedRole(role.roleId),
+          // Selectable in the panel builder. A Discord-managed role can never
+          // be granted by a bot; anything else below the bot can, and saving
+          // the panel allowlists it.
+          optionable: manageable,
+        };
+      }),
     });
   });
 

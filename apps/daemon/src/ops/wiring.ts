@@ -1,4 +1,5 @@
-import { ChannelType, PermissionsBitField, type Client } from 'discord.js';
+import { randomBytes } from 'node:crypto';
+import { ChannelType, PermissionsBitField, type Client, type GuildMember } from 'discord.js';
 import {
   archiveBackfillDedupeKey,
   compileRule,
@@ -8,6 +9,7 @@ import {
   runDryRun,
   undoDedupeKey,
   type Config,
+  type OpsGuildMemberInfo,
   type OpsInstance,
   type OpsPorts,
   type OpsSettingChange,
@@ -72,6 +74,23 @@ import type { GuildOperations } from '../runtime/guild.js';
  * else enqueues a job dated in the future that is never claimed. It shows up as
  * a row sitting in `jobs list` forever, with nothing anywhere saying why.
  */
+export const fetchInHundredIdChunks = async <T>(
+  userIds: readonly string[],
+  fetchChunk: (ids: readonly string[]) => Promise<readonly T[]>,
+): Promise<T[]> => {
+  const results: T[] = [];
+  for (let start = 0; start < userIds.length; start += 100) {
+    try {
+      results.push(...(await fetchChunk(userIds.slice(start, start + 100))));
+    } catch {
+      // Preserve confirmed members from earlier chunks. A later REST failure
+      // must not erase useful names already fetched.
+      break;
+    }
+  }
+  return results;
+};
+
 export const opsPortsFor = (
   scope: GuildScope,
   /** A separate parameter rather than derived from the guild scope: the two scopes are different types on purpose, and a derivation would be the cast this prevents. */
@@ -476,8 +495,10 @@ export const opsPortsFor = (
 
   // Storage-only write: `panel create` and the dashboard builder both land
   // here. Nothing reaches Discord — publishing stays publishPanel's job.
-  createPanel: (definition) => operations.createPanel(definition),
+  createPanel: (definition, newlyAllowlistedRoleIds) =>
+    operations.createPanel(definition, newlyAllowlistedRoleIds),
   isManagedRole: (roleId) => roleRepo.findManagedRole(scope, roleId) !== undefined,
+  allowlistRole: (roleId) => roleRepo.allowlistRole(scope, roleId),
 
   // --- write commands that reach Discord (13e, ADR 0026) ---------------------
   publishPanel: (panelId) => operations.publishPanel(panelId),
@@ -628,11 +649,34 @@ export const opsPortsFor = (
           channel.type === ChannelType.GuildCategory ||
           (channel.isTextBased() && !channel.isThread()),
       )
-      .map((channel) => ({ channelId: channel.id, name: channel.name, kind: kindOf(channel.type) }))
+      .map((channel) => ({
+        channelId: channel.id,
+        name: channel.name,
+        kind: kindOf(channel.type),
+        ...(channel.parentId !== null ? { parentId: channel.parentId } : {}),
+      }))
       .sort((a, b) => a.name.localeCompare(b.name));
+  },
+  findGuildMessage: async (channelId, messageId) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return 'channel-not-found';
+    const channel = guild.channels.cache.get(channelId);
+    if (channel === undefined) return 'channel-not-found';
+    if (!channel.isTextBased()) return 'not-text-channel';
+    try {
+      await channel.messages.fetch(messageId);
+      return 'ok';
+    } catch {
+      return 'message-not-found';
+    }
   },
   // Same gateway-cache honesty as listGuildChannels: the guild's roles,
   // `@everyone` excluded (it is not a panel option), highest rank first.
+  // `rawPosition`, deliberately: discord.js's `Role.position` is the role's
+  // index in the sorted cache, NOT Discord's position field, and the
+  // manageability check in `/api/guild/roles` compares this number against
+  // the bot's rawPosition - mixing the two scales can report an above-bot
+  // role as manageable (should-fix, review round 2).
   listGuildRoles: () => {
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return [];
@@ -642,14 +686,44 @@ export const opsPortsFor = (
         roleId: role.id,
         name: role.name,
         colour: role.color,
-        position: role.position,
+        position: role.rawPosition,
         managed: role.managed,
       }))
       .sort((a, b) => b.position - a.position || a.name.localeCompare(b.name));
   },
+  // Live hierarchy, not a remembered flag: the owner can reorder roles in
+  // Discord at any time, and the dashboard must answer for the hierarchy as
+  // it is now.
+  botHighestRolePosition: () => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    return guild?.members.me?.roles.highest.rawPosition;
+  },
   // The same paginated REST read the MCP port makes (ruling M4-D10): the
   // 50-entry member cache would silently truncate, and `cache: false` keeps
   // the listing from churning it. No presence, activity or status fields.
+  // Bulk, live, and absent-when-gone: moderation surfaces resolve the ids
+  // on screen in one REST call, and a departed member comes back missing so
+  // the dashboard shows the bare id rather than a stale name.
+  fetchGuildMembers: async (userIds) => {
+    const guild = client.guilds.cache.get(scope.guildId);
+    if (guild === undefined) return [];
+    const wanted = [...new Set(userIds)];
+    if (wanted.length === 0) return [];
+    // The bulk endpoint takes at most 100 ids per call; chunk rather than
+    // truncate, so a surface handing over 100 ids does not silently lose the
+    // rest (low, independent audit).
+    const mapMember = (member: GuildMember): OpsGuildMemberInfo => ({
+      memberId: member.id,
+      username: member.user.username,
+      displayName: member.displayName,
+      roleIds: member.roles.cache.filter((role) => role.id !== guild.id).map((role) => role.id),
+      joinedAt: member.joinedTimestamp,
+    });
+    return fetchInHundredIdChunks(wanted, async (ids) => {
+      const fetched = await guild.members.fetch({ user: [...ids] });
+      return [...fetched.values()].map(mapMember);
+    });
+  },
   listGuildMembers: async (input) => {
     const guild = client.guilds.cache.get(scope.guildId);
     if (guild === undefined) return { members: [], nextAfter: undefined };
@@ -1201,6 +1275,7 @@ export const accountOpsFor = (
 ): Pick<
   OpsInstance,
   | 'accountList'
+  | 'accountCreate'
   | 'accountSetDisabled'
   | 'accountDelete'
   | 'accountRevokeCredentials'
@@ -1218,6 +1293,28 @@ export const accountOpsFor = (
       lockedUntil: row.lockedUntil,
       createdAt: row.createdAt,
     })),
+  accountCreate: async (username) => {
+    if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
+      return 'username-taken';
+    }
+    // Generated, never chosen (S13-D3's rule applied to creation): the
+    // secret lands in no shell history and no form field. The account
+    // starts non-owner with no guild access and no capabilities - least
+    // privilege by construction, with every later grant an explicit,
+    // audited step.
+    const password = generateToken();
+    const passwordHash = await hashPassword(password);
+    const accountId = `acct_${randomBytes(16).toString('hex')}`;
+    const at = now();
+    accountRepo.createAccount(instanceScope, {
+      accountId,
+      username,
+      passwordHash,
+      isOwner: false,
+      now: at,
+    });
+    return { accountId, username, password, createdAt: at };
+  },
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
     if (row === undefined) return 'no-such-account';
@@ -1566,6 +1663,24 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // core's index does not re-export every member shape (cf. `OpsMcpClient`,
     // likewise structural here), and this file must not reach past the root.
     const warnings: ReturnType<OpsInstance['providerEligibilityWarnings']>[number][] = [];
+    // The configured provider with no row: without this line `doctor` prints
+    // "every provider verified" while the assistant refuses every invoke.
+    // The state is intentional - no row exists until an owner verifies the
+    // provider's terms and seeds one by migration (ruling M4-D16) - and the
+    // surface must say exactly that, never invent an approval.
+    const configuredProvider = deps.config.AI_PROVIDER;
+    if (
+      configuredProvider !== undefined &&
+      configuredProvider !== 'off' &&
+      eligibilityRepo.findEligibility(deps.instanceScope, configuredProvider) === undefined
+    ) {
+      warnings.push({
+        provider: configuredProvider,
+        reason: 'unverified',
+        trainsOnInput: 'unknown',
+        reviewedAt: 0,
+      });
+    }
     for (const row of eligibilityRepo.listEligibility(deps.instanceScope)) {
       if (!eligibilityRepo.isEligible(row)) {
         warnings.push({

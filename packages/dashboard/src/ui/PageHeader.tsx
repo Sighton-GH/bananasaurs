@@ -11,12 +11,12 @@ export function PageHeader({
   readonly actions?: ReactNode;
 }) {
   return (
-    <div className="mb-4 flex items-start justify-between gap-4">
+    <div className="mb-4 flex flex-col items-start justify-between gap-4 sm:flex-row">
       <div>
         <h1 className="text-xl">{title}</h1>
         <p className="mt-1 text-sm text-ink-muted">{purpose}</p>
       </div>
-      {actions !== undefined && <div className="flex shrink-0 gap-2">{actions}</div>}
+      {actions !== undefined && <div className="flex max-w-full gap-2 sm:shrink-0">{actions}</div>}
     </div>
   );
 }

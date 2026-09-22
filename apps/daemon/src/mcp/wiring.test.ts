@@ -16,6 +16,7 @@ import {
   authzRepo,
   effectRepo,
   guildRepo,
+  loggingRepo,
   mcpSendRepo,
   roleRepo,
 } from '@bananasaurs/storage';
@@ -663,6 +664,19 @@ describe('/mcp send_message through the real composition', () => {
     expect(refused.isError).toBe(true);
     expect(refused.text).toContain('private thread');
     expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+  });
+
+  it('an excluded allowlisted channel is refused and Discord is never called', async () => {
+    allow();
+    loggingRepo.excludeChannel(t.scopes.forGuild(GUILD_A), CHANNEL);
+    const accessToken = await mintToken('bananasaurs:send');
+    const refused = callText(
+      (await sendCall(accessToken, sendArgs({ idempotencyKey: 'excluded-send' }))).body,
+    );
+    expect(refused.isError).toBe(true);
+    expect(refused.text).toContain('not on the send allowlist');
+    expect(fakeDiscord.restCalls('sendMessage')).toHaveLength(0);
+    expect(mcpSendRepo.findSend(t.scopes.forGuild(GUILD_A), 'excluded-send')).toBeUndefined();
   });
 
   it('a non-allowlisted channel is refused and Discord is never called', async () => {

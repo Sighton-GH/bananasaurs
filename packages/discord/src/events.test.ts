@@ -480,6 +480,7 @@ describe('messages', () => {
         editedTimestampMs: undefined,
         mentionedUserIds: [],
         mentionedRoleIds: [],
+        authorRoleIds: [],
         mentionsEveryone: false,
         attachments: [],
       },

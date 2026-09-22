@@ -219,7 +219,9 @@ describe('AutomodRulePage', () => {
     fireEvent.change(screen.getByLabelText('Configuration'), { target: { value: '{bad' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save configuration' }));
     expect(await screen.findByText('Not valid JSON')).toBeTruthy();
-    expect(mock.mock.calls).toHaveLength(1);
+    // Only the detail GET (and the pickers' list loads) may have fired -
+    // never a config write.
+    expect(mock.mock.calls.filter((c) => (c[0] as string).includes('/config'))).toHaveLength(0);
   });
 
   it('config save posts { config } parsed from the textarea', async () => {

@@ -6,6 +6,7 @@ import {
   OPERATOR_COMMANDS,
   parseGuildId,
   Pipeline,
+  REMINDER_DELIVERY_STALE_MS,
   safeLogFields,
   seedDefaultWordList,
   type Config,
@@ -19,6 +20,7 @@ import {
 } from '@bananasaurs/core';
 import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/discord';
 import {
+  assistantRepo,
   automodRuleRepo,
   guildRepo,
   jobRepo,
@@ -30,8 +32,10 @@ import {
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
+import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
+import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 
 /**
  * The composition root.
@@ -116,6 +120,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const guildIds = config.BANANASAURS_GUILD_ALLOWLIST.map((id) => parseGuildId(id));
   const allowlist = new Set<string>(guildIds);
 
+  // One sealer per process, lifted here from the per-guild runtime: the key is
+  // process-lifetime state, and minting it per guild invited the two to drift
+  // (independent audit, round 2).
+  const interactionTokenSealer = createInteractionTokenSealer();
+
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();
   for (const guildId of guildIds) {
     const scope = scopes.forGuild(guildId);
@@ -123,7 +132,16 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     seedAutomodDefaults(scope, config, logger, now());
     byGuild.set(guildId, {
       scope,
-      runtime: buildGuildRuntime({ scope, config, discord, client, logger, now }),
+      runtime: buildGuildRuntime({
+        scope,
+        instance: scopes.instance(),
+        config,
+        discord,
+        client,
+        logger,
+        now,
+        interactionTokenSealer,
+      }),
     });
   }
 
@@ -136,6 +154,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // ADR 0046, Slice M1 Task 5 (PR-70): the daily archive-expiry producer. One
   // expiry job per guild per UTC day, beside the backup timer — the job table
   // has no scheduler, so this `setInterval` is what says when.
+  const reminderDeliveryTimer = createReminderDeliveryTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    // Same stale threshold the claim pass uses, so the peek and the claim
+    // agree on what counts as deliverable.
+    hasDueWork: (scope) =>
+      assistantRepo.hasDeliverableReminders(scope, now(), REMINDER_DELIVERY_STALE_MS),
+    now,
+    logger,
+  });
+
   const archiveExpiryTimer = createArchiveExpiryTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
@@ -434,6 +463,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer.unref();
       backupTimer.start();
       archiveExpiryTimer.start();
+      reminderDeliveryTimer.start();
     },
 
     async stop() {
@@ -441,6 +471,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer = undefined;
       backupTimer.stop();
       archiveExpiryTimer.stop();
+      reminderDeliveryTimer.stop();
       await settle();
     },
 
