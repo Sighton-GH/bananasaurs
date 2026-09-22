@@ -202,7 +202,7 @@ export function ArchivePage() {
     <>
       <PageHeader
         title="Archive"
-        purpose="The channels being archived, the search index over them, and the retention and case tools that act on what is stored."
+        purpose="Archive means Bananasaurs collects and keeps a searchable copy of messages. It is separate from READ, which only lets the bot see current content. Manage retention, backfill and cases here."
       />
       <div className="grid max-w-6xl gap-3">
         <Card title="Search index">
@@ -309,7 +309,9 @@ export function ArchivePage() {
                                 void setThreads(c, (c.includeThreads ?? true) ? 'none' : 'all')
                               }
                             >
-                              {(c.includeThreads ?? true) ? 'Exclude threads' : 'Include threads'}
+                              {(c.includeThreads ?? true)
+                                ? 'Do not archive threads'
+                                : 'Include threads'}
                             </Button>
                           )}
                           <Button onClick={() => void backfill(c)}>Backfill</Button>

@@ -8,6 +8,9 @@ import {
   assistantSkillGrants,
   assistantTickets,
   assistantDecisions,
+  assistantServerCards,
+  assistantMemories,
+  assistantMemoryPreferences,
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
@@ -602,3 +605,118 @@ export const transitionDecision = (
         )
         .run().changes > 0,
   );
+
+export interface AssistantMemoryRow {
+  readonly id: string;
+  readonly section: string;
+  readonly content: string;
+  readonly subjectId?: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+export const getServerCard = (scope: GuildScope): string =>
+  read(
+    scope,
+    (db) =>
+      db.select().from(assistantServerCards).where(scope.only(assistantServerCards)).get()
+        ?.content ?? 'Bananasaurs club assistant',
+  );
+export const putServerCard = (scope: GuildScope, content: string, now: number): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantServerCards)
+      .values({ guildId: scope.guildId, content, updatedAt: now })
+      .onConflictDoUpdate({
+        target: assistantServerCards.guildId,
+        set: { content, updatedAt: now },
+      })
+      .run();
+  });
+export const listMemories = (scope: GuildScope): readonly AssistantMemoryRow[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantMemories)
+      .where(scope.only(assistantMemories))
+      .orderBy(asc(assistantMemories.createdAt))
+      .all()
+      .map((r) => ({
+        id: r.memoryId,
+        section: r.section,
+        content: r.content,
+        ...(r.subjectId === null ? {} : { subjectId: r.subjectId }),
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+  );
+export const putMemory = (
+  scope: GuildScope,
+  input: { id: string; section: string; content: string; subjectId?: string | undefined },
+  now: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantMemories)
+      .values({
+        guildId: scope.guildId,
+        memoryId: input.id,
+        section: input.section,
+        content: input.content,
+        subjectId: input.subjectId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [assistantMemories.guildId, assistantMemories.memoryId],
+        set: { content: input.content, subjectId: input.subjectId ?? null, updatedAt: now },
+      })
+      .run();
+  });
+export const deleteMemory = (scope: GuildScope, id: string): boolean =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .delete(assistantMemories)
+        .where(scope.only(assistantMemories, eq(assistantMemories.memoryId, id)))
+        .run().changes > 0,
+  );
+export const memoryPreference = (scope: GuildScope, userId: string): { optedOut: boolean } =>
+  read(scope, (db) => ({
+    optedOut:
+      db
+        .select()
+        .from(assistantMemoryPreferences)
+        .where(
+          scope.only(assistantMemoryPreferences, eq(assistantMemoryPreferences.userId, userId)),
+        )
+        .get()?.optedOut === 1,
+  }));
+export const setMemoryOptOut = (
+  scope: GuildScope,
+  userId: string,
+  optedOut: boolean,
+  now: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantMemoryPreferences)
+      .values({ guildId: scope.guildId, userId, optedOut: optedOut ? 1 : 0, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [assistantMemoryPreferences.guildId, assistantMemoryPreferences.userId],
+        set: { optedOut: optedOut ? 1 : 0, updatedAt: now },
+      })
+      .run();
+  });
+export const forgetMember = (scope: GuildScope, userId: string, now: number): number =>
+  write(scope, ({ db }) => {
+    const removed = db
+      .delete(assistantMemories)
+      .where(scope.only(assistantMemories, eq(assistantMemories.subjectId, userId)))
+      .run().changes;
+    db.insert(assistantMemoryPreferences)
+      .values({ guildId: scope.guildId, userId, optedOut: 1, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [assistantMemoryPreferences.guildId, assistantMemoryPreferences.userId],
+        set: { optedOut: 1, updatedAt: now },
+      })
+      .run();
+    return removed;
+  });

@@ -3,6 +3,7 @@ import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
 import { AssistantActivityPage } from '../pages/assistant-activity.js';
 import { AssistantPage } from '../pages/assistant.js';
+import { AssistantMemoryPage } from '../pages/assistant-memory.js';
 import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
 import { BackupsPage } from '../pages/backups.js';
@@ -26,7 +27,6 @@ import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { PermissionsPage } from '../pages/permissions.js';
-import { StubPage } from '../pages/stub.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
@@ -161,38 +161,10 @@ function Pages() {
       <Route path="/providers" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
       <Route path="/assistant/activity" component={AssistantActivityPage} />
-      <Route path="/resources">
-        {() => (
-          <StubPage
-            title="Resources"
-            purpose="Files, links and notes the club keeps, findable from Discord."
-          />
-        )}
-      </Route>
-      <Route path="/memory">
-        {() => (
-          <StubPage
-            title="Memory"
-            purpose="What the assistant remembers about the server, and how to correct it."
-          />
-        )}
-      </Route>
-      <Route path="/ai">
-        {() => (
-          <StubPage
-            title="AI workspace"
-            purpose="Where the owner drafts and reviews AI-assisted actions before they run."
-          />
-        )}
-      </Route>
-      <Route path="/proposals">
-        {() => (
-          <StubPage
-            title="Proposals"
-            purpose="Changes the assistant proposes, waiting for a person to approve."
-          />
-        )}
-      </Route>
+      <Route path="/resources" component={AssistantPage} />
+      <Route path="/memory" component={AssistantMemoryPage} />
+      <Route path="/ai" component={AssistantPage} />
+      <Route path="/proposals" component={AssistantPage} />
       <Route component={NotFoundPage} />
     </Switch>
   );

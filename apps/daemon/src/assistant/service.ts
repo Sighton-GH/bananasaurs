@@ -299,7 +299,18 @@ export const createAssistantService = (
       }));
       const context = compileAssistantContext({
         behaviour: input.behaviour,
-        serverCard: 'Bananasaurs club assistant',
+        serverCard:
+          assistantRepo.getServerCard(scope) +
+          (assistantRepo.memoryPreference(scope, input.userId).optedOut
+            ? ''
+            : '\nCurated memory:\n' +
+              assistantRepo
+                .listMemories(scope)
+                .filter(
+                  (memory) => memory.subjectId === undefined || memory.subjectId === input.userId,
+                )
+                .map((memory) => '- ' + memory.content)
+                .join('\n')),
         resources,
         evidence,
         skills: permittedSkills,

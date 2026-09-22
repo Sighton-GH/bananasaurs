@@ -355,11 +355,10 @@ describe('AssistantPage', () => {
     expect(screen.getByText('from #general, 12 messages cited')).toBeTruthy();
   });
 
-  it('empty state names the configuration API and carries no action that goes nowhere', async () => {
+  it('empty state can create the working default behaviour', async () => {
     renderPage({ ...FULL, behaviours: [] });
     expect(await screen.findByText('No assistant behaviour configured')).toBeTruthy();
-    expect(screen.getByText(/configuration API/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Add behaviour/ })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Create default behaviour' })).toBeTruthy();
   });
 
   it('offers no control without a backing endpoint', async () => {

@@ -27,6 +27,13 @@ const behaviour = z.object({
   resourceIds: z.array(z.string()).max(100),
   enabled: z.boolean(),
 });
+const memory = z.object({
+  id: z.string().min(1).max(64),
+  section: z.string().min(1).max(100),
+  content: z.string().min(1).max(1000),
+  subjectId: snowflake.optional(),
+});
+const serverCard = z.object({ content: z.string().min(1).max(4000) });
 const resource = z.object({
   id: z.string().min(1).max(64),
   title: z.string().min(1).max(200),
@@ -63,8 +70,41 @@ export const registerAssistantRoutes = (
       skillGrants: assistantRepo.listSkillGrants(session.scope),
       tickets: assistantRepo.listTickets(session.scope),
       decisions: assistantRepo.listDecisions(session.scope),
+      serverCard: assistantRepo.getServerCard(session.scope),
+      memories: assistantRepo.listMemories(session.scope),
+      aiStatus: deps.assistantAiStatus ?? {
+        provider: 'unknown',
+        enabled: false,
+        modelConfigured: false,
+      },
       ...(directories ?? {}),
     });
+  });
+  app.put('/api/assistant/server-card', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = serverCard.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    assistantRepo.putServerCard(session.scope, parsed.data.content, deps.now());
+    return reply.status(200).send({ ok: true });
+  });
+  app.put('/api/assistant/memories/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = memory.safeParse(request.body);
+    if (!parsed.success || parsed.data.id !== (request.params as { id: string }).id)
+      return reply.status(400).send({ error: 'bad-request' });
+    assistantRepo.putMemory(session.scope, parsed.data, deps.now());
+    return reply.status(200).send({ ok: true });
+  });
+  app.delete('/api/assistant/memories/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    assistantRepo.deleteMemory(session.scope, (request.params as { id: string }).id);
+    return reply.status(200).send({ ok: true });
   });
   app.put('/api/assistant/behaviours/:id', (request, reply) => {
     const session = guard.require(request, reply);

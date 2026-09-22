@@ -1,6 +1,6 @@
 /** Navigation remains data so access, labelling and future states stay consistent across layouts. */
 export type NavStatus = 'built' | 'stub';
-export type NavGroup = 'Operate' | 'Moderation' | 'Archive' | 'Instance' | 'Release 3';
+export type NavGroup = 'Operate' | 'Moderation' | 'Archive' | 'Instance' | 'Assistant';
 
 export interface NavEntry {
   readonly path: string;
@@ -14,7 +14,7 @@ export interface NavEntry {
  * sheet both render this order; empty groups render nothing rather than a
  * bare heading.
  */
-export const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'] as const;
+export const GROUPS = ['Operate', 'Moderation', 'Archive', 'Instance', 'Assistant'] as const;
 
 export const NAV: readonly NavEntry[] = [
   { path: '/', label: 'Overview', status: 'built', group: 'Operate' },
@@ -36,11 +36,8 @@ export const NAV: readonly NavEntry[] = [
   { path: '/config', label: 'Configuration', status: 'built', group: 'Instance' },
   { path: '/accounts', label: 'Accounts', status: 'built', group: 'Instance' },
   { path: '/mcp', label: 'MCP connector', status: 'built', group: 'Instance' },
-  { path: '/providers', label: 'Providers', status: 'built', group: 'Instance' },
-  { path: '/assistant', label: 'Assistant', status: 'built', group: 'Release 3' },
-  { path: '/assistant/activity', label: 'Skill activity', status: 'built', group: 'Release 3' },
-  { path: '/resources', label: 'Resources', status: 'stub', group: 'Release 3' },
-  { path: '/memory', label: 'Memory', status: 'stub', group: 'Release 3' },
-  { path: '/ai', label: 'AI workspace', status: 'stub', group: 'Release 3' },
-  { path: '/proposals', label: 'Proposals', status: 'stub', group: 'Release 3' },
+  { path: '/providers', label: 'API providers', status: 'built', group: 'Assistant' },
+  { path: '/assistant', label: 'Assistant', status: 'built', group: 'Assistant' },
+  { path: '/assistant/activity', label: 'Skill activity', status: 'built', group: 'Assistant' },
+  { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
 ];

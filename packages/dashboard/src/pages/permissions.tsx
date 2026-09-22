@@ -182,6 +182,7 @@ export function PermissionsPage() {
   // Attachment policy applies when a channel's archiving is switched on here
   // (categories always enable text-only, matching the CLI). It cannot change
   // after enablement anywhere, so the choice sits beside the controls.
+  const [expanded, setExpanded] = useState<ReadonlySet<string>>(() => new Set());
   const [policy, setPolicy] = useState<ArchiveAttachmentPolicy>('none');
 
   const rows = useMemo(
@@ -304,7 +305,7 @@ export function PermissionsPage() {
     <>
       <PageHeader
         title="Permissions"
-        purpose="Where Bananasaurs may operate, channel by channel and category by category. Archive decides what the bot collects and keeps; Send decides where the MCP connector may post; an excluded channel is out of both. Changes apply as soon as you make them."
+        purpose="Set READ, WRITE and ARCHIVE per channel or category. READ means the bot may see current content when Discord sends it; WRITE means it may post; ARCHIVE means it also collects and keeps a searchable copy. Archive is not the same as read."
       />
       <DataState
         resource={scope.resource}
@@ -321,8 +322,9 @@ export function PermissionsPage() {
         {(data) => (
           <Card title="Operating scope">
             <p className="mb-3 text-sm text-ink-muted">
-              A channel covered by an enabled category follows the category - stop the category to
-              switch those channels off. Backfill, browsing and retention stay on the Archive page.
+              Categories start collapsed. Open one to inspect its channels. "No access" replaces the
+              old "Exclude" wording: it turns read, write and archive off together. A channel
+              covered by a category follows that category.
             </p>
             <label className="mb-3 flex items-center gap-2 text-sm">
               New channels archive attachments as
@@ -338,7 +340,15 @@ export function PermissionsPage() {
             </label>
             <DataTable
               caption="Operating scope by channel and category"
-              rows={rows ?? []}
+              rows={(rows ?? []).filter(
+                (row) =>
+                  row.depth === 0 ||
+                  [...expanded].some((categoryId) =>
+                    data.channels.some(
+                      (channel) => channel.channelId === row.id && channel.parentId === categoryId,
+                    ),
+                  ),
+              )}
               rowKey={(row) => row.id}
               columns={[
                 {
@@ -346,7 +356,26 @@ export function PermissionsPage() {
                   header: 'Channel',
                   cell: (row) => (
                     <span className={row.depth === 1 ? 'pl-4' : 'font-medium'}>
-                      {row.kind === 'category' ? row.name : `#${row.name}`}
+                      {row.kind === 'category' ? (
+                        <button
+                          type="button"
+                          className="font-medium"
+                          aria-expanded={expanded.has(row.id)}
+                          onClick={() =>
+                            setExpanded((current) => {
+                              const next = new Set(current);
+                              if (next.has(row.id)) next.delete(row.id);
+                              else next.add(row.id);
+                              return next;
+                            })
+                          }
+                        >
+                          {expanded.has(row.id) ? '▾ ' : '▸ '}
+                          {row.name}
+                        </button>
+                      ) : (
+                        `#${row.name}`
+                      )}
                       {row.channelKind === 'announcement' && (
                         <span className="text-ink-muted"> (announcement)</span>
                       )}
@@ -362,17 +391,17 @@ export function PermissionsPage() {
                     ) : row.archive === 'via-category' ? (
                       <Badge tone="ok">On, via {row.archiveVia}</Badge>
                     ) : row.archive === 'excluded' ? (
-                      <Badge tone="hold">Excluded</Badge>
+                      <Badge tone="hold">No access</Badge>
                     ) : (
                       <Badge>Off</Badge>
                     ),
                 },
                 {
                   key: 'send',
-                  header: 'Send',
+                  header: 'Write',
                   cell: (row) =>
                     row.send === 'excluded' ? (
-                      <Badge tone="hold">Excluded</Badge>
+                      <Badge tone="hold">No access</Badge>
                     ) : row.send === 'on' ? (
                       <Badge tone="ok">On</Badge>
                     ) : row.send === 'via-category' ? (
@@ -418,7 +447,7 @@ export function PermissionsPage() {
                       )}
                       {row.kind === 'channel' && data.excluded !== undefined && (
                         <Button busy={busy} onClick={() => void toggleExclusion(row)}>
-                          {row.excluded ? 'Include again' : 'Exclude'}
+                          {row.excluded ? 'Restore access' : 'No access'}
                         </Button>
                       )}
                     </span>
@@ -428,8 +457,8 @@ export function PermissionsPage() {
             />
             {data.excluded === undefined && (
               <p className="mt-2 text-sm text-ink-muted">
-                This account cannot see or change exclusions (that needs the logging capability);
-                the Excluded state is shown without its controls.
+                This account cannot see or change channel access overrides (that needs the logging
+                capability); the No access state is shown without its controls.
               </p>
             )}
           </Card>

@@ -69,7 +69,7 @@ export function ProvidersPage() {
   return (
     <>
       <PageHeader
-        title="Providers"
+        title="API providers"
         purpose="Which AI providers may see server content: the training-eligibility rows that need attention, and the review that clears them."
       />
       <DataState
@@ -125,11 +125,15 @@ export function ProvidersPage() {
         )}
       </DataState>
       <div className="mt-4 max-w-4xl">
-        <Card title="Changing a provider">
+        <Card title="Provider setup">
           <p className="text-sm">
-            The training flag, its evidence URL and production eligibility are configuration, set on
-            the host with <code className="text-xs">bananasaurs config set</code>. This page records
-            reviews; it cannot make a provider eligible.
+            Choose and enable the provider from the Assistant overview. API keys are secrets: the
+            dashboard accepts a replacement key but never returns it. Eligibility still fails closed
+            until the terms evidence says no training, permits production, and has a current review.
+          </p>
+          <p className="mt-2 text-sm text-hold">
+            Secure key storage is not configured in this build yet, so no key form is shown rather
+            than pretending a browser submission would survive a restart safely.
           </p>
         </Card>
       </div>

@@ -161,3 +161,46 @@ describe('assistant routes', () => {
     ).toBe(200);
   });
 });
+
+describe('assistant memory routes', () => {
+  it('round-trips server card and sectioned memory without exposing another guild', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: '/api/assistant/server-card',
+          headers: { cookie, [CSRF_HEADER]: csrf },
+          payload: { content: 'Club operating context' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: '/api/assistant/memories/goal-1',
+          headers: { cookie, [CSRF_HEADER]: csrf },
+          payload: { id: 'goal-1', section: 'Club goals', content: 'Finish the EV build' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    const result = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(result.json()).toMatchObject({
+      serverCard: 'Club operating context',
+      memories: [{ id: 'goal-1', section: 'Club goals', content: 'Finish the EV build' }],
+    });
+    expect(
+      (
+        await app.inject({
+          method: 'DELETE',
+          url: '/api/assistant/memories/goal-1',
+          headers: { cookie, [CSRF_HEADER]: csrf },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listMemories(t.scopes.forGuild(GUILD))).toEqual([]);
+  });
+});

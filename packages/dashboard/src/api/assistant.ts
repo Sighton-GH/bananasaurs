@@ -111,6 +111,14 @@ export interface AssistantData {
   readonly skillGrants?: readonly SkillGrant[];
   readonly tickets?: readonly TicketRow[];
   readonly decisions?: readonly DecisionRow[];
+  readonly serverCard?: string;
+  readonly memories?: readonly {
+    id: string;
+    section: string;
+    content: string;
+    subjectId?: string;
+  }[];
+  readonly aiStatus?: { provider: string; enabled: boolean; modelConfigured: boolean };
 }
 
 export const ASSISTANT_URL = '/api/assistant';

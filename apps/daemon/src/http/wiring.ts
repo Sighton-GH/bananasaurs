@@ -181,6 +181,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
+    assistantAiStatus: { provider: 'unknown', enabled: false, modelConfigured: false },
   };
   const app = createServer({
     deps: httpDeps,
@@ -247,6 +248,11 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
+    assistantAiStatus: {
+      provider: deps.config.AI_PROVIDER,
+      enabled: deps.config.AI_PROVIDER !== 'off' && deps.config.AI_MODEL !== undefined,
+      modelConfigured: deps.config.AI_MODEL !== undefined,
+    },
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.

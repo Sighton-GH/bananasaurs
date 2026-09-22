@@ -69,6 +69,9 @@ export interface HttpDeps extends AuthDeps {
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
+  readonly assistantAiStatus?:
+    | { readonly provider: string; readonly enabled: boolean; readonly modelConfigured: boolean }
+    | undefined;
   readonly assistantDirectories?:
     | ((guildId: string) => Promise<{
         roles: readonly { id: string; name: string; position: number }[];

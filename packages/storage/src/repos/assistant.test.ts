@@ -15,6 +15,13 @@ import {
   transitionDecision,
   listDecisions,
   recordResourceFetch,
+  putServerCard,
+  getServerCard,
+  putMemory,
+  listMemories,
+  memoryPreference,
+  setMemoryOptOut,
+  forgetMember,
 } from './assistant.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
@@ -146,4 +153,22 @@ it('clears mentionRoleId and ticketChannelId when a re-put omits them', () => {
   expect(saved?.promptVersion).toBe(2);
   expect(saved?.mentionRoleId).toBeUndefined();
   expect(saved?.ticketChannelId).toBeUndefined();
+});
+it('stores a sectioned curated memory, server card, and member opt-out', () => {
+  const s = t.scopes.forGuild(G);
+  putServerCard(s, 'SFU team assistant', 10);
+  putMemory(
+    s,
+    { id: 'm1', section: 'Exec team', content: 'Prepare budget', subjectId: '333333333333333333' },
+    11,
+  );
+  expect(getServerCard(s)).toBe('SFU team assistant');
+  expect(listMemories(s)).toEqual([
+    expect.objectContaining({ id: 'm1', section: 'Exec team', content: 'Prepare budget' }),
+  ]);
+  expect(memoryPreference(s, '333333333333333333')).toEqual({ optedOut: false });
+  setMemoryOptOut(s, '333333333333333333', true, 12);
+  expect(memoryPreference(s, '333333333333333333')).toEqual({ optedOut: true });
+  expect(forgetMember(s, '333333333333333333', 13)).toBe(1);
+  expect(listMemories(s)).toEqual([]);
 });
