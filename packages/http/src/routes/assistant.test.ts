@@ -255,3 +255,41 @@ describe('assistant memory routes', () => {
     expect(assistantRepo.listMemories(t.scopes.forGuild(GUILD))).toEqual([]);
   });
 });
+
+describe('memory proposal save', () => {
+  it('validates before transition and then materializes memory atomically', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const s = t.scopes.forGuild(GUILD);
+    assistantRepo.insertDecisionDraft(s, {
+      id: 'mp',
+      kind: 'memory',
+      summary: 'draft',
+      requesterId: ROLE_A,
+      provenance: 'test',
+      at: clock,
+    });
+    expect(assistantRepo.transitionDecision(s, 'mp', 'draft', 'reviewed')).toBe(true);
+    const bad = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/decisions/mp/save',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: {},
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(assistantRepo.listDecisions(s)[0]).toMatchObject({ status: 'reviewed' });
+    const good = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/decisions/mp/save',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { section: 'Exec', content: 'Confirm budget' },
+    });
+    expect(good.statusCode).toBe(200);
+    expect(assistantRepo.listDecisions(s)[0]).toMatchObject({ status: 'saved' });
+    expect(assistantRepo.listMemories(s)[0]).toMatchObject({
+      section: 'Exec',
+      content: 'Confirm budget',
+    });
+  });
+});

@@ -617,6 +617,9 @@ function DecisionsCard({
   readonly session: Session;
   readonly onSaved: () => void;
 }) {
+  const [memoryDrafts, setMemoryDrafts] = useState<
+    Record<string, { section: string; content: string; subjectId: string }>
+  >({});
   const memberName = (id: string) => data.members?.find((m) => m.id === id)?.name;
   return (
     <Card title="Decisions and plans">
@@ -635,7 +638,12 @@ function DecisionsCard({
             {
               key: 'kind',
               header: 'Kind',
-              cell: (d) => (d.kind === 'decision' ? 'Decision' : 'Plan review'),
+              cell: (d) =>
+                d.kind === 'decision'
+                  ? 'Decision'
+                  : d.kind === 'memory'
+                    ? 'Memory proposal'
+                    : 'Plan review',
             },
             { key: 'summary', header: 'Summary', cell: (d) => d.summary },
             {
@@ -659,6 +667,77 @@ function DecisionsCard({
               cell: (d) =>
                 d.status === 'saved' ? (
                   <span className="text-xs text-ink-muted">Saved</span>
+                ) : d.kind === 'memory' && d.status === 'reviewed' ? (
+                  <div className="grid min-w-64 gap-2">
+                    <Input
+                      aria-label={`Memory section ${d.id}`}
+                      placeholder="Section"
+                      value={memoryDrafts[d.id]?.section ?? ''}
+                      onChange={(e) =>
+                        setMemoryDrafts((all) => ({
+                          ...all,
+                          [d.id]: {
+                            section: e.target.value,
+                            content: all[d.id]?.content ?? d.summary,
+                            subjectId: all[d.id]?.subjectId ?? '',
+                          },
+                        }))
+                      }
+                    />
+                    <textarea
+                      aria-label={`Memory content ${d.id}`}
+                      className="min-h-20 rounded-sm border border-line bg-canvas p-2 text-sm"
+                      value={memoryDrafts[d.id]?.content ?? d.summary}
+                      onChange={(e) =>
+                        setMemoryDrafts((all) => ({
+                          ...all,
+                          [d.id]: {
+                            section: all[d.id]?.section ?? '',
+                            content: e.target.value,
+                            subjectId: all[d.id]?.subjectId ?? '',
+                          },
+                        }))
+                      }
+                    />
+                    <select
+                      aria-label={`Memory subject ${d.id}`}
+                      className="rounded-sm border border-line bg-canvas px-2 py-1 text-sm"
+                      value={memoryDrafts[d.id]?.subjectId ?? ''}
+                      onChange={(e) =>
+                        setMemoryDrafts((all) => ({
+                          ...all,
+                          [d.id]: {
+                            section: all[d.id]?.section ?? '',
+                            content: all[d.id]?.content ?? d.summary,
+                            subjectId: e.target.value,
+                          },
+                        }))
+                      }
+                    >
+                      <option value="">Club-wide</option>
+                      {data.members?.map((member) => (
+                        <option key={member.id} value={member.id}>
+                          {member.name}
+                        </option>
+                      ))}
+                    </select>
+                    <Button
+                      disabled={(memoryDrafts[d.id]?.section ?? '').trim() === ''}
+                      onClick={() => {
+                        const draft = memoryDrafts[d.id];
+                        if (draft === undefined) return;
+                        void session
+                          .write(decisionSaveUrl(d.id), {
+                            section: draft.section.trim(),
+                            content: draft.content.trim(),
+                            ...(draft.subjectId === '' ? {} : { subjectId: draft.subjectId }),
+                          })
+                          .then((result) => result !== undefined && onSaved());
+                      }}
+                    >
+                      Save memory
+                    </Button>
+                  </div>
                 ) : (
                   <Button
                     onClick={() =>

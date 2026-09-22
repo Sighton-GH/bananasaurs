@@ -172,6 +172,9 @@ export const createLoggingSubscriber = (ports: LoggingPorts): Subscriber => ({
     const routeKind = ROUTE_KIND[event.kind as keyof typeof ROUTE_KIND] as string | undefined;
     if (routeKind === undefined) return; // everything else: not this module's job
 
+    if (event.kind === 'messageCreate') {
+      if (event.authorIsBot || ports.isChannelExcluded(event.channelId)) return;
+    }
     if (event.kind === 'messageUpdate' && ports.isChannelExcluded(event.channelId)) return;
 
     const route = ports.findRoute(routeKind);

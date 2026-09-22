@@ -101,9 +101,13 @@ export const createAssistantService = (
         handoff: 'draft-handoff',
       };
       const skill = commandSkill[input.command];
-      // The behaviour's caller role gate applies on every path. The mention
-      // router already enforced it; the slash path did not (finding 9).
-      if (!input.behaviour.callerRoleIds.some((roleId) => input.callerRoleIds.includes(roleId)))
+      const owner = input.userId === config.BANANASAURS_OWNER_USER_ID;
+      // Owners can complete first-run setup before any caller role is selected.
+      // Everyone else still fails closed against the behaviour allowlist.
+      if (
+        !owner &&
+        !input.behaviour.callerRoleIds.some((roleId) => input.callerRoleIds.includes(roleId))
+      )
         return {
           ok: false,
           content: 'This behaviour is not available to your server roles. No action was taken.',
@@ -113,7 +117,6 @@ export const createAssistantService = (
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      const owner = input.userId === config.BANANASAURS_OWNER_USER_ID;
       const grants = assistantRepo.listSkillGrants(scope);
       const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
         if (!input.behaviour.allowedSkillIds.includes(candidate.id)) return false;

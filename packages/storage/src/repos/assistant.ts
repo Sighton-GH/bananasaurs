@@ -584,6 +584,54 @@ export const insertDecisionDraft = (scope: GuildScope, input: NewAssistantDecisi
       })
       .run();
   });
+export const saveMemoryProposal = (
+  scope: GuildScope,
+  id: string,
+  memory: {
+    readonly section: string;
+    readonly content: string;
+    readonly subjectId?: string | undefined;
+  },
+  now: number,
+): boolean =>
+  write(scope, ({ db }) => {
+    const proposal = db
+      .select()
+      .from(assistantDecisions)
+      .where(
+        scope.only(
+          assistantDecisions,
+          eq(assistantDecisions.decisionId, id),
+          eq(assistantDecisions.kind, 'memory'),
+          eq(assistantDecisions.status, 'reviewed'),
+        ),
+      )
+      .get();
+    if (proposal === undefined) return false;
+    db.insert(assistantMemories)
+      .values({
+        guildId: scope.guildId,
+        memoryId: `proposal-${id}`,
+        section: memory.section,
+        content: memory.content,
+        subjectId: memory.subjectId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    db.update(assistantDecisions)
+      .set({ status: 'saved' })
+      .where(
+        scope.only(
+          assistantDecisions,
+          eq(assistantDecisions.decisionId, id),
+          eq(assistantDecisions.status, 'reviewed'),
+        ),
+      )
+      .run();
+    return true;
+  });
+
 export const transitionDecision = (
   scope: GuildScope,
   id: string,

@@ -16,6 +16,7 @@ interface MemoryRow {
   readonly subjectId?: string;
 }
 interface MemoryData {
+  readonly members?: readonly { id: string; name: string }[];
   readonly serverCard: string;
   readonly memories: readonly MemoryRow[];
 }
@@ -136,6 +137,48 @@ export function AssistantMemoryPage() {
                 </ul>
               </Card>
             ))}
+            <Card title="Member memory privacy">
+              <p className="mb-2 text-sm text-ink-muted">
+                Opt a member out of memory, or delete all member-specific memory and opt them out in
+                one action. Club-wide memory is untouched.
+              </p>
+              <ul className="grid gap-2 sm:grid-cols-2">
+                {data.members?.map((member) => (
+                  <li
+                    key={member.id}
+                    className="flex items-center justify-between gap-2 rounded border border-line p-2"
+                  >
+                    <span>{member.name}</span>
+                    <span className="flex gap-1">
+                      <Button
+                        onClick={() =>
+                          void session.write(
+                            `/api/assistant/memory-preferences/${encodeURIComponent(member.id)}`,
+                            { optedOut: true },
+                            'PUT',
+                          )
+                        }
+                      >
+                        Opt out
+                      </Button>
+                      <Button
+                        onClick={() =>
+                          void session
+                            .write(
+                              `/api/assistant/member-memory/${encodeURIComponent(member.id)}`,
+                              undefined,
+                              'DELETE',
+                            )
+                            .then(() => memory.reload())
+                        }
+                      >
+                        Delete memory
+                      </Button>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </Card>
             {data.memories.length === 0 && (
               <Card title="No memory yet">
                 <p className="text-sm text-ink-muted">

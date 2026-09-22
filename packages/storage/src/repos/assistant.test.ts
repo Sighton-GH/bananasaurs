@@ -22,6 +22,7 @@ import {
   memoryPreference,
   setMemoryOptOut,
   forgetMember,
+  saveMemoryProposal,
 } from './assistant.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
@@ -184,4 +185,22 @@ it('stores a memory proposal without changing memory before review', () => {
   });
   expect(listDecisions(s)[0]).toMatchObject({ id: 'mp', kind: 'memory', status: 'draft' });
   expect(listMemories(s)).toEqual([]);
+});
+it('saves a reviewed memory proposal atomically', () => {
+  const s = t.scopes.forGuild(G);
+  insertDecisionDraft(s, {
+    id: 'memory-save',
+    kind: 'memory',
+    summary: 'draft',
+    requesterId: '333333333333333333',
+    provenance: 'test',
+    at: 20,
+  });
+  expect(transitionDecision(s, 'memory-save', 'draft', 'reviewed')).toBe(true);
+  expect(
+    saveMemoryProposal(s, 'memory-save', { section: 'Exec', content: 'Confirm budget' }, 21),
+  ).toBe(true);
+  expect(listDecisions(s)[0]).toMatchObject({ status: 'saved' });
+  expect(listMemories(s)[0]).toMatchObject({ section: 'Exec', content: 'Confirm budget' });
+  expect(saveMemoryProposal(s, 'memory-save', { section: 'x', content: 'retry' }, 22)).toBe(false);
 });

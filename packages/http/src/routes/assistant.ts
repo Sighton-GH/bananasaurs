@@ -107,6 +107,27 @@ export const registerAssistantRoutes = (
     assistantRepo.putServerCard(session.scope, parsed.data.content, deps.now());
     return reply.status(200).send({ ok: true });
   });
+  app.put('/api/assistant/memory-preferences/:userId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const userId = (request.params as { userId: string }).userId;
+    const parsed = z.object({ optedOut: z.boolean() }).safeParse(request.body);
+    if (!snowflake.safeParse(userId).success || !parsed.success)
+      return reply.status(400).send({ error: 'bad-request' });
+    assistantRepo.setMemoryOptOut(session.scope, userId, parsed.data.optedOut, deps.now());
+    return reply.status(200).send({ ok: true });
+  });
+  app.delete('/api/assistant/member-memory/:userId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const userId = (request.params as { userId: string }).userId;
+    if (!snowflake.safeParse(userId).success)
+      return reply.status(400).send({ error: 'bad-request' });
+    const removed = assistantRepo.forgetMember(session.scope, userId, deps.now());
+    return reply.status(200).send({ removed, optedOut: true });
+  });
   app.put('/api/assistant/memories/:id', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
@@ -269,8 +290,6 @@ export const registerAssistantRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const id = (request.params as { id: string }).id;
     const proposal = assistantRepo.listDecisions(session.scope).find((item) => item.id === id);
-    if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved'))
-      return reply.status(409).send({ error: 'invalid-transition' });
     if (proposal?.kind === 'memory') {
       const parsed = z
         .object({
@@ -280,7 +299,10 @@ export const registerAssistantRoutes = (
         })
         .safeParse(request.body);
       if (!parsed.success) return reply.status(400).send({ error: 'memory-details-required' });
-      assistantRepo.putMemory(session.scope, { id: `proposal-${id}`, ...parsed.data }, deps.now());
+      if (!assistantRepo.saveMemoryProposal(session.scope, id, parsed.data, deps.now()))
+        return reply.status(409).send({ error: 'invalid-transition' });
+    } else if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved')) {
+      return reply.status(409).send({ error: 'invalid-transition' });
     }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),

@@ -465,3 +465,28 @@ describe('gap markers (ADR 0023 decision 5)', () => {
     expect(discord.restCalls('sendMessage')).toHaveLength(2);
   });
 });
+
+describe('message creates', () => {
+  const create = (over: Partial<MessageEvent> = {}): MessageEvent => ({
+    ...messageEdit(),
+    kind: 'messageCreate',
+    editedTimestampMs: undefined,
+    ...over,
+  });
+  it('does not self-log the bot logging its own line', async () => {
+    seedRoute('message_create');
+    await createLoggingSubscriber(ports).handle(create({ authorIsBot: true }));
+    expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+  it('does not log messages from a No access channel', async () => {
+    seedRoute('message_create');
+    excludeChannel(EXCLUDED_CHANNEL);
+    await createLoggingSubscriber(ports).handle(create({ channelId: EXCLUDED_CHANNEL }));
+    expect(discord.restCalls('sendMessage')).toHaveLength(0);
+  });
+  it('logs a member message from an allowed channel once', async () => {
+    seedRoute('message_create');
+    await createLoggingSubscriber(ports).handle(create());
+    expect(discord.restCalls('sendMessage')).toHaveLength(1);
+  });
+});
