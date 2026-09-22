@@ -69,7 +69,7 @@ function DesktopHeader() {
         </div>
         <details className="mt-0.5 text-xs text-ink-muted">
           <summary className="cursor-pointer">Server details</summary>
-          <p className="font-mono">{session.info.guildId}</p>
+          <p>{session.info.guildId}</p>
         </details>
       </div>
       <div className="flex items-center gap-4">

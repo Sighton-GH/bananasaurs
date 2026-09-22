@@ -48,7 +48,7 @@ export const registerCaseRoutes = (
     });
   });
 
-  app.get<{ Params: { caseId: string } }>('/api/mod/cases/:caseId', (request, reply) => {
+  app.get<{ Params: { caseId: string } }>('/api/mod/cases/:caseId', async (request, reply) => {
     if (!caseIdParamSchema.safeParse(request.params.caseId).success) {
       return reply.status(400).send({ error: 'bad-request' });
     }
@@ -59,7 +59,11 @@ export const registerCaseRoutes = (
     const ports = deps.portsFor(session.scope);
     const detail = ports.findCaseDetail(request.params.caseId);
     if (detail === undefined) return reply.status(404).send({ error: 'not-found' });
-    return reply.status(200).send(detail);
+    const [member] = await ports.fetchGuildMembers([detail.case.memberId]);
+    return reply.status(200).send({
+      ...detail,
+      case: { ...detail.case, member: member ?? null },
+    });
   });
 
   app.get<{ Params: { memberId: string } }>(
