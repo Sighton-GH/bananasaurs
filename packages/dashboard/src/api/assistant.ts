@@ -79,7 +79,7 @@ export interface AssistantBehaviourView extends Omit<AssistantBehaviour, 'caller
 /** A /decision or /review-plan record. Drafts are analysis, not club policy, until confirmed and saved. */
 export interface DecisionRow {
   readonly id: string;
-  readonly kind: 'decision' | 'review-plan';
+  readonly kind: 'decision' | 'review-plan' | 'memory';
   readonly summary: string;
   readonly status: 'draft' | 'reviewed' | 'saved';
   /** Who asked, and where the content came from, so a draft never reads as policy. */

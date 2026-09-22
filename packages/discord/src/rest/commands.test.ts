@@ -82,6 +82,7 @@ describe('the Release 3 command set', () => {
       'ask',
       'find',
       'remind',
+      'remember',
       'decision',
       'review-plan',
       'onboard',

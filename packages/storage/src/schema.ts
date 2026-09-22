@@ -2006,7 +2006,7 @@ export const assistantDecisions = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_decisions_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_decisions_requester_id_snowflake', snowflakeCheck(t.requesterId)),
-    check('assistant_decisions_kind', sql`${t.kind} IN ('decision','review-plan')`),
+    check('assistant_decisions_kind', sql`${t.kind} IN ('decision','review-plan','memory')`),
     check('assistant_decisions_status', sql`${t.status} IN ('draft','reviewed','saved')`),
   ],
 );

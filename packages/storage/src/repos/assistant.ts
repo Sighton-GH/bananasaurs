@@ -563,7 +563,7 @@ export const insertTicket = (scope: GuildScope, input: NewAssistantTicket): bool
   );
 export interface NewAssistantDecision {
   readonly id: string;
-  readonly kind: 'decision' | 'review-plan';
+  readonly kind: 'decision' | 'review-plan' | 'memory';
   readonly summary: string;
   readonly requesterId: string;
   readonly provenance: string;

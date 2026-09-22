@@ -90,6 +90,7 @@ export const createAssistantService = (
         ask: 'search-club',
         find: 'search-club',
         remind: 'create-reminder',
+        remember: 'propose-memory',
         decision: 'record-decision',
         'review-plan': 'review-plan',
         onboard: 'onboarding-guide',
@@ -348,6 +349,23 @@ export const createAssistantService = (
         actorId: input.userId,
         outcome: 'completed',
       });
+      if (input.command === 'remember') {
+        const id = `memory-${randomUUID()}`;
+        assistantRepo.insertDecisionDraft(scope, {
+          id,
+          kind: 'memory',
+          summary: response.text.slice(0, 4_000),
+          requesterId: input.userId,
+          provenance: `Assistant memory proposal; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
+          at: now(),
+        });
+        return {
+          ok: true,
+          content: `${response.text}
+
+Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and save it in the dashboard.`,
+        };
+      }
       if (input.command === 'decision' || input.command === 'review-plan') {
         const id = `${input.command}-${randomUUID()}`;
         assistantRepo.insertDecisionDraft(scope, {

@@ -301,6 +301,12 @@ export const REMIND_COMMAND: GuildCommandDefinition = {
     requiredText('text', 'Reminder text'),
   ],
 };
+export const REMEMBER_COMMAND: GuildCommandDefinition = {
+  name: 'remember',
+  description: 'Propose a memory entry for owner review',
+  type: ApplicationCommandType.ChatInput,
+  options: [requiredText('request', 'What the assistant should consider remembering', 2_000)],
+};
 export const DECISION_COMMAND: GuildCommandDefinition = {
   name: 'decision',
   description: 'Draft a club decision from the evidence you provide',
@@ -347,6 +353,7 @@ export const RELEASE_3_COMMANDS: readonly GuildCommandDefinition[] = [
   ASK_COMMAND,
   FIND_COMMAND,
   REMIND_COMMAND,
+  REMEMBER_COMMAND,
   DECISION_COMMAND,
   REVIEW_PLAN_COMMAND,
   ONBOARD_COMMAND,

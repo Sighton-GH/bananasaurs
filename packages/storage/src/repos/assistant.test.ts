@@ -172,3 +172,16 @@ it('stores a sectioned curated memory, server card, and member opt-out', () => {
   expect(forgetMember(s, '333333333333333333', 13)).toBe(1);
   expect(listMemories(s)).toEqual([]);
 });
+it('stores a memory proposal without changing memory before review', () => {
+  const s = t.scopes.forGuild(G);
+  insertDecisionDraft(s, {
+    id: 'mp',
+    kind: 'memory',
+    summary: 'Exec team: Prepare budget',
+    requesterId: '333333333333333333',
+    provenance: 'assistant proposal',
+    at: 20,
+  });
+  expect(listDecisions(s)[0]).toMatchObject({ id: 'mp', kind: 'memory', status: 'draft' });
+  expect(listMemories(s)).toEqual([]);
+});

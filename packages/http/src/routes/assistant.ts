@@ -268,8 +268,20 @@ export const registerAssistantRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const id = (request.params as { id: string }).id;
+    const proposal = assistantRepo.listDecisions(session.scope).find((item) => item.id === id);
     if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved'))
       return reply.status(409).send({ error: 'invalid-transition' });
+    if (proposal?.kind === 'memory') {
+      const parsed = z
+        .object({
+          section: z.string().min(1).max(100),
+          content: z.string().min(1).max(1000),
+          subjectId: snowflake.optional(),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'memory-details-required' });
+      assistantRepo.putMemory(session.scope, { id: `proposal-${id}`, ...parsed.data }, deps.now());
+    }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'assistant_decision.saved',
