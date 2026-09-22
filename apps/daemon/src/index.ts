@@ -288,6 +288,9 @@ async function main(): Promise<void> {
       instance: daemon.instance,
       client,
       discord,
+      ...(daemon.providerStore === undefined
+        ? {}
+        : { assistantProviderConfig: daemon.providerStore }),
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and

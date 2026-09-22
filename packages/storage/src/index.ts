@@ -59,6 +59,7 @@ export * as authzRepo from './repos/authz.js';
 export { authzStoreFor, isTargetProtected } from './repos/authz.js';
 export * as effectRepo from './repos/effects.js';
 export * as assistantRepo from './repos/assistant.js';
+export * as assistantProviderRepo from './repos/assistant-provider.js';
 export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
 export * as loggingRepo from './repos/logging.js';

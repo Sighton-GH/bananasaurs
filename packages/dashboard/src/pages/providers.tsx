@@ -41,6 +41,10 @@ export function ProvidersPage() {
   );
   const warnings = useResource('the provider eligibility warnings', load);
 
+  const [provider, setProvider] = useState<'off' | 'gemini' | 'openrouter' | 'nvidia-nim'>('off');
+  const [model, setModel] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [enabled, setEnabled] = useState(false);
   const [reviewing, setReviewing] = useState<EligibilityWarning | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
@@ -126,15 +130,83 @@ export function ProvidersPage() {
       </DataState>
       <div className="mt-4 max-w-4xl">
         <Card title="Provider setup">
-          <p className="text-sm">
-            Choose and enable the provider from the Assistant overview. API keys are secrets: the
-            dashboard accepts a replacement key but never returns it. Eligibility still fails closed
-            until the terms evidence says no training, permits production, and has a current review.
+          <p className="mb-3 text-sm">
+            API keys are encrypted at rest and write-only. After save, the API returns only whether
+            a key exists. Eligibility still gates traffic.
           </p>
-          <p className="mt-2 text-sm text-hold">
-            Secure key storage is not configured in this build yet, so no key form is shown rather
-            than pretending a browser submission would survive a restart safely.
-          </p>
+          <form
+            className="grid gap-3"
+            onSubmit={(event) => {
+              event.preventDefault();
+              void (async () => {
+                setBusy(true);
+                const result = await session.write<{ keyConfigured: boolean }>(
+                  '/api/assistant/provider',
+                  {
+                    provider,
+                    ...(model.trim() === '' ? {} : { model: model.trim() }),
+                    ...(apiKey === '' ? {} : { apiKey }),
+                    enabled,
+                  },
+                  'PUT',
+                );
+                setBusy(false);
+                if (result !== undefined) {
+                  setApiKey('');
+                  toast({
+                    tone: 'ok',
+                    title: enabled ? 'Provider configuration saved' : 'Assistant provider disabled',
+                    message: result.keyConfigured
+                      ? 'A write-only API key is stored.'
+                      : 'No API key is stored.',
+                  });
+                }
+              })();
+            }}
+          >
+            <label className="text-sm">
+              Provider{' '}
+              <select
+                className="rounded-sm border border-line bg-canvas px-2 py-1"
+                value={provider}
+                onChange={(e) => setProvider(e.target.value as typeof provider)}
+              >
+                <option value="off">Off</option>
+                <option value="gemini">Gemini</option>
+                <option value="openrouter">OpenRouter</option>
+                <option value="nvidia-nim">NVIDIA NIM</option>
+              </select>
+            </label>
+            <label className="text-sm">
+              Model{' '}
+              <input
+                className="rounded-sm border border-line bg-canvas px-2 py-1"
+                value={model}
+                onChange={(e) => setModel(e.target.value)}
+              />
+            </label>
+            <label className="text-sm">
+              Replace API key{' '}
+              <input
+                type="password"
+                autoComplete="new-password"
+                className="rounded-sm border border-line bg-canvas px-2 py-1"
+                value={apiKey}
+                onChange={(e) => setApiKey(e.target.value)}
+              />
+            </label>
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+              />
+              Enable provider after save (eligibility still required)
+            </label>
+            <Button variant="primary" busy={busy}>
+              Save provider
+            </Button>
+          </form>
         </Card>
       </div>
       <ConfirmDialog

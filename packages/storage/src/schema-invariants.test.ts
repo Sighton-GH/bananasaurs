@@ -55,6 +55,8 @@ const INSTANCE_LEVEL = new Set<string>([
   'oauth_tokens',
   // ADR 0044 §7: a provider is a fact about the daemon, not a guild.
   'provider_eligibility',
+  // Release 3: one encrypted provider configuration for the daemon.
+  'assistant_provider_config',
 ]);
 
 /**
@@ -1149,12 +1151,18 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
     expect(columns(table).map((c) => c.name)).not.toContain('guild_id');
   });
 
-  it('INSTANCE_LEVEL contains exactly the seven expected names', () => {
+  it('INSTANCE_LEVEL contains exactly the eight expected names', () => {
     // The tripwire. An eighth table cannot join the exemption without this
     // failing and a human reading ADR 0045 — or ADR 0044 §7 for
     // provider_eligibility.
     expect([...INSTANCE_LEVEL].sort()).toEqual(
-      ['bootstrap_tokens', 'dashboard_accounts', 'provider_eligibility', ...OAUTH_TABLES].sort(),
+      [
+        'assistant_provider_config',
+        'bootstrap_tokens',
+        'dashboard_accounts',
+        'provider_eligibility',
+        ...OAUTH_TABLES,
+      ].sort(),
     );
   });
 

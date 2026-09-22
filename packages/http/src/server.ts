@@ -70,7 +70,31 @@ export interface HttpDeps extends AuthDeps {
   readonly instance: OpsInstance;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
   readonly assistantAiStatus?:
-    | { readonly provider: string; readonly enabled: boolean; readonly modelConfigured: boolean }
+    | {
+        readonly provider: string;
+        readonly enabled: boolean;
+        readonly modelConfigured: boolean;
+        readonly keyConfigured?: boolean;
+      }
+    | undefined;
+  readonly assistantProviderConfig?:
+    | {
+        status(): {
+          provider: string;
+          enabled: boolean;
+          modelConfigured: boolean;
+          keyConfigured: boolean;
+        };
+        save(
+          input: {
+            provider: 'off' | 'gemini' | 'openrouter' | 'nvidia-nim';
+            model?: string | undefined;
+            apiKey?: string | undefined;
+            enabled: boolean;
+          },
+          now: number,
+        ): void;
+      }
     | undefined;
   readonly assistantDirectories?:
     | ((guildId: string) => Promise<{

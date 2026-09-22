@@ -1758,6 +1758,26 @@ export const providerEligibility = sqliteTable(
   ],
 );
 
+// Instance-level encrypted provider configuration. The API key is write-only; only ciphertext reaches storage.
+export const assistantProviderConfig = sqliteTable(
+  'assistant_provider_config',
+  {
+    configId: text('config_id').primaryKey().default('active'),
+    provider: text('provider').notNull().default('off'),
+    model: text('model'),
+    apiKeyEnc: text('api_key_enc'),
+    enabled: integer('enabled').notNull().default(0),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    check(
+      'assistant_provider_config_provider',
+      sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
+    ),
+    check('assistant_provider_config_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
 // --- Release 3 assistant ----------------------------------------------------
 export const assistantServerCards = sqliteTable(
   'assistant_server_cards',

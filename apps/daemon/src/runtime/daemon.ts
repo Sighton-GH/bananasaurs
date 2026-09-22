@@ -36,6 +36,7 @@ import { createBackupTimer } from './backup-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
+import { createProviderConfigStore } from '../assistant/provider-config.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 
 /**
@@ -82,6 +83,7 @@ export interface Daemon {
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   /** The dashboard API's seam into process-level facts (`HttpDeps.instance`). */
   readonly instance: OpsInstance;
+  readonly providerStore?: ReturnType<typeof createProviderConfigStore> | undefined;
   /** Begins draining the job queues. Does not connect. */
   start(): void;
   stop(): Promise<void>;
@@ -125,6 +127,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   // process-lifetime state, and minting it per guild invited the two to drift
   // (independent audit, round 2).
   const interactionTokenSealer = createInteractionTokenSealer();
+  const providerStore =
+    config.ASSISTANT_PROVIDER_SECRET_KEY === undefined
+      ? undefined
+      : createProviderConfigStore(scopes.instance(), config.ASSISTANT_PROVIDER_SECRET_KEY);
+  const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
 
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();
   for (const guildId of guildIds) {
@@ -142,6 +149,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         logger,
         now,
         interactionTokenSealer,
+        assistantConfig,
       }),
     });
   }

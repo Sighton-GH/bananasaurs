@@ -127,6 +127,7 @@ export interface GuildRuntimeDeps {
    * the same envelope the queue hands back.
    */
   readonly interactionTokenSealer: InteractionTokenSealer;
+  readonly assistantConfig?: (() => Config) | undefined;
 }
 
 /**
@@ -683,7 +684,14 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
-  const assistantService = createAssistantService(scope, instance, config, now);
+  const assistantService = createAssistantService(
+    scope,
+    instance,
+    config,
+    now,
+    {},
+    deps.assistantConfig ?? (() => config),
+  );
   const { interactionTokenSealer } = deps;
 
   const subscribers: Subscriber[] = [

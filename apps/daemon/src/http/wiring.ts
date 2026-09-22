@@ -66,6 +66,7 @@ export interface DashboardApiDeps {
    * would serve a `send_message` that registers and always fails.
    */
   readonly discord: DiscordPort;
+  readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
 }
 
 export interface DashboardApi {
@@ -248,6 +249,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
+    ...(deps.assistantProviderConfig === undefined
+      ? {}
+      : { assistantProviderConfig: deps.assistantProviderConfig }),
     assistantAiStatus: {
       provider: deps.config.AI_PROVIDER,
       enabled: deps.config.AI_PROVIDER !== 'off' && deps.config.AI_MODEL !== undefined,

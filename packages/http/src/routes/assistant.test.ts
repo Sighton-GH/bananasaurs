@@ -162,6 +162,57 @@ describe('assistant routes', () => {
   });
 });
 
+describe('assistant provider configuration', () => {
+  it('refuses key input when the encrypted secret store is not configured', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/provider',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { provider: 'gemini', model: 'x', apiKey: 'must-not-echo', enabled: true },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.body).not.toContain('must-not-echo');
+  });
+  it('returns only keyConfigured after a write', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    let saved = false;
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        status: () => ({
+          provider: 'gemini',
+          enabled: true,
+          modelConfigured: true,
+          keyConfigured: saved,
+        }),
+        save: (input) => {
+          expect(input.apiKey).toBe('must-not-echo');
+          saved = true;
+        },
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/provider',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { provider: 'gemini', model: 'x', apiKey: 'must-not-echo', enabled: true },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      provider: 'gemini',
+      enabled: true,
+      modelConfigured: true,
+      keyConfigured: true,
+    });
+    expect(response.body).not.toContain('must-not-echo');
+  });
+});
+
 describe('assistant memory routes', () => {
   it('round-trips server card and sectioned memory without exposing another guild', async () => {
     grant('config.read');

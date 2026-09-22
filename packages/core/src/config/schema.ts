@@ -164,6 +164,8 @@ export const configSchema = z.object({
   GEMINI_API_KEY: z.string().min(1).optional(),
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   NVIDIA_NIM_API_KEY: z.string().min(1).optional(),
+  /** AES-GCM master secret for write-only provider keys stored through the dashboard. */
+  ASSISTANT_PROVIDER_SECRET_KEY: z.string().min(32).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

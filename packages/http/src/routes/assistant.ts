@@ -27,6 +27,12 @@ const behaviour = z.object({
   resourceIds: z.array(z.string()).max(100),
   enabled: z.boolean(),
 });
+const providerConfig = z.object({
+  provider: z.enum(['off', 'gemini', 'openrouter', 'nvidia-nim']),
+  model: z.string().min(1).max(200).optional(),
+  apiKey: z.string().min(1).max(1000).optional(),
+  enabled: z.boolean(),
+});
 const memory = z.object({
   id: z.string().min(1).max(64),
   section: z.string().min(1).max(100),
@@ -72,13 +78,25 @@ export const registerAssistantRoutes = (
       decisions: assistantRepo.listDecisions(session.scope),
       serverCard: assistantRepo.getServerCard(session.scope),
       memories: assistantRepo.listMemories(session.scope),
-      aiStatus: deps.assistantAiStatus ?? {
-        provider: 'unknown',
-        enabled: false,
-        modelConfigured: false,
-      },
+      aiStatus: deps.assistantProviderConfig?.status() ??
+        deps.assistantAiStatus ?? {
+          provider: 'unknown',
+          enabled: false,
+          modelConfigured: false,
+        },
       ...(directories ?? {}),
     });
+  });
+  app.put('/api/assistant/provider', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    if (deps.assistantProviderConfig === undefined)
+      return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
+    const parsed = providerConfig.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    deps.assistantProviderConfig.save(parsed.data, deps.now());
+    return reply.status(200).send(deps.assistantProviderConfig.status());
   });
   app.put('/api/assistant/server-card', (request, reply) => {
     const session = guard.require(request, reply);

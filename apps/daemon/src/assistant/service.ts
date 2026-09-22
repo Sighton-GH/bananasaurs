@@ -68,21 +68,24 @@ export const createAssistantService = (
   config: Config,
   now: () => number,
   testPorts: AssistantServiceTestPorts = {},
+  liveConfig: () => Config = () => config,
 ): AssistantCommandService => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
-  const rawProvider = testPorts.provider ?? providerFor(config);
-  const provider =
-    rawProvider === undefined || rawProvider instanceof SafeProvider
+  const currentProvider = (): TextProvider | undefined => {
+    const current = liveConfig();
+    const rawProvider = testPorts.provider ?? providerFor(current);
+    return rawProvider === undefined || rawProvider instanceof SafeProvider
       ? rawProvider
-      : new SafeProvider(rawProvider, config.AI_PROFILE_COST_CLASS, {
-          monthlyCapUsdMicros: 0,
-        });
+      : new SafeProvider(rawProvider, current.AI_PROFILE_COST_CLASS, { monthlyCapUsdMicros: 0 });
+  };
   const resourceFetcher = new ReviewedResourceFetcher({ now });
   const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
+      const currentConfig = liveConfig();
+      const provider = currentProvider();
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -206,7 +209,7 @@ export const createAssistantService = (
           content:
             'Search is holding because Discord channel visibility has not been verified for this request. No hidden source was searched.',
         };
-      if (provider === undefined || config.AI_MODEL === undefined)
+      if (provider === undefined || currentConfig.AI_MODEL === undefined)
         return {
           ok: false,
           content:
@@ -317,7 +320,7 @@ export const createAssistantService = (
       });
       const isIt = input.behaviour.surface === 'it-services';
       const response = await provider.generateText({
-        model: config.AI_MODEL,
+        model: currentConfig.AI_MODEL,
         systemInstruction:
           context.systemInstruction +
           (isIt
