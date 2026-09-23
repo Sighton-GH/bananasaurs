@@ -253,6 +253,13 @@
       "when": 1790202367335,
       "tag": "0035_supreme_may_parker",
       "breakpoints": true
+    },
+    {
+      "idx": 36,
+      "version": "6",
+      "when": 1790205101131,
+      "tag": "0036_easy_purifiers",
+      "breakpoints": true
     }
   ]
 }

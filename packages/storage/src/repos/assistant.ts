@@ -11,6 +11,7 @@ import {
   assistantServerCards,
   assistantMemories,
   assistantMemoryPreferences,
+  assistantSettings,
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
@@ -128,6 +129,26 @@ export const setBotTagBehaviour = (
         )
         .run();
     return true;
+  });
+/** ADR 0065: guild-wide assistant settings. Absent fields are unset. */
+export interface AssistantSettings {
+  readonly logChannelId?: string;
+}
+export const getAssistantSettings = (scope: GuildScope): AssistantSettings =>
+  read(scope, (db) => {
+    const row = db.select().from(assistantSettings).where(scope.only(assistantSettings)).get();
+    return row === undefined || row.logChannelId === null ? {} : { logChannelId: row.logChannelId };
+  });
+/** Sets or (with `null`) clears the AI log channel. */
+export const setLogChannel = (scope: GuildScope, channelId: string | null, now: number): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantSettings)
+      .values({ guildId: scope.guildId, logChannelId: channelId, updatedAt: now })
+      .onConflictDoUpdate({
+        target: assistantSettings.guildId,
+        set: { logChannelId: channelId, updatedAt: now },
+      })
+      .run();
   });
 const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => ({
   id: r.resourceId,

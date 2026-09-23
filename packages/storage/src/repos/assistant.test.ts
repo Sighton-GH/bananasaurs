@@ -32,6 +32,8 @@ import {
   forgetMember,
   saveMemoryProposal,
   setBotTagBehaviour,
+  getAssistantSettings,
+  setLogChannel,
 } from './assistant.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
@@ -388,5 +390,29 @@ describe('setBotTagBehaviour (ADR 0063)', () => {
         .prepare('UPDATE assistant_behaviours SET answers_bot_tag = 1 WHERE guild_id = ?')
         .run(G),
     ).toThrow(/UNIQUE constraint failed/);
+  });
+});
+
+describe('assistant settings (ADR 0065)', () => {
+  it('has no log channel until one is set, and clears it with null', () => {
+    const s = t.scopes.forGuild(G);
+    expect(getAssistantSettings(s)).toEqual({});
+    setLogChannel(s, '444444444444444444', 10);
+    expect(getAssistantSettings(s)).toEqual({ logChannelId: '444444444444444444' });
+    setLogChannel(s, '555555555555555555', 11);
+    expect(getAssistantSettings(s)).toEqual({ logChannelId: '555555555555555555' });
+    setLogChannel(s, null, 12);
+    expect(getAssistantSettings(s)).toEqual({});
+  });
+
+  it('keeps each guild its own log channel', () => {
+    const other = parseGuildId('999999999999999999');
+    guildRepo.upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 1 });
+    setLogChannel(t.scopes.forGuild(G), '444444444444444444', 10);
+    expect(getAssistantSettings(t.scopes.forGuild(other))).toEqual({});
+  });
+
+  it('refuses a log channel that is not a snowflake', () => {
+    expect(() => setLogChannel(t.scopes.forGuild(G), 'general', 10)).toThrow();
   });
 });

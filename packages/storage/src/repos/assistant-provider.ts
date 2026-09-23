@@ -8,6 +8,11 @@ export interface AssistantProviderConfigRow {
   readonly apiKeyEnc?: string;
   readonly enabled: boolean;
   readonly costClass: 'free' | 'paid' | 'unknown';
+  /** Tried once when the main model is overloaded. */
+  readonly fallbackModel?: string;
+  /** ADR 0066: the sealed Brave Search API key. */
+  readonly searchApiKeyEnc?: string;
+  readonly searchEnabled?: boolean;
   readonly updatedAt: number;
 }
 export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefined =>
@@ -21,6 +26,9 @@ export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefine
           ...(row.apiKeyEnc === null ? {} : { apiKeyEnc: row.apiKeyEnc }),
           enabled: row.enabled === 1,
           costClass: row.costClass as AssistantProviderConfigRow['costClass'],
+          ...(row.fallbackModel === null ? {} : { fallbackModel: row.fallbackModel }),
+          ...(row.searchApiKeyEnc === null ? {} : { searchApiKeyEnc: row.searchApiKeyEnc }),
+          searchEnabled: row.searchEnabled === 1,
           updatedAt: row.updatedAt,
         };
   });
@@ -34,6 +42,9 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
         apiKeyEnc: input.apiKeyEnc ?? null,
         enabled: input.enabled ? 1 : 0,
         costClass: input.costClass,
+        fallbackModel: input.fallbackModel ?? null,
+        searchApiKeyEnc: input.searchApiKeyEnc ?? null,
+        searchEnabled: input.searchEnabled === true ? 1 : 0,
         updatedAt: input.updatedAt,
       })
       .onConflictDoUpdate({
@@ -44,6 +55,9 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
           apiKeyEnc: input.apiKeyEnc ?? null,
           enabled: input.enabled ? 1 : 0,
           costClass: input.costClass,
+          fallbackModel: input.fallbackModel ?? null,
+          searchApiKeyEnc: input.searchApiKeyEnc ?? null,
+          searchEnabled: input.searchEnabled === true ? 1 : 0,
           updatedAt: input.updatedAt,
         },
       })

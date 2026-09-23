@@ -521,3 +521,54 @@ describe('migration 0035 adds the bot-tag flag and flags the one club assistant 
     raw.close();
   });
 });
+
+describe('migration 0036 adds the fallback model, web search and assistant settings', () => {
+  it('keeps the saved provider row, with search off and no fallback', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const migrationsFolderUpTo = (lastIdx: number): string => {
+      const journal = JSON.parse(
+        fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+      ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-migration-'));
+      fs.mkdirSync(path.join(dir, 'meta'));
+      const entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
+      fs.writeFileSync(
+        path.join(dir, 'meta', '_journal.json'),
+        JSON.stringify({ ...journal, entries }),
+      );
+      for (const entry of entries)
+        fs.copyFileSync(
+          path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+          path.join(dir, `${entry.tag}.sql`),
+        );
+      return dir;
+    };
+    runMigrations(raw, db, migrationsFolderUpTo(35));
+    raw
+      .prepare(
+        `INSERT INTO assistant_provider_config (config_id, provider, model, api_key_enc, enabled, cost_class, updated_at)
+         VALUES ('active', 'gemini', 'gemini-2.5-flash', 'sealed', 1, 'free', 7)`,
+      )
+      .run();
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    expect(raw.prepare('SELECT * FROM assistant_provider_config').all()).toEqual([
+      {
+        config_id: 'active',
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        api_key_enc: 'sealed',
+        enabled: 1,
+        cost_class: 'free',
+        fallback_model: null,
+        search_api_key_enc: null,
+        search_enabled: 0,
+        updated_at: 7,
+      },
+    ]);
+    raw.close();
+  });
+});

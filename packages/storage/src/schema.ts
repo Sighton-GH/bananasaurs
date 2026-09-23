@@ -1775,10 +1775,16 @@ export const assistantProviderConfig = sqliteTable(
     enabled: integer('enabled').notNull().default(0),
     /** The owner's statement of the model's cost (ADR 0061 §2); overrides `AI_PROFILE_COST_CLASS`. */
     costClass: text('cost_class').notNull().default('unknown'),
+    /** Tried once when the main model is overloaded (HTTP 503); same service and key. */
+    fallbackModel: text('fallback_model'),
+    /** ADR 0066: the Brave Search API key, sealed like `api_key_enc`. */
+    searchApiKeyEnc: text('search_api_key_enc'),
+    searchEnabled: integer('search_enabled').notNull().default(0),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check('assistant_provider_config_search_enabled_bool', boolCheck(t.searchEnabled)),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
@@ -1877,6 +1883,21 @@ export const assistantBehaviours = sqliteTable(
       'assistant_behaviours_ticket_channel_snowflake',
       nullableSnowflakeCheck(t.ticketChannelId),
     ),
+  ],
+);
+
+/** ADR 0065: per-guild assistant settings that are not about one behaviour. */
+export const assistantSettings = sqliteTable(
+  'assistant_settings',
+  {
+    guildId: snowflake('guild_id').primaryKey(),
+    logChannelId: snowflake('log_channel_id'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_settings_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_settings_log_channel_snowflake', nullableSnowflakeCheck(t.logChannelId)),
   ],
 );
 
