@@ -1,16 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import type { AssistantBehaviour, AssistantSkill } from '@bananasaurs/core';
-import type { EligibilityRow } from '@bananasaurs/storage';
+import type { eligibilityRepo } from '@bananasaurs/storage';
 import type { AssistantProviderStatus } from '../server.js';
 import { computeAssistantSetup } from './assistant-setup.js';
+
+type EligibilityRow = eligibilityRepo.EligibilityRow;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NOW = Date.UTC(2026, 8, 23);
 const REVIEW_MAX_AGE_MS = 90 * DAY_MS;
 
-const behaviour = (
-  over: Partial<AssistantBehaviour> = {},
-): AssistantBehaviour => ({
+const behaviour = (over: Partial<AssistantBehaviour> = {}): AssistantBehaviour => ({
   id: 'club',
   guildId: '111111111111111111',
   surface: 'bananasaurs',
@@ -89,9 +89,7 @@ describe('computeAssistantSetup', () => {
     ]);
     expect(setup.steps.every((s) => s.state === 'done')).toBe(true);
     expect(setup.answering).toBe(true);
-    expect(stepById(setup, 'connect').detail).toBe(
-      'Connected to Gemini using gemini-2.0-flash.',
-    );
+    expect(stepById(setup, 'connect').detail).toBe('Connected to Gemini using gemini-2.0-flash.');
     expect(stepById(setup, 'terms').detail).toBe(
       "Terms checked on 2026-09-23: it doesn't train on your data.",
     );

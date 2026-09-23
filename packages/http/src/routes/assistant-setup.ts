@@ -1,6 +1,8 @@
 import type { AssistantBehaviour, AssistantSkill } from '@bananasaurs/core';
-import type { EligibilityRow } from '@bananasaurs/storage';
+import type { eligibilityRepo } from '@bananasaurs/storage';
 import type { AssistantProviderStatus } from '../server.js';
+
+type EligibilityRow = eligibilityRepo.EligibilityRow;
 
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
@@ -198,9 +200,7 @@ const onStep = (
   status: AssistantProviderStatus,
   behaviours: readonly AssistantBehaviour[],
 ): SetupStep => {
-  const usable = behaviours.some(
-    (item) => item.enabled && item.callerRoleIds.length > 0,
-  );
+  const usable = behaviours.some((item) => item.enabled && item.callerRoleIds.length > 0);
   if (status.enabled && usable) {
     return { id: 'on', state: 'done', detail: 'The assistant is on.' };
   }

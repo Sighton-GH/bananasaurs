@@ -1111,7 +1111,7 @@ describe('provider terms record (ADR 0061 §1)', () => {
       payload: { username: 'operator', password: PASSWORD, guildId: GUILD },
     });
     const cookie = cookieFrom(login.headers['set-cookie']);
-    const csrf: string = login.json().csrfToken;
+    const csrf: string = login.json<{ csrfToken: string }>().csrfToken;
     const response = await app.inject({
       method: 'PUT',
       url: '/api/providers/gemini/terms',
@@ -1152,7 +1152,8 @@ describe('provider terms record (ADR 0061 §1)', () => {
       payload: { ...claim(), evidenceClause: 'short' },
     });
     expect(shortClause.statusCode).toBe(400);
-    const { productionUseAllowed: _dropped, ...missing } = claim();
+    const { productionUseAllowed, ...missing } = claim();
+    expect(productionUseAllowed).toBe(true);
     const missingField = await app.inject({
       method: 'PUT',
       url: '/api/providers/gemini/terms',

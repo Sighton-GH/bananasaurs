@@ -1046,7 +1046,11 @@ export const registerOpsWriteRoutes = (
   const providerTermsBodySchema = z.object({
     trainsOnInput: z.enum(['no', 'yes', 'unknown']),
     evidenceClause: z.string().trim().min(10).max(2000),
-    evidenceUrl: z.string().url().max(500).refine((u) => u.startsWith('https://')),
+    evidenceUrl: z
+      .string()
+      .url()
+      .max(500)
+      .refine((u) => u.startsWith('https://')),
     productionUseAllowed: z.boolean(),
   });
   const TERMS_PROVIDERS = new Set(['gemini', 'openrouter', 'nvidia-nim']);
@@ -1054,8 +1058,7 @@ export const registerOpsWriteRoutes = (
   app.put<{ Params: { provider: string } }>('/api/providers/:provider/terms', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
-    if (!isInstanceOwner(deps, session))
-      return reply.status(403).send({ error: 'owner-only' });
+    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
     const provider = request.params.provider;
     if (!TERMS_PROVIDERS.has(provider))
       return reply.status(404).send({ error: 'no-such-provider' });
