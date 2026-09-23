@@ -1853,11 +1853,18 @@ export const assistantBehaviours = sqliteTable(
     ticketChannelId: snowflake('ticket_channel_id'),
     reviewerRoleIdsJson: text('reviewer_role_ids_json').notNull().default('[]'),
     resourceIdsJson: text('resource_ids_json').notNull().default('[]'),
+    // ADR 0063: the one behaviour that answers a tag of the bot user itself.
+    answersBotTag: integer('answers_bot_tag').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.behaviourId] }),
+    // At most one per guild, enforced here rather than by caller discipline.
+    uniqueIndex('assistant_behaviours_one_bot_tag')
+      .on(t.guildId)
+      .where(sql`${t.answersBotTag} = 1`),
+    check('assistant_behaviours_answers_bot_tag_bool', boolCheck(t.answersBotTag)),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check(
       'assistant_behaviours_surface',

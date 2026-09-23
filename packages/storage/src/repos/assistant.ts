@@ -35,6 +35,7 @@ const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehav
   reviewerRoleIds: array(r.reviewerRoleIdsJson),
   resourceIds: array(r.resourceIdsJson),
   enabled: r.enabled === 1,
+  answersBotTag: r.answersBotTag === 1,
 });
 export const listBehaviours = (scope: GuildScope): readonly AssistantBehaviour[] =>
   read(scope, (db) =>
@@ -67,6 +68,9 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         ticketChannelId: input.ticketChannelId ?? null,
         reviewerRoleIdsJson: JSON.stringify(input.reviewerRoleIds),
         resourceIdsJson: JSON.stringify(input.resourceIds),
+        // Only setBotTagBehaviour changes this flag (ADR 0063): a new
+        // behaviour starts unflagged and a re-save leaves it as it was.
+        answersBotTag: 0,
         createdAt: now,
         updatedAt: now,
       })
@@ -88,6 +92,42 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         },
       })
       .run();
+  });
+/**
+ * Makes `behaviourId` the one behaviour that answers a tag of the bot user,
+ * clearing the flag from every other behaviour in the guild in the same
+ * write, so the partial unique index never sees two. `null` clears it
+ * everywhere. Returns false, changing nothing, when `behaviourId` is not a
+ * behaviour of this guild (ADR 0063).
+ */
+export const setBotTagBehaviour = (
+  scope: GuildScope,
+  behaviourId: string | null,
+  now: number,
+): boolean =>
+  write(scope, ({ db }) => {
+    if (behaviourId !== null) {
+      const exists = db
+        .select({ id: assistantBehaviours.behaviourId })
+        .from(assistantBehaviours)
+        .where(
+          and(scope.only(assistantBehaviours), eq(assistantBehaviours.behaviourId, behaviourId)),
+        )
+        .get();
+      if (exists === undefined) return false;
+    }
+    db.update(assistantBehaviours)
+      .set({ answersBotTag: 0, updatedAt: now })
+      .where(and(scope.only(assistantBehaviours), eq(assistantBehaviours.answersBotTag, 1)))
+      .run();
+    if (behaviourId !== null)
+      db.update(assistantBehaviours)
+        .set({ answersBotTag: 1, updatedAt: now })
+        .where(
+          and(scope.only(assistantBehaviours), eq(assistantBehaviours.behaviourId, behaviourId)),
+        )
+        .run();
+    return true;
   });
 const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => ({
   id: r.resourceId,
