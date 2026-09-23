@@ -286,10 +286,23 @@ function ServiceForm({
             <p className="mt-1 text-xs text-ink-muted">Only the server owner can change this.</p>
           )}
         </fieldset>
-        <div>
-          <Button variant="primary" type="submit" busy={busy}>
+        <div className="flex flex-wrap items-center gap-3">
+          <Button
+            variant="primary"
+            type="submit"
+            busy={busy}
+            disabled={secretMissing}
+            title={
+              secretMissing === true
+                ? 'Saving is unavailable until the key store is configured on the host'
+                : undefined
+            }
+          >
             Save AI setup
           </Button>
+          {secretMissing === true && connectDetail !== undefined && (
+            <span className="text-sm text-ink-muted">{connectDetail}</span>
+          )}
         </div>
       </form>
     </Card>

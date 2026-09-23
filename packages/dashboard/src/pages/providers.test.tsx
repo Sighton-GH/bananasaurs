@@ -55,6 +55,30 @@ const stubPage = (assistant: unknown, warnings: unknown = { warnings: [] }) =>
     { url: '/api/providers/eligibility', body: warnings },
   ]);
 
+const missingSecretAssistant = () =>
+  assistantBody({
+    aiStatus: {
+      provider: 'gemini',
+      enabled: false,
+      modelConfigured: false,
+      keyConfigured: false,
+      keyReadable: false,
+      costClass: 'unknown',
+      secretSource: 'missing',
+    },
+    setup: {
+      answering: false,
+      steps: [
+        { id: 'connect', state: 'blocked', detail: CONNECT_DETAIL },
+        { id: 'terms', state: 'todo', detail: TERMS_DETAIL },
+        { id: 'cost', state: 'todo', detail: COST_DETAIL },
+        { id: 'who', state: 'todo', detail: 'Choose who may use it.' },
+        { id: 'skills', state: 'todo', detail: 'Choose what it can do.' },
+        { id: 'on', state: 'todo', detail: 'Switch it on.' },
+      ],
+    },
+  });
+
 const inputOf = (element: HTMLElement): HTMLInputElement => {
   if (!(element instanceof HTMLInputElement)) throw new Error('expected an <input>');
   return element;
@@ -140,36 +164,25 @@ describe('ProvidersPage', () => {
   });
 
   it('disables the key input and shows the connect detail when no secret store exists', async () => {
-    stubPage(
-      assistantBody({
-        aiStatus: {
-          provider: 'gemini',
-          enabled: false,
-          modelConfigured: false,
-          keyConfigured: false,
-          keyReadable: false,
-          costClass: 'unknown',
-          secretSource: 'missing',
-        },
-        setup: {
-          answering: false,
-          steps: [
-            { id: 'connect', state: 'blocked', detail: CONNECT_DETAIL },
-            { id: 'terms', state: 'todo', detail: TERMS_DETAIL },
-            { id: 'cost', state: 'todo', detail: COST_DETAIL },
-            { id: 'who', state: 'todo', detail: 'Choose who may use it.' },
-            { id: 'skills', state: 'todo', detail: 'Choose what it can do.' },
-            { id: 'on', state: 'todo', detail: 'Switch it on.' },
-          ],
-        },
-      }),
-    );
+    stubPage(missingSecretAssistant());
     renderWithSession(<ProvidersPage />);
     const key = inputOf(await screen.findByLabelText('API key'));
     expect(key.disabled).toBe(true);
     expect(key.getAttribute('placeholder')).toBeNull();
     const hintId = key.getAttribute('aria-describedby') ?? '';
     expect(document.getElementById(hintId)?.textContent).toBe(CONNECT_DETAIL);
+  });
+
+  it('disables saving and explains why when no secret store exists', async () => {
+    const mock = stubPage(missingSecretAssistant());
+    renderWithSession(<ProvidersPage />);
+    const save = await screen.findByRole('button', { name: 'Save AI setup' });
+    expect(save instanceof HTMLButtonElement && save.disabled).toBe(true);
+    expect(save.closest('div')?.textContent).toContain(CONNECT_DETAIL);
+    await act(async () => {
+      fireEvent.click(save);
+    });
+    expect(mock.mock.calls.filter((c) => c[1]?.method === 'PUT')).toHaveLength(0);
   });
 
   it('warns when the saved key cannot be read on this host', async () => {
