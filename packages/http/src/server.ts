@@ -59,6 +59,10 @@ export interface AssistantProviderStatus {
   /** Where the key-encryption secret came from; `missing` means keys cannot be saved here. */
   readonly secretSource: 'env' | 'file' | 'missing';
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
+  /** Tried once when the main model is overloaded. */
+  readonly fallbackModel?: string;
+  /** ADR 0066. Absent while no Brave key is saved and search is off. */
+  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
 
 export interface HttpDeps extends AuthDeps {
@@ -100,6 +104,9 @@ export interface HttpDeps extends AuthDeps {
             apiKey?: string | undefined;
             enabled: boolean;
             costClass?: 'free' | 'paid' | 'unknown' | undefined;
+            fallbackModel?: string | null | undefined;
+            searchApiKey?: string | undefined;
+            searchEnabled?: boolean | undefined;
           },
           now: number,
         ): void;

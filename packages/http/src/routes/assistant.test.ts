@@ -636,3 +636,151 @@ describe('PUT /api/assistant/bot-tag authorisation', () => {
     expect(response.statusCode).toBe(403);
   });
 });
+
+describe('provider fallback model and web search (ADR 0066)', () => {
+  const OPERATOR = 'acct_fedcba9876543210fedcba9876543211';
+  type SaveInput = Parameters<NonNullable<HttpDeps['assistantProviderConfig']>['save']>[0];
+  let saved: SaveInput[];
+  const restart = async () => {
+    saved = [];
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        status: () => ({
+          provider: 'gemini',
+          enabled: true,
+          modelConfigured: true,
+          keyConfigured: true,
+          keyReadable: true,
+          costClass: 'free',
+          secretSource: 'file',
+          ...(saved.at(-1)?.fallbackModel ? { fallbackModel: saved.at(-1)!.fallbackModel! } : {}),
+          ...(saved.at(-1)?.searchEnabled !== undefined
+            ? { webSearch: { keyConfigured: true, enabled: saved.at(-1)!.searchEnabled! } }
+            : {}),
+        }),
+        save: (input) => {
+          saved.push(input);
+        },
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+  const putProvider = (cookie: string, csrf: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/assistant/provider',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { provider: 'gemini', enabled: true, ...payload },
+    });
+
+  it('lets the owner save a fallback model and a Brave key, and never audits the key', async () => {
+    grant('config.write');
+    await restart();
+    const { cookie, csrf } = await signIn();
+    const response = await putProvider(cookie, csrf, {
+      fallbackModel: 'gemini-2.5-flash-lite',
+      searchApiKey: 'brave-raw-key',
+      searchEnabled: true,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(saved[0]).toMatchObject({
+      fallbackModel: 'gemini-2.5-flash-lite',
+      searchApiKey: 'brave-raw-key',
+      searchEnabled: true,
+    });
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_provider.saved');
+    expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
+      fallbackModel: 'gemini-2.5-flash-lite',
+      searchEnabled: true,
+      searchKeyReplaced: true,
+    });
+    expect(JSON.stringify(row)).not.toContain('brave-raw-key');
+    expect(JSON.stringify(response.json())).not.toContain('brave-raw-key');
+  });
+
+  it('clears the fallback model with null and rejects a bad value', async () => {
+    grant('config.write');
+    await restart();
+    const { cookie, csrf } = await signIn();
+    expect((await putProvider(cookie, csrf, { fallbackModel: null })).statusCode).toBe(200);
+    expect(saved[0]?.fallbackModel).toBeNull();
+    expect((await putProvider(cookie, csrf, { fallbackModel: '' })).statusCode).toBe(400);
+  });
+
+  it('keeps turning on web search and replacing its key owner-only', async () => {
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: OPERATOR,
+      username: 'operator2',
+      passwordHash: await hashPassword(PASSWORD),
+      isOwner: false,
+      now: clock,
+    });
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), OPERATOR);
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
+      accountId: OPERATOR,
+      capability: 'config.write',
+      grantedBy: 'test',
+      now: clock,
+    });
+    await restart();
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/login',
+      payload: { username: 'operator2', password: PASSWORD, guildId: GUILD },
+    });
+    const cookie = cookieFrom(login.headers['set-cookie']);
+    const csrf = login.json<{ csrfToken: string }>().csrfToken;
+    const on = await putProvider(cookie, csrf, { searchEnabled: true });
+    expect(on.statusCode).toBe(403);
+    expect(on.json()).toEqual({ error: 'owner-only', field: 'searchEnabled' });
+    const key = await putProvider(cookie, csrf, { searchApiKey: 'x'.repeat(20) });
+    expect(key.json()).toEqual({ error: 'owner-only', field: 'searchApiKey' });
+    expect(saved).toHaveLength(0);
+  });
+});
+
+describe('PUT /api/assistant/log-channel (ADR 0065)', () => {
+  const LOG = '444444444444444444';
+  const putLog = (cookie: string, csrf: string, payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/assistant/log-channel',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+
+  it('sets and clears the log channel, audited, and GET reports it', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const set = await putLog(cookie, csrf, { channelId: LOG });
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toEqual({ ok: true, channelId: LOG });
+    const read = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(read.json<{ settings: unknown }>().settings).toEqual({ logChannelId: LOG });
+    expect((await putLog(cookie, csrf, { channelId: null })).statusCode).toBe(200);
+    expect(assistantRepo.getAssistantSettings(t.scopes.forGuild(GUILD))).toEqual({});
+    const rows = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .filter((r) => r.action === 'assistant_log_channel.set')
+      .map((r) => [JSON.parse(r.before ?? 'null'), JSON.parse(r.after ?? 'null')] as const);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        [{ channelId: null }, { channelId: LOG }],
+        [{ channelId: LOG }, { channelId: null }],
+      ]),
+    );
+  });
+
+  it('requires config.write and a snowflake', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    expect((await putLog(cookie, csrf, { channelId: LOG })).statusCode).toBe(403);
+    grant('config.write');
+    expect((await putLog(cookie, csrf, { channelId: 'general' })).statusCode).toBe(400);
+  });
+});
