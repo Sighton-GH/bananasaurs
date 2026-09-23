@@ -159,6 +159,55 @@ describe('SetupTracker', () => {
     expect(reload).toHaveBeenCalled();
   });
 
+  it('with a behaviour missing caller roles, Save who can ask writes that behaviour', async () => {
+    const mock = stubFetch([
+      { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
+    ]);
+    const { reload } = renderTracker(
+      baseData({
+        behaviours: [
+          {
+            id: 'club',
+            guildId: 'g1',
+            surface: 'direct-command',
+            name: 'Club assistant',
+            systemPrompt: 'Keep it brief.',
+            promptVersion: 3,
+            allowedSkillIds: ['s-old'],
+            resourceIds: ['res-1'],
+            reviewerRoleIds: [],
+            enabled: false,
+            callerRoleIds: [],
+          },
+        ],
+      }),
+    );
+    const list = await screen.findByRole('list', { name: 'Setup steps' });
+    const whoRow = within(list)
+      .getAllByRole('listitem')
+      .find((li) => within(li).queryByText('Choose who can ask') !== null)!;
+    fireEvent.click(within(whoRow).getByRole('checkbox', { name: 'Helper' }));
+    fireEvent.click(
+      within(whoRow).getByRole('button', { name: 'Save who can ask Club assistant' }),
+    );
+    await screen.findByText('Saved who can ask');
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === '/api/assistant/behaviours/club' && c[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({
+      id: 'club',
+      surface: 'direct-command',
+      name: 'Club assistant',
+      systemPrompt: 'Keep it brief.',
+      promptVersion: 3,
+      allowedSkillIds: ['s-old'],
+      resourceIds: ['res-1'],
+      enabled: false,
+      callerRoleIds: ['role-helper'],
+    });
+    expect(reload).toHaveBeenCalled();
+  });
+
   it('grants the everyday skills with the union of caller roles and skill ids', async () => {
     const behaviour = {
       id: 'club',
