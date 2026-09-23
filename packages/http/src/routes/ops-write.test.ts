@@ -8,6 +8,7 @@ import {
   accountRepo,
   authzRepo,
   effectRepo,
+  eligibilityRepo,
   guildRepo,
   loggingRepo,
   oauthRepo,
@@ -1058,5 +1059,107 @@ describe('archive categories, threads and send-allowlist categories (threads mer
     });
     expect(repeat.json()).toEqual({ ok: true, outcome: 'not-allowed' });
     expect(effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 20 }).length).toBe(before);
+  });
+});
+
+describe('provider terms record (ADR 0061 §1)', () => {
+  const claim = () => ({
+    trainsOnInput: 'no' as const,
+    evidenceClause: 'This service does not train on customer data.',
+    evidenceUrl: 'https://example.com/terms',
+    productionUseAllowed: true,
+  });
+
+  it('lets the owner record a no row with audit', async () => {
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/providers/gemini/terms',
+      headers: { cookie, [CSRF]: csrf },
+      payload: claim(),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ provider: 'gemini', trainsOnInput: 'no' });
+    expect(eligibilityRepo.findEligibility(t.scopes.instance(), 'gemini')).toMatchObject({
+      provider: 'gemini',
+      trainsOnInput: 'no',
+      evidenceClause: 'This service does not train on customer data.',
+    });
+    const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 5 });
+    expect(rows.map((row) => row.action)).toContain('provider.terms_recorded');
+  });
+
+  it('refuses a non-owner with config.write and stores nothing', async () => {
+    const OPERATOR = 'acct_fedcba9876543210fedcba9876543210';
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: OPERATOR,
+      username: 'operator',
+      passwordHash: await hashPassword(PASSWORD),
+      isOwner: false,
+      now: clock,
+    });
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), OPERATOR);
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
+      accountId: OPERATOR,
+      capability: 'config.write',
+      grantedBy: 'test',
+      now: clock,
+    });
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/login',
+      payload: { username: 'operator', password: PASSWORD, guildId: GUILD },
+    });
+    const cookie = cookieFrom(login.headers['set-cookie']);
+    const csrf: string = login.json().csrfToken;
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/providers/gemini/terms',
+      headers: { cookie, [CSRF]: csrf },
+      payload: claim(),
+    });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toEqual({ error: 'owner-only' });
+    expect(eligibilityRepo.findEligibility(t.scopes.instance(), 'gemini')).toBeUndefined();
+  });
+
+  it('answers 404 for an unknown provider', async () => {
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/providers/chatgpt/terms',
+      headers: { cookie, [CSRF]: csrf },
+      payload: claim(),
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'no-such-provider' });
+  });
+
+  it('answers 400 for an http url, a short clause, or a missing field', async () => {
+    const { cookie, csrf } = await signIn();
+    const headers = { cookie, [CSRF]: csrf };
+    const httpUrl = await app.inject({
+      method: 'PUT',
+      url: '/api/providers/gemini/terms',
+      headers,
+      payload: { ...claim(), evidenceUrl: 'http://example.com/terms' },
+    });
+    expect(httpUrl.statusCode).toBe(400);
+    const shortClause = await app.inject({
+      method: 'PUT',
+      url: '/api/providers/gemini/terms',
+      headers,
+      payload: { ...claim(), evidenceClause: 'short' },
+    });
+    expect(shortClause.statusCode).toBe(400);
+    const { productionUseAllowed: _dropped, ...missing } = claim();
+    const missingField = await app.inject({
+      method: 'PUT',
+      url: '/api/providers/gemini/terms',
+      headers,
+      payload: missing,
+    });
+    expect(missingField.statusCode).toBe(400);
+    expect(eligibilityRepo.findEligibility(t.scopes.instance(), 'gemini')).toBeUndefined();
   });
 });
