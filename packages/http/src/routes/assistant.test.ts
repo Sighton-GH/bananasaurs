@@ -367,6 +367,48 @@ describe('assistant setup checklist', () => {
     expect(body.providerTerms).toBeNull();
     expect(body.viewerIsOwner).toBe(true);
   });
+
+  it('names the roles in the who step from the roles directory', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    expect((await put(cookie, csrf, body({ callerRoleIds: [ROLE_A, ROLE_B] }))).statusCode).toBe(
+      200,
+    );
+    deps = {
+      ...deps,
+      assistantDirectories: () =>
+        Promise.resolve({
+          roles: [
+            { id: ROLE_A, name: 'Member', position: 10 },
+            { id: ROLE_B, name: 'Helper', position: 5 },
+          ],
+          members: [],
+          channels: [],
+        }),
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const result = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(result.statusCode).toBe(200);
+    const parsed = result.json() as { setup: { steps: { id: string; detail: string }[] } };
+    expect(parsed.setup.steps.find((step) => step.id === 'who')?.detail).toBe(
+      'Member and Helper can ask.',
+    );
+  });
+
+  it('falls back to counts when the roles directory is absent', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    expect((await put(cookie, csrf, body({ callerRoleIds: [ROLE_A, ROLE_B] }))).statusCode).toBe(
+      200,
+    );
+    const result = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(result.statusCode).toBe(200);
+    const parsed = result.json() as { setup: { steps: { id: string; detail: string }[] } };
+    expect(parsed.setup.steps.find((step) => step.id === 'who')?.detail).toBe('2 roles can ask.');
+  });
 });
 
 describe('provider cost statement is owner-only', () => {

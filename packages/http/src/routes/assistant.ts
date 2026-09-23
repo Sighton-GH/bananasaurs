@@ -86,6 +86,10 @@ export const registerAssistantRoutes = (
       };
     const providerTerms =
       eligibilityRepo.findEligibility(deps.scopes.instance(), aiStatus.provider) ?? null;
+    const roleNames =
+      directories?.roles === undefined
+        ? undefined
+        : new Map(directories.roles.map((role) => [role.id, role.name] as const));
     return reply.status(200).send({
       behaviours: behaviours.map((item) => ({
         ...item,
@@ -112,6 +116,7 @@ export const registerAssistantRoutes = (
         skills: CLUB_ASSISTANT_SKILLS,
         now: deps.now(),
         reviewMaxAgeMs: eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS,
+        ...(roleNames === undefined ? {} : { roleNames }),
       }),
       providerTerms,
       viewerIsOwner: isInstanceOwner(deps, session),

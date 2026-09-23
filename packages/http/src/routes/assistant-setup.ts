@@ -149,16 +149,38 @@ const costStep = (status: AssistantProviderStatus): SetupStep => {
   return { id: 'cost', state: 'todo', detail: 'Confirm the model is free to use.' };
 };
 
-const whoStep = (behaviours: readonly AssistantBehaviour[]): SetupStep => {
+const whoStep = (
+  behaviours: readonly AssistantBehaviour[],
+  roleNames?: ReadonlyMap<string, string>,
+): SetupStep => {
   const roles = new Set<string>();
   for (const item of behaviours) {
     for (const roleId of item.callerRoleIds) roles.add(roleId);
   }
   if (roles.size > 0) {
+    const ids = [...roles];
+    const names =
+      roleNames === undefined
+        ? undefined
+        : ids.map((id) => roleNames.get(id));
+    if (names !== undefined && names.every((name) => name !== undefined)) {
+      const known = names as string[];
+      if (known.length === 1) {
+        return { id: 'who', state: 'done', detail: `${known[0]} can ask.` };
+      }
+      if (known.length === 2) {
+        return { id: 'who', state: 'done', detail: `${known[0]} and ${known[1]} can ask.` };
+      }
+      return {
+        id: 'who',
+        state: 'done',
+        detail: `${known.slice(0, -1).join(', ')} and ${known[known.length - 1]} can ask.`,
+      };
+    }
     return {
       id: 'who',
       state: 'done',
-      detail: `Members with ${String(roles.size)} role(s) can ask.`,
+      detail: roles.size === 1 ? '1 role can ask.' : `${String(roles.size)} roles can ask.`,
     };
   }
   return {
@@ -187,7 +209,7 @@ const skillsStep = (
     return {
       id: 'skills',
       state: 'done',
-      detail: `${String(ready)} skill(s) ready to use.`,
+      detail: ready === 1 ? '1 skill is ready to use.' : `${String(ready)} skills are ready to use.`,
     };
   }
   return {
@@ -223,12 +245,13 @@ export const computeAssistantSetup = (input: {
   skills: readonly AssistantSkill[];
   now: number;
   reviewMaxAgeMs: number;
+  roleNames?: ReadonlyMap<string, string>;
 }): AssistantSetup => {
   const steps: readonly SetupStep[] = [
     connectStep(input.status),
     termsStep(input.status, input.terms, input.now, input.reviewMaxAgeMs),
     costStep(input.status),
-    whoStep(input.behaviours),
+    whoStep(input.behaviours, input.roleNames),
     skillsStep(input.behaviours, input.grants, input.skills),
     onStep(input.status, input.behaviours),
   ];

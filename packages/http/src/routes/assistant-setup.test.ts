@@ -94,8 +94,8 @@ describe('computeAssistantSetup', () => {
       "Terms checked on 2026-09-23: it doesn't train on your data.",
     );
     expect(stepById(setup, 'cost').detail).toBe('Marked as free to use.');
-    expect(stepById(setup, 'who').detail).toBe('Members with 1 role(s) can ask.');
-    expect(stepById(setup, 'skills').detail).toBe('1 skill(s) ready to use.');
+    expect(stepById(setup, 'who').detail).toBe('1 role can ask.');
+    expect(stepById(setup, 'skills').detail).toBe('1 skill is ready to use.');
     expect(stepById(setup, 'on').detail).toBe('The assistant is on.');
   });
 
@@ -328,8 +328,61 @@ describe('computeAssistantSetup', () => {
       expect(stepById(setup, 'who')).toEqual({
         id: 'who',
         state: 'done',
-        detail: 'Members with 2 role(s) can ask.',
+        detail: '2 roles can ask.',
       });
+    });
+
+    it('names one role', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [behaviour({ callerRoleIds: ['222222222222222222'] })],
+        roleNames: new Map([['222222222222222222', 'Member']]),
+      });
+      expect(stepById(setup, 'who').detail).toBe('Member can ask.');
+    });
+
+    it('names two roles', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [
+          behaviour({ callerRoleIds: ['222222222222222222', '333333333333333333'] }),
+        ],
+        roleNames: new Map([
+          ['222222222222222222', 'Member'],
+          ['333333333333333333', 'Helper'],
+        ]),
+      });
+      expect(stepById(setup, 'who').detail).toBe('Member and Helper can ask.');
+    });
+
+    it('names three roles', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [
+          behaviour({
+            callerRoleIds: [
+              '222222222222222222',
+              '333333333333333333',
+              '444444444444444444',
+            ],
+          }),
+        ],
+        roleNames: new Map([
+          ['222222222222222222', 'Member'],
+          ['333333333333333333', 'Helper'],
+          ['444444444444444444', 'Mod'],
+        ]),
+      });
+      expect(stepById(setup, 'who').detail).toBe('Member, Helper and Mod can ask.');
+    });
+
+    it('falls back to counts for unknown ids', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        behaviours: [behaviour({ callerRoleIds: ['222222222222222222'] })],
+        roleNames: new Map([['999999999999999999', 'Someone']]),
+      });
+      expect(stepById(setup, 'who').detail).toBe('1 role can ask.');
     });
 
     it('is todo when nobody may ask', () => {
@@ -356,7 +409,7 @@ describe('computeAssistantSetup', () => {
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',
         state: 'done',
-        detail: '2 skill(s) ready to use.',
+        detail: '2 skills are ready to use.',
       });
     });
 
