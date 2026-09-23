@@ -727,6 +727,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // expensive invoke, off the serial dispatch chain — B2).
     createAssistantCommandSubscriber({
       guildId,
+      botUserId,
       service: assistantService,
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
       respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),

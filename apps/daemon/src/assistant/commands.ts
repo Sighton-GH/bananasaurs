@@ -65,6 +65,8 @@ export interface AssistantCommandService {
 
 export interface AssistantCommandDeps {
   readonly guildId: string;
+  /** The bot's own user id: a tag of it routes to the behaviour flagged `answersBotTag` (ADR 0063). */
+  readonly botUserId: string;
   readonly service: AssistantCommandService;
   readonly defer: (
     ref: { interactionId: string; token: string },
@@ -226,7 +228,7 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
 
 async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): Promise<void> {
   const behaviours = await deps.service.behavioursForGuild(event.guildId);
-  const route = routeAssistantMention(event, behaviours);
+  const route = routeAssistantMention(event, behaviours, deps.botUserId);
   if (route.kind === 'not-addressed') return;
   if (route.kind === 'ambiguous') {
     // Hard rule 6: this subscriber holds no idempotency key of its own, and

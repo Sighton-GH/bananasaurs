@@ -89,6 +89,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
     queued,
     flush,
     subscriber: createAssistantCommandSubscriber({
+      botUserId: '901234567890123456',
       guildId,
       service,
       defer,
@@ -198,6 +199,37 @@ describe('assistant command subscriber', () => {
     );
   });
 
+  it('routes a tag of the bot user through the queue to the flagged behaviour', async () => {
+    const h = harness([direct, { ...club, answersBotTag: true }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012346',
+      authorId: userId,
+      authorIsBot: false,
+      content: '<@901234567890123456> when is the meeting?',
+      editedTimestampMs: undefined,
+      mentionedUserIds: ['901234567890123456'],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toEqual([
+      expect.objectContaining({
+        behaviourId: 'club',
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'mention',
+      }),
+    ]);
+  });
+
   it('does not expose removed privacy commands', async () => {
     const h = harness();
     await h.subscriber.handle(slash('mydata', []));
@@ -263,6 +295,7 @@ describe('assistant command subscriber', () => {
 
   it('swallows an enqueue failure without posting or throwing', async () => {
     const subscriber = createAssistantCommandSubscriber({
+      botUserId: '901234567890123456',
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [club]), invoke: vi.fn() },
       defer: vi.fn(async () => undefined),
