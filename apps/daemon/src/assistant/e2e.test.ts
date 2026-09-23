@@ -841,7 +841,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
   });
 
   it('fetches every resource up front for a provider without tools', async () => {
-    const fetchResource = vi.fn(async () => ({
+    const fetchResource = vi.fn(async (_url: string) => ({
       ok: false as const,
       code: 'http-status' as const,
       message: 'x',
@@ -854,7 +854,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       },
       fetchResource,
     ).invoke(invocation('ask', { question: 'q' }));
-    expect(fetchResource.mock.calls.map((c) => c[0] as string)).toEqual([
+    expect(fetchResource.mock.calls.map((c) => c[0])).toEqual([
       'https://example.com/handbook',
       'https://example.com/rules',
     ]);

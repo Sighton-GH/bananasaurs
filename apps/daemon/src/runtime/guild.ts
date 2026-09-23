@@ -78,6 +78,7 @@ import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
+import { memberChannels } from '../assistant/member-channels.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -692,6 +693,25 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     {},
     deps.assistantConfig ?? (() => config),
     logger,
+    {
+      memberChannels: (userId) => {
+        const guild = client.guilds.cache.get(guildId);
+        return memberChannels(
+          guild === undefined
+            ? undefined
+            : {
+                channels: guild.channels,
+                members: {
+                  fetch: async (id) => {
+                    const member = await guild.members.fetch(id);
+                    return { permissionsIn: (channel) => member.permissionsIn(channel.id) };
+                  },
+                },
+              },
+          userId,
+        );
+      },
+    },
   );
   const { interactionTokenSealer } = deps;
 
