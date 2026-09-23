@@ -205,3 +205,4 @@ export const decisionSaveUrl = (id: string) =>
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;
+export const STARTER_URL = '/api/assistant/skill-grants/starter';
