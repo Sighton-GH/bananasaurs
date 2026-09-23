@@ -3,6 +3,7 @@ import {
   assistantInvokePayload,
   JOB_KINDS,
   ProviderError,
+  RetryAfterError,
   safeLogFields,
   type AssistantInvokePayload,
   type JobHandler,
@@ -70,12 +71,16 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
 
 /**
  * A retryable provider failure (429, 5xx, timeout) is what the job table is
- * for: rethrow so the worker backs off and tries again. Bounded below the
- * store's default `maxAttempts` (5) so the member always gets an answer,
- * and inside Discord's 15-minute interaction-token window (backoff is
- * 1 s, 2 s, 4 s...). Non-retryable failures answer at once.
+ * for: rethrow so the job runs again. An overloaded model (Gemini's HTTP 503)
+ * answers the same way two seconds later, so the retries are spaced out
+ * rather than using the store's 1 s, 2 s, 4 s backoff: 10 s, 30 s, 90 s. That
+ * is bounded below the store's default `maxAttempts` (5), so the member always
+ * gets an answer, and ends well inside Discord's 15-minute interaction-token
+ * window. Non-retryable failures answer at once.
  */
-const PROVIDER_RETRY_CEILING = 3;
+const PROVIDER_RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
+const PROVIDER_RETRY_CEILING = PROVIDER_RETRY_DELAYS_MS.length + 1;
+const BUSY_REPLY = 'The AI service is busy right now. Try again in a minute. No action was taken.';
 
 export const assistantInvokeHandler = (deps: {
   guildId: string;
@@ -166,7 +171,10 @@ export const assistantInvokeHandler = (deps: {
             }),
             'assistant invocation hit a retryable provider error; job will retry',
           );
-          throw err;
+          throw new RetryAfterError(
+            err.message,
+            PROVIDER_RETRY_DELAYS_MS[context.attempts - 1] ?? PROVIDER_RETRY_DELAYS_MS.at(-1)!,
+          );
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
@@ -174,7 +182,11 @@ export const assistantInvokeHandler = (deps: {
           safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
           'assistant invocation failed before a response was produced',
         );
-        await answer('I could not complete that request. No action was taken.');
+        await answer(
+          err instanceof ProviderError && err.retryable
+            ? BUSY_REPLY
+            : 'I could not complete that request. No action was taken.',
+        );
         return;
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here

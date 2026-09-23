@@ -206,6 +206,15 @@ describe('failJob', () => {
     expect(findJob(a, jobId ?? -1)?.state).toBe('queued');
   });
 
+  it('uses a caller-chosen retry delay instead of the backoff', () => {
+    const { jobId } = put(a);
+    claimNext(a, 1000);
+    const result = failJob(a, jobId ?? -1, 'provider busy', 2000, { retryAfterMs: 30_000 });
+
+    expect(result).toEqual({ willRetry: true, nextRunAfter: 32_000 });
+    expect(findJob(a, jobId ?? -1)?.state).toBe('queued');
+  });
+
   it('records the error so a failure is diagnosable', () => {
     const { jobId } = put(a);
     claimNext(a, 1000);

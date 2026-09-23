@@ -4,6 +4,7 @@ import { pino } from 'pino';
 import { z } from 'zod';
 import {
   JobWorker,
+  RetryAfterError,
   type AnyJobHandler,
   type ClaimedJob,
   type FailOptions,
@@ -29,6 +30,7 @@ interface Recorded {
   jobId: number;
   error: string;
   permanent: boolean;
+  retryAfterMs: number | undefined;
 }
 
 /**
@@ -58,7 +60,7 @@ const memoryStore = () => {
     fail(jobId, error, _now, options: FailOptions = {}) {
       const row = rows.find((r) => r.jobId === jobId);
       const permanent = options.permanent === true;
-      failures.push({ jobId, error, permanent });
+      failures.push({ jobId, error, permanent, retryAfterMs: options.retryAfterMs });
       const willRetry = !permanent && (row?.attempts ?? 0) < (row?.maxAttempts ?? 0);
       if (row) row.state = willRetry ? 'queued' : 'failed';
       return { willRetry };
@@ -205,6 +207,31 @@ describe('failures that might be transient are retried', () => {
 
     expect(outcome).toMatchObject({ status: 'failed', willRetry: true });
     expect(s.failures[0]?.permanent).toBe(false);
+  });
+
+  it('passes a handler-chosen retry delay to the store', async () => {
+    s.add();
+    const handler: AnyJobHandler = {
+      kind: 'sweep',
+      payload: sweepPayload,
+      run() {
+        throw new RetryAfterError('provider busy', 30_000);
+      },
+    };
+    const outcome = await build([handler]).runOnce();
+
+    expect(outcome).toMatchObject({
+      status: 'failed',
+      willRetry: true,
+      error: 'RetryAfterError: provider busy',
+    });
+    expect(s.failures[0]).toMatchObject({ permanent: false, retryAfterMs: 30_000 });
+  });
+
+  it('leaves the delay to the store for an ordinary error', async () => {
+    s.add();
+    await build([handlerFor(ran, 'throw')]).runOnce();
+    expect(s.failures[0]?.retryAfterMs).toBeUndefined();
   });
 
   it('stops retrying once attempts are exhausted', async () => {

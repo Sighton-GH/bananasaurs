@@ -74,6 +74,7 @@ export {
 } from './pipeline/pipeline.js';
 export {
   JobWorker,
+  RetryAfterError,
   type AnyJobHandler,
   type ClaimedJob,
   type FailOptions,

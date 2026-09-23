@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import type { AssistantBehaviour, AssistantInvokePayload, DomainEvent } from '@bananasaurs/core';
-import { ProviderError } from '@bananasaurs/core';
+import { ProviderError, RetryAfterError } from '@bananasaurs/core';
 import {
   createAssistantCommandSubscriber,
   type AssistantCommandService,
@@ -676,25 +676,38 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
     return { send, respond, saved, run };
   };
 
-  it('rethrows a retryable provider error below the ceiling so the job retries', async () => {
-    const invoke = vi.fn(async () => {
-      throw new ProviderError('rate-limit', '429', true);
-    });
-    const d = jobDeps(invoke);
-    await expect(d.run(1, null)).rejects.toBeInstanceOf(ProviderError);
-    expect(d.send).not.toHaveBeenCalled();
-    expect(d.saved).toHaveLength(0);
-  });
+  it.each([
+    [1, 10_000],
+    [2, 30_000],
+    [3, 90_000],
+  ])(
+    'retries a busy provider after attempt %i with a %i ms delay, silently',
+    async (attempt, delay) => {
+      const invoke = vi.fn(async () => {
+        throw new ProviderError('outage', 'Gemini request failed with HTTP 503', true);
+      });
+      const d = jobDeps(invoke);
+      const thrown = await Promise.resolve()
+        .then(() => d.run(attempt, null))
+        .catch((err: unknown) => err);
+      expect(thrown).toBeInstanceOf(RetryAfterError);
+      expect((thrown as RetryAfterError).retryAfterMs).toBe(delay);
+      expect(d.send).not.toHaveBeenCalled();
+      expect(d.saved).toHaveLength(0);
+    },
+  );
 
-  it('answers the member on the last permitted attempt instead of retrying forever', async () => {
+  it('tells the member the AI service is busy after the last attempt', async () => {
     const invoke = vi.fn(async () => {
-      throw new ProviderError('rate-limit', '429', true);
+      throw new ProviderError('outage', 'Gemini request failed with HTTP 503', true);
     });
     const d = jobDeps(invoke);
-    await d.run(3, null);
+    await d.run(4, null);
     expect(d.send).toHaveBeenCalledWith(
       channelId,
-      expect.objectContaining({ content: expect.stringContaining('could not complete') }),
+      expect.objectContaining({
+        content: 'The AI service is busy right now. Try again in a minute. No action was taken.',
+      }),
     );
   });
 

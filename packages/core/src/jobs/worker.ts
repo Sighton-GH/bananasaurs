@@ -30,6 +30,23 @@ export interface FailOptions {
    * answer, and buries the real error under four duplicates.
    */
   permanent?: boolean;
+  /** Retry after this long instead of the store's default backoff. */
+  retryAfterMs?: number;
+}
+
+/**
+ * Thrown by a handler whose failure is transient but needs more room than the
+ * default backoff (1 s, 2 s, 4 s...): an overloaded AI provider answers the
+ * same way two seconds later.
+ */
+export class RetryAfterError extends Error {
+  constructor(
+    message: string,
+    readonly retryAfterMs: number,
+  ) {
+    super(message);
+    this.name = 'RetryAfterError';
+  }
 }
 
 export interface JobStore {
@@ -152,7 +169,12 @@ export class JobWorker {
     try {
       await handler.run(payload, context);
     } catch (err) {
-      return this.#fail(job, describeError(err), false);
+      return this.#fail(
+        job,
+        describeError(err),
+        false,
+        err instanceof RetryAfterError ? err.retryAfterMs : undefined,
+      );
     }
 
     store.complete(job.jobId, this.deps.now());
@@ -186,8 +208,11 @@ export class JobWorker {
     return ran;
   }
 
-  #fail(job: ClaimedJob, error: string, permanent: boolean): RunOutcome {
-    const { willRetry } = this.deps.store.fail(job.jobId, error, this.deps.now(), { permanent });
+  #fail(job: ClaimedJob, error: string, permanent: boolean, retryAfterMs?: number): RunOutcome {
+    const { willRetry } = this.deps.store.fail(job.jobId, error, this.deps.now(), {
+      permanent,
+      ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
+    });
     this.deps.logger.error(
       safeLogFields({
         component: 'jobs',
