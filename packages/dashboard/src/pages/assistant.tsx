@@ -278,9 +278,7 @@ function CreateBehaviourForm({
             selected={callerRoleIds}
             onToggle={(id) => setCallerRoleIds((ids) => toggleIn(ids, id))}
           />
-          <p className="mt-2 text-xs text-ink-muted">
-            If no role is ticked, nobody can use it.
-          </p>
+          <p className="mt-2 text-xs text-ink-muted">If no role is ticked, nobody can use it.</p>
         </section>
         {error !== undefined && (
           <p role="alert" className="mt-3 text-sm text-danger">
@@ -364,9 +362,7 @@ function BehaviourAccessEditor({
               selected={roleIds}
               onToggle={(id) => setRoleIds((ids) => toggleIn(ids, id))}
             />
-            <p className="mt-2 text-xs text-ink-muted">
-              If no role is ticked, nobody can use it.
-            </p>
+            <p className="mt-2 text-xs text-ink-muted">If no role is ticked, nobody can use it.</p>
           </>
         )}
       </section>

@@ -361,9 +361,7 @@ describe('AssistantPage', () => {
     const form = (await screen.findByRole('heading', { name: 'Create a behaviour' })).closest(
       'section',
     )!;
-    expect(
-      within(form).getByText('If no role is ticked, nobody can use it.'),
-    ).toBeTruthy();
+    expect(within(form).getByText('If no role is ticked, nobody can use it.')).toBeTruthy();
     expect(
       within(form).getByText(/Each role can belong to only one behaviour that is turned on/),
     ).toBeTruthy();

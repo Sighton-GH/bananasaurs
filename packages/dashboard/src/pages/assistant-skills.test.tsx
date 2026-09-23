@@ -133,6 +133,7 @@ describe('AssistantSkillsPage', () => {
       'section',
     )!;
     const row = within(grants).getByText('Set a reminder').closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: 'Change who can use it' }));
     fireEvent.click(within(row).getByRole('checkbox', { name: 'Onboarding' }));
     fireEvent.click(within(row).getByRole('button', { name: 'Save grant' }));
     await screen.findByText('Set a reminder grant saved');
@@ -142,9 +143,66 @@ describe('AssistantSkillsPage', () => {
         c[1]?.method === 'PUT',
     )!;
     expect(bodyOf(put)).toEqual({ roleIds: ['role-onboarding'], userIds: ['user-bryan'] });
+    // Saving closes the editor again.
+    expect(within(row).queryByRole('button', { name: 'Save grant' })).toBeNull();
     const ownerRow = within(grants).getByText('Deliver a reminder').closest('li')!;
     expect(within(ownerRow).queryByRole('checkbox')).toBeNull();
+    expect(within(ownerRow).queryByRole('button')).toBeNull();
     expect(within(ownerRow).getByText(/Always restricted to the server owner/)).toBeTruthy();
+  });
+
+  it('summarises each grant in one line without raw ids', async () => {
+    renderPage({
+      ...FULL,
+      skillGrants: [
+        { skillId: 'search-club', roleIds: [], userIds: [] },
+        {
+          skillId: 'create-reminder',
+          roleIds: ['role-club-member'],
+          userIds: ['user-bryan'],
+        },
+      ],
+    });
+    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
+      'section',
+    )!;
+    const searchRow = within(grants).getByText('Search club knowledge').closest('li')!;
+    expect(within(searchRow).getByText('Nobody yet')).toBeTruthy();
+    const reminderRow = within(grants).getByText('Set a reminder').closest('li')!;
+    expect(within(reminderRow).getByText('Club Member and 1 person')).toBeTruthy();
+    fireEvent.click(within(searchRow).getByRole('button', { name: 'Change who can use it' }));
+    expect(
+      within(searchRow).getByText('Nobody can use this skill until you choose who can.'),
+    ).toBeTruthy();
+  });
+
+  it('names roles that left the server instead of showing raw ids', async () => {
+    renderPage({
+      ...FULL,
+      skillGrants: [{ skillId: 'search-club', roleIds: ['role-gone'], userIds: [] }],
+    });
+    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
+      'section',
+    )!;
+    const row = within(grants).getByText('Search club knowledge').closest('li')!;
+    expect(within(row).getByText('a role that no longer exists')).toBeTruthy();
+  });
+
+  it('keeps only one grant editor open at a time', async () => {
+    renderPage();
+    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
+      'section',
+    )!;
+    const buttons = within(grants).getAllByRole('button', { name: 'Change who can use it' });
+    expect(buttons.length).toBe(2);
+    expect(within(grants).queryByRole('button', { name: 'Save grant' })).toBeNull();
+    fireEvent.click(buttons[0]!);
+    const searchRow = within(grants).getByText('Search club knowledge').closest('li')!;
+    expect(within(searchRow).getByRole('button', { name: 'Save grant' })).toBeTruthy();
+    fireEvent.click(buttons[1]!);
+    expect(within(searchRow).queryByRole('button', { name: 'Save grant' })).toBeNull();
+    const reminderRow = within(grants).getByText('Set a reminder').closest('li')!;
+    expect(within(reminderRow).getByRole('button', { name: 'Save grant' })).toBeTruthy();
   });
 
   it('fails closed when the server build does not expose skill grants', async () => {

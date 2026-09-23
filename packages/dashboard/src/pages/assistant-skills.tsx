@@ -3,8 +3,10 @@ import { Link } from 'wouter';
 import {
   ASSISTANT_URL,
   behaviourUrl,
+  skillGrantUrl,
   type AssistantBehaviourView,
   type AssistantData,
+  type SkillGrant,
 } from '../api/assistant.js';
 import { useSession, type Session } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -15,7 +17,7 @@ import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
-import { behaviourBody, SkillGrantRow, toggleIn } from './assistant-shared.js';
+import { behaviourBody, MemberChecklist, RoleChecklist, toggleIn } from './assistant-shared.js';
 
 /**
  * One behaviour's skill allowlist - the ONLY place allowlists are edited
@@ -103,6 +105,163 @@ function BehaviourAllowlistEditor({
         </Button>
       </div>
     </section>
+  );
+}
+
+/**
+ * One line saying who may use a skill: role names from the live directory,
+ * never raw ids. A missing role means it left the server since the grant
+ * was saved.
+ */
+function grantSummary(grant: SkillGrant | undefined, roles: AssistantData['roles']): string {
+  const roleIds = grant?.roleIds ?? [];
+  const userIds = grant?.userIds ?? [];
+  if (roleIds.length === 0 && userIds.length === 0) return 'Nobody yet';
+  const names = roleIds.map(
+    (id) => roles?.find((role) => role.id === id)?.name ?? 'a role that no longer exists',
+  );
+  const people =
+    userIds.length === 0
+      ? ''
+      : `${String(userIds.length)} ${userIds.length === 1 ? 'person' : 'people'}`;
+  if (names.length === 0) return people;
+  if (people === '') return names.join(', ');
+  return `${names.join(', ')} and ${people}`;
+}
+
+/**
+ * The grant editor for one skill: role and member checklists saved with the
+ * same PUT body the full editor always used. Rendered only for the one
+ * expanded row so the grants card stays a compact list on small screens.
+ */
+function SkillGrantEditor({
+  skill,
+  grant,
+  roles,
+  members,
+  session,
+  onSaved,
+  onClose,
+}: {
+  readonly skill: AssistantData['skills'][number];
+  readonly grant: SkillGrant | undefined;
+  readonly roles: AssistantData['roles'];
+  readonly members: AssistantData['members'];
+  readonly session: Session;
+  readonly onSaved: () => void;
+  readonly onClose: () => void;
+}) {
+  const toast = useToast();
+  const [roleIds, setRoleIds] = useState<readonly string[]>(grant?.roleIds ?? []);
+  const [userIds, setUserIds] = useState<readonly string[]>(grant?.userIds ?? []);
+  const [busy, setBusy] = useState(false);
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const result = await session.write(skillGrantUrl(skill.id), { roleIds, userIds }, 'PUT');
+      if (result !== undefined) {
+        toast({ tone: 'ok', title: `${skill.name} grant saved` });
+        onSaved();
+        onClose();
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section aria-label={`Who can use ${skill.name}`} className="mt-3 border-t border-line pt-3">
+      <div className="grid gap-3 md:grid-cols-2">
+        <div>
+          <p className="text-xs text-ink-muted">Roles</p>
+          <RoleChecklist
+            label={`Roles granted ${skill.name}`}
+            roles={roles}
+            selected={roleIds}
+            onToggle={(id) => setRoleIds((ids) => toggleIn(ids, id))}
+          />
+        </div>
+        <div>
+          <p className="text-xs text-ink-muted">Members</p>
+          <MemberChecklist
+            label={`Members granted ${skill.name}`}
+            members={members}
+            selected={userIds}
+            onToggle={(id) => setUserIds((ids) => toggleIn(ids, id))}
+          />
+        </div>
+      </div>
+      <p className="mt-2 text-xs text-ink-muted">
+        Nobody can use this skill until you choose who can.
+      </p>
+      <div className="mt-2">
+        <Button busy={busy} onClick={() => void save()}>
+          Save grant
+        </Button>
+      </div>
+    </section>
+  );
+}
+
+/**
+ * Guild-wide skill grants as a compact list: one row per skill with a
+ * one-line summary, expanding at most one editor at a time. Owner-only
+ * skills have no grant to edit and render their standing restriction.
+ */
+function SkillGrantList({
+  data,
+  session,
+  onSaved,
+}: {
+  readonly data: AssistantData;
+  readonly session: Session;
+  readonly onSaved: () => void;
+}) {
+  const [expandedId, setExpandedId] = useState<string>();
+  return (
+    <ul className="grid gap-3">
+      {data.skills.map((skill) => {
+        const grant = data.skillGrants?.find((g) => g.skillId === skill.id);
+        const expanded = expandedId === skill.id;
+        return (
+          <li key={skill.id} className="rounded-md border border-line bg-canvas p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div className="min-w-0">
+                <p className="text-sm font-medium">{skill.name}</p>
+                {skill.ownerOnly === true ? (
+                  <p className="mt-1 text-xs text-ink-muted">
+                    Always restricted to the server owner; no grant can widen it.
+                  </p>
+                ) : (
+                  <p className="mt-1 text-xs text-ink-muted">{grantSummary(grant, data.roles)}</p>
+                )}
+              </div>
+              {skill.ownerOnly !== true && (
+                <Button
+                  className="shrink-0"
+                  onClick={() => setExpandedId(expanded ? undefined : skill.id)}
+                >
+                  Change who can use it
+                </Button>
+              )}
+            </div>
+            {expanded && skill.ownerOnly !== true && (
+              <SkillGrantEditor
+                key={skill.id}
+                skill={skill}
+                grant={grant}
+                roles={data.roles}
+                members={data.members}
+                session={session}
+                onSaved={onSaved}
+                onClose={() => setExpandedId(undefined)}
+              />
+            )}
+          </li>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -199,19 +358,7 @@ export function AssistantSkillsPage() {
                   keeps applying and nothing here can be edited.
                 </p>
               ) : (
-                <ul className="grid gap-3">
-                  {data.skills.map((skill) => (
-                    <SkillGrantRow
-                      key={skill.id}
-                      skill={skill}
-                      grant={data.skillGrants?.find((g) => g.skillId === skill.id)}
-                      roles={data.roles}
-                      members={data.members}
-                      session={session}
-                      onSaved={assistant.reload}
-                    />
-                  ))}
-                </ul>
+                <SkillGrantList data={data} session={session} onSaved={assistant.reload} />
               )}
             </Card>
             <p className="text-sm text-ink-muted">
