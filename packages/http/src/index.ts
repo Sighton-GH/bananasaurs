@@ -4,6 +4,7 @@ export {
   SESSION_COOKIE,
   type CreateServerOptions,
   type HttpDeps,
+  type AssistantProviderStatus,
   type RouteGuard,
 } from './server.js';
 export {

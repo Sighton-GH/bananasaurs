@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { parseGuildId, type Capability } from '@bananasaurs/core';
-import { accountRepo, assistantRepo, authzRepo, guildRepo } from '@bananasaurs/storage';
+import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -187,6 +187,9 @@ describe('assistant provider configuration', () => {
           enabled: true,
           modelConfigured: true,
           keyConfigured: saved,
+          keyReadable: saved,
+          costClass: 'unknown',
+          secretSource: 'env',
         }),
         save: (input) => {
           expect(input.apiKey).toBe('must-not-echo');
@@ -208,6 +211,9 @@ describe('assistant provider configuration', () => {
       enabled: true,
       modelConfigured: true,
       keyConfigured: true,
+      keyReadable: true,
+      costClass: 'unknown',
+      secretSource: 'env',
     });
     expect(response.body).not.toContain('must-not-echo');
   });
@@ -291,5 +297,113 @@ describe('memory proposal save', () => {
       section: 'Exec',
       content: 'Confirm budget',
     });
+  });
+});
+
+describe('assistant context writes are audited', () => {
+  it('audits the server card, memory opt-out and member forget', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const headers = { cookie, [CSRF_HEADER]: csrf };
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: '/api/assistant/server-card',
+          headers,
+          payload: { content: 'Club operating context' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: `/api/assistant/memory-preferences/${ROLE_A}`,
+          headers,
+          payload: { optedOut: true },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'DELETE',
+          url: `/api/assistant/member-memory/${ROLE_B}`,
+          headers,
+        })
+      ).statusCode,
+    ).toBe(200);
+    const actions = effectRepo.tailAudit(t.scopes.forGuild(GUILD), {}).map((row) => row.action);
+    expect(actions).toEqual(
+      expect.arrayContaining([
+        'assistant_server_card.saved',
+        'assistant_memory_preference.saved',
+        'assistant_member_memory.forgotten',
+      ]),
+    );
+  });
+});
+
+describe('provider cost statement is owner-only', () => {
+  it('refuses a non-owner changing the cost class but lets them save other settings', async () => {
+    const OPERATOR = 'acct_fedcba9876543210fedcba9876543210';
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: OPERATOR,
+      username: 'operator',
+      passwordHash: await hashPassword(PASSWORD),
+      isOwner: false,
+      now: clock,
+    });
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), OPERATOR);
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
+      accountId: OPERATOR,
+      capability: 'config.write',
+      grantedBy: 'test',
+      now: clock,
+    });
+    let costClass: 'free' | 'paid' | 'unknown' = 'unknown';
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        status: () => ({
+          provider: 'gemini',
+          enabled: false,
+          modelConfigured: true,
+          keyConfigured: true,
+          keyReadable: true,
+          costClass,
+          secretSource: 'file',
+        }),
+        save: (input) => {
+          costClass = input.costClass ?? costClass;
+        },
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/login',
+      payload: { username: 'operator', password: PASSWORD, guildId: GUILD },
+    });
+    const cookie = cookieFrom(login.headers['set-cookie']);
+    const csrf = login.json<{ csrfToken: string }>().csrfToken;
+    const headers = { cookie, [CSRF_HEADER]: csrf };
+    const refused = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/provider',
+      headers,
+      payload: { provider: 'gemini', enabled: true, costClass: 'free' },
+    });
+    expect(refused.statusCode).toBe(403);
+    expect(costClass).toBe('unknown');
+    const allowed = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/provider',
+      headers,
+      payload: { provider: 'gemini', enabled: true, costClass: 'unknown' },
+    });
+    expect(allowed.statusCode).toBe(200);
   });
 });

@@ -44,6 +44,23 @@ import { secretsMatch } from './secrets.js';
 export const SESSION_COOKIE = 'bs_session';
 export const CSRF_HEADER = 'x-bananasaurs-csrf';
 
+/**
+ * What the dashboard may know about the AI provider configuration (ADR 0058,
+ * ADR 0061). Never the key: only whether one is stored and whether it opens.
+ */
+export interface AssistantProviderStatus {
+  readonly provider: string;
+  readonly model?: string;
+  readonly enabled: boolean;
+  readonly modelConfigured: boolean;
+  readonly keyConfigured: boolean;
+  readonly keyReadable: boolean;
+  readonly costClass: 'free' | 'paid' | 'unknown';
+  /** Where the key-encryption secret came from; `missing` means keys cannot be saved here. */
+  readonly secretSource: 'env' | 'file' | 'missing';
+  readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
+}
+
 export interface HttpDeps extends AuthDeps {
   readonly logger: Logger;
   /** `BANANASAURS_READONLY`. Decides whether `/bootstrap` is even armed. */
@@ -68,34 +85,27 @@ export interface HttpDeps extends AuthDeps {
    */
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
-  /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
-  readonly assistantAiStatus?:
-    | {
-        readonly provider: string;
-        readonly enabled: boolean;
-        readonly modelConfigured: boolean;
-        readonly keyConfigured?: boolean;
-      }
-    | undefined;
+  /**
+   * The provider state when no dashboard key store exists (secret missing):
+   * derived from env by the daemon. Absent in isolated route tests.
+   */
+  readonly assistantAiStatus?: AssistantProviderStatus | undefined;
   readonly assistantProviderConfig?:
     | {
-        status(): {
-          provider: string;
-          enabled: boolean;
-          modelConfigured: boolean;
-          keyConfigured: boolean;
-        };
+        status(): AssistantProviderStatus;
         save(
           input: {
             provider: 'off' | 'gemini' | 'openrouter' | 'nvidia-nim';
             model?: string | undefined;
             apiKey?: string | undefined;
             enabled: boolean;
+            costClass?: 'free' | 'paid' | 'unknown' | undefined;
           },
           now: number,
         ): void;
       }
     | undefined;
+  /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
   readonly assistantDirectories?:
     | ((guildId: string) => Promise<{
         roles: readonly { id: string; name: string; position: number }[];

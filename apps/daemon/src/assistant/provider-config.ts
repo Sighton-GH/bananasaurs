@@ -21,20 +21,30 @@ const open = (key: Buffer, value: string): string | undefined => {
     return undefined;
   }
 };
+export type ProviderSecretSource = 'env' | 'file' | 'missing';
+export type ProviderCostClass = 'free' | 'paid' | 'unknown';
+export interface ProviderConfigStatus {
+  readonly provider: string;
+  /** The model name is configuration, not a secret; the key never appears here. */
+  readonly model?: string;
+  readonly enabled: boolean;
+  readonly modelConfigured: boolean;
+  readonly keyConfigured: boolean;
+  /** Whether the stored ciphertext opens under this daemon's secret (ADR 0061 §3). */
+  readonly keyReadable: boolean;
+  readonly costClass: ProviderCostClass;
+  readonly secretSource: ProviderSecretSource;
+}
 export interface ProviderConfigStore {
-  status(): {
-    provider: string;
-    enabled: boolean;
-    modelConfigured: boolean;
-    keyConfigured: boolean;
-  };
+  status(): ProviderConfigStatus;
   effective(base: Config): Config;
   save(
     input: {
       provider: 'off' | 'gemini' | 'openrouter' | 'nvidia-nim';
-      model?: string;
-      apiKey?: string;
+      model?: string | undefined;
+      apiKey?: string | undefined;
       enabled: boolean;
+      costClass?: ProviderCostClass | undefined;
     },
     now: number,
   ): void;
@@ -42,19 +52,33 @@ export interface ProviderConfigStore {
 export const createProviderConfigStore = (
   instance: InstanceScope,
   masterSecret: string,
+  secretSource: Exclude<ProviderSecretSource, 'missing'> = 'env',
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
   return {
     status() {
       const row = assistantProviderRepo.get(instance);
-      return row === undefined
-        ? { provider: 'off', enabled: false, modelConfigured: false, keyConfigured: false }
-        : {
-            provider: row.provider,
-            enabled: row.enabled,
-            modelConfigured: row.model !== undefined,
-            keyConfigured: row.apiKeyEnc !== undefined,
-          };
+      if (row === undefined)
+        return {
+          provider: 'off',
+          enabled: false,
+          modelConfigured: false,
+          keyConfigured: false,
+          keyReadable: false,
+          costClass: 'unknown',
+          secretSource,
+        };
+      return {
+        provider: row.provider,
+        ...(row.model === undefined ? {} : { model: row.model }),
+        enabled: row.enabled,
+        modelConfigured: row.model !== undefined,
+        keyConfigured: row.apiKeyEnc !== undefined,
+        // Opened and dropped: the plaintext never leaves this expression.
+        keyReadable: row.apiKeyEnc !== undefined && open(key, row.apiKeyEnc) !== undefined,
+        costClass: row.costClass,
+        secretSource,
+      };
     },
     effective(base) {
       const row = assistantProviderRepo.get(instance);
@@ -71,6 +95,7 @@ export const createProviderConfigStore = (
         ...base,
         AI_PROVIDER: row.provider,
         AI_MODEL: row.model,
+        AI_PROFILE_COST_CLASS: row.costClass,
         ...(row.provider === 'gemini'
           ? { GEMINI_API_KEY: apiKey }
           : row.provider === 'openrouter'
@@ -80,15 +105,16 @@ export const createProviderConfigStore = (
     },
     save(input, now) {
       const current = assistantProviderRepo.get(instance);
+      // Omitted fields keep what is saved: re-saving to flip `enabled` must not
+      // silently drop the model, the cost statement or the key.
+      const model = input.model ?? current?.model;
+      const apiKeyEnc = input.apiKey !== undefined ? seal(key, input.apiKey) : current?.apiKeyEnc;
       assistantProviderRepo.put(instance, {
         provider: input.provider,
-        ...(input.model === undefined ? {} : { model: input.model }),
-        ...(input.apiKey !== undefined
-          ? { apiKeyEnc: seal(key, input.apiKey) }
-          : current?.apiKeyEnc === undefined
-            ? {}
-            : { apiKeyEnc: current.apiKeyEnc }),
+        ...(model === undefined ? {} : { model }),
+        ...(apiKeyEnc === undefined ? {} : { apiKeyEnc }),
         enabled: input.enabled,
+        costClass: input.costClass ?? current?.costClass ?? 'unknown',
         updatedAt: now,
       });
     },

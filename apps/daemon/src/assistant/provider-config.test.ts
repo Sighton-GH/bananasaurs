@@ -26,9 +26,13 @@ it('encrypts a write-only key and recovers it only into effective runtime config
   );
   expect(store.status()).toEqual({
     provider: 'gemini',
+    model: 'gemini-test',
     enabled: true,
     modelConfigured: true,
     keyConfigured: true,
+    keyReadable: true,
+    costClass: 'unknown',
+    secretSource: 'env',
   });
   const row = assistantProviderRepo.get(t.scopes.instance())!;
   expect(row.apiKeyEnc).not.toContain('raw-secret-value');
@@ -48,4 +52,55 @@ it('retains the encrypted key on settings-only updates and disables without expo
   expect(assistantProviderRepo.get(t.scopes.instance())!.apiKeyEnc).toBe(before);
   expect(store.status()).toMatchObject({ enabled: false, keyConfigured: true });
   expect(store.effective(base).AI_PROVIDER).toBe('off');
+});
+it('reports the saved model, cost class, secret source and whether the key decrypts', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32), 'file');
+  expect(store.status()).toEqual({
+    provider: 'off',
+    enabled: false,
+    modelConfigured: false,
+    keyConfigured: false,
+    keyReadable: false,
+    costClass: 'unknown',
+    secretSource: 'file',
+  });
+  store.save(
+    {
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      apiKey: 'k',
+      enabled: true,
+      costClass: 'free',
+    },
+    10,
+  );
+  expect(store.status()).toEqual({
+    provider: 'gemini',
+    model: 'gemini-2.5-flash',
+    enabled: true,
+    modelConfigured: true,
+    keyConfigured: true,
+    keyReadable: true,
+    costClass: 'free',
+    secretSource: 'file',
+  });
+  const other = createProviderConfigStore(t.scopes.instance(), 'b'.repeat(32), 'env');
+  expect(other.status()).toMatchObject({ keyConfigured: true, keyReadable: false });
+  expect(JSON.stringify(store.status())).not.toContain('"k"');
+});
+it('keeps the saved model and cost class when a save omits them', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save(
+    { provider: 'gemini', model: 'm1', apiKey: 'k', enabled: true, costClass: 'free' },
+    10,
+  );
+  store.save({ provider: 'gemini', enabled: true }, 11);
+  expect(store.status()).toMatchObject({ model: 'm1', costClass: 'free' });
+});
+it('applies the stored cost class to the effective config', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save({ provider: 'gemini', model: 'm', apiKey: 'k', enabled: true, costClass: 'free' }, 10);
+  expect(store.effective(base).AI_PROFILE_COST_CLASS).toBe('free');
+  store.save({ provider: 'gemini', enabled: true, costClass: 'paid' }, 11);
+  expect(store.effective(base).AI_PROFILE_COST_CLASS).toBe('paid');
 });

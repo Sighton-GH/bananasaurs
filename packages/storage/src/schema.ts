@@ -1745,6 +1745,12 @@ export const providerEligibility = sqliteTable(
     trainsOnInput: text('trains_on_input').notNull(),
     /** The settings page / clause cited as evidence. */
     evidenceUrl: text('evidence_url').notNull(),
+    /**
+     * The quoted terms clause (ADR 0061 §1). Null on migration-seeded rows,
+     * which cite their clause in the migration and `PRIVACY.md`; a row the
+     * dashboard writes always carries one.
+     */
+    evidenceClause: text('evidence_clause'),
     productionUseAllowed: integer('production_use_allowed').notNull(),
     /** Epoch-ms the evidence was last verified. */
     reviewedAt: integer('reviewed_at').notNull(),
@@ -1767,9 +1773,12 @@ export const assistantProviderConfig = sqliteTable(
     model: text('model'),
     apiKeyEnc: text('api_key_enc'),
     enabled: integer('enabled').notNull().default(0),
+    /** The owner's statement of the model's cost (ADR 0061 §2); overrides `AI_PROFILE_COST_CLASS`. */
+    costClass: text('cost_class').notNull().default('unknown'),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
+    check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,

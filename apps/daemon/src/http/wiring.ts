@@ -23,6 +23,7 @@ import {
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
+  type AssistantProviderStatus,
 } from '@bananasaurs/http';
 import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
@@ -67,6 +68,8 @@ export interface DashboardApiDeps {
    */
   readonly discord: DiscordPort;
   readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
+  /** Why there is no provider store, when there is none (ADR 0061 §3). */
+  readonly assistantSecretProblem?: AssistantProviderStatus['secretProblem'];
 }
 
 export interface DashboardApi {
@@ -98,6 +101,8 @@ export interface DashboardAppDeps {
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
   readonly distDir: string;
+  readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
+  readonly assistantAiStatus?: HttpDeps['assistantAiStatus'];
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
   /**
@@ -182,7 +187,13 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
-    assistantAiStatus: { provider: 'unknown', enabled: false, modelConfigured: false },
+    // Carried through, never rebuilt: the 2026-09-23 audit found this literal
+    // hard-coding an 'unknown' status and dropping the store, so every
+    // dashboard provider save answered 503 (wiring.provider.test.ts).
+    ...(deps.assistantProviderConfig === undefined
+      ? {}
+      : { assistantProviderConfig: deps.assistantProviderConfig }),
+    ...(deps.assistantAiStatus === undefined ? {} : { assistantAiStatus: deps.assistantAiStatus }),
   };
   const app = createServer({
     deps: httpDeps,
@@ -238,6 +249,31 @@ const printBootstrapBanner = (token: string, port: number, ttlMinutes: number): 
  * the confusion `bootstrap reissue` warns about and tells the operator to fix
  * with a restart.
  */
+const envAiStatus = (
+  config: Config,
+  secretProblem: AssistantProviderStatus['secretProblem'],
+): AssistantProviderStatus => {
+  const envKey =
+    config.AI_PROVIDER === 'gemini'
+      ? config.GEMINI_API_KEY
+      : config.AI_PROVIDER === 'openrouter'
+        ? config.OPENROUTER_API_KEY
+        : config.AI_PROVIDER === 'nvidia-nim'
+          ? config.NVIDIA_NIM_API_KEY
+          : undefined;
+  return {
+    provider: config.AI_PROVIDER,
+    ...(config.AI_MODEL === undefined ? {} : { model: config.AI_MODEL }),
+    enabled: config.AI_PROVIDER !== 'off' && config.AI_MODEL !== undefined,
+    modelConfigured: config.AI_MODEL !== undefined,
+    keyConfigured: envKey !== undefined,
+    keyReadable: envKey !== undefined,
+    costClass: config.AI_PROFILE_COST_CLASS,
+    secretSource: 'missing',
+    ...(secretProblem === undefined ? {} : { secretProblem }),
+  };
+};
+
 export async function startDashboardApi(deps: DashboardApiDeps): Promise<DashboardApi> {
   const httpDeps: HttpDeps = {
     scopes: deps.scopes,
@@ -252,11 +288,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     ...(deps.assistantProviderConfig === undefined
       ? {}
       : { assistantProviderConfig: deps.assistantProviderConfig }),
-    assistantAiStatus: {
-      provider: deps.config.AI_PROVIDER,
-      enabled: deps.config.AI_PROVIDER !== 'off' && deps.config.AI_MODEL !== undefined,
-      modelConfigured: deps.config.AI_MODEL !== undefined,
-    },
+    // Only read when there is no store: the env-configured provider, with the
+    // reason the dashboard cannot save keys itself.
+    assistantAiStatus: envAiStatus(deps.config, deps.assistantSecretProblem),
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.

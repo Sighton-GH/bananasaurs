@@ -1,10 +1,19 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { CLUB_ASSISTANT_SKILLS, validateResourceUrl } from '@bananasaurs/core';
-import { assistantRepo } from '@bananasaurs/storage';
+import { accountRepo, assistantRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
+import type { SessionContext } from '../auth.js';
+
+/**
+ * Instance owner, read from the account row rather than any capability: the
+ * provider's cost statement and terms record are facts about the whole
+ * daemon (ADR 0061), and no per-guild grant can confer them.
+ */
+export const isInstanceOwner = (deps: HttpDeps, session: SessionContext): boolean =>
+  accountRepo.findAccountById(deps.scopes.instance(), session.accountId)?.isOwner === true;
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
 const behaviour = z.object({
@@ -32,6 +41,7 @@ const providerConfig = z.object({
   model: z.string().min(1).max(200).optional(),
   apiKey: z.string().min(1).max(1000).optional(),
   enabled: z.boolean(),
+  costClass: z.enum(['free', 'paid', 'unknown']).optional(),
 });
 const memory = z.object({
   id: z.string().min(1).max(64),
@@ -83,6 +93,10 @@ export const registerAssistantRoutes = (
           provider: 'unknown',
           enabled: false,
           modelConfigured: false,
+          keyConfigured: false,
+          keyReadable: false,
+          costClass: 'unknown',
+          secretSource: 'missing',
         },
       ...(directories ?? {}),
     });
@@ -95,8 +109,36 @@ export const registerAssistantRoutes = (
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = providerConfig.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const before = deps.assistantProviderConfig.status();
+    if (
+      parsed.data.costClass !== undefined &&
+      parsed.data.costClass !== before.costClass &&
+      !isInstanceOwner(deps, session)
+    )
+      return reply.status(403).send({ error: 'owner-only', field: 'costClass' });
     deps.assistantProviderConfig.save(parsed.data, deps.now());
-    return reply.status(200).send(deps.assistantProviderConfig.status());
+    const after = deps.assistantProviderConfig.status();
+    // The key itself never reaches the audit row: only whether it was replaced.
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_provider.saved',
+      subjectType: 'assistant_provider',
+      subjectId: 'active',
+      before: {
+        provider: before.provider,
+        model: before.model ?? null,
+        enabled: before.enabled,
+        costClass: before.costClass,
+      },
+      after: {
+        provider: after.provider,
+        model: after.model ?? null,
+        enabled: after.enabled,
+        costClass: after.costClass,
+        keyReplaced: parsed.data.apiKey !== undefined,
+      },
+    });
+    return reply.status(200).send(after);
   });
   app.put('/api/assistant/server-card', (request, reply) => {
     const session = guard.require(request, reply);
@@ -105,6 +147,14 @@ export const registerAssistantRoutes = (
     const parsed = serverCard.safeParse(request.body);
     if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
     assistantRepo.putServerCard(session.scope, parsed.data.content, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_server_card.saved',
+      subjectType: 'assistant_server_card',
+      subjectId: session.guildId,
+      before: undefined,
+      after: { length: parsed.data.content.length },
+    });
     return reply.status(200).send({ ok: true });
   });
   app.put('/api/assistant/memory-preferences/:userId', (request, reply) => {
@@ -116,6 +166,14 @@ export const registerAssistantRoutes = (
     if (!snowflake.safeParse(userId).success || !parsed.success)
       return reply.status(400).send({ error: 'bad-request' });
     assistantRepo.setMemoryOptOut(session.scope, userId, parsed.data.optedOut, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_memory_preference.saved',
+      subjectType: 'member',
+      subjectId: userId,
+      before: undefined,
+      after: { optedOut: parsed.data.optedOut },
+    });
     return reply.status(200).send({ ok: true });
   });
   app.delete('/api/assistant/member-memory/:userId', (request, reply) => {
@@ -126,6 +184,14 @@ export const registerAssistantRoutes = (
     if (!snowflake.safeParse(userId).success)
       return reply.status(400).send({ error: 'bad-request' });
     const removed = assistantRepo.forgetMember(session.scope, userId, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_member_memory.forgotten',
+      subjectType: 'member',
+      subjectId: userId,
+      before: undefined,
+      after: { removed, optedOut: true },
+    });
     return reply.status(200).send({ removed, optedOut: true });
   });
   app.put('/api/assistant/memories/:id', (request, reply) => {

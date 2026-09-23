@@ -7,6 +7,7 @@ export interface AssistantProviderConfigRow {
   readonly model?: string;
   readonly apiKeyEnc?: string;
   readonly enabled: boolean;
+  readonly costClass: 'free' | 'paid' | 'unknown';
   readonly updatedAt: number;
 }
 export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefined =>
@@ -19,6 +20,7 @@ export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefine
           ...(row.model === null ? {} : { model: row.model }),
           ...(row.apiKeyEnc === null ? {} : { apiKeyEnc: row.apiKeyEnc }),
           enabled: row.enabled === 1,
+          costClass: row.costClass as AssistantProviderConfigRow['costClass'],
           updatedAt: row.updatedAt,
         };
   });
@@ -31,6 +33,7 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
         model: input.model ?? null,
         apiKeyEnc: input.apiKeyEnc ?? null,
         enabled: input.enabled ? 1 : 0,
+        costClass: input.costClass,
         updatedAt: input.updatedAt,
       })
       .onConflictDoUpdate({
@@ -40,6 +43,7 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
           model: input.model ?? null,
           apiKeyEnc: input.apiKeyEnc ?? null,
           enabled: input.enabled ? 1 : 0,
+          costClass: input.costClass,
           updatedAt: input.updatedAt,
         },
       })
