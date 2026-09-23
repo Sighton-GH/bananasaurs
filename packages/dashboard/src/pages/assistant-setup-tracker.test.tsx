@@ -130,6 +130,159 @@ describe('SetupTracker', () => {
     expect(screen.getAllByText('Done')).toHaveLength(1);
   });
 
+  it('marks rows with a round marker: check, alert, or step number', () => {
+    stubFetch([]);
+    renderTracker(
+      baseData({
+        setup: steps({
+          connect: { state: 'done', detail: 'Connected.' },
+          terms: { state: 'blocked', detail: 'Terms need review.' },
+        }),
+      }),
+    );
+    const list = screen.getByRole('list', { name: 'Setup steps' });
+    const items = within(list).getAllByRole('listitem');
+    const doneMarker = within(items[0]!).getByText('✓').parentElement!;
+    expect(doneMarker.className).toContain('rounded-full');
+    expect(doneMarker.className).toContain('border-ok');
+    const blockedMarker = within(items[1]!).getByText('!').parentElement!;
+    expect(blockedMarker.className).toContain('rounded-full');
+    expect(blockedMarker.className).toContain('border-danger');
+    const todoMarker = within(items[2]!).getByText('3').parentElement!;
+    expect(todoMarker.className).toContain('rounded-full');
+    expect(todoMarker.className).toContain('border-line');
+  });
+
+  it('highlights only the first not-done row as the next step', () => {
+    stubFetch([]);
+    renderTracker(baseData());
+    const list = screen.getByRole('list', { name: 'Setup steps' });
+    const items = within(list).getAllByRole('listitem');
+    // connect and terms are done; cost is the next step.
+    expect(items[0]!.className).not.toContain('bg-panel');
+    expect(items[1]!.className).not.toContain('bg-panel');
+    expect(items[2]!.className).toContain('bg-panel');
+    expect(items[2]!.className).toContain('border-ink');
+    expect(items[3]!.className).not.toContain('bg-panel');
+    expect(items[4]!.className).not.toContain('bg-panel');
+    expect(items[5]!.className).not.toContain('bg-panel');
+  });
+
+  it('shows one Open AI setup link when the first three steps are all not done', () => {
+    stubFetch([]);
+    renderTracker(baseData({ setup: steps() }));
+    const links = screen.getAllByText('Open AI setup');
+    expect(links).toHaveLength(1);
+    expect(links[0]!.closest('a')?.className).toContain('bg-ink');
+  });
+
+  it('keeps later rows secondary once the next step has its primary action', () => {
+    stubFetch([]);
+    renderTracker(baseData());
+    const list = screen.getByRole('list', { name: 'Setup steps' });
+    const items = within(list).getAllByRole('listitem');
+    const nextLink = within(items[2]!).getByText('Open AI setup');
+    expect(nextLink.closest('a')?.className).toContain('bg-ink');
+    const laterButton = within(items[3]!).getByRole('button', { name: 'Save who can ask' });
+    expect(laterButton.className).not.toContain('bg-ink');
+  });
+
+  it('names the mention roles in the collapsed answering line', () => {
+    stubFetch([]);
+    const done = {
+      answering: true,
+      steps: [
+        { id: 'connect', state: 'done', detail: 'Connected.' },
+        { id: 'terms', state: 'done', detail: 'Terms recorded.' },
+        { id: 'cost', state: 'done', detail: 'Free.' },
+        { id: 'who', state: 'done', detail: 'Roles chosen.' },
+        { id: 'skills', state: 'done', detail: 'Skills granted.' },
+        { id: 'on', state: 'done', detail: 'On.' },
+      ],
+    } as const;
+    renderTracker(
+      baseData({
+        behaviours: [
+          {
+            id: 'club',
+            guildId: 'g1',
+            surface: 'bananasaurs',
+            mentionRoleId: 'role-member',
+            name: 'Club assistant',
+            systemPrompt: 'Prompt.',
+            promptVersion: 1,
+            allowedSkillIds: [],
+            resourceIds: [],
+            reviewerRoleIds: [],
+            enabled: true,
+            callerRoleIds: ['role-member'],
+          },
+          {
+            id: 'ask',
+            guildId: 'g1',
+            surface: 'direct-command',
+            name: 'Club Q and A',
+            systemPrompt: 'Prompt.',
+            promptVersion: 1,
+            allowedSkillIds: [],
+            resourceIds: [],
+            reviewerRoleIds: [],
+            enabled: true,
+            callerRoleIds: ['role-helper'],
+          },
+        ],
+        setup: { ...done, steps: [...done.steps] },
+      }),
+    );
+    expect(
+      screen.getByText('Members can ask in Discord with /ask, or by mentioning @Member.'),
+    ).toBeTruthy();
+  });
+
+  it('shows an inline error when turning on fails without a conflict', async () => {
+    stubFetch([
+      {
+        method: 'PUT',
+        url: '/api/assistant/behaviours/club',
+        status: 400,
+        body: { error: 'bad-request' },
+      },
+    ]);
+    renderTracker(
+      baseData({
+        behaviours: [
+          {
+            id: 'club',
+            guildId: 'g1',
+            surface: 'direct-command',
+            name: 'Club assistant',
+            systemPrompt: 'Prompt.',
+            promptVersion: 1,
+            allowedSkillIds: [],
+            resourceIds: [],
+            reviewerRoleIds: [],
+            enabled: false,
+            callerRoleIds: ['role-member'],
+          },
+        ],
+        setup: steps({
+          connect: { state: 'done', detail: 'Connected.' },
+          terms: { state: 'done', detail: 'Terms recorded.' },
+          cost: { state: 'done', detail: 'Free.' },
+          who: { state: 'done', detail: 'Roles chosen.' },
+          skills: { state: 'done', detail: 'Skills granted.' },
+          on: { state: 'todo', detail: 'Nothing is turned on yet.' },
+        }),
+      }),
+    );
+    const list = await screen.findByRole('list', { name: 'Setup steps' });
+    const onRow = within(list)
+      .getAllByRole('listitem')
+      .find((li) => within(li).queryByText('Turn it on') !== null)!;
+    fireEvent.click(within(onRow).getByRole('button', { name: 'Turn on Club assistant' }));
+    expect(await within(onRow).findByText("Couldn't turn it on. Try again.")).toBeTruthy();
+  });
+
   it('with no behaviours, Save who can ask creates the disabled club assistant', async () => {
     const mock = stubFetch([
       { method: 'PUT', url: '/api/assistant/behaviours/default', body: { ok: true } },
@@ -445,11 +598,7 @@ describe('SetupTracker', () => {
       }),
     );
     expect(await screen.findByText('Answering')).toBeTruthy();
-    expect(
-      screen.getByText(
-        "Members can ask in Discord with /ask, or by mentioning a behaviour's role.",
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText('Members can ask in Discord with /ask.')).toBeTruthy();
     expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show setup steps' }));
     expect(screen.getByRole('list', { name: 'Setup steps' })).toBeTruthy();
