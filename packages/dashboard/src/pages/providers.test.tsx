@@ -261,6 +261,31 @@ describe('ProvidersPage', () => {
     expect(screen.queryByText('Terms record saved')).toBeNull();
   });
 
+  it('shows a non-validation terms failure inline without the field hints', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: '/api/providers/gemini/terms',
+        status: 409,
+        body: { error: 'terms-conflict', message: 'Record changed underneath.' },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('button', { name: 'Save terms record' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save terms record' }));
+    });
+    expect(screen.getByText('The terms record was not saved. Try again.')).toBeTruthy();
+    expect(
+      screen.queryByText(
+        'Check the quote (at least 10 characters) and that the link starts with https://.',
+      ),
+    ).toBeNull();
+    expect(screen.queryByText('Terms record saved')).toBeNull();
+  });
+
   it('tells a non-owner that only the owner records the terms', async () => {
     stubPage(assistantBody({ viewerIsOwner: false }));
     renderWithSession(<ProvidersPage />);

@@ -339,10 +339,12 @@ function TermsForm({
       toast({ tone: 'ok', title: 'Terms record saved' });
       onSaved();
     } catch (err: unknown) {
-      if (err instanceof ApiError) {
+      if (err instanceof ApiError && err.status === 400) {
         setError(
           'Check the quote (at least 10 characters) and that the link starts with https://.',
         );
+      } else if (err instanceof ApiError) {
+        setError('The terms record was not saved. Try again.');
       } else {
         setError('The server refused this record. Check the fields and try again.');
       }
