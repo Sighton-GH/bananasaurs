@@ -165,6 +165,30 @@ describe('AssistantPage', () => {
     expect(screen.getByText('Buy two spare batteries')).toBeTruthy();
   });
 
+  it('labels a direct command without repeating the words and badges On and Off', async () => {
+    const direct = {
+      id: 'ask',
+      guildId: '1540816150026518620',
+      surface: 'direct-command',
+      name: 'Club Q and A',
+      systemPrompt: 'Answer member questions.',
+      promptVersion: 1,
+      allowedSkillIds: [],
+      resourceIds: [],
+      enabled: true,
+      callerRoleIds: [],
+    };
+    renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
+    const card = await screen.findByRole('button', { name: /Club Q and A/ });
+    expect(within(card).getByText('Direct command')).toBeTruthy();
+    expect(within(card).getByText('Members use /ask')).toBeTruthy();
+    expect(within(card).getByText('On')).toBeTruthy();
+    const itCard = screen.getByRole('button', { name: /IT services/ });
+    expect(within(itCard).getByText('Off')).toBeTruthy();
+    expect(screen.queryByText('enabled')).toBeNull();
+    expect(screen.queryByText('disabled')).toBeNull();
+  });
+
   it('shows no AI status card and no answering claim outside the setup tracker', async () => {
     renderPage();
     await screen.findByRole('heading', { level: 1, name: 'Assistant' });

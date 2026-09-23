@@ -884,7 +884,7 @@ function AssistantReady({
         {data.behaviours.map((item) => {
           const mention =
             item.surface === 'direct-command'
-              ? 'Direct command'
+              ? 'Members use /ask'
               : (() => {
                   const name = roleName(item.mentionRoleId);
                   return name === undefined ? 'Mention role not set' : `Members mention @${name}`;
@@ -904,7 +904,7 @@ function AssistantReady({
               <span className="mt-2 flex items-center justify-between gap-2">
                 <strong>{item.name}</strong>
                 <Badge tone={item.enabled ? 'ok' : 'neutral'}>
-                  {item.enabled ? 'enabled' : 'disabled'}
+                  {item.enabled ? 'On' : 'Off'}
                 </Badge>
               </span>
             </button>
