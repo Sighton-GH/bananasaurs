@@ -147,15 +147,22 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantPage', () => {
-  it('renders behaviours with their tag mapping, prompt editor, AI status and records', async () => {
+  it('renders behaviours with their tag mapping, prompt editor and records', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
     const club = screen.getByRole('button', { name: /Club assistant/ });
     expect(club.getAttribute('aria-pressed')).toBe('true');
     expect(within(club).getByText('Members mention @Club Assistant')).toBeTruthy();
     expect(screen.getByDisplayValue('Answer with reviewed club knowledge only.')).toBeTruthy();
-    expect(screen.getByText('AI status')).toBeTruthy();
     expect(screen.getByText('Buy two spare batteries')).toBeTruthy();
+  });
+
+  it('shows no AI status card and no answering claim outside the setup tracker', async () => {
+    renderPage();
+    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    expect(screen.queryByText('AI status')).toBeNull();
+    expect(screen.queryByText('Off - the assistant will not answer')).toBeNull();
+    expect(screen.queryByText('Enabled')).toBeNull();
   });
 
   it('keeps skills, schedules and resources off this page (ADR 0060 declutter)', async () => {
@@ -396,10 +403,46 @@ describe('AssistantPage', () => {
     expect(submit.hasAttribute('disabled')).toBe(true);
   });
 
-  it('empty state can create the working default behaviour', async () => {
+  it('empty state shows the tracker and the no-behaviours guidance', async () => {
+    renderPage({
+      ...FULL,
+      behaviours: [],
+      aiStatus: {
+        provider: 'gemini',
+        enabled: true,
+        modelConfigured: true,
+        keyConfigured: true,
+        keyReadable: true,
+        costClass: 'free',
+        secretSource: 'env',
+      },
+      setup: {
+        answering: false,
+        steps: [
+          { id: 'connect', state: 'done', detail: 'A provider is connected.' },
+          { id: 'terms', state: 'done', detail: 'Terms are recorded.' },
+          { id: 'cost', state: 'done', detail: 'Free.' },
+          { id: 'who', state: 'todo', detail: 'No behaviour has caller roles yet.' },
+          { id: 'skills', state: 'todo', detail: 'No everyday skills granted yet.' },
+          { id: 'on', state: 'todo', detail: 'Nothing is turned on yet.' },
+        ],
+      },
+    });
+    expect(await screen.findByText('Set up the assistant')).toBeTruthy();
+    expect(screen.getByText('No behaviours yet')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Step 4 creates the club assistant, which members reach with /ask. To set up a tagged helper like @it-services instead, create a behaviour.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Create default behaviour' })).toBeNull();
+  });
+
+  it('with zero behaviours, the header Create a behaviour button shows the create form', async () => {
     renderPage({ ...FULL, behaviours: [] });
-    expect(await screen.findByText('No assistant behaviour configured')).toBeTruthy();
-    expect(screen.getByRole('button', { name: 'Create default behaviour' })).toBeTruthy();
+    expect(await screen.findByText('No behaviours yet')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Create a behaviour' }));
+    expect(await screen.findByRole('heading', { name: 'Create a behaviour' })).toBeTruthy();
   });
 
   it('offers no control without a backing endpoint', async () => {

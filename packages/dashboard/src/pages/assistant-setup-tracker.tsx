@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, type ReactElement } from 'react';
 import { Link } from 'wouter';
 import { ApiError } from '../api.js';
 import {
@@ -74,17 +74,21 @@ function WhoAction({
     try {
       const result =
         data.behaviours.length === 0
-          ? await session.write(behaviourUrl('default'), {
-              id: 'default',
-              surface: 'direct-command',
-              name: 'Club assistant',
-              systemPrompt: DEFAULT_PROMPT,
-              promptVersion: 0,
-              allowedSkillIds: [],
-              resourceIds: [],
-              callerRoleIds: [...roleIds],
-              enabled: false,
-            }, 'PUT')
+          ? await session.write(
+              behaviourUrl('default'),
+              {
+                id: 'default',
+                surface: 'direct-command',
+                name: 'Club assistant',
+                systemPrompt: DEFAULT_PROMPT,
+                promptVersion: 0,
+                allowedSkillIds: [],
+                resourceIds: [],
+                callerRoleIds: [...roleIds],
+                enabled: false,
+              },
+              'PUT',
+            )
           : target === undefined
             ? undefined
             : await session.write(
@@ -142,11 +146,7 @@ function SkillsAction({
     setBusy(true);
     try {
       const roleIds = union(withRoles.map((b) => b.callerRoleIds ?? []));
-      const granted = await session.write<{ skillIds: string[] }>(
-        STARTER_URL,
-        { roleIds },
-        'POST',
-      );
+      const granted = await session.write<{ skillIds: string[] }>(STARTER_URL, { roleIds }, 'POST');
       if (granted === undefined) return;
       for (const behaviour of withRoles) {
         const updated = await session.write(
@@ -184,9 +184,9 @@ function SkillsAction({
         <p className="mt-1 text-xs text-ink-muted">Choose who can ask first</p>
       )}
       <p className="mt-1 text-xs text-ink-muted">
-        Searching club knowledge, linking resources, and drafting agendas, summaries,
-        announcements, checklists and handoffs. Reminders, memory and decisions stay off until
-        you allow them on the Skills page.
+        Searching club knowledge, linking resources, and drafting agendas, summaries, announcements,
+        checklists and handoffs. Reminders, memory and decisions stay off until you allow them on
+        the Skills page.
       </p>
     </div>
   );
@@ -274,7 +274,7 @@ export function SetupTracker({
   readonly data: AssistantData;
   readonly session: Session;
   readonly reload: () => void;
-}): JSX.Element | null {
+}): ReactElement | null {
   const [expanded, setExpanded] = useState(false);
   const setup = data.setup;
   if (setup === undefined) return null;
@@ -291,11 +291,7 @@ export function SetupTracker({
           <p className="text-sm">
             Members can ask in Discord with /ask, or by mentioning a behaviour&apos;s role.
           </p>
-          <button
-            type="button"
-            className="text-sm underline"
-            onClick={() => setExpanded(true)}
-          >
+          <button type="button" className="text-sm underline" onClick={() => setExpanded(true)}>
             Show setup steps
           </button>
         </div>

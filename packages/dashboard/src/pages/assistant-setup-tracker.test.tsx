@@ -3,7 +3,7 @@ import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { useSession, type Session } from '../app/session.js';
-import type { AssistantData } from '../api/assistant.js';
+import type { AssistantData, AssistantSetup } from '../api/assistant.js';
 import { DEFAULT_PROMPT, SetupTracker } from './assistant-setup-tracker.js';
 
 afterEach(cleanup);
@@ -16,7 +16,7 @@ const ROLES = [
 
 function steps(
   overrides: Partial<Record<string, { state: 'done' | 'todo' | 'blocked'; detail: string }>> = {},
-): AssistantData['setup'] {
+): AssistantSetup {
   const get = (id: 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on') =>
     overrides[id] ?? { state: 'todo' as const, detail: `${id} detail.` };
   return {
@@ -33,6 +33,15 @@ function steps(
 }
 
 function baseData(overrides: Partial<AssistantData> = {}): AssistantData {
+  const { setup, ...rest } = overrides;
+  const fallback = steps({
+    connect: { state: 'done', detail: 'A provider is connected.' },
+    terms: { state: 'done', detail: 'Terms are recorded.' },
+    cost: { state: 'todo', detail: 'Confirm the model costs nothing.' },
+    who: { state: 'todo', detail: 'No behaviour has caller roles yet.' },
+    skills: { state: 'todo', detail: 'No everyday skills granted yet.' },
+    on: { state: 'todo', detail: 'Nothing is turned on yet.' },
+  });
   return {
     behaviours: [],
     resources: [],
@@ -58,15 +67,8 @@ function baseData(overrides: Partial<AssistantData> = {}): AssistantData {
       costClass: 'free',
       secretSource: 'env',
     },
-    setup: steps({
-      connect: { state: 'done', detail: 'A provider is connected.' },
-      terms: { state: 'done', detail: 'Terms are recorded.' },
-      cost: { state: 'todo', detail: 'Confirm the model costs nothing.' },
-      who: { state: 'todo', detail: 'No behaviour has caller roles yet.' },
-      skills: { state: 'todo', detail: 'No everyday skills granted yet.' },
-      on: { state: 'todo', detail: 'Nothing is turned on yet.' },
-    }),
-    ...overrides,
+    ...rest,
+    setup: setup ?? fallback,
   };
 }
 
@@ -161,6 +163,7 @@ describe('SetupTracker', () => {
       promptVersion: 1,
       allowedSkillIds: ['s-old'],
       resourceIds: [],
+      reviewerRoleIds: [],
       enabled: false,
       callerRoleIds: ['role-member', 'role-helper'],
     } as const;
@@ -194,8 +197,7 @@ describe('SetupTracker', () => {
     );
     await screen.findByText('Everyday skills turned on');
     const post = mock.mock.calls.find(
-      (c) =>
-        (c[0] as string) === '/api/assistant/skill-grants/starter' && c[1]?.method === 'POST',
+      (c) => (c[0] as string) === '/api/assistant/skill-grants/starter' && c[1]?.method === 'POST',
     )!;
     expect(bodyOf(post)).toEqual({ roleIds: ['role-member', 'role-helper'] });
     const put = mock.mock.calls.find(
@@ -222,6 +224,7 @@ describe('SetupTracker', () => {
             promptVersion: 1,
             allowedSkillIds: [],
             resourceIds: [],
+            reviewerRoleIds: [],
             enabled: false,
             callerRoleIds: [],
           },
@@ -260,6 +263,7 @@ describe('SetupTracker', () => {
             promptVersion: 1,
             allowedSkillIds: [],
             resourceIds: [],
+            reviewerRoleIds: [],
             enabled: false,
             callerRoleIds: ['role-member'],
           },
@@ -302,6 +306,7 @@ describe('SetupTracker', () => {
             promptVersion: 1,
             allowedSkillIds: [],
             resourceIds: [],
+            reviewerRoleIds: [],
             enabled: false,
             callerRoleIds: ['role-member'],
           },
@@ -352,6 +357,7 @@ describe('SetupTracker', () => {
             promptVersion: 1,
             allowedSkillIds: [],
             resourceIds: [],
+            reviewerRoleIds: [],
             enabled: false,
             callerRoleIds: ['role-member'],
           },
@@ -385,7 +391,9 @@ describe('SetupTracker', () => {
     );
     expect(await screen.findByText('Answering')).toBeTruthy();
     expect(
-      screen.getByText("Members can ask in Discord with /ask, or by mentioning a behaviour's role."),
+      screen.getByText(
+        "Members can ask in Discord with /ask, or by mentioning a behaviour's role.",
+      ),
     ).toBeTruthy();
     expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show setup steps' }));
@@ -394,7 +402,9 @@ describe('SetupTracker', () => {
 
   it('renders nothing when setup is undefined', () => {
     stubFetch([]);
-    const { container } = renderTracker(baseData({ setup: undefined }));
+    const data = baseData() as unknown as Record<string, unknown>;
+    delete data['setup'];
+    const { container } = renderTracker(data as unknown as AssistantData);
     expect(container.textContent).toBe('');
   });
 });
