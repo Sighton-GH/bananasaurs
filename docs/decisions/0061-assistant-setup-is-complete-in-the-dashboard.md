@@ -35,6 +35,9 @@ close all three gaps.
    - The monthly cap stays $0, so only `free` passes. The dashboard never allows spend.
    - The form warns that marking a paid model free can cost money, and changes are
      audited.
+   - The statement is about one model: changing the model resets it to
+     `not sure`. Switching service also drops the saved key and model, so one
+     company's key is never sent to another.
 3. **The daemon generates the key-encryption secret when it is missing.**
    - If `ASSISTANT_PROVIDER_SECRET_KEY` is unset, the daemon reads or creates
      `<BANANASAURS_DATA_DIR>/assistant-provider.key`: 32 random bytes, created with
