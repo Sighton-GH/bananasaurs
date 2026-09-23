@@ -13,7 +13,6 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
-import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 import { behaviourBody, SkillGrantRow, toggleIn } from './assistant-shared.js';
@@ -160,15 +159,6 @@ export function AssistantSkillsPage() {
                       </span>
                     </div>
                     <p className="mt-1 text-xs text-ink-muted">{skill.description}</p>
-                    <p className="mt-2 text-xs text-ink-muted">
-                      Needs the Discord permission{' '}
-                      <span className="font-mono">{skill.requiredPermission}</span>{' '}
-                      <HelpTip label="required permission">
-                        A Discord permission the member must already hold before this skill runs, on
-                        top of every check above. The bot never grants permissions; it only checks
-                        them.
-                      </HelpTip>
-                    </p>
                   </li>
                 ))}
               </ul>

@@ -63,6 +63,14 @@ const SKILLS = [
     requiresConfirmation: false,
   },
   {
+    id: 'draft-post',
+    name: 'Draft an announcement',
+    description: 'Draft a club announcement for an operator to send.',
+    effect: 'draft',
+    requiredPermission: 'assistant.draft',
+    requiresConfirmation: false,
+  },
+  {
     id: 'send-reminder',
     name: 'Deliver a reminder',
     description: 'Send a due reminder through the configured Discord destination.',
@@ -347,16 +355,69 @@ describe('AssistantPage', () => {
     });
   });
 
-  it('states the fail-closed and ambiguous-tag rules inside the create form', async () => {
+  it('states the fail-closed rule inside the create form in plain words', async () => {
     renderPage();
     fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    const form = (await screen.findByRole('heading', { name: 'Create a behaviour' })).closest(
+      'section',
+    )!;
     expect(
-      await screen.findByText(/An empty allowlist fails closed: the behaviour answers nobody/),
+      within(form).getByText('If no role is ticked, nobody can use it.'),
     ).toBeTruthy();
     expect(
-      screen.getByText(/A role mapped to two behaviours is refused rather than answered by a mix/),
+      within(form).getByText(/Each role can belong to only one behaviour that is turned on/),
     ).toBeTruthy();
-    expect(screen.getByText(/New behaviours start turned off/)).toBeTruthy();
+    expect(within(form).getByText(/New behaviours start turned off/)).toBeTruthy();
+  });
+
+  it('describes the prompt card without system internals', async () => {
+    renderPage();
+    expect(
+      await screen.findByText(
+        /These are the instructions this behaviour follows\. Bananasaurs adds its own safety rules/,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Ambiguous tags are refused rather than mixed/)).toBeNull();
+  });
+
+  it('offers no owner-only skill in the create form and labels effects plainly', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    const picker = await screen.findByRole('region', {
+      name: 'Skills the new behaviour may use',
+    });
+    expect(within(picker).queryByText('Deliver a reminder')).toBeNull();
+    expect(within(picker).getByText('Draft an announcement')).toBeTruthy();
+    expect(within(picker).getByText('Drafts, never sends')).toBeTruthy();
+    expect(within(picker).getAllByText('Reads').length).toBe(2);
+    expect(within(picker).getByText('Schedules · you confirm first')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Which kind of helper this is. It decides the safety rules it follows, for example IT help can open tickets.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows ticket routing only for IT behaviours', async () => {
+    const direct = {
+      id: 'ask',
+      guildId: '1540816150026518620',
+      surface: 'direct-command',
+      name: 'Club Q and A',
+      systemPrompt: 'Answer member questions.',
+      promptVersion: 1,
+      allowedSkillIds: [],
+      resourceIds: [],
+      enabled: true,
+      callerRoleIds: [],
+      ticket: { reviewerRoleIds: [] },
+    };
+    renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
+    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Ticket routing' })).toBeNull();
+    expect(screen.queryByText(/Ticket routing is not exposed/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /IT services/ }));
+    expect(await screen.findByRole('region', { name: 'Ticket routing' })).toBeTruthy();
   });
 
   it('maps a mention-role refusal to a plain-language inline error', async () => {

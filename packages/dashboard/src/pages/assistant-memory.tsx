@@ -69,7 +69,7 @@ export function AssistantMemoryPage() {
     <>
       <PageHeader
         title="Memory"
-        purpose="The assistant's small, reviewed memory. Group work by team, club goal or project; operators can add, edit and delete entries. Member-specific entries honour memory opt-out; privacy commands are intentionally not registered."
+        purpose="What the assistant remembers about your club: goals, teams and ongoing work. Operators review every entry. Members can be opted out, and their entries deleted, below."
         actions={
           <Button variant="primary" onClick={() => open('new')}>
             Add memory

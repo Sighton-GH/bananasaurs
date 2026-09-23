@@ -82,12 +82,13 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantSkillsPage', () => {
-  it('renders the catalogue with required permissions and confirmation classes', async () => {
+  it('renders the catalogue without Discord permission claims', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
     const catalogue = screen.getByRole('heading', { name: 'Skill catalogue' }).closest('section')!;
     expect(within(catalogue).getAllByText('Search club knowledge').length).toBeGreaterThan(0);
-    expect(within(catalogue).getByText('assistant.search')).toBeTruthy();
+    expect(within(catalogue).queryByText(/Needs the Discord permission/)).toBeNull();
+    expect(within(catalogue).queryByText('assistant.search')).toBeNull();
     expect(within(catalogue).getByText('Asks an operator first')).toBeTruthy();
     expect(within(catalogue).getAllByText('Can do automatically').length).toBeGreaterThan(0);
     expect(within(catalogue).getByText('owner only')).toBeTruthy();

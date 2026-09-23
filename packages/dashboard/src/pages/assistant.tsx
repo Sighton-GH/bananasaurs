@@ -51,6 +51,16 @@ const TAG_SURFACES = [
 
 type TagSurface = (typeof TAG_SURFACES)[number]['value'];
 
+/** Plain words for what a skill does, for the create-form picker (ADR 0059). */
+const skillEffectWord = (effect: AssistantData['skills'][number]['effect']): string =>
+  effect === 'read'
+    ? 'Reads'
+    : effect === 'draft'
+      ? 'Drafts, never sends'
+      : effect === 'schedule'
+        ? 'Schedules'
+        : 'Sends';
+
 /**
  * Create a brand-new tag behaviour through the existing PUT create path
  * (audit action assistant_behaviour.created). New behaviours are always
@@ -163,7 +173,10 @@ function CreateBehaviourForm({
               maxLength={100}
             />
           </Field>
-          <Field label="Tag" hint="The @ mention members use in Discord to reach this behaviour.">
+          <Field
+            label="Tag"
+            hint="Which kind of helper this is. It decides the safety rules it follows, for example IT help can open tickets."
+          >
             <select
               value={surface}
               onChange={(e) => setSurface(e.target.value as TagSurface)}
@@ -195,8 +208,8 @@ function CreateBehaviourForm({
             </select>
           </Field>
           <p className="mt-1 text-xs text-ink-muted">
-            Members mention this Discord role to talk to the behaviour. A role mapped to two
-            behaviours is refused rather than answered by a mix of both.{' '}
+            Members reach this behaviour by mentioning this role in Discord, for example @IT
+            Services. Each role can belong to only one behaviour that is turned on.{' '}
             <HelpTip label="mention role">
               Discord roles can be mentioned like @Club Assistant. The bot watches for that mention
               and routes it to this behaviour. Only roles Discord reports for this server are
@@ -235,24 +248,26 @@ function CreateBehaviourForm({
             anything.
           </p>
           <ul className="mt-2 grid gap-1 sm:grid-cols-2">
-            {data.skills.map((skill) => (
-              <li key={skill.id}>
-                <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
-                  <input
-                    type="checkbox"
-                    checked={skillIds.includes(skill.id)}
-                    onChange={() => setSkillIds((ids) => toggleIn(ids, skill.id))}
-                  />
-                  <span>
-                    <span className="block">{skill.name}</span>
-                    <span className="text-xs text-ink-muted">
-                      {skill.effect}
-                      {skill.requiresConfirmation ? ' · asks an operator first' : ''}
+            {data.skills
+              .filter((skill) => skill.ownerOnly !== true)
+              .map((skill) => (
+                <li key={skill.id}>
+                  <label className="flex items-start gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={skillIds.includes(skill.id)}
+                      onChange={() => setSkillIds((ids) => toggleIn(ids, skill.id))}
+                    />
+                    <span>
+                      <span className="block">{skill.name}</span>
+                      <span className="text-xs text-ink-muted">
+                        {skillEffectWord(skill.effect)}
+                        {skill.requiresConfirmation ? ' · you confirm first' : ''}
+                      </span>
                     </span>
-                  </span>
-                </label>
-              </li>
-            ))}
+                  </label>
+                </li>
+              ))}
           </ul>
         </section>
         <section aria-label="Who may use the new behaviour" className="mt-4">
@@ -264,7 +279,7 @@ function CreateBehaviourForm({
             onToggle={(id) => setCallerRoleIds((ids) => toggleIn(ids, id))}
           />
           <p className="mt-2 text-xs text-ink-muted">
-            An empty allowlist fails closed: the behaviour answers nobody until a role is selected.
+            If no role is ticked, nobody can use it.
           </p>
         </section>
         {error !== undefined && (
@@ -350,7 +365,7 @@ function BehaviourAccessEditor({
               onToggle={(id) => setRoleIds((ids) => toggleIn(ids, id))}
             />
             <p className="mt-2 text-xs text-ink-muted">
-              An empty allowlist fails closed: the tag answers nobody until a role is selected.
+              If no role is ticked, nobody can use it.
             </p>
           </>
         )}
@@ -388,7 +403,7 @@ function BehaviourAccessEditor({
           unanswered rather than guessing a destination.
         </p>
       )}
-      {behaviour.ticket !== undefined && (
+      {behaviour.ticket !== undefined && behaviour.surface === 'it-services' && (
         <section aria-label="Ticket routing" className="mt-4">
           <h3 className="text-sm font-medium">Ticket routing</h3>
           <p className="mt-1 text-xs text-ink-muted">
@@ -791,9 +806,9 @@ function BehaviourPromptCard({
   return (
     <Card title={`${behaviour.name} behaviour`}>
       <p className="text-sm text-ink-muted">
-        This is the configured prompt for this tag/direct route. The API receives the surface safety
-        instruction, this prompt, injection defence, server card, reviewed resources, allowed skills
-        and untrusted evidence envelope. Ambiguous tags are refused rather than mixed.
+        These are the instructions this behaviour follows. Bananasaurs adds its own safety rules,
+        your server card and any resources you attach, and always treats messages and web pages as
+        information, never as instructions.
       </p>
       <Field
         label="Instructions the assistant follows"
@@ -924,7 +939,7 @@ function AssistantReady({
         data={data}
         onSaved={reload}
       />
-      {data.tickets !== undefined && (
+      {data.tickets !== undefined && current.surface === 'it-services' && (
         <TicketsCard tickets={data.tickets} behaviour={current} data={data} />
       )}
       {data.decisions !== undefined && (
