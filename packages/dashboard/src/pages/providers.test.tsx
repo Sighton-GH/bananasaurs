@@ -140,6 +140,92 @@ describe('ProvidersPage', () => {
     expect(inputOf(screen.getByLabelText('API key')).value).toBe('');
   });
 
+  it('switching service clears the model and cost and changes the key placeholder', async () => {
+    stubPage(assistantBody());
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('radio', { name: /Google Gemini/ });
+    expect(inputOf(screen.getByLabelText('API key')).getAttribute('placeholder')).toBe(
+      'Saved. Leave blank to keep it',
+    );
+    fireEvent.click(screen.getByRole('radio', { name: 'OpenRouter' }));
+    expect(inputOf(screen.getByLabelText('Model')).value).toBe('');
+    expect(inputOf(screen.getByRole('radio', { name: 'Not sure' })).checked).toBe(true);
+    expect(inputOf(screen.getByLabelText('API key')).getAttribute('placeholder')).toBe(
+      'Paste the API key for OpenRouter',
+    );
+    expect(
+      screen.getByText('Switching service clears the saved key, model and cost answer.'),
+    ).toBeTruthy();
+  });
+
+  it('lists other providers under Service terms to check', async () => {
+    stubPage(assistantBody(), WARNINGS);
+    renderWithSession(<ProvidersPage />);
+    expect(await screen.findByText('Service terms to check')).toBeTruthy();
+    expect(screen.queryByText('Other services')).toBeNull();
+  });
+
+  it('hides the terms form behind Update the terms record when a record exists', async () => {
+    stubPage(
+      assistantBody({
+        providerTerms: {
+          provider: 'gemini',
+          trainsOnInput: 'no',
+          evidenceUrl: 'https://example.test/ai-terms#training',
+          evidenceClause: 'We do not use customer data to train our models.',
+          productionUseAllowed: true,
+          reviewedAt: 1000,
+        },
+      }),
+    );
+    renderWithSession(<ProvidersPage />);
+    expect(
+      await screen.findByText('We do not use customer data to train our models.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save terms record' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Update the terms record' }));
+    expect(screen.getByRole('button', { name: 'Save terms record' })).toBeTruthy();
+  });
+
+  it('hides the terms form again after a successful save', async () => {
+    stubFetch([
+      {
+        url: '/api/assistant',
+        body: assistantBody({
+          providerTerms: {
+            provider: 'gemini',
+            trainsOnInput: 'no',
+            evidenceUrl: 'https://example.test/ai-terms#training',
+            evidenceClause: 'We do not use customer data to train our models.',
+            productionUseAllowed: true,
+            reviewedAt: 1000,
+          },
+        }),
+      },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: '/api/providers/gemini/terms',
+        body: {
+          provider: 'gemini',
+          trainsOnInput: 'no',
+          evidenceUrl: 'https://example.test/ai-terms#training',
+          evidenceClause: 'We do not use customer data to train our models.',
+          productionUseAllowed: true,
+          reviewedAt: 2000,
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Update the terms record' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save terms record' }));
+    });
+    expect(screen.getByText('Terms record saved')).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Save terms record' })).toBeNull();
+    expect(screen.getByRole('button', { name: 'Update the terms record' })).toBeTruthy();
+  });
+
   it('disables cost for a non-owner and omits it from the save', async () => {
     const mock = stubFetch([
       { url: '/api/assistant', body: assistantBody({ viewerIsOwner: false }) },

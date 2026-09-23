@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { Link } from 'wouter';
 import { ApiError } from '../api.js';
 import {
@@ -114,12 +114,26 @@ function ServiceForm({
   const chosen = PROVIDERS.find((p) => p.id === service);
   const secretMissing = status?.secretSource === 'missing';
   const keyUnreadable = status?.keyConfigured === true && !status.keyReadable;
+  // The saved key belongs to the saved service: switching service drops it
+  // (the server clears key, model and cost), so the "Saved" placeholder and
+  // the prefilled model and cost only apply while the chosen radio matches.
+  const isSameService = status?.provider === service;
+  const switchedService = chosen !== undefined && !isSameService;
+  const savedService = status?.provider;
+  useEffect(() => {
+    if (savedService !== undefined && service !== savedService) {
+      setModel('');
+      setCost('unknown');
+    }
+  }, [service, savedService]);
   const keyPlaceholder =
     secretMissing === true
       ? undefined
-      : status?.keyConfigured === true && status.keyReadable
+      : isSameService && status?.keyConfigured === true && status.keyReadable
         ? 'Saved. Leave blank to keep it'
-        : undefined;
+        : switchedService && chosen !== undefined
+          ? `Paste the API key for ${chosen.name}`
+          : undefined;
 
   const submit = async (): Promise<void> => {
     setBusy(true);
@@ -202,6 +216,11 @@ function ServiceForm({
             ))}
           </div>
         </fieldset>
+        {switchedService && (
+          <p className="text-sm text-ink-muted">
+            Switching service clears the saved key, model and cost answer.
+          </p>
+        )}
         {chosen !== undefined && (
           <Field label="Model" hint={chosen.modelHint}>
             <Input value={model} onChange={(e) => setModel(e.target.value)} />
@@ -465,6 +484,9 @@ function TermsCard({
   readonly chosenService: ProviderId;
   readonly onSaved: () => void;
 }) {
+  // A stored record reads as a summary; the form stays hidden until the
+  // owner asks to update it, so a first-time reader sees what is true.
+  const [editing, setEditing] = useState(false);
   return (
     <Card title="Terms record">
       <p className="text-sm text-ink-muted">
@@ -499,7 +521,7 @@ function TermsCard({
         <p className="mt-3 text-sm text-ink-muted">
           Save the AI service first, then record its terms.
         </p>
-      ) : (
+      ) : terms === null ? (
         <TermsForm
           key={info.id}
           provider={info.id}
@@ -508,6 +530,22 @@ function TermsCard({
           initial={terms}
           onSaved={onSaved}
         />
+      ) : editing ? (
+        <TermsForm
+          key={info.id}
+          provider={info.id}
+          providerName={info.name}
+          defaultUrl={info.termsUrl}
+          initial={terms}
+          onSaved={() => {
+            setEditing(false);
+            onSaved();
+          }}
+        />
+      ) : (
+        <div className="mt-3">
+          <Button onClick={() => setEditing(true)}>Update the terms record</Button>
+        </div>
       )}
     </Card>
   );
@@ -592,7 +630,7 @@ export function ProvidersPage() {
             empty={null}
           >
             {(rows) => (
-              <Card title="Other services">
+              <Card title="Service terms to check">
                 <DataTable
                   caption="Provider eligibility warnings"
                   rows={rows}
@@ -697,6 +735,7 @@ function SetupBody({
       {savedInfo !== undefined && (
         <div className="mt-4">
           <TermsCard
+            key={savedInfo.id}
             info={savedInfo}
             terms={data.providerTerms ?? null}
             isOwner={data.viewerIsOwner ?? false}
