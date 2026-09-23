@@ -531,3 +531,108 @@ describe('assistant skill-grant starter', () => {
     expect(afterSecond).toEqual(grants);
   });
 });
+
+describe('PUT /api/assistant/bot-tag (ADR 0063)', () => {
+  const putBotTag = (cookie: string, csrf: string, payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/assistant/bot-tag',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+  const flags = async (cookie: string) =>
+    Object.fromEntries(
+      (await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } }))
+        .json<{ behaviours: { id: string; answersBotTag: boolean }[] }>()
+        .behaviours.map((b) => [b.id, b.answersBotTag]),
+    );
+  const auditRows = () =>
+    effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .filter((row) => row.action === 'assistant_bot_tag.set');
+
+  let cookie: string;
+  let csrf: string;
+  beforeEach(async () => {
+    grant('config.read');
+    grant('config.write');
+    ({ cookie, csrf } = await signIn());
+    expect((await put(cookie, csrf, body())).statusCode).toBe(200);
+    expect(
+      (await put(cookie, csrf, body({ id: 'help', surface: 'help', mentionRoleId: ROLE_B })))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await put(
+          cookie,
+          csrf,
+          body({ id: 'off', surface: 'help', mentionRoleId: ROLE_B, enabled: false }),
+        )
+      ).statusCode,
+    ).toBe(200);
+  });
+
+  it('sets, moves and clears the one behaviour that answers a bot tag', async () => {
+    expect(await flags(cookie)).toEqual({ club: false, help: false, off: false });
+    const set = await putBotTag(cookie, csrf, { behaviourId: 'club' });
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toEqual({ ok: true, behaviourId: 'club' });
+    expect(await flags(cookie)).toEqual({ club: true, help: false, off: false });
+    expect((await putBotTag(cookie, csrf, { behaviourId: 'help' })).statusCode).toBe(200);
+    expect(await flags(cookie)).toEqual({ club: false, help: true, off: false });
+    const cleared = await putBotTag(cookie, csrf, { behaviourId: null });
+    expect(cleared.json()).toEqual({ ok: true, behaviourId: null });
+    expect(await flags(cookie)).toEqual({ club: false, help: false, off: false });
+  });
+
+  it('audits each change with the previous and new behaviour', async () => {
+    await putBotTag(cookie, csrf, { behaviourId: 'club' });
+    await putBotTag(cookie, csrf, { behaviourId: 'help' });
+    await putBotTag(cookie, csrf, { behaviourId: null });
+    const rows = auditRows().map((row) => ({
+      subjectId: row.subjectId,
+      before: JSON.parse(row.before ?? 'null') as unknown,
+      after: JSON.parse(row.after ?? 'null') as unknown,
+    }));
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { subjectId: 'club', before: { behaviourId: null }, after: { behaviourId: 'club' } },
+        { subjectId: 'help', before: { behaviourId: 'club' }, after: { behaviourId: 'help' } },
+        { subjectId: 'help', before: { behaviourId: 'help' }, after: { behaviourId: null } },
+      ]),
+    );
+    expect(rows).toHaveLength(3);
+  });
+
+  it('refuses an unknown behaviour, a disabled one, and a malformed body without changing anything', async () => {
+    await putBotTag(cookie, csrf, { behaviourId: 'club' });
+    const missing = await putBotTag(cookie, csrf, { behaviourId: 'nope' });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'not-found' });
+    const disabled = await putBotTag(cookie, csrf, { behaviourId: 'off' });
+    expect(disabled.statusCode).toBe(409);
+    expect(disabled.json()).toEqual({ error: 'behaviour-disabled' });
+    for (const payload of [{}, { behaviourId: 5 }, { behaviourId: '' }]) {
+      const bad = await putBotTag(cookie, csrf, payload);
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json()).toEqual({ error: 'bad-request' });
+    }
+    expect(await flags(cookie)).toEqual({ club: true, help: false, off: false });
+    expect(auditRows()).toHaveLength(1);
+  });
+});
+
+describe('PUT /api/assistant/bot-tag authorisation', () => {
+  it('requires config.write', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/bot-tag',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { behaviourId: null },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+});

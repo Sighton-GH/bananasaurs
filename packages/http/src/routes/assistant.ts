@@ -37,6 +37,7 @@ const behaviour = z.object({
   resourceIds: z.array(z.string()).max(100),
   enabled: z.boolean(),
 });
+const botTag = z.object({ behaviourId: z.string().min(1).max(64).nullable() }).strict();
 const providerConfig = z.object({
   provider: z.enum(['off', 'gemini', 'openrouter', 'nvidia-nim']),
   model: z.string().min(1).max(200).optional(),
@@ -306,6 +307,32 @@ export const registerAssistantRoutes = (
       deps.now(),
     );
     return reply.status(200).send({ ok: true });
+  });
+  // ADR 0063: the one behaviour that answers a tag of the bot user itself.
+  app.put('/api/assistant/bot-tag', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = botTag.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const { behaviourId } = parsed.data;
+    const behaviours = assistantRepo.listBehaviours(session.scope);
+    if (behaviourId !== null) {
+      const target = behaviours.find((item) => item.id === behaviourId);
+      if (target === undefined) return reply.status(404).send({ error: 'not-found' });
+      if (!target.enabled) return reply.status(409).send({ error: 'behaviour-disabled' });
+    }
+    const previous = behaviours.find((item) => item.answersBotTag === true)?.id ?? null;
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_bot_tag.set',
+      subjectType: 'assistant_behaviour',
+      subjectId: behaviourId ?? previous ?? 'none',
+      before: { behaviourId: previous },
+      after: { behaviourId },
+    });
+    assistantRepo.setBotTagBehaviour(session.scope, behaviourId, deps.now());
+    return reply.status(200).send({ ok: true, behaviourId });
   });
   app.post('/api/assistant/skill-grants/starter', (request, reply) => {
     const session = guard.require(request, reply);
