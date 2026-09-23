@@ -57,17 +57,10 @@ const terms = (over: Partial<EligibilityRow> = {}): EligibilityRow => ({
   ...over,
 });
 
-const grant = (
-  skillId: string,
-  roleIds: readonly string[] = ['222222222222222222'],
-  userIds: readonly string[] = [],
-) => ({ skillId, roleIds, userIds });
-
 const doneInput = () => ({
   status: status(),
   terms: terms() as EligibilityRow | undefined,
   behaviours: [behaviour()],
-  grants: [grant('search-club')],
   skills: [skill('search-club')],
   now: NOW,
   reviewMaxAgeMs: REVIEW_MAX_AGE_MS,
@@ -420,12 +413,14 @@ describe('computeAssistantSetup', () => {
   });
 
   describe('skills', () => {
-    it('counts skills allowed by a behaviour and granted to someone', () => {
+    it('counts the skills behaviours allow; grants play no part (ADR 0064)', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
-        behaviours: [behaviour({ allowedSkillIds: ['search-club', 'other-skill'] })],
-        grants: [grant('search-club'), grant('other-skill', [], ['999999999999999999'])],
-        skills: [skill('search-club'), skill('other-skill'), skill('ungranted')],
+        behaviours: [
+          behaviour({ allowedSkillIds: ['search-club', 'other-skill'] }),
+          behaviour({ id: 'second', enabled: false, allowedSkillIds: ['search-club'] }),
+        ],
+        skills: [skill('search-club'), skill('other-skill'), skill('unused')],
       });
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',
@@ -434,19 +429,10 @@ describe('computeAssistantSetup', () => {
       });
     });
 
-    it('is todo when the allowed skill has no grant', () => {
-      const setup = computeAssistantSetup({ ...doneInput(), grants: [] });
-      expect(stepById(setup, 'skills')).toEqual({
-        id: 'skills',
-        state: 'todo',
-        detail: 'Choose what the assistant may do for members.',
-      });
-    });
-
-    it('is todo when the grant names nobody', () => {
+    it('is todo when no behaviour allows a skill', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
-        grants: [grant('search-club', [], [])],
+        behaviours: [behaviour({ allowedSkillIds: [] })],
       });
       expect(stepById(setup, 'skills')).toEqual({
         id: 'skills',

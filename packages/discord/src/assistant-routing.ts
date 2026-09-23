@@ -23,10 +23,11 @@ const userMention = (userId: string): RegExp => new RegExp(`<@!?${userId}>`, 'g'
  * is rejected locally, before retrieval or a provider can see its contents.
  *
  * Tagging the bot user itself (not a mapped role) routes to the one enabled
- * behaviour flagged `answersBotTag` (ADR 0063), or nowhere when none is. Like
- * `/ask`, that path leaves the caller-role check to the service, which exempts
- * the owner and answers with a visible refusal. A mapped role tag in the same
- * message wins, so a member can still pick a specialised desk.
+ * behaviour flagged `answersBotTag` (ADR 0063), or nowhere when none is. A
+ * mapped role tag in the same message wins, so a member can still pick a
+ * specialised desk. Neither path checks caller roles here: like `/ask`, the
+ * service does, exempting the owner and answering a refusal through the keyed
+ * job instead of dropping it silently (ADR 0064).
  */
 export const routeAssistantMention = (
   event: MessageEvent,
@@ -73,16 +74,6 @@ export const routeAssistantMention = (
         message: 'Please tag either @bananasaurs or @it-services, not both.',
       };
     }
-  }
-
-  if (
-    mentioned.size > 0 &&
-    !behaviour.callerRoleIds.some((roleId) => (event.authorRoleIds ?? []).includes(roleId))
-  ) {
-    return {
-      kind: 'ambiguous',
-      message: 'Your server role is not allowed to use that assistant tag.',
-    };
   }
 
   let prompt = (event.content ?? '').replace(userMention(botUserId), ' ');

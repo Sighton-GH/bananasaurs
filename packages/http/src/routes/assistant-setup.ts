@@ -188,21 +188,13 @@ const whoStep = (
   };
 };
 
+/** ADR 0064: a skill is ready once a behaviour allows it; "Who can ask" decides who. */
 const skillsStep = (
   behaviours: readonly AssistantBehaviour[],
-  grants: readonly { skillId: string; roleIds: readonly string[]; userIds: readonly string[] }[],
   skills: readonly AssistantSkill[],
 ): SetupStep => {
-  const allowed = new Set<string>();
-  for (const item of behaviours) {
-    for (const skillId of item.allowedSkillIds) allowed.add(skillId);
-  }
-  let ready = 0;
-  for (const item of skills) {
-    if (!allowed.has(item.id)) continue;
-    const grant = grants.find((g) => g.skillId === item.id);
-    if (grant !== undefined && (grant.roleIds.length > 0 || grant.userIds.length > 0)) ready += 1;
-  }
+  const allowed = new Set(behaviours.flatMap((item) => item.allowedSkillIds));
+  const ready = skills.filter((item) => allowed.has(item.id)).length;
   if (ready > 0) {
     return {
       id: 'skills',
@@ -240,7 +232,6 @@ export const computeAssistantSetup = (input: {
   status: AssistantProviderStatus;
   terms: EligibilityRow | undefined;
   behaviours: readonly AssistantBehaviour[];
-  grants: readonly { skillId: string; roleIds: readonly string[]; userIds: readonly string[] }[];
   skills: readonly AssistantSkill[];
   now: number;
   reviewMaxAgeMs: number;
@@ -251,7 +242,7 @@ export const computeAssistantSetup = (input: {
     termsStep(input.status, input.terms, input.now, input.reviewMaxAgeMs),
     costStep(input.status),
     whoStep(input.behaviours, input.roleNames),
-    skillsStep(input.behaviours, input.grants, input.skills),
+    skillsStep(input.behaviours, input.skills),
     onStep(input.status, input.behaviours),
   ];
   const complete = (step: SetupStep): boolean => step.state === 'done' || step.state === 'warning';

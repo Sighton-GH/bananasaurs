@@ -121,18 +121,14 @@ export const createAssistantService = (
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      const grants = assistantRepo.listSkillGrants(scope);
-      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
-        if (!input.behaviour.allowedSkillIds.includes(candidate.id)) return false;
-        if (owner) return true;
-        if (candidate.ownerOnly === true) return false;
-        const grant = grants.find((item) => item.skillId === candidate.id);
-        return (
-          grant !== undefined &&
-          (grant.userIds.includes(input.userId) ||
-            grant.roleIds.some((roleId) => input.callerRoleIds.includes(roleId)))
-        );
-      });
+      // ADR 0064: passing the behaviour's "Who can ask" allows every skill in
+      // its allowlist. Owner-only skills stay owner-only; per-skill grants are
+      // no longer a gate.
+      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter(
+        (candidate) =>
+          input.behaviour.allowedSkillIds.includes(candidate.id) &&
+          (owner || candidate.ownerOnly !== true),
+      );
       if (!permittedSkills.some((candidate) => candidate.id === skill)) {
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),
@@ -141,12 +137,11 @@ export const createAssistantService = (
           skillId: skill,
           actorId: input.userId,
           outcome: 'denied',
-          detail: 'No matching owner, user or role grant.',
+          detail: 'The skill is owner-only.',
         });
         return {
           ok: false,
-          content:
-            'You do not have a matching grant for this assistant skill. No action was taken.',
+          content: 'Only the server owner can use this assistant skill. No action was taken.',
         };
       }
       if (input.command === 'remind') {

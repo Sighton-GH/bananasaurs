@@ -113,7 +113,6 @@ export const registerAssistantRoutes = (
         status: aiStatus,
         terms: providerTerms ?? undefined,
         behaviours,
-        grants: skillGrants,
         skills: CLUB_ASSISTANT_SKILLS,
         now: deps.now(),
         reviewMaxAgeMs: eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS,

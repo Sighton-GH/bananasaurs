@@ -96,6 +96,12 @@ describe('routeAssistantMention', () => {
     });
   });
 
+  it('routes a role tag from a member outside Who can ask so the service can refuse visibly (ADR 0064)', () => {
+    expect(
+      routeAssistantMention(event({ authorRoleIds: [] }), behaviours, botUserId),
+    ).toMatchObject({ kind: 'routed', behaviour: { id: 'club' } });
+  });
+
   it('ignores bot messages and unrelated role mentions', () => {
     expect(routeAssistantMention(event({ authorIsBot: true }), behaviours, botUserId)).toEqual({
       kind: 'not-addressed',

@@ -484,6 +484,39 @@ describe('Release 3 review fixes', () => {
     },
   );
 
+  it('answers a member whose role is only in Who can ask, with no skill grant (ADR 0064)', async () => {
+    const OPERATIONS = '789012345678901299';
+    const scope = t.scopes.forGuild(GUILD);
+    const operations = { ...direct, id: 'ops', callerRoleIds: [OPERATIONS] };
+    assistantRepo.putBehaviour(scope, { ...direct, enabled: false }, NOW);
+    assistantRepo.putBehaviour(scope, operations, NOW);
+    seedEligibility(t, 'fixture');
+    const network = vi.fn(async () => ({ text: 'Meeting is Monday.', model: 'fixture-model' }));
+    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, {
+      provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
+    });
+    const ask = (callerRoleIds: string[]) =>
+      service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds,
+        behaviour: operations,
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'slash-command',
+        invocationId: `int-ops-${callerRoleIds.length}`,
+      });
+    await expect(ask([OPERATIONS])).resolves.toMatchObject({ ok: true });
+    expect(network).toHaveBeenCalledTimes(1);
+    // A role outside Who can ask is still refused, before any provider call.
+    await expect(ask([])).resolves.toMatchObject({
+      ok: false,
+      content: 'This behaviour is not available to your server roles. No action was taken.',
+    });
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
   it('does not warn for a provider whose terms say it does not train', async () => {
     seedEligibility(t, 'fixture');
     const warn = vi.fn();
