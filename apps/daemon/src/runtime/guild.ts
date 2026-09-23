@@ -691,6 +691,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     now,
     {},
     deps.assistantConfig ?? (() => config),
+    logger,
   );
   const { interactionTokenSealer } = deps;
 

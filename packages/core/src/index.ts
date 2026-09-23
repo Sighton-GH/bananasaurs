@@ -551,7 +551,11 @@ export type {
   TextProvider,
 } from './providers/contracts.js';
 export { ProviderError, type ProviderErrorKind } from './providers/errors.js';
-export { assertProviderEligible, type ProviderAudience } from './providers/eligibility.js';
+export {
+  assertProviderEligible,
+  providerMayTrain,
+  type ProviderAudience,
+} from './providers/eligibility.js';
 export { GeminiProvider, type GeminiProviderOptions } from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,

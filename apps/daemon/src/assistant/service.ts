@@ -6,9 +6,12 @@ import {
   createNvidiaNimProvider,
   createOpenRouterProvider,
   GeminiProvider,
+  providerMayTrain,
   redactEvidenceText,
   SafeProvider,
+  safeLogFields,
   type Config,
+  type Logger,
   type TextProvider,
   validateReminderDraft,
 } from '@bananasaurs/core';
@@ -69,6 +72,7 @@ export const createAssistantService = (
   now: () => number,
   testPorts: AssistantServiceTestPorts = {},
   liveConfig: () => Config = () => config,
+  logger: Pick<Logger, 'warn'> = { warn: () => undefined },
 ): AssistantCommandService => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
@@ -219,9 +223,11 @@ export const createAssistantService = (
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
-      // Hard rule 5: the provider_eligibility table is consulted on the
-      // request path, and a missing or ineligible row fails closed before
-      // any member content crosses the provider boundary (finding 1).
+      // Hard rule 5 (ADR 0062): the provider_eligibility table is consulted
+      // on the request path. A missing terms record, or one that does not
+      // allow production use, fails closed before any member content crosses
+      // the provider boundary (finding 1). A provider that may train on input
+      // is allowed by owner decision and raises a warning instead.
       const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
       try {
         if (eligibilityRow === undefined)
@@ -243,14 +249,23 @@ export const createAssistantService = (
           skillId: skill,
           actorId: input.userId,
           outcome: 'denied',
-          detail: 'Provider training-data eligibility is not verified.',
+          detail: 'Provider terms are not recorded or do not allow this use.',
         });
         return {
           ok: false,
           content:
-            "The AI provider's training-data eligibility is not verified, so no content was sent outside the server.",
+            "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
         };
       }
+      if (providerMayTrain(eligibilityRow))
+        logger.warn(
+          safeLogFields({
+            component: 'assistant',
+            guildId: input.guildId,
+            reason: 'provider-may-train',
+          }),
+          'assistant provider may train on server content',
+        );
       const resources = assistantRepo
         .listResources(scope)
         .filter((r) => input.behaviour.resourceIds.includes(r.id) && r.enabled);

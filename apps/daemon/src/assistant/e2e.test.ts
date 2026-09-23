@@ -32,12 +32,16 @@ const config = parseConfig({
   AI_PROFILE_COST_CLASS: 'free',
 });
 
-const seedEligibility = (t: MigratedTestDatabase, providerId: string): void => {
+const seedEligibility = (
+  t: MigratedTestDatabase,
+  providerId: string,
+  trainsOnInput: 'no' | 'yes' | 'unknown' = 'no',
+): void => {
   writeInstance(t.scopes.instance(), ({ db }) => {
     db.insert(schema.providerEligibility)
       .values({
         provider: providerId,
-        trainsOnInput: 'no',
+        trainsOnInput,
         evidenceUrl: 'https://example.com/data-privacy',
         productionUseAllowed: 1,
         reviewedAt: NOW,
@@ -435,11 +439,81 @@ describe('Release 3 review fixes', () => {
       invocationId: 'int-1',
     });
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.content).toContain('eligibility');
+    expect(result.ok === false && result.content).toContain('terms');
     expect(network).not.toHaveBeenCalled();
     expect(assistantRepo.listSkillActivity(t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
       outcome: 'denied',
     });
+  });
+
+  it.each(['yes', 'unknown'] as const)(
+    'answers through a provider whose terms say trainsOnInput=%s and logs a warning (ADR 0062)',
+    async (trainsOnInput) => {
+      seedEligibility(t, 'fixture', trainsOnInput);
+      const network = vi.fn(async () => ({ text: 'Meeting is Monday.', model: 'fixture-model' }));
+      const warn = vi.fn();
+      const service = createAssistantService(
+        t.scopes.forGuild(GUILD),
+        t.scopes.instance(),
+        config,
+        () => NOW,
+        {
+          provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
+        },
+        undefined,
+        { warn },
+      );
+      const result = await service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds: [CLUB_ROLE],
+        behaviour: direct,
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'slash-command',
+        invocationId: 'int-train',
+      });
+      expect(result.ok).toBe(true);
+      expect(network).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ guildId: GUILD, reason: 'provider-may-train' }),
+        'assistant provider may train on server content',
+      );
+    },
+  );
+
+  it('does not warn for a provider whose terms say it does not train', async () => {
+    seedEligibility(t, 'fixture');
+    const warn = vi.fn();
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        provider: {
+          id: 'fixture',
+          capabilities: new Set(['text']),
+          generateText: async () => ({ text: 'ok', model: 'fixture-model' }),
+        },
+      },
+      undefined,
+      { warn },
+    );
+    await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'when is the meeting?' },
+      source: 'slash-command',
+      invocationId: 'int-no-train',
+    });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('finding 2: a test-injected provider still passes through the outbound scan', async () => {
