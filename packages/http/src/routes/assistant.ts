@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { CLUB_ASSISTANT_SKILLS, validateResourceUrl } from '@bananasaurs/core';
+import { CLUB_ASSISTANT_SKILLS, STARTER_SKILL_IDS, validateResourceUrl } from '@bananasaurs/core';
 import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -301,6 +301,35 @@ export const registerAssistantRoutes = (
       deps.now(),
     );
     return reply.status(200).send({ ok: true });
+  });
+  app.post('/api/assistant/skill-grants/starter', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = z
+      .object({ roleIds: z.array(snowflake).min(1).max(100) })
+      .safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const before: Record<string, readonly string[]> = {};
+    for (const grant of assistantRepo.listSkillGrants(session.scope)) {
+      if (STARTER_SKILL_IDS.includes(grant.skillId)) {
+        before[grant.skillId] = grant.roleIds;
+      }
+    }
+    assistantRepo.addRolesToSkillGrants(
+      session.scope,
+      { skillIds: STARTER_SKILL_IDS, roleIds: parsed.data.roleIds },
+      deps.now(),
+    );
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_skill_grant.starter_applied',
+      subjectType: 'assistant_skill_grant',
+      subjectId: 'starter',
+      before,
+      after: { roleIds: parsed.data.roleIds, skillIds: STARTER_SKILL_IDS },
+    });
+    return reply.status(200).send({ skillIds: STARTER_SKILL_IDS });
   });
   app.put('/api/assistant/skill-grants/:id', (request, reply) => {
     const session = guard.require(request, reply);

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, type Capability } from '@bananasaurs/core';
+import { parseGuildId, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
 import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
@@ -429,5 +429,63 @@ describe('provider cost statement is owner-only', () => {
       payload: { provider: 'gemini', enabled: true, costClass: 'unknown' },
     });
     expect(allowed.statusCode).toBe(200);
+  });
+});
+
+describe('assistant skill-grant starter', () => {
+  const postStarter = (cookie: string, csrf: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/assistant/skill-grants/starter',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload,
+    });
+  it('requires config.write', async () => {
+    const { cookie, csrf } = await signIn();
+    const response = await postStarter(cookie, csrf, { roleIds: [ROLE_A] });
+    expect(response.statusCode).toBe(403);
+  });
+  it('rejects an empty roleIds or a non-snowflake', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const empty = await postStarter(cookie, csrf, { roleIds: [] });
+    expect(empty.statusCode).toBe(400);
+    expect(empty.json()).toEqual({ error: 'bad-request' });
+    const bad = await postStarter(cookie, csrf, { roleIds: ['not-a-snowflake'] });
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toEqual({ error: 'bad-request' });
+  });
+  it('grants the starter skills once, leaves confirmation skills alone, and stays idempotent', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const first = await postStarter(cookie, csrf, { roleIds: [ROLE_A, ROLE_B] });
+    expect(first.statusCode).toBe(200);
+    expect(first.json()).toEqual({ skillIds: [...STARTER_SKILL_IDS] });
+    expect(STARTER_SKILL_IDS).toHaveLength(9);
+    const scope = t.scopes.forGuild(GUILD);
+    const grants = assistantRepo.listSkillGrants(scope);
+    for (const skillId of STARTER_SKILL_IDS) {
+      expect(grants.find((grant) => grant.skillId === skillId)?.roleIds).toEqual([ROLE_A, ROLE_B]);
+    }
+    expect(grants.find((grant) => grant.skillId === 'create-reminder')).toBeUndefined();
+    const starterAudits = effectRepo
+      .tailAudit(scope, {})
+      .filter((row) => row.action === 'assistant_skill_grant.starter_applied');
+    expect(starterAudits).toHaveLength(1);
+    expect(starterAudits[0]).toMatchObject({
+      action: 'assistant_skill_grant.starter_applied',
+      subjectType: 'assistant_skill_grant',
+      subjectId: 'starter',
+    });
+    const second = await postStarter(cookie, csrf, { roleIds: [ROLE_A, ROLE_B] });
+    expect(second.statusCode).toBe(200);
+    const afterSecond = assistantRepo.listSkillGrants(scope);
+    for (const skillId of STARTER_SKILL_IDS) {
+      expect(afterSecond.find((grant) => grant.skillId === skillId)?.roleIds).toEqual([
+        ROLE_A,
+        ROLE_B,
+      ]);
+    }
+    expect(afterSecond).toEqual(grants);
   });
 });

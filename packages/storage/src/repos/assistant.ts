@@ -512,7 +512,10 @@ export const addRolesToSkillGrants = (
       .select()
       .from(assistantSkillGrants)
       .where(
-        scope.only(assistantSkillGrants, inArray(assistantSkillGrants.skillId, [...input.skillIds])),
+        scope.only(
+          assistantSkillGrants,
+          inArray(assistantSkillGrants.skillId, [...input.skillIds]),
+        ),
       )
       .all();
     const bySkillId = new Map(existing.map((row) => [row.skillId, row]));
