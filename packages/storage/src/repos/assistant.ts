@@ -496,6 +496,63 @@ export const putSkillGrant = (scope: GuildScope, input: AssistantSkillGrant, now
       })
       .run();
   });
+/**
+ * Adds roles to several skills' grants in one transaction. A union: existing
+ * role and user ids are kept, duplicates are not repeated. Returns the grants
+ * as stored after the write, in the order given.
+ */
+export const addRolesToSkillGrants = (
+  scope: GuildScope,
+  input: { skillIds: readonly string[]; roleIds: readonly string[] },
+  now: number,
+): readonly AssistantSkillGrant[] =>
+  write(scope, ({ db }) => {
+    if (input.skillIds.length === 0) return [];
+    const existing = db
+      .select()
+      .from(assistantSkillGrants)
+      .where(
+        scope.only(assistantSkillGrants, inArray(assistantSkillGrants.skillId, [...input.skillIds])),
+      )
+      .all();
+    const bySkillId = new Map(existing.map((row) => [row.skillId, row]));
+    const result: AssistantSkillGrant[] = [];
+    for (const skillId of input.skillIds) {
+      const row = bySkillId.get(skillId);
+      const currentRoleIds = row === undefined ? [] : array(row.roleIdsJson);
+      const currentUserIds = row === undefined ? [] : array(row.userIdsJson);
+      const roleIds = [...currentRoleIds];
+      for (const roleId of input.roleIds) {
+        if (!roleIds.includes(roleId)) roleIds.push(roleId);
+      }
+      db.insert(assistantSkillGrants)
+        .values({
+          guildId: scope.guildId,
+          skillId,
+          roleIdsJson: JSON.stringify(roleIds),
+          userIdsJson: JSON.stringify(currentUserIds),
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [assistantSkillGrants.guildId, assistantSkillGrants.skillId],
+          set: {
+            roleIdsJson: JSON.stringify(roleIds),
+            userIdsJson: JSON.stringify(currentUserIds),
+            updatedAt: now,
+          },
+        })
+        .run();
+      result.push({ skillId, roleIds, userIds: [...currentUserIds] });
+      bySkillId.set(skillId, {
+        guildId: scope.guildId,
+        skillId,
+        roleIdsJson: JSON.stringify(roleIds),
+        userIdsJson: JSON.stringify(currentUserIds),
+        updatedAt: now,
+      });
+    }
+    return result;
+  });
 export const listTickets = (scope: GuildScope) =>
   read(scope, (db) =>
     db

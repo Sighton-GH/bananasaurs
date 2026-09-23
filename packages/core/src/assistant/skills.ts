@@ -110,6 +110,11 @@ export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
   },
 ] as const;
 
+/** Everyday skills a first-run owner may grant in one step: not owner-only, no confirmation. */
+export const STARTER_SKILL_IDS: readonly string[] = CLUB_ASSISTANT_SKILLS.filter(
+  (skill) => skill.ownerOnly !== true && !skill.requiresConfirmation,
+).map((skill) => skill.id);
+
 export const decideSkillUse = (
   skill: AssistantSkill,
   principal: AssistantPrincipal,
