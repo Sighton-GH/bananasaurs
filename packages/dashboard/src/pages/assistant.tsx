@@ -27,6 +27,7 @@ import {
   behaviourBody,
   decisionTone,
   RoleChecklist,
+  skillEffectLabel,
   ticketTone,
   toggleIn,
 } from './assistant-shared.js';
@@ -50,16 +51,6 @@ const TAG_SURFACES = [
 ] as const;
 
 type TagSurface = (typeof TAG_SURFACES)[number]['value'];
-
-/** Plain words for what a skill does, for the create-form picker (ADR 0059). */
-const skillEffectWord = (effect: AssistantData['skills'][number]['effect']): string =>
-  effect === 'read'
-    ? 'Reads'
-    : effect === 'draft'
-      ? 'Drafts, never sends'
-      : effect === 'schedule'
-        ? 'Schedules'
-        : 'Sends';
 
 /**
  * Create a brand-new tag behaviour through the existing PUT create path
@@ -260,10 +251,7 @@ function CreateBehaviourForm({
                     />
                     <span>
                       <span className="block">{skill.name}</span>
-                      <span className="text-xs text-ink-muted">
-                        {skillEffectWord(skill.effect)}
-                        {skill.requiresConfirmation ? ' · you confirm first' : ''}
-                      </span>
+                      <span className="text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
                     </span>
                   </label>
                 </li>

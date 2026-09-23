@@ -89,10 +89,36 @@ describe('AssistantSkillsPage', () => {
     expect(within(catalogue).getAllByText('Search club knowledge').length).toBeGreaterThan(0);
     expect(within(catalogue).queryByText(/Needs the Discord permission/)).toBeNull();
     expect(within(catalogue).queryByText('assistant.search')).toBeNull();
-    expect(within(catalogue).getByText('Asks an operator first')).toBeTruthy();
-    expect(within(catalogue).getAllByText('Can do automatically').length).toBeGreaterThan(0);
+    expect(within(catalogue).getByText('You confirm first')).toBeTruthy();
+    expect(within(catalogue).getAllByText('Runs without asking').length).toBeGreaterThan(0);
     expect(within(catalogue).getByText('owner only')).toBeTruthy();
     expect(screen.getAllByRole('link', { name: 'Assistant history' }).length).toBeGreaterThan(0);
+  });
+
+  it('states the double narrowing in plain words on both cards', async () => {
+    renderPage();
+    const allowlists = (await screen.findByRole('heading', { name: 'Allowlists per behaviour' }))
+      .closest('section')!;
+    expect(
+      within(allowlists).getByText(
+        'For each behaviour, choose the skills it may use. The model only sees the skills allowed here, and members also need to be allowed below.',
+      ),
+    ).toBeTruthy();
+    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
+      'section',
+    )!;
+    expect(
+      within(grants).getByText(
+        'Who may use each skill anywhere in this server. Reminders, memory and decisions stay with the owner until you allow someone here.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('labels allowlist effects in the same plain words as the create form', async () => {
+    renderPage();
+    const region = await screen.findByRole('region', { name: 'Allowlist for Club assistant' });
+    expect(within(region).getByText('Reads')).toBeTruthy();
+    expect(within(region).getByText('Schedules · you confirm first')).toBeTruthy();
   });
 
   it('saves a per-behaviour allowlist as the whole behaviour object', async () => {

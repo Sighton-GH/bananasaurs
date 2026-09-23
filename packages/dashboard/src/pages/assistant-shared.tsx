@@ -1,18 +1,11 @@
-import { useState } from 'react';
 import type { AssistantSkill, ReminderStatus } from '@bananasaurs/core';
 import {
-  skillGrantUrl,
   type AssistantBehaviourView,
   type DecisionRow,
   type GuildMemberInfo,
   type GuildRoleInfo,
-  type SkillGrant,
   type TicketRow,
 } from '../api/assistant.js';
-import type { Session } from '../app/session.js';
-import { Badge } from '../ui/Badge.js';
-import { Button } from '../ui/Button.js';
-import { useToast } from '../ui/Toast.js';
 
 /**
  * Pieces the assistant purpose pages share (ADR 0060): the whole-object
@@ -39,6 +32,19 @@ export const decisionTone = (status: DecisionRow['status']) =>
 
 export const toggleIn = (list: readonly string[], id: string): readonly string[] =>
   list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
+
+/** Plain words for what a skill does, shared by the create form and the allowlist editor. */
+export const skillEffectLabel = (skill: AssistantSkill): string => {
+  const word =
+    skill.effect === 'read'
+      ? 'Reads'
+      : skill.effect === 'draft'
+        ? 'Drafts, never sends'
+        : skill.effect === 'schedule'
+          ? 'Schedules'
+          : 'Sends';
+  return skill.requiresConfirmation ? `${word} · you confirm first` : word;
+};
 
 /** The body PUT /api/assistant/behaviours/:id accepts: every stored field, whole. */
 export const behaviourBody = (
@@ -147,90 +153,4 @@ export function MemberChecklist({
   );
 }
 
-/** Guild-scoped grants: who may use each skill at all, before any per-member permission check. */
-export function SkillGrantRow({
-  skill,
-  grant,
-  roles,
-  members,
-  session,
-  onSaved,
-}: {
-  readonly skill: AssistantSkill;
-  readonly grant: SkillGrant | undefined;
-  readonly roles: readonly GuildRoleInfo[] | undefined;
-  readonly members: readonly GuildMemberInfo[] | undefined;
-  readonly session: Session;
-  readonly onSaved: () => void;
-}) {
-  const toast = useToast();
-  const [roleIds, setRoleIds] = useState<readonly string[]>(grant?.roleIds ?? []);
-  const [userIds, setUserIds] = useState<readonly string[]>(grant?.userIds ?? []);
-  const [busy, setBusy] = useState(false);
 
-  const save = async () => {
-    setBusy(true);
-    try {
-      const result = await session.write(skillGrantUrl(skill.id), { roleIds, userIds }, 'PUT');
-      if (result !== undefined) {
-        toast({ tone: 'ok', title: `${skill.name} grant saved` });
-        onSaved();
-      }
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <li className="rounded-md border border-line bg-canvas p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <p className="text-sm font-medium">{skill.name}</p>
-          <p className="text-xs text-ink-muted">{skill.description}</p>
-        </div>
-        <span className="flex shrink-0 gap-1">
-          {skill.ownerOnly === true && <Badge tone="neutral">owner only</Badge>}
-          <Badge tone={skill.requiresConfirmation ? 'hold' : 'ok'}>
-            {skill.requiresConfirmation ? 'Asks an operator first' : 'Can do automatically'}
-          </Badge>
-        </span>
-      </div>
-      {skill.ownerOnly === true ? (
-        <p className="mt-2 text-xs text-ink-muted">
-          Always restricted to the server owner; no grant can widen it.
-        </p>
-      ) : (
-        <>
-          <div className="mt-2 grid gap-3 md:grid-cols-2">
-            <div>
-              <p className="text-xs text-ink-muted">Roles</p>
-              <RoleChecklist
-                label={`Roles granted ${skill.name}`}
-                roles={roles}
-                selected={roleIds}
-                onToggle={(id) => setRoleIds((ids) => toggleIn(ids, id))}
-              />
-            </div>
-            <div>
-              <p className="text-xs text-ink-muted">Members</p>
-              <MemberChecklist
-                label={`Members granted ${skill.name}`}
-                members={members}
-                selected={userIds}
-                onToggle={(id) => setUserIds((ids) => toggleIn(ids, id))}
-              />
-            </div>
-          </div>
-          <p className="mt-2 text-xs text-ink-muted">
-            A skill with no grants fails closed: nobody may use it.
-          </p>
-          <div className="mt-2">
-            <Button busy={busy} onClick={() => void save()}>
-              Save grant
-            </Button>
-          </div>
-        </>
-      )}
-    </li>
-  );
-}

@@ -17,7 +17,13 @@ import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
-import { behaviourBody, MemberChecklist, RoleChecklist, toggleIn } from './assistant-shared.js';
+import {
+  behaviourBody,
+  MemberChecklist,
+  RoleChecklist,
+  skillEffectLabel,
+  toggleIn,
+} from './assistant-shared.js';
 
 /**
  * One behaviour's skill allowlist - the ONLY place allowlists are edited
@@ -80,10 +86,7 @@ function BehaviourAllowlistEditor({
               />
               <span>
                 <span className="block">{skill.name}</span>
-                <span className="text-xs text-ink-muted">
-                  {skill.effect}
-                  {skill.requiresConfirmation ? ' · asks an operator first' : ''}
-                </span>
+                <span className="text-xs text-ink-muted">{skillEffectLabel(skill)}</span>
               </span>
             </label>
           </li>
@@ -266,9 +269,9 @@ function SkillGrantList({
 }
 
 /**
- * `/assistant/skills`: the skill catalogue with required permissions and
- * confirmation classes, the per-behaviour allowlists, guild-wide grants and
- * a link to Assistant history for recent activity (ADR 0060).
+ * `/assistant/skills`: the skill catalogue with confirmation classes, the
+ * per-behaviour allowlists, guild-wide grants and a link to Assistant
+ * history for recent activity (ADR 0060).
  */
 export function AssistantSkillsPage() {
   const session = useSession();
@@ -311,9 +314,7 @@ export function AssistantSkillsPage() {
                       <span className="flex shrink-0 gap-1">
                         {skill.ownerOnly === true && <Badge tone="neutral">owner only</Badge>}
                         <Badge tone={skill.requiresConfirmation ? 'hold' : 'ok'}>
-                          {skill.requiresConfirmation
-                            ? 'Asks an operator first'
-                            : 'Can do automatically'}
+                          {skill.requiresConfirmation ? 'You confirm first' : 'Runs without asking'}
                         </Badge>
                       </span>
                     </div>
@@ -325,7 +326,7 @@ export function AssistantSkillsPage() {
             <Card title="Allowlists per behaviour">
               <p className="mb-1 text-sm text-ink-muted">
                 For each behaviour, choose the skills it may use. The model only sees the skills
-                allowed here, narrowed further by grants and the member's own permissions.
+                allowed here, and members also need to be allowed below.
               </p>
               {data.behaviours.length === 0 ? (
                 <p className="text-sm text-ink-muted">
@@ -349,8 +350,8 @@ export function AssistantSkillsPage() {
             </Card>
             <Card title="Skill grants">
               <p className="mb-3 text-sm text-ink-muted">
-                Who may use each skill anywhere in this server, before the member's own permissions
-                are checked. Reminder creation stays with the owner until a grant says otherwise.
+                Who may use each skill anywhere in this server. Reminders, memory and decisions stay
+                with the owner until you allow someone here.
               </p>
               {data.skillGrants === undefined ? (
                 <p className="text-xs text-ink-muted">
