@@ -103,8 +103,15 @@ export const listEligibility = (scope: InstanceScope): readonly EligibilityRow[]
       .map(toRow),
   );
 
-/** `'no'` only — `'unknown'` is treated as `'yes'` (hard rule 5, ADR 0010 §1). */
-export const isEligible = (row: EligibilityRow): boolean => row.trainsOnInput === 'no';
+/**
+ * `'no'` only — `'unknown'` is treated as `'yes'` (hard rule 5, ADR 0010 §1).
+ * A dashboard-written row must also cite its terms: an empty-string clause
+ * fails closed, while a migration-seeded row without a clause (its citation
+ * lives in the migration) still passes.
+ */
+export const isEligible = (row: EligibilityRow): boolean =>
+  row.trainsOnInput === 'no' &&
+  (row.evidenceClause === undefined || row.evidenceClause.trim().length > 0);
 
 /**
  * Records that a human re-checked this provider's row and found it still

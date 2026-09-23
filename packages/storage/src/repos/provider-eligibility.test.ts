@@ -48,6 +48,16 @@ describe('isEligible treats unknown as yes (hard rule 5, ADR 0010 §1)', () => {
     expect(isEligible(row('no'))).toBe(true);
   });
 
+  it("refuses 'no' with an empty-string clause", () => {
+    expect(isEligible({ ...row('no'), evidenceClause: '' })).toBe(false);
+    expect(isEligible({ ...row('no'), evidenceClause: '   ' })).toBe(false);
+  });
+
+  it("accepts a seeded 'no' row without a clause", () => {
+    expect(findEligibility(instance, 'anthropic-consumer-mcp')).toBeDefined();
+    expect(isEligible(findEligibility(instance, 'anthropic-consumer-mcp')!)).toBe(true);
+  });
+
   it("refuses 'yes'", () => {
     expect(isEligible(row('yes'))).toBe(false);
   });
