@@ -353,8 +353,18 @@ export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
  * rule 3 still applies: a row that does not validate is treated as no
  * progress rather than trusted into the answer path on every retry.
  */
+/** ADR 0065: what the AI log channel reports; carried so a resumed job can still log it. */
+const invocationTrace = z.object({
+  latencyMs: z.number().nonnegative(),
+  model: z.string().optional(),
+  tools: z.array(z.object({ name: z.string(), ok: z.boolean() })).optional(),
+  sources: z.array(z.object({ title: z.string(), url: z.string() })).optional(),
+  web: z.boolean().optional(),
+  usedFallback: z.boolean().optional(),
+});
+
 export const assistantInvokeCursor = z.object({
-  stage: z.enum(['invoke-done', 'answered', 'escalation-sent']),
+  stage: z.enum(['invoke-done', 'answered', 'escalation-sent', 'logged']),
   result: z.discriminatedUnion('ok', [
     z.object({
       ok: z.literal(true),
@@ -366,8 +376,9 @@ export const assistantInvokeCursor = z.object({
           ticketId: z.string().min(1),
         })
         .optional(),
+      trace: invocationTrace.optional(),
     }),
-    z.object({ ok: z.literal(false), content: z.string() }),
+    z.object({ ok: z.literal(false), content: z.string(), trace: invocationTrace.optional() }),
   ]),
 });
 export type AssistantInvokeCursor = z.infer<typeof assistantInvokeCursor>;

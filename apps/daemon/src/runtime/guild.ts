@@ -50,6 +50,7 @@ import {
 import {
   authzStoreFor,
   archiveRepo,
+  assistantRepo,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -770,6 +771,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
         send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
         logger,
+        logChannelId: () => assistantRepo.getAssistantSettings(scope).logChannelId,
+        now,
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),

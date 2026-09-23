@@ -212,6 +212,8 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       respond,
       send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     await handler.run(handler.payload.parse(queued[0]), {
       jobId: 1,
