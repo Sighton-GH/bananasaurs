@@ -345,6 +345,30 @@ describe('assistant context writes are audited', () => {
   });
 });
 
+describe('assistant setup checklist', () => {
+  it('returns setup, providerTerms and viewerIsOwner for the owner', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const result = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(result.statusCode).toBe(200);
+    const body: {
+      setup: { steps: { id: string }[]; answering: boolean };
+      providerTerms: unknown;
+      viewerIsOwner: boolean;
+    } = result.json();
+    expect(body.setup.steps.map((step) => step.id)).toEqual([
+      'connect',
+      'terms',
+      'cost',
+      'who',
+      'skills',
+      'on',
+    ]);
+    expect(body.providerTerms).toBeNull();
+    expect(body.viewerIsOwner).toBe(true);
+  });
+});
+
 describe('provider cost statement is owner-only', () => {
   it('refuses a non-owner changing the cost class but lets them save other settings', async () => {
     const OPERATOR = 'acct_fedcba9876543210fedcba9876543210';

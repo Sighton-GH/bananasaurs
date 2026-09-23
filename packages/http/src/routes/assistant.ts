@@ -1,11 +1,12 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { CLUB_ASSISTANT_SKILLS, validateResourceUrl } from '@bananasaurs/core';
-import { accountRepo, assistantRepo } from '@bananasaurs/storage';
+import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 import type { SessionContext } from '../auth.js';
+import { computeAssistantSetup } from './assistant-setup.js';
 
 /**
  * Instance owner, read from the account row rather than any capability: the
@@ -71,8 +72,22 @@ export const registerAssistantRoutes = (
       deps.assistantDirectories === undefined
         ? undefined
         : await deps.assistantDirectories(session.guildId).catch(() => undefined);
+    const behaviours = assistantRepo.listBehaviours(session.scope);
+    const skillGrants = assistantRepo.listSkillGrants(session.scope);
+    const aiStatus = deps.assistantProviderConfig?.status() ??
+      deps.assistantAiStatus ?? {
+        provider: 'unknown',
+        enabled: false,
+        modelConfigured: false,
+        keyConfigured: false,
+        keyReadable: false,
+        costClass: 'unknown',
+        secretSource: 'missing',
+      };
+    const providerTerms =
+      eligibilityRepo.findEligibility(deps.scopes.instance(), aiStatus.provider) ?? null;
     return reply.status(200).send({
-      behaviours: assistantRepo.listBehaviours(session.scope).map((item) => ({
+      behaviours: behaviours.map((item) => ({
         ...item,
         ticket: {
           ...(item.ticketChannelId === undefined ? {} : { channelId: item.ticketChannelId }),
@@ -83,21 +98,23 @@ export const registerAssistantRoutes = (
       reminders: assistantRepo.listReminders(session.scope),
       skills: CLUB_ASSISTANT_SKILLS,
       activity: assistantRepo.listSkillActivity(session.scope, 100),
-      skillGrants: assistantRepo.listSkillGrants(session.scope),
+      skillGrants,
       tickets: assistantRepo.listTickets(session.scope),
       decisions: assistantRepo.listDecisions(session.scope),
       serverCard: assistantRepo.getServerCard(session.scope),
       memories: assistantRepo.listMemories(session.scope),
-      aiStatus: deps.assistantProviderConfig?.status() ??
-        deps.assistantAiStatus ?? {
-          provider: 'unknown',
-          enabled: false,
-          modelConfigured: false,
-          keyConfigured: false,
-          keyReadable: false,
-          costClass: 'unknown',
-          secretSource: 'missing',
-        },
+      aiStatus,
+      setup: computeAssistantSetup({
+        status: aiStatus,
+        terms: providerTerms ?? undefined,
+        behaviours,
+        grants: skillGrants,
+        skills: CLUB_ASSISTANT_SKILLS,
+        now: deps.now(),
+        reviewMaxAgeMs: eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS,
+      }),
+      providerTerms,
+      viewerIsOwner: isInstanceOwner(deps, session),
       ...(directories ?? {}),
     });
   });
