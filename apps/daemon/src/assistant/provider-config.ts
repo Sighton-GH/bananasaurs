@@ -49,15 +49,51 @@ export interface ProviderConfigStore {
     now: number,
   ): void;
 }
+/**
+ * The provider as `.env` configures it: what runs when nothing is saved in
+ * the dashboard, and the whole story when no key store exists.
+ */
+export const envProviderStatus = (
+  config: Config,
+  secretSource: ProviderSecretSource,
+): ProviderConfigStatus => {
+  const envKey =
+    config.AI_PROVIDER === 'gemini'
+      ? config.GEMINI_API_KEY
+      : config.AI_PROVIDER === 'openrouter'
+        ? config.OPENROUTER_API_KEY
+        : config.AI_PROVIDER === 'nvidia-nim'
+          ? config.NVIDIA_NIM_API_KEY
+          : undefined;
+  return {
+    provider: config.AI_PROVIDER,
+    ...(config.AI_MODEL === undefined ? {} : { model: config.AI_MODEL }),
+    enabled: config.AI_PROVIDER !== 'off' && config.AI_MODEL !== undefined,
+    modelConfigured: config.AI_MODEL !== undefined,
+    keyConfigured: envKey !== undefined,
+    keyReadable: envKey !== undefined,
+    costClass: config.AI_PROFILE_COST_CLASS,
+    secretSource,
+  };
+};
+
+/**
+ * `envBase` is the process config. With no saved row the env provider runs
+ * and `status()` reports it; once the dashboard saves a row, the row is
+ * authoritative, and switched off there means off.
+ */
 export const createProviderConfigStore = (
   instance: InstanceScope,
   masterSecret: string,
   secretSource: Exclude<ProviderSecretSource, 'missing'> = 'env',
+  envBase?: Config,
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
   return {
     status() {
       const row = assistantProviderRepo.get(instance);
+      if (row === undefined && envBase !== undefined && envBase.AI_PROVIDER !== 'off')
+        return envProviderStatus(envBase, secretSource);
       if (row === undefined)
         return {
           provider: 'off',
@@ -82,13 +118,9 @@ export const createProviderConfigStore = (
     },
     effective(base) {
       const row = assistantProviderRepo.get(instance);
-      if (
-        row === undefined ||
-        !row.enabled ||
-        row.provider === 'off' ||
-        row.apiKeyEnc === undefined
-      )
-        return base;
+      if (row === undefined) return base;
+      if (!row.enabled || row.provider === 'off' || row.apiKeyEnc === undefined)
+        return { ...base, AI_PROVIDER: 'off' };
       const apiKey = open(key, row.apiKeyEnc);
       if (apiKey === undefined) return { ...base, AI_PROVIDER: 'off' };
       return {

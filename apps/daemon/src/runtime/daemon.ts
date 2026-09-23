@@ -146,7 +146,12 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const providerStore =
     providerSecret.source === 'missing'
       ? undefined
-      : createProviderConfigStore(scopes.instance(), providerSecret.secret, providerSecret.source);
+      : createProviderConfigStore(
+          scopes.instance(),
+          providerSecret.secret,
+          providerSecret.source,
+          config,
+        );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
 
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();

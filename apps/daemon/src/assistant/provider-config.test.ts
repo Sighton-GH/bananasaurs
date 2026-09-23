@@ -104,3 +104,36 @@ it('applies the stored cost class to the effective config', () => {
   store.save({ provider: 'gemini', enabled: true, costClass: 'paid' }, 11);
   expect(store.effective(base).AI_PROFILE_COST_CLASS).toBe('paid');
 });
+it('reports the env-configured provider when nothing is saved in the dashboard', () => {
+  const envBase = {
+    ...base,
+    AI_PROVIDER: 'gemini' as const,
+    AI_MODEL: 'env-model',
+    GEMINI_API_KEY: 'env-key',
+    AI_PROFILE_COST_CLASS: 'free' as const,
+  };
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32), 'file', envBase);
+  expect(store.status()).toEqual({
+    provider: 'gemini',
+    model: 'env-model',
+    enabled: true,
+    modelConfigured: true,
+    keyConfigured: true,
+    keyReadable: true,
+    costClass: 'free',
+    secretSource: 'file',
+  });
+  expect(store.effective(envBase).AI_PROVIDER).toBe('gemini');
+});
+it('a saved dashboard row is authoritative: switched off there means off, even with env set', () => {
+  const envBase = {
+    ...base,
+    AI_PROVIDER: 'gemini' as const,
+    AI_MODEL: 'env-model',
+    GEMINI_API_KEY: 'env-key',
+  };
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32), 'file', envBase);
+  store.save({ provider: 'gemini', model: 'm', apiKey: 'k', enabled: false }, 10);
+  expect(store.status()).toMatchObject({ provider: 'gemini', enabled: false });
+  expect(store.effective(envBase).AI_PROVIDER).toBe('off');
+});

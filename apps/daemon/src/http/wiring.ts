@@ -25,6 +25,7 @@ import {
   type HttpDeps,
   type AssistantProviderStatus,
 } from '@bananasaurs/http';
+import { envProviderStatus } from '../assistant/provider-config.js';
 import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
 
@@ -249,31 +250,6 @@ const printBootstrapBanner = (token: string, port: number, ttlMinutes: number): 
  * the confusion `bootstrap reissue` warns about and tells the operator to fix
  * with a restart.
  */
-const envAiStatus = (
-  config: Config,
-  secretProblem: AssistantProviderStatus['secretProblem'],
-): AssistantProviderStatus => {
-  const envKey =
-    config.AI_PROVIDER === 'gemini'
-      ? config.GEMINI_API_KEY
-      : config.AI_PROVIDER === 'openrouter'
-        ? config.OPENROUTER_API_KEY
-        : config.AI_PROVIDER === 'nvidia-nim'
-          ? config.NVIDIA_NIM_API_KEY
-          : undefined;
-  return {
-    provider: config.AI_PROVIDER,
-    ...(config.AI_MODEL === undefined ? {} : { model: config.AI_MODEL }),
-    enabled: config.AI_PROVIDER !== 'off' && config.AI_MODEL !== undefined,
-    modelConfigured: config.AI_MODEL !== undefined,
-    keyConfigured: envKey !== undefined,
-    keyReadable: envKey !== undefined,
-    costClass: config.AI_PROFILE_COST_CLASS,
-    secretSource: 'missing',
-    ...(secretProblem === undefined ? {} : { secretProblem }),
-  };
-};
-
 export async function startDashboardApi(deps: DashboardApiDeps): Promise<DashboardApi> {
   const httpDeps: HttpDeps = {
     scopes: deps.scopes,
@@ -290,7 +266,12 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
       : { assistantProviderConfig: deps.assistantProviderConfig }),
     // Only read when there is no store: the env-configured provider, with the
     // reason the dashboard cannot save keys itself.
-    assistantAiStatus: envAiStatus(deps.config, deps.assistantSecretProblem),
+    assistantAiStatus: {
+      ...envProviderStatus(deps.config, 'missing'),
+      ...(deps.assistantSecretProblem === undefined
+        ? {}
+        : { secretProblem: deps.assistantSecretProblem }),
+    },
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.
