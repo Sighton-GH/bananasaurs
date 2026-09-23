@@ -510,3 +510,86 @@ describe('ProvidersPage', () => {
     expect(screen.queryByText('Other services')).toBeNull();
   });
 });
+
+describe('ProvidersPage: backup model and web search (ADR 0066)', () => {
+  const putBody = (mock: ReturnType<typeof stubFetch>) =>
+    bodyOf(
+      mock.mock.calls.find(
+        (c) => (c[0] as string) === '/api/assistant/provider' && c[1]?.method === 'PUT',
+      )!,
+    ) as Record<string, unknown>;
+
+  it('saves a backup model, and clears it with an empty field', async () => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: '/api/assistant/provider', body: SAVED_STATUS },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const field = await screen.findByLabelText('Backup model (optional)');
+    fireEvent.change(field, { target: { value: ' gemini-2.5-flash-lite ' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save AI setup' }));
+    });
+    expect(putBody(mock).fallbackModel).toBe('gemini-2.5-flash-lite');
+
+    cleanup();
+    const mock2 = stubFetch([
+      {
+        url: '/api/assistant',
+        body: assistantBody({ aiStatus: { ...SAVED_STATUS, fallbackModel: 'old-lite' } }),
+      },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: '/api/assistant/provider', body: SAVED_STATUS },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const saved = await screen.findByLabelText('Backup model (optional)');
+    expect(saved).toHaveProperty('value', 'old-lite');
+    fireEvent.change(saved, { target: { value: '' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save AI setup' }));
+    });
+    expect(putBody(mock2).fallbackModel).toBeNull();
+  });
+
+  it('lets the owner save a Brave key and turn web search on, keeping the key write-only', async () => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: '/api/assistant/provider',
+        body: { ...SAVED_STATUS, webSearch: { keyConfigured: true, enabled: true } },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const card = (await screen.findByRole('heading', { name: 'Web search' })).closest('section')!;
+    fireEvent.change(within(card).getByLabelText('Brave Search API key'), {
+      target: { value: 'brave-raw-key' },
+    });
+    fireEvent.click(within(card).getByLabelText('Let the assistant search the web'));
+    await act(async () => {
+      fireEvent.click(within(card).getByRole('button', { name: 'Save web search' }));
+    });
+    expect(putBody(mock)).toEqual({
+      provider: 'gemini',
+      enabled: true,
+      searchApiKey: 'brave-raw-key',
+      searchEnabled: true,
+    });
+    const after = (await screen.findByRole('heading', { name: 'Web search' })).closest('section')!;
+    expect(within(after).getByLabelText('Brave Search API key')).toHaveProperty('value', '');
+    expect(within(after).getByText(/Powered by Brave Search/)).toBeTruthy();
+  });
+
+  it('shows web search read-only to a non-owner', async () => {
+    stubPage(assistantBody({ viewerIsOwner: false }));
+    renderWithSession(<ProvidersPage />);
+    const card = (await screen.findByRole('heading', { name: 'Web search' })).closest('section')!;
+    expect(within(card).getByText('Only the server owner can change web search.')).toBeTruthy();
+    expect(within(card).getByLabelText('Let the assistant search the web')).toHaveProperty(
+      'disabled',
+      true,
+    );
+  });
+});

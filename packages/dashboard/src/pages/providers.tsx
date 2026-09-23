@@ -116,6 +116,7 @@ function ServiceForm({
   const session = useSession();
   const toast = useToast();
   const [model, setModel] = useState(status?.model ?? '');
+  const [fallback, setFallback] = useState(status?.fallbackModel ?? '');
   const [apiKey, setApiKey] = useState('');
   const [enabled, setEnabled] = useState(status?.enabled ?? false);
   const [cost, setCost] = useState<'free' | 'paid' | 'unknown'>(status?.costClass ?? 'unknown');
@@ -133,6 +134,7 @@ function ServiceForm({
   useEffect(() => {
     if (savedService !== undefined && service !== savedService) {
       setModel('');
+      setFallback('');
       setCost('unknown');
     }
   }, [service, savedService]);
@@ -151,6 +153,11 @@ function ServiceForm({
       const body: Record<string, unknown> = { provider: service, enabled };
       const trimmed = model.trim();
       if (trimmed !== '') body.model = trimmed;
+      // Sent only when it changed: blank clears a saved backup model.
+      const fallbackTrimmed = fallback.trim();
+      const savedFallback = isSameService ? (status?.fallbackModel ?? '') : '';
+      if (fallbackTrimmed !== savedFallback)
+        body.fallbackModel = fallbackTrimmed === '' ? null : fallbackTrimmed;
       if (apiKey !== '') body.apiKey = apiKey;
       if (isOwner) body.costClass = cost;
       const result = await session.write<AiStatus>(PROVIDER_URL, body, 'PUT');
@@ -234,6 +241,14 @@ function ServiceForm({
         {chosen !== undefined && (
           <Field label="Model" hint={chosen.modelHint}>
             <Input value={model} onChange={(e) => setModel(e.target.value)} />
+          </Field>
+        )}
+        {chosen !== undefined && (
+          <Field
+            label="Backup model (optional)"
+            hint="Tried once when the main model is busy, on the same service and key. Changing it asks the cost question again."
+          >
+            <Input value={fallback} onChange={(e) => setFallback(e.target.value)} />
           </Field>
         )}
         {chosen !== undefined && (
@@ -339,6 +354,111 @@ function ServiceForm({
 }
 
 /** The owner-only terms form, prefilled from the stored record when one exists. */
+/**
+ * ADR 0066: web search through the Brave Search API. Owner-only, because it
+ * sends queries to a new outside service. The key is write-only.
+ */
+function WebSearchCard({
+  status,
+  isOwner,
+  onSaved,
+}: {
+  readonly status: AiStatus | undefined;
+  readonly isOwner: boolean;
+  readonly onSaved: () => void;
+}) {
+  const session = useSession();
+  const toast = useToast();
+  const [apiKey, setApiKey] = useState('');
+  const [enabled, setEnabled] = useState(status?.webSearch?.enabled ?? false);
+  const [busy, setBusy] = useState(false);
+  const keySaved = status?.webSearch?.keyConfigured === true;
+
+  const submit = async (): Promise<void> => {
+    if (status === undefined) return;
+    setBusy(true);
+    try {
+      const body: Record<string, unknown> = {
+        provider: status.provider,
+        enabled: status.enabled,
+        ...(apiKey === '' ? {} : { searchApiKey: apiKey }),
+        searchEnabled: enabled,
+      };
+      const result = await session.write<AiStatus>(PROVIDER_URL, body, 'PUT');
+      if (result === undefined) return;
+      setApiKey('');
+      toast({ tone: 'ok', title: enabled ? 'Web search is on' : 'Web search is off' });
+      onSaved();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Web search">
+      <form
+        className="grid gap-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void submit();
+        }}
+      >
+        <p className="text-sm text-ink-muted">
+          Lets the assistant search the public web through the Brave Search API. Answers that use
+          web results end with &ldquo;Powered by Brave Search&rdquo;. Brave&apos;s free allowance is
+          about 1,000 searches a month.{' '}
+          <a
+            className="underline"
+            href="https://api-dashboard.search.brave.com/terms-of-service"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Read the terms
+          </a>{' '}
+          ·{' '}
+          <a
+            className="underline"
+            href="https://api-dashboard.search.brave.com/"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Get an API key
+          </a>
+        </p>
+        <p className="text-xs text-hold">
+          Brave&apos;s terms forbid using results to train AI. While your AI service trains on what
+          it is sent, search results sent to it may be used that way.
+        </p>
+        <Field label="Brave Search API key">
+          <Input
+            type="password"
+            autoComplete="new-password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+            disabled={!isOwner}
+            {...(keySaved ? { placeholder: 'Saved. Leave blank to keep it' } : {})}
+          />
+        </Field>
+        <Checkbox
+          label="Let the assistant search the web"
+          checked={enabled}
+          onChange={(e) => setEnabled(e.target.checked)}
+          disabled={!isOwner}
+        />
+        {isOwner ? (
+          <div>
+            <Button type="submit" busy={busy}>
+              Save web search
+            </Button>
+          </div>
+        ) : (
+          <p className="text-xs text-ink-muted">Only the server owner can change web search.</p>
+        )}
+      </form>
+    </Card>
+  );
+}
+
 function TermsForm({
   provider,
   providerName,
@@ -739,6 +859,14 @@ function SetupBody({
           isOwner={data.viewerIsOwner ?? false}
           service={service}
           onServiceChange={setService}
+          onSaved={onChanged}
+        />
+      </div>
+      <div className="mt-4">
+        <WebSearchCard
+          key={`web-${String(status?.webSearch?.enabled ?? false)}`}
+          status={status}
+          isOwner={data.viewerIsOwner ?? false}
           onSaved={onChanged}
         />
       </div>

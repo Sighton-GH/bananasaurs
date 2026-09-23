@@ -136,6 +136,10 @@ export interface AiStatus {
   readonly costClass: 'free' | 'paid' | 'unknown';
   readonly secretSource: 'env' | 'file' | 'missing';
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
+  /** Tried once when the main model is overloaded. */
+  readonly fallbackModel?: string;
+  /** ADR 0066. Absent while no Brave key is saved and search is off. */
+  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
