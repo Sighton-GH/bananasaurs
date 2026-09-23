@@ -216,10 +216,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     guildScopes: [...byGuild.values()].map(({ scope }) => scope),
     now,
     backupTimer,
-    chosenAiProvider: () => {
-      const saved = providerStore?.status().provider;
-      return saved !== undefined && saved !== 'off' ? saved : config.AI_PROVIDER;
-    },
+    chosenAiProvider: () => providerStore?.status().provider ?? config.AI_PROVIDER,
   });
 
   /**
