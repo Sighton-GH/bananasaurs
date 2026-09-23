@@ -420,6 +420,33 @@ describe('ProvidersPage', () => {
     expect(screen.getByText('The assistant can answer members.')).toBeTruthy();
   });
 
+  it('keeps a terms warning visible beside Answering and never treats it as unfinished', async () => {
+    const warning = 'It may train on your data.';
+    const body = (answering: boolean) =>
+      assistantBody({
+        setup: {
+          answering,
+          steps: [
+            { id: 'connect', state: 'done', detail: 'Connected.' },
+            { id: 'terms', state: 'warning', detail: warning },
+            { id: 'cost', state: answering ? 'done' : 'todo', detail: 'Confirm the cost.' },
+            { id: 'who', state: 'done', detail: 'Roles chosen.' },
+            { id: 'skills', state: 'done', detail: 'Skills granted.' },
+            { id: 'on', state: 'done', detail: 'On.' },
+          ],
+        },
+      });
+    stubPage(body(true));
+    renderWithSession(<ProvidersPage />);
+    expect(await screen.findByText('Answering')).toBeTruthy();
+    expect(screen.getByText(warning)).toBeTruthy();
+    cleanup();
+    stubPage(body(false));
+    renderWithSession(<ProvidersPage />);
+    expect(await screen.findByText('Not answering yet')).toBeTruthy();
+    expect(screen.getByText('Confirm the cost.')).toBeTruthy();
+  });
+
   it('points at the Assistant page when only later steps remain', async () => {
     stubPage(
       assistantBody({

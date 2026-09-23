@@ -337,10 +337,10 @@ export const doctorCommand = defineCommand<Record<string, never>>({
         });
       } else {
         problems.push({
-          title: `Provider ${warning.provider} trains on input (or its policy is unknown)`,
+          title: `Provider ${warning.provider} may train on input (or its policy is unknown)`,
           impact:
-            'Member content must not be sent to it; the assistant refuses until this is resolved.',
-          fix: 'Set AI_PROVIDER=off, or switch to a provider that does not train on input.',
+            'The assistant still uses it by owner decision (ADR 0062): member questions and server excerpts sent to it may be used for training.',
+          fix: 'Accept this, or switch to a provider or plan that does not train on input and record its terms as not training.',
           route: '/providers',
           details: `trainsOnInput=${warning.trainsOnInput}  ${reviewed}`,
         });

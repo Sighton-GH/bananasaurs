@@ -50,16 +50,26 @@ const STATUS_STEP_IDS = ['connect', 'terms', 'cost'] as const;
 /** One badge plus one sentence: answering, or what still blocks answers. */
 function StatusLine({ setup }: { readonly setup: AssistantSetup | undefined }) {
   if (setup === undefined) return null;
+  // A warning step works (ADR 0062): it is shown, never treated as unfinished.
+  const warnings = setup.steps.filter((s) => s.state === 'warning');
   if (setup.answering) {
     return (
-      <p className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge tone="ok">Answering</Badge>
-        <span>The assistant can answer members.</span>
-      </p>
+      <div className="space-y-2">
+        <p className="flex flex-wrap items-center gap-2 text-sm">
+          <Badge tone="ok">Answering</Badge>
+          <span>The assistant can answer members.</span>
+        </p>
+        {warnings.map((step) => (
+          <p key={step.id} role="note" className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge tone="hold">Warning</Badge>
+            <span>{step.detail}</span>
+          </p>
+        ))}
+      </div>
     );
   }
   const next = STATUS_STEP_IDS.map((id) => setup.steps.find((s) => s.id === id)).find(
-    (s) => s !== undefined && s.state !== 'done',
+    (s) => s !== undefined && s.state !== 'done' && s.state !== 'warning',
   );
   if (next === undefined) {
     return (
