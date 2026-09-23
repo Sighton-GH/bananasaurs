@@ -13,7 +13,7 @@ export interface SetupStep {
 }
 export interface AssistantSetup {
   readonly steps: readonly SetupStep[]; // always all six, in the order above
-  /** True only when a member's question could actually reach the provider today. */
+  /** True exactly when the request path would send a member's question to the provider. */
   readonly answering: boolean;
 }
 
@@ -120,10 +120,11 @@ const termsStep = (
     };
   }
   if (now - terms.reviewedAt > reviewMaxAgeMs) {
+    const date = new Date(terms.reviewedAt).toISOString().slice(0, 10);
     return {
       id: 'terms',
       state: 'todo',
-      detail: 'The terms were last checked over 90 days ago. Check them again.',
+      detail: `Terms last checked on ${date}, over 90 days ago. The assistant still answers; check them again.`,
     };
   }
   const date = new Date(terms.reviewedAt).toISOString().slice(0, 10);
@@ -231,5 +232,15 @@ export const computeAssistantSetup = (input: {
     skillsStep(input.behaviours, input.grants, input.skills),
     onStep(input.status, input.behaviours),
   ];
-  return { steps, answering: steps.every((step) => step.state === 'done') };
+  const othersDone = steps
+    .filter((step) => step.id !== 'terms')
+    .every((step) => step.state === 'done');
+  const staleButAcceptable =
+    input.terms !== undefined &&
+    input.terms.trainsOnInput === 'no' &&
+    input.terms.productionUseAllowed &&
+    input.now - input.terms.reviewedAt > input.reviewMaxAgeMs;
+  const answering =
+    steps.every((step) => step.state === 'done') || (othersDone && staleButAcceptable);
+  return { steps, answering };
 };

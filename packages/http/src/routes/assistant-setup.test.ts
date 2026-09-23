@@ -249,16 +249,38 @@ describe('computeAssistantSetup', () => {
       });
     });
 
-    it('is todo when the review is stale', () => {
+    it('is todo when the review is stale, but still answering when everything else is done', () => {
+      const reviewedAt = NOW - 91 * DAY_MS;
+      const date = new Date(reviewedAt).toISOString().slice(0, 10);
       const setup = computeAssistantSetup({
         ...doneInput(),
-        terms: terms({ reviewedAt: NOW - 91 * DAY_MS }),
+        terms: terms({ reviewedAt }),
       });
       expect(stepById(setup, 'terms')).toEqual({
         id: 'terms',
         state: 'todo',
-        detail: 'The terms were last checked over 90 days ago. Check them again.',
+        detail: `Terms last checked on ${date}, over 90 days ago. The assistant still answers; check them again.`,
       });
+      expect(setup.answering).toBe(true);
+    });
+
+    it('is not answering when stale and another step is not done', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        terms: terms({ reviewedAt: NOW - 91 * DAY_MS }),
+        status: status({ costClass: 'unknown' }),
+      });
+      expect(stepById(setup, 'terms').state).toBe('todo');
+      expect(setup.answering).toBe(false);
+    });
+
+    it('is not answering when stale terms are otherwise unacceptable', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        terms: terms({ reviewedAt: NOW - 91 * DAY_MS, productionUseAllowed: false }),
+      });
+      expect(stepById(setup, 'terms').state).toBe('blocked');
+      expect(setup.answering).toBe(false);
     });
 
     it('is done with the UTC review date', () => {
