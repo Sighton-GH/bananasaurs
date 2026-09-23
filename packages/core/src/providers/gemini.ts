@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type {
   GenerateTextRequest,
   GenerateTextResponse,
+  GenerationMessage,
   ProviderCapability,
   TextProvider,
 } from './contracts.js';
@@ -16,7 +17,21 @@ const geminiResponseSchema = z.object({
       z.object({
         content: z
           .object({
-            parts: z.array(z.object({ text: z.string().optional() })).default([]),
+            parts: z
+              .array(
+                z.object({
+                  text: z.string().optional(),
+                  thought: z.boolean().optional(),
+                  functionCall: z
+                    .object({
+                      name: z.string().min(1),
+                      args: z.record(z.string(), z.unknown()).optional(),
+                      id: z.string().optional(),
+                    })
+                    .optional(),
+                }),
+              )
+              .default([]),
           })
           .optional(),
         finishReason: z.string().optional(),
@@ -32,6 +47,43 @@ const geminiResponseSchema = z.object({
     .optional(),
   modelVersion: z.string().optional(),
 });
+
+/**
+ * Maps messages to Gemini contents. An assistant turn with `providerParts`
+ * is sent back exactly as Gemini returned it, thought signatures included.
+ * Adjacent tool results are merged into one user turn: Gemini expects every
+ * call of a parallel batch answered together.
+ */
+const toContents = (messages: readonly GenerationMessage[]): unknown[] => {
+  const contents: { role: 'user' | 'model'; parts: unknown[] }[] = [];
+  for (const message of messages) {
+    if (message.role === 'tool') {
+      const part = {
+        functionResponse: {
+          ...(message.toolCallId === undefined ? {} : { id: message.toolCallId }),
+          name: message.toolName ?? 'unknown',
+          response: { content: message.text },
+        },
+      };
+      const last = contents.at(-1);
+      const lastIsResponses =
+        last?.role === 'user' &&
+        last.parts.every((p) => typeof p === 'object' && p !== null && 'functionResponse' in p);
+      if (last !== undefined && lastIsResponses) last.parts.push(part);
+      else contents.push({ role: 'user', parts: [part] });
+      continue;
+    }
+    if (message.role === 'assistant' && Array.isArray(message.providerParts)) {
+      contents.push({ role: 'model', parts: message.providerParts as unknown[] });
+      continue;
+    }
+    contents.push({
+      role: message.role === 'assistant' ? 'model' : 'user',
+      parts: [{ text: message.text }],
+    });
+  }
+  return contents;
+};
 
 export interface GeminiProviderOptions {
   readonly apiKey: string;
@@ -80,10 +132,10 @@ export class GeminiProvider implements TextProvider {
     const timeout = AbortSignal.timeout(this.timeoutMs);
     const signal = request.signal ? AbortSignal.any([request.signal, timeout]) : timeout;
     const body = {
-      contents: request.messages.map((message) => ({
-        role: message.role === 'assistant' ? 'model' : 'user',
-        parts: [{ text: message.text }],
-      })),
+      contents: toContents(request.messages),
+      ...(request.tools !== undefined && request.tools.length > 0
+        ? { tools: [{ functionDeclarations: request.tools }] }
+        : {}),
       ...(request.systemInstruction
         ? { system_instruction: { parts: [{ text: request.systemInstruction }] } }
         : {}),
@@ -129,15 +181,32 @@ export class GeminiProvider implements TextProvider {
       );
     }
 
-    const parsed = geminiResponseSchema.safeParse(await response.json());
+    const raw: unknown = await response.json();
+    const parsed = geminiResponseSchema.safeParse(raw);
     if (!parsed.success) {
       throw new ProviderError('invalid-response', 'Gemini returned an invalid response', false, {
         cause: parsed.error,
       });
     }
     const candidate = parsed.data.candidates[0];
-    const text = candidate?.content?.parts.flatMap((part) => part.text ?? []).join('') ?? '';
-    if (text === '') {
+    const parts = candidate?.content?.parts ?? [];
+    const text = parts.flatMap((part) => (part.thought === true ? [] : (part.text ?? []))).join('');
+    const toolCalls = parts.flatMap((part) =>
+      part.functionCall === undefined
+        ? []
+        : [
+            {
+              ...(part.functionCall.id === undefined ? {} : { id: part.functionCall.id }),
+              name: part.functionCall.name,
+              args: part.functionCall.args ?? {},
+            },
+          ],
+    );
+    // The raw parts, not the parsed ones: Zod drops fields it does not know
+    // (thoughtSignature), and Gemini rejects a tool turn echoed without them.
+    const rawParts = (raw as { candidates?: { content?: { parts?: unknown } }[] }).candidates?.[0]
+      ?.content?.parts;
+    if (text === '' && toolCalls.length === 0) {
       const kind = candidate?.finishReason === 'SAFETY' ? 'safety-refusal' : 'invalid-response';
       throw new ProviderError(kind, 'Gemini returned no text', false);
     }
@@ -147,6 +216,7 @@ export class GeminiProvider implements TextProvider {
       text,
       model: parsed.data.modelVersion ?? request.model,
       ...(candidate?.finishReason ? { finishReason: candidate.finishReason } : {}),
+      ...(toolCalls.length === 0 ? {} : { toolCalls, providerParts: rawParts }),
       ...(usage
         ? {
             usage: {

@@ -68,6 +68,17 @@ export class OpenAiCompatibleProvider implements TextProvider {
     assertOutboundRequestSafe(request);
     if (request.messages.length === 0)
       throw new ProviderError('invalid-request', 'at least one message is required', false);
+    // No `tools` capability here (ADR 0067): the caller should never offer
+    // tools, and a tool turn has no faithful mapping without call ids.
+    if (
+      (request.tools !== undefined && request.tools.length > 0) ||
+      request.messages.some((message) => message.role === 'tool')
+    )
+      throw new ProviderError(
+        'capability-mismatch',
+        'this provider does not support tool calls',
+        false,
+      );
     const signal = request.signal
       ? AbortSignal.any([request.signal, AbortSignal.timeout(this.timeoutMs)])
       : AbortSignal.timeout(this.timeoutMs);
