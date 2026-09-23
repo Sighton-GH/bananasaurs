@@ -391,7 +391,7 @@ describe('assistant setup checklist', () => {
     app = createServer({ deps, registerRoutes: registerAssistantRoutes });
     const result = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
     expect(result.statusCode).toBe(200);
-    const parsed = result.json() as { setup: { steps: { id: string; detail: string }[] } };
+    const parsed: { setup: { steps: { id: string; detail: string }[] } } = result.json();
     expect(parsed.setup.steps.find((step) => step.id === 'who')?.detail).toBe(
       'Member and Helper can ask.',
     );
@@ -406,7 +406,7 @@ describe('assistant setup checklist', () => {
     );
     const result = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
     expect(result.statusCode).toBe(200);
-    const parsed = result.json() as { setup: { steps: { id: string; detail: string }[] } };
+    const parsed: { setup: { steps: { id: string; detail: string }[] } } = result.json();
     expect(parsed.setup.steps.find((step) => step.id === 'who')?.detail).toBe('2 roles can ask.');
   });
 });

@@ -344,9 +344,7 @@ describe('computeAssistantSetup', () => {
     it('names two roles', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
-        behaviours: [
-          behaviour({ callerRoleIds: ['222222222222222222', '333333333333333333'] }),
-        ],
+        behaviours: [behaviour({ callerRoleIds: ['222222222222222222', '333333333333333333'] })],
         roleNames: new Map([
           ['222222222222222222', 'Member'],
           ['333333333333333333', 'Helper'],
@@ -360,11 +358,7 @@ describe('computeAssistantSetup', () => {
         ...doneInput(),
         behaviours: [
           behaviour({
-            callerRoleIds: [
-              '222222222222222222',
-              '333333333333333333',
-              '444444444444444444',
-            ],
+            callerRoleIds: ['222222222222222222', '333333333333333333', '444444444444444444'],
           }),
         ],
         roleNames: new Map([

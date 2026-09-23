@@ -891,9 +891,7 @@ function AssistantReady({
               <span className="mt-1 block font-mono text-sm">{mention}</span>
               <span className="mt-2 flex items-center justify-between gap-2">
                 <strong>{item.name}</strong>
-                <Badge tone={item.enabled ? 'ok' : 'neutral'}>
-                  {item.enabled ? 'On' : 'Off'}
-                </Badge>
+                <Badge tone={item.enabled ? 'ok' : 'neutral'}>{item.enabled ? 'On' : 'Off'}</Badge>
               </span>
             </button>
           );

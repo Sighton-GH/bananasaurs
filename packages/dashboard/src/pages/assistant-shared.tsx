@@ -152,5 +152,3 @@ export function MemberChecklist({
     </ul>
   );
 }
-
-

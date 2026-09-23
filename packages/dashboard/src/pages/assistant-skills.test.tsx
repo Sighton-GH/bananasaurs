@@ -97,8 +97,9 @@ describe('AssistantSkillsPage', () => {
 
   it('states the double narrowing in plain words on both cards', async () => {
     renderPage();
-    const allowlists = (await screen.findByRole('heading', { name: 'Allowlists per behaviour' }))
-      .closest('section')!;
+    const allowlists = (
+      await screen.findByRole('heading', { name: 'Allowlists per behaviour' })
+    ).closest('section')!;
     expect(
       within(allowlists).getByText(
         'For each behaviour, choose the skills it may use. The model only sees the skills allowed here, and members also need to be allowed below.',

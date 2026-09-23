@@ -159,22 +159,18 @@ const whoStep = (
   }
   if (roles.size > 0) {
     const ids = [...roles];
-    const names =
-      roleNames === undefined
-        ? undefined
-        : ids.map((id) => roleNames.get(id));
-    if (names !== undefined && names.every((name) => name !== undefined)) {
-      const known = names as string[];
-      if (known.length === 1) {
-        return { id: 'who', state: 'done', detail: `${known[0]} can ask.` };
+    const names = roleNames === undefined ? undefined : ids.map((id) => roleNames.get(id));
+    if (names !== undefined && names.every((name): name is string => name !== undefined)) {
+      if (names.length === 1) {
+        return { id: 'who', state: 'done', detail: `${names[0]} can ask.` };
       }
-      if (known.length === 2) {
-        return { id: 'who', state: 'done', detail: `${known[0]} and ${known[1]} can ask.` };
+      if (names.length === 2) {
+        return { id: 'who', state: 'done', detail: `${names[0]} and ${names[1]} can ask.` };
       }
       return {
         id: 'who',
         state: 'done',
-        detail: `${known.slice(0, -1).join(', ')} and ${known[known.length - 1]} can ask.`,
+        detail: `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]} can ask.`,
       };
     }
     return {
@@ -209,7 +205,8 @@ const skillsStep = (
     return {
       id: 'skills',
       state: 'done',
-      detail: ready === 1 ? '1 skill is ready to use.' : `${String(ready)} skills are ready to use.`,
+      detail:
+        ready === 1 ? '1 skill is ready to use.' : `${String(ready)} skills are ready to use.`,
     };
   }
   return {
