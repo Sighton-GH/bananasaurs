@@ -550,6 +550,8 @@ export type {
   ProviderEligibility,
   ProviderUsage,
   TextProvider,
+  ToolCall,
+  ToolDeclaration,
 } from './providers/contracts.js';
 export { ProviderError, type ProviderErrorKind } from './providers/errors.js';
 export {

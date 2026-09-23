@@ -9,7 +9,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { assistantRepo, guildRepo, schema, writeInstance } from '@bananasaurs/storage';
+import { archiveRepo, assistantRepo, guildRepo, schema, writeInstance } from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
 
 const GUILD = parseGuildId('234567890123456789');
@@ -695,5 +695,168 @@ describe('first-run owner access', () => {
       source: 'slash-command',
     });
     expect(member).toMatchObject({ ok: false });
+  });
+});
+
+describe('tools, shared resources and the archive (ADR 0067)', () => {
+  let t: MigratedTestDatabase;
+  const PUBLIC = '811111111111111111';
+  const STAFF = '822222222222222222';
+  const THREAD = '833333333333333333';
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club organiser',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club', 'open-resource'],
+    resourceIds: ['handbook'],
+    enabled: true,
+  };
+  const seed = (messageId: string, channelId: string, content: string, threadId?: string) =>
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD), {
+      messageId,
+      channelId,
+      ...(threadId === undefined ? {} : { threadId }),
+      authorId: MEMBER,
+      content,
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+  const memberChannels = vi.fn(async () => [{ id: PUBLIC, name: 'general' }]);
+  const service = (provider: TextProvider, fetchResource = vi.fn()) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      { provider, fetchResource },
+      undefined,
+      undefined,
+      { memberChannels },
+    );
+  const invocation = (command: 'ask' | 'find', input: Record<string, string>) => ({
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: MEMBER,
+    callerRoleIds: [CLUB_ROLE],
+    behaviour: direct,
+    command,
+    input,
+    source: 'slash-command' as const,
+    invocationId: `inv-${command}`,
+  });
+
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    for (const channelId of [PUBLIC, STAFF])
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: NOW });
+    seed('844444444444444441', PUBLIC, 'battery order ships friday');
+    seed('844444444444444442', STAFF, 'battery budget is secret');
+    seed('844444444444444443', PUBLIC, 'battery chat in a private thread', THREAD);
+    seedEligibility(t, 'fixture');
+    for (const [id, title] of [
+      ['handbook', 'Handbook'],
+      ['rules', 'Rules'],
+    ] as const)
+      assistantRepo.putResource(scope, {
+        id,
+        guildId: GUILD,
+        title,
+        url: `https://example.com/${id}`,
+        kind: 'website',
+        enabled: true,
+        reviewedAt: new Date(NOW).toISOString(),
+      });
+  });
+  afterEach(() => t.close());
+
+  it('/find searches only archived channels the member can view, and no threads', async () => {
+    const result = await service({
+      id: 'fixture',
+      capabilities: new Set(['text']),
+      generateText: vi.fn(),
+    }).invoke(invocation('find', { query: 'battery' }));
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('ships friday');
+    expect(result.content).not.toContain('secret');
+    expect(result.content).not.toContain('private thread');
+    expect(memberChannels).toHaveBeenCalledWith(MEMBER);
+  });
+
+  it('runs one tool round against the archive and traces it', async () => {
+    const requests: GenerateTextRequest[] = [];
+    const generateText = vi.fn(async (request: GenerateTextRequest) => {
+      requests.push(request);
+      return requests.length === 1
+        ? {
+            text: '',
+            model: 'fixture-model',
+            toolCalls: [{ name: 'search_archive', args: { query: 'battery' } }],
+          }
+        : { text: 'The order ships Friday.', model: 'fixture-model' };
+    });
+    const fetchResource = vi.fn(async () => ({
+      ok: true as const,
+      cache: 'miss' as const,
+      evidence: {
+        url: 'https://example.com/handbook',
+        mediaType: 'text/html',
+        text: 'Handbook text.',
+        fetchedAt: NOW,
+        trust: 'untrusted-reviewed-resource' as const,
+      },
+    }));
+    const result = await service(
+      { id: 'fixture', capabilities: new Set(['text', 'tools']), generateText },
+      fetchResource,
+    ).invoke(invocation('ask', { question: 'when does the battery ship?' }));
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: 'The order ships Friday.',
+      trace: {
+        model: 'fixture-model',
+        tools: [{ name: 'search_archive', ok: true }],
+        sources: [{ title: 'Handbook', url: 'https://example.com/handbook' }],
+      },
+    });
+    const toolTurn = requests[1]?.messages.find((m) => m.role === 'tool');
+    expect(toolTurn?.text).toContain('ships friday');
+    expect(toolTurn?.text).not.toContain('secret');
+    expect(requests[1]?.tools).toBeUndefined();
+    // Only the behaviour's own resource is fetched up front; the rest are listed.
+    expect(fetchResource).toHaveBeenCalledTimes(1);
+    expect(fetchResource).toHaveBeenCalledWith('https://example.com/handbook');
+    expect(requests[0]?.systemInstruction).toContain(
+      'OTHER CLUB RESOURCES (open them with the open_resource tool when useful)\nrules: Rules',
+    );
+  });
+
+  it('fetches every resource up front for a provider without tools', async () => {
+    const fetchResource = vi.fn(async () => ({
+      ok: false as const,
+      code: 'http-status' as const,
+      message: 'x',
+    }));
+    await service(
+      {
+        id: 'fixture',
+        capabilities: new Set(['text']),
+        generateText: async () => ({ text: 'ok', model: 'fixture-model' }),
+      },
+      fetchResource,
+    ).invoke(invocation('ask', { question: 'q' }));
+    expect(fetchResource.mock.calls.map((c) => c[0] as string)).toEqual([
+      'https://example.com/handbook',
+      'https://example.com/rules',
+    ]);
   });
 });

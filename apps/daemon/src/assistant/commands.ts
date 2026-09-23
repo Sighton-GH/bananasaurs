@@ -41,6 +41,16 @@ export interface AssistantInvocation {
   readonly invocationId?: string | undefined;
 }
 
+/** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
+export interface InvocationTrace {
+  readonly latencyMs: number;
+  readonly model?: string;
+  readonly tools?: readonly { readonly name: string; readonly ok: boolean }[];
+  readonly sources?: readonly { readonly title: string; readonly url: string }[];
+  readonly web?: boolean;
+  readonly usedFallback?: boolean;
+}
+
 export type AssistantInvocationResult =
   | {
       readonly ok: true;
@@ -50,8 +60,9 @@ export type AssistantInvocationResult =
         readonly reviewerRoleIds: readonly string[];
         readonly ticketId: string;
       };
+      readonly trace?: InvocationTrace;
     }
-  | { readonly ok: false; readonly content: string };
+  | { readonly ok: false; readonly content: string; readonly trace?: InvocationTrace };
 
 /**
  * The live assistant service sits behind this port. Its implementation owns

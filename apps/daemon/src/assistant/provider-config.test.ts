@@ -172,3 +172,55 @@ it('asks for the cost again when the model changes', () => {
   store.save({ provider: 'gemini', model: 'm2', enabled: true }, 11);
   expect(store.status()).toMatchObject({ model: 'm2', costClass: 'unknown', keyConfigured: true });
 });
+
+it('saves a fallback model for the same service and drops it on a service switch', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save(
+    {
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      fallbackModel: 'gemini-2.5-flash-lite',
+      apiKey: 'k',
+      enabled: true,
+    },
+    10,
+  );
+  expect(store.status().fallbackModel).toBe('gemini-2.5-flash-lite');
+  expect(store.effective(base).AI_FALLBACK_MODEL).toBe('gemini-2.5-flash-lite');
+  store.save({ provider: 'gemini', enabled: true }, 11);
+  expect(store.status().fallbackModel).toBe('gemini-2.5-flash-lite');
+  store.save({ provider: 'gemini', fallbackModel: null, enabled: true }, 12);
+  expect(store.status().fallbackModel).toBeUndefined();
+  store.save({ provider: 'gemini', fallbackModel: 'x', enabled: true }, 13);
+  store.save({ provider: 'openrouter', model: 'm', apiKey: 'k2', enabled: true }, 14);
+  expect(store.status().fallbackModel).toBeUndefined();
+});
+
+it('keeps the Brave key write-only and applies it only while web search is on (ADR 0066)', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save({ provider: 'gemini', model: 'm', apiKey: 'k', enabled: true }, 10);
+  expect(store.status().webSearch).toBeUndefined();
+  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBeUndefined();
+
+  store.save({ provider: 'gemini', enabled: true, searchApiKey: 'brave-raw-key' }, 11);
+  expect(store.status().webSearch).toEqual({ keyConfigured: true, enabled: false });
+  expect(assistantProviderRepo.get(t.scopes.instance())?.searchApiKeyEnc).not.toContain(
+    'brave-raw-key',
+  );
+  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBeUndefined();
+
+  store.save({ provider: 'gemini', enabled: true, searchEnabled: true }, 12);
+  expect(store.status().webSearch).toEqual({ keyConfigured: true, enabled: true });
+  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBe('brave-raw-key');
+  expect(JSON.stringify(store.status())).not.toContain('brave-raw-key');
+
+  // The search key is not tied to the AI service.
+  store.save({ provider: 'openrouter', model: 'm', apiKey: 'k2', enabled: true }, 13);
+  expect(store.effective(base).BRAVE_SEARCH_API_KEY).toBe('brave-raw-key');
+
+  // A saved row is authoritative: switched off there means off, even with env set.
+  store.save({ provider: 'openrouter', enabled: true, searchEnabled: false }, 14);
+  expect(
+    store.effective({ ...base, BRAVE_SEARCH_API_KEY: 'env-key' }).BRAVE_SEARCH_API_KEY,
+  ).toBeUndefined();
+});

@@ -18,7 +18,10 @@ When the provider supports tool calls, a request offers the model these
 read-only tools:
 
 - `search_archive`: search messages in archive-enabled channels that the asking
-  member can view (checked against their live Discord permissions)
+  member can view (checked against their live Discord permissions). Thread
+  messages are left out: the archive does not record which threads are
+  private, and a private thread is not visible to everyone who can see its
+  channel. `/find` uses the same search, answered without the AI.
 - `open_resource`: open any enabled reviewed resource
 - `web_search`: the Brave Search API, when it is switched on (ADR 0066)
 - `server_info`: the server card and the channels the member can view

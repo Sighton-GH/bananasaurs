@@ -22,6 +22,7 @@ export const SECRET_CONFIG_KEYS = [
   'GEMINI_API_KEY',
   'OPENROUTER_API_KEY',
   'NVIDIA_NIM_API_KEY',
+  'BRAVE_SEARCH_API_KEY',
 ] as const;
 
 export type SecretConfigKey = (typeof SECRET_CONFIG_KEYS)[number];
@@ -164,6 +165,22 @@ export const configSchema = z.object({
   GEMINI_API_KEY: z.string().min(1).optional(),
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   NVIDIA_NIM_API_KEY: z.string().min(1).optional(),
+  /** Tried once when `AI_MODEL` is overloaded; same service and key. Overridden by AI setup. */
+  AI_FALLBACK_MODEL: z.string().min(1).optional(),
+  /** ADR 0066: web search is on only while this key is set. Overridden by AI setup. */
+  BRAVE_SEARCH_API_KEY: z.string().min(1).optional(),
+  /** The club's IANA time zone, for the assistant's `current_time` tool. */
+  BANANASAURS_TIME_ZONE: z
+    .string()
+    .refine((zone) => {
+      try {
+        new Intl.DateTimeFormat('en-CA', { timeZone: zone });
+        return true;
+      } catch {
+        return false;
+      }
+    }, 'must be an IANA time zone such as America/Vancouver')
+    .default('America/Vancouver'),
   /** AES-GCM master secret for write-only provider keys stored through the dashboard. */
   ASSISTANT_PROVIDER_SECRET_KEY: z.string().min(32).optional(),
 });

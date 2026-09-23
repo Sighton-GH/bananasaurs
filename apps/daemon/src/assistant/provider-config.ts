@@ -34,6 +34,10 @@ export interface ProviderConfigStatus {
   readonly keyReadable: boolean;
   readonly costClass: ProviderCostClass;
   readonly secretSource: ProviderSecretSource;
+  /** Tried once when the main model is overloaded. */
+  readonly fallbackModel?: string;
+  /** ADR 0066. Absent while no Brave key is saved and search is off. */
+  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
 export interface ProviderConfigStore {
   status(): ProviderConfigStatus;
@@ -45,6 +49,11 @@ export interface ProviderConfigStore {
       apiKey?: string | undefined;
       enabled: boolean;
       costClass?: ProviderCostClass | undefined;
+      /** `null` clears it; omitted keeps it. */
+      fallbackModel?: string | null | undefined;
+      /** Write-only; omitted keeps the saved key. */
+      searchApiKey?: string | undefined;
+      searchEnabled?: boolean | undefined;
     },
     now: number,
   ): void;
@@ -114,17 +123,41 @@ export const createProviderConfigStore = (
         keyReadable: row.apiKeyEnc !== undefined && open(key, row.apiKeyEnc) !== undefined,
         costClass: row.costClass,
         secretSource,
+        ...(row.fallbackModel === undefined ? {} : { fallbackModel: row.fallbackModel }),
+        ...(row.searchApiKeyEnc === undefined && row.searchEnabled !== true
+          ? {}
+          : {
+              webSearch: {
+                keyConfigured: row.searchApiKeyEnc !== undefined,
+                enabled: row.searchEnabled === true,
+              },
+            }),
       };
     },
-    effective(base) {
+    effective(envConfig) {
       const row = assistantProviderRepo.get(instance);
-      if (row === undefined) return base;
+      if (row === undefined) return envConfig;
+      // A saved row is authoritative for web search too: off there means off.
+      const {
+        BRAVE_SEARCH_API_KEY: _envSearchKey,
+        AI_FALLBACK_MODEL: _envFallback,
+        ...rest
+      } = envConfig;
+      const searchKey =
+        row.searchEnabled === true && row.searchApiKeyEnc !== undefined
+          ? open(key, row.searchApiKeyEnc)
+          : undefined;
+      const base: Config = {
+        ...rest,
+        ...(searchKey === undefined ? {} : { BRAVE_SEARCH_API_KEY: searchKey }),
+      };
       if (!row.enabled || row.provider === 'off' || row.apiKeyEnc === undefined)
         return { ...base, AI_PROVIDER: 'off' };
       const apiKey = open(key, row.apiKeyEnc);
       if (apiKey === undefined) return { ...base, AI_PROVIDER: 'off' };
       return {
         ...base,
+        ...(row.fallbackModel === undefined ? {} : { AI_FALLBACK_MODEL: row.fallbackModel }),
         AI_PROVIDER: row.provider,
         AI_MODEL: row.model,
         AI_PROFILE_COST_CLASS: row.costClass,
@@ -145,15 +178,28 @@ export const createProviderConfigStore = (
       const same = current?.provider === input.provider ? current : undefined;
       const model = input.model ?? same?.model;
       const apiKeyEnc = input.apiKey !== undefined ? seal(key, input.apiKey) : same?.apiKeyEnc;
+      // The fallback model runs on the same service and key, so it follows the
+      // same rule; and the cost statement has to cover it too.
+      const fallbackModel =
+        input.fallbackModel === null ? undefined : (input.fallbackModel ?? same?.fallbackModel);
       const costClass =
         input.costClass ??
-        (same !== undefined && model === same.model ? same.costClass : 'unknown');
+        (same !== undefined && model === same.model && fallbackModel === same.fallbackModel
+          ? same.costClass
+          : 'unknown');
+      // Web search is its own service (ADR 0066): its key survives an AI
+      // service switch.
+      const searchApiKeyEnc =
+        input.searchApiKey !== undefined ? seal(key, input.searchApiKey) : current?.searchApiKeyEnc;
       assistantProviderRepo.put(instance, {
         provider: input.provider,
         ...(model === undefined ? {} : { model }),
         ...(apiKeyEnc === undefined ? {} : { apiKeyEnc }),
         enabled: input.enabled,
         costClass,
+        ...(fallbackModel === undefined ? {} : { fallbackModel }),
+        ...(searchApiKeyEnc === undefined ? {} : { searchApiKeyEnc }),
+        searchEnabled: input.searchEnabled ?? current?.searchEnabled ?? false,
         updatedAt: now,
       });
     },
