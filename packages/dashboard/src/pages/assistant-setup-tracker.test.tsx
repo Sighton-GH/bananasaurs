@@ -119,7 +119,13 @@ describe('SetupTracker', () => {
         }),
       }),
     );
-    expect(screen.getByText('Needs attention')).toBeTruthy();
+    for (const word of [
+      screen.getByText('Needs attention'),
+      ...screen.getAllByText('To do'),
+      ...screen.getAllByText('Done'),
+    ]) {
+      expect(word.closest('[aria-hidden="true"]')).toBeNull();
+    }
     expect(screen.getAllByText('To do')).toHaveLength(4);
     expect(screen.getAllByText('Done')).toHaveLength(1);
   });

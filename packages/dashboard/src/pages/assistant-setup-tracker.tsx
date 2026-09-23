@@ -33,21 +33,24 @@ const union = (lists: readonly (readonly string[])[]): string[] => [
 function StatusMark({ state }: { readonly state: 'done' | 'todo' | 'blocked' }) {
   if (state === 'done') {
     return (
-      <span className="mt-0.5 w-5 shrink-0 text-center" aria-hidden="true">
-        ✓<span className="sr-only">Done</span>
+      <span className="mt-0.5 w-5 shrink-0 text-center">
+        <span aria-hidden="true">✓</span>
+        <span className="sr-only">Done</span>
       </span>
     );
   }
   if (state === 'blocked') {
     return (
-      <span className="mt-0.5 w-5 shrink-0 text-center text-danger" aria-hidden="true">
-        !<span className="sr-only">Needs attention</span>
+      <span className="mt-0.5 w-5 shrink-0 text-center text-danger">
+        <span aria-hidden="true">!</span>
+        <span className="sr-only">Needs attention</span>
       </span>
     );
   }
   return (
-    <span className="mt-0.5 w-5 shrink-0 text-center" aria-hidden="true">
-      ○<span className="sr-only">To do</span>
+    <span className="mt-0.5 w-5 shrink-0 text-center">
+      <span aria-hidden="true">○</span>
+      <span className="sr-only">To do</span>
     </span>
   );
 }
