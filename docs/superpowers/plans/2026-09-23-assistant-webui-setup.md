@@ -1,6 +1,6 @@
-# DRAFT — Assistant web UI: first-run setup that actually works
+# Assistant web UI: first-run setup that actually works
 
-Status: DRAFT, awaiting owner approval
+Status: executed 2026-09-23 (owner decisions in ADR 0061)
 Base: `origin/oc/assistant-pages` (1bc147b) · Work branch: `oc/assistant-webui-setup`
 Source: the 2026-09-23 audit of `oc/assistant-pages`.
 
