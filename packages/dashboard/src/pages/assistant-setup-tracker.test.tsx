@@ -15,7 +15,9 @@ const ROLES = [
 ];
 
 function steps(
-  overrides: Partial<Record<string, { state: 'done' | 'todo' | 'blocked'; detail: string }>> = {},
+  overrides: Partial<
+    Record<string, { state: 'done' | 'todo' | 'blocked' | 'warning'; detail: string }>
+  > = {},
 ): AssistantSetup {
   const get = (id: 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on') =>
     overrides[id] ?? { state: 'todo' as const, detail: `${id} detail.` };
@@ -151,6 +153,28 @@ describe('SetupTracker', () => {
     const todoMarker = within(items[2]!).getByText('3').parentElement!;
     expect(todoMarker.className).toContain('rounded-full');
     expect(todoMarker.className).toContain('border-line');
+  });
+
+  it('shows a warning step with the hold-tone marker, its detail, and counts it as done', () => {
+    stubFetch([]);
+    renderTracker(
+      baseData({
+        setup: steps({
+          connect: { state: 'done', detail: 'Connected.' },
+          terms: { state: 'warning', detail: 'It may train on your data.' },
+        }),
+      }),
+    );
+    const list = screen.getByRole('list', { name: 'Setup steps' });
+    const items = within(list).getAllByRole('listitem');
+    const word = within(items[1]!).getByText('Warning');
+    expect(word.closest('[aria-hidden="true"]')).toBeNull();
+    expect(within(items[1]!).getByText('!').parentElement!.className).toContain('border-hold');
+    expect(within(items[1]!).getByText('It may train on your data.')).toBeTruthy();
+    expect(screen.getByText('2 of 6 done')).toBeTruthy();
+    // The warning row is not the next step; cost is.
+    expect(items[1]!.className).not.toContain('bg-panel');
+    expect(items[2]!.className).toContain('bg-panel');
   });
 
   it('highlights only the first not-done row as the next step', () => {
@@ -602,6 +626,28 @@ describe('SetupTracker', () => {
     expect(screen.queryByRole('list', { name: 'Setup steps' })).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: 'Show setup steps' }));
     expect(screen.getByRole('list', { name: 'Setup steps' })).toBeTruthy();
+  });
+
+  it('keeps a warning visible in the collapsed Answering summary', async () => {
+    stubFetch([]);
+    renderTracker(
+      baseData({
+        setup: {
+          answering: true,
+          steps: [
+            { id: 'connect', state: 'done', detail: 'Connected.' },
+            { id: 'terms', state: 'warning', detail: 'It may train on your data.' },
+            { id: 'cost', state: 'done', detail: 'Free.' },
+            { id: 'who', state: 'done', detail: 'Roles chosen.' },
+            { id: 'skills', state: 'done', detail: 'Skills granted.' },
+            { id: 'on', state: 'done', detail: 'On.' },
+          ],
+        },
+      }),
+    );
+    expect(await screen.findByText('Answering')).toBeTruthy();
+    expect(screen.getByText('6 of 6 done')).toBeTruthy();
+    expect(screen.getByText('It may train on your data.')).toBeTruthy();
   });
 
   it('renders nothing when setup is undefined', () => {

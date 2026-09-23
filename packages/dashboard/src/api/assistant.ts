@@ -140,7 +140,8 @@ export interface AiStatus {
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
   readonly id: SetupStepId;
-  readonly state: 'done' | 'todo' | 'blocked';
+  /** `warning` counts as complete: it works, with a caveat the owner accepted (ADR 0062). */
+  readonly state: 'done' | 'todo' | 'blocked' | 'warning';
   readonly detail: string;
 }
 export interface AssistantSetup {

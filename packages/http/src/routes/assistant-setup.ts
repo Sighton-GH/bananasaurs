@@ -7,7 +7,8 @@ type EligibilityRow = eligibilityRepo.EligibilityRow;
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
   readonly id: SetupStepId;
-  readonly state: 'done' | 'todo' | 'blocked';
+  /** `warning` counts as complete: the step works, with a caveat the owner has accepted (ADR 0062). */
+  readonly state: 'done' | 'todo' | 'blocked' | 'warning';
   /** One plain sentence for a first-time operator: what is true now, or what to do next. */
   readonly detail: string;
 }
@@ -105,13 +106,6 @@ const termsStep = (
       detail: `Record what ${displayName(status.provider)}'s terms say about training on your data.`,
     };
   }
-  if (terms.trainsOnInput !== 'no') {
-    return {
-      id: 'terms',
-      state: 'blocked',
-      detail: `${displayName(status.provider)}'s terms record says it may train on your data, so it can't be used.`,
-    };
-  }
   if (!terms.productionUseAllowed) {
     return {
       id: 'terms',
@@ -125,6 +119,14 @@ const termsStep = (
       id: 'terms',
       state: 'todo',
       detail: `Terms last checked on ${date}, over 90 days ago. The assistant still answers; check them again.`,
+    };
+  }
+  // ADR 0062: training is disclosed, not blocked.
+  if (terms.trainsOnInput !== 'no') {
+    return {
+      id: 'terms',
+      state: 'warning',
+      detail: `${displayName(status.provider)}'s terms record says it may train on your data. Member questions and server excerpts sent to it may be used for training.`,
     };
   }
   const date = new Date(terms.reviewedAt).toISOString().slice(0, 10);
@@ -252,15 +254,12 @@ export const computeAssistantSetup = (input: {
     skillsStep(input.behaviours, input.grants, input.skills),
     onStep(input.status, input.behaviours),
   ];
-  const othersDone = steps
-    .filter((step) => step.id !== 'terms')
-    .every((step) => step.state === 'done');
+  const complete = (step: SetupStep): boolean => step.state === 'done' || step.state === 'warning';
+  const othersDone = steps.filter((step) => step.id !== 'terms').every(complete);
   const staleButAcceptable =
     input.terms !== undefined &&
-    input.terms.trainsOnInput === 'no' &&
     input.terms.productionUseAllowed &&
     input.now - input.terms.reviewedAt > input.reviewMaxAgeMs;
-  const answering =
-    steps.every((step) => step.state === 'done') || (othersDone && staleButAcceptable);
+  const answering = steps.every(complete) || (othersDone && staleButAcceptable);
   return { steps, answering };
 };

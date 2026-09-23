@@ -225,16 +225,43 @@ describe('computeAssistantSetup', () => {
       });
     });
 
-    it.each(['yes', 'unknown'] as const)('is blocked when trainsOnInput is %s', (trains) => {
+    it.each(['yes', 'unknown'] as const)(
+      'warns, and still answers, when trainsOnInput is %s (ADR 0062)',
+      (trains) => {
+        const setup = computeAssistantSetup({
+          ...doneInput(),
+          terms: terms({ trainsOnInput: trains }),
+        });
+        expect(stepById(setup, 'terms')).toEqual({
+          id: 'terms',
+          state: 'warning',
+          detail:
+            "Gemini's terms record says it may train on your data. Member questions and server excerpts sent to it may be used for training.",
+        });
+        expect(setup.answering).toBe(true);
+      },
+    );
+
+    it('is still blocked when a may-train record does not allow production use', () => {
       const setup = computeAssistantSetup({
         ...doneInput(),
-        terms: terms({ trainsOnInput: trains }),
+        terms: terms({ trainsOnInput: 'yes', productionUseAllowed: false }),
       });
       expect(stepById(setup, 'terms')).toEqual({
         id: 'terms',
         state: 'blocked',
-        detail: "Gemini's terms record says it may train on your data, so it can't be used.",
+        detail: "Gemini's terms record doesn't allow use for member questions.",
       });
+      expect(setup.answering).toBe(false);
+    });
+
+    it('answers when a may-train record is stale and everything else is done', () => {
+      const setup = computeAssistantSetup({
+        ...doneInput(),
+        terms: terms({ trainsOnInput: 'yes', reviewedAt: NOW - 91 * DAY_MS }),
+      });
+      expect(stepById(setup, 'terms').state).toBe('todo');
+      expect(setup.answering).toBe(true);
     });
 
     it('is blocked when production use is not allowed', () => {
