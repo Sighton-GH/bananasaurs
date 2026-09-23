@@ -196,6 +196,8 @@ export const providerName = (id: string): string =>
 export const PROVIDER_URL = '/api/assistant/provider';
 export const providerTermsUrl = (provider: string) =>
   `/api/providers/${encodeURIComponent(provider)}/terms`;
+/** ADR 0063: which behaviour answers a tag of the bot user itself. */
+export const BOT_TAG_URL = '/api/assistant/bot-tag';
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;

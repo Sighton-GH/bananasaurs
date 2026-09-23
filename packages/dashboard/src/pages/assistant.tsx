@@ -1,7 +1,9 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'wouter';
+import { ApiError } from '../api.js';
 import {
   ASSISTANT_URL,
+  BOT_TAG_URL,
   behaviourUrl,
   decisionReviewUrl,
   decisionSaveUrl,
@@ -740,6 +742,94 @@ export function AssistantPage() {
  * selection would save behaviour A's prompt onto behaviour B (B3). Every
  * piece of draft state in here belongs to exactly one behaviour id.
  */
+/**
+ * ADR 0063: which behaviour answers when a member tags the bot user itself
+ * (not a mapped role). One at a time; the server enforces it and refuses a
+ * disabled behaviour, so only enabled ones are offered.
+ */
+function BotTagCard({
+  data,
+  session,
+  reload,
+}: {
+  readonly data: AssistantData;
+  readonly session: Session;
+  readonly reload: () => void;
+}) {
+  const toast = useToast();
+  const current = data.behaviours.find((b) => b.answersBotTag === true)?.id ?? '';
+  const [choice, setChoice] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const offered = data.behaviours.filter((b) => b.enabled);
+
+  const save = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      const behaviourId = choice === '' ? null : choice;
+      const result = await session.writeOrThrow(BOT_TAG_URL, { behaviourId }, 'PUT');
+      if (result === undefined) return;
+      const name = data.behaviours.find((b) => b.id === choice)?.name;
+      toast({
+        tone: 'ok',
+        title:
+          name === undefined
+            ? 'Tagging @Bananasaurs is off'
+            : `Tag @Bananasaurs now answers with ${name}`,
+      });
+      reload();
+    } catch (err: unknown) {
+      // writeOrThrow throws only 400 and 409; the session reports the rest.
+      setError(
+        err instanceof ApiError && err.status === 409
+          ? 'Turn that behaviour on first.'
+          : 'The choice was not saved. Try again.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Tagging @Bananasaurs">
+      <p className="text-sm text-ink-muted">
+        Members can tag the bot itself to ask a question. Tags of a mapped role, such as
+        @it-services, still go to that role&apos;s behaviour.
+      </p>
+      <div className="mt-3">
+        <Field
+          label="When someone tags @Bananasaurs, answer with"
+          {...(error === undefined ? {} : { error })}
+        >
+          <select
+            value={choice}
+            onChange={(e) => setChoice(e.target.value)}
+            className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+          >
+            <option value="">Nobody</option>
+            {offered.map((b) => (
+              <option key={b.id} value={b.id}>
+                {b.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      {current === '' && (
+        <p className="mt-2 text-xs text-hold">
+          Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.
+        </p>
+      )}
+      <div className="mt-3">
+        <Button busy={busy} disabled={choice === current || busy} onClick={() => void save()}>
+          Save
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function BehaviourPromptCard({
   behaviour,
   session,
@@ -868,6 +958,13 @@ function AssistantReady({
 
   return (
     <div className="space-y-5">
+      <BotTagCard
+        // Remount when the saved choice changes so the picker shows it.
+        key={`bot-tag-${data.behaviours.find((b) => b.answersBotTag === true)?.id ?? 'none'}`}
+        data={data}
+        session={session}
+        reload={reload}
+      />
       <section aria-label="Invocation behaviours" className="grid gap-3 md:grid-cols-2">
         {data.behaviours.map((item) => {
           const mention =
@@ -891,7 +988,12 @@ function AssistantReady({
               <span className="mt-1 block font-mono text-sm">{mention}</span>
               <span className="mt-2 flex items-center justify-between gap-2">
                 <strong>{item.name}</strong>
-                <Badge tone={item.enabled ? 'ok' : 'neutral'}>{item.enabled ? 'On' : 'Off'}</Badge>
+                <span className="flex flex-wrap items-center gap-1">
+                  {item.answersBotTag === true && <Badge tone="ok">Tag @Bananasaurs</Badge>}
+                  <Badge tone={item.enabled ? 'ok' : 'neutral'}>
+                    {item.enabled ? 'On' : 'Off'}
+                  </Badge>
+                </span>
               </span>
             </button>
           );

@@ -263,6 +263,61 @@ describe('SetupTracker', () => {
     ).toBeTruthy();
   });
 
+  it('adds tagging @Bananasaurs to the answering line when a behaviour answers it', () => {
+    stubFetch([]);
+    const done = {
+      answering: true,
+      steps: [
+        { id: 'connect', state: 'done', detail: 'Connected.' },
+        { id: 'terms', state: 'done', detail: 'Terms recorded.' },
+        { id: 'cost', state: 'done', detail: 'Free.' },
+        { id: 'who', state: 'done', detail: 'Roles chosen.' },
+        { id: 'skills', state: 'done', detail: 'Skills granted.' },
+        { id: 'on', state: 'done', detail: 'On.' },
+      ],
+    } as const;
+    renderTracker(
+      baseData({
+        behaviours: [
+          {
+            id: 'club',
+            guildId: 'g1',
+            surface: 'bananasaurs',
+            mentionRoleId: 'role-member',
+            name: 'Club assistant',
+            systemPrompt: 'Prompt.',
+            promptVersion: 1,
+            allowedSkillIds: [],
+            resourceIds: [],
+            reviewerRoleIds: [],
+            enabled: true,
+            callerRoleIds: ['role-member'],
+            answersBotTag: true,
+          },
+          {
+            id: 'ask',
+            guildId: 'g1',
+            surface: 'direct-command',
+            name: 'Club Q and A',
+            systemPrompt: 'Prompt.',
+            promptVersion: 1,
+            allowedSkillIds: [],
+            resourceIds: [],
+            reviewerRoleIds: [],
+            enabled: true,
+            callerRoleIds: ['role-helper'],
+          },
+        ],
+        setup: { ...done, steps: [...done.steps] },
+      }),
+    );
+    expect(
+      screen.getByText(
+        'Members can ask in Discord with /ask, by tagging @Bananasaurs, or by mentioning @Member.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('shows an inline error when turning on fails without a conflict', async () => {
     stubFetch([
       {

@@ -334,10 +334,17 @@ export function SetupTracker({
     .filter((b) => b.enabled && b.mentionRoleId !== undefined)
     .map((b) => data.roles?.find((role) => role.id === b.mentionRoleId)?.name)
     .filter((name): name is string => name !== undefined);
+  // ADR 0063: tagging the bot itself works once an enabled behaviour answers it.
+  const botTag = data.behaviours.some((b) => b.enabled && b.answersBotTag === true);
+  const roleWays = mentions.map((name) => `by mentioning @${name}`).join(' or ');
   const askingLine =
     mentions.length === 0
-      ? 'Members can ask in Discord with /ask.'
-      : `Members can ask in Discord with /ask, or ${mentions.map((name) => `by mentioning @${name}`).join(' or ')}.`;
+      ? botTag
+        ? 'Members can ask in Discord with /ask, or by tagging @Bananasaurs.'
+        : 'Members can ask in Discord with /ask.'
+      : botTag
+        ? `Members can ask in Discord with /ask, by tagging @Bananasaurs, or ${roleWays}.`
+        : `Members can ask in Discord with /ask, or ${roleWays}.`;
 
   if (setup.answering && !expanded) {
     return (

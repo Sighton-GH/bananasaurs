@@ -547,3 +547,99 @@ describe('AssistantPage', () => {
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
   });
 });
+
+describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
+  const LABEL = 'When someone tags @Bananasaurs, answer with';
+  const withFlag = (id: string | undefined) => ({
+    ...FULL,
+    behaviours: BEHAVIOURS.map((b) => ({ ...b, answersBotTag: b.id === id })),
+  });
+  const render = (
+    body: unknown,
+    put: { status?: number; body: unknown } = { body: { ok: true } },
+  ) => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body },
+      { method: 'PUT', url: '/api/assistant/bot-tag', ...put },
+    ]);
+    renderWithSession(<AssistantPage />);
+    return mock;
+  };
+  const putCalls = (mock: ReturnType<typeof stubFetch>) =>
+    mock.mock.calls.filter(
+      (call) => call[0] === '/api/assistant/bot-tag' && (call[1] as RequestInit)?.method === 'PUT',
+    );
+
+  it('offers Nobody and only enabled behaviours, preselecting the flagged one', async () => {
+    const enabledIt = {
+      ...FULL,
+      behaviours: [
+        { ...BEHAVIOURS[0]!, answersBotTag: false },
+        { ...BEHAVIOURS[1]!, enabled: true, answersBotTag: true },
+      ],
+    };
+    render(enabledIt);
+    const select = await screen.findByLabelText(LABEL);
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Nobody', 'Club assistant', 'IT services']);
+    expect(select).toHaveProperty('value', 'it');
+    cleanup();
+    render(withFlag(undefined));
+    const again = await screen.findByLabelText(LABEL);
+    // IT services is disabled in FULL, so it is not offered.
+    expect(
+      within(again)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['Nobody', 'Club assistant']);
+    expect(again).toHaveProperty('value', '');
+    expect(
+      screen.getByText(
+        'Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('saves the chosen behaviour, then Nobody, through PUT /api/assistant/bot-tag', async () => {
+    const mock = render(withFlag(undefined));
+    const select = await screen.findByLabelText(LABEL);
+    const save = screen.getByRole('button', { name: 'Save' });
+    expect((save as HTMLButtonElement).disabled).toBe(true);
+    fireEvent.change(select, { target: { value: 'club' } });
+    fireEvent.click(save);
+    expect(
+      await screen.findByText('Tag @Bananasaurs now answers with Club assistant'),
+    ).toBeTruthy();
+    expect(bodyOf(putCalls(mock)[0]!)).toEqual({ behaviourId: 'club' });
+    cleanup();
+    const mock2 = render(withFlag('club'));
+    const select2 = await screen.findByLabelText(LABEL);
+    fireEvent.change(select2, { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Tagging @Bananasaurs is off')).toBeTruthy();
+    expect(bodyOf(putCalls(mock2)[0]!)).toEqual({ behaviourId: null });
+  });
+
+  it('explains a refused save inline', async () => {
+    render(withFlag(undefined), { status: 409, body: { error: 'behaviour-disabled' } });
+    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('Turn that behaviour on first.')).toBeTruthy();
+    cleanup();
+    render(withFlag(undefined), { status: 400, body: { error: 'bad-request' } });
+    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save' }));
+    expect(await screen.findByText('The choice was not saved. Try again.')).toBeTruthy();
+  });
+
+  it('badges only the behaviour that answers the bot tag', async () => {
+    render(withFlag('club'));
+    const club = await screen.findByRole('button', { name: /Club assistant/ });
+    expect(within(club).getByText('Tag @Bananasaurs')).toBeTruthy();
+    const it = screen.getByRole('button', { name: /IT services/ });
+    expect(within(it).queryByText('Tag @Bananasaurs')).toBeNull();
+  });
+});

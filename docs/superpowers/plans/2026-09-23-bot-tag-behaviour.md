@@ -1,6 +1,6 @@
 # Training check becomes a warning; tagging @Bananasaurs answers with a chosen behaviour
 
-Status: **APPROVED by the owner 2026-09-23; executing on oc/bot-tag-behaviour.**
+Status: **EXECUTED 2026-09-23 on branch bot-tag-behaviour** (tasks 1 via opencode; 2-6 inline after the opencode limit).**
 Branch: `oc/bot-tag-behaviour`. Global gate for every task:
 `npm run typecheck && npm run lint && npm run test`.
 
