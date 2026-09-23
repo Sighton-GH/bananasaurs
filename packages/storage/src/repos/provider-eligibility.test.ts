@@ -10,6 +10,7 @@ import {
   isEligible,
   listEligibility,
   listStaleEligibility,
+  recordEligibilityClaim,
   recordEligibilityReview,
   type EligibilityRow,
 } from './provider-eligibility.js';
@@ -137,6 +138,60 @@ describe('recordEligibilityReview (ruling M4-D20)', () => {
     expect(
       listStaleEligibility(instance, now, ELIGIBILITY_REVIEW_MAX_AGE_MS).map((r) => r.provider),
     ).not.toContain('anthropic-consumer-mcp');
+  });
+});
+
+describe('recordEligibilityClaim (ADR 0061 §1)', () => {
+  it('inserts a new row with the clause and the review date', () => {
+    const now = CONFIRMED_AT + 5 * DAY_MS;
+    recordEligibilityClaim(instance, {
+      provider: 'gemini',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/terms',
+      evidenceClause: 'We do not train on your data.',
+      productionUseAllowed: true,
+      now,
+    });
+    expect(findEligibility(instance, 'gemini')).toEqual({
+      provider: 'gemini',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/terms',
+      evidenceClause: 'We do not train on your data.',
+      productionUseAllowed: true,
+      reviewedAt: now,
+    });
+  });
+
+  it('replaces an existing row wholesale, including clause and review date', () => {
+    recordEligibilityClaim(instance, {
+      provider: 'gemini',
+      trainsOnInput: 'yes',
+      evidenceUrl: 'https://example.com/old',
+      evidenceClause: 'Old clause text here.',
+      productionUseAllowed: false,
+      now: CONFIRMED_AT,
+    });
+    const now = CONFIRMED_AT + 7 * DAY_MS;
+    recordEligibilityClaim(instance, {
+      provider: 'gemini',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/new',
+      evidenceClause: 'New clause text here.',
+      productionUseAllowed: true,
+      now,
+    });
+    expect(findEligibility(instance, 'gemini')).toEqual({
+      provider: 'gemini',
+      trainsOnInput: 'no',
+      evidenceUrl: 'https://example.com/new',
+      evidenceClause: 'New clause text here.',
+      productionUseAllowed: true,
+      reviewedAt: now,
+    });
+  });
+
+  it('reads a row without a clause back with evidenceClause undefined', () => {
+    expect(findEligibility(instance, 'anthropic-consumer-mcp')?.evidenceClause).toBeUndefined();
   });
 });
 

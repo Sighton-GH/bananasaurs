@@ -17,12 +17,19 @@ import { providerEligibility } from '../schema.js';
  * promise whose only remedy is editing SQL is the wrong shape to leave in a
  * privacy policy, so `bananasaurs provider review` writes `reviewed_at` via
  * `recordEligibilityReview` below (ruling M4-D20) — and nothing else.
+ *
+ * Dashboard rows the instance owner writes (ADR 0061) are as authoritative
+ * as migration-seeded rows: the same principal who can enable the provider
+ * and enter its key records what the provider's terms say, and
+ * `recordEligibilityClaim` below writes the whole row.
  */
 
 export interface EligibilityRow {
   readonly provider: string;
   readonly trainsOnInput: 'no' | 'yes' | 'unknown';
   readonly evidenceUrl: string;
+  /** Present on rows the dashboard wrote (ADR 0061); migration-seeded rows cite theirs in the migration. */
+  readonly evidenceClause?: string;
   readonly productionUseAllowed: boolean;
   readonly reviewedAt: number;
 }
@@ -43,6 +50,7 @@ const toRow = (r: {
   provider: string;
   trainsOnInput: string;
   evidenceUrl: string;
+  evidenceClause: string | null;
   productionUseAllowed: number;
   reviewedAt: number;
 }): EligibilityRow => {
@@ -56,6 +64,7 @@ const toRow = (r: {
     provider: r.provider,
     trainsOnInput: r.trainsOnInput,
     evidenceUrl: r.evidenceUrl,
+    ...(r.evidenceClause === null ? {} : { evidenceClause: r.evidenceClause }),
     productionUseAllowed: r.productionUseAllowed === 1,
     reviewedAt: r.reviewedAt,
   };
@@ -65,6 +74,7 @@ const SELECT = {
   provider: providerEligibility.provider,
   trainsOnInput: providerEligibility.trainsOnInput,
   evidenceUrl: providerEligibility.evidenceUrl,
+  evidenceClause: providerEligibility.evidenceClause,
   productionUseAllowed: providerEligibility.productionUseAllowed,
   reviewedAt: providerEligibility.reviewedAt,
 };
@@ -116,6 +126,44 @@ export const recordEligibilityReview = (
       .where(eq(providerEligibility.provider, input.provider))
       .run();
     return result.changes === 1;
+  });
+
+/**
+ * Owner-recorded claim (ADR 0061 §1): inserts or replaces the whole row,
+ * reviewedAt = now.
+ */
+export const recordEligibilityClaim = (
+  scope: InstanceScope,
+  input: {
+    provider: string;
+    trainsOnInput: 'no' | 'yes' | 'unknown';
+    evidenceUrl: string;
+    evidenceClause: string;
+    productionUseAllowed: boolean;
+    now: number;
+  },
+): void =>
+  writeInstance(scope, ({ db }) => {
+    db.insert(providerEligibility)
+      .values({
+        provider: input.provider,
+        trainsOnInput: input.trainsOnInput,
+        evidenceUrl: input.evidenceUrl,
+        evidenceClause: input.evidenceClause,
+        productionUseAllowed: input.productionUseAllowed ? 1 : 0,
+        reviewedAt: input.now,
+      })
+      .onConflictDoUpdate({
+        target: providerEligibility.provider,
+        set: {
+          trainsOnInput: input.trainsOnInput,
+          evidenceUrl: input.evidenceUrl,
+          evidenceClause: input.evidenceClause,
+          productionUseAllowed: input.productionUseAllowed ? 1 : 0,
+          reviewedAt: input.now,
+        },
+      })
+      .run();
   });
 
 /** Rows whose `reviewedAt` is older than `maxAgeMs` before `now`, for `doctor` (Task 7b). */
