@@ -137,16 +137,23 @@ export const createProviderConfigStore = (
     },
     save(input, now) {
       const current = assistantProviderRepo.get(instance);
-      // Omitted fields keep what is saved: re-saving to flip `enabled` must not
-      // silently drop the model, the cost statement or the key.
-      const model = input.model ?? current?.model;
-      const apiKeyEnc = input.apiKey !== undefined ? seal(key, input.apiKey) : current?.apiKeyEnc;
+      // Omitted fields keep what is saved, so re-saving to flip `enabled` does
+      // not drop anything. But the key, model and cost statement belong to the
+      // service they were entered for: switching service drops them, so one
+      // company's key is never sent to another; and a "free" statement is about
+      // one model, so a new model needs it stated again (final review, 2026-09-23).
+      const same = current?.provider === input.provider ? current : undefined;
+      const model = input.model ?? same?.model;
+      const apiKeyEnc = input.apiKey !== undefined ? seal(key, input.apiKey) : same?.apiKeyEnc;
+      const costClass =
+        input.costClass ??
+        (same !== undefined && model === same.model ? same.costClass : 'unknown');
       assistantProviderRepo.put(instance, {
         provider: input.provider,
         ...(model === undefined ? {} : { model }),
         ...(apiKeyEnc === undefined ? {} : { apiKeyEnc }),
         enabled: input.enabled,
-        costClass: input.costClass ?? current?.costClass ?? 'unknown',
+        costClass,
         updatedAt: now,
       });
     },

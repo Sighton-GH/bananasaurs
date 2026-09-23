@@ -137,3 +137,38 @@ it('a saved dashboard row is authoritative: switched off there means off, even w
   expect(store.status()).toMatchObject({ provider: 'gemini', enabled: false });
   expect(store.effective(envBase).AI_PROVIDER).toBe('off');
 });
+it('never carries one service key over to another service', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save({ provider: 'gemini', model: 'm', apiKey: 'gemini-key', enabled: true }, 10);
+  store.save({ provider: 'openrouter', model: 'x', enabled: true }, 11);
+  expect(store.status()).toMatchObject({ provider: 'openrouter', keyConfigured: false });
+  const effective = store.effective(base);
+  expect(effective.AI_PROVIDER).toBe('off');
+  expect(JSON.stringify(effective)).not.toContain('gemini-key');
+  // The same service keeps its key when the field is left blank.
+  store.save({ provider: 'openrouter', model: 'x', apiKey: 'or-key', enabled: true }, 12);
+  store.save({ provider: 'openrouter', model: 'y', enabled: true }, 13);
+  expect(store.effective(base)).toMatchObject({
+    AI_PROVIDER: 'openrouter',
+    OPENROUTER_API_KEY: 'or-key',
+  });
+});
+it('does not carry a model or a free statement over to a different service', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save({ provider: 'gemini', model: 'm', apiKey: 'k', enabled: true, costClass: 'free' }, 10);
+  store.save({ provider: 'openrouter', apiKey: 'k2', enabled: true }, 11);
+  expect(store.status()).toMatchObject({
+    provider: 'openrouter',
+    costClass: 'unknown',
+    modelConfigured: false,
+  });
+});
+it('asks for the cost again when the model changes', () => {
+  const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+  store.save(
+    { provider: 'gemini', model: 'm1', apiKey: 'k', enabled: true, costClass: 'free' },
+    10,
+  );
+  store.save({ provider: 'gemini', model: 'm2', enabled: true }, 11);
+  expect(store.status()).toMatchObject({ model: 'm2', costClass: 'unknown', keyConfigured: true });
+});
