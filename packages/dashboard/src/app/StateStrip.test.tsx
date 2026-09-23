@@ -46,7 +46,7 @@ describe('StateStrip', () => {
       </HealthProvider>,
     );
     const strip = await screen.findByTestId('state-strip');
-    expect(strip.textContent).toContain('Health unknown');
+    expect(strip.textContent).toContain('Safety status unavailable');
   });
 
   it('names every active hold', async () => {
@@ -69,7 +69,7 @@ describe('StateStrip', () => {
     const strip = await screen.findByTestId('state-strip');
     for (const text of [
       'Read-only instance',
-      'Dry run',
+      'Preview mode',
       'Kill switch on',
       'Circuit breaker open',
       'Gateway disconnected',

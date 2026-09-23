@@ -9,8 +9,10 @@ import {
   panelDefinitionSchema,
   snowflakeIdSchema,
 } from '@bananasaurs/core';
+import { eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
+import { isInstanceOwner } from './assistant.js';
 import { requireCapability } from './capability.js';
 
 /**
@@ -1040,6 +1042,62 @@ export const registerOpsWriteRoutes = (
       return reply.status(200).send(result);
     },
   );
+
+  const providerTermsBodySchema = z.object({
+    trainsOnInput: z.enum(['no', 'yes', 'unknown']),
+    evidenceClause: z.string().trim().min(10).max(2000),
+    evidenceUrl: z
+      .string()
+      .url()
+      .max(500)
+      .refine((u) => u.startsWith('https://')),
+    productionUseAllowed: z.boolean(),
+  });
+  const TERMS_PROVIDERS = new Set(['gemini', 'openrouter', 'nvidia-nim']);
+
+  app.put<{ Params: { provider: string } }>('/api/providers/:provider/terms', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+    const provider = request.params.provider;
+    if (!TERMS_PROVIDERS.has(provider))
+      return reply.status(404).send({ error: 'no-such-provider' });
+    const parsed = providerTermsBodySchema.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const beforeRow = eligibilityRepo.findEligibility(deps.scopes.instance(), provider);
+    const before =
+      beforeRow === undefined
+        ? undefined
+        : {
+            trainsOnInput: beforeRow.trainsOnInput,
+            evidenceUrl: beforeRow.evidenceUrl,
+            evidenceClause: beforeRow.evidenceClause ?? null,
+            productionUseAllowed: beforeRow.productionUseAllowed,
+            reviewedAt: beforeRow.reviewedAt,
+          };
+    const now = deps.now();
+    eligibilityRepo.recordEligibilityClaim(deps.scopes.instance(), {
+      ...parsed.data,
+      provider,
+      now,
+    });
+    const afterRow = eligibilityRepo.findEligibility(deps.scopes.instance(), provider);
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, now),
+      action: 'provider.terms_recorded',
+      subjectType: 'provider',
+      subjectId: provider,
+      before,
+      after: {
+        trainsOnInput: parsed.data.trainsOnInput,
+        evidenceUrl: parsed.data.evidenceUrl,
+        evidenceClause: parsed.data.evidenceClause,
+        productionUseAllowed: parsed.data.productionUseAllowed,
+        reviewedAt: now,
+      },
+    });
+    return reply.status(200).send(afterRow);
+  });
 
   app.post<{ Params: { username: string } }>(
     '/api/accounts/:username/disabled',

@@ -58,7 +58,7 @@ const ACTION_TEXT: Record<
   },
   'revoke-credentials': {
     title: (a) => `Revoke every credential of ${a.username}?`,
-    confirm: 'Revoke credentials',
+    confirm: 'Sign out everywhere and revoke access tokens',
     danger: true,
   },
   'grant-guild': {
@@ -321,7 +321,7 @@ export function AccountsPage() {
     <>
       <PageHeader
         title="Accounts"
-        purpose="Every dashboard account: owner, enabled or disabled, lockouts — and the levers over its sessions, tokens and guild access."
+        purpose="Create and manage operator accounts. Owners can manage accounts and all settings; members only get the servers and tasks you choose."
       />
       <Card title="Create an account">
         <form
@@ -348,7 +348,7 @@ export function AccountsPage() {
             />
           </Field>
           <Checkbox
-            label={`Give the account access to this guild (${session.info.guildId})`}
+            label={`Give this account access to this server`}
             checked={draftGuild}
             onChange={(e) => {
               setDraftGuild(e.target.checked);
@@ -358,7 +358,7 @@ export function AccountsPage() {
           {draftGuild && (
             <fieldset className="grid gap-1 rounded-sm border border-line p-2">
               <legend className="px-1 text-xs text-ink-muted">
-                Capabilities in this guild — none is the safe start
+                What this account can do on this server — none is the safe start
               </legend>
               {CAPABILITIES.map((capability) => (
                 <Checkbox
@@ -426,7 +426,7 @@ export function AccountsPage() {
               },
               {
                 key: 'capabilities',
-                header: 'Capabilities in this guild',
+                header: 'What this account can do on this server',
                 cell: (a) => {
                   const held = r.capabilities[a.accountId] ?? [];
                   const remaining = CAPABILITIES.filter(
@@ -494,13 +494,13 @@ export function AccountsPage() {
                       Reset password
                     </Button>
                     <Button onClick={() => setPending({ kind: 'revoke-credentials', account: a })}>
-                      Revoke credentials
+                      Sign out everywhere and revoke access tokens
                     </Button>
                     <Button onClick={() => setPending({ kind: 'grant-guild', account: a })}>
-                      Grant guild
+                      Give server access
                     </Button>
                     <Button onClick={() => setPending({ kind: 'revoke-guild', account: a })}>
-                      Revoke guild
+                      Remove server access
                     </Button>
                     <Button
                       variant="danger"

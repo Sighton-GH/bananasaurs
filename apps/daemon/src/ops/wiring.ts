@@ -1256,6 +1256,11 @@ export interface OpsInstanceDeps {
   readonly now: () => number;
   /** `backup now` and `backup list` (ADR 0034, slice 16). */
   readonly backupTimer: BackupTimer;
+  /**
+   * The provider actually chosen: the dashboard's saved choice when it is not
+   * 'off', else env `AI_PROVIDER` (ADR 0061). Absent in tests: env only.
+   */
+  readonly chosenAiProvider?: (() => string) | undefined;
 }
 
 /**
@@ -1668,7 +1673,7 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
     // The state is intentional - no row exists until an owner verifies the
     // provider's terms and seeds one by migration (ruling M4-D16) - and the
     // surface must say exactly that, never invent an approval.
-    const configuredProvider = deps.config.AI_PROVIDER;
+    const configuredProvider = deps.chosenAiProvider?.() ?? deps.config.AI_PROVIDER;
     if (
       configuredProvider !== undefined &&
       configuredProvider !== 'off' &&

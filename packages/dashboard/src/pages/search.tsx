@@ -63,10 +63,7 @@ export function SearchPage() {
 
   return (
     <>
-      <PageHeader
-        title="Search"
-        purpose="Full-text search over the archived messages of this guild's archive-enabled channels."
-      />
+      <PageHeader title="Search" purpose="Search messages Bananasaurs has saved for this server." />
       <form onSubmit={submit} className="mb-4 grid max-w-2xl gap-3">
         <Field label="Search for">
           <Input
@@ -78,11 +75,11 @@ export function SearchPage() {
         <div className="grid gap-3 sm:grid-cols-3">
           <ChannelPicker
             label="Channel"
-            hint="Optional - pick a channel or paste its snowflake ID."
+            hint="Optional - search and choose a channel."
             value={draft.channelId}
             onChange={(channelId) => set({ channelId })}
           />
-          <Field label="Author ID" hint="Optional">
+          <Field label="Author" hint="Optional">
             <Input value={draft.authorId} onChange={(e) => set({ authorId: e.target.value })} />
           </Field>
           <Field label="Limit" hint="At most 500">

@@ -214,10 +214,33 @@ describe('GET /api/mod/cases/:caseId', () => {
     expect(response.json()).toEqual({ error: 'no-grant' });
   });
 
-  it('returns the case with its events', async () => {
+  it('returns the case with its events and member', async () => {
     grant(['audit.read']);
     const caseId = openCase();
     const eventId = recordEvent(caseId);
+    const originalPortsFor = deps.portsFor;
+    deps = {
+      ...deps,
+      portsFor: (scope) => ({
+        ...originalPortsFor(scope),
+        fetchGuildMembers: (memberIds) =>
+          Promise.resolve(
+            memberIds.includes(MEMBER)
+              ? [
+                  {
+                    memberId: MEMBER,
+                    username: 'case-member',
+                    displayName: 'Case Member',
+                    roleIds: [],
+                    joinedAt: clock,
+                  },
+                ]
+              : [],
+          ),
+      }),
+    };
+    await app.close();
+    app = buildApp();
     const { cookie } = await signIn();
     const response = await app.inject({
       method: 'GET',
@@ -226,7 +249,16 @@ describe('GET /api/mod/cases/:caseId', () => {
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      case: expect.objectContaining({ caseId, memberId: MEMBER, status: 'open' }),
+      case: expect.objectContaining({
+        caseId,
+        memberId: MEMBER,
+        status: 'open',
+        member: expect.objectContaining({
+          memberId: MEMBER,
+          username: 'case-member',
+          displayName: 'Case Member',
+        }),
+      }),
       events: [expect.objectContaining({ eventId, caseId, ruleId: 'kw-one' })],
     });
   });

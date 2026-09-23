@@ -12,6 +12,7 @@ const BEHAVIOURS = [
     id: 'club',
     guildId: '1540816150026518620',
     surface: 'bananasaurs',
+    mentionRoleId: 'role-club-assistant',
     name: 'Club assistant',
     systemPrompt: 'Answer with reviewed club knowledge only.',
     promptVersion: 1,
@@ -24,6 +25,7 @@ const BEHAVIOURS = [
     id: 'it',
     guildId: '1540816150026518620',
     surface: 'it-services',
+    mentionRoleId: 'role-it-help',
     name: 'IT services',
     systemPrompt: 'Answer infrastructure questions.',
     promptVersion: 1,
@@ -58,6 +60,14 @@ const SKILLS = [
     description: 'Return a reviewed website, document or channel link.',
     effect: 'read',
     requiredPermission: 'assistant.resources',
+    requiresConfirmation: false,
+  },
+  {
+    id: 'draft-post',
+    name: 'Draft an announcement',
+    description: 'Draft a club announcement for an operator to send.',
+    effect: 'draft',
+    requiredPermission: 'assistant.draft',
     requiresConfirmation: false,
   },
   {
@@ -98,6 +108,8 @@ const FULL = {
   roles: [
     { id: 'role-club-member', name: 'Club Member', position: 10 },
     { id: 'role-onboarding', name: 'Onboarding', position: 5 },
+    { id: 'role-club-assistant', name: 'Club Assistant', position: 20 },
+    { id: 'role-it-help', name: 'IT Help', position: 15 },
   ],
   members: [
     { id: 'user-bryan', name: 'Bryan' },
@@ -137,26 +149,63 @@ function renderPage(body: unknown = FULL) {
     { url: '/api/assistant', body },
     { method: 'PUT', url: '/api/assistant/behaviours/club', body: { ok: true } },
     { method: 'PUT', url: '/api/assistant/behaviours/it', body: { ok: true } },
-    { method: 'PUT', url: '/api/assistant/skill-grants/create-reminder', body: { ok: true } },
-    { method: 'PUT', url: '/api/assistant/resources/handbook', body: { ok: true } },
   ]);
   renderWithSession(<AssistantPage />);
   return mock;
 }
 
 describe('AssistantPage', () => {
-  it('renders behaviours, detail, skills, reminders and resources', async () => {
+  it('renders behaviours with their tag mapping, prompt editor and records', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
     const club = screen.getByRole('button', { name: /Club assistant/ });
     expect(club.getAttribute('aria-pressed')).toBe('true');
+    expect(within(club).getByText('Members mention @Club Assistant')).toBeTruthy();
     expect(screen.getByDisplayValue('Answer with reviewed club knowledge only.')).toBeTruthy();
-    expect(screen.getAllByText('Search club knowledge').length).toBeGreaterThan(0);
-    expect(screen.getAllByText('confirmation').length).toBeGreaterThan(0);
-    expect(screen.getByText('Bring the robot battery')).toBeTruthy();
-    expect(screen.getByText('failed')).toBeTruthy();
-    expect(screen.getByText('https://example.com/handbook')).toBeTruthy();
-    expect(screen.getByText(/reviewed 2026-09-01/)).toBeTruthy();
+    expect(screen.getByText('Buy two spare batteries')).toBeTruthy();
+  });
+
+  it('labels a direct command without repeating the words and badges On and Off', async () => {
+    const direct = {
+      id: 'ask',
+      guildId: '1540816150026518620',
+      surface: 'direct-command',
+      name: 'Club Q and A',
+      systemPrompt: 'Answer member questions.',
+      promptVersion: 1,
+      allowedSkillIds: [],
+      resourceIds: [],
+      enabled: true,
+      callerRoleIds: [],
+    };
+    renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
+    const card = await screen.findByRole('button', { name: /Club Q and A/ });
+    expect(within(card).getByText('Direct command')).toBeTruthy();
+    expect(within(card).getByText('Members use /ask')).toBeTruthy();
+    expect(within(card).getByText('On')).toBeTruthy();
+    const itCard = screen.getByRole('button', { name: /IT services/ });
+    expect(within(itCard).getByText('Off')).toBeTruthy();
+    expect(screen.queryByText('enabled')).toBeNull();
+    expect(screen.queryByText('disabled')).toBeNull();
+  });
+
+  it('shows no AI status card and no answering claim outside the setup tracker', async () => {
+    renderPage();
+    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    expect(screen.queryByText('AI status')).toBeNull();
+    expect(screen.queryByText('Off - the assistant will not answer')).toBeNull();
+    expect(screen.queryByText('Enabled')).toBeNull();
+  });
+
+  it('keeps skills, schedules and resources off this page (ADR 0060 declutter)', async () => {
+    renderPage();
+    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    expect(screen.queryByText('Things the assistant can do')).toBeNull();
+    expect(screen.queryByText('Skill grants')).toBeNull();
+    expect(screen.queryByText('Schedules and reminders')).toBeNull();
+    expect(screen.queryByText('Resources and context')).toBeNull();
+    expect(screen.queryByText('Bring the robot battery')).toBeNull();
+    expect(screen.queryByText('https://example.com/handbook')).toBeNull();
   });
 
   it('saves the caller-role allowlist through the behaviour endpoint, whole object', async () => {
@@ -173,6 +222,7 @@ describe('AssistantPage', () => {
     expect(bodyOf(put)).toEqual({
       id: 'club',
       surface: 'bananasaurs',
+      mentionRoleId: 'role-club-assistant',
       name: 'Club assistant',
       systemPrompt: 'Answer with reviewed club knowledge only.',
       promptVersion: 1,
@@ -208,7 +258,9 @@ describe('AssistantPage', () => {
 
   it('toggles behaviour enablement through the same whole-object write', async () => {
     const mock = renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Disable behaviour' }));
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'Turn off - members will get no answer' }),
+    );
     await screen.findByText('Club assistant disabled');
     const put = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/assistant/behaviours/club' && c[1]?.method === 'PUT',
@@ -218,20 +270,17 @@ describe('AssistantPage', () => {
 
   it("never carries one behaviour's edited prompt onto another (B3)", async () => {
     const mock = renderPage();
-    // Edit behaviour A's prompt, then switch to behaviour B WITHOUT saving.
     const editor = await screen.findByRole<HTMLTextAreaElement>('textbox', {
-      name: 'System prompt',
+      name: 'Instructions the assistant follows',
     });
     fireEvent.change(editor, { target: { value: 'Unsaved rewrite of the club prompt.' } });
     fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
-    // The editor must show B's prompt, not A's unsaved text.
     const switched = await screen.findByRole<HTMLTextAreaElement>('textbox', {
-      name: 'System prompt',
+      name: 'Instructions the assistant follows',
     });
     expect(switched.value).toBe('Answer infrastructure questions.');
-    // Saving now writes B's object to B's endpoint — A's text cannot land on B.
     fireEvent.change(switched, { target: { value: 'New IT prompt.' } });
-    fireEvent.click(screen.getByRole('button', { name: 'Save prompt' }));
+    fireEvent.click(screen.getByRole('button', { name: 'Save instructions' }));
     await screen.findByText('IT services prompt saved');
     const put = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/assistant/behaviours/it' && c[1]?.method === 'PUT',
@@ -248,7 +297,6 @@ describe('AssistantPage', () => {
   it('configures ticket routing for it-services with a fail-closed empty channel', async () => {
     const mock = renderPage();
     fireEvent.click(await screen.findByRole('button', { name: /IT services/ }));
-    // No channel selected: the fail-closed notice shows before anything is saved.
     expect(await screen.findByText(/ticket creation fails closed/)).toBeTruthy();
     fireEvent.change(screen.getByRole('combobox', { name: 'Ticket channel' }), {
       target: { value: 'chan-it' },
@@ -276,77 +324,6 @@ describe('AssistantPage', () => {
     expect(within(table).getByText('open')).toBeTruthy();
   });
 
-  it('saves a skill grant and keeps owner-only skills unwidened', async () => {
-    const mock = renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
-    const grants = screen.getByRole('heading', { name: 'Skill grants' }).closest('section')!;
-    const row = within(grants).getByText('Set a reminder').closest('li')!;
-    fireEvent.click(within(row).getByRole('checkbox', { name: 'Onboarding' }));
-    fireEvent.click(within(row).getByRole('button', { name: 'Save grant' }));
-    await screen.findByText('Set a reminder grant saved');
-    const put = mock.mock.calls.find(
-      (c) =>
-        (c[0] as string) === '/api/assistant/skill-grants/create-reminder' &&
-        c[1]?.method === 'PUT',
-    )!;
-    expect(bodyOf(put)).toEqual({ roleIds: ['role-onboarding'], userIds: ['user-bryan'] });
-    // The owner-only skill offers no editor.
-    const ownerRow = within(grants).getByText('Deliver a reminder').closest('li')!;
-    expect(within(ownerRow).queryByRole('checkbox')).toBeNull();
-    expect(within(ownerRow).getByText(/Always restricted to the server owner/)).toBeTruthy();
-  });
-
-  it('adds a resource through the reviewed endpoint and surfaces URL refusal inline', async () => {
-    const NOW = 1750000000000;
-    vi.spyOn(Date, 'now').mockReturnValue(NOW);
-    const mock = stubFetch([
-      { url: '/api/assistant', body: FULL },
-      {
-        method: 'PUT',
-        url: `/api/assistant/resources/res-${NOW.toString(36)}`,
-        status: 400,
-        body: { error: 'unsafe-resource-url' },
-      },
-    ]);
-    renderWithSession(<AssistantPage />);
-    fireEvent.click((await screen.findAllByRole('button', { name: 'Add resource' }))[0]!);
-    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), {
-      target: { value: 'Club website' },
-    });
-    fireEvent.change(screen.getByRole('textbox', { name: 'URL' }), {
-      target: { value: 'http://169.254.169.254/meta' },
-    });
-    const submit = screen
-      .getAllByRole('button', { name: 'Add resource' })
-      .find((b) => b.getAttribute('type') === 'submit')!;
-    fireEvent.click(submit);
-    expect(
-      await screen.findByText(
-        'That address is not allowed: private and local addresses are refused.',
-      ),
-    ).toBeTruthy();
-    const put = mock.mock.calls.find((c) =>
-      (c[0] as string).startsWith('/api/assistant/resources/'),
-    )!;
-    expect(put[1]?.method).toBe('PUT');
-    const sent = bodyOf(put) as { id: string; title: string; enabled: boolean };
-    expect(sent.id).toMatch(/^res-/);
-    expect(sent.title).toBe('Club website');
-    expect(sent.enabled).toBe(true);
-  });
-
-  it('enables a disabled resource with a whole-object write', async () => {
-    const mock = renderPage({
-      ...FULL,
-      resources: [{ ...FULL.resources[0]!, enabled: false }],
-    });
-    fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
-    const put = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/assistant/resources/handbook' && c[1]?.method === 'PUT',
-    )!;
-    expect((bodyOf(put) as { enabled: boolean }).enabled).toBe(true);
-  });
-
   it('shows decision records as drafts, never as policy', async () => {
     renderPage();
     expect(await screen.findByText('Buy two spare batteries')).toBeTruthy();
@@ -355,11 +332,200 @@ describe('AssistantPage', () => {
     expect(screen.getByText('from #general, 12 messages cited')).toBeTruthy();
   });
 
-  it('empty state names the configuration API and carries no action that goes nowhere', async () => {
+  it('creates a new tag behaviour disabled, through the PUT create path', async () => {
+    const NOW = 1750000000000;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const id = `new-member-help-${NOW.toString(36)}`;
+    const mock = stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { method: 'PUT', url: `/api/assistant/behaviours/${id}`, body: { ok: true } },
+    ]);
+    renderWithSession(<AssistantPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    // Submit stays disabled until the mention role is chosen from the live directory.
+    const submit = screen.getAllByRole('button', { name: 'Create behaviour' })[0]!;
+    expect(submit.hasAttribute('disabled')).toBe(true);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
+      target: { value: 'New member help' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Tag' }), {
+      target: { value: 'help' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
+      target: { value: 'role-onboarding' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
+      target: { value: 'Answer new member questions from reviewed sources only.' },
+    });
+    fireEvent.click(screen.getByRole('checkbox', { name: /Search club knowledge/ }));
+    const callers = screen.getByRole('list', { name: 'Who may use the new behaviour' });
+    fireEvent.click(within(callers).getByRole('checkbox', { name: 'Club Member' }));
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create behaviour' })[0]!);
+    await screen.findByText('New member help created');
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === `/api/assistant/behaviours/${id}` && c[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({
+      id,
+      surface: 'help',
+      mentionRoleId: 'role-onboarding',
+      name: 'New member help',
+      systemPrompt: 'Answer new member questions from reviewed sources only.',
+      promptVersion: 0,
+      allowedSkillIds: ['search-club'],
+      resourceIds: [],
+      callerRoleIds: ['role-club-member'],
+      enabled: false,
+    });
+  });
+
+  it('states the fail-closed rule inside the create form in plain words', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    const form = (await screen.findByRole('heading', { name: 'Create a behaviour' })).closest(
+      'section',
+    )!;
+    expect(within(form).getByText('If no role is ticked, nobody can use it.')).toBeTruthy();
+    expect(
+      within(form).getByText(/Each role can belong to only one behaviour that is turned on/),
+    ).toBeTruthy();
+    expect(within(form).getByText(/New behaviours start turned off/)).toBeTruthy();
+  });
+
+  it('describes the prompt card without system internals', async () => {
+    renderPage();
+    expect(
+      await screen.findByText(
+        /These are the instructions this behaviour follows\. Bananasaurs adds its own safety rules/,
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText(/Ambiguous tags are refused rather than mixed/)).toBeNull();
+  });
+
+  it('offers no owner-only skill in the create form and labels effects plainly', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    const picker = await screen.findByRole('region', {
+      name: 'Skills the new behaviour may use',
+    });
+    expect(within(picker).queryByText('Deliver a reminder')).toBeNull();
+    expect(within(picker).getByText('Draft an announcement')).toBeTruthy();
+    expect(within(picker).getByText('Drafts, never sends')).toBeTruthy();
+    expect(within(picker).getAllByText('Reads').length).toBe(2);
+    expect(within(picker).getByText('Schedules · you confirm first')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Which kind of helper this is. It decides the safety rules it follows, for example IT help can open tickets.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows ticket routing only for IT behaviours', async () => {
+    const direct = {
+      id: 'ask',
+      guildId: '1540816150026518620',
+      surface: 'direct-command',
+      name: 'Club Q and A',
+      systemPrompt: 'Answer member questions.',
+      promptVersion: 1,
+      allowedSkillIds: [],
+      resourceIds: [],
+      enabled: true,
+      callerRoleIds: [],
+      ticket: { reviewerRoleIds: [] },
+    };
+    renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
+    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(screen.queryByRole('region', { name: 'Ticket routing' })).toBeNull();
+    expect(screen.queryByText(/Ticket routing is not exposed/)).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: /IT services/ }));
+    expect(await screen.findByRole('region', { name: 'Ticket routing' })).toBeTruthy();
+  });
+
+  it('maps a mention-role refusal to a plain-language inline error', async () => {
+    const NOW = 1750000000000;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    const id = `welcome-${NOW.toString(36)}`;
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      {
+        method: 'PUT',
+        url: `/api/assistant/behaviours/${id}`,
+        status: 400,
+        body: { error: 'mention-role-required' },
+      },
+    ]);
+    renderWithSession(<AssistantPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Name' }), {
+      target: { value: 'Welcome' },
+    });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Mention role' }), {
+      target: { value: 'role-onboarding' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Instructions for the new behaviour' }), {
+      target: { value: 'Welcome new members.' },
+    });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Create behaviour' })[0]!);
+    expect(
+      await screen.findByText(
+        'Choose the Discord role members will mention to reach this behaviour.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('cannot create a behaviour when the role directory did not load', async () => {
+    const body = { ...FULL } as Record<string, unknown>;
+    delete body['roles'];
+    renderPage(body);
+    fireEvent.click(await screen.findByRole('button', { name: 'Create a behaviour' }));
+    expect(
+      await screen.findByText(/no mention role can be chosen and the behaviour cannot be created/),
+    ).toBeTruthy();
+    const submit = screen.getAllByRole('button', { name: 'Create behaviour' })[0]!;
+    expect(submit.hasAttribute('disabled')).toBe(true);
+  });
+
+  it('empty state shows the tracker and the no-behaviours guidance', async () => {
+    renderPage({
+      ...FULL,
+      behaviours: [],
+      aiStatus: {
+        provider: 'gemini',
+        enabled: true,
+        modelConfigured: true,
+        keyConfigured: true,
+        keyReadable: true,
+        costClass: 'free',
+        secretSource: 'env',
+      },
+      setup: {
+        answering: false,
+        steps: [
+          { id: 'connect', state: 'done', detail: 'A provider is connected.' },
+          { id: 'terms', state: 'done', detail: 'Terms are recorded.' },
+          { id: 'cost', state: 'done', detail: 'Free.' },
+          { id: 'who', state: 'todo', detail: 'No behaviour has caller roles yet.' },
+          { id: 'skills', state: 'todo', detail: 'No everyday skills granted yet.' },
+          { id: 'on', state: 'todo', detail: 'Nothing is turned on yet.' },
+        ],
+      },
+    });
+    expect(await screen.findByText('Set up the assistant')).toBeTruthy();
+    expect(screen.getByText('No behaviours yet')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Step 4 creates the club assistant, which members reach with /ask. To set up a tagged helper like @it-services instead, create a behaviour.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Create default behaviour' })).toBeNull();
+  });
+
+  it('with zero behaviours, the header Create a behaviour button shows the create form', async () => {
     renderPage({ ...FULL, behaviours: [] });
-    expect(await screen.findByText('No assistant behaviour configured')).toBeTruthy();
-    expect(screen.getByText(/configuration API/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: /Add behaviour/ })).toBeNull();
+    expect(await screen.findByText('No behaviours yet')).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'Create a behaviour' }));
+    expect(await screen.findByRole('heading', { name: 'Create a behaviour' })).toBeTruthy();
   });
 
   it('offers no control without a backing endpoint', async () => {
@@ -368,7 +534,9 @@ describe('AssistantPage', () => {
     for (const label of [/Edit behaviour/, /Run test scenario/, /New reminder/]) {
       expect(screen.queryByRole('button', { name: label })).toBeNull();
     }
-    expect(screen.getByRole('button', { name: 'Save prompt' }).hasAttribute('disabled')).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save instructions' }).hasAttribute('disabled')).toBe(
+      true,
+    );
   });
 
   it('renders the error state when the load fails', async () => {

@@ -79,7 +79,7 @@ export interface AssistantBehaviourView extends Omit<AssistantBehaviour, 'caller
 /** A /decision or /review-plan record. Drafts are analysis, not club policy, until confirmed and saved. */
 export interface DecisionRow {
   readonly id: string;
-  readonly kind: 'decision' | 'review-plan';
+  readonly kind: 'decision' | 'review-plan' | 'memory';
   readonly summary: string;
   readonly status: 'draft' | 'reviewed' | 'saved';
   /** Who asked, and where the content came from, so a draft never reads as policy. */
@@ -111,9 +111,90 @@ export interface AssistantData {
   readonly skillGrants?: readonly SkillGrant[];
   readonly tickets?: readonly TicketRow[];
   readonly decisions?: readonly DecisionRow[];
+  readonly serverCard?: string;
+  readonly memories?: readonly {
+    id: string;
+    section: string;
+    content: string;
+    subjectId?: string;
+  }[];
+  readonly aiStatus?: AiStatus;
+  readonly setup?: AssistantSetup;
+  readonly providerTerms?: ProviderTerms | null;
+  readonly viewerIsOwner?: boolean;
 }
 
 export const ASSISTANT_URL = '/api/assistant';
+export type ProviderId = 'off' | 'gemini' | 'openrouter' | 'nvidia-nim';
+export interface AiStatus {
+  readonly provider: string;
+  readonly model?: string;
+  readonly enabled: boolean;
+  readonly modelConfigured: boolean;
+  readonly keyConfigured: boolean;
+  readonly keyReadable: boolean;
+  readonly costClass: 'free' | 'paid' | 'unknown';
+  readonly secretSource: 'env' | 'file' | 'missing';
+  readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
+}
+export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
+export interface SetupStep {
+  readonly id: SetupStepId;
+  readonly state: 'done' | 'todo' | 'blocked';
+  readonly detail: string;
+}
+export interface AssistantSetup {
+  readonly steps: readonly SetupStep[];
+  readonly answering: boolean;
+}
+export interface ProviderTerms {
+  readonly provider: string;
+  readonly trainsOnInput: 'no' | 'yes' | 'unknown';
+  readonly evidenceUrl: string;
+  readonly evidenceClause?: string;
+  readonly productionUseAllowed: boolean;
+  readonly reviewedAt: number;
+}
+/** Display names and links; the only place a provider id is turned into words. */
+export const PROVIDERS: readonly {
+  readonly id: Exclude<ProviderId, 'off'>;
+  readonly name: string;
+  readonly summary: string;
+  readonly termsUrl: string;
+  readonly keyUrl: string;
+  readonly modelHint: string;
+}[] = [
+  {
+    id: 'gemini',
+    name: 'Google Gemini',
+    summary: 'Sends member questions and allowed server context to Google.',
+    termsUrl: 'https://ai.google.dev/gemini-api/terms',
+    keyUrl: 'https://aistudio.google.com/app/apikey',
+    modelHint: 'For example gemini-2.5-flash',
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    summary:
+      'Sends member questions and allowed server context through OpenRouter to the model you name.',
+    termsUrl: 'https://openrouter.ai/terms',
+    keyUrl: 'https://openrouter.ai/settings/keys',
+    modelHint: 'The model id from OpenRouter, for example a model ending in :free',
+  },
+  {
+    id: 'nvidia-nim',
+    name: 'NVIDIA NIM',
+    summary: 'Sends member questions and allowed server context to NVIDIA.',
+    termsUrl: 'https://www.nvidia.com/en-us/data-center/products/nvidia-ai-enterprise/eula/',
+    keyUrl: 'https://build.nvidia.com/',
+    modelHint: 'The model id from build.nvidia.com',
+  },
+];
+export const providerName = (id: string): string =>
+  PROVIDERS.find((p) => p.id === id)?.name ?? (id === 'off' ? 'None' : 'Unknown service');
+export const PROVIDER_URL = '/api/assistant/provider';
+export const providerTermsUrl = (provider: string) =>
+  `/api/providers/${encodeURIComponent(provider)}/terms`;
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;
@@ -124,3 +205,4 @@ export const decisionSaveUrl = (id: string) =>
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;
+export const STARTER_URL = '/api/assistant/skill-grants/starter';

@@ -65,7 +65,7 @@ describe('JumpNav', () => {
     const labels = Array.from(nav.querySelectorAll('a')).map((a) =>
       a.textContent?.replace(/Current|Future/g, ''),
     );
-    const groupOrder = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'];
+    const groupOrder = ['Start here', 'Moderation', 'Messages', 'Assistant', 'Advanced / System'];
     expect(labels).toEqual(
       groupOrder.flatMap((group) => NAV.filter((n) => n.group === group).map((n) => n.label)),
     );
@@ -73,7 +73,7 @@ describe('JumpNav', () => {
     expect(current.getAttribute('href')).toBe('/audit');
     expect(current.textContent).toContain('Audit');
     expect(current.textContent).toContain('Current');
-    expect(within(nav).getAllByText('Future')).toHaveLength(4);
+    expect(within(nav).queryByText('Future')).toBeNull();
   });
 
   it('carries the server identity, sign-out and credit so mobile keeps the rail footer', async () => {

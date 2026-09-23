@@ -36,7 +36,10 @@ export function GuildIdentity() {
       ) : (
         <p className="truncate text-sm font-medium">{name ?? 'Guild'}</p>
       )}
-      <p className="mt-0.5 truncate text-xs text-ink-muted">{session.info.guildId}</p>
+      <details className="mt-0.5 text-xs text-ink-muted">
+        <summary className="cursor-pointer">Server details</summary>
+        <p>{session.info.guildId}</p>
+      </details>
     </div>
   );
 }

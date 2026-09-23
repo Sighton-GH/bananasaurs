@@ -8,6 +8,9 @@ import {
   assistantSkillGrants,
   assistantTickets,
   assistantDecisions,
+  assistantServerCards,
+  assistantMemories,
+  assistantMemoryPreferences,
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
@@ -493,6 +496,66 @@ export const putSkillGrant = (scope: GuildScope, input: AssistantSkillGrant, now
       })
       .run();
   });
+/**
+ * Adds roles to several skills' grants in one transaction. A union: existing
+ * role and user ids are kept, duplicates are not repeated. Returns the grants
+ * as stored after the write, in the order given.
+ */
+export const addRolesToSkillGrants = (
+  scope: GuildScope,
+  input: { skillIds: readonly string[]; roleIds: readonly string[] },
+  now: number,
+): readonly AssistantSkillGrant[] =>
+  write(scope, ({ db }) => {
+    if (input.skillIds.length === 0) return [];
+    const existing = db
+      .select()
+      .from(assistantSkillGrants)
+      .where(
+        scope.only(
+          assistantSkillGrants,
+          inArray(assistantSkillGrants.skillId, [...input.skillIds]),
+        ),
+      )
+      .all();
+    const bySkillId = new Map(existing.map((row) => [row.skillId, row]));
+    const result: AssistantSkillGrant[] = [];
+    for (const skillId of input.skillIds) {
+      const row = bySkillId.get(skillId);
+      const currentRoleIds = row === undefined ? [] : array(row.roleIdsJson);
+      const currentUserIds = row === undefined ? [] : array(row.userIdsJson);
+      const roleIds = [...currentRoleIds];
+      for (const roleId of input.roleIds) {
+        if (!roleIds.includes(roleId)) roleIds.push(roleId);
+      }
+      db.insert(assistantSkillGrants)
+        .values({
+          guildId: scope.guildId,
+          skillId,
+          roleIdsJson: JSON.stringify(roleIds),
+          userIdsJson: JSON.stringify(currentUserIds),
+          updatedAt: now,
+        })
+        .onConflictDoUpdate({
+          target: [assistantSkillGrants.guildId, assistantSkillGrants.skillId],
+          set: {
+            roleIdsJson: JSON.stringify(roleIds),
+            userIdsJson: JSON.stringify(currentUserIds),
+            updatedAt: now,
+          },
+        })
+        .run();
+      result.push({ skillId, roleIds, userIds: [...currentUserIds] });
+      bySkillId.set(skillId, {
+        guildId: scope.guildId,
+        skillId,
+        roleIdsJson: JSON.stringify(roleIds),
+        userIdsJson: JSON.stringify(currentUserIds),
+        updatedAt: now,
+      });
+    }
+    return result;
+  });
 export const listTickets = (scope: GuildScope) =>
   read(scope, (db) =>
     db
@@ -560,7 +623,7 @@ export const insertTicket = (scope: GuildScope, input: NewAssistantTicket): bool
   );
 export interface NewAssistantDecision {
   readonly id: string;
-  readonly kind: 'decision' | 'review-plan';
+  readonly kind: 'decision' | 'review-plan' | 'memory';
   readonly summary: string;
   readonly requesterId: string;
   readonly provenance: string;
@@ -581,6 +644,54 @@ export const insertDecisionDraft = (scope: GuildScope, input: NewAssistantDecisi
       })
       .run();
   });
+export const saveMemoryProposal = (
+  scope: GuildScope,
+  id: string,
+  memory: {
+    readonly section: string;
+    readonly content: string;
+    readonly subjectId?: string | undefined;
+  },
+  now: number,
+): boolean =>
+  write(scope, ({ db }) => {
+    const proposal = db
+      .select()
+      .from(assistantDecisions)
+      .where(
+        scope.only(
+          assistantDecisions,
+          eq(assistantDecisions.decisionId, id),
+          eq(assistantDecisions.kind, 'memory'),
+          eq(assistantDecisions.status, 'reviewed'),
+        ),
+      )
+      .get();
+    if (proposal === undefined) return false;
+    db.insert(assistantMemories)
+      .values({
+        guildId: scope.guildId,
+        memoryId: `proposal-${id}`,
+        section: memory.section,
+        content: memory.content,
+        subjectId: memory.subjectId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .run();
+    db.update(assistantDecisions)
+      .set({ status: 'saved' })
+      .where(
+        scope.only(
+          assistantDecisions,
+          eq(assistantDecisions.decisionId, id),
+          eq(assistantDecisions.status, 'reviewed'),
+        ),
+      )
+      .run();
+    return true;
+  });
+
 export const transitionDecision = (
   scope: GuildScope,
   id: string,
@@ -602,3 +713,123 @@ export const transitionDecision = (
         )
         .run().changes > 0,
   );
+
+export interface AssistantMemoryRow {
+  readonly id: string;
+  readonly section: string;
+  readonly content: string;
+  readonly subjectId?: string;
+  readonly createdAt: number;
+  readonly updatedAt: number;
+}
+export const getServerCard = (scope: GuildScope): string =>
+  read(
+    scope,
+    (db) =>
+      db.select().from(assistantServerCards).where(scope.only(assistantServerCards)).get()
+        ?.content ?? 'Bananasaurs club assistant',
+  );
+export const putServerCard = (scope: GuildScope, content: string, now: number): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantServerCards)
+      .values({ guildId: scope.guildId, content, updatedAt: now })
+      .onConflictDoUpdate({
+        target: assistantServerCards.guildId,
+        set: { content, updatedAt: now },
+      })
+      .run();
+  });
+export const listMemories = (scope: GuildScope): readonly AssistantMemoryRow[] =>
+  read(scope, (db) =>
+    db
+      .select()
+      .from(assistantMemories)
+      .where(scope.only(assistantMemories))
+      .orderBy(asc(assistantMemories.createdAt))
+      .all()
+      .map((r) => ({
+        id: r.memoryId,
+        section: r.section,
+        content: r.content,
+        ...(r.subjectId === null ? {} : { subjectId: r.subjectId }),
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt,
+      })),
+  );
+export const putMemory = (
+  scope: GuildScope,
+  input: { id: string; section: string; content: string; subjectId?: string | undefined },
+  now: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantMemories)
+      .values({
+        guildId: scope.guildId,
+        memoryId: input.id,
+        section: input.section,
+        content: input.content,
+        subjectId: input.subjectId ?? null,
+        createdAt: now,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [assistantMemories.guildId, assistantMemories.memoryId],
+        set: {
+          section: input.section,
+          content: input.content,
+          subjectId: input.subjectId ?? null,
+          updatedAt: now,
+        },
+      })
+      .run();
+  });
+export const deleteMemory = (scope: GuildScope, id: string): boolean =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .delete(assistantMemories)
+        .where(scope.only(assistantMemories, eq(assistantMemories.memoryId, id)))
+        .run().changes > 0,
+  );
+export const memoryPreference = (scope: GuildScope, userId: string): { optedOut: boolean } =>
+  read(scope, (db) => ({
+    optedOut:
+      db
+        .select()
+        .from(assistantMemoryPreferences)
+        .where(
+          scope.only(assistantMemoryPreferences, eq(assistantMemoryPreferences.userId, userId)),
+        )
+        .get()?.optedOut === 1,
+  }));
+export const setMemoryOptOut = (
+  scope: GuildScope,
+  userId: string,
+  optedOut: boolean,
+  now: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantMemoryPreferences)
+      .values({ guildId: scope.guildId, userId, optedOut: optedOut ? 1 : 0, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [assistantMemoryPreferences.guildId, assistantMemoryPreferences.userId],
+        set: { optedOut: optedOut ? 1 : 0, updatedAt: now },
+      })
+      .run();
+  });
+export const forgetMember = (scope: GuildScope, userId: string, now: number): number =>
+  write(scope, ({ db }) => {
+    const removed = db
+      .delete(assistantMemories)
+      .where(scope.only(assistantMemories, eq(assistantMemories.subjectId, userId)))
+      .run().changes;
+    db.insert(assistantMemoryPreferences)
+      .values({ guildId: scope.guildId, userId, optedOut: 1, updatedAt: now })
+      .onConflictDoUpdate({
+        target: [assistantMemoryPreferences.guildId, assistantMemoryPreferences.userId],
+        set: { optedOut: 1, updatedAt: now },
+      })
+      .run();
+    return removed;
+  });

@@ -18,6 +18,7 @@ export type AssistantCommand =
   | 'ask'
   | 'find'
   | 'remind'
+  | 'remember'
   | 'decision'
   | 'review-plan'
   | 'onboard'
@@ -98,6 +99,7 @@ const COMMANDS = new Set<AssistantCommand>([
   'ask',
   'find',
   'remind',
+  'remember',
   'decision',
   'review-plan',
   'onboard',
@@ -125,6 +127,10 @@ const commandInput = (event: SlashCommandEvent): Readonly<Record<string, string>
     const when = value(event, 'when');
     const text = value(event, 'text');
     return when && text ? { when, text } : undefined;
+  }
+  if (event.commandName === 'remember') {
+    const request = value(event, 'request');
+    return request ? { request } : undefined;
   }
   if (event.commandName === 'decision') {
     const topic = value(event, 'topic');

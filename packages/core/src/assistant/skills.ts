@@ -36,6 +36,15 @@ export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
     requiresConfirmation: false,
   },
   {
+    id: 'propose-memory',
+    name: 'Propose a memory',
+    description:
+      'Draft a sectioned memory entry for operator review; never writes memory directly.',
+    effect: 'draft',
+    requiredPermission: 'assistant.memory',
+    requiresConfirmation: true,
+  },
+  {
     id: 'record-decision',
     name: 'Record a decision',
     description: 'Draft a sourced club decision record for human review.',
@@ -100,6 +109,11 @@ export const CLUB_ASSISTANT_SKILLS: readonly AssistantSkill[] = [
     requiresConfirmation: false,
   },
 ] as const;
+
+/** Everyday skills a first-run owner may grant in one step: not owner-only, no confirmation. */
+export const STARTER_SKILL_IDS: readonly string[] = CLUB_ASSISTANT_SKILLS.filter(
+  (skill) => skill.ownerOnly !== true && !skill.requiresConfirmation,
+).map((skill) => skill.id);
 
 export const decideSkillUse = (
   skill: AssistantSkill,

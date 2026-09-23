@@ -1,10 +1,20 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { CLUB_ASSISTANT_SKILLS, validateResourceUrl } from '@bananasaurs/core';
-import { assistantRepo } from '@bananasaurs/storage';
+import { CLUB_ASSISTANT_SKILLS, STARTER_SKILL_IDS, validateResourceUrl } from '@bananasaurs/core';
+import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
+import type { SessionContext } from '../auth.js';
+import { computeAssistantSetup } from './assistant-setup.js';
+
+/**
+ * Instance owner, read from the account row rather than any capability: the
+ * provider's cost statement and terms record are facts about the whole
+ * daemon (ADR 0061), and no per-guild grant can confer them.
+ */
+export const isInstanceOwner = (deps: HttpDeps, session: SessionContext): boolean =>
+  accountRepo.findAccountById(deps.scopes.instance(), session.accountId)?.isOwner === true;
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
 const behaviour = z.object({
@@ -27,6 +37,20 @@ const behaviour = z.object({
   resourceIds: z.array(z.string()).max(100),
   enabled: z.boolean(),
 });
+const providerConfig = z.object({
+  provider: z.enum(['off', 'gemini', 'openrouter', 'nvidia-nim']),
+  model: z.string().min(1).max(200).optional(),
+  apiKey: z.string().min(1).max(1000).optional(),
+  enabled: z.boolean(),
+  costClass: z.enum(['free', 'paid', 'unknown']).optional(),
+});
+const memory = z.object({
+  id: z.string().min(1).max(64),
+  section: z.string().min(1).max(100),
+  content: z.string().min(1).max(1000),
+  subjectId: snowflake.optional(),
+});
+const serverCard = z.object({ content: z.string().min(1).max(4000) });
 const resource = z.object({
   id: z.string().min(1).max(64),
   title: z.string().min(1).max(200),
@@ -48,8 +72,26 @@ export const registerAssistantRoutes = (
       deps.assistantDirectories === undefined
         ? undefined
         : await deps.assistantDirectories(session.guildId).catch(() => undefined);
+    const behaviours = assistantRepo.listBehaviours(session.scope);
+    const skillGrants = assistantRepo.listSkillGrants(session.scope);
+    const aiStatus = deps.assistantProviderConfig?.status() ??
+      deps.assistantAiStatus ?? {
+        provider: 'unknown',
+        enabled: false,
+        modelConfigured: false,
+        keyConfigured: false,
+        keyReadable: false,
+        costClass: 'unknown',
+        secretSource: 'missing',
+      };
+    const providerTerms =
+      eligibilityRepo.findEligibility(deps.scopes.instance(), aiStatus.provider) ?? null;
+    const roleNames =
+      directories?.roles === undefined
+        ? undefined
+        : new Map(directories.roles.map((role) => [role.id, role.name] as const));
     return reply.status(200).send({
-      behaviours: assistantRepo.listBehaviours(session.scope).map((item) => ({
+      behaviours: behaviours.map((item) => ({
         ...item,
         ticket: {
           ...(item.ticketChannelId === undefined ? {} : { channelId: item.ticketChannelId }),
@@ -60,11 +102,136 @@ export const registerAssistantRoutes = (
       reminders: assistantRepo.listReminders(session.scope),
       skills: CLUB_ASSISTANT_SKILLS,
       activity: assistantRepo.listSkillActivity(session.scope, 100),
-      skillGrants: assistantRepo.listSkillGrants(session.scope),
+      skillGrants,
       tickets: assistantRepo.listTickets(session.scope),
       decisions: assistantRepo.listDecisions(session.scope),
+      serverCard: assistantRepo.getServerCard(session.scope),
+      memories: assistantRepo.listMemories(session.scope),
+      aiStatus,
+      setup: computeAssistantSetup({
+        status: aiStatus,
+        terms: providerTerms ?? undefined,
+        behaviours,
+        grants: skillGrants,
+        skills: CLUB_ASSISTANT_SKILLS,
+        now: deps.now(),
+        reviewMaxAgeMs: eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS,
+        ...(roleNames === undefined ? {} : { roleNames }),
+      }),
+      providerTerms,
+      viewerIsOwner: isInstanceOwner(deps, session),
       ...(directories ?? {}),
     });
+  });
+  app.put('/api/assistant/provider', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    if (deps.assistantProviderConfig === undefined)
+      return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
+    const parsed = providerConfig.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const before = deps.assistantProviderConfig.status();
+    if (
+      parsed.data.costClass !== undefined &&
+      parsed.data.costClass !== before.costClass &&
+      !isInstanceOwner(deps, session)
+    )
+      return reply.status(403).send({ error: 'owner-only', field: 'costClass' });
+    deps.assistantProviderConfig.save(parsed.data, deps.now());
+    const after = deps.assistantProviderConfig.status();
+    // The key itself never reaches the audit row: only whether it was replaced.
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_provider.saved',
+      subjectType: 'assistant_provider',
+      subjectId: 'active',
+      before: {
+        provider: before.provider,
+        model: before.model ?? null,
+        enabled: before.enabled,
+        costClass: before.costClass,
+      },
+      after: {
+        provider: after.provider,
+        model: after.model ?? null,
+        enabled: after.enabled,
+        costClass: after.costClass,
+        keyReplaced: parsed.data.apiKey !== undefined,
+      },
+    });
+    return reply.status(200).send(after);
+  });
+  app.put('/api/assistant/server-card', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = serverCard.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    assistantRepo.putServerCard(session.scope, parsed.data.content, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_server_card.saved',
+      subjectType: 'assistant_server_card',
+      subjectId: session.guildId,
+      before: undefined,
+      after: { length: parsed.data.content.length },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+  app.put('/api/assistant/memory-preferences/:userId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const userId = (request.params as { userId: string }).userId;
+    const parsed = z.object({ optedOut: z.boolean() }).safeParse(request.body);
+    if (!snowflake.safeParse(userId).success || !parsed.success)
+      return reply.status(400).send({ error: 'bad-request' });
+    assistantRepo.setMemoryOptOut(session.scope, userId, parsed.data.optedOut, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_memory_preference.saved',
+      subjectType: 'member',
+      subjectId: userId,
+      before: undefined,
+      after: { optedOut: parsed.data.optedOut },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+  app.delete('/api/assistant/member-memory/:userId', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const userId = (request.params as { userId: string }).userId;
+    if (!snowflake.safeParse(userId).success)
+      return reply.status(400).send({ error: 'bad-request' });
+    const removed = assistantRepo.forgetMember(session.scope, userId, deps.now());
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_member_memory.forgotten',
+      subjectType: 'member',
+      subjectId: userId,
+      before: undefined,
+      after: { removed, optedOut: true },
+    });
+    return reply.status(200).send({ removed, optedOut: true });
+  });
+  app.put('/api/assistant/memories/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = memory.safeParse(request.body);
+    if (!parsed.success || parsed.data.id !== (request.params as { id: string }).id)
+      return reply.status(400).send({ error: 'bad-request' });
+    assistantRepo.putMemory(session.scope, parsed.data, deps.now());
+    return reply.status(200).send({ ok: true });
+  });
+  app.delete('/api/assistant/memories/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    assistantRepo.deleteMemory(session.scope, (request.params as { id: string }).id);
+    return reply.status(200).send({ ok: true });
   });
   app.put('/api/assistant/behaviours/:id', (request, reply) => {
     const session = guard.require(request, reply);
@@ -140,6 +307,35 @@ export const registerAssistantRoutes = (
     );
     return reply.status(200).send({ ok: true });
   });
+  app.post('/api/assistant/skill-grants/starter', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = z
+      .object({ roleIds: z.array(snowflake).min(1).max(100) })
+      .safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const before: Record<string, readonly string[]> = {};
+    for (const grant of assistantRepo.listSkillGrants(session.scope)) {
+      if (STARTER_SKILL_IDS.includes(grant.skillId)) {
+        before[grant.skillId] = grant.roleIds;
+      }
+    }
+    assistantRepo.addRolesToSkillGrants(
+      session.scope,
+      { skillIds: STARTER_SKILL_IDS, roleIds: parsed.data.roleIds },
+      deps.now(),
+    );
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_skill_grant.starter_applied',
+      subjectType: 'assistant_skill_grant',
+      subjectId: 'starter',
+      before,
+      after: { roleIds: parsed.data.roleIds, skillIds: STARTER_SKILL_IDS },
+    });
+    return reply.status(200).send({ skillIds: STARTER_SKILL_IDS });
+  });
   app.put('/api/assistant/skill-grants/:id', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
@@ -210,8 +406,21 @@ export const registerAssistantRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const id = (request.params as { id: string }).id;
-    if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved'))
+    const proposal = assistantRepo.listDecisions(session.scope).find((item) => item.id === id);
+    if (proposal?.kind === 'memory') {
+      const parsed = z
+        .object({
+          section: z.string().min(1).max(100),
+          content: z.string().min(1).max(1000),
+          subjectId: snowflake.optional(),
+        })
+        .safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'memory-details-required' });
+      if (!assistantRepo.saveMemoryProposal(session.scope, id, parsed.data, deps.now()))
+        return reply.status(409).send({ error: 'invalid-transition' });
+    } else if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved')) {
       return reply.status(409).send({ error: 'invalid-transition' });
+    }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'assistant_decision.saved',

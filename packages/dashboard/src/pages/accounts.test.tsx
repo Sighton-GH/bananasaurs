@@ -111,7 +111,7 @@ describe('AccountsPage', () => {
     stubFetch([{ url: '/api/accounts', body: ACCOUNTS }]);
     renderWithSession(<AccountsPage />);
     await screen.findByText('bryan');
-    fireEvent.click(screen.getAllByRole('button', { name: 'Revoke guild' })[0]!);
+    fireEvent.click(screen.getAllByRole('button', { name: 'Remove server access' })[0]!);
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).toContain('your own account');
     expect(dialog.textContent).toContain('no way back in');
@@ -248,7 +248,7 @@ describe('AccountsPage capabilities (account grant parity)', () => {
     fireEvent.change(screen.getByLabelText('Username'), {
       target: { value: 'mod-jules' },
     });
-    fireEvent.click(screen.getByLabelText(/Give the account access to this guild/));
+    fireEvent.click(screen.getByLabelText(/Give this account access to this server/));
     fireEvent.click(screen.getByLabelText('audit.read'));
     expect(
       screen.getByText(/access to guild 1540816150026518620 with the capabilities audit\.read/),

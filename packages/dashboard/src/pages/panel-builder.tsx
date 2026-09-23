@@ -232,7 +232,7 @@ export function PanelBuilder({
       found.push('Name: lowercase letters, numbers, dashes and underscores, at most 64.');
     }
     if (!SNOWFLAKE.test(channelId.trim())) {
-      found.push('Channel: pick a channel or paste its snowflake ID.');
+      found.push('Channel: search for and choose a channel.');
     }
     if (isReaction && !SNOWFLAKE.test(messageId.trim())) {
       found.push(

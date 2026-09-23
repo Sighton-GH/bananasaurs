@@ -430,8 +430,13 @@ export type RedactedConfig = Readonly<Record<string, unknown>>;
  * change it here too; the route refuses anything else with `bad-request`.
  */
 export const LOG_EVENT_KINDS: readonly string[] = [
+  'automod_action',
+  'guild_available',
+  'guild_unavailable',
   'member_join',
   'member_leave',
+  'member_update',
+  'message_create',
   'message_delete',
   'message_edit',
   'role_create',

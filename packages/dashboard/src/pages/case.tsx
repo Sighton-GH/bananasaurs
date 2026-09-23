@@ -50,7 +50,10 @@ export function CasePage() {
 
   return (
     <>
-      <PageHeader title={caseId} purpose="One moderation case and what the bot did about it." />
+      <PageHeader
+        title="Moderation case"
+        purpose="One moderation case and what Bananasaurs did about it."
+      />
       <DataState resource={detail.resource}>
         {({ case: item, events }) => {
           const ordered = [...events].sort((a, b) => a.at - b.at);
@@ -61,7 +64,11 @@ export function CasePage() {
                   <dt className="text-ink-muted">Case</dt>
                   <dd>{item.caseId}</dd>
                   <dt className="text-ink-muted">Member</dt>
-                  <dd>{item.memberId}</dd>
+                  <dd>
+                    {item.member === null
+                      ? 'Former or unavailable member'
+                      : `${item.member.displayName} (@${item.member.username})`}
+                  </dd>
                   <dt className="text-ink-muted">Opened</dt>
                   <dd>{new Date(item.openedAt).toLocaleString()}</dd>
                   <dt className="text-ink-muted">Violations</dt>

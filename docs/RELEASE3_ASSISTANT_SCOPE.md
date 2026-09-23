@@ -71,3 +71,9 @@ Exactly what is live, so the release gate is measured against reality:
 ## Release gate
 
 Release 3 is complete only when all original roadmap bullets are implemented, every new capability has a dashboard path, the golden suite finds no permission leak, provider failure leaves Releases 1 and 2 working, and actual desktop/mobile pixels plus end-to-end Discord behaviour are reviewed. Provider adapters alone are a foundation, not Release 3.
+
+## Fresh deployment and provider boundary
+
+A writable fresh deployment creates the product-owned direct-command behaviour and attaches the built-in skill catalogue. These skills, prompts, reviewed resources, memory and permission controls are visible before any AI provider is enabled.
+
+`AI_PROVIDER` defaults to `off`. In that state no member content is sent to an external provider. Enabling a behaviour does not cross that boundary: provider traffic also requires a configured model and key plus a current eligible provider record. Missing or unverified configuration fails closed.

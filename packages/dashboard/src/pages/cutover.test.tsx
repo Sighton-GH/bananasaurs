@@ -72,13 +72,15 @@ describe('CutoverPage', () => {
       },
     ]);
     renderWithSession(<CutoverPage />);
-    expect(await screen.findByRole('heading', { level: 1, name: 'Cutover' })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { level: 1, name: 'Turn on moderation' }),
+    ).toBeTruthy();
     expect(
       screen.getByText(
         'Enforcement is offered only by the release gate (ADR 0042); this board reports, it does not move anything.',
       ),
     ).toBeTruthy();
-    const table = await screen.findByRole('table', { name: 'Cutover board' });
+    const table = await screen.findByRole('table', { name: 'Moderation readiness' });
     // The observing rule under the floor reads "3 of 14"; the ready rule
     // past it reads plain days — "of 14" appears exactly once.
     expect(within(table).getByText('3 of 14')).toBeTruthy();

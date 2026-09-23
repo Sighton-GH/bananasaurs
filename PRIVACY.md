@@ -58,7 +58,7 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 **It stays on one computer.** Bananasaurs runs on a machine owned and operated by the server owner. There is no Bananasaurs company, no cloud account holding your messages, and no analytics service receiving them.
 
-**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks. The provider currently in use is listed in `/privacy`.
+**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks. The provider currently in use, the sentence from its terms saying it does not train on this data, and the date that was checked are recorded on the bot's AI setup page; a server admin can show you.
 
 Bananasaurs only uses providers whose terms state they **do not train models on the data sent to them**. This is both a promise to you and a requirement of Discord's own developer rules, which prohibit using message content to train AI models.
 

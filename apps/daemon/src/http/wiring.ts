@@ -23,7 +23,9 @@ import {
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
+  type AssistantProviderStatus,
 } from '@bananasaurs/http';
+import { envProviderStatus } from '../assistant/provider-config.js';
 import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
 
@@ -66,6 +68,9 @@ export interface DashboardApiDeps {
    * would serve a `send_message` that registers and always fails.
    */
   readonly discord: DiscordPort;
+  readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
+  /** Why there is no provider store, when there is none (ADR 0061 §3). */
+  readonly assistantSecretProblem?: AssistantProviderStatus['secretProblem'];
 }
 
 export interface DashboardApi {
@@ -97,6 +102,8 @@ export interface DashboardAppDeps {
   readonly portsFor: (scope: GuildScope) => OpsPorts;
   readonly instance: OpsInstance;
   readonly distDir: string;
+  readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
+  readonly assistantAiStatus?: HttpDeps['assistantAiStatus'];
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
   /**
@@ -181,6 +188,13 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
+    // Carried through, never rebuilt: the 2026-09-23 audit found this literal
+    // hard-coding an 'unknown' status and dropping the store, so every
+    // dashboard provider save answered 503 (wiring.provider.test.ts).
+    ...(deps.assistantProviderConfig === undefined
+      ? {}
+      : { assistantProviderConfig: deps.assistantProviderConfig }),
+    ...(deps.assistantAiStatus === undefined ? {} : { assistantAiStatus: deps.assistantAiStatus }),
   };
   const app = createServer({
     deps: httpDeps,
@@ -247,6 +261,17 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.config.MCP_PUBLIC_URL,
+    ...(deps.assistantProviderConfig === undefined
+      ? {}
+      : { assistantProviderConfig: deps.assistantProviderConfig }),
+    // Only read when there is no store: the env-configured provider, with the
+    // reason the dashboard cannot save keys itself.
+    assistantAiStatus: {
+      ...envProviderStatus(deps.config, 'missing'),
+      ...(deps.assistantSecretProblem === undefined
+        ? {}
+        : { secretProblem: deps.assistantSecretProblem }),
+    },
   };
 
   // Under BANANASAURS_READONLY this returns undefined rather than throwing.

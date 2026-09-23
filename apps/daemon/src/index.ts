@@ -17,6 +17,7 @@ import { DatabaseLockedError, openDatabase, type OpenedDatabase } from '@bananas
 import { bindOpsSocket, SocketInUseError, type OpsSocketServer } from './ops/socket.js';
 import { announceCommands } from './runtime/commands.js';
 import { startDashboardApi, type DashboardApi } from './http/wiring.js';
+import { resolveProviderSecret } from './assistant/provider-secret.js';
 import { createDaemon } from './runtime/daemon.js';
 import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
 import {
@@ -259,6 +260,19 @@ async function main(): Promise<void> {
     guildOwnerId: (guildId) => client.guilds.cache.get(guildId)?.ownerId,
   });
 
+  // After the database opens (so the data dir exists) and before the daemon is
+  // built. ADR 0061 §3: env wins, else the 0600 key file, created on first run.
+  const providerSecret = resolveProviderSecret({
+    envSecret: config.ASSISTANT_PROVIDER_SECRET_KEY,
+    dataDir: config.BANANASAURS_DATA_DIR,
+    readonly: config.BANANASAURS_READONLY,
+  });
+  if (providerSecret.source === 'missing')
+    log.warn(
+      safeLogFields({ component: 'assistant', reason: providerSecret.reason }),
+      'dashboard provider keys are unavailable: no usable key-encryption secret',
+    );
+
   let shuttingDown = false;
   const daemon = createDaemon({
     config,
@@ -268,6 +282,7 @@ async function main(): Promise<void> {
     logger: log,
     raw: opened.raw,
     now: () => Date.now(),
+    providerSecret,
     onFatal: (reason) => {
       log.fatal(safeLogFields({ component: 'startup', reason }), 'stopping');
       void shutdown('fatal', EXIT_UNAVAILABLE);
@@ -288,6 +303,12 @@ async function main(): Promise<void> {
       instance: daemon.instance,
       client,
       discord,
+      ...(daemon.providerStore === undefined
+        ? {}
+        : { assistantProviderConfig: daemon.providerStore }),
+      ...(daemon.providerSecretProblem === undefined
+        ? {}
+        : { assistantSecretProblem: daemon.providerSecretProblem }),
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and

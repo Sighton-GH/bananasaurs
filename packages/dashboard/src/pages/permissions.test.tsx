@@ -85,7 +85,8 @@ describe('PermissionsPage', () => {
   it('shows effective state: via-category, off, and the category row itself', async () => {
     stubAll();
     renderWithSession(<PermissionsPage />);
-    // general is archived and sendable via the Community category.
+    // Categories start collapsed; opening Community reveals inherited states.
+    fireEvent.click(await screen.findByRole('button', { name: /Community/ }));
     expect((await screen.findAllByText('On, via Community')).length).toBe(2);
     // mod-log is off on both axes and offers both enables.
     expect(screen.getAllByText('Off').length).toBeGreaterThan(0);
@@ -99,8 +100,9 @@ describe('PermissionsPage', () => {
   it('marks an excluded channel and overrides its rows', async () => {
     stubAll({ exclusions: ['333333333333333333'] });
     renderWithSession(<PermissionsPage />);
-    expect((await screen.findAllByText('Excluded')).length).toBe(2);
-    expect(screen.getByRole('button', { name: 'Include again' })).toBeTruthy();
+    expect((await screen.findAllByText('No access')).length).toBe(2);
+    fireEvent.click(screen.getByRole('button', { name: /Community/ }));
+    expect(screen.getByRole('button', { name: 'Restore access' })).toBeTruthy();
   });
 
   it('enables a channel with the chosen attachment policy', async () => {
@@ -146,18 +148,18 @@ describe('PermissionsPage', () => {
   it('exclusion toggle posts and deletes the exclusion', async () => {
     const mock = stubAll();
     renderWithSession(<PermissionsPage />);
-    const excludeButtons = await screen.findAllByRole('button', { name: 'Exclude' });
+    const excludeButtons = await screen.findAllByRole('button', { name: 'No access' });
     fireEvent.click(excludeButtons[0]!);
     const post = mock.mock.calls.find(
       (c) => (c[1]?.method ?? 'GET') === 'POST' && c[0] === '/api/log-exclusions',
     );
-    expect(bodyOf(post ?? [])).toEqual({ channelId: '333333333333333333' });
+    expect(bodyOf(post ?? [])).toEqual({ channelId: '444444444444444444' });
   });
 
   it('hides the exclusion controls honestly when the account lacks the logging capability', async () => {
     stubAll({ exclusionsFail: true });
     renderWithSession(<PermissionsPage />);
-    expect(await screen.findByText(/cannot see or change exclusions/)).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Exclude' })).toBeNull();
+    expect(await screen.findByText(/cannot see or change channel access overrides/)).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'No access' })).toBeNull();
   });
 });

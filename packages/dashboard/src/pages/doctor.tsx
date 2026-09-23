@@ -84,7 +84,9 @@ export function DoctorPage() {
             What this runs{' '}
             <HelpTip label="the bot and server checks">
               The same checks as the bananasaurs doctor command on the host: gateway connection, bot
-              permissions, role messages and archive health. Running them changes nothing.
+              permissions, role messages and archive health. READ means seeing current content;
+              ARCHIVE means collecting and keeping a searchable copy. Running checks changes
+              nothing.
             </HelpTip>
           </p>
           <DataState resource={doctor.resource}>
@@ -112,6 +114,18 @@ export function DoctorPage() {
                         <li key={advisory}>{advisory}</li>
                       ))}
                     </ul>
+                  </div>
+                )}
+                {!report.ok && (report.data.problems?.length ?? 0) === 0 && (
+                  <div className="mb-3 rounded border border-danger/40 bg-danger/5 p-3">
+                    <p className="text-sm font-medium">
+                      The structured fix is unavailable in this report.
+                    </p>
+                    <p className="mt-1 text-sm whitespace-pre-wrap">{report.text}</p>
+                    <p className="mt-2 text-sm">
+                      Fix: update to a server build that returns Doctor problems with issue, impact,
+                      fix and route fields, then re-run this check.
+                    </p>
                   </div>
                 )}
                 <ReportBody text={report.text} data={report.data} />
@@ -142,6 +156,21 @@ export function DoctorPage() {
                     <Badge tone="danger">problems found</Badge>
                   )}
                 </p>
+                {report.probed && !report.ok && (
+                  <div className="mb-3 rounded border border-danger/40 bg-danger/5 p-3">
+                    <p className="text-sm font-medium">
+                      Internet access is not configured as intended
+                    </p>
+                    <p className="mt-1 text-sm whitespace-pre-wrap">{report.text}</p>
+                    <p className="mt-2 text-sm">
+                      Fix the public connector or Cloudflare Access policy named above, then re-run
+                      this check.
+                    </p>
+                    <Link href="/mcp" className="mt-2 inline-block text-sm text-accent underline">
+                      Open connector settings
+                    </Link>
+                  </div>
+                )}
                 <ReportBody text={report.text} data={report.data} />
               </>
             )}

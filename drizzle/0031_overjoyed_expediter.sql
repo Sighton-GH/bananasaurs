@@ -1,0 +1,1 @@
+ALTER TABLE `assistant_memories` ADD `section` text DEFAULT 'General' NOT NULL;

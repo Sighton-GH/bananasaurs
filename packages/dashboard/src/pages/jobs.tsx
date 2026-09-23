@@ -90,7 +90,7 @@ export function JobsPage() {
   return (
     <>
       <PageHeader
-        title="Jobs"
+        title="Background tasks"
         purpose="Background work the bot has queued, is running or could not finish. Failed work can be retried here."
       />
       <div className="mb-3">

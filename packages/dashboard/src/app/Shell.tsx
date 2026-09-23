@@ -3,6 +3,10 @@ import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
 import { AssistantActivityPage } from '../pages/assistant-activity.js';
 import { AssistantPage } from '../pages/assistant.js';
+import { AssistantResourcesPage } from '../pages/assistant-resources.js';
+import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
+import { AssistantSkillsPage } from '../pages/assistant-skills.js';
+import { AssistantMemoryPage } from '../pages/assistant-memory.js';
 import { ArchivePage } from '../pages/archive.js';
 import { AuditPage } from '../pages/audit.js';
 import { BackupsPage } from '../pages/backups.js';
@@ -26,7 +30,6 @@ import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { PermissionsPage } from '../pages/permissions.js';
-import { StubPage } from '../pages/stub.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
@@ -67,12 +70,17 @@ function DesktopHeader() {
             Active server
           </span>
         </div>
-        <p className="mt-0.5 truncate text-xs text-ink-muted">{session.info.guildId}</p>
+        <details className="mt-0.5 text-xs text-ink-muted">
+          <summary className="cursor-pointer">Server details</summary>
+          <p>{session.info.guildId}</p>
+        </details>
       </div>
       <div className="flex items-center gap-4">
         <div className="text-right">
           <p className="text-xs font-medium text-ink">{freshness}</p>
-          <p className="text-[0.6875rem] text-ink-muted">Health summary · Observe-first controls</p>
+          <Link href="/safety" className="text-[0.6875rem] text-ink-muted underline">
+            Safety mode: changes are logged, not applied
+          </Link>
         </div>
         <ThemeToggle />
       </div>
@@ -160,39 +168,14 @@ function Pages() {
       <Route path="/mcp" component={McpPage} />
       <Route path="/providers" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
+      <Route path="/assistant/skills" component={AssistantSkillsPage} />
+      <Route path="/assistant/schedules" component={AssistantSchedulesPage} />
+      <Route path="/assistant/resources" component={AssistantResourcesPage} />
       <Route path="/assistant/activity" component={AssistantActivityPage} />
-      <Route path="/resources">
-        {() => (
-          <StubPage
-            title="Resources"
-            purpose="Files, links and notes the club keeps, findable from Discord."
-          />
-        )}
-      </Route>
-      <Route path="/memory">
-        {() => (
-          <StubPage
-            title="Memory"
-            purpose="What the assistant remembers about the server, and how to correct it."
-          />
-        )}
-      </Route>
-      <Route path="/ai">
-        {() => (
-          <StubPage
-            title="AI workspace"
-            purpose="Where the owner drafts and reviews AI-assisted actions before they run."
-          />
-        )}
-      </Route>
-      <Route path="/proposals">
-        {() => (
-          <StubPage
-            title="Proposals"
-            purpose="Changes the assistant proposes, waiting for a person to approve."
-          />
-        )}
-      </Route>
+      <Route path="/resources" component={AssistantResourcesPage} />
+      <Route path="/memory" component={AssistantMemoryPage} />
+      <Route path="/ai" component={AssistantPage} />
+      <Route path="/proposals" component={AssistantPage} />
       <Route component={NotFoundPage} />
     </Switch>
   );

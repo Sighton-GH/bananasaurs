@@ -317,6 +317,7 @@ export const assistantInvokePayload = z.object({
     'ask',
     'find',
     'remind',
+    'remember',
     'decision',
     'review-plan',
     'onboard',

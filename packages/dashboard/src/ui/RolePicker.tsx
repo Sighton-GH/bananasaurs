@@ -47,7 +47,7 @@ export function RolePicker({
     <div className="text-sm">
       <Field
         label={label}
-        hint={hint ?? 'Pick a role below or paste its snowflake ID.'}
+        hint={hint ?? 'Search by role name and choose a result.'}
         {...(error !== undefined ? { error } : {})}
       >
         <Input
@@ -55,7 +55,7 @@ export function RolePicker({
           onChange={(e) => onChange(e.target.value)}
           onFocus={() => setFocused(true)}
           onBlur={() => setFocused(false)}
-          placeholder="Role name or ID"
+          placeholder="Search role names"
           autoComplete="off"
         />
       </Field>

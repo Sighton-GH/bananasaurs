@@ -535,3 +535,58 @@ describe('Release 3 review fixes', () => {
     });
   });
 });
+
+describe('first-run owner access', () => {
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+  });
+  afterEach(() => t.close());
+  it('lets the owner use an empty caller-role default while refusing other members', async () => {
+    seedEligibility(t, 'fixture');
+    const p = provider();
+    const behaviour = {
+      id: 'default',
+      guildId: GUILD,
+      surface: 'direct-command' as const,
+      name: 'Default',
+      systemPrompt: 'Safe.',
+      promptVersion: 1,
+      callerRoleIds: [] as readonly string[],
+      reviewerRoleIds: [] as readonly string[],
+      allowedSkillIds: ['draft-agenda'] as readonly string[],
+      resourceIds: [] as readonly string[],
+      enabled: true,
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      { provider: p.value },
+    );
+    const owner = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: OWNER,
+      callerRoleIds: [],
+      behaviour,
+      command: 'agenda',
+      input: { request: 'weekly agenda' },
+      source: 'slash-command',
+    });
+    expect(owner.ok).toBe(true);
+    const member = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [],
+      behaviour,
+      command: 'agenda',
+      input: { request: 'weekly agenda' },
+      source: 'slash-command',
+    });
+    expect(member).toMatchObject({ ok: false });
+  });
+});

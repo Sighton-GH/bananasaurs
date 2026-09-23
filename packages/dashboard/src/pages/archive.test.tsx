@@ -38,7 +38,7 @@ describe('ArchivePage', () => {
       { method: 'POST', url: '/api/archive/reindex', body: { indexed: 120 } },
     ]);
     renderWithSession(<ArchivePage />);
-    fireEvent.click(await screen.findByRole('button', { name: 'Reindex' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Update search results' }));
     expect(mock.mock.calls.some((c) => (c[0] as string) === '/api/archive/reindex')).toBe(true);
   });
 
@@ -138,7 +138,7 @@ describe('ArchivePage', () => {
     renderWithSession(<ArchivePage />);
     await screen.findByText('c-1');
     await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: 'Exclude threads' }));
+      fireEvent.click(screen.getByRole('button', { name: 'Do not archive threads' }));
     });
     const post = mock.mock.calls.find(
       (c) => (c[0] as string) === '/api/archive/channels/c-1/threads' && c[1]?.method === 'POST',

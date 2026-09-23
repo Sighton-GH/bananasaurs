@@ -1745,6 +1745,12 @@ export const providerEligibility = sqliteTable(
     trainsOnInput: text('trains_on_input').notNull(),
     /** The settings page / clause cited as evidence. */
     evidenceUrl: text('evidence_url').notNull(),
+    /**
+     * The quoted terms clause (ADR 0061 §1). Null on migration-seeded rows,
+     * which cite their clause in the migration and `PRIVACY.md`; a row the
+     * dashboard writes always carries one.
+     */
+    evidenceClause: text('evidence_clause'),
     productionUseAllowed: integer('production_use_allowed').notNull(),
     /** Epoch-ms the evidence was last verified. */
     reviewedAt: integer('reviewed_at').notNull(),
@@ -1758,7 +1764,79 @@ export const providerEligibility = sqliteTable(
   ],
 );
 
+// Instance-level encrypted provider configuration. The API key is write-only; only ciphertext reaches storage.
+export const assistantProviderConfig = sqliteTable(
+  'assistant_provider_config',
+  {
+    configId: text('config_id').primaryKey().default('active'),
+    provider: text('provider').notNull().default('off'),
+    model: text('model'),
+    apiKeyEnc: text('api_key_enc'),
+    enabled: integer('enabled').notNull().default(0),
+    /** The owner's statement of the model's cost (ADR 0061 §2); overrides `AI_PROFILE_COST_CLASS`. */
+    costClass: text('cost_class').notNull().default('unknown'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check(
+      'assistant_provider_config_provider',
+      sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
+    ),
+    check('assistant_provider_config_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
 // --- Release 3 assistant ----------------------------------------------------
+export const assistantServerCards = sqliteTable(
+  'assistant_server_cards',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    content: text('content').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_server_cards_guild_id_snowflake', snowflakeCheck(t.guildId)),
+  ],
+);
+
+export const assistantMemories = sqliteTable(
+  'assistant_memories',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    memoryId: text('memory_id').notNull(),
+    section: text('section').notNull().default('General'),
+    content: text('content').notNull(),
+    subjectId: snowflake('subject_id'),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.memoryId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_memories_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_memories_subject_id_snowflake', nullableSnowflakeCheck(t.subjectId)),
+  ],
+);
+
+export const assistantMemoryPreferences = sqliteTable(
+  'assistant_memory_preferences',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    userId: snowflake('user_id').notNull(),
+    optedOut: integer('opted_out').notNull().default(0),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.userId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_memory_preferences_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_memory_preferences_user_id_snowflake', snowflakeCheck(t.userId)),
+    check('assistant_memory_preferences_opted_out_bool', boolCheck(t.optedOut)),
+  ],
+);
 export const assistantBehaviours = sqliteTable(
   'assistant_behaviours',
   {
@@ -1937,7 +2015,7 @@ export const assistantDecisions = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_decisions_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_decisions_requester_id_snowflake', snowflakeCheck(t.requesterId)),
-    check('assistant_decisions_kind', sql`${t.kind} IN ('decision','review-plan')`),
+    check('assistant_decisions_kind', sql`${t.kind} IN ('decision','review-plan','memory')`),
     check('assistant_decisions_status', sql`${t.status} IN ('draft','reviewed','saved')`),
   ],
 );

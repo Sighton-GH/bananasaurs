@@ -55,7 +55,7 @@ describe('Shell', () => {
     ['/automod', 'Automod'],
     ['/review', 'Review'],
     ['/cases', 'Cases'],
-    ['/cutover', 'Cutover'],
+    ['/cutover', 'Turn on moderation'],
   ])('renders the %s page titled %s and marks its rail entry current', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
@@ -77,15 +77,15 @@ describe('Shell', () => {
     );
     // Rendered order follows the rail groups (ADR 0051 D6), not the NAV
     // array: every entry appears exactly once, in group order.
-    const groupOrder = ['Operate', 'Moderation', 'Archive', 'Instance', 'Release 3'];
+    const groupOrder = ['Start here', 'Moderation', 'Messages', 'Assistant', 'Advanced / System'];
     const expected = groupOrder.flatMap((group) =>
       NAV.filter((n) => n.group === group).map((n) => n.label),
     );
     expect(labels).toEqual(expected);
-    expect(within(nav).getByRole('heading', { name: 'Operate' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Start here' })).toBeTruthy();
     expect(within(nav).getByRole('heading', { name: 'Moderation' })).toBeTruthy();
-    expect(within(nav).getByRole('heading', { name: 'Instance' })).toBeTruthy();
-    expect(within(nav).getByRole('heading', { name: 'Release 3' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Advanced / System' })).toBeTruthy();
+    expect(within(nav).getByRole('heading', { name: 'Assistant' })).toBeTruthy();
     const aside = screen.getByRole('complementary');
     expect(await within(aside).findByText('Bananasaurs dev')).toBeTruthy();
   });
@@ -95,7 +95,7 @@ describe('Shell', () => {
     expect(await screen.findByText('Updated', { exact: false })).toBeTruthy();
     expect(screen.getAllByText('Bananasaurs dev')).toHaveLength(3);
     expect(screen.getAllByText('Active server')).toHaveLength(2);
-    expect(screen.getByText('Health summary · Observe-first controls')).toBeTruthy();
+    expect(screen.getByText('Safety mode: changes are logged, not applied')).toBeTruthy();
   });
 
   it('Sign out posts /api/logout', async () => {
@@ -166,29 +166,25 @@ describe('Shell', () => {
   });
 
   // ADR 0051 D7 supersedes S10-D3: Archive, Search and Providers are real pages now;
-  // only the Release 3 four remain stubs.
+  // only the Release 3 four remain stubs. ADR 0060: /resources is the new
+  // Resources page; /ai and /proposals stay aliases of Assistant.
   it.each([
     ['/resources', 'Resources'],
+    ['/assistant/skills', 'Skills'],
+    ['/assistant/schedules', 'Schedules'],
+    ['/assistant/resources', 'Resources'],
     ['/memory', 'Memory'],
-    ['/ai', 'AI workspace'],
-    ['/proposals', 'Proposals'],
-  ])('renders NOT_BUILT at the %s stub titled %s', async (path, title) => {
+    ['/ai', 'Assistant'],
+    ['/proposals', 'Assistant'],
+  ])('renders the built %s surface titled %s', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
-    expect(await screen.findByText(NOT_BUILT)).toBeTruthy();
+    expect(screen.queryByText(NOT_BUILT)).toBeNull();
   });
 
-  it('marks exactly the four Release 3 entries as future', async () => {
+  it('marks no Assistant entry as future', async () => {
     renderAt('/');
-    const nav = screen.getByRole('navigation', { name: 'Areas' });
-    const future = within(nav).getAllByText('Future');
-    expect(future).toHaveLength(4);
-    expect(NAV.filter((n) => n.status === 'stub').map((n) => n.label)).toEqual([
-      'Resources',
-      'Memory',
-      'AI workspace',
-      'Proposals',
-    ]);
+    expect(screen.queryByText('Future')).toBeNull();
   });
 
   it('opens and closes the mobile jump navigation without changing the page', async () => {

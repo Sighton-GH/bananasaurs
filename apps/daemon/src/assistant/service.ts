@@ -68,25 +68,29 @@ export const createAssistantService = (
   config: Config,
   now: () => number,
   testPorts: AssistantServiceTestPorts = {},
+  liveConfig: () => Config = () => config,
 ): AssistantCommandService => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
-  const rawProvider = testPorts.provider ?? providerFor(config);
-  const provider =
-    rawProvider === undefined || rawProvider instanceof SafeProvider
+  const currentProvider = (): TextProvider | undefined => {
+    const current = liveConfig();
+    const rawProvider = testPorts.provider ?? providerFor(current);
+    return rawProvider === undefined || rawProvider instanceof SafeProvider
       ? rawProvider
-      : new SafeProvider(rawProvider, config.AI_PROFILE_COST_CLASS, {
-          monthlyCapUsdMicros: 0,
-        });
+      : new SafeProvider(rawProvider, current.AI_PROFILE_COST_CLASS, { monthlyCapUsdMicros: 0 });
+  };
   const resourceFetcher = new ReviewedResourceFetcher({ now });
   const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
+      const currentConfig = liveConfig();
+      const provider = currentProvider();
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
         remind: 'create-reminder',
+        remember: 'propose-memory',
         decision: 'record-decision',
         'review-plan': 'review-plan',
         onboard: 'onboarding-guide',
@@ -97,9 +101,13 @@ export const createAssistantService = (
         handoff: 'draft-handoff',
       };
       const skill = commandSkill[input.command];
-      // The behaviour's caller role gate applies on every path. The mention
-      // router already enforced it; the slash path did not (finding 9).
-      if (!input.behaviour.callerRoleIds.some((roleId) => input.callerRoleIds.includes(roleId)))
+      const owner = input.userId === config.BANANASAURS_OWNER_USER_ID;
+      // Owners can complete first-run setup before any caller role is selected.
+      // Everyone else still fails closed against the behaviour allowlist.
+      if (
+        !owner &&
+        !input.behaviour.callerRoleIds.some((roleId) => input.callerRoleIds.includes(roleId))
+      )
         return {
           ok: false,
           content: 'This behaviour is not available to your server roles. No action was taken.',
@@ -109,7 +117,6 @@ export const createAssistantService = (
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      const owner = input.userId === config.BANANASAURS_OWNER_USER_ID;
       const grants = assistantRepo.listSkillGrants(scope);
       const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
         if (!input.behaviour.allowedSkillIds.includes(candidate.id)) return false;
@@ -206,7 +213,7 @@ export const createAssistantService = (
           content:
             'Search is holding because Discord channel visibility has not been verified for this request. No hidden source was searched.',
         };
-      if (provider === undefined || config.AI_MODEL === undefined)
+      if (provider === undefined || currentConfig.AI_MODEL === undefined)
         return {
           ok: false,
           content:
@@ -299,14 +306,25 @@ export const createAssistantService = (
       }));
       const context = compileAssistantContext({
         behaviour: input.behaviour,
-        serverCard: 'Bananasaurs club assistant',
+        serverCard:
+          assistantRepo.getServerCard(scope) +
+          (assistantRepo.memoryPreference(scope, input.userId).optedOut
+            ? ''
+            : '\nCurated memory:\n' +
+              assistantRepo
+                .listMemories(scope)
+                .filter(
+                  (memory) => memory.subjectId === undefined || memory.subjectId === input.userId,
+                )
+                .map((memory) => '- ' + memory.content)
+                .join('\n')),
         resources,
         evidence,
         skills: permittedSkills,
       });
       const isIt = input.behaviour.surface === 'it-services';
       const response = await provider.generateText({
-        model: config.AI_MODEL,
+        model: currentConfig.AI_MODEL,
         systemInstruction:
           context.systemInstruction +
           (isIt
@@ -334,6 +352,23 @@ export const createAssistantService = (
         actorId: input.userId,
         outcome: 'completed',
       });
+      if (input.command === 'remember') {
+        const id = `memory-${randomUUID()}`;
+        assistantRepo.insertDecisionDraft(scope, {
+          id,
+          kind: 'memory',
+          summary: response.text.slice(0, 4_000),
+          requesterId: input.userId,
+          provenance: `Assistant memory proposal; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
+          at: now(),
+        });
+        return {
+          ok: true,
+          content: `${response.text}
+
+Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and save it in the dashboard.`,
+        };
+      }
       if (input.command === 'decision' || input.command === 'review-plan') {
         const id = `${input.command}-${randomUUID()}`;
         assistantRepo.insertDecisionDraft(scope, {
