@@ -1130,6 +1130,33 @@ describe('providerEligibilityWarnings (ADR 0044 §7)', () => {
     ).toEqual([]);
   });
 
+  it("warns 'unverified' for the dashboard's chosen provider even when env AI_PROVIDER is off", () => {
+    const ops = opsInstanceFor({
+      config: {
+        BANANASAURS_READONLY: false,
+        BANANASAURS_ENV: 'test',
+        AI_PROVIDER: 'off',
+      } as unknown as Config,
+      client,
+      startedAtMs: NOW,
+      instanceScope: t.scopes.instance(),
+      guildScopes: [],
+      now: () => NOW,
+      backupTimer: {
+        runOnce: () => ({ ok: false as const, error: 'not used by this test' }),
+        start: () => {},
+        stop: () => {},
+      },
+      chosenAiProvider: () => 'gemini',
+    });
+    expect(ops.providerEligibilityWarnings(NOW)).toContainEqual({
+      provider: 'gemini',
+      reason: 'unverified',
+      trainsOnInput: 'unknown',
+      reviewedAt: 0,
+    });
+  });
+
   it("warns 'stale' for a row reviewed 91 days before now, and nothing for 89 days", () => {
     setReviewedAt(SEEDED, NOW - 91 * DAY_MS);
     expect(instanceOps().providerEligibilityWarnings(NOW)).toEqual([
