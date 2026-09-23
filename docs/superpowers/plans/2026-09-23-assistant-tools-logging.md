@@ -1,12 +1,16 @@
 # Assistant reliability, permissions, logging, web search and tools
 
 Status: **APPROVED 2026-09-23 with owner decisions:**
-- Q1 web search: Gemini Google Search grounding.
+- Q1 web search: first Gemini Google Search grounding. Changed to the **Brave
+  Search API** because Gemini's terms require showing Google's Search
+  Suggestions widget, which Discord cannot render (ADR 0066).
 - Q3 permissions: "Who can ask" covers every skill the behaviour allows. Only
   owner-only skills stay owner-only, and the per-skill grants are no longer a
   gate for members.
-- Q4 tools: all four groups (archive search; web search and reading a page;
-  resources, server card and channel directory; date, time and reminders).
+- Q4 tools: all four groups. There is one tool round (ADR 0067, hard rule 3),
+  so "read a page from the search results" is not a separate tool: web
+  search returns the result snippets, and reading pages covers reviewed
+  resources.
 - Log content: the full question and answer.
 Base: branch `bot-tag-behaviour`, which must be merged and migrated first.
 Gate for every task: `npm run typecheck && npm run lint && npm run test`.
