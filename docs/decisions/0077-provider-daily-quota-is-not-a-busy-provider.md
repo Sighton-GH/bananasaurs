@@ -72,6 +72,59 @@ answers `BUSY_REPLY` ("Try again in a minute") — wrong advice for a cap that
 does not reset for up to 24 hours, and each member message could cost up to
 4 of the day's 50 requests before failing.
 
+### Fix round 1 (controller finding, 2026-09-24): the headers are in the body
+
+The first implementation read `X-RateLimit-Reset` only from the HTTP
+response, on the theory (recorded above) that the two docs pages read for
+this ADR do not document that header for `/chat/completions` at all. That
+theory was correct as far as it went, but incomplete: OpenRouter does not
+put the header on the HTTP response — it puts it **inside the JSON error
+body**. Verified against real, observed 429 payloads, not memory:
+
+- `github.com/Gitlawb/openclaude/issues/936`
+- `github.com/langchain-ai/openwiki/issues/664`
+- `openrouter.ai/docs/api_reference/limits`
+
+The actual shape of a platform 429 on `/chat/completions`:
+
+```json
+{
+  "error": {
+    "code": 429,
+    "message": "Rate limit exceeded: free-models-per-day. …",
+    "metadata": {
+      "headers": {
+        "X-RateLimit-Limit": "50",
+        "X-RateLimit-Remaining": "0",
+        "X-RateLimit-Reset": "1777420800000"
+      }
+    }
+  }
+}
+```
+
+`error.metadata.headers` is a flat object of the same rate-limit headers,
+with **string** values (`"50"`, `"0"`, not `50`, `0`), and
+`X-RateLimit-Reset` is Unix **milliseconds**, not seconds. Reading only
+`response.headers` meant `resetAt` was effectively never populated from a
+real OpenRouter 429, because OpenRouter never actually sends that header on
+the response — the fallback path was live only in theory. The fix reads
+`error.metadata.headers.X-RateLimit-Reset` (case-insensitive key lookup,
+since header-name casing on the wire is not guaranteed) as the primary
+source, and keeps the HTTP response header as a fallback for a shape this
+adapter has not seen. Malformed `metadata.headers` (wrong type, absent) is
+ignored — it degrades to "no reset known", never a parse failure that loses
+the `code`/`message` extraction next to it.
+
+This also gives a second, corroborating signal for telling the daily cap
+apart from the per-minute cap: `X-RateLimit-Remaining: "0"` in the body.
+It is **not sufficient alone** — the per-minute limit reports
+`X-RateLimit-Remaining: "0"` too, once a minute's 20 requests are spent, so
+treating zero-remaining alone as "daily" would misclassify an ordinary,
+retryable per-minute exhaustion as a 24-hour outage. It is used only in
+addition to a message that itself names the per-day limit, alongside the
+original message-only rule from round 1.
+
 ## Decision
 
 - **`ProviderError`** gains two optional, readonly fields, set only via
@@ -82,19 +135,30 @@ does not reset for up to 24 hours, and each member message could cost up to
      `{ error: { code?: number; message?: string; metadata?: object } }`;
      a parse failure (malformed JSON, empty body, or a body so large the
      bound truncates it mid-object) is treated as no body — never throws.
-  2. A `429` is classified `quota` / `quotaScope: 'daily-free'` only when
-     **both** hold: the requested model id ends in `:free`, and the parsed
-     `error.message` matches `/free[\s\S]{0,40}per[- ]?day|per[- ]?day[\s\S]{0,40}free/i`
-     (a "free" and a "day"/"per-day" phrase within 40 characters of each
-     other, either order). Otherwise a `429` stays `rate-limit`/retryable,
-     exactly as before.
-  3. `resetAt` comes only from the `X-RateLimit-Reset` response header
-     (undocumented for this endpoint, read defensively): parsed as a number;
-     if it is `< 1e12` it is treated as seconds since epoch and multiplied by
-     1000, otherwise as milliseconds already; the result is kept only if it
-     is finite and strictly after "now". Anything else (header absent,
+  2. A `429` is classified `quota` / `quotaScope: 'daily-free'` only when the
+     requested model id ends in `:free`, **and** either: (a) the parsed
+     `error.message` matches
+     `/free[\s\S]{0,40}per[- ]?day|per[- ]?day[\s\S]{0,40}free/i` (a "free"
+     and a "day"/"per-day" phrase within 40 characters of each other, either
+     order); or (b) `error.metadata.headers.X-RateLimit-Remaining` (read
+     case-insensitively, string or number) is `0` **and** the message
+     contains `/per[- ]day/i`. Zero-remaining is never sufficient on its
+     own — the per-minute cap reports it too (fix round 1). Otherwise a
+     `429` stays `rate-limit`/retryable, exactly as before.
+  3. `resetAt` is read from `error.metadata.headers.X-RateLimit-Reset` in
+     the JSON body first (case-insensitive key lookup; values may be a
+     string or a number) — that is where OpenRouter actually sends it (fix
+     round 1) — falling back to the `X-RateLimit-Reset` HTTP response header
+     only if the body has none. Either source is parsed as a number; if it
+     is `< 1e12` it is treated as seconds since epoch and multiplied by
+     1000, otherwise as milliseconds already (the body's reset is
+     documented as Unix ms; the HTTP-header path is undocumented for this
+     endpoint and kept defensive); the result is kept only if it is finite
+     and strictly after "now". Anything else (both sources absent,
      non-numeric, in the past) leaves `resetAt` unset — callers fall back to
-     the next UTC midnight (see below).
+     the next UTC midnight (see below). A shape mismatch in
+     `metadata.headers` (wrong type, missing) is treated as "no headers
+     here", never as a reason to fail parsing the rest of the error body.
   4. Every non-2xx `ProviderError` message includes the provider's short
      reason when the body parsed: `code <n>: <first 160 chars of message,
      control characters stripped>`, e.g. `openrouter request failed with

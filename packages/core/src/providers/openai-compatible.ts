@@ -106,28 +106,91 @@ const shortReason = (detail: z.infer<typeof errorBodySchema> | undefined): strin
 };
 
 /**
- * ADR 0077: OpenRouter's docs give the free-model daily cap and the
- * free-model per-minute cap the same HTTP status (429) and the same
- * `error_type` (`rate_limit_exceeded`) - there is no field that positively
- * distinguishes them. The conservative rule: only a `:free` model, and only
- * when the message itself names the per-day limit.
+ * ADR 0077 fix round 1: OpenRouter's platform 429 (verified against real
+ * error reports - github.com/Gitlawb/openclaude/issues/936,
+ * github.com/langchain-ai/openwiki/issues/664 - and
+ * openrouter.ai/docs/api_reference/limits) carries the rate-limit headers
+ * INSIDE the JSON body, at `error.metadata.headers`, not on the HTTP
+ * response: `{ "X-RateLimit-Limit": "50", "X-RateLimit-Remaining": "0",
+ * "X-RateLimit-Reset": "1777420800000" }`. Values are strings. Read
+ * leniently and case-insensitively: any shape mismatch here means "this
+ * metadata has no usable headers", never a reason to reject the rest of the
+ * error body (the code/message extraction above must keep working).
  */
-const DAILY_FREE_QUOTA_MESSAGE = /free[\s\S]{0,40}per[- ]?day|per[- ]?day[\s\S]{0,40}free/i;
-const isDailyFreeQuota = (model: string, message: string | undefined): boolean =>
-  model.endsWith(':free') && message !== undefined && DAILY_FREE_QUOTA_MESSAGE.test(message);
+const metadataHeadersSchema = z.record(z.string(), z.union([z.string(), z.number()]));
+
+const metadataHeaderValue = (
+  metadata: Record<string, unknown> | undefined,
+  name: string,
+): string | number | undefined => {
+  if (metadata === undefined) return undefined;
+  const parsed = metadataHeadersSchema.safeParse(metadata['headers']);
+  if (!parsed.success) return undefined;
+  const lower = name.toLowerCase();
+  for (const [key, value] of Object.entries(parsed.data)) {
+    if (key.toLowerCase() === lower) return value;
+  }
+  return undefined;
+};
 
 /**
- * `X-RateLimit-Reset` is not documented for this endpoint (ADR 0077); read
- * defensively. Accepts seconds or milliseconds since epoch (disambiguated by
- * magnitude) and only when finite and strictly in the future.
+ * Accepts seconds or milliseconds since epoch (disambiguated by magnitude)
+ * and only when finite and strictly in the future. `X-RateLimit-Reset` is
+ * Unix milliseconds per the body shape above, but the HTTP-header fallback
+ * below is undocumented for this endpoint, so both units are still accepted
+ * defensively.
  */
-const parseRateLimitReset = (headers: Headers, nowMs: number): number | undefined => {
-  const raw = headers.get('x-ratelimit-reset');
-  if (raw === null) return undefined;
-  const value = Number(raw);
+const toFutureEpochMs = (raw: string | number | undefined, nowMs: number): number | undefined => {
+  if (raw === undefined) return undefined;
+  const value = typeof raw === 'number' ? raw : Number(raw);
   if (!Number.isFinite(value)) return undefined;
   const ms = value < 1_000_000_000_000 ? value * 1000 : value;
   return ms > nowMs ? ms : undefined;
+};
+
+/**
+ * The body's `error.metadata.headers.X-RateLimit-Reset` is the primary
+ * source (that is where OpenRouter actually puts it); the HTTP response
+ * header is only a fallback for a shape this adapter has not seen.
+ */
+const resolveResetAt = (
+  response: Response,
+  metadata: Record<string, unknown> | undefined,
+  nowMs: number,
+): number | undefined => {
+  const fromBody = toFutureEpochMs(metadataHeaderValue(metadata, 'X-RateLimit-Reset'), nowMs);
+  if (fromBody !== undefined) return fromBody;
+  return toFutureEpochMs(response.headers.get('x-ratelimit-reset') ?? undefined, nowMs);
+};
+
+/**
+ * ADR 0077: OpenRouter's docs give the free-model daily cap and the
+ * free-model per-minute cap the same HTTP status (429) and the same
+ * `error_type` (`rate_limit_exceeded`) - there is no field that positively
+ * distinguishes them by itself. The conservative rule: only a `:free`
+ * model, and only when either (a) the message names the per-day limit, or
+ * (b) the body reports zero requests remaining AND the message names a
+ * per-day limit. Zero remaining alone is never enough - the per-minute
+ * limit reports zero remaining too.
+ */
+const DAILY_FREE_QUOTA_MESSAGE = /free[\s\S]{0,40}per[- ]?day|per[- ]?day[\s\S]{0,40}free/i;
+const PER_DAY_PHRASE = /per[- ]day/i;
+
+const remainingIsZero = (metadata: Record<string, unknown> | undefined): boolean => {
+  const raw = metadataHeaderValue(metadata, 'X-RateLimit-Remaining');
+  if (raw === undefined) return false;
+  const value = typeof raw === 'number' ? raw : Number(raw);
+  return value === 0;
+};
+
+const isDailyFreeQuota = (
+  model: string,
+  message: string | undefined,
+  metadata: Record<string, unknown> | undefined,
+): boolean => {
+  if (!model.endsWith(':free') || message === undefined) return false;
+  if (DAILY_FREE_QUOTA_MESSAGE.test(message)) return true;
+  return remainingIsZero(metadata) && PER_DAY_PHRASE.test(message);
 };
 
 /**
@@ -253,9 +316,13 @@ export class OpenAiCompatibleProvider implements TextProvider {
     if (!response.ok) {
       const parsedBody = errorBodySchema.safeParse(await readErrorBody(response));
       const detail = parsedBody.success ? parsedBody.data : undefined;
+      const metadata = detail?.error.metadata;
       const reason = shortReason(detail);
-      if (response.status === 429 && isDailyFreeQuota(request.model, detail?.error.message)) {
-        const resetAt = parseRateLimitReset(response.headers, Date.now());
+      if (
+        response.status === 429 &&
+        isDailyFreeQuota(request.model, detail?.error.message, metadata)
+      ) {
+        const resetAt = resolveResetAt(response, metadata, Date.now());
         throw new ProviderError(
           'quota',
           reason === undefined

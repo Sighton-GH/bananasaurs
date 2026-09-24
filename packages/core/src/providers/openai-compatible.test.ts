@@ -306,6 +306,115 @@ describe('OpenAI-compatible providers', () => {
         .catch((e: unknown) => e);
       expect((err as { resetAt?: number }).resetAt).toBeUndefined();
     });
+
+    it('reads resetAt from error.metadata.headers in the JSON body (fix round 1, ADR 0077)', async () => {
+      // The exact shape OpenRouter's platform 429 actually sends (issues
+      // #936, #664): the rate-limit headers travel INSIDE the JSON body, not
+      // on the HTTP response. Values are strings; Reset is Unix ms. The
+      // literal example reset (1777420800000, 2026-04-29) is already in the
+      // past by the time this suite runs, so it is swapped for an
+      // equivalently-shaped future value; everything else matches exactly.
+      const futureResetMs = Date.now() + 3_600_000;
+      const body = JSON.stringify({
+        error: {
+          code: 429,
+          message: 'Rate limit exceeded: free-models-per-day. …',
+          metadata: {
+            headers: {
+              'X-RateLimit-Limit': '50',
+              'X-RateLimit-Remaining': '0',
+              'X-RateLimit-Reset': String(futureResetMs),
+            },
+          },
+        },
+      });
+      // No HTTP-level rate-limit headers at all: resetAt must come from the body.
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(body, { status: 429 }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({
+          model: 'nvidia/nemotron:free',
+          messages: [{ role: 'user', text: 'q' }],
+        })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        kind: 'quota',
+        retryable: false,
+        quotaScope: 'daily-free',
+        resetAt: futureResetMs,
+      });
+    });
+
+    it('falls back to the HTTP header, or undefined, when metadata.headers is absent', async () => {
+      const resetSeconds = Math.floor(Date.now() / 1000) + 3600;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(dailyCapBody, {
+          status: 429,
+          headers: { 'x-ratelimit-reset': String(resetSeconds) },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const withHeader = await provider
+        .generateText({ model: 'm:free', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(withHeader).toMatchObject({
+        kind: 'quota',
+        quotaScope: 'daily-free',
+        resetAt: resetSeconds * 1000,
+      });
+
+      const fetchNoReset = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(dailyCapBody, { status: 429 }));
+      const providerNoReset = createOpenRouterProvider({ apiKey: 'secret', fetch: fetchNoReset });
+      const withoutHeader = await providerNoReset
+        .generateText({ model: 'm:free', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(withoutHeader).toMatchObject({ kind: 'quota', quotaScope: 'daily-free' });
+      expect((withoutHeader as { resetAt?: number }).resetAt).toBeUndefined();
+    });
+
+    it('treats X-RateLimit-Remaining 0 plus a per-day message as the daily cap (fix round 1)', async () => {
+      const body = JSON.stringify({
+        error: {
+          code: 429,
+          message: 'You have hit the per-day cap for this key.',
+          metadata: { headers: { 'X-RateLimit-Remaining': '0' } },
+        },
+      });
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(body, { status: 429 }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({
+          model: 'nvidia/nemotron:free',
+          messages: [{ role: 'user', text: 'q' }],
+        }),
+      ).rejects.toMatchObject({ kind: 'quota', quotaScope: 'daily-free' });
+    });
+
+    it('does not treat X-RateLimit-Remaining 0 alone as the daily cap (the per-minute limit reports it too)', async () => {
+      const body = JSON.stringify({
+        error: {
+          code: 429,
+          message: 'Rate limit exceeded',
+          metadata: { headers: { 'X-RateLimit-Remaining': '0' } },
+        },
+      });
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(body, { status: 429 }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({
+          model: 'nvidia/nemotron:free',
+          messages: [{ role: 'user', text: 'q' }],
+        }),
+      ).rejects.toMatchObject({ kind: 'rate-limit', retryable: true, quotaScope: undefined });
+    });
   });
 
   it('ignores thinkingBudget instead of sending it', async () => {
