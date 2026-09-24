@@ -171,7 +171,10 @@ describe('OpenAI-compatible providers', () => {
         { role: 'tool', text: 'result', toolName: 'search_sources', toolCallId: 'c1' },
       ],
     });
-    expect(JSON.parse(fetch.mock.calls[0]?.[1]?.body as string).messages).toEqual([
+    const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as {
+      messages: unknown;
+    };
+    expect(body.messages).toEqual([
       { role: 'user', content: 'q' },
       {
         role: 'assistant',
