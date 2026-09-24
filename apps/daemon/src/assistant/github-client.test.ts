@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createGitHubClient, GitHubClientError } from './github-client.js';
+import { createGitHubClient, GitHubError } from './github-client.js';
 
 const ok = (value: unknown, headers: Record<string, string> = {}): Response =>
   new Response(JSON.stringify(value), {
@@ -50,7 +50,7 @@ describe('createGitHubClient — auth and headers', () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 404 }));
     const client = createGitHubClient({ token: () => 'ghp_super_secret', fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
+    expect(error).toBeInstanceOf(GitHubError);
     expect(JSON.stringify(error)).not.toContain('ghp_super_secret');
     expect((error as Error).message).not.toContain('ghp_super_secret');
   });
@@ -173,12 +173,12 @@ describe('createGitHubClient — listTree', () => {
 });
 
 describe('createGitHubClient — errors', () => {
-  it('maps a 404 to a not-found GitHubClientError', async () => {
+  it('maps a 404 to a not-found GitHubError', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 404 }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'missing').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
-    expect((error as GitHubClientError).kind).toBe('not-found');
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('not-found');
   });
 
   it('maps a 403 with x-ratelimit-remaining: 0 to rate-limited with resetAt from x-ratelimit-reset', async () => {
@@ -191,17 +191,17 @@ describe('createGitHubClient — errors', () => {
     );
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
-    expect((error as GitHubClientError).kind).toBe('rate-limited');
-    expect((error as GitHubClientError).resetAt).toBe(resetEpochSeconds * 1000);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('rate-limited');
+    expect((error as GitHubError).resetAt).toBe(resetEpochSeconds * 1000);
   });
 
   it('a plain 403 without the rate-limit headers is a network error, not rate-limited', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 403 }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
-    expect((error as GitHubClientError).kind).toBe('network');
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('network');
   });
 
   it('maps invalid JSON to invalid-response', async () => {
@@ -210,23 +210,23 @@ describe('createGitHubClient — errors', () => {
       .mockResolvedValue(new Response('not json', { status: 200, headers: { 'content-type': 'application/json' } }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
-    expect((error as GitHubClientError).kind).toBe('invalid-response');
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('invalid-response');
   });
 
   it('maps a response shaped wrong for the schema to invalid-response', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ nope: true }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
-    expect((error as GitHubClientError).kind).toBe('invalid-response');
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('invalid-response');
   });
 
   it('maps a fetch rejection to a network error', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(new Error('ECONNRESET'));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
-    expect(error).toBeInstanceOf(GitHubClientError);
-    expect((error as GitHubClientError).kind).toBe('network');
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('network');
   });
 });

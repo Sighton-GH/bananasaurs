@@ -18,13 +18,13 @@ const DEFAULT_TIMEOUT_MS = 10_000;
 
 export type GitHubErrorKind = 'not-found' | 'rate-limited' | 'network' | 'invalid-response';
 
-export class GitHubClientError extends Error {
+export class GitHubError extends Error {
   readonly kind: GitHubErrorKind;
   readonly resetAt?: number;
 
   constructor(kind: GitHubErrorKind, message: string, resetAt?: number) {
     super(message);
-    this.name = 'GitHubClientError';
+    this.name = 'GitHubError';
     this.kind = kind;
     if (resetAt !== undefined) this.resetAt = resetAt;
   }
@@ -128,24 +128,24 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
         signal: AbortSignal.timeout(timeoutMs),
       });
     } catch {
-      throw new GitHubClientError('network', 'GitHub could not be reached.');
+      throw new GitHubError('network', 'GitHub could not be reached.');
     }
     if (response.status === 404) {
-      throw new GitHubClientError('not-found', 'GitHub returned 404 for this URL.');
+      throw new GitHubError('not-found', 'GitHub returned 404 for this URL.');
     }
     if (response.status === 403 && response.headers.get('x-ratelimit-remaining') === '0') {
       const resetHeader = response.headers.get('x-ratelimit-reset');
       const resetSeconds = resetHeader === null ? NaN : Number(resetHeader);
       const resetAt = Number.isFinite(resetSeconds) ? resetSeconds * 1_000 : undefined;
-      throw new GitHubClientError('rate-limited', 'GitHub rate limit reached.', resetAt);
+      throw new GitHubError('rate-limited', 'GitHub rate limit reached.', resetAt);
     }
     if (!response.ok) {
-      throw new GitHubClientError('network', `GitHub returned HTTP ${String(response.status)}.`);
+      throw new GitHubError('network', `GitHub returned HTTP ${String(response.status)}.`);
     }
     try {
       return await response.json();
     } catch {
-      throw new GitHubClientError('invalid-response', 'GitHub returned a response that was not valid JSON.');
+      throw new GitHubError('invalid-response', 'GitHub returned a response that was not valid JSON.');
     }
   };
 
@@ -159,7 +159,7 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
       const body = await request(url);
       const parsed = z.array(repoSummarySchema).safeParse(body);
       if (!parsed.success) {
-        throw new GitHubClientError('invalid-response', 'GitHub returned an unexpected repo list shape.');
+        throw new GitHubError('invalid-response', 'GitHub returned an unexpected repo list shape.');
       }
       for (const item of parsed.data) {
         repos.push({
@@ -181,7 +181,7 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     const body = await request(url);
     const parsed = repoDetailSchema.safeParse(body);
     if (!parsed.success) {
-      throw new GitHubClientError('invalid-response', 'GitHub returned an unexpected repo shape.');
+      throw new GitHubError('invalid-response', 'GitHub returned an unexpected repo shape.');
     }
     return {
       defaultBranch: parsed.data.default_branch,
@@ -198,7 +198,7 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     const body = await request(url);
     const parsed = treeResponseSchema.safeParse(body);
     if (!parsed.success) {
-      throw new GitHubClientError('invalid-response', 'GitHub returned an unexpected tree shape.');
+      throw new GitHubError('invalid-response', 'GitHub returned an unexpected tree shape.');
     }
     const entries = parsed.data.tree
       .filter((entry) => entry.type === 'blob' || entry.type === 'tree')
