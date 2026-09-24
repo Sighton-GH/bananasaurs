@@ -140,4 +140,30 @@ describe('bodiless DELETE with a JSON content-type', () => {
     expect(res.statusCode).toBe(413);
     expect(res.json<{ error: string }>().error).toBe('FST_ERR_CTP_BODY_TOO_LARGE');
   });
+
+  it('a prototype-poisoning body is rejected by Fastify, not parsed', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['accounts.manage']);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/reauth',
+      headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
+      payload: '{"__proto__":{"polluted":true}}',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json<{ error: string }>().error).toMatch(/^FST_ERR_CTP_/);
+    expect(({} as Record<string, unknown>).polluted).toBeUndefined();
+  });
+
+  it('an empty POST labelled application/json is still a 400 — only DELETE is exempt', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['accounts.manage']);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/reauth',
+      headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toEqual({ error: 'FST_ERR_CTP_EMPTY_JSON_BODY' });
+  });
 });
