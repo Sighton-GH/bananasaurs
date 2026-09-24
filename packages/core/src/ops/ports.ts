@@ -1507,7 +1507,10 @@ export interface OpsInstance {
    * (`weak-password`, fewer than 12 characters) before this is called, so
    * the CLI's generate-only path keeps calling with no second argument.
    */
-  accountCreate(username: string, password?: string): Promise<OpsAccountCreateResult | 'username-taken'>;
+  accountCreate(
+    username: string,
+    password?: string,
+  ): Promise<OpsAccountCreateResult | 'username-taken'>;
   /**
    * Disables or re-enables one dashboard account by username (ADR 0045 D6).
    *

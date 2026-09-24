@@ -11,7 +11,7 @@ const ok = (body: unknown): Response =>
 
 describe('apiFetch write headers', () => {
   it('a DELETE with no body sends no content-type header but does send the CSRF header', async () => {
-    const mock = vi.fn(() => Promise.resolve(ok({ ok: true })));
+    const mock = vi.fn((_input: string, _init?: RequestInit) => Promise.resolve(ok({ ok: true })));
     vi.stubGlobal('fetch', mock);
     await apiFetch('/api/accounts/nobody', 'csrf-test', () => Promise.resolve(undefined), {
       method: 'DELETE',
@@ -25,7 +25,7 @@ describe('apiFetch write headers', () => {
   });
 
   it('a POST with a body sends both the CSRF and content-type headers', async () => {
-    const mock = vi.fn(() => Promise.resolve(ok({ ok: true })));
+    const mock = vi.fn((_input: string, _init?: RequestInit) => Promise.resolve(ok({ ok: true })));
     vi.stubGlobal('fetch', mock);
     await apiFetch<{ ok: boolean }>(
       '/api/accounts/nobody/disabled',

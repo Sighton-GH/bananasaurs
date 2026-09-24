@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import {
   openMigratedTestDatabase,
@@ -31,6 +31,13 @@ let t: MigratedTestDatabase;
 let clock: number;
 let app: FastifyInstance;
 let instance: HttpDeps['instance'];
+// Kept as their own bindings, not read back through `instance.accountDelete`
+// / `instance.accountSetPassword`: `OpsInstance`'s methods use TypeScript
+// method-shorthand syntax, so accessing one as a bare value (to hand it to
+// `toHaveBeenCalled`) trips `@typescript-eslint/unbound-method`. A plain
+// local variable has no such "this"-bound method type to lose.
+let accountDeleteSpy: Mock;
+let accountSetPasswordSpy: Mock;
 
 const grantManage = (accountId: string): void => {
   authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
@@ -65,34 +72,53 @@ beforeEach(async () => {
   grantManage(OP);
 
   const real = testInstanceFor(scope, () => clock);
+  accountDeleteSpy = vi.fn((username: string) => ({
+    username,
+    accountId: `acct_${username}`,
+    wasOwner: false,
+    tokensRevoked: 0,
+    codesDeleted: 0,
+    enabledOwnersRemaining: 1,
+    accountsRemaining: 2,
+  }));
+  accountSetPasswordSpy = vi.fn(async (username: string, password?: string) => ({
+    username,
+    accountId: `acct_${username}`,
+    password: password ?? 'generated-fallback-password',
+    sessionsRevoked: 0,
+    guildsTouched: 1,
+  }));
   instance = {
     ...real,
-    accountCreate: vi.fn(real.accountCreate),
-    accountSetDisabled: vi.fn(async (username: string, disabled: boolean) => ({
+    // `real.accountCreate` is called rather than handed to `vi.fn` bare, for
+    // the same `unbound-method` reason as the spies above.
+    accountCreate: vi.fn((username: string, password?: string) =>
+      real.accountCreate(username, password),
+    ),
+    // `accountSetDisabled` / `accountDelete` / `accountRevokeCredentials` are
+    // synchronous on `OpsInstance` (ports.ts); the route handlers call them
+    // without `await`, so a mock returning a Promise would hand the route a
+    // pending Promise instead of the real result. Only `accountSetPassword`
+    // is async.
+    accountSetDisabled: vi.fn((username: string, disabled: boolean) => ({
+      changed: true,
       username,
+      isOwner: false,
       disabled,
+      lockedUntil: null,
       enabledOwnersRemaining: 1,
     })),
-    accountDelete: vi.fn(async (username: string) => ({
+    accountDelete: accountDeleteSpy,
+    accountRevokeCredentials: vi.fn((username: string) => ({
       username,
-      wasOwner: false,
-      tokensRevoked: 0,
-      codesDeleted: 0,
-      enabledOwnersRemaining: 1,
-    })),
-    accountRevokeCredentials: vi.fn(async (username: string) => ({
-      username,
+      accountId: `acct_${username}`,
       sessionsRevoked: 0,
       tokensRevoked: 0,
       codesDeleted: 0,
       guildsTouched: 1,
+      stillEnabled: true,
     })),
-    accountSetPassword: vi.fn(async (username: string, password?: string) => ({
-      username,
-      password: password ?? 'generated-fallback-password',
-      sessionsRevoked: 0,
-      guildsTouched: 1,
-    })),
+    accountSetPassword: accountSetPasswordSpy,
   };
 
   const deps: HttpDeps = {
@@ -135,7 +161,7 @@ describe('owner protection (ADR 0069)', () => {
     const response = await app.inject({ method: 'DELETE', url: '/api/accounts/alice', headers });
     expect(response.statusCode).toBe(403);
     expect(response.json()).toEqual({ error: 'owner-protected' });
-    expect(instance.accountDelete).not.toHaveBeenCalled();
+    expect(accountDeleteSpy).not.toHaveBeenCalled();
     expect(accountRepo.findAccountByUsername(t.scopes.instance(), 'alice')).toBeDefined();
   });
 
@@ -144,7 +170,11 @@ describe('owner protection (ADR 0069)', () => {
     { method: 'POST', url: '/api/accounts/alice/revoke-credentials' },
     { method: 'POST', url: '/api/accounts/alice/grant-guild' },
     { method: 'POST', url: '/api/accounts/alice/revoke-guild' },
-    { method: 'POST', url: '/api/accounts/alice/capabilities', payload: { capability: 'config.read' } },
+    {
+      method: 'POST',
+      url: '/api/accounts/alice/capabilities',
+      payload: { capability: 'config.read' },
+    },
     { method: 'DELETE', url: '/api/accounts/alice/capabilities/config.read' },
   ])('refuses $method $url on the owner', async ({ method, url, payload }) => {
     const headers = await signInAs('ops');
@@ -167,7 +197,7 @@ describe('owner protection (ADR 0069)', () => {
       { method: 'POST', url: '/api/accounts/alice/revoke-guild' },
     ] as const) {
       const response = await app.inject({
-        method: call.method as 'POST' | 'DELETE',
+        method: call.method,
         url: call.url,
         headers,
         ...('payload' in call ? { payload: call.payload } : {}),
@@ -175,7 +205,7 @@ describe('owner protection (ADR 0069)', () => {
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
       expect(response.json()).toEqual({ error: 'owner-protected' });
     }
-    expect(instance.accountDelete).not.toHaveBeenCalled();
+    expect(accountDeleteSpy).not.toHaveBeenCalled();
   });
 
   it('lets the owner change their own password but refuses anyone else', async () => {
@@ -254,7 +284,10 @@ describe('create always grants this server (ADR 0069)', () => {
 
   it('ignores a stale grantThisGuild field instead of refusing', async () => {
     const headers = await signInAs('ops');
-    for (const [username, grantThisGuild] of [['kim', false], ['ken', true]] as const) {
+    for (const [username, grantThisGuild] of [
+      ['kim', false],
+      ['ken', true],
+    ] as const) {
       const response = await app.inject({
         method: 'POST',
         url: '/api/accounts',
@@ -340,7 +373,7 @@ describe('chosen passwords (ADR 0069)', () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: 'weak-password' });
-    expect(instance.accountSetPassword).not.toHaveBeenCalled();
+    expect(accountSetPasswordSpy).not.toHaveBeenCalled();
   });
 
   it('echoes a chosen password once and never audits it', async () => {

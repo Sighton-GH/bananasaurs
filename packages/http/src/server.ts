@@ -319,7 +319,13 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
     const text = typeof body === 'string' ? body : body.toString('utf8');
     if (text.length === 0 && request.method === 'DELETE') return done(null, undefined);
-    void defaultJsonParser(request, body, done);
+    // Fastify's `addContentTypeParser<parseAs>` overload cannot invert the
+    // `parseAs extends Buffer ? 'buffer' : 'string'` conditional back to a
+    // concrete type from the `'string'` literal we pass, so `body` widens to
+    // `string | Buffer` here even though `parseAs: 'string'` guarantees a
+    // string at runtime. Pass the already-narrowed `text` rather than assert
+    // the type away.
+    void defaultJsonParser(request, text, done);
   });
 
   app.setErrorHandler((err, _request, reply) => {
