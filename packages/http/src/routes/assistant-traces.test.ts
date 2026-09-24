@@ -6,7 +6,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
+import { createServer, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
 import { registerAssistantTraceRoutes } from './assistant-traces.js';
