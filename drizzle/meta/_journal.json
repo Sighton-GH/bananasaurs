@@ -267,6 +267,13 @@
       "when": 1790278668822,
       "tag": "0037_careless_master_mold",
       "breakpoints": true
+    },
+    {
+      "idx": 38,
+      "version": "6",
+      "when": 1790287778420,
+      "tag": "0038_bitter_thanos",
+      "breakpoints": true
     }
   ]
 }

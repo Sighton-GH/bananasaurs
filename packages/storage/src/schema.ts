@@ -1408,6 +1408,13 @@ export const dashboardAccounts = sqliteTable(
     username: text('username').notNull(),
     /** Argon2id. */
     passwordHash: text('password_hash').notNull(),
+    /**
+     * The sealed copy of the plaintext password, so the owner can reveal it
+     * after re-authenticating (ADR 0070). Never the sign-in authority — that
+     * stays `password_hash` above — null when the vault was unavailable at
+     * set time or the account is an owner (owner accounts never get one).
+     */
+    passwordSealed: text('password_sealed'),
     totpSecretEnc: text('totp_secret_enc'),
     totpEnrolled: integer('totp_enrolled').notNull().default(0),
     isOwner: integer('is_owner').notNull().default(0),
