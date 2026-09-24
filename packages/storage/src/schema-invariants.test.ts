@@ -96,6 +96,8 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'attachment_id',
   'required_role_id',
   'principal_id',
+  // ADR 0072: assistant_conversations.started_by.
+  'started_by',
 ]);
 
 interface ColumnInfo {
