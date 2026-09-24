@@ -31,7 +31,7 @@ export class ProviderError extends Error {
   ) {
     super(message, options);
     this.name = 'ProviderError';
-    this.resetAt = options?.resetAt;
-    this.quotaScope = options?.quotaScope;
+    if (options?.resetAt !== undefined) this.resetAt = options.resetAt;
+    if (options?.quotaScope !== undefined) this.quotaScope = options.quotaScope;
   }
 }

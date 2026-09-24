@@ -6,6 +6,8 @@ import {
   RetryAfterError,
   type AssistantBehaviour,
   type JobContext,
+  type Logger,
+  type OutgoingMessage,
 } from '@bananasaurs/core';
 import type {
   AssistantCommandService,
@@ -45,7 +47,7 @@ const payload = {
 };
 
 /** A pino instance whose emitted JSON lines are captured for assertion. */
-const capturedLogger = (): { logger: pino.Logger; lines: () => Record<string, unknown>[] } => {
+const capturedLogger = (): { logger: Logger; lines: () => Record<string, unknown>[] } => {
   const stream = new PassThrough();
   const chunks: string[] = [];
   stream.on('data', (chunk: Buffer) => chunks.push(chunk.toString()));
@@ -80,15 +82,15 @@ const service = (
   },
 });
 
-const baseDeps = (service_: AssistantCommandService, logger: pino.Logger) => {
-  const sent: { channelId: string; message: { content: string } }[] = [];
+const baseDeps = (service_: AssistantCommandService, logger: Logger) => {
+  const sent: { channelId: string; message: OutgoingMessage }[] = [];
   return {
     deps: {
       guildId: GUILD_ID,
       service: service_,
       openToken: () => undefined,
       respond: async () => undefined,
-      send: async (channelId: string, message: { content: string }) => {
+      send: async (channelId: string, message: OutgoingMessage) => {
         sent.push({ channelId, message });
         return undefined;
       },
@@ -196,7 +198,9 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     const { deps } = baseDeps(svc, pino({ level: 'silent' }));
     const handler = assistantInvokeHandler(deps);
 
-    const err = await handler.run(payload, context({ attempts: 1 })).catch((e: unknown) => e);
+    const err = await Promise.resolve(handler.run(payload, context({ attempts: 1 }))).catch(
+      (e: unknown) => e,
+    );
     expect(err).toBeInstanceOf(RetryAfterError);
     expect((err as RetryAfterError).retryAfterMs).toBe(10_000);
   });

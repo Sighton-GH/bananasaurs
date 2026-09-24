@@ -85,6 +85,7 @@ const readErrorBody = async (response: Response): Promise<unknown> => {
   }
 };
 
+// eslint-disable-next-line no-control-regex -- deliberately stripping control characters, not matching them by accident.
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
 
 /**

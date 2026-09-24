@@ -237,13 +237,11 @@ describe('OpenAI-compatible providers', () => {
     });
 
     it('treats a 429 on a :free model with no day-scoped message as an ordinary rate limit', async () => {
-      const fetch = vi
-        .fn<typeof globalThis.fetch>()
-        .mockResolvedValue(
-          new Response(JSON.stringify({ error: { code: 429, message: 'Rate limit exceeded' } }), {
-            status: 429,
-          }),
-        );
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code: 429, message: 'Rate limit exceeded' } }), {
+          status: 429,
+        }),
+      );
       const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
       await expect(
         provider.generateText({
