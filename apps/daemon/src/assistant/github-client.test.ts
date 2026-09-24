@@ -7,7 +7,10 @@ const ok = (value: unknown, headers: Record<string, string> = {}): Response =>
     headers: { 'content-type': 'application/json', ...headers },
   });
 
-const repoItem = (name: string, overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
+const repoItem = (
+  name: string,
+  overrides: Record<string, unknown> = {},
+): Record<string, unknown> => ({
   name,
   description: `${name} description`,
   default_branch: 'main',
@@ -23,7 +26,9 @@ const noopGuard = async (): Promise<void> => {
 
 describe('createGitHubClient — auth and headers', () => {
   it('sets authenticated true and sends the Authorization header only when a token is present', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ tree: [], truncated: false }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(ok({ tree: [], truncated: false }));
     const client = createGitHubClient({ token: () => 'ghp_secret', fetch, guard: noopGuard });
     expect(client.authenticated).toBe(true);
     await client.listTree('acme', 'widget', 'main');
@@ -32,7 +37,9 @@ describe('createGitHubClient — auth and headers', () => {
   });
 
   it('sets authenticated false and omits Authorization when token() returns undefined', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ tree: [], truncated: false }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(ok({ tree: [], truncated: false }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     expect(client.authenticated).toBe(false);
     await client.listTree('acme', 'widget', 'main');
@@ -41,13 +48,17 @@ describe('createGitHubClient — auth and headers', () => {
   });
 
   it('treats an empty-string token the same as no token', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ tree: [], truncated: false }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(ok({ tree: [], truncated: false }));
     const client = createGitHubClient({ token: () => '', fetch, guard: noopGuard });
     expect(client.authenticated).toBe(false);
   });
 
   it('never logs or returns the token in an error', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 404 }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('', { status: 404 }));
     const client = createGitHubClient({ token: () => 'ghp_super_secret', fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);
@@ -56,7 +67,9 @@ describe('createGitHubClient — auth and headers', () => {
   });
 
   it('sends the required Accept, API version and User-Agent headers on every request', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ tree: [], truncated: false }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(ok({ tree: [], truncated: false }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     await client.listTree('acme', 'widget', 'main');
     const init = fetch.mock.calls[0]?.[1];
@@ -69,7 +82,9 @@ describe('createGitHubClient — auth and headers', () => {
 
 describe('createGitHubClient — guard', () => {
   it('calls guard with the request URL before every fetch', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(ok({ tree: [], truncated: false }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(ok({ tree: [], truncated: false }));
     const guard = vi.fn<(url: URL) => Promise<void>>().mockResolvedValue(undefined);
     const client = createGitHubClient({ token: () => undefined, fetch, guard });
     await client.listTree('acme', 'widget', 'main');
@@ -97,8 +112,22 @@ describe('createGitHubClient — listOrgRepos', () => {
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const repos = await client.listOrgRepos('acme');
     expect(repos).toEqual([
-      { name: 'one', description: 'one description', defaultBranch: 'main', fork: false, archived: false, private: false },
-      { name: 'two', description: 'two description', defaultBranch: 'main', fork: true, archived: false, private: false },
+      {
+        name: 'one',
+        description: 'one description',
+        defaultBranch: 'main',
+        fork: false,
+        archived: false,
+        private: false,
+      },
+      {
+        name: 'two',
+        description: 'two description',
+        defaultBranch: 'main',
+        fork: true,
+        archived: false,
+        private: false,
+      },
     ]);
     const url = new URL(fetch.mock.calls[0]?.[0] as string);
     expect(url.pathname).toBe('/users/acme/repos');
@@ -112,12 +141,16 @@ describe('createGitHubClient — listOrgRepos', () => {
     // A fresh Response per call: Response.json() consumes the body stream,
     // so reusing one instance across calls would break every call after the
     // first.
-    const fetch = vi.fn<typeof globalThis.fetch>().mockImplementation(() => Promise.resolve(ok(fullPage)));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockImplementation(() => Promise.resolve(ok(fullPage)));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const repos = await client.listOrgRepos('acme');
     expect(fetch).toHaveBeenCalledTimes(5);
     expect(repos).toHaveLength(500);
-    const pages = fetch.mock.calls.map((call) => new URL(call[0] as string).searchParams.get('page'));
+    const pages = fetch.mock.calls.map((call) =>
+      new URL(call[0] as string).searchParams.get('page'),
+    );
     expect(pages).toEqual(['1', '2', '3', '4', '5']);
   });
 
@@ -174,7 +207,9 @@ describe('createGitHubClient — listTree', () => {
 
 describe('createGitHubClient — errors', () => {
   it('maps a 404 to a not-found GitHubError', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 404 }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('', { status: 404 }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'missing').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);
@@ -197,7 +232,9 @@ describe('createGitHubClient — errors', () => {
   });
 
   it('a plain 403 without the rate-limit headers is a network error, not rate-limited', async () => {
-    const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('', { status: 403 }));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('', { status: 403 }));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);
@@ -207,7 +244,9 @@ describe('createGitHubClient — errors', () => {
   it('maps invalid JSON to invalid-response', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()
-      .mockResolvedValue(new Response('not json', { status: 200, headers: { 'content-type': 'application/json' } }));
+      .mockResolvedValue(
+        new Response('not json', { status: 200, headers: { 'content-type': 'application/json' } }),
+      );
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
     const error = await client.getRepo('acme', 'widget').catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);

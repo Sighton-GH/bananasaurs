@@ -145,7 +145,10 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     try {
       return await response.json();
     } catch {
-      throw new GitHubError('invalid-response', 'GitHub returned a response that was not valid JSON.');
+      throw new GitHubError(
+        'invalid-response',
+        'GitHub returned a response that was not valid JSON.',
+      );
     }
   };
 
@@ -177,7 +180,9 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
   };
 
   const getRepo = async (owner: string, repo: string): Promise<GitHubRepoDetail> => {
-    const url = new URL(`${API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`);
+    const url = new URL(
+      `${API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}`,
+    );
     const body = await request(url);
     const parsed = repoDetailSchema.safeParse(body);
     if (!parsed.success) {

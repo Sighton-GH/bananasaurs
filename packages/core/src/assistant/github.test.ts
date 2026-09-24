@@ -123,7 +123,13 @@ describe('selectRepoFiles', () => {
     const selected = selectRepoFiles(entries);
     expect(selected[0]).toBe('readme.txt');
     expect(selected).toEqual(
-      expect.arrayContaining(['readme.txt', 'docs/guide.md', 'CONTRIBUTING.md', 'CHANGELOG.md', 'NOTES.md']),
+      expect.arrayContaining([
+        'readme.txt',
+        'docs/guide.md',
+        'CONTRIBUTING.md',
+        'CHANGELOG.md',
+        'NOTES.md',
+      ]),
     );
     expect(selected).not.toContain('src/index.ts');
     expect(selected).not.toContain('docs');

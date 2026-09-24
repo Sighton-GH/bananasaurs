@@ -5,7 +5,13 @@
 
 export type GitHubTarget =
   | { readonly kind: 'org'; readonly owner: string }
-  | { readonly kind: 'repo'; readonly owner: string; readonly repo: string; readonly ref?: string; readonly path?: string };
+  | {
+      readonly kind: 'repo';
+      readonly owner: string;
+      readonly repo: string;
+      readonly ref?: string;
+      readonly path?: string;
+    };
 
 const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
 
@@ -87,7 +93,9 @@ export const parseGitHubUrl = (input: string): GitHubTarget | undefined => {
   }
   const ref = segments[3]!;
   const path = segments.slice(4).join('/');
-  return path === '' ? { kind: 'repo', owner, repo, ref } : { kind: 'repo', owner, repo, ref, path };
+  return path === ''
+    ? { kind: 'repo', owner, repo, ref }
+    : { kind: 'repo', owner, repo, ref, path };
 };
 
 /** `raw.githubusercontent.com/{owner}/{repo}/{ref}/{path}`, percent-encoded per segment. */
@@ -135,7 +143,11 @@ const globToRegExp = (glob: string): RegExp => {
  * file and 2 MB total, README first.
  */
 export const selectRepoFiles = (
-  entries: readonly { readonly path: string; readonly type: 'blob' | 'tree'; readonly size?: number }[],
+  entries: readonly {
+    readonly path: string;
+    readonly type: 'blob' | 'tree';
+    readonly size?: number;
+  }[],
   options?: {
     readonly include?: readonly string[];
     readonly maxFiles?: number;

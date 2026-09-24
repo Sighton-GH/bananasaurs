@@ -86,7 +86,10 @@ describe('buildSystemPrompt — omission of empty sections', () => {
   });
 
   it('includes WHAT YOU HELP WITH once helpsWith or helpsWithOther is non-empty', () => {
-    const withHelp = promptWizardAnswers.parse({ ...minimalAnswers, helpsWith: ['club-questions'] });
+    const withHelp = promptWizardAnswers.parse({
+      ...minimalAnswers,
+      helpsWith: ['club-questions'],
+    });
     expect(buildSystemPrompt(withHelp, CONTEXT)).toContain('WHAT YOU HELP WITH');
   });
 
@@ -96,7 +99,10 @@ describe('buildSystemPrompt — omission of empty sections', () => {
   });
 
   it('emits the exact plan sentence, with a straight apostrophe, when preferClubSources is true', () => {
-    const withPreferClub = promptWizardAnswers.parse({ ...minimalAnswers, preferClubSources: true });
+    const withPreferClub = promptWizardAnswers.parse({
+      ...minimalAnswers,
+      preferClubSources: true,
+    });
     expect(buildSystemPrompt(withPreferClub, CONTEXT)).toContain(
       "Search the club's resources before answering from general knowledge. Use search_sources first, then read_chunk for the best result.",
     );
@@ -107,7 +113,14 @@ describe('buildSystemPrompt — 4,000 character cap and trim order', () => {
   it('stays at or under 4,000 characters for maximal answers, trimming examples first, then club facts, never cutting ROLE/VOICE/BOUNDARIES', () => {
     const maximal: PromptWizardAnswers = promptWizardAnswers.parse({
       audience: ['members', 'new-members', 'it-help', 'execs'],
-      helpsWith: ['club-questions', 'find-resources', 'projects-code', 'onboarding', 'events-meetings', 'it-access'],
+      helpsWith: [
+        'club-questions',
+        'find-resources',
+        'projects-code',
+        'onboarding',
+        'events-meetings',
+        'it-access',
+      ],
       helpsWithOther: 'x'.repeat(300),
       tone: 'playful',
       length: 'detailed',
@@ -178,7 +191,9 @@ describe('DEFAULT_WIZARD_ANSWERS', () => {
   });
 
   it('it-services default includes the never-claim "that an access change was made"', () => {
-    expect(DEFAULT_WIZARD_ANSWERS['it-services'].neverClaim).toContain('that an access change was made');
+    expect(DEFAULT_WIZARD_ANSWERS['it-services'].neverClaim).toContain(
+      'that an access change was made',
+    );
     const prompt = buildSystemPrompt(DEFAULT_WIZARD_ANSWERS['it-services'], CONTEXT);
     expect(prompt).toContain('that an access change was made');
   });
@@ -186,7 +201,9 @@ describe('DEFAULT_WIZARD_ANSWERS', () => {
   it('both defaults parse against the schema and produce a prompt at or under 4,000 characters', () => {
     for (const key of ['club', 'it-services'] as const) {
       expect(() => promptWizardAnswers.parse(DEFAULT_WIZARD_ANSWERS[key])).not.toThrow();
-      expect(buildSystemPrompt(DEFAULT_WIZARD_ANSWERS[key], CONTEXT).length).toBeLessThanOrEqual(4_000);
+      expect(buildSystemPrompt(DEFAULT_WIZARD_ANSWERS[key], CONTEXT).length).toBeLessThanOrEqual(
+        4_000,
+      );
     }
   });
 });

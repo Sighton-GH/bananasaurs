@@ -100,16 +100,25 @@ describe('chunkDocument — markdown', () => {
         expect(paragraphLines.includes(line) || line === '## Handbook').toBe(true);
       }
     }
-    expect(chunks.map((c) => c.text).join('\n').split('\n').filter((l) => l !== '## Handbook')).toEqual(
-      paragraphLines,
-    );
+    expect(
+      chunks
+        .map((c) => c.text)
+        .join('\n')
+        .split('\n')
+        .filter((l) => l !== '## Handbook'),
+    ).toEqual(paragraphLines);
   });
 
   it('hard-splits a single oversized paragraph with no sentence or word boundaries', () => {
     const paragraph = 'x'.repeat(4_000);
     const text = ['## Blob', '', paragraph].join('\n');
 
-    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'blob.md', maxChars: 1_500 });
+    const chunks = chunkDocument({
+      text,
+      mediaType: 'text/markdown',
+      path: 'blob.md',
+      maxChars: 1_500,
+    });
     expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) {
       expect(chunk.text.length).toBeLessThanOrEqual(1_500);
@@ -153,7 +162,11 @@ describe('chunkDocument — plain text and code windowing', () => {
 
   it('windows plain text with no headings the same way as code', () => {
     const lines = Array.from({ length: 61 }, (_, i) => `note ${i + 1}`);
-    const chunks = chunkDocument({ text: lines.join('\n'), mediaType: 'text/plain', path: 'notes.txt' });
+    const chunks = chunkDocument({
+      text: lines.join('\n'),
+      mediaType: 'text/plain',
+      path: 'notes.txt',
+    });
     expect(chunks).toHaveLength(2);
     expect(chunks[0]).toMatchObject({ lineStart: 1, lineEnd: 60 });
     expect(chunks[1]).toMatchObject({ lineStart: 51, lineEnd: 61 });
@@ -163,7 +176,7 @@ describe('chunkDocument — plain text and code windowing', () => {
 describe('chunkDocument — HTML', () => {
   it('converts HTML to text first, drops scripts, and keeps heading hierarchy', () => {
     const html =
-      "<script>evil()</script><h1>Club</h1><p>Intro text.</p><h2>Meetings</h2><p>Mondays.</p>";
+      '<script>evil()</script><h1>Club</h1><p>Intro text.</p><h2>Meetings</h2><p>Mondays.</p>';
     const chunks = chunkDocument({ text: html, mediaType: 'text/html', path: 'page.html' });
     expect(chunks.some((c) => c.text.includes('evil('))).toBe(false);
     expect(chunks.map((c) => c.headingPath)).toEqual([
@@ -208,7 +221,7 @@ describe('htmlToText', () => {
       </body></html>`;
     const text = htmlToText(html);
     expect(text).not.toContain('Site nav links');
-    expect(text).not.toContain("alert(");
+    expect(text).not.toContain('alert(');
     expect(text).not.toContain('color:red');
     expect(text).not.toContain('Enable JS');
     expect(text).not.toContain('Copyright 2026');
@@ -228,7 +241,10 @@ describe('htmlToText', () => {
 
   it('turns <br>, <p> and <div> into line breaks', () => {
     const text = htmlToText('<div>First</div><p>Second<br>Third</p>');
-    const lines = text.split('\n').map((l) => l.trim()).filter((l) => l !== '');
+    const lines = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => l !== '');
     expect(lines).toEqual(['First', 'Second', 'Third']);
   });
 });

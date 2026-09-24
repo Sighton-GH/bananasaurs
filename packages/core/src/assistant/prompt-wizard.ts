@@ -9,7 +9,14 @@ import { z } from 'zod';
 export const promptWizardAnswers = z.object({
   audience: z.array(z.enum(['members', 'new-members', 'it-help', 'execs'])).min(1),
   helpsWith: z.array(
-    z.enum(['club-questions', 'find-resources', 'projects-code', 'onboarding', 'events-meetings', 'it-access']),
+    z.enum([
+      'club-questions',
+      'find-resources',
+      'projects-code',
+      'onboarding',
+      'events-meetings',
+      'it-access',
+    ]),
   ),
   helpsWithOther: z.string().max(300).default(''),
   tone: z.enum(['friendly', 'professional', 'playful']),
@@ -23,8 +30,15 @@ export const promptWizardAnswers = z.object({
   avoidTopics: z.array(z.string().max(60)).max(10),
   offTopic: z.enum(['answer-briefly', 'redirect']),
   neverClaim: z.array(z.string().max(120)).max(5),
-  format: z.object({ bullets: z.boolean(), codeBlocks: z.boolean(), oneMessage: z.boolean(), sourcesLine: z.boolean() }),
-  examples: z.array(z.object({ question: z.string().max(300), answer: z.string().max(600) })).max(3),
+  format: z.object({
+    bullets: z.boolean(),
+    codeBlocks: z.boolean(),
+    oneMessage: z.boolean(),
+    sourcesLine: z.boolean(),
+  }),
+  examples: z
+    .array(z.object({ question: z.string().max(300), answer: z.string().max(600) }))
+    .max(3),
 });
 
 export type PromptWizardAnswers = z.infer<typeof promptWizardAnswers>;
@@ -90,8 +104,10 @@ const EMOJI_LABELS: Record<PromptWizardAnswers['emoji'], string> = {
 };
 
 const OFF_TOPIC_LABELS: Record<PromptWizardAnswers['offTopic'], string> = {
-  'answer-briefly': "For questions outside what you help with, answer briefly if you can; otherwise say it's outside what you help with.",
-  redirect: 'For questions outside what you help with, say so and redirect the person to a more appropriate channel or person.',
+  'answer-briefly':
+    "For questions outside what you help with, answer briefly if you can; otherwise say it's outside what you help with.",
+  redirect:
+    'For questions outside what you help with, say so and redirect the person to a more appropriate channel or person.',
 };
 
 interface Section {
@@ -99,7 +115,10 @@ interface Section {
   readonly body: string;
 }
 
-const buildRoleSection = (answers: PromptWizardAnswers, context: { clubName: string; behaviourName: string }): Section => {
+const buildRoleSection = (
+  answers: PromptWizardAnswers,
+  context: { clubName: string; behaviourName: string },
+): Section => {
   const audience = joinWithAnd(answers.audience.map((a) => AUDIENCE_LABELS[a]));
   return {
     header: 'ROLE',
@@ -142,7 +161,8 @@ const buildSourcesSection = (answers: PromptWizardAnswers): Section | undefined 
 
 const buildWhenUnsureSection = (answers: PromptWizardAnswers): Section | undefined => {
   const lines: string[] = [];
-  if (answers.whenUnsure.say) lines.push('If you are not sure, say so plainly instead of guessing.');
+  if (answers.whenUnsure.say)
+    lines.push('If you are not sure, say so plainly instead of guessing.');
   const suggest = answers.whenUnsure.suggest.trim();
   if (suggest !== '') lines.push(`When unsure, suggest: ${neutraliseHeaderLookalikes(suggest)}`);
   if (lines.length === 0) return undefined;
@@ -225,7 +245,9 @@ export const buildSystemPrompt = (
     const currentBody = sections[clubFactsIndex]!.body;
     const targetLength = Math.max(0, currentBody.length - overshoot - 1);
     const trimmedBody = `${currentBody.slice(0, targetLength).trimEnd()}…`;
-    sections = sections.map((s, i) => (i === clubFactsIndex ? { header: s.header, body: trimmedBody } : s));
+    sections = sections.map((s, i) =>
+      i === clubFactsIndex ? { header: s.header, body: trimmedBody } : s,
+    );
     compiled = assemble(sections);
   }
 
@@ -269,7 +291,8 @@ const itServicesAnswers: PromptWizardAnswers = promptWizardAnswers.parse({
   examples: [],
 });
 
-export const DEFAULT_WIZARD_ANSWERS: Readonly<Record<'club' | 'it-services', PromptWizardAnswers>> = {
-  club: clubAnswers,
-  'it-services': itServicesAnswers,
-};
+export const DEFAULT_WIZARD_ANSWERS: Readonly<Record<'club' | 'it-services', PromptWizardAnswers>> =
+  {
+    club: clubAnswers,
+    'it-services': itServicesAnswers,
+  };

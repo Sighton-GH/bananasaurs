@@ -16,7 +16,8 @@ const DEFAULT_MAX_CHARS = 1_500;
 const WINDOW_LINES = 60;
 const WINDOW_OVERLAP_LINES = 10;
 
-const normaliseLineEndings = (text: string): string => text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+const normaliseLineEndings = (text: string): string =>
+  text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 
 const basename = (path: string): string => {
   const parts = path.split('/').filter((part) => part !== '');
@@ -67,11 +68,14 @@ const decodeEntities = (text: string): string =>
 const ANCHOR_RE = /<a\b[^>]*\bhref\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>([\s\S]*?)<\/a>/giu;
 
 const convertAnchors = (html: string): string =>
-  html.replace(ANCHOR_RE, (_match, hrefDouble: string | undefined, hrefSingle: string | undefined, inner: string) => {
-    const href = hrefDouble ?? hrefSingle ?? '';
-    const label = stripTags(inner).replace(/\s+/gu, ' ').trim();
-    return label === '' ? href : `${label} (${href})`;
-  });
+  html.replace(
+    ANCHOR_RE,
+    (_match, hrefDouble: string | undefined, hrefSingle: string | undefined, inner: string) => {
+      const href = hrefDouble ?? hrefSingle ?? '';
+      const label = stripTags(inner).replace(/\s+/gu, ' ').trim();
+      return label === '' ? href : `${label} (${href})`;
+    },
+  );
 
 const HEADING_TAG_RE = /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/giu;
 
@@ -178,7 +182,11 @@ interface Piece {
 // Greedily packs ordered strings, joined by `sep`, into groups whose joined
 // length never exceeds `maxChars`. Shared by the paragraph-, line- and
 // sentence-level splitters below.
-const packStrings = (parts: readonly string[], sep: string, maxChars: number): readonly string[] => {
+const packStrings = (
+  parts: readonly string[],
+  sep: string,
+  maxChars: number,
+): readonly string[] => {
   const groups: string[] = [];
   let current = '';
   for (const part of parts) {
@@ -244,11 +252,19 @@ const splitOversizedParagraph = (para: Piece, maxChars: number): readonly Piece[
     return packStrings(sentences, ' ', maxChars).flatMap((group) =>
       group.length <= maxChars
         ? [{ text: group, startLine: para.startLine, endLine: para.endLine }]
-        : hardCut(group, maxChars).map((text) => ({ text, startLine: para.startLine, endLine: para.endLine })),
+        : hardCut(group, maxChars).map((text) => ({
+            text,
+            startLine: para.startLine,
+            endLine: para.endLine,
+          })),
     );
   }
 
-  return hardCut(para.text, maxChars).map((text) => ({ text, startLine: para.startLine, endLine: para.endLine }));
+  return hardCut(para.text, maxChars).map((text) => ({
+    text,
+    startLine: para.startLine,
+    endLine: para.endLine,
+  }));
 };
 
 const extractParagraphs = (section: Section): readonly Piece[] => {
