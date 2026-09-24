@@ -122,6 +122,8 @@ export interface AssistantData {
   readonly setup?: AssistantSetup;
   readonly providerTerms?: ProviderTerms | null;
   readonly viewerIsOwner?: boolean;
+  /** ADR 0065: guild-wide assistant settings. */
+  readonly settings?: { readonly logChannelId?: string };
 }
 
 export const ASSISTANT_URL = '/api/assistant';
@@ -202,6 +204,8 @@ export const providerTermsUrl = (provider: string) =>
   `/api/providers/${encodeURIComponent(provider)}/terms`;
 /** ADR 0063: which behaviour answers a tag of the bot user itself. */
 export const BOT_TAG_URL = '/api/assistant/bot-tag';
+/** ADR 0065: the AI log channel. */
+export const LOG_CHANNEL_URL = '/api/assistant/log-channel';
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;

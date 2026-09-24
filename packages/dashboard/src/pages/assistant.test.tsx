@@ -643,3 +643,61 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
     expect(within(it).queryByText('Tag @Bananasaurs')).toBeNull();
   });
 });
+
+describe('AssistantPage: AI log channel (ADR 0065)', () => {
+  const LABEL = 'Post every assistant request to';
+  const render = (
+    settings: unknown,
+    put: { status?: number; body: unknown } = { body: { ok: true } },
+  ) => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: { ...FULL, settings } },
+      { method: 'PUT', url: '/api/assistant/log-channel', ...put },
+    ]);
+    renderWithSession(<AssistantPage />);
+    return mock;
+  };
+  const putCall = (mock: ReturnType<typeof stubFetch>) =>
+    mock.mock.calls.find(
+      (c) => c[0] === '/api/assistant/log-channel' && (c[1] as RequestInit)?.method === 'PUT',
+    );
+
+  it('offers Nobody and the live channels, preselecting the saved one', async () => {
+    render({ logChannelId: 'chan-it' });
+    const select = await screen.findByLabelText(LABEL);
+    expect(
+      within(select)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual(['No log channel', '#it-services', '#general']);
+    expect(select).toHaveProperty('value', 'chan-it');
+    expect(screen.getByText(/staff-only channel/)).toBeTruthy();
+  });
+
+  it('saves a channel and turns logging off with null', async () => {
+    const mock = render({});
+    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'chan-general' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save log channel' }));
+    expect(await screen.findByText('Assistant requests now log to #general')).toBeTruthy();
+    expect(bodyOf(putCall(mock)!)).toEqual({ channelId: 'chan-general' });
+    cleanup();
+    const mock2 = render({ logChannelId: 'chan-general' });
+    fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: '' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Save log channel' }));
+    expect(await screen.findByText('Assistant logging is off')).toBeTruthy();
+    expect(bodyOf(putCall(mock2)!)).toEqual({ channelId: null });
+  });
+});
+
+describe('AssistantPage: shared resources (ADR 0067)', () => {
+  it('says every resource is shared and the ticked ones are emphasised', async () => {
+    renderPage();
+    const section = await screen.findByRole('region', { name: 'Emphasised resources' });
+    expect(within(section).getByText('Resources to emphasise')).toBeTruthy();
+    expect(
+      within(section).getByText(
+        'Every enabled resource is available to every behaviour. Tick the ones this behaviour should prefer.',
+      ),
+    ).toBeTruthy();
+  });
+});

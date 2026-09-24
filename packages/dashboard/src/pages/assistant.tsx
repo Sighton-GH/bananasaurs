@@ -4,6 +4,7 @@ import { ApiError } from '../api.js';
 import {
   ASSISTANT_URL,
   BOT_TAG_URL,
+  LOG_CHANNEL_URL,
   behaviourUrl,
   decisionReviewUrl,
   decisionSaveUrl,
@@ -356,18 +357,22 @@ function BehaviourAccessEditor({
           </>
         )}
       </section>
-      <section aria-label="Attached resources" className="mt-4">
-        <h3 className="text-sm font-medium">Information the assistant may use</h3>
+      <section aria-label="Emphasised resources" className="mt-4">
+        <h3 className="text-sm font-medium">Resources to emphasise</h3>
+        <p className="mt-1 text-xs text-ink-muted">
+          Every enabled resource is available to every behaviour. Tick the ones this behaviour
+          should prefer.
+        </p>
         {data.resources.length === 0 ? (
           <p className="mt-2 text-xs text-ink-muted">
             No resources configured yet. Add them on the{' '}
             <Link className="underline" href="/assistant/resources">
               Resources page
             </Link>
-            , then attach them here.
+            .
           </p>
         ) : (
-          <ul aria-label="Attachable resources" className="mt-2 grid gap-1 sm:grid-cols-2">
+          <ul aria-label="Resources to emphasise" className="mt-2 grid gap-1 sm:grid-cols-2">
             {data.resources.map((resource) => (
               <li key={resource.id}>
                 <label className="flex items-center gap-2 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm">
@@ -830,6 +835,79 @@ function BotTagCard({
   );
 }
 
+/**
+ * ADR 0065: the channel every assistant request is logged to, with the full
+ * question and answer. Picked from the live channel directory, never typed.
+ */
+function LogChannelCard({
+  data,
+  session,
+  reload,
+}: {
+  readonly data: AssistantData;
+  readonly session: Session;
+  readonly reload: () => void;
+}) {
+  const toast = useToast();
+  const current = data.settings?.logChannelId ?? '';
+  const [choice, setChoice] = useState(current);
+  const [busy, setBusy] = useState(false);
+  const channels = data.channels ?? [];
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      const channelId = choice === '' ? null : choice;
+      const result = await session.write(LOG_CHANNEL_URL, { channelId }, 'PUT');
+      if (result === undefined) return;
+      const name = channels.find((c) => c.id === choice)?.name;
+      toast({
+        tone: 'ok',
+        title:
+          name === undefined
+            ? 'Assistant logging is off'
+            : `Assistant requests now log to #${name}`,
+      });
+      reload();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="AI log channel">
+      <p className="text-sm text-ink-muted">
+        Each request is posted with who asked, the question, the answer, the tools and sources used,
+        the model, and whether it worked.
+      </p>
+      <p className="mt-1 text-xs text-hold">
+        Members&apos; questions are copied there in full. Choose a staff-only channel.
+      </p>
+      <div className="mt-3">
+        <Field label="Post every assistant request to">
+          <select
+            value={choice}
+            onChange={(e) => setChoice(e.target.value)}
+            className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+          >
+            <option value="">No log channel</option>
+            {channels.map((c) => (
+              <option key={c.id} value={c.id}>
+                #{c.name}
+              </option>
+            ))}
+          </select>
+        </Field>
+      </div>
+      <div className="mt-3">
+        <Button busy={busy} disabled={choice === current || busy} onClick={() => void save()}>
+          Save log channel
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
 function BehaviourPromptCard({
   behaviour,
   session,
@@ -881,7 +959,7 @@ function BehaviourPromptCard({
     <Card title={`${behaviour.name} behaviour`}>
       <p className="text-sm text-ink-muted">
         These are the instructions this behaviour follows. Bananasaurs adds its own safety rules,
-        your server card and any resources you attach, and always treats messages and web pages as
+        your server card and the club resources, and always treats messages and web pages as
         information, never as instructions.
       </p>
       <Field
@@ -961,6 +1039,12 @@ function AssistantReady({
       <BotTagCard
         // Remount when the saved choice changes so the picker shows it.
         key={`bot-tag-${data.behaviours.find((b) => b.answersBotTag === true)?.id ?? 'none'}`}
+        data={data}
+        session={session}
+        reload={reload}
+      />
+      <LogChannelCard
+        key={`log-${data.settings?.logChannelId ?? 'none'}`}
         data={data}
         session={session}
         reload={reload}
