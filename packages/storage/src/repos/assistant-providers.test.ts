@@ -47,7 +47,7 @@ const migrationsFolderUpTo = (lastIdx: number): string => {
   return dir;
 };
 
-describe('migration 0037 copies the single provider config into the new tables', () => {
+describe('migration 0038 copies the single provider config into the new tables', () => {
   it('copies the provider row and the model plus fallback models as ordered chain entries', () => {
     const raw = new Database(':memory:');
     raw.pragma('foreign_keys = ON');
