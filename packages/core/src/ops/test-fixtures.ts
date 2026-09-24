@@ -112,6 +112,7 @@ export const fakeOpsPorts = (over: Partial<OpsPorts> = {}): OpsPorts => ({
   archiveChannelHistory: unstubbed('archiveChannelHistory'),
   archiveFindMessage: unstubbed('archiveFindMessage'),
   grantAccountCapability: unstubbed('grantAccountCapability'),
+  revokeAccountCapability: unstubbed('revokeAccountCapability'),
   listAccountCapabilities: unstubbed('listAccountCapabilities'),
   accountGrantGuild: unstubbed('accountGrantGuild'),
   accountRevokeGuild: unstubbed('accountRevokeGuild'),
