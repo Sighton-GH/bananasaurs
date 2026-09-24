@@ -205,9 +205,9 @@ describe('assistant trace routes', () => {
   });
 
   it('serves the daily usage strip', async () => {
+    clock = Date.UTC(2026, 8, 21, 12, 0, 0);
     grant('audit.read');
     const { cookie } = await signIn();
-    clock = Date.UTC(2026, 8, 21, 12, 0, 0);
     traceRepo.insertTrace(
       t.scopes.forGuild(GUILD),
       trace({ at: Date.UTC(2026, 8, 21, 1, 0, 0), outcome: 'answered' }),
