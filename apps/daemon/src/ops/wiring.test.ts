@@ -442,6 +442,20 @@ describe('accountOpsFor', () => {
     expect(accountRepo.countAccounts(instance())).toBe(1);
   });
 
+  it("accountCreate('kim', chosen) stores a hash the chosen password verifies against", async () => {
+    const created = await ops().accountCreate('kim', 'correct horse battery');
+    expect(created).not.toBe('username-taken');
+    if (created === 'username-taken') return;
+    expect(created.password).toBe('correct horse battery');
+
+    const row = accountRepo.findAccountByUsername(instance(), 'kim');
+    expect(row).toBeDefined();
+    expect(row!.isOwner).toBe(false);
+    // The stored row holds a hash, never the plaintext.
+    expect(row!.passwordHash).not.toContain('correct horse battery');
+    expect(await verifyPassword(row!.passwordHash, 'correct horse battery')).toBe(true);
+  });
+
   it('accountList never exposes a password hash', () => {
     seedAccount('acct_sentinel00000000000000000000001', 'sentinel', {
       passwordHash: '$argon2id$v=19$SENTINEL',
@@ -876,6 +890,19 @@ describe('accountSetPassword (S13-D3/D4)', () => {
     expect(stored?.passwordHash).not.toBe('$argon2id$old-password');
     expect(stored?.passwordHash).not.toContain(result.password);
     expect(await verifyPassword(stored?.passwordHash ?? '', result.password)).toBe(true);
+  });
+
+  it('stores a hash a chosen password verifies against and echoes it once', async () => {
+    seedAccount('acct_chosen0000000000000000000000001', 'chooses');
+
+    const result = await ops().accountSetPassword('chooses', 'correct horse battery');
+    expect(result).not.toBe('no-such-account');
+    if (result === 'no-such-account') return;
+    expect(result.password).toBe('correct horse battery');
+
+    const stored = accountRepo.findAccountByUsername(instance(), 'chooses');
+    expect(stored?.passwordHash).not.toContain('correct horse battery');
+    expect(await verifyPassword(stored?.passwordHash ?? '', 'correct horse battery')).toBe(true);
   });
 
   it('revokes dashboard sessions in every guild and leaves OAuth tokens live', async () => {
