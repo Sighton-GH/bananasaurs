@@ -103,7 +103,7 @@ describe('bodiless DELETE with a JSON content-type', () => {
       payload: '{not json',
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json().error).toBe('FST_ERR_CTP_INVALID_JSON_BODY');
+    expect(res.json<{ error: string }>().error).toBe('FST_ERR_CTP_INVALID_JSON_BODY');
   });
 
   it.each([
@@ -138,6 +138,6 @@ describe('bodiless DELETE with a JSON content-type', () => {
       payload: JSON.stringify({ password: 'x'.repeat(128 * 1024) }),
     });
     expect(res.statusCode).toBe(413);
-    expect(res.json().error).toBe('FST_ERR_CTP_BODY_TOO_LARGE');
+    expect(res.json<{ error: string }>().error).toBe('FST_ERR_CTP_BODY_TOO_LARGE');
   });
 });
