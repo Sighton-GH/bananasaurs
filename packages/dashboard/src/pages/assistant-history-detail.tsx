@@ -46,7 +46,7 @@ export function AssistantHistoryDetailPage() {
   const session = useSession();
   const guildId = session.info.guildId;
   const load = useCallback(() => {
-    return session.read<TraceDetailResponse>(traceUrl(traceId ?? '')).catch((err: unknown) => {
+    return session.read<TraceDetailResponse>(traceUrl(traceId)).catch((err: unknown) => {
       if (err instanceof ApiError && err.status === 404) {
         throw new Error('no run with this id is stored for this server');
       }

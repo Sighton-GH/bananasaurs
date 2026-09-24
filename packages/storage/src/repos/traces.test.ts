@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId } from '@bananasaurs/core';
 import type { AssistantTrace } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
@@ -23,7 +23,9 @@ beforeEach(() => {
   t = openMigratedTestDatabase();
   upsertGuild(t.scopes.forGuild(GUILD_A), { name: 'guild a', now: 0 });
   upsertGuild(t.scopes.forGuild(GUILD_B), { name: 'guild b', now: 0 });
-  return () => t.close();
+});
+afterEach(() => {
+  t.close();
 });
 
 /** Stored-data fixture: fixed ids and timestamps, no narrative. */
