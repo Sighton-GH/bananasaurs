@@ -2047,3 +2047,33 @@ export const assistantDecisions = sqliteTable(
     check('assistant_decisions_status', sql`${t.status} IN ('draft','reviewed','saved')`),
   ],
 );
+
+// ADR 0076: one row per assistant run. The queryable columns (who, when,
+// behaviour, outcome, conversation, tokens) stay real columns so the History
+// list filters without parsing JSON; the full run is `body_json`, capped at
+// 200 KB by `capTrace` before it reaches this table. Rows die with their
+// conversation through the prune job, and with their guild through the FK.
+export const assistantTraces = sqliteTable(
+  'assistant_traces',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    traceId: text('trace_id').notNull(),
+    at: integer('at').notNull(),
+    userId: snowflake('user_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    outcome: text('outcome').notNull(),
+    conversationId: text('conversation_id'),
+    durationMs: integer('duration_ms').notNull(),
+    totalTokens: integer('total_tokens'),
+    bodyJson: text('body_json').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.traceId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_traces_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_traces_user_id_snowflake', snowflakeCheck(t.userId)),
+    check('assistant_traces_outcome', sql`${t.outcome} IN ('answered','refused','failed')`),
+    index('assistant_traces_recent').on(t.guildId, t.at),
+    index('assistant_traces_conversation').on(t.guildId, t.conversationId),
+  ],
+);

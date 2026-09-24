@@ -880,3 +880,25 @@ Output structure (sections in this order, each omitted when empty): `ROLE` ("You
 - [ ] After every task: re-run that task's vitest command in the worktree; then in the **main checkout** on a branch at the task head (`git checkout -b verify/ahv2 oc/assistant-harness-v2` once, then `git merge --ff-only oc/assistant-harness-v2` each time) run `npm run typecheck`, then `npm run lint`, then `npm run test`, each on its own, checking the exit status.
 - [ ] Final whole-branch review by a Claude subagent (model named on dispatch) from `oc-task --branch-diff`.
 - [ ] Merge only on the owner's say-so. Deploy on this box: `sudo systemctl stop bananasaurs` → `npm run build` → `npm run db:migrate` → `sudo systemctl start bananasaurs`.
+
+---
+
+## Addendum — owner requests during execution (2026-09-24)
+
+### Task Q: a provider's daily free allowance is not a busy provider (ADR 0077)
+
+OpenRouter's free-model daily cap (50/day under $10 of credits, failed calls count, resets 00:00 UTC) surfaced as "busy", and the job's 4 retries burned it faster. The OpenAI-compatible adapter parses the 429 body and `X-RateLimit-*` headers (shape verified against OpenRouter's docs); a daily-cap 429 becomes `ProviderError('quota', …, false, { resetAt, quotaScope: 'daily-free' })`; non-2xx errors carry a short sanitised provider reason; the fallback skips `:free` models after a daily cap; the job answers at once: "The bot's free AI allowance for today is used up. It resets <t:UNIX:t>. No action was taken." (fallback reset: next 00:00 UTC). Gemini's daily quota is a follow-up.
+
+### Task 6b: several API keys per provider
+
+The owner wants several API keys for different providers, and the same model with a different key as a fallback. API keys become their own instance-level list (`assistant_provider_keys`: key id, provider, label, sealed key, cost class, enabled); each model-order entry is **key + model** (unique pair), so `nemotron:free` on key A then `nemotron:free` on key B is a valid order. Terms records stay per provider (hard rule 5). The existing single key per provider migrates to one key row each. Keys from the same provider account share that account's allowance — the AI setup page says so.
+
+### Additions to Task 12 (tool loop)
+
+- After a `quotaScope: 'daily-free'` error on an entry, skip later entries on the **same key** whose model ends in `:free`; entries on other keys, and paid models, are still tried.
+- A process-wide `QuotaLedger` remembers "key K's free allowance is used up until T"; the loop skips such entries without calling them (attempt recorded as `skipped`, reason `daily-allowance-used`) until T passes — failed calls count against the cap, so not calling saves the allowance.
+- When every entry is skipped or exhausted by a daily cap, the service surfaces the daily-cap error (earliest known reset) so the job gives the daily-cap reply.
+
+### Additions to Task 8 (AI setup page)
+
+A **Keys** section (add key: provider, label, key, cost; list with status and a delete action) replaces the per-provider key field; each model-order row picks a key and a model; a key whose free allowance is used up shows "Free allowance used — resets <time>".

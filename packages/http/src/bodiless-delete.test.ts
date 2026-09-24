@@ -113,20 +113,20 @@ describe('bodiless DELETE with a JSON content-type', () => {
     { url: '/api/log-exclusions/333333333333333333', capability: 'logging.manage' },
     { url: '/api/send-allowlist/333333333333333333', capability: 'config.write' },
     { url: '/api/archive/channels/333333333333333333', capability: 'config.write' },
-  ] as const)('bodiless DELETE $url reaches its route (status is not 500)', async ({
-    url,
-    capability,
-  }) => {
-    const { cookie, csrf } = await signIn();
-    grant([capability]);
-    const res = await app.inject({
-      method: 'DELETE',
-      url,
-      headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
-    });
-    expect(res.statusCode).not.toBe(500);
-    expect(res.statusCode).toBe(200);
-  });
+  ] as const)(
+    'bodiless DELETE $url reaches its route (status is not 500)',
+    async ({ url, capability }) => {
+      const { cookie, csrf } = await signIn();
+      grant([capability]);
+      const res = await app.inject({
+        method: 'DELETE',
+        url,
+        headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
+      });
+      expect(res.statusCode).not.toBe(500);
+      expect(res.statusCode).toBe(200);
+    },
+  );
 
   it('a body over the limit still answers 413', async () => {
     const { cookie, csrf } = await signIn();

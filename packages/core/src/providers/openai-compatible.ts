@@ -85,7 +85,11 @@ const toWireMessage = (
       );
     return { role: 'tool', tool_call_id: message.toolCallId, content: message.text };
   }
-  if (message.role === 'assistant' && message.toolCalls !== undefined && message.toolCalls.length > 0) {
+  if (
+    message.role === 'assistant' &&
+    message.toolCalls !== undefined &&
+    message.toolCalls.length > 0
+  ) {
     return {
       role: 'assistant',
       content: message.text === '' ? null : message.text,
@@ -100,7 +104,11 @@ const toWireMessage = (
 };
 
 export class OpenAiCompatibleProvider implements TextProvider {
-  public readonly capabilities: ReadonlySet<ProviderCapability> = new Set(['text', 'tools', 'usage']);
+  public readonly capabilities: ReadonlySet<ProviderCapability> = new Set([
+    'text',
+    'tools',
+    'usage',
+  ]);
   public readonly id: 'openrouter' | 'nvidia-nim';
   private readonly apiKey: string;
   private readonly baseUrl: string;
@@ -130,7 +138,9 @@ export class OpenAiCompatibleProvider implements TextProvider {
     const body = JSON.stringify({
       model: request.model,
       messages: [
-        ...(request.systemInstruction ? [{ role: 'system', content: request.systemInstruction }] : []),
+        ...(request.systemInstruction
+          ? [{ role: 'system', content: request.systemInstruction }]
+          : []),
         ...request.messages.map((message) => toWireMessage(message, this.id)),
       ],
       ...(request.tools !== undefined && request.tools.length > 0

@@ -19,8 +19,7 @@ const LEAK_STEP = 20;
 /** Member-facing name used in place of any configured model id. */
 const MODEL_ID_REPLACEMENT = "the club's AI service";
 
-const escapeRegExp = (value: string): string =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 const collapseBlankLines = (text: string): string => text.replace(/\n{3,}/g, '\n\n').trim();
 
@@ -85,8 +84,7 @@ const replaceModelIds = (
   return { text: out, replaced };
 };
 
-const normaliseForLeak = (text: string): string =>
-  text.toLowerCase().replace(/\s+/g, ' ').trim();
+const normaliseForLeak = (text: string): string => text.toLowerCase().replace(/\s+/g, ' ').trim();
 
 const hasPromptLeak = (answer: string, protectedText: string): boolean => {
   const needle = normaliseForLeak(protectedText);

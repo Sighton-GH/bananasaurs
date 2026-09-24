@@ -1,7 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
-import { AssistantActivityPage } from '../pages/assistant-activity.js';
+import { AssistantHistoryDetailPage } from '../pages/assistant-history-detail.js';
+import { AssistantHistoryPage } from '../pages/assistant-history.js';
 import { AssistantPage } from '../pages/assistant.js';
 import { AssistantResourcesPage } from '../pages/assistant-resources.js';
 import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
@@ -171,7 +172,9 @@ function Pages() {
       <Route path="/assistant/skills" component={AssistantSkillsPage} />
       <Route path="/assistant/schedules" component={AssistantSchedulesPage} />
       <Route path="/assistant/resources" component={AssistantResourcesPage} />
-      <Route path="/assistant/activity" component={AssistantActivityPage} />
+      <Route path="/assistant/history/:traceId" component={AssistantHistoryDetailPage} />
+      <Route path="/assistant/history" component={AssistantHistoryPage} />
+      <Route path="/assistant/activity" component={AssistantHistoryPage} />
       <Route path="/resources" component={AssistantResourcesPage} />
       <Route path="/memory" component={AssistantMemoryPage} />
       <Route path="/ai" component={AssistantPage} />
