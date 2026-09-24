@@ -105,4 +105,39 @@ describe('bodiless DELETE with a JSON content-type', () => {
     expect(res.statusCode).toBe(400);
     expect(res.json().error).toBe('FST_ERR_CTP_INVALID_JSON_BODY');
   });
+
+  it.each([
+    // The dashboard's other bodiless DELETEs: the log-exclusion remove in
+    // `packages/dashboard/src/pages/logging.tsx`, and the send-scope remove
+    // plus the archive stop in `packages/dashboard/src/pages/permissions.tsx`.
+    { url: '/api/log-exclusions/333333333333333333', capability: 'logging.manage' },
+    { url: '/api/send-allowlist/333333333333333333', capability: 'config.write' },
+    { url: '/api/archive/channels/333333333333333333', capability: 'config.write' },
+  ] as const)('bodiless DELETE $url reaches its route (status is not 500)', async ({
+    url,
+    capability,
+  }) => {
+    const { cookie, csrf } = await signIn();
+    grant([capability]);
+    const res = await app.inject({
+      method: 'DELETE',
+      url,
+      headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
+    });
+    expect(res.statusCode).not.toBe(500);
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('a body over the limit still answers 413', async () => {
+    const { cookie, csrf } = await signIn();
+    grant(['accounts.manage']);
+    const res = await app.inject({
+      method: 'POST',
+      url: '/api/reauth',
+      headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
+      payload: JSON.stringify({ password: 'x'.repeat(128 * 1024) }),
+    });
+    expect(res.statusCode).toBe(413);
+    expect(res.json().error).toBe('FST_ERR_CTP_BODY_TOO_LARGE');
+  });
 });
