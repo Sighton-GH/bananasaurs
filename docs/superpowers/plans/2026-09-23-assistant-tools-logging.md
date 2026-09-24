@@ -1,6 +1,6 @@
 # Assistant reliability, permissions, logging, web search and tools
 
-Status: **APPROVED 2026-09-23 with owner decisions:**
+Status: **EXECUTED 2026-09-23 on branch `assistant-tools-logging`.** Owner decisions:
 - Q1 web search: first Gemini Google Search grounding. Changed to the **Brave
   Search API** because Gemini's terms require showing Google's Search
   Suggestions widget, which Discord cannot render (ADR 0066).
