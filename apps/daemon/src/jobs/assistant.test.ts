@@ -127,4 +127,91 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     expect(err?.message).toContain('code 429');
     expect(err?.message).toContain('Rate limit exceeded');
   });
+
+  it('answers a daily quota cap at once, using resetAt for the unix time, with no retry', async () => {
+    const resetAt = NOW + 3_600_000;
+    const calls: AssistantInvocation[] = [];
+    const svc = service(async () => {
+      throw new ProviderError('quota', 'openrouter free-model daily limit reached', false, {
+        quotaScope: 'daily-free',
+        resetAt,
+      });
+    }, calls);
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+
+    expect(calls).toHaveLength(1);
+    const unix = Math.floor(resetAt / 1000);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.content).toBe(
+      `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`,
+    );
+  });
+
+  it('falls back to the next UTC midnight from deps.now() when resetAt is unknown', async () => {
+    const calls: AssistantInvocation[] = [];
+    const svc = service(async () => {
+      throw new ProviderError('quota', 'openrouter free-model daily limit reached', false, {
+        quotaScope: 'daily-free',
+      });
+    }, calls);
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    await handler.run(payload, context({ attempts: 1 }));
+
+    expect(calls).toHaveLength(1);
+    const d = new Date(NOW);
+    const nextMidnight = Date.UTC(
+      d.getUTCFullYear(),
+      d.getUTCMonth(),
+      d.getUTCDate() + 1,
+      0,
+      0,
+      0,
+      0,
+    );
+    const unix = Math.floor(nextMidnight / 1000);
+    expect(sent[0]?.message.content).toBe(
+      `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`,
+    );
+  });
+
+  it('does not throw RetryAfterError for a daily quota cap', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('quota', 'daily cap', false, { quotaScope: 'daily-free' });
+    });
+    const { deps } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+  });
+
+  it('still retries a transient 429 with the existing per-attempt delay', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('rate-limit', 'HTTP 429', true);
+    });
+    const { deps } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    const err = await handler.run(payload, context({ attempts: 1 })).catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(RetryAfterError);
+    expect((err as RetryAfterError).retryAfterMs).toBe(10_000);
+  });
+
+  it('answers BUSY_REPLY, not the daily-cap wording, for a genuine transient error past the retry ceiling', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('outage', 'HTTP 503', true);
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    await handler.run(payload, context({ attempts: 4 }));
+
+    expect(sent[0]?.message.content).toBe(
+      'The AI service is busy right now. Try again in a minute. No action was taken.',
+    );
+  });
 });
