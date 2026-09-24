@@ -304,9 +304,43 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   // an omission: it is what stops a cross-origin page reading the body of
   // `GET /api/session` and learning the CSRF token.
 
+  // The dashboard's `apiFetch` used to label every write — including a
+  // bodiless DELETE — `content-type: application/json`. Fastify's default JSON
+  // parser rejects an empty JSON body (`FST_ERR_CTP_EMPTY_JSON_BODY`, 400)
+  // before routing, and the error handler below flattened that 400 into a 500
+  // `internal`. Accept an empty body as `undefined`, but only for DELETE: any
+  // other method with an empty labelled body is still a client mistake. The
+  // instance `bodyLimit` still applies — a too-large body answers 413, which
+  // the 4xx branch below passes through unchanged.
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
+    const text = typeof body === 'string' ? body : body.toString('utf8');
+    if (text.length === 0 && request.method === 'DELETE') return done(null, undefined);
+    try {
+      done(null, JSON.parse(text));
+    } catch {
+      const err = new Error('Body is not valid JSON') as Error & {
+        statusCode: number;
+        code: string;
+      };
+      err.statusCode = 400;
+      err.code = 'FST_ERR_CTP_INVALID_JSON_BODY';
+      done(err, undefined);
+    }
+  });
+
   app.setErrorHandler((err, _request, reply) => {
     if (isReadonlyRefusal(err)) {
       void reply.status(READONLY_STATUS).send(READONLY_BODY);
+      return;
+    }
+    // Fastify's own client errors (bad JSON, empty JSON body on a non-DELETE,
+    // too-large body) carry their status: answer it with the error code rather
+    // than flattening every 4xx into a 500 `internal`.
+    const status = (err as { statusCode?: unknown }).statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      const code = (err as { code?: unknown }).code;
+      void reply.status(status).send({ error: typeof code === 'string' ? code : 'bad-request' });
       return;
     }
     // The message only, never the error object: a thrown value could carry a
