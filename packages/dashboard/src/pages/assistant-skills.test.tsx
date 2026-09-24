@@ -107,6 +107,14 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantSkillsPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
+    expect(
+      screen.getByText('What the assistant can do, where each skill is on, and who can use it.'),
+    ).toBeTruthy();
+  });
+
   it('renders the catalogue without Discord permission claims', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Skills' })).toBeTruthy();
@@ -179,25 +187,14 @@ describe('AssistantSkillsPage', () => {
     expect(screen.queryByRole('heading', { name: 'Skill grants' })).toBeNull();
   });
 
-  it('opens a skill to show where it is allowed, who can use it and its recent runs', async () => {
+  it('links each skill card to its own detail page instead of expanding inline', async () => {
     renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Set a reminder' }));
-    const details = screen.getByRole('region', { name: 'Set a reminder details' });
-    expect(within(details).getByText('Schedules · you confirm first')).toBeTruthy();
-    expect(within(details).getByText('Club assistant')).toBeTruthy();
-    expect(within(details).getByText('@Club Member, and the server owner')).toBeTruthy();
-    expect(within(details).getByText(/completed/)).toBeTruthy();
-    fireEvent.click(within(details).getByRole('button', { name: 'Close' }));
+    const catalogue = (await screen.findByRole('heading', { name: 'Skill catalogue' })).closest(
+      'section',
+    )!;
+    const link = within(catalogue).getByRole('link', { name: 'Set a reminder' });
+    expect(link.getAttribute('href')).toBe('/assistant/skills/create-reminder');
     expect(screen.queryByRole('region', { name: 'Set a reminder details' })).toBeNull();
-  });
-
-  it('says an owner-only skill is for the owner, and an unused skill is allowed nowhere', async () => {
-    renderPage();
-    fireEvent.click(await screen.findByRole('button', { name: 'Deliver a reminder' }));
-    const details = screen.getByRole('region', { name: 'Deliver a reminder details' });
-    expect(within(details).getByText('No behaviour allows it yet.')).toBeTruthy();
-    expect(within(details).getByText('Only the server owner.')).toBeTruthy();
-    expect(within(details).getByText('No runs yet.')).toBeTruthy();
   });
 
   it('lists the look-up tools, with web search off until it is set up', async () => {
