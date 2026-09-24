@@ -2072,10 +2072,7 @@ export const assistantTraces = sqliteTable(
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_traces_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_traces_user_id_snowflake', snowflakeCheck(t.userId)),
-    check(
-      'assistant_traces_outcome',
-      sql`${t.outcome} IN ('answered','refused','failed')`,
-    ),
+    check('assistant_traces_outcome', sql`${t.outcome} IN ('answered','refused','failed')`),
     index('assistant_traces_recent').on(t.guildId, t.at),
     index('assistant_traces_conversation').on(t.guildId, t.conversationId),
   ],

@@ -66,9 +66,7 @@ export const listTraces = (scope: GuildScope, q: TraceListQuery): TraceSummary[]
           assistantTraces,
           q.before === undefined ? undefined : lt(assistantTraces.at, q.before),
           q.outcome === undefined ? undefined : eq(assistantTraces.outcome, q.outcome),
-          q.behaviourId === undefined
-            ? undefined
-            : eq(assistantTraces.behaviourId, q.behaviourId),
+          q.behaviourId === undefined ? undefined : eq(assistantTraces.behaviourId, q.behaviourId),
           q.userId === undefined ? undefined : eq(assistantTraces.userId, q.userId),
         ),
       )
@@ -98,10 +96,7 @@ export const getTrace = (scope: GuildScope, traceId: string): AssistantTrace | u
  * Removes every trace of the named conversations in this guild (the prune
  * job calls this alongside the conversation delete). Returns the row count.
  */
-export const deleteTracesForConversations = (
-  scope: GuildScope,
-  ids: readonly string[],
-): number => {
+export const deleteTracesForConversations = (scope: GuildScope, ids: readonly string[]): number => {
   if (ids.length === 0) return 0;
   return write(
     scope,

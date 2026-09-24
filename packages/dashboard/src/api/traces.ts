@@ -53,8 +53,7 @@ export const traceListUrl = (filters: TraceFilters, before?: number): string => 
   return `${TRACES_URL}?${search.toString()}`;
 };
 
-export const traceUrl = (traceId: string): string =>
-  `${TRACES_URL}/${encodeURIComponent(traceId)}`;
+export const traceUrl = (traceId: string): string => `${TRACES_URL}/${encodeURIComponent(traceId)}`;
 
 export const historyUrl = (traceId: string): string =>
   `/assistant/history/${encodeURIComponent(traceId)}`;

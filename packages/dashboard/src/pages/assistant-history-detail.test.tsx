@@ -126,7 +126,9 @@ describe('AssistantHistoryDetailPage', () => {
   });
 
   it('maps a missing run to a sentence', async () => {
-    stubFetch([{ url: '/api/assistant/traces/trace-1', status: 404, body: { error: 'not-found' } }]);
+    stubFetch([
+      { url: '/api/assistant/traces/trace-1', status: 404, body: { error: 'not-found' } },
+    ]);
     renderDetail();
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('no run with this id is stored for this server');

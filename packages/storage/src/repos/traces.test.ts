@@ -161,7 +161,11 @@ describe('deleteTracesForConversations', () => {
     insertTrace(scopeA, trace({ traceId: 'a3', conversationId: undefined }));
     insertTrace(t.scopes.forGuild(GUILD_B), trace({ traceId: 'b1', conversationId: 'conv-1' }));
     expect(deleteTracesForConversations(scopeA, ['conv-1'])).toBe(1);
-    expect(listTraces(scopeA, { limit: 50 }).map((r) => r.traceId).sort()).toEqual(['a2', 'a3']);
+    expect(
+      listTraces(scopeA, { limit: 50 })
+        .map((r) => r.traceId)
+        .sort(),
+    ).toEqual(['a2', 'a3']);
     expect(getTrace(t.scopes.forGuild(GUILD_B), 'b1')).toBeDefined();
     expect(deleteTracesForConversations(scopeA, [])).toBe(0);
   });

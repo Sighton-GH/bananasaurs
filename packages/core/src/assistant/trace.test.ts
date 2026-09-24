@@ -1,10 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  assistantTraceSchema,
-  capTrace,
-  estimateTokens,
-  type AssistantTrace,
-} from './trace.js';
+import { assistantTraceSchema, capTrace, estimateTokens, type AssistantTrace } from './trace.js';
 
 /**
  * A fixture trace as stored data: fixed ids and timestamps, no narrative
@@ -68,15 +63,11 @@ describe('assistantTraceSchema', () => {
   });
 
   it('rejects an unknown outcome and a zero tool round', () => {
-    expect(() =>
-      assistantTraceSchema.parse(fixtureTrace({ outcome: 'maybe' as never })),
-    ).toThrow();
+    expect(() => assistantTraceSchema.parse(fixtureTrace({ outcome: 'maybe' as never }))).toThrow();
     expect(() =>
       assistantTraceSchema.parse(
         fixtureTrace({
-          toolCalls: [
-            { round: 0, name: 'search_sources', args: {}, ok: true, ms: 1, preview: '' },
-          ],
+          toolCalls: [{ round: 0, name: 'search_sources', args: {}, ok: true, ms: 1, preview: '' }],
         }),
       ),
     ).toThrow();
@@ -112,9 +103,7 @@ describe('capTrace', () => {
     const big = 'y'.repeat(500_000);
     const trace = fixtureTrace({
       sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
-      toolCalls: [
-        { round: 1, name: 'search_sources', args: {}, ok: true, ms: 1, preview: big },
-      ],
+      toolCalls: [{ round: 1, name: 'search_sources', args: {}, ok: true, ms: 1, preview: big }],
     });
     const capped = capTrace(trace);
     expect(new TextEncoder().encode(JSON.stringify(capped)).length).toBeLessThanOrEqual(200_000);

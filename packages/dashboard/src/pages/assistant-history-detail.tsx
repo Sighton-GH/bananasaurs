@@ -87,7 +87,9 @@ export function AssistantHistoryDetailPage() {
                   <div>
                     <dt className="text-ink-muted">Answer, as posted</dt>
                     <dd className="whitespace-pre-wrap">
-                      {trace.answer ?? <span className="text-ink-muted">No answer was posted.</span>}
+                      {trace.answer ?? (
+                        <span className="text-ink-muted">No answer was posted.</span>
+                      )}
                     </dd>
                   </div>
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
@@ -114,7 +116,9 @@ export function AssistantHistoryDetailPage() {
                   </div>
                   <div className="flex flex-wrap gap-x-6 gap-y-2">
                     {trace.conversationId !== undefined && (
-                      <Link href={`/assistant/conversations/${encodeURIComponent(trace.conversationId)}`}>
+                      <Link
+                        href={`/assistant/conversations/${encodeURIComponent(trace.conversationId)}`}
+                      >
                         Open the conversation
                       </Link>
                     )}
@@ -173,10 +177,7 @@ export function AssistantHistoryDetailPage() {
                 ) : (
                   <div className="grid gap-2">
                     {trace.sections.map((s) => (
-                      <details
-                        key={s.name}
-                        className="rounded-sm border border-line px-3 py-2"
-                      >
+                      <details key={s.name} className="rounded-sm border border-line px-3 py-2">
                         <summary className="cursor-pointer text-sm">
                           {s.name} · {s.chars} characters · about {s.estTokens} tokens
                         </summary>
@@ -213,7 +214,9 @@ export function AssistantHistoryDetailPage() {
                       {
                         key: 'args',
                         header: 'Arguments',
-                        cell: (r) => <pre className="text-xs whitespace-pre-wrap">{argsText(r.args)}</pre>,
+                        cell: (r) => (
+                          <pre className="text-xs whitespace-pre-wrap">{argsText(r.args)}</pre>
+                        ),
                       },
                       {
                         key: 'preview',

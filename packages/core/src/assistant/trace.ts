@@ -137,8 +137,7 @@ const truncateTo = (text: string, maxChars: number): string => {
   return text.slice(0, maxChars - TRUNCATION_SUFFIX.length) + TRUNCATION_SUFFIX;
 };
 
-const byteSize = (t: AssistantTrace): number =>
-  new TextEncoder().encode(JSON.stringify(t)).length;
+const byteSize = (t: AssistantTrace): number => new TextEncoder().encode(JSON.stringify(t)).length;
 
 /**
  * Shrinks a trace until its JSON fits `maxBytes` (default 200 KB): first the

@@ -51,9 +51,10 @@ describe('splitForDiscord', () => {
   });
 
   it('caps output at 5 parts with a shortened marker', () => {
-    const input = Array.from({ length: 40 }, (_, i) => `Paragraph ${i}: ${'word '.repeat(60)}`).join(
-      '\n\n',
-    );
+    const input = Array.from(
+      { length: 40 },
+      (_, i) => `Paragraph ${i}: ${'word '.repeat(60)}`,
+    ).join('\n\n');
     const parts = splitForDiscord(input);
     expect(parts).toHaveLength(5);
     expect(parts[4]!.endsWith('\n-# (answer shortened)')).toBe(true);

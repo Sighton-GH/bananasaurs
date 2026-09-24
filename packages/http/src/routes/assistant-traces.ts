@@ -110,9 +110,7 @@ export const registerAssistantTraceRoutes = (
     return reply.status(200).send({
       days: Array.from({ length: days }, (_, i) => {
         const day = new Date(deps.now() - (days - 1 - i) * DAY_MS).toISOString().slice(0, 10);
-        return (
-          counts.get(day) ?? { day, answers: 0, failures: 0, fallbacks: 0, tokens: 0 }
-        );
+        return counts.get(day) ?? { day, answers: 0, failures: 0, fallbacks: 0, tokens: 0 };
       }),
     });
   });

@@ -101,9 +101,7 @@ describe('assistant trace routes', () => {
   it('requires audit.read for the list, the detail and the usage strip', async () => {
     const { cookie } = await signIn();
     for (const url of ['/api/assistant/traces', '/api/assistant/traces/trace-1']) {
-      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(
-        403,
-      );
+      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(403);
     }
     expect(
       (await app.inject({ method: 'GET', url: '/api/assistant/usage', headers: { cookie } }))
@@ -117,7 +115,11 @@ describe('assistant trace routes', () => {
     const scope = t.scopes.forGuild(GUILD);
     traceRepo.insertTrace(scope, trace({ traceId: 'old', at: 1_000, outcome: 'answered' }));
     traceRepo.insertTrace(scope, trace({ traceId: 'new', at: 2_000, outcome: 'failed' }));
-    const list = await app.inject({ method: 'GET', url: '/api/assistant/traces', headers: { cookie } });
+    const list = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces',
+      headers: { cookie },
+    });
     expect(list.statusCode).toBe(200);
     expect(list.json<{ traces: { traceId: string }[] }>().traces.map((r) => r.traceId)).toEqual([
       'new',
@@ -155,12 +157,22 @@ describe('assistant trace routes', () => {
     grant('audit.read');
     const { cookie } = await signIn();
     expect(
-      (await app.inject({ method: 'GET', url: '/api/assistant/traces?limit=0', headers: { cookie } }))
-        .statusCode,
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/assistant/traces?limit=0',
+          headers: { cookie },
+        })
+      ).statusCode,
     ).toBe(400);
     expect(
-      (await app.inject({ method: 'GET', url: '/api/assistant/usage?days=many', headers: { cookie } }))
-        .statusCode,
+      (
+        await app.inject({
+          method: 'GET',
+          url: '/api/assistant/usage?days=many',
+          headers: { cookie },
+        })
+      ).statusCode,
     ).toBe(400);
   });
 
@@ -187,9 +199,7 @@ describe('assistant trace routes', () => {
       headers: { cookie },
     });
     expect(withGrant.statusCode).toBe(200);
-    expect(withGrant.json<{ trace: AssistantTrace }>().trace.sections[0]?.text).toBe(
-      'Be helpful.',
-    );
+    expect(withGrant.json<{ trace: AssistantTrace }>().trace.sections[0]?.text).toBe('Be helpful.');
   });
 
   it('answers 404 for an unknown trace id', async () => {

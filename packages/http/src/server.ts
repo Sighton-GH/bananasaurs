@@ -319,7 +319,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
     const text = typeof body === 'string' ? body : body.toString('utf8');
     if (text.length === 0 && request.method === 'DELETE') return done(null, undefined);
-    void defaultJsonParser(request, body, done);
+    void defaultJsonParser(request, text, done);
   });
 
   app.setErrorHandler((err, _request, reply) => {

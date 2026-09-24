@@ -6,7 +6,9 @@ const P =
 
 describe('guardAnswer', () => {
   it('keeps a normal answer', () => {
-    expect(guardAnswer({ text: 'The meeting is Tuesday.', protectedText: P, modelIds: [] })).toEqual({
+    expect(
+      guardAnswer({ text: 'The meeting is Tuesday.', protectedText: P, modelIds: [] }),
+    ).toEqual({
       ok: true,
       text: 'The meeting is Tuesday.',
       removed: [],

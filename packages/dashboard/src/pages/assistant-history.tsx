@@ -121,7 +121,11 @@ function OlderActivity() {
               header: 'Outcome',
               cell: (r) => (
                 <>
-                  <Badge tone={r.outcome === 'refused' ? 'hold' : r.outcome === 'failed' ? 'danger' : 'ok'}>
+                  <Badge
+                    tone={
+                      r.outcome === 'refused' ? 'hold' : r.outcome === 'failed' ? 'danger' : 'ok'
+                    }
+                  >
                     {r.outcome}
                   </Badge>
                   {r.detail !== undefined && (
@@ -189,8 +193,12 @@ export function AssistantHistoryPage() {
   const loaded: readonly TraceRow[] =
     first.resource.state === 'ready' ? [...first.resource.data.traces, ...appended] : [];
   const behaviours = [...new Set(loaded.map((r) => r.behaviourId))].sort();
-  const behaviourOptions = [...new Set([...behaviours, applied.behaviourId].filter((b) => b !== ''))].sort();
-  const more = first.resource.state === 'ready' && (advanced ? cursor : first.resource.data.nextBefore) !== undefined;
+  const behaviourOptions = [
+    ...new Set([...behaviours, applied.behaviourId].filter((b) => b !== '')),
+  ].sort();
+  const more =
+    first.resource.state === 'ready' &&
+    (advanced ? cursor : first.resource.data.nextBefore) !== undefined;
 
   return (
     <>
@@ -295,12 +303,22 @@ export function AssistantHistoryPage() {
                       <span className="font-mono text-xs">{r.model}</span>
                     ),
                 },
-                { key: 'duration', header: 'Duration', numeric: true, cell: (r) => durationText(r.durationMs) },
+                {
+                  key: 'duration',
+                  header: 'Duration',
+                  numeric: true,
+                  cell: (r) => durationText(r.durationMs),
+                },
                 {
                   key: 'tokens',
                   header: 'Tokens',
                   numeric: true,
-                  cell: (r) => (r.totalTokens === null ? <span className="text-ink-muted">—</span> : r.totalTokens),
+                  cell: (r) =>
+                    r.totalTokens === null ? (
+                      <span className="text-ink-muted">—</span>
+                    ) : (
+                      r.totalTokens
+                    ),
                 },
                 {
                   key: 'run',

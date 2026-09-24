@@ -83,9 +83,7 @@ describe('AssistantHistoryPage', () => {
     // The member Discord no longer knows renders as a bare id with a note.
     expect(screen.getByText('199999999999999999')).toBeTruthy();
     // The 14-day strip: plain bars with accessible day labels.
-    expect(
-      screen.getByRole('img', { name: '2026-09-20: 3 answers, 1 failures' }),
-    ).toBeTruthy();
+    expect(screen.getByRole('img', { name: '2026-09-20: 3 answers, 1 failures' })).toBeTruthy();
     // The pre-trace rows stay reachable, collapsed.
     expect(screen.getByText('Older activity (before detailed history)')).toBeTruthy();
     expect(screen.getByText('Search club knowledge')).toBeTruthy();
@@ -131,7 +129,9 @@ describe('AssistantHistoryPage', () => {
     stubFetch(stubs({ traces: [] }));
     renderWithSession(<AssistantHistoryPage />);
     expect(await screen.findByText('No assistant runs yet')).toBeTruthy();
-    expect(screen.getByText('Tag @Bananasaurs in Discord or use Try it on a behaviour.')).toBeTruthy();
+    expect(
+      screen.getByText('Tag @Bananasaurs in Discord or use Try it on a behaviour.'),
+    ).toBeTruthy();
   });
 
   it('renders the error state naming the request when the load fails', async () => {
