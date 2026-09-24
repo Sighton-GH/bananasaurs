@@ -9,3 +9,4 @@ export * from './output-guard.js';
 export * from './split-message.js';
 export * from './chunker.js';
 export * from './github.js';
+export * from './prompt-wizard.js';
