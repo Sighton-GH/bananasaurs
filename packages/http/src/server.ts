@@ -311,22 +311,15 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   // `internal`. Accept an empty body as `undefined`, but only for DELETE: any
   // other method with an empty labelled body is still a client mistake. The
   // instance `bodyLimit` still applies — a too-large body answers 413, which
-  // the 4xx branch below passes through unchanged.
+  // the 4xx branch below passes through unchanged. Every other case delegates
+  // to Fastify's own default JSON parser, so `secure-json-parse` keeps
+  // rejecting `__proto__` / `constructor.prototype` keys exactly as before.
+  const defaultJsonParser = app.getDefaultJsonParser('error', 'error');
   app.removeContentTypeParser('application/json');
   app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
     const text = typeof body === 'string' ? body : body.toString('utf8');
     if (text.length === 0 && request.method === 'DELETE') return done(null, undefined);
-    try {
-      done(null, JSON.parse(text));
-    } catch {
-      const err = new Error('Body is not valid JSON') as Error & {
-        statusCode: number;
-        code: string;
-      };
-      err.statusCode = 400;
-      err.code = 'FST_ERR_CTP_INVALID_JSON_BODY';
-      done(err, undefined);
-    }
+    defaultJsonParser(request, body, done);
   });
 
   app.setErrorHandler((err, _request, reply) => {
