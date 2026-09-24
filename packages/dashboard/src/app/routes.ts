@@ -49,8 +49,8 @@ export const NAV: readonly NavEntry[] = [
   { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
   { path: '/providers', label: 'AI setup', status: 'built', group: 'Assistant' },
   {
-    path: '/assistant/activity',
-    label: 'Assistant history',
+    path: '/assistant/history',
+    label: 'History',
     status: 'built',
     group: 'Advanced / System',
   },

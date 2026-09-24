@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "09c340eb-7f47-47ec-bac0-174ed6a065af",
+  "id": "7b6ab4cb-cced-4325-9bc3-b68c8e2d63f5",
   "prevId": "48469c04-3ffd-453c-af46-6db934479d59",
   "tables": {
     "account_capabilities": {
@@ -1092,67 +1092,6 @@
         }
       }
     },
-    "assistant_model_chain": {
-      "name": "assistant_model_chain",
-      "columns": {
-        "position": {
-          "name": "position",
-          "type": "integer",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "model": {
-          "name": "model",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "assistant_model_chain_provider_assistant_providers_provider_fk": {
-          "name": "assistant_model_chain_provider_assistant_providers_provider_fk",
-          "tableFrom": "assistant_model_chain",
-          "tableTo": "assistant_providers",
-          "columnsFrom": [
-            "provider"
-          ],
-          "columnsTo": [
-            "provider"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "assistant_model_chain_position": {
-          "name": "assistant_model_chain_position",
-          "value": "\"assistant_model_chain\".\"position\" BETWEEN 0 AND 5"
-        },
-        "assistant_model_chain_provider": {
-          "name": "assistant_model_chain_provider",
-          "value": "\"assistant_model_chain\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
-        }
-      }
-    },
     "assistant_provider_config": {
       "name": "assistant_provider_config",
       "columns": {
@@ -1225,13 +1164,6 @@
           "autoincrement": false,
           "default": 0
         },
-        "github_token_enc": {
-          "name": "github_token_enc",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
         "updated_at": {
           "name": "updated_at",
           "type": "integer",
@@ -1260,66 +1192,6 @@
         "assistant_provider_config_enabled_bool": {
           "name": "assistant_provider_config_enabled_bool",
           "value": "\"assistant_provider_config\".\"enabled\" IN (0,1)"
-        }
-      }
-    },
-    "assistant_providers": {
-      "name": "assistant_providers",
-      "columns": {
-        "provider": {
-          "name": "provider",
-          "type": "text",
-          "primaryKey": true,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "api_key_enc": {
-          "name": "api_key_enc",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "cost_class": {
-          "name": "cost_class",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'unknown'"
-        },
-        "enabled": {
-          "name": "enabled",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "updated_at": {
-          "name": "updated_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {},
-      "compositePrimaryKeys": {},
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "assistant_providers_provider": {
-          "name": "assistant_providers_provider",
-          "value": "\"assistant_providers\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
-        },
-        "assistant_providers_cost_class": {
-          "name": "assistant_providers_cost_class",
-          "value": "\"assistant_providers\".\"cost_class\" IN ('free','paid','unknown')"
-        },
-        "assistant_providers_enabled_bool": {
-          "name": "assistant_providers_enabled_bool",
-          "value": "\"assistant_providers\".\"enabled\" IN (0,1)"
         }
       }
     },
@@ -1999,6 +1871,138 @@
         "assistant_tickets_status": {
           "name": "assistant_tickets_status",
           "value": "\"assistant_tickets\".\"status\" IN ('open','claimed','resolved')"
+        }
+      }
+    },
+    "assistant_traces": {
+      "name": "assistant_traces",
+      "columns": {
+        "guild_id": {
+          "name": "guild_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "trace_id": {
+          "name": "trace_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "at": {
+          "name": "at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "user_id": {
+          "name": "user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "behaviour_id": {
+          "name": "behaviour_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "outcome": {
+          "name": "outcome",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "conversation_id": {
+          "name": "conversation_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "duration_ms": {
+          "name": "duration_ms",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "total_tokens": {
+          "name": "total_tokens",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "body_json": {
+          "name": "body_json",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {
+        "assistant_traces_recent": {
+          "name": "assistant_traces_recent",
+          "columns": [
+            "guild_id",
+            "at"
+          ],
+          "isUnique": false
+        },
+        "assistant_traces_conversation": {
+          "name": "assistant_traces_conversation",
+          "columns": [
+            "guild_id",
+            "conversation_id"
+          ],
+          "isUnique": false
+        }
+      },
+      "foreignKeys": {
+        "assistant_traces_guild_id_guilds_guild_id_fk": {
+          "name": "assistant_traces_guild_id_guilds_guild_id_fk",
+          "tableFrom": "assistant_traces",
+          "tableTo": "guilds",
+          "columnsFrom": [
+            "guild_id"
+          ],
+          "columnsTo": [
+            "guild_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {
+        "assistant_traces_guild_id_trace_id_pk": {
+          "columns": [
+            "guild_id",
+            "trace_id"
+          ],
+          "name": "assistant_traces_guild_id_trace_id_pk"
+        }
+      },
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_traces_guild_id_snowflake": {
+          "name": "assistant_traces_guild_id_snowflake",
+          "value": "(\"assistant_traces\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_traces\".\"guild_id\") BETWEEN 17 AND 20)"
+        },
+        "assistant_traces_user_id_snowflake": {
+          "name": "assistant_traces_user_id_snowflake",
+          "value": "(\"assistant_traces\".\"user_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_traces\".\"user_id\") BETWEEN 17 AND 20)"
+        },
+        "assistant_traces_outcome": {
+          "name": "assistant_traces_outcome",
+          "value": "\"assistant_traces\".\"outcome\" IN ('answered','refused','failed')"
         }
       }
     },
