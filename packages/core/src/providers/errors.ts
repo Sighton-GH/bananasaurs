@@ -10,13 +10,28 @@ export type ProviderErrorKind =
   | 'invalid-response';
 
 export class ProviderError extends Error {
+  /**
+   * When the provider told us when a daily free-model allowance resets
+   * (epoch ms). Only set alongside `quotaScope: 'daily-free'` (ADR 0077),
+   * and only when the source value was finite and in the future.
+   */
+  public readonly resetAt?: number;
+  /**
+   * Set when `kind` is `'quota'` and the cap is a `:free` model's daily
+   * request allowance rather than an account credit exhaustion (ADR 0077).
+   * A retry never helps this kind of quota error before `resetAt`.
+   */
+  public readonly quotaScope?: 'daily-free';
+
   public constructor(
     public readonly kind: ProviderErrorKind,
     message: string,
     public readonly retryable: boolean,
-    options?: ErrorOptions,
+    options?: ErrorOptions & { resetAt?: number; quotaScope?: 'daily-free' },
   ) {
     super(message, options);
     this.name = 'ProviderError';
+    this.resetAt = options?.resetAt;
+    this.quotaScope = options?.quotaScope;
   }
 }
