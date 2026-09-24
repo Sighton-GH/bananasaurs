@@ -66,6 +66,24 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 **AI log channel.** If the server owner chooses a log channel, every question asked of Bananasaurs is copied there, together with its answer, the sources used and the outcome. That channel is meant for server staff only. Messages in it are kept by Discord, not by Bananasaurs, until someone deletes them.
 
+## Assistant conversations and resources
+
+- Conversations with the assistant — the questions asked, the answers given,
+  who asked, and in which channel — are stored on the club's server. They are
+  deleted automatically after the owner's chosen period (2 months, 6 months,
+  12 months, or keep forever; the default is 6 months).
+- When someone tags Bananasaurs in a reply to another person's message, that
+  replied-to message is sent to the AI provider as context for the answer.
+- Content from GitHub repositories and organisations the owner adds is fetched
+  from GitHub and cached on the club's server so the assistant can answer
+  from it.
+- The owner can reveal dashboard account passwords from an encrypted copy
+  kept on the server. Every reveal is recorded in the audit log without the
+  password itself.
+- Test chats typed into the dashboard ("Try it") are sent to the AI provider
+  like any other question. They are saved as conversations marked Dashboard
+  test and are never posted to Discord.
+
 ## Who can see it
 
 - **Everyone:** their own data, via `/mydata`
