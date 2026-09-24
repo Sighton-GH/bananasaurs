@@ -9,7 +9,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { assistantRepo, guildRepo, schema, writeInstance } from '@bananasaurs/storage';
+import { archiveRepo, assistantRepo, guildRepo, schema, writeInstance } from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
 
 const GUILD = parseGuildId('234567890123456789');
@@ -32,12 +32,16 @@ const config = parseConfig({
   AI_PROFILE_COST_CLASS: 'free',
 });
 
-const seedEligibility = (t: MigratedTestDatabase, providerId: string): void => {
+const seedEligibility = (
+  t: MigratedTestDatabase,
+  providerId: string,
+  trainsOnInput: 'no' | 'yes' | 'unknown' = 'no',
+): void => {
   writeInstance(t.scopes.instance(), ({ db }) => {
     db.insert(schema.providerEligibility)
       .values({
         provider: providerId,
-        trainsOnInput: 'no',
+        trainsOnInput,
         evidenceUrl: 'https://example.com/data-privacy',
         productionUseAllowed: 1,
         reviewedAt: NOW,
@@ -435,11 +439,114 @@ describe('Release 3 review fixes', () => {
       invocationId: 'int-1',
     });
     expect(result.ok).toBe(false);
-    expect(result.ok === false && result.content).toContain('eligibility');
+    expect(result.ok === false && result.content).toContain('terms');
     expect(network).not.toHaveBeenCalled();
     expect(assistantRepo.listSkillActivity(t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
       outcome: 'denied',
     });
+  });
+
+  it.each(['yes', 'unknown'] as const)(
+    'answers through a provider whose terms say trainsOnInput=%s and logs a warning (ADR 0062)',
+    async (trainsOnInput) => {
+      seedEligibility(t, 'fixture', trainsOnInput);
+      const network = vi.fn(async () => ({ text: 'Meeting is Monday.', model: 'fixture-model' }));
+      const warn = vi.fn();
+      const service = createAssistantService(
+        t.scopes.forGuild(GUILD),
+        t.scopes.instance(),
+        config,
+        () => NOW,
+        {
+          provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
+        },
+        undefined,
+        { warn },
+      );
+      const result = await service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds: [CLUB_ROLE],
+        behaviour: direct,
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'slash-command',
+        invocationId: 'int-train',
+      });
+      expect(result.ok).toBe(true);
+      expect(network).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.objectContaining({ guildId: GUILD, reason: 'provider-may-train' }),
+        'assistant provider may train on server content',
+      );
+    },
+  );
+
+  it('answers a member whose role is only in Who can ask, with no skill grant (ADR 0064)', async () => {
+    const OPERATIONS = '789012345678901299';
+    const scope = t.scopes.forGuild(GUILD);
+    const operations = { ...direct, id: 'ops', callerRoleIds: [OPERATIONS] };
+    assistantRepo.putBehaviour(scope, { ...direct, enabled: false }, NOW);
+    assistantRepo.putBehaviour(scope, operations, NOW);
+    seedEligibility(t, 'fixture');
+    const network = vi.fn(async () => ({ text: 'Meeting is Monday.', model: 'fixture-model' }));
+    const service = createAssistantService(scope, t.scopes.instance(), config, () => NOW, {
+      provider: { id: 'fixture', capabilities: new Set(['text']), generateText: network },
+    });
+    const ask = (callerRoleIds: string[]) =>
+      service.invoke({
+        guildId: GUILD,
+        channelId: CHANNEL,
+        userId: MEMBER,
+        callerRoleIds,
+        behaviour: operations,
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'slash-command',
+        invocationId: `int-ops-${callerRoleIds.length}`,
+      });
+    await expect(ask([OPERATIONS])).resolves.toMatchObject({ ok: true });
+    expect(network).toHaveBeenCalledTimes(1);
+    // A role outside Who can ask is still refused, before any provider call.
+    await expect(ask([])).resolves.toMatchObject({
+      ok: false,
+      content: 'This behaviour is not available to your server roles. No action was taken.',
+    });
+    expect(network).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not warn for a provider whose terms say it does not train', async () => {
+    seedEligibility(t, 'fixture');
+    const warn = vi.fn();
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        provider: {
+          id: 'fixture',
+          capabilities: new Set(['text']),
+          generateText: async () => ({ text: 'ok', model: 'fixture-model' }),
+        },
+      },
+      undefined,
+      { warn },
+    );
+    await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'when is the meeting?' },
+      source: 'slash-command',
+      invocationId: 'int-no-train',
+    });
+    expect(warn).not.toHaveBeenCalled();
   });
 
   it('finding 2: a test-injected provider still passes through the outbound scan', async () => {
@@ -588,5 +695,168 @@ describe('first-run owner access', () => {
       source: 'slash-command',
     });
     expect(member).toMatchObject({ ok: false });
+  });
+});
+
+describe('tools, shared resources and the archive (ADR 0067)', () => {
+  let t: MigratedTestDatabase;
+  const PUBLIC = '811111111111111111';
+  const STAFF = '822222222222222222';
+  const THREAD = '833333333333333333';
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club organiser',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club', 'open-resource'],
+    resourceIds: ['handbook'],
+    enabled: true,
+  };
+  const seed = (messageId: string, channelId: string, content: string, threadId?: string) =>
+    archiveRepo.upsertMessage(t.scopes.forGuild(GUILD), {
+      messageId,
+      channelId,
+      ...(threadId === undefined ? {} : { threadId }),
+      authorId: MEMBER,
+      content,
+      createdAt: NOW - 1_000,
+      editedAt: undefined,
+      attachments: [],
+    });
+  const memberChannels = vi.fn(async () => [{ id: PUBLIC, name: 'general' }]);
+  const service = (provider: TextProvider, fetchResource = vi.fn()) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      { provider, fetchResource },
+      undefined,
+      undefined,
+      { memberChannels },
+    );
+  const invocation = (command: 'ask' | 'find', input: Record<string, string>) => ({
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: MEMBER,
+    callerRoleIds: [CLUB_ROLE],
+    behaviour: direct,
+    command,
+    input,
+    source: 'slash-command' as const,
+    invocationId: `inv-${command}`,
+  });
+
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    const scope = t.scopes.forGuild(GUILD);
+    guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    assistantRepo.putBehaviour(scope, direct, NOW);
+    for (const channelId of [PUBLIC, STAFF])
+      archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: NOW });
+    seed('844444444444444441', PUBLIC, 'battery order ships friday');
+    seed('844444444444444442', STAFF, 'battery budget is secret');
+    seed('844444444444444443', PUBLIC, 'battery chat in a private thread', THREAD);
+    seedEligibility(t, 'fixture');
+    for (const [id, title] of [
+      ['handbook', 'Handbook'],
+      ['rules', 'Rules'],
+    ] as const)
+      assistantRepo.putResource(scope, {
+        id,
+        guildId: GUILD,
+        title,
+        url: `https://example.com/${id}`,
+        kind: 'website',
+        enabled: true,
+        reviewedAt: new Date(NOW).toISOString(),
+      });
+  });
+  afterEach(() => t.close());
+
+  it('/find searches only archived channels the member can view, and no threads', async () => {
+    const result = await service({
+      id: 'fixture',
+      capabilities: new Set(['text']),
+      generateText: vi.fn(),
+    }).invoke(invocation('find', { query: 'battery' }));
+    expect(result.ok).toBe(true);
+    expect(result.content).toContain('ships friday');
+    expect(result.content).not.toContain('secret');
+    expect(result.content).not.toContain('private thread');
+    expect(memberChannels).toHaveBeenCalledWith(MEMBER);
+  });
+
+  it('runs one tool round against the archive and traces it', async () => {
+    const requests: GenerateTextRequest[] = [];
+    const generateText = vi.fn(async (request: GenerateTextRequest) => {
+      requests.push(request);
+      return requests.length === 1
+        ? {
+            text: '',
+            model: 'fixture-model',
+            toolCalls: [{ name: 'search_archive', args: { query: 'battery' } }],
+          }
+        : { text: 'The order ships Friday.', model: 'fixture-model' };
+    });
+    const fetchResource = vi.fn(async () => ({
+      ok: true as const,
+      cache: 'miss' as const,
+      evidence: {
+        url: 'https://example.com/handbook',
+        mediaType: 'text/html',
+        text: 'Handbook text.',
+        fetchedAt: NOW,
+        trust: 'untrusted-reviewed-resource' as const,
+      },
+    }));
+    const result = await service(
+      { id: 'fixture', capabilities: new Set(['text', 'tools']), generateText },
+      fetchResource,
+    ).invoke(invocation('ask', { question: 'when does the battery ship?' }));
+
+    expect(result).toMatchObject({
+      ok: true,
+      content: 'The order ships Friday.',
+      trace: {
+        model: 'fixture-model',
+        tools: [{ name: 'search_archive', ok: true }],
+        sources: [{ title: 'Handbook', url: 'https://example.com/handbook' }],
+      },
+    });
+    const toolTurn = requests[1]?.messages.find((m) => m.role === 'tool');
+    expect(toolTurn?.text).toContain('ships friday');
+    expect(toolTurn?.text).not.toContain('secret');
+    expect(requests[1]?.tools).toBeUndefined();
+    // Only the behaviour's own resource is fetched up front; the rest are listed.
+    expect(fetchResource).toHaveBeenCalledTimes(1);
+    expect(fetchResource).toHaveBeenCalledWith('https://example.com/handbook');
+    expect(requests[0]?.systemInstruction).toContain(
+      'OTHER CLUB RESOURCES (open them with the open_resource tool when useful)\nrules: Rules',
+    );
+  });
+
+  it('fetches every resource up front for a provider without tools', async () => {
+    const fetchResource = vi.fn(async (_url: string) => ({
+      ok: false as const,
+      code: 'http-status' as const,
+      message: 'x',
+    }));
+    await service(
+      {
+        id: 'fixture',
+        capabilities: new Set(['text']),
+        generateText: async () => ({ text: 'ok', model: 'fixture-model' }),
+      },
+      fetchResource,
+    ).invoke(invocation('ask', { question: 'q' }));
+    expect(fetchResource.mock.calls.map((c) => c[0])).toEqual([
+      'https://example.com/handbook',
+      'https://example.com/rules',
+    ]);
   });
 });

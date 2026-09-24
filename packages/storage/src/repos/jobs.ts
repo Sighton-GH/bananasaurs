@@ -163,6 +163,8 @@ export interface FailOptions {
    * error under four duplicates.
    */
   permanent?: boolean;
+  /** Retry after this long instead of `backoffMs` (a handler knows its failure best). */
+  retryAfterMs?: number;
 }
 
 export const failJob = (
@@ -189,7 +191,7 @@ export const failJob = (
       return { willRetry: false, nextRunAfter: undefined };
     }
 
-    const nextRunAfter = now + backoffMs(row.attempts);
+    const nextRunAfter = now + (options.retryAfterMs ?? backoffMs(row.attempts));
     db.update(jobs)
       .set({ state: 'queued', lastError: error, runAfter: nextRunAfter, updatedAt: now })
       .where(scope.only(jobs, eq(jobs.jobId, jobId)))

@@ -74,6 +74,7 @@ export {
 } from './pipeline/pipeline.js';
 export {
   JobWorker,
+  RetryAfterError,
   type AnyJobHandler,
   type ClaimedJob,
   type FailOptions,
@@ -549,10 +550,21 @@ export type {
   ProviderEligibility,
   ProviderUsage,
   TextProvider,
+  ToolCall,
+  ToolDeclaration,
 } from './providers/contracts.js';
 export { ProviderError, type ProviderErrorKind } from './providers/errors.js';
-export { assertProviderEligible, type ProviderAudience } from './providers/eligibility.js';
-export { GeminiProvider, type GeminiProviderOptions } from './providers/gemini.js';
+export {
+  assertProviderEligible,
+  providerMayTrain,
+  type ProviderAudience,
+} from './providers/eligibility.js';
+export {
+  GeminiProvider,
+  listGeminiModels,
+  type GeminiModelInfo,
+  type GeminiProviderOptions,
+} from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,
   redactEvidenceText,

@@ -211,6 +211,48 @@ describe('resources and context', () => {
   });
 });
 
+describe('compileAssistantContext resources (ADR 0067)', () => {
+  const resource = (id: string, title: string) => ({
+    id,
+    guildId: 'g1',
+    title,
+    url: `https://example.com/${id}`,
+    kind: 'website' as const,
+    enabled: true,
+    reviewedAt: '2026-09-01T00:00:00.000Z',
+  });
+  it('lists every resource, the behaviour emphasis first, with ids for open_resource', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [resource('rules', 'Rules'), resource('web', 'Website')],
+      skills: [],
+      evidence: [],
+      toolsAvailable: true,
+    });
+    expect(compiled.systemInstruction).toContain(
+      'PREFERRED RESOURCES (use these first)\nweb: Website - https://example.com/web',
+    );
+    expect(compiled.systemInstruction).toContain(
+      'OTHER CLUB RESOURCES (open them with the open_resource tool when useful)\nrules: Rules - https://example.com/rules',
+    );
+  });
+
+  it('says nothing about a tool when the provider has none', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [resource('rules', 'Rules')],
+      skills: [],
+      evidence: [],
+    });
+    expect(compiled.systemInstruction).toContain(
+      'OTHER CLUB RESOURCES\nrules: Rules - https://example.com/rules',
+    );
+    expect(compiled.systemInstruction).not.toContain('open_resource');
+  });
+});
+
 describe('reminders', () => {
   it('validates, persists and delivers due reminders with stable dedupe keys', async () => {
     const create = vi.fn(async () => undefined);

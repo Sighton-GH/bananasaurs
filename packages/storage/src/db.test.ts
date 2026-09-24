@@ -462,3 +462,113 @@ describe('migration 0027 grants accounts.manage to existing owners (ADR 0056)', 
     raw.close();
   });
 });
+
+describe('migration 0035 adds the bot-tag flag and flags the one club assistant (ADR 0063)', () => {
+  it('keeps every behaviour and flags only a guild with exactly one enabled bananasaurs behaviour', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const migrationsFolderUpTo = (lastIdx: number): string => {
+      const journal = JSON.parse(
+        fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+      ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'bot-tag-migration-'));
+      fs.mkdirSync(path.join(dir, 'meta'));
+      const entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
+      fs.writeFileSync(
+        path.join(dir, 'meta', '_journal.json'),
+        JSON.stringify({ ...journal, entries }),
+      );
+      for (const entry of entries)
+        fs.copyFileSync(
+          path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+          path.join(dir, `${entry.tag}.sql`),
+        );
+      return dir;
+    };
+    runMigrations(raw, db, migrationsFolderUpTo(34));
+    const one = '111111111111111111';
+    const two = '222222222222222222';
+    const insertGuild = raw.prepare(
+      `INSERT INTO guilds (guild_id, name, created_at, updated_at) VALUES (?, 'g', 0, 0)`,
+    );
+    insertGuild.run(one);
+    insertGuild.run(two);
+    const insertBehaviour = raw.prepare(
+      `INSERT INTO assistant_behaviours (guild_id, behaviour_id, surface, mention_role_id, name, system_prompt, enabled, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'prompt', ?, 0, 0)`,
+    );
+    insertBehaviour.run(one, 'club', 'bananasaurs', '333333333333333333', 'Club', 1);
+    insertBehaviour.run(one, 'it', 'it-services', '444444444444444444', 'IT', 1);
+    insertBehaviour.run(one, 'old-club', 'bananasaurs', '555555555555555555', 'Old club', 0);
+    insertBehaviour.run(two, 'club-a', 'bananasaurs', '666666666666666666', 'Club A', 1);
+    insertBehaviour.run(two, 'club-b', 'bananasaurs', '777777777777777777', 'Club B', 1);
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const rows = raw
+      .prepare(
+        `SELECT guild_id, behaviour_id, name, answers_bot_tag FROM assistant_behaviours ORDER BY guild_id, behaviour_id`,
+      )
+      .all();
+    expect(rows).toEqual([
+      { guild_id: one, behaviour_id: 'club', name: 'Club', answers_bot_tag: 1 },
+      { guild_id: one, behaviour_id: 'it', name: 'IT', answers_bot_tag: 0 },
+      { guild_id: one, behaviour_id: 'old-club', name: 'Old club', answers_bot_tag: 0 },
+      { guild_id: two, behaviour_id: 'club-a', name: 'Club A', answers_bot_tag: 0 },
+      { guild_id: two, behaviour_id: 'club-b', name: 'Club B', answers_bot_tag: 0 },
+    ]);
+    raw.close();
+  });
+});
+
+describe('migration 0036 adds the fallback model, web search and assistant settings', () => {
+  it('keeps the saved provider row, with search off and no fallback', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const migrationsFolderUpTo = (lastIdx: number): string => {
+      const journal = JSON.parse(
+        fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+      ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'provider-migration-'));
+      fs.mkdirSync(path.join(dir, 'meta'));
+      const entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
+      fs.writeFileSync(
+        path.join(dir, 'meta', '_journal.json'),
+        JSON.stringify({ ...journal, entries }),
+      );
+      for (const entry of entries)
+        fs.copyFileSync(
+          path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+          path.join(dir, `${entry.tag}.sql`),
+        );
+      return dir;
+    };
+    runMigrations(raw, db, migrationsFolderUpTo(35));
+    raw
+      .prepare(
+        `INSERT INTO assistant_provider_config (config_id, provider, model, api_key_enc, enabled, cost_class, updated_at)
+         VALUES ('active', 'gemini', 'gemini-2.5-flash', 'sealed', 1, 'free', 7)`,
+      )
+      .run();
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    expect(raw.prepare('SELECT * FROM assistant_provider_config').all()).toEqual([
+      {
+        config_id: 'active',
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        api_key_enc: 'sealed',
+        enabled: 1,
+        cost_class: 'free',
+        fallback_models_json: '[]',
+        search_api_key_enc: null,
+        search_enabled: 0,
+        updated_at: 7,
+      },
+    ]);
+    raw.close();
+  });
+});

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import type { AssistantBehaviour, AssistantInvokePayload, DomainEvent } from '@bananasaurs/core';
-import { ProviderError } from '@bananasaurs/core';
+import { ProviderError, RetryAfterError } from '@bananasaurs/core';
 import {
   createAssistantCommandSubscriber,
   type AssistantCommandService,
@@ -70,6 +70,8 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
     respond,
     send,
     logger: pino({ level: 'silent' }),
+    logChannelId: () => undefined,
+    now: () => 1,
   });
   const flush = async (): Promise<void> => {
     for (const payload of queued.splice(0)) {
@@ -89,6 +91,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
     queued,
     flush,
     subscriber: createAssistantCommandSubscriber({
+      botUserId: '901234567890123456',
       guildId,
       service,
       defer,
@@ -198,6 +201,37 @@ describe('assistant command subscriber', () => {
     );
   });
 
+  it('routes a tag of the bot user through the queue to the flagged behaviour', async () => {
+    const h = harness([direct, { ...club, answersBotTag: true }]);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012346',
+      authorId: userId,
+      authorIsBot: false,
+      content: '<@901234567890123456> when is the meeting?',
+      editedTimestampMs: undefined,
+      mentionedUserIds: ['901234567890123456'],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toEqual([
+      expect.objectContaining({
+        behaviourId: 'club',
+        command: 'ask',
+        input: { question: 'when is the meeting?' },
+        source: 'mention',
+      }),
+    ]);
+  });
+
   it('does not expose removed privacy commands', async () => {
     const h = harness();
     await h.subscriber.handle(slash('mydata', []));
@@ -263,6 +297,7 @@ describe('assistant command subscriber', () => {
 
   it('swallows an enqueue failure without posting or throwing', async () => {
     const subscriber = createAssistantCommandSubscriber({
+      botUserId: '901234567890123456',
       guildId,
       service: { behavioursForGuild: vi.fn(async () => [club]), invoke: vi.fn() },
       defer: vi.fn(async () => undefined),
@@ -361,6 +396,8 @@ describe('assistant mention failure path', () => {
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     // Attempt 1: invoke succeeds, the answer send throws (Discord blip).
     let cursor: string | null = null;
@@ -425,6 +462,8 @@ describe('assistant mention failure path', () => {
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     await handler.run(handler.payload.parse(payload), {
       jobId: 1,
@@ -458,6 +497,8 @@ describe('assistant mention failure path', () => {
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     const payload = handler.payload.parse({
       schemaVersion: 1,
@@ -498,6 +539,8 @@ describe('assistant mention failure path', () => {
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     const payload = handler.payload.parse({
       schemaVersion: 1,
@@ -556,6 +599,8 @@ describe('assistant mention failure path', () => {
       respond: h.respond,
       send: h.send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     const payload = handler.payload.parse({
       schemaVersion: 1,
@@ -619,8 +664,8 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
     source: 'mention',
     invocationId: '890123456789012345',
   };
-  const jobDeps = (invoke: AssistantCommandService['invoke']) => {
-    const send = vi.fn(async () => undefined);
+  const jobDeps = (invoke: AssistantCommandService['invoke'], logChannelId?: string) => {
+    const send = vi.fn(async (_channelId: string, _message: unknown) => undefined);
     const respond = vi.fn(async () => undefined);
     const saved: (string | null)[] = [];
     const handler = assistantInvokeHandler({
@@ -630,6 +675,8 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
       respond,
       send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => logChannelId,
+      now: () => 1_790_000_000_000,
     });
     const run = (attempts: number, cursor: string | null) =>
       handler.run(handler.payload.parse(mentionPayload), {
@@ -643,25 +690,38 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
     return { send, respond, saved, run };
   };
 
-  it('rethrows a retryable provider error below the ceiling so the job retries', async () => {
-    const invoke = vi.fn(async () => {
-      throw new ProviderError('rate-limit', '429', true);
-    });
-    const d = jobDeps(invoke);
-    await expect(d.run(1, null)).rejects.toBeInstanceOf(ProviderError);
-    expect(d.send).not.toHaveBeenCalled();
-    expect(d.saved).toHaveLength(0);
-  });
+  it.each([
+    [1, 10_000],
+    [2, 30_000],
+    [3, 90_000],
+  ])(
+    'retries a busy provider after attempt %i with a %i ms delay, silently',
+    async (attempt, delay) => {
+      const invoke = vi.fn(async () => {
+        throw new ProviderError('outage', 'Gemini request failed with HTTP 503', true);
+      });
+      const d = jobDeps(invoke);
+      const thrown = await Promise.resolve()
+        .then(() => d.run(attempt, null))
+        .catch((err: unknown) => err);
+      expect(thrown).toBeInstanceOf(RetryAfterError);
+      expect((thrown as RetryAfterError).retryAfterMs).toBe(delay);
+      expect(d.send).not.toHaveBeenCalled();
+      expect(d.saved).toHaveLength(0);
+    },
+  );
 
-  it('answers the member on the last permitted attempt instead of retrying forever', async () => {
+  it('tells the member the AI service is busy after the last attempt', async () => {
     const invoke = vi.fn(async () => {
-      throw new ProviderError('rate-limit', '429', true);
+      throw new ProviderError('outage', 'Gemini request failed with HTTP 503', true);
     });
     const d = jobDeps(invoke);
-    await d.run(3, null);
+    await d.run(4, null);
     expect(d.send).toHaveBeenCalledWith(
       channelId,
-      expect.objectContaining({ content: expect.stringContaining('could not complete') }),
+      expect.objectContaining({
+        content: 'The AI service is busy right now. Try again in a minute. No action was taken.',
+      }),
     );
   });
 
@@ -701,6 +761,8 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
       respond: d.respond,
       send: d.send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     await handler.run(
       handler.payload.parse({
@@ -720,6 +782,119 @@ describe('assistant invoke job: retries, cursor hygiene and stranded stages', ()
     expect(d.send).toHaveBeenCalledWith(
       '111111111111111111',
       expect.objectContaining({ content: expect.stringContaining('IT request t1') }),
+    );
+  });
+});
+
+describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
+  const LOG = '999999999999999990';
+  const payload: AssistantInvokePayload = {
+    channelId,
+    userId,
+    callerRoleIds: [],
+    behaviourId: club.id,
+    command: 'ask',
+    input: { question: 'where is the handbook?' },
+    source: 'mention',
+    invocationId: '890123456789012399',
+  };
+  const setup = (invoke: AssistantCommandService['invoke'], logChannelId?: string) => {
+    const send = vi.fn(async (_channelId: string, _message: unknown) => undefined);
+    const saved: (string | null)[] = [];
+    const handler = assistantInvokeHandler({
+      guildId,
+      service: { behavioursForGuild: vi.fn(async () => [club]), invoke },
+      openToken: () => undefined,
+      respond: vi.fn(async () => undefined),
+      send,
+      logger: pino({ level: 'silent' }),
+      logChannelId: () => logChannelId,
+      now: () => 1_790_000_000_000,
+    });
+    const run = (attempts: number, cursor: string | null) =>
+      handler.run(handler.payload.parse(payload), {
+        jobId: 1,
+        attempts,
+        cursor,
+        saveCursor: (c) => {
+          saved.push(c);
+        },
+      });
+    return { send, saved, run };
+  };
+  const logPosts = (send: ReturnType<typeof setup>['send']) =>
+    send.mock.calls.filter(([channel]) => channel === LOG);
+  type LogEmbed = { title: string; fields: { name: string; value: string }[] };
+  const embed = (call: [string, unknown]) =>
+    (call[1] as { embeds: LogEmbed[] }).embeds[0] as LogEmbed;
+
+  it('posts one log after the answer, with the trace, and marks the stage', async () => {
+    const d = setup(
+      vi.fn(async () => ({
+        ok: true as const,
+        content: 'Top shelf.',
+        trace: { latencyMs: 900, model: 'm', tools: [{ name: 'current_time', ok: true }] },
+      })),
+      LOG,
+    );
+    await d.run(1, null);
+    expect(d.send.mock.calls.map(([channel]) => channel)).toEqual([channelId, LOG]);
+    const logged = embed(logPosts(d.send)[0]!);
+    expect(logged.title).toBe('Mention · answered');
+    expect(logged.fields).toEqual(
+      expect.arrayContaining([
+        { name: 'Question', value: 'where is the handbook?' },
+        { name: 'Answer', value: 'Top shelf.' },
+        { name: 'Tools', value: 'current_time ✓' },
+        { name: 'Behaviour', value: club.name, inline: true },
+      ]),
+    );
+    expect(JSON.parse(d.saved.at(-1)!)).toMatchObject({ stage: 'logged' });
+  });
+
+  it('never posts the log twice when a retry resumes after it', async () => {
+    const invoke = vi.fn();
+    const d = setup(invoke, LOG);
+    await d.run(
+      2,
+      JSON.stringify({ stage: 'logged', result: { ok: true, content: 'Top shelf.' } }),
+    );
+    expect(d.send).not.toHaveBeenCalled();
+    expect(invoke).not.toHaveBeenCalled();
+  });
+
+  it('retries only the log when it failed after the answer landed', async () => {
+    const d = setup(vi.fn(), LOG);
+    await d.run(
+      2,
+      JSON.stringify({ stage: 'answered', result: { ok: false, content: 'Refused.' } }),
+    );
+    expect(d.send.mock.calls.map(([channel]) => channel)).toEqual([LOG]);
+    expect(embed(logPosts(d.send)[0]!).title).toBe('Mention · refused');
+  });
+
+  it('posts nothing when no log channel is set', async () => {
+    const d = setup(vi.fn(async () => ({ ok: true as const, content: 'Hi.' })));
+    await d.run(1, null);
+    expect(d.send.mock.calls.map(([channel]) => channel)).toEqual([channelId]);
+  });
+
+  it('logs a failure with its reason, and a broken log channel never re-answers', async () => {
+    const d = setup(
+      vi.fn(async () => {
+        throw new ProviderError('outage', 'Gemini request failed with HTTP 503', true);
+      }),
+      LOG,
+    );
+    d.send.mockImplementation(async (channel: string) => {
+      if (channel === LOG) throw new Error('Missing Access');
+      return undefined;
+    });
+    await expect(d.run(4, null)).resolves.toBeUndefined();
+    const logged = embed(logPosts(d.send)[0]!);
+    expect(logged.title).toBe('Mention · failed');
+    expect(logged.fields).toEqual(
+      expect.arrayContaining([{ name: 'Reason', value: 'Gemini request failed with HTTP 503' }]),
     );
   });
 });

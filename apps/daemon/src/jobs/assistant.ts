@@ -3,13 +3,19 @@ import {
   assistantInvokePayload,
   JOB_KINDS,
   ProviderError,
+  RetryAfterError,
   safeLogFields,
   type AssistantInvokePayload,
   type JobHandler,
   type Logger,
   type OutgoingMessage,
 } from '@bananasaurs/core';
-import type { AssistantCommandService, AssistantInvocationResult } from '../assistant/commands.js';
+import type {
+  AssistantCommandService,
+  AssistantInvocationResult,
+  InvocationTrace,
+} from '../assistant/commands.js';
+import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 
 /**
  * Runs one assistant invocation off the serial per-guild dispatch chain (B2).
@@ -38,14 +44,20 @@ const reply = (content: string): OutgoingMessage => ({
 });
 
 /** Every delivery stage the worker may retry through. */
-type CursorStage = 'invoke-done' | 'answered' | 'escalation-sent';
+type CursorStage = 'invoke-done' | 'answered' | 'escalation-sent' | 'logged';
 interface StagedCursor {
   readonly stage: CursorStage;
   readonly result: AssistantInvocationResult;
 }
-const STAGES: readonly CursorStage[] = ['invoke-done', 'answered', 'escalation-sent'];
+const STAGES: readonly CursorStage[] = ['invoke-done', 'answered', 'escalation-sent', 'logged'];
 /** Total order over stages: a retry resumes AFTER the furthest stage reached. */
 const stageRank = (stage: CursorStage): number => STAGES.indexOf(stage);
+
+/** Zod's optional fields come back as `undefined`; the result type wants them absent. */
+const stripUndefined = (value: object): InvocationTrace =>
+  Object.fromEntries(
+    Object.entries(value).filter(([, v]) => v !== undefined),
+  ) as unknown as InvocationTrace;
 
 const parseCursor = (cursor: string | null): StagedCursor | undefined => {
   if (cursor === null) return undefined;
@@ -55,13 +67,14 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
     const parsed = assistantInvokeCursor.safeParse(JSON.parse(cursor));
     if (!parsed.success) return undefined;
     const { stage, result } = parsed.data;
-    if (!result.ok) return { stage, result: { ok: false, content: result.content } };
+    const trace = result.trace === undefined ? {} : { trace: stripUndefined(result.trace) };
+    if (!result.ok) return { stage, result: { ok: false, content: result.content, ...trace } };
     return {
       stage,
       result:
         result.escalation === undefined
-          ? { ok: true, content: result.content }
-          : { ok: true, content: result.content, escalation: result.escalation },
+          ? { ok: true, content: result.content, ...trace }
+          : { ok: true, content: result.content, escalation: result.escalation, ...trace },
     };
   } catch {
     return undefined;
@@ -70,12 +83,16 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
 
 /**
  * A retryable provider failure (429, 5xx, timeout) is what the job table is
- * for: rethrow so the worker backs off and tries again. Bounded below the
- * store's default `maxAttempts` (5) so the member always gets an answer,
- * and inside Discord's 15-minute interaction-token window (backoff is
- * 1 s, 2 s, 4 s...). Non-retryable failures answer at once.
+ * for: rethrow so the job runs again. An overloaded model (Gemini's HTTP 503)
+ * answers the same way two seconds later, so the retries are spaced out
+ * rather than using the store's 1 s, 2 s, 4 s backoff: 10 s, 30 s, 90 s. That
+ * is bounded below the store's default `maxAttempts` (5), so the member always
+ * gets an answer, and ends well inside Discord's 15-minute interaction-token
+ * window. Non-retryable failures answer at once.
  */
-const PROVIDER_RETRY_CEILING = 3;
+const PROVIDER_RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
+const PROVIDER_RETRY_CEILING = PROVIDER_RETRY_DELAYS_MS.length + 1;
+const BUSY_REPLY = 'The AI service is busy right now. Try again in a minute. No action was taken.';
 
 export const assistantInvokeHandler = (deps: {
   guildId: string;
@@ -88,6 +105,9 @@ export const assistantInvokeHandler = (deps: {
   ) => Promise<void>;
   send: (channelId: string, message: OutgoingMessage) => Promise<unknown>;
   logger: Logger;
+  /** ADR 0065: the AI log channel, read at run time; undefined means no log. */
+  logChannelId: () => string | undefined;
+  now: () => number;
 }): JobHandler<AssistantInvokePayload> => ({
   kind: JOB_KINDS.assistantInvoke,
   payload: assistantInvokePayload,
@@ -128,6 +148,44 @@ export const assistantInvokeHandler = (deps: {
       return;
     }
 
+    const behaviourName = async (): Promise<string> =>
+      (await deps.service.behavioursForGuild(deps.guildId)).find(
+        (b) => b.id === payload.behaviourId,
+      )?.name ?? payload.behaviourId;
+    const logEntry = async (
+      entry: Pick<AssistantLogInput, 'outcome' | 'answer' | 'reason' | 'trace'>,
+    ): Promise<OutgoingMessage> =>
+      assistantLogMessage({
+        userId: payload.userId,
+        channelId: payload.channelId,
+        behaviourName: await behaviourName(),
+        command: payload.command,
+        source: payload.source,
+        question: Object.values(payload.input).join('\n'),
+        at: deps.now(),
+        ...entry,
+      });
+    /**
+     * A failure is logged best-effort: the member has already been answered
+     * and the job completes, so a broken log channel must not retry the job
+     * and answer them twice.
+     */
+    const logFailure = async (answerText: string, reason: string): Promise<void> => {
+      const logChannelId = deps.logChannelId();
+      if (logChannelId === undefined) return;
+      try {
+        await deps.send(
+          logChannelId,
+          await logEntry({ outcome: 'failed', answer: answerText, reason }),
+        );
+      } catch (err) {
+        deps.logger.warn(
+          safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+          'assistant log channel post failed',
+        );
+      }
+    };
+
     // Stage 1: the invoke. Skipped on a retry that already finished it.
     let result: AssistantInvocationResult;
     if (prior !== undefined) {
@@ -137,7 +195,9 @@ export const assistantInvokeHandler = (deps: {
         const behaviours = await deps.service.behavioursForGuild(deps.guildId);
         const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
         if (behaviour === undefined || !behaviour.enabled) {
-          await answer('That assistant behaviour is no longer available. No action was taken.');
+          const text = 'That assistant behaviour is no longer available. No action was taken.';
+          await answer(text);
+          await logFailure(text, 'The behaviour was deleted or turned off before the request ran.');
           return;
         }
         result = await deps.service.invoke({
@@ -166,7 +226,10 @@ export const assistantInvokeHandler = (deps: {
             }),
             'assistant invocation hit a retryable provider error; job will retry',
           );
-          throw err;
+          throw new RetryAfterError(
+            err.message,
+            PROVIDER_RETRY_DELAYS_MS[context.attempts - 1] ?? PROVIDER_RETRY_DELAYS_MS.at(-1)!,
+          );
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
@@ -174,7 +237,12 @@ export const assistantInvokeHandler = (deps: {
           safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
           'assistant invocation failed before a response was produced',
         );
-        await answer('I could not complete that request. No action was taken.');
+        const text =
+          err instanceof ProviderError && err.retryable
+            ? BUSY_REPLY
+            : 'I could not complete that request. No action was taken.';
+        await answer(text);
+        await logFailure(text, err instanceof Error ? err.message : 'unknown error');
         return;
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here
@@ -210,6 +278,21 @@ export const assistantInvokeHandler = (deps: {
       context.saveCursor(
         JSON.stringify({ stage: 'escalation-sent', result } satisfies StagedCursor),
       );
+    }
+
+    // Stage 4: the AI log channel (ADR 0065), after the member has their
+    // answer. Its own marker, so a retry resumes here and never re-answers.
+    const logChannelId = deps.logChannelId();
+    if (reached < stageRank('logged') && logChannelId !== undefined) {
+      await deps.send(
+        logChannelId,
+        await logEntry({
+          outcome: result.ok ? 'answered' : 'refused',
+          answer: result.content,
+          trace: result.trace,
+        }),
+      );
+      context.saveCursor(JSON.stringify({ stage: 'logged', result } satisfies StagedCursor));
     }
   },
 });

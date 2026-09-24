@@ -59,6 +59,10 @@ export interface AssistantProviderStatus {
   /** Where the key-encryption secret came from; `missing` means keys cannot be saved here. */
   readonly secretSource: 'env' | 'file' | 'missing';
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
+  /** ADR 0068: up to two more models, tried in order when the one before is busy. */
+  readonly fallbackModels?: readonly string[];
+  /** ADR 0066. Absent while no Brave key is saved and search is off. */
+  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
 
 export interface HttpDeps extends AuthDeps {
@@ -100,9 +104,17 @@ export interface HttpDeps extends AuthDeps {
             apiKey?: string | undefined;
             enabled: boolean;
             costClass?: 'free' | 'paid' | 'unknown' | undefined;
+            fallbackModels?: readonly string[] | undefined;
+            searchApiKey?: string | undefined;
+            searchEnabled?: boolean | undefined;
           },
           now: number,
         ): void;
+        /** ADR 0068: models the pasted or saved key can use. Absent in older wiring. */
+        listModels?(
+          provider: string,
+          apiKey?: string,
+        ): Promise<readonly { id: string; name: string; description?: string }[]>;
       }
     | undefined;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */

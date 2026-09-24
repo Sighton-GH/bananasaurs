@@ -5,6 +5,11 @@ export interface AssistantBehaviour {
   readonly guildId: string;
   readonly surface: AssistantSurface;
   readonly mentionRoleId?: string | undefined;
+  /**
+   * Answers when someone tags the bot user itself; at most one per guild,
+   * enforced by the database (ADR 0063). Absent means false.
+   */
+  readonly answersBotTag?: boolean | undefined;
   /** Discord roles allowed to invoke this behaviour. Empty means nobody. */
   readonly callerRoleIds: readonly string[];
   /** IT escalation destination; required for ticket creation, otherwise fail closed. */

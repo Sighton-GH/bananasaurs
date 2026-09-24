@@ -50,6 +50,7 @@ import {
 import {
   authzStoreFor,
   archiveRepo,
+  assistantRepo,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -78,6 +79,7 @@ import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
+import { memberChannels } from '../assistant/member-channels.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
 /**
@@ -691,6 +693,26 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     now,
     {},
     deps.assistantConfig ?? (() => config),
+    logger,
+    {
+      memberChannels: (userId) => {
+        const guild = client.guilds.cache.get(guildId);
+        return memberChannels(
+          guild === undefined
+            ? undefined
+            : {
+                channels: guild.channels,
+                members: {
+                  fetch: async (id) => {
+                    const member = await guild.members.fetch(id);
+                    return { permissionsIn: (channel) => member.permissionsIn(channel.id) };
+                  },
+                },
+              },
+          userId,
+        );
+      },
+    },
   );
   const { interactionTokenSealer } = deps;
 
@@ -726,6 +748,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // expensive invoke, off the serial dispatch chain — B2).
     createAssistantCommandSubscriber({
       guildId,
+      botUserId,
       service: assistantService,
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
       respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
@@ -748,6 +771,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
         send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
         logger,
+        logChannelId: () => assistantRepo.getAssistantSettings(scope).logChannelId,
+        now,
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),

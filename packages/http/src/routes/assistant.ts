@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { CLUB_ASSISTANT_SKILLS, STARTER_SKILL_IDS, validateResourceUrl } from '@bananasaurs/core';
+import {
+  CLUB_ASSISTANT_SKILLS,
+  ProviderError,
+  STARTER_SKILL_IDS,
+  validateResourceUrl,
+} from '@bananasaurs/core';
 import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -37,12 +42,16 @@ const behaviour = z.object({
   resourceIds: z.array(z.string()).max(100),
   enabled: z.boolean(),
 });
+const botTag = z.object({ behaviourId: z.string().min(1).max(64).nullable() }).strict();
 const providerConfig = z.object({
   provider: z.enum(['off', 'gemini', 'openrouter', 'nvidia-nim']),
   model: z.string().min(1).max(200).optional(),
   apiKey: z.string().min(1).max(1000).optional(),
   enabled: z.boolean(),
   costClass: z.enum(['free', 'paid', 'unknown']).optional(),
+  fallbackModels: z.array(z.string().trim().min(1).max(200)).max(2).optional(),
+  searchApiKey: z.string().min(1).max(1000).optional(),
+  searchEnabled: z.boolean().optional(),
 });
 const memory = z.object({
   id: z.string().min(1).max(64),
@@ -107,12 +116,12 @@ export const registerAssistantRoutes = (
       decisions: assistantRepo.listDecisions(session.scope),
       serverCard: assistantRepo.getServerCard(session.scope),
       memories: assistantRepo.listMemories(session.scope),
+      settings: assistantRepo.getAssistantSettings(session.scope),
       aiStatus,
       setup: computeAssistantSetup({
         status: aiStatus,
         terms: providerTerms ?? undefined,
         behaviours,
-        grants: skillGrants,
         skills: CLUB_ASSISTANT_SKILLS,
         now: deps.now(),
         reviewMaxAgeMs: eligibilityRepo.ELIGIBILITY_REVIEW_MAX_AGE_MS,
@@ -138,6 +147,17 @@ export const registerAssistantRoutes = (
       !isInstanceOwner(deps, session)
     )
       return reply.status(403).send({ error: 'owner-only', field: 'costClass' });
+    // ADR 0066: web search sends queries to a new outside service, so turning
+    // it on and replacing its key are the owner's call, like the cost class.
+    if (!isInstanceOwner(deps, session)) {
+      if (
+        parsed.data.searchEnabled !== undefined &&
+        parsed.data.searchEnabled !== (before.webSearch?.enabled ?? false)
+      )
+        return reply.status(403).send({ error: 'owner-only', field: 'searchEnabled' });
+      if (parsed.data.searchApiKey !== undefined)
+        return reply.status(403).send({ error: 'owner-only', field: 'searchApiKey' });
+    }
     deps.assistantProviderConfig.save(parsed.data, deps.now());
     const after = deps.assistantProviderConfig.status();
     // The key itself never reaches the audit row: only whether it was replaced.
@@ -151,6 +171,8 @@ export const registerAssistantRoutes = (
         model: before.model ?? null,
         enabled: before.enabled,
         costClass: before.costClass,
+        fallbackModels: before.fallbackModels ?? [],
+        searchEnabled: before.webSearch?.enabled ?? false,
       },
       after: {
         provider: after.provider,
@@ -158,9 +180,41 @@ export const registerAssistantRoutes = (
         enabled: after.enabled,
         costClass: after.costClass,
         keyReplaced: parsed.data.apiKey !== undefined,
+        fallbackModels: after.fallbackModels ?? [],
+        searchEnabled: after.webSearch?.enabled ?? false,
+        searchKeyReplaced: parsed.data.searchApiKey !== undefined,
       },
     });
     return reply.status(200).send(after);
+  });
+  // ADR 0068: the models a key can use, for the ordered model pickers. The
+  // pasted key is used once and dropped; it is never saved, logged or echoed.
+  app.post('/api/assistant/provider/models', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const store = deps.assistantProviderConfig;
+    if (store?.listModels === undefined)
+      return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
+    const parsed = z
+      .object({
+        provider: z.enum(['gemini', 'openrouter', 'nvidia-nim']),
+        apiKey: z.string().min(1).max(1000).optional(),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    try {
+      const models = await store.listModels(parsed.data.provider, parsed.data.apiKey);
+      return reply.status(200).send({ models });
+    } catch (err) {
+      if (err instanceof ProviderError)
+        return reply.status(409).send({ error: 'provider-refused', kind: err.kind });
+      const message = err instanceof Error ? err.message : '';
+      if (message === 'no-key' || message === 'unsupported')
+        return reply.status(409).send({ error: message });
+      throw err;
+    }
   });
   app.put('/api/assistant/server-card', (request, reply) => {
     const session = guard.require(request, reply);
@@ -306,6 +360,51 @@ export const registerAssistantRoutes = (
       deps.now(),
     );
     return reply.status(200).send({ ok: true });
+  });
+  // ADR 0065: the AI log channel for this guild; null turns logging off.
+  app.put('/api/assistant/log-channel', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = z.object({ channelId: snowflake.nullable() }).strict().safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const previous = assistantRepo.getAssistantSettings(session.scope).logChannelId ?? null;
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_log_channel.set',
+      subjectType: 'assistant_settings',
+      subjectId: session.guildId,
+      before: { channelId: previous },
+      after: { channelId: parsed.data.channelId },
+    });
+    assistantRepo.setLogChannel(session.scope, parsed.data.channelId, deps.now());
+    return reply.status(200).send({ ok: true, channelId: parsed.data.channelId });
+  });
+  // ADR 0063: the one behaviour that answers a tag of the bot user itself.
+  app.put('/api/assistant/bot-tag', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = botTag.safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    const { behaviourId } = parsed.data;
+    const behaviours = assistantRepo.listBehaviours(session.scope);
+    if (behaviourId !== null) {
+      const target = behaviours.find((item) => item.id === behaviourId);
+      if (target === undefined) return reply.status(404).send({ error: 'not-found' });
+      if (!target.enabled) return reply.status(409).send({ error: 'behaviour-disabled' });
+    }
+    const previous = behaviours.find((item) => item.answersBotTag === true)?.id ?? null;
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_bot_tag.set',
+      subjectType: 'assistant_behaviour',
+      subjectId: behaviourId ?? previous ?? 'none',
+      before: { behaviourId: previous },
+      after: { behaviourId },
+    });
+    assistantRepo.setBotTagBehaviour(session.scope, behaviourId, deps.now());
+    return reply.status(200).send({ ok: true, behaviourId });
   });
   app.post('/api/assistant/skill-grants/starter', (request, reply) => {
     const session = guard.require(request, reply);

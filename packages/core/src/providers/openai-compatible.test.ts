@@ -43,6 +43,28 @@ describe('OpenAI-compatible providers', () => {
       });
     },
   );
+  it('refuses tool turns and tool offers rather than sending them malformed', async () => {
+    const fetch = vi.fn<typeof globalThis.fetch>();
+    const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+    await expect(
+      provider.generateText({
+        model: 'free-model',
+        messages: [{ role: 'user', text: 'q' }],
+        tools: [{ name: 't', description: 'd', parameters: { type: 'object' } }],
+      }),
+    ).rejects.toMatchObject({ kind: 'capability-mismatch' });
+    await expect(
+      provider.generateText({
+        model: 'free-model',
+        messages: [
+          { role: 'user', text: 'q' },
+          { role: 'tool', text: 'result', toolName: 't' },
+        ],
+      }),
+    ).rejects.toMatchObject({ kind: 'capability-mismatch' });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it('runs the local outbound scan before fetch', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>();
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });

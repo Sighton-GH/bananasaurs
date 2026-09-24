@@ -56,7 +56,32 @@ const FULL = {
   resources: [],
   reminders: [],
   skills: SKILLS,
-  activity: [],
+  activity: [
+    {
+      id: 'a1',
+      at: 1790000000000,
+      behaviourId: 'club',
+      skillId: 'create-reminder',
+      outcome: 'completed',
+    },
+    {
+      id: 'a2',
+      at: 1790000100000,
+      behaviourId: 'club',
+      skillId: 'search-club',
+      outcome: 'denied',
+      detail: 'x',
+    },
+  ],
+  aiStatus: {
+    provider: 'gemini',
+    enabled: true,
+    modelConfigured: true,
+    keyConfigured: true,
+    keyReadable: true,
+    costClass: 'free',
+    secretSource: 'file',
+  },
   roles: [
     { id: 'role-club-member', name: 'Club Member', position: 10 },
     { id: 'role-onboarding', name: 'Onboarding', position: 5 },
@@ -93,26 +118,6 @@ describe('AssistantSkillsPage', () => {
     expect(within(catalogue).getAllByText('Runs without asking').length).toBeGreaterThan(0);
     expect(within(catalogue).getByText('owner only')).toBeTruthy();
     expect(screen.getAllByRole('link', { name: 'Assistant history' }).length).toBeGreaterThan(0);
-  });
-
-  it('states the double narrowing in plain words on both cards', async () => {
-    renderPage();
-    const allowlists = (
-      await screen.findByRole('heading', { name: 'Allowlists per behaviour' })
-    ).closest('section')!;
-    expect(
-      within(allowlists).getByText(
-        'For each behaviour, choose the skills it may use. The model only sees the skills allowed here, and members also need to be allowed below.',
-      ),
-    ).toBeTruthy();
-    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
-      'section',
-    )!;
-    expect(
-      within(grants).getByText(
-        'Who may use each skill anywhere in this server. Reminders, memory and decisions stay with the owner until you allow someone here.',
-      ),
-    ).toBeTruthy();
   });
 
   it('labels allowlist effects in the same plain words as the create form', async () => {
@@ -154,97 +159,75 @@ describe('AssistantSkillsPage', () => {
     expect(within(region).getByText(/Nothing is allowed/)).toBeTruthy();
   });
 
-  it('saves a skill grant and keeps owner-only skills unwidened', async () => {
-    const mock = renderPage();
-    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
-      'section',
-    )!;
-    const row = within(grants).getByText('Set a reminder').closest('li')!;
-    fireEvent.click(within(row).getByRole('button', { name: 'Change who can use it' }));
-    fireEvent.click(within(row).getByRole('checkbox', { name: 'Onboarding' }));
-    fireEvent.click(within(row).getByRole('button', { name: 'Save grant' }));
-    await screen.findByText('Set a reminder grant saved');
-    const put = mock.mock.calls.find(
-      (c) =>
-        (c[0] as string) === '/api/assistant/skill-grants/create-reminder' &&
-        c[1]?.method === 'PUT',
-    )!;
-    expect(bodyOf(put)).toEqual({ roleIds: ['role-onboarding'], userIds: ['user-bryan'] });
-    // Saving closes the editor again.
-    expect(within(row).queryByRole('button', { name: 'Save grant' })).toBeNull();
-    const ownerRow = within(grants).getByText('Deliver a reminder').closest('li')!;
-    expect(within(ownerRow).queryByRole('checkbox')).toBeNull();
-    expect(within(ownerRow).queryByRole('button')).toBeNull();
-    expect(within(ownerRow).getByText(/Always restricted to the server owner/)).toBeTruthy();
-  });
-
-  it('summarises each grant in one line without raw ids', async () => {
-    renderPage({
-      ...FULL,
-      skillGrants: [
-        { skillId: 'search-club', roleIds: [], userIds: [] },
-        {
-          skillId: 'create-reminder',
-          roleIds: ['role-club-member'],
-          userIds: ['user-bryan'],
-        },
-      ],
-    });
-    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
-      'section',
-    )!;
-    const searchRow = within(grants).getByText('Search club knowledge').closest('li')!;
-    expect(within(searchRow).getByText('Nobody yet')).toBeTruthy();
-    const reminderRow = within(grants).getByText('Set a reminder').closest('li')!;
-    expect(within(reminderRow).getByText('Club Member and 1 person')).toBeTruthy();
-    fireEvent.click(within(searchRow).getByRole('button', { name: 'Change who can use it' }));
-    expect(
-      within(searchRow).getByText('Nobody can use this skill until you choose who can.'),
-    ).toBeTruthy();
-  });
-
-  it('names roles that left the server instead of showing raw ids', async () => {
-    renderPage({
-      ...FULL,
-      skillGrants: [{ skillId: 'search-club', roleIds: ['role-gone'], userIds: [] }],
-    });
-    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
-      'section',
-    )!;
-    const row = within(grants).getByText('Search club knowledge').closest('li')!;
-    expect(within(row).getByText('a role that no longer exists')).toBeTruthy();
-  });
-
-  it('keeps only one grant editor open at a time', async () => {
-    renderPage();
-    const grants = (await screen.findByRole('heading', { name: 'Skill grants' })).closest(
-      'section',
-    )!;
-    const buttons = within(grants).getAllByRole('button', { name: 'Change who can use it' });
-    expect(buttons.length).toBe(2);
-    expect(within(grants).queryByRole('button', { name: 'Save grant' })).toBeNull();
-    fireEvent.click(buttons[0]!);
-    const searchRow = within(grants).getByText('Search club knowledge').closest('li')!;
-    expect(within(searchRow).getByRole('button', { name: 'Save grant' })).toBeTruthy();
-    fireEvent.click(buttons[1]!);
-    expect(within(searchRow).queryByRole('button', { name: 'Save grant' })).toBeNull();
-    const reminderRow = within(grants).getByText('Set a reminder').closest('li')!;
-    expect(within(reminderRow).getByRole('button', { name: 'Save grant' })).toBeTruthy();
-  });
-
-  it('fails closed when the server build does not expose skill grants', async () => {
-    const body = { ...FULL } as Record<string, unknown>;
-    delete body['skillGrants'];
-    renderPage(body);
-    expect(
-      await screen.findByText(/Skill grants are not exposed by this server build yet/),
-    ).toBeTruthy();
-  });
-
   it('renders the error state when the load fails', async () => {
     stubFetch([]);
     renderWithSession(<AssistantSkillsPage />);
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(screen.getByText(/Could not load assistant skills/)).toBeTruthy();
+  });
+
+  it('states the one rule for who can use skills (ADR 0064)', async () => {
+    renderPage();
+    const card = (await screen.findByRole('heading', { name: 'Who can use skills' })).closest(
+      'section',
+    )!;
+    expect(
+      within(card).getByText(
+        'Anyone a behaviour lets ask (its Who can ask roles on the Assistant page) can use every skill that behaviour allows. Owner-only skills stay with the server owner.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByRole('heading', { name: 'Skill grants' })).toBeNull();
+  });
+
+  it('opens a skill to show where it is allowed, who can use it and its recent runs', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Set a reminder' }));
+    const details = screen.getByRole('region', { name: 'Set a reminder details' });
+    expect(within(details).getByText('Schedules · you confirm first')).toBeTruthy();
+    expect(within(details).getByText('Club assistant')).toBeTruthy();
+    expect(within(details).getByText('@Club Member, and the server owner')).toBeTruthy();
+    expect(within(details).getByText(/completed/)).toBeTruthy();
+    fireEvent.click(within(details).getByRole('button', { name: 'Close' }));
+    expect(screen.queryByRole('region', { name: 'Set a reminder details' })).toBeNull();
+  });
+
+  it('says an owner-only skill is for the owner, and an unused skill is allowed nowhere', async () => {
+    renderPage();
+    fireEvent.click(await screen.findByRole('button', { name: 'Deliver a reminder' }));
+    const details = screen.getByRole('region', { name: 'Deliver a reminder details' });
+    expect(within(details).getByText('No behaviour allows it yet.')).toBeTruthy();
+    expect(within(details).getByText('Only the server owner.')).toBeTruthy();
+    expect(within(details).getByText('No runs yet.')).toBeTruthy();
+  });
+
+  it('lists the look-up tools, with web search off until it is set up', async () => {
+    renderPage();
+    const tools = (await screen.findByRole('heading', { name: 'Look-up tools' })).closest(
+      'section',
+    )!;
+    for (const name of [
+      'Search the Discord archive',
+      'Open a club resource',
+      'Search the web',
+      'Server and channels',
+      'Date and time',
+      'My reminders',
+    ])
+      expect(within(tools).getByText(name)).toBeTruthy();
+    const web = within(tools).getByText('Search the web').closest('li')!;
+    expect(within(web).getByText('Off')).toBeTruthy();
+    expect(within(web).getByRole('link', { name: 'Set up web search' })).toBeTruthy();
+  });
+
+  it('shows web search on when AI setup turned it on', async () => {
+    renderPage({
+      ...FULL,
+      aiStatus: { ...FULL.aiStatus, webSearch: { keyConfigured: true, enabled: true } },
+    });
+    const tools = (await screen.findByRole('heading', { name: 'Look-up tools' })).closest(
+      'section',
+    )!;
+    const web = within(tools).getByText('Search the web').closest('li')!;
+    expect(within(web).getByText('On')).toBeTruthy();
   });
 });

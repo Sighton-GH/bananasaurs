@@ -56,9 +56,9 @@ export const providerReviewCommand = defineCommand<z.infer<typeof providerReview
       // `trains_on_input` is not `'no'` does not clear that warning, and the
       // command says so rather than letting the operator think it did.
       lines.push(
-        `WARNING: the row still says this provider trains on input — recording a review ` +
-          `does not change that. \`doctor\` will keep warning, and no server content may be ` +
-          `sent to it until the row itself is changed, which is a migration.`,
+        `WARNING: the row still says this provider may train on input — recording a review ` +
+          `does not change that. \`doctor\` will keep warning while the row says so; the ` +
+          `assistant still uses it (ADR 0062).`,
       );
     }
     if (!outcome.productionUseAllowed) {

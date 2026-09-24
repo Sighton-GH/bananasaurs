@@ -122,6 +122,8 @@ export interface AssistantData {
   readonly setup?: AssistantSetup;
   readonly providerTerms?: ProviderTerms | null;
   readonly viewerIsOwner?: boolean;
+  /** ADR 0065: guild-wide assistant settings. */
+  readonly settings?: { readonly logChannelId?: string };
 }
 
 export const ASSISTANT_URL = '/api/assistant';
@@ -136,11 +138,16 @@ export interface AiStatus {
   readonly costClass: 'free' | 'paid' | 'unknown';
   readonly secretSource: 'env' | 'file' | 'missing';
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
+  /** ADR 0068: up to two more models, tried in order when the one before is busy. */
+  readonly fallbackModels?: readonly string[];
+  /** ADR 0066. Absent while no Brave key is saved and search is off. */
+  readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
 export type SetupStepId = 'connect' | 'terms' | 'cost' | 'who' | 'skills' | 'on';
 export interface SetupStep {
   readonly id: SetupStepId;
-  readonly state: 'done' | 'todo' | 'blocked';
+  /** `warning` counts as complete: it works, with a caveat the owner accepted (ADR 0062). */
+  readonly state: 'done' | 'todo' | 'blocked' | 'warning';
   readonly detail: string;
 }
 export interface AssistantSetup {
@@ -193,8 +200,19 @@ export const PROVIDERS: readonly {
 export const providerName = (id: string): string =>
   PROVIDERS.find((p) => p.id === id)?.name ?? (id === 'off' ? 'None' : 'Unknown service');
 export const PROVIDER_URL = '/api/assistant/provider';
+/** ADR 0068: the models a pasted or saved key can use. */
+export const PROVIDER_MODELS_URL = '/api/assistant/provider/models';
+export interface ModelInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+}
 export const providerTermsUrl = (provider: string) =>
   `/api/providers/${encodeURIComponent(provider)}/terms`;
+/** ADR 0063: which behaviour answers a tag of the bot user itself. */
+export const BOT_TAG_URL = '/api/assistant/bot-tag';
+/** ADR 0065: the AI log channel. */
+export const LOG_CHANNEL_URL = '/api/assistant/log-channel';
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;

@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { CLUB_ASSISTANT_SKILLS, parseGuildId, STARTER_SKILL_IDS } from '@bananasaurs/core';
+import {
+  CLUB_ASSISTANT_SKILLS,
+  parseGuildId,
+  STARTER_SKILL_IDS,
+  type AssistantBehaviour,
+} from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { guildRepo } from '../index.js';
 import {
@@ -26,6 +31,9 @@ import {
   setMemoryOptOut,
   forgetMember,
   saveMemoryProposal,
+  setBotTagBehaviour,
+  getAssistantSettings,
+  setLogChannel,
 } from './assistant.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
@@ -307,5 +315,104 @@ describe('addRolesToSkillGrants', () => {
       roleIds: [ROLE_A],
       userIds: [],
     });
+  });
+});
+
+describe('setBotTagBehaviour (ADR 0063)', () => {
+  const OTHER_GUILD = parseGuildId('999999999999999999');
+  const behaviour = (id: string, guildId: string = G): AssistantBehaviour => ({
+    id,
+    guildId,
+    surface: 'bananasaurs',
+    mentionRoleId: `22222222222222222${id.length}`,
+    name: id,
+    systemPrompt: 'Canadian English',
+    promptVersion: 1,
+    allowedSkillIds: ['search-club'],
+    reviewerRoleIds: [],
+    callerRoleIds: [],
+    resourceIds: [],
+    enabled: true,
+  });
+  const flags = (scope = t.scopes.forGuild(G)) =>
+    Object.fromEntries(listBehaviours(scope).map((b) => [b.id, b.answersBotTag]));
+
+  beforeEach(() => {
+    const s = t.scopes.forGuild(G);
+    putBehaviour(s, behaviour('a'), 10);
+    putBehaviour(s, behaviour('bb'), 10);
+  });
+
+  it('reads back false for a new behaviour', () => {
+    expect(flags()).toEqual({ a: false, bb: false });
+  });
+
+  it('moves the flag to exactly one behaviour and clears it with null', () => {
+    const s = t.scopes.forGuild(G);
+    expect(setBotTagBehaviour(s, 'a', 11)).toBe(true);
+    expect(flags()).toEqual({ a: true, bb: false });
+    expect(setBotTagBehaviour(s, 'bb', 12)).toBe(true);
+    expect(flags()).toEqual({ a: false, bb: true });
+    expect(setBotTagBehaviour(s, null, 13)).toBe(true);
+    expect(flags()).toEqual({ a: false, bb: false });
+  });
+
+  it('returns false and changes nothing for an unknown id', () => {
+    const s = t.scopes.forGuild(G);
+    setBotTagBehaviour(s, 'a', 11);
+    expect(setBotTagBehaviour(s, 'missing', 12)).toBe(false);
+    expect(flags()).toEqual({ a: true, bb: false });
+  });
+
+  it('keeps the flag when the behaviour is saved again', () => {
+    const s = t.scopes.forGuild(G);
+    setBotTagBehaviour(s, 'a', 11);
+    putBehaviour(s, { ...behaviour('a'), name: 'renamed', answersBotTag: false }, 12);
+    putBehaviour(s, { ...behaviour('a'), name: 'renamed again' }, 13);
+    expect(flags()).toEqual({ a: true, bb: false });
+  });
+
+  it('never touches another guild', () => {
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    putBehaviour(other, behaviour('a', OTHER_GUILD), 10);
+    setBotTagBehaviour(other, 'a', 11);
+    setBotTagBehaviour(t.scopes.forGuild(G), 'bb', 12);
+    expect(flags(other)).toEqual({ a: true });
+    // An id that exists only in the other guild is unknown here.
+    setBotTagBehaviour(t.scopes.forGuild(G), null, 13);
+    expect(flags(other)).toEqual({ a: true });
+  });
+
+  it('lets the database refuse two flagged behaviours in one guild', () => {
+    expect(() =>
+      t.raw
+        .prepare('UPDATE assistant_behaviours SET answers_bot_tag = 1 WHERE guild_id = ?')
+        .run(G),
+    ).toThrow(/UNIQUE constraint failed/);
+  });
+});
+
+describe('assistant settings (ADR 0065)', () => {
+  it('has no log channel until one is set, and clears it with null', () => {
+    const s = t.scopes.forGuild(G);
+    expect(getAssistantSettings(s)).toEqual({});
+    setLogChannel(s, '444444444444444444', 10);
+    expect(getAssistantSettings(s)).toEqual({ logChannelId: '444444444444444444' });
+    setLogChannel(s, '555555555555555555', 11);
+    expect(getAssistantSettings(s)).toEqual({ logChannelId: '555555555555555555' });
+    setLogChannel(s, null, 12);
+    expect(getAssistantSettings(s)).toEqual({});
+  });
+
+  it('keeps each guild its own log channel', () => {
+    const other = parseGuildId('999999999999999999');
+    guildRepo.upsertGuild(t.scopes.forGuild(other), { name: 'other', now: 1 });
+    setLogChannel(t.scopes.forGuild(G), '444444444444444444', 10);
+    expect(getAssistantSettings(t.scopes.forGuild(other))).toEqual({});
+  });
+
+  it('refuses a log channel that is not a snowflake', () => {
+    expect(() => setLogChannel(t.scopes.forGuild(G), 'general', 10)).toThrow();
   });
 });

@@ -24,6 +24,21 @@ describe('parseConfig', () => {
     expect(c.BANANASAURS_BACKUP_RETAIN).toBe(14);
   });
 
+  it('parses up to two backup models in order and refuses a third (ADR 0068)', () => {
+    expect(
+      parseConfig({ ...VALID, AI_FALLBACK_MODELS: ' lite , gemma ' }).AI_FALLBACK_MODELS,
+    ).toEqual(['lite', 'gemma']);
+    expect(parseConfig(VALID).AI_FALLBACK_MODELS).toBeUndefined();
+    expect(() => parseConfig({ ...VALID, AI_FALLBACK_MODELS: 'a,b,c' })).toThrow(ConfigError);
+  });
+
+  it('defaults the club time zone and refuses one that is not IANA', () => {
+    expect(parseConfig(VALID).BANANASAURS_TIME_ZONE).toBe('America/Vancouver');
+    expect(() => parseConfig({ ...VALID, BANANASAURS_TIME_ZONE: 'Mars/Olympus' })).toThrow(
+      ConfigError,
+    );
+  });
+
   it('defaults dry run ON, so an unconfigured instance performs no side effects', () => {
     expect(parseConfig(VALID).BANANASAURS_DRY_RUN).toBe(true);
   });

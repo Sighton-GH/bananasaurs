@@ -40,7 +40,7 @@ const SECONDARY_LINK = 'text-sm underline';
 
 /**
  * The round step marker. Colours reuse the `Badge` tones (`ok` for done,
- * `danger` for blocked) and nothing else; the to-do marker is an outline
+ * `hold` for warning, `danger` for blocked) and nothing else; the to-do marker is an outline
  * with the step number. The state word stays outside any `aria-hidden`
  * element so it is announced exactly once.
  */
@@ -48,7 +48,7 @@ function StatusMark({
   state,
   index,
 }: {
-  readonly state: 'done' | 'todo' | 'blocked';
+  readonly state: 'done' | 'todo' | 'blocked' | 'warning';
   readonly index: number;
 }) {
   if (state === 'done') {
@@ -56,6 +56,14 @@ function StatusMark({
       <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-ok text-ok">
         <span aria-hidden="true">✓</span>
         <span className="sr-only">Done</span>
+      </span>
+    );
+  }
+  if (state === 'warning') {
+    return (
+      <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-hold text-hold">
+        <span aria-hidden="true">!</span>
+        <span className="sr-only">Warning</span>
       </span>
     );
   }
@@ -314,19 +322,29 @@ export function SetupTracker({
   const [expanded, setExpanded] = useState(false);
   const setup = data.setup;
   if (setup === undefined) return null;
-  const done = setup.steps.filter((s) => s.state === 'done').length;
+  // A warning step works (ADR 0062), so it counts as done and is never "next".
+  const complete = (state: string): boolean => state === 'done' || state === 'warning';
+  const done = setup.steps.filter((s) => complete(s.state)).length;
+  const warnings = setup.steps.filter((s) => s.state === 'warning');
   // The next step is the first one that is not done: its row is highlighted
   // and its action is primary. Steps 1–3 share one "Open AI setup" link, so
   // only the next row among them shows it.
-  const nextId = setup.steps.find((step) => step.state !== 'done')?.id;
+  const nextId = setup.steps.find((step) => !complete(step.state))?.id;
   const mentions = data.behaviours
     .filter((b) => b.enabled && b.mentionRoleId !== undefined)
     .map((b) => data.roles?.find((role) => role.id === b.mentionRoleId)?.name)
     .filter((name): name is string => name !== undefined);
+  // ADR 0063: tagging the bot itself works once an enabled behaviour answers it.
+  const botTag = data.behaviours.some((b) => b.enabled && b.answersBotTag === true);
+  const roleWays = mentions.map((name) => `by mentioning @${name}`).join(' or ');
   const askingLine =
     mentions.length === 0
-      ? 'Members can ask in Discord with /ask.'
-      : `Members can ask in Discord with /ask, or ${mentions.map((name) => `by mentioning @${name}`).join(' or ')}.`;
+      ? botTag
+        ? 'Members can ask in Discord with /ask, or by tagging @Bananasaurs.'
+        : 'Members can ask in Discord with /ask.'
+      : botTag
+        ? `Members can ask in Discord with /ask, by tagging @Bananasaurs, or ${roleWays}.`
+        : `Members can ask in Discord with /ask, or ${roleWays}.`;
 
   if (setup.answering && !expanded) {
     return (
@@ -341,6 +359,12 @@ export function SetupTracker({
             Show setup steps
           </button>
         </div>
+        {warnings.map((step) => (
+          <p key={step.id} role="note" className="mt-2 flex flex-wrap items-center gap-2 text-sm">
+            <Badge tone="hold">Warning</Badge>
+            <span>{step.detail}</span>
+          </p>
+        ))}
       </Card>
     );
   }
@@ -363,7 +387,7 @@ export function SetupTracker({
                 <p className="text-sm font-medium">{TITLES[step.id]}</p>
                 <p className="text-sm text-ink-muted">{step.detail}</p>
               </div>
-              {step.state !== 'done' && (
+              {!complete(step.state) && (
                 <div className="w-full sm:w-auto sm:max-w-md sm:shrink-0">
                   {step.id === 'connect' || step.id === 'terms' || step.id === 'cost' ? (
                     isNext ? (

@@ -6,19 +6,37 @@ import {
   createNvidiaNimProvider,
   createOpenRouterProvider,
   GeminiProvider,
+  providerMayTrain,
   redactEvidenceText,
   SafeProvider,
+  safeLogFields,
   type Config,
+  type Logger,
   type TextProvider,
   validateReminderDraft,
 } from '@bananasaurs/core';
 import {
+  archiveRepo,
+  archiveSearchRepo,
   assistantRepo,
   eligibilityRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
-import type { AssistantCommandService, AssistantInvocation } from './commands.js';
+import type {
+  AssistantCommandService,
+  AssistantInvocation,
+  AssistantInvocationResult,
+} from './commands.js';
+import { braveWebSearch } from './brave-search.js';
+import { generateAnswer, type GenerationTrace } from './generate.js';
+import {
+  runAssistantTool,
+  toolDeclarations,
+  type ArchiveHit,
+  type AssistantToolPorts,
+  type WebResult,
+} from './tools.js';
 import { ReviewedResourceFetcher } from './resource-fetcher.js';
 
 export const providerFor = (config: Config): TextProvider | undefined => {
@@ -61,6 +79,19 @@ export interface AssistantServiceTestPorts {
   readonly provider?: TextProvider | undefined;
   readonly fetchResource?:
     ((url: string) => ReturnType<ReviewedResourceFetcher['fetch']>) | undefined;
+  /** Replaces Brave's HTTP call in tests. */
+  readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
+}
+
+/** What the tools need from live Discord (ADR 0067). */
+export interface AssistantDiscordPorts {
+  /**
+   * Text channels the member can view and read history in, from their live
+   * permissions. The archive tool searches only these; empty fails closed.
+   */
+  readonly memberChannels: (
+    userId: string,
+  ) => Promise<readonly { readonly id: string; readonly name: string }[]>;
 }
 export const createAssistantService = (
   scope: GuildScope,
@@ -69,6 +100,8 @@ export const createAssistantService = (
   now: () => number,
   testPorts: AssistantServiceTestPorts = {},
   liveConfig: () => Config = () => config,
+  logger: Pick<Logger, 'warn'> = { warn: () => undefined },
+  discord: AssistantDiscordPorts = { memberChannels: () => Promise.resolve([]) },
 ): AssistantCommandService => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
@@ -81,9 +114,34 @@ export const createAssistantService = (
   };
   const resourceFetcher = new ReviewedResourceFetcher({ now });
   const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
-  return {
-    behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
-    async invoke(input: AssistantInvocation) {
+  /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
+  const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
+    if (query.trim() === '') return [];
+    const visible = new Set((await discord.memberChannels(userId)).map((channel) => channel.id));
+    const channelIds = archiveRepo
+      .listChannels(scope)
+      .map((channel) => channel.channelId)
+      .filter((id) => visible.has(id));
+    if (channelIds.length === 0) return [];
+    // A private thread inside a visible channel is not visible to every member
+    // who can see the channel, and the archive does not record which threads
+    // are private, so member-facing search leaves every thread out.
+    return archiveSearchRepo
+      .searchMessages(scope, { query, visibility: { channelIds }, limit: 16 })
+      .hits.filter((hit) => hit.threadId === undefined)
+      .slice(0, 8)
+      .map((hit) => ({
+        channelId: hit.channelId,
+        messageId: hit.messageId,
+        createdAt: hit.createdAt,
+        excerpt: hit.excerpt,
+      }));
+  };
+  const invokeOnce = async (
+    input: AssistantInvocation,
+    sink: { trace?: GenerationTrace },
+  ): Promise<AssistantInvocationResult> => {
+    {
       const currentConfig = liveConfig();
       const provider = currentProvider();
       const commandSkill: Record<AssistantInvocation['command'], string> = {
@@ -117,18 +175,14 @@ export const createAssistantService = (
           ok: false,
           content: `This behaviour is not allowed to use ${skill}. No action was taken.`,
         };
-      const grants = assistantRepo.listSkillGrants(scope);
-      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter((candidate) => {
-        if (!input.behaviour.allowedSkillIds.includes(candidate.id)) return false;
-        if (owner) return true;
-        if (candidate.ownerOnly === true) return false;
-        const grant = grants.find((item) => item.skillId === candidate.id);
-        return (
-          grant !== undefined &&
-          (grant.userIds.includes(input.userId) ||
-            grant.roleIds.some((roleId) => input.callerRoleIds.includes(roleId)))
-        );
-      });
+      // ADR 0064: passing the behaviour's "Who can ask" allows every skill in
+      // its allowlist. Owner-only skills stay owner-only; per-skill grants are
+      // no longer a gate.
+      const permittedSkills = CLUB_ASSISTANT_SKILLS.filter(
+        (candidate) =>
+          input.behaviour.allowedSkillIds.includes(candidate.id) &&
+          (owner || candidate.ownerOnly !== true),
+      );
       if (!permittedSkills.some((candidate) => candidate.id === skill)) {
         assistantRepo.recordSkillActivity(scope, {
           id: randomUUID(),
@@ -137,12 +191,11 @@ export const createAssistantService = (
           skillId: skill,
           actorId: input.userId,
           outcome: 'denied',
-          detail: 'No matching owner, user or role grant.',
+          detail: 'The skill is owner-only.',
         });
         return {
           ok: false,
-          content:
-            'You do not have a matching grant for this assistant skill. No action was taken.',
+          content: 'Only the server owner can use this assistant skill. No action was taken.',
         };
       }
       if (input.command === 'remind') {
@@ -207,21 +260,34 @@ export const createAssistantService = (
           content: `Reminder scheduled for ${new Date(dueAt).toLocaleString('en-CA')}.`,
         };
       }
-      if (input.command === 'find')
+      if (input.command === 'find') {
+        // ADR 0067: the archive, limited to channels this member can view.
+        const hits = await searchArchive(input.userId, input.input.query ?? '');
         return {
-          ok: false,
+          ok: true,
           content:
-            'Search is holding because Discord channel visibility has not been verified for this request. No hidden source was searched.',
+            hits.length === 0
+              ? 'No matching messages in the channels you can see.'
+              : hits
+                  .map(
+                    (hit) =>
+                      `https://discord.com/channels/${scope.guildId}/${hit.channelId}/${hit.messageId}\n> ${hit.excerpt}`,
+                  )
+                  .join('\n')
+                  .slice(0, 1_900),
         };
+      }
       if (provider === undefined || currentConfig.AI_MODEL === undefined)
         return {
           ok: false,
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
-      // Hard rule 5: the provider_eligibility table is consulted on the
-      // request path, and a missing or ineligible row fails closed before
-      // any member content crosses the provider boundary (finding 1).
+      // Hard rule 5 (ADR 0062): the provider_eligibility table is consulted
+      // on the request path. A missing terms record, or one that does not
+      // allow production use, fails closed before any member content crosses
+      // the provider boundary (finding 1). A provider that may train on input
+      // is allowed by owner decision and raises a warning instead.
       const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
       try {
         if (eligibilityRow === undefined)
@@ -243,19 +309,34 @@ export const createAssistantService = (
           skillId: skill,
           actorId: input.userId,
           outcome: 'denied',
-          detail: 'Provider training-data eligibility is not verified.',
+          detail: 'Provider terms are not recorded or do not allow this use.',
         });
         return {
           ok: false,
           content:
-            "The AI provider's training-data eligibility is not verified, so no content was sent outside the server.",
+            "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
         };
       }
-      const resources = assistantRepo
-        .listResources(scope)
-        .filter((r) => input.behaviour.resourceIds.includes(r.id) && r.enabled);
+      if (providerMayTrain(eligibilityRow))
+        logger.warn(
+          safeLogFields({
+            component: 'assistant',
+            guildId: input.guildId,
+            reason: 'provider-may-train',
+          }),
+          'assistant provider may train on server content',
+        );
+      // ADR 0067: every enabled resource is available to every behaviour. The
+      // behaviour's own list is fetched up front as preferred evidence; with
+      // tools the model opens the others itself, without them all are fetched.
+      const resources = assistantRepo.listResources(scope).filter((r) => r.enabled);
+      const emphasised = resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
+      const toolsAvailable = provider.capabilities.has('tools');
+      const prefetch = toolsAvailable
+        ? emphasised
+        : [...emphasised, ...resources.filter((r) => !emphasised.includes(r))];
       const fetched = await Promise.all(
-        resources
+        prefetch
           .filter((resource) => ['website', 'document', 'repository'].includes(resource.kind))
           .map(async (resource) => ({
             resource,
@@ -321,10 +402,34 @@ export const createAssistantService = (
         resources,
         evidence,
         skills: permittedSkills,
+        toolsAvailable,
       });
       const isIt = input.behaviour.surface === 'it-services';
-      const response = await provider.generateText({
+      const toolPorts: AssistantToolPorts = {
+        userId: input.userId,
+        now,
+        timeZone: currentConfig.BANANASAURS_TIME_ZONE,
+        searchArchive: (query) => searchArchive(input.userId, query),
+        resources: () => resources,
+        fetchResource,
+        webSearch:
+          testPorts.webSearch ??
+          (currentConfig.BRAVE_SEARCH_API_KEY === undefined
+            ? undefined
+            : (query: string) =>
+                braveWebSearch({ apiKey: currentConfig.BRAVE_SEARCH_API_KEY! }, query)),
+        serverCard: () => assistantRepo.getServerCard(scope),
+        visibleChannels: () => discord.memberChannels(input.userId),
+        reminders: () => assistantRepo.listReminders(scope),
+      };
+      const response = await generateAnswer({
+        provider,
         model: currentConfig.AI_MODEL,
+        fallbackModels: currentConfig.AI_FALLBACK_MODELS,
+        tools: {
+          declarations: toolDeclarations(toolPorts),
+          run: (call) => runAssistantTool(call, toolPorts),
+        },
         systemInstruction:
           context.systemInstruction +
           (isIt
@@ -333,17 +438,19 @@ export const createAssistantService = (
           (input.command === 'decision' || input.command === 'review-plan'
             ? '\nReturn analysis as a DRAFT. State that it is not club policy and has not been saved. Do not claim persistence.'
             : ''),
-        messages: [
-          {
-            role: 'user',
-            text: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
-              .filter(Boolean)
-              .join('\n\n'),
-          },
-        ],
+        userText: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
+          .filter(Boolean)
+          .join('\n\n'),
         maxOutputTokens: 800,
         temperature: 0.2,
       });
+      sink.trace = {
+        ...response.trace,
+        sources: [
+          ...redactedEvidence.map(({ resource }) => ({ title: resource.title, url: resource.url })),
+          ...response.trace.sources,
+        ],
+      };
       assistantRepo.recordSkillActivity(scope, {
         id: randomUUID(),
         at: now(),
@@ -428,6 +535,15 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         };
       }
       return { ok: true, content: response.text };
+    }
+  };
+  return {
+    behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
+    async invoke(input: AssistantInvocation) {
+      const started = now();
+      const sink: { trace?: GenerationTrace } = {};
+      const result = await invokeOnce(input, sink);
+      return { ...result, trace: { ...sink.trace, latencyMs: now() - started } };
     },
   };
 };

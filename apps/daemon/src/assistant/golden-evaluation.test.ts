@@ -22,6 +22,7 @@ import { SAFE_GOLDENS, SAFETY_GOLDENS } from './__fixtures__/golden-evaluation.j
 
 const guildA = '234567890123456789';
 const guildB = '345678901234567890';
+const botUserId = '901234567890123456';
 const channelId = '456789012345678901';
 const userId = '567890123456789012';
 const bananaRole = '678901234567890123';
@@ -103,9 +104,23 @@ describe('Release 3 golden evaluation: permission and guild boundaries', () => {
   });
 
   it('never resolves a behaviour from another guild', () => {
-    expect(routeAssistantMention(message(), [behaviour('foreign', guildB)])).toEqual({
+    expect(routeAssistantMention(message(), [behaviour('foreign', guildB)], botUserId)).toEqual({
       kind: 'not-addressed',
     });
+  });
+
+  it('never answers a bot tag with a behaviour flagged in another guild', () => {
+    expect(
+      routeAssistantMention(
+        message({
+          content: `<@${botUserId}> hello`,
+          mentionedUserIds: [botUserId],
+          mentionedRoleIds: [],
+        }),
+        [{ ...behaviour('foreign', guildB), answersBotTag: true }],
+        botUserId,
+      ),
+    ).toEqual({ kind: 'not-addressed' });
   });
 
   it('removes disabled and cross-guild resources before context compilation', () => {
@@ -156,6 +171,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
           mentionedRoleIds: [bananaRole, itRole],
         }),
         [behaviour('club'), behaviour('it', guildA, 'it-services', itRole)],
+        botUserId,
       ),
     ).toEqual({
       kind: 'ambiguous',
@@ -175,6 +191,7 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
     const sealer = createInteractionTokenSealer();
     const queued: Parameters<ReturnType<typeof assistantInvokeHandler>['run']>[0][] = [];
     const subscriber = createAssistantCommandSubscriber({
+      botUserId: '901234567890123456',
       guildId: guildA,
       service,
       defer: vi.fn(async () => undefined),
@@ -195,6 +212,8 @@ describe('Release 3 golden evaluation: routing and Discord output', () => {
       respond,
       send,
       logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => 1,
     });
     await handler.run(handler.payload.parse(queued[0]), {
       jobId: 1,

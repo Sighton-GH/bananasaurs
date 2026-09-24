@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
+import { parseGuildId, ProviderError, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
 import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
@@ -529,5 +529,340 @@ describe('assistant skill-grant starter', () => {
       ]);
     }
     expect(afterSecond).toEqual(grants);
+  });
+});
+
+describe('PUT /api/assistant/bot-tag (ADR 0063)', () => {
+  const putBotTag = (cookie: string, csrf: string, payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/assistant/bot-tag',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+  const flags = async (cookie: string) =>
+    Object.fromEntries(
+      (await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } }))
+        .json<{ behaviours: { id: string; answersBotTag: boolean }[] }>()
+        .behaviours.map((b) => [b.id, b.answersBotTag]),
+    );
+  const auditRows = () =>
+    effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .filter((row) => row.action === 'assistant_bot_tag.set');
+
+  let cookie: string;
+  let csrf: string;
+  beforeEach(async () => {
+    grant('config.read');
+    grant('config.write');
+    ({ cookie, csrf } = await signIn());
+    expect((await put(cookie, csrf, body())).statusCode).toBe(200);
+    expect(
+      (await put(cookie, csrf, body({ id: 'help', surface: 'help', mentionRoleId: ROLE_B })))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await put(
+          cookie,
+          csrf,
+          body({ id: 'off', surface: 'help', mentionRoleId: ROLE_B, enabled: false }),
+        )
+      ).statusCode,
+    ).toBe(200);
+  });
+
+  it('sets, moves and clears the one behaviour that answers a bot tag', async () => {
+    expect(await flags(cookie)).toEqual({ club: false, help: false, off: false });
+    const set = await putBotTag(cookie, csrf, { behaviourId: 'club' });
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toEqual({ ok: true, behaviourId: 'club' });
+    expect(await flags(cookie)).toEqual({ club: true, help: false, off: false });
+    expect((await putBotTag(cookie, csrf, { behaviourId: 'help' })).statusCode).toBe(200);
+    expect(await flags(cookie)).toEqual({ club: false, help: true, off: false });
+    const cleared = await putBotTag(cookie, csrf, { behaviourId: null });
+    expect(cleared.json()).toEqual({ ok: true, behaviourId: null });
+    expect(await flags(cookie)).toEqual({ club: false, help: false, off: false });
+  });
+
+  it('audits each change with the previous and new behaviour', async () => {
+    await putBotTag(cookie, csrf, { behaviourId: 'club' });
+    await putBotTag(cookie, csrf, { behaviourId: 'help' });
+    await putBotTag(cookie, csrf, { behaviourId: null });
+    const rows = auditRows().map((row) => ({
+      subjectId: row.subjectId,
+      before: JSON.parse(row.before ?? 'null') as unknown,
+      after: JSON.parse(row.after ?? 'null') as unknown,
+    }));
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        { subjectId: 'club', before: { behaviourId: null }, after: { behaviourId: 'club' } },
+        { subjectId: 'help', before: { behaviourId: 'club' }, after: { behaviourId: 'help' } },
+        { subjectId: 'help', before: { behaviourId: 'help' }, after: { behaviourId: null } },
+      ]),
+    );
+    expect(rows).toHaveLength(3);
+  });
+
+  it('refuses an unknown behaviour, a disabled one, and a malformed body without changing anything', async () => {
+    await putBotTag(cookie, csrf, { behaviourId: 'club' });
+    const missing = await putBotTag(cookie, csrf, { behaviourId: 'nope' });
+    expect(missing.statusCode).toBe(404);
+    expect(missing.json()).toEqual({ error: 'not-found' });
+    const disabled = await putBotTag(cookie, csrf, { behaviourId: 'off' });
+    expect(disabled.statusCode).toBe(409);
+    expect(disabled.json()).toEqual({ error: 'behaviour-disabled' });
+    for (const payload of [{}, { behaviourId: 5 }, { behaviourId: '' }]) {
+      const bad = await putBotTag(cookie, csrf, payload);
+      expect(bad.statusCode).toBe(400);
+      expect(bad.json()).toEqual({ error: 'bad-request' });
+    }
+    expect(await flags(cookie)).toEqual({ club: true, help: false, off: false });
+    expect(auditRows()).toHaveLength(1);
+  });
+});
+
+describe('PUT /api/assistant/bot-tag authorisation', () => {
+  it('requires config.write', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/bot-tag',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { behaviourId: null },
+    });
+    expect(response.statusCode).toBe(403);
+  });
+});
+
+describe('provider fallback model and web search (ADR 0066)', () => {
+  const OPERATOR = 'acct_fedcba9876543210fedcba9876543211';
+  type SaveInput = Parameters<NonNullable<HttpDeps['assistantProviderConfig']>['save']>[0];
+  let saved: SaveInput[];
+  const restart = async () => {
+    saved = [];
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        status: () => ({
+          provider: 'gemini',
+          enabled: true,
+          modelConfigured: true,
+          keyConfigured: true,
+          keyReadable: true,
+          costClass: 'free',
+          secretSource: 'file',
+          ...(saved.at(-1)?.fallbackModels
+            ? { fallbackModels: [...saved.at(-1)!.fallbackModels!] }
+            : {}),
+          ...(saved.at(-1)?.searchEnabled !== undefined
+            ? { webSearch: { keyConfigured: true, enabled: saved.at(-1)!.searchEnabled! } }
+            : {}),
+        }),
+        save: (input) => {
+          saved.push(input);
+        },
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+  const putProvider = (cookie: string, csrf: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/assistant/provider',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: { provider: 'gemini', enabled: true, ...payload },
+    });
+
+  it('lets the owner save a fallback model and a Brave key, and never audits the key', async () => {
+    grant('config.write');
+    await restart();
+    const { cookie, csrf } = await signIn();
+    const response = await putProvider(cookie, csrf, {
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
+      searchApiKey: 'brave-raw-key',
+      searchEnabled: true,
+    });
+    expect(response.statusCode).toBe(200);
+    expect(saved[0]).toMatchObject({
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
+      searchApiKey: 'brave-raw-key',
+      searchEnabled: true,
+    });
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_provider.saved');
+    expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
+      searchEnabled: true,
+      searchKeyReplaced: true,
+    });
+    expect(JSON.stringify(row)).not.toContain('brave-raw-key');
+    expect(JSON.stringify(response.json())).not.toContain('brave-raw-key');
+  });
+
+  it('clears the backups with an empty list and refuses more than two or a blank', async () => {
+    grant('config.write');
+    await restart();
+    const { cookie, csrf } = await signIn();
+    expect((await putProvider(cookie, csrf, { fallbackModels: [] })).statusCode).toBe(200);
+    expect(saved[0]?.fallbackModels).toEqual([]);
+    expect((await putProvider(cookie, csrf, { fallbackModels: ['a', 'b', 'c'] })).statusCode).toBe(
+      400,
+    );
+    expect((await putProvider(cookie, csrf, { fallbackModels: [''] })).statusCode).toBe(400);
+  });
+
+  it('keeps turning on web search and replacing its key owner-only', async () => {
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: OPERATOR,
+      username: 'operator2',
+      passwordHash: await hashPassword(PASSWORD),
+      isOwner: false,
+      now: clock,
+    });
+    accountRepo.grantGuildAccess(t.scopes.forGuild(GUILD), OPERATOR);
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
+      accountId: OPERATOR,
+      capability: 'config.write',
+      grantedBy: 'test',
+      now: clock,
+    });
+    await restart();
+    const login = await app.inject({
+      method: 'POST',
+      url: '/api/login',
+      payload: { username: 'operator2', password: PASSWORD, guildId: GUILD },
+    });
+    const cookie = cookieFrom(login.headers['set-cookie']);
+    const csrf = login.json<{ csrfToken: string }>().csrfToken;
+    const on = await putProvider(cookie, csrf, { searchEnabled: true });
+    expect(on.statusCode).toBe(403);
+    expect(on.json()).toEqual({ error: 'owner-only', field: 'searchEnabled' });
+    const key = await putProvider(cookie, csrf, { searchApiKey: 'x'.repeat(20) });
+    expect(key.json()).toEqual({ error: 'owner-only', field: 'searchApiKey' });
+    expect(saved).toHaveLength(0);
+  });
+});
+
+describe('PUT /api/assistant/log-channel (ADR 0065)', () => {
+  const LOG = '444444444444444444';
+  const putLog = (cookie: string, csrf: string, payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: '/api/assistant/log-channel',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+
+  it('sets and clears the log channel, audited, and GET reports it', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const set = await putLog(cookie, csrf, { channelId: LOG });
+    expect(set.statusCode).toBe(200);
+    expect(set.json()).toEqual({ ok: true, channelId: LOG });
+    const read = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    expect(read.json<{ settings: unknown }>().settings).toEqual({ logChannelId: LOG });
+    expect((await putLog(cookie, csrf, { channelId: null })).statusCode).toBe(200);
+    expect(assistantRepo.getAssistantSettings(t.scopes.forGuild(GUILD))).toEqual({});
+    const rows = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .filter((r) => r.action === 'assistant_log_channel.set')
+      .map((r) => [JSON.parse(r.before ?? 'null'), JSON.parse(r.after ?? 'null')] as const);
+    expect(rows).toEqual(
+      expect.arrayContaining([
+        [{ channelId: null }, { channelId: LOG }],
+        [{ channelId: LOG }, { channelId: null }],
+      ]),
+    );
+  });
+
+  it('requires config.write and a snowflake', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    expect((await putLog(cookie, csrf, { channelId: LOG })).statusCode).toBe(403);
+    grant('config.write');
+    expect((await putLog(cookie, csrf, { channelId: 'general' })).statusCode).toBe(400);
+  });
+});
+
+describe('POST /api/assistant/provider/models (ADR 0068)', () => {
+  const listed = [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }];
+  let calls: { provider: string; apiKey?: string | undefined }[];
+  const restart = async (
+    listModels: (provider: string, apiKey?: string) => Promise<typeof listed>,
+  ) => {
+    calls = [];
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        status: () => ({
+          provider: 'gemini',
+          enabled: true,
+          modelConfigured: true,
+          keyConfigured: true,
+          keyReadable: true,
+          costClass: 'free',
+          secretSource: 'file',
+        }),
+        save: () => undefined,
+        listModels: async (provider, apiKey) => {
+          calls.push({ provider, apiKey });
+          return await listModels(provider, apiKey);
+        },
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+  const post = (cookie: string, csrf: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/assistant/provider/models',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload,
+    });
+
+  it('lists the models with a pasted key and never echoes the key', async () => {
+    grant('config.write');
+    await restart(async () => listed);
+    const { cookie, csrf } = await signIn();
+    const response = await post(cookie, csrf, { provider: 'gemini', apiKey: 'pasted-secret' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ models: listed });
+    expect(calls).toEqual([{ provider: 'gemini', apiKey: 'pasted-secret' }]);
+    expect(response.body).not.toContain('pasted-secret');
+    const withSaved = await post(cookie, csrf, { provider: 'gemini' });
+    expect(withSaved.statusCode).toBe(200);
+    expect(calls[1]).toEqual({ provider: 'gemini', apiKey: undefined });
+  });
+
+  it('explains a missing key, an unsupported service and a rejected key', async () => {
+    grant('config.write');
+    await restart(async (_provider, apiKey) => {
+      if (apiKey === 'bad') throw new ProviderError('authentication', 'HTTP 403', false);
+      throw new Error(apiKey === undefined ? 'no-key' : 'unsupported');
+    });
+    const { cookie, csrf } = await signIn();
+    const noKey = await post(cookie, csrf, { provider: 'gemini' });
+    expect(noKey.statusCode).toBe(409);
+    expect(noKey.json()).toEqual({ error: 'no-key' });
+    const other = await post(cookie, csrf, { provider: 'openrouter', apiKey: 'k' });
+    expect(other.statusCode).toBe(409);
+    expect(other.json()).toEqual({ error: 'unsupported' });
+    const bad = await post(cookie, csrf, { provider: 'gemini', apiKey: 'bad' });
+    expect(bad.statusCode).toBe(409);
+    expect(bad.json()).toEqual({ error: 'provider-refused', kind: 'authentication' });
+  });
+
+  it('requires config.write', async () => {
+    grant('config.read');
+    await restart(async () => listed);
+    const { cookie, csrf } = await signIn();
+    expect((await post(cookie, csrf, { provider: 'gemini' })).statusCode).toBe(403);
   });
 });

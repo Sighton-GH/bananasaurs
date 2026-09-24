@@ -11,6 +11,7 @@ import {
   assistantServerCards,
   assistantMemories,
   assistantMemoryPreferences,
+  assistantSettings,
 } from '../schema.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
@@ -35,6 +36,7 @@ const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehav
   reviewerRoleIds: array(r.reviewerRoleIdsJson),
   resourceIds: array(r.resourceIdsJson),
   enabled: r.enabled === 1,
+  answersBotTag: r.answersBotTag === 1,
 });
 export const listBehaviours = (scope: GuildScope): readonly AssistantBehaviour[] =>
   read(scope, (db) =>
@@ -67,6 +69,9 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         ticketChannelId: input.ticketChannelId ?? null,
         reviewerRoleIdsJson: JSON.stringify(input.reviewerRoleIds),
         resourceIdsJson: JSON.stringify(input.resourceIds),
+        // Only setBotTagBehaviour changes this flag (ADR 0063): a new
+        // behaviour starts unflagged and a re-save leaves it as it was.
+        answersBotTag: 0,
         createdAt: now,
         updatedAt: now,
       })
@@ -86,6 +91,62 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
           resourceIdsJson: JSON.stringify(input.resourceIds),
           updatedAt: now,
         },
+      })
+      .run();
+  });
+/**
+ * Makes `behaviourId` the one behaviour that answers a tag of the bot user,
+ * clearing the flag from every other behaviour in the guild in the same
+ * write, so the partial unique index never sees two. `null` clears it
+ * everywhere. Returns false, changing nothing, when `behaviourId` is not a
+ * behaviour of this guild (ADR 0063).
+ */
+export const setBotTagBehaviour = (
+  scope: GuildScope,
+  behaviourId: string | null,
+  now: number,
+): boolean =>
+  write(scope, ({ db }) => {
+    if (behaviourId !== null) {
+      const exists = db
+        .select({ id: assistantBehaviours.behaviourId })
+        .from(assistantBehaviours)
+        .where(
+          and(scope.only(assistantBehaviours), eq(assistantBehaviours.behaviourId, behaviourId)),
+        )
+        .get();
+      if (exists === undefined) return false;
+    }
+    db.update(assistantBehaviours)
+      .set({ answersBotTag: 0, updatedAt: now })
+      .where(and(scope.only(assistantBehaviours), eq(assistantBehaviours.answersBotTag, 1)))
+      .run();
+    if (behaviourId !== null)
+      db.update(assistantBehaviours)
+        .set({ answersBotTag: 1, updatedAt: now })
+        .where(
+          and(scope.only(assistantBehaviours), eq(assistantBehaviours.behaviourId, behaviourId)),
+        )
+        .run();
+    return true;
+  });
+/** ADR 0065: guild-wide assistant settings. Absent fields are unset. */
+export interface AssistantSettings {
+  readonly logChannelId?: string;
+}
+export const getAssistantSettings = (scope: GuildScope): AssistantSettings =>
+  read(scope, (db) => {
+    const row = db.select().from(assistantSettings).where(scope.only(assistantSettings)).get();
+    return row === undefined || row.logChannelId === null ? {} : { logChannelId: row.logChannelId };
+  });
+/** Sets or (with `null`) clears the AI log channel. */
+export const setLogChannel = (scope: GuildScope, channelId: string | null, now: number): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantSettings)
+      .values({ guildId: scope.guildId, logChannelId: channelId, updatedAt: now })
+      .onConflictDoUpdate({
+        target: assistantSettings.guildId,
+        set: { logChannelId: channelId, updatedAt: now },
       })
       .run();
   });

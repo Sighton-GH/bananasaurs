@@ -15,7 +15,7 @@ Run `/privacy` in the server at any time to see this policy and the current sett
 - Bananasaurs stores messages **only from channels the server owner has specifically turned on**. It is off everywhere else by default.
 - It keeps a copy of those messages, including edits and deletions, so the server has a searchable history and a moderation log.
 - When someone asks it a question, small, relevant excerpts may be sent to an external AI provider to generate an answer. Nothing is sent unless someone asks.
-- Nothing is sold, shared, advertised against, or used to train AI models.
+- Nothing is sold or advertised against. Excerpts sent to the AI provider may be used by that provider to train its models; see "One exception: AI answers" below.
 - You can see what is stored about you, and you can ask for it to be removed.
 
 ---
@@ -58,9 +58,13 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
 
 **It stays on one computer.** Bananasaurs runs on a machine owned and operated by the server owner. There is no Bananasaurs company, no cloud account holding your messages, and no analytics service receiving them.
 
-**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks. The provider currently in use, the sentence from its terms saying it does not train on this data, and the date that was checked are recorded on the bot's AI setup page; a server admin can show you.
+**One exception: AI answers.** When someone asks Bananasaurs a question, it selects a small number of relevant excerpts and sends them to an external AI provider to generate a reply. This happens only when someone explicitly asks. The provider currently in use, what its terms say about training on this data, and the date that was checked are recorded on the bot's AI setup page; a server admin can show you.
 
-Bananasaurs only uses providers whose terms state they **do not train models on the data sent to them**. This is both a promise to you and a requirement of Discord's own developer rules, which prohibit using message content to train AI models.
+**The AI provider may train on what is sent.** The server owner has chosen a provider whose terms allow it to use the excerpts it receives to train its models. The bot shows a warning on its setup page while that is the case. If you do not want your messages used this way, do not ask Bananasaurs questions that would draw on them, and ask a server admin which channels are stored.
+
+**Web search.** If the server owner turns on web search, the assistant may send a short search query, written by the AI from your question, to the Brave Search API. Queries that look like they contain personal data or secrets (an email address, a phone number, a key) are refused before they are sent. Answers that use web results say "Powered by Brave Search".
+
+**AI log channel.** If the server owner chooses a log channel, every question asked of Bananasaurs is copied there, together with its answer, the sources used and the outcome. That channel is meant for server staff only. Messages in it are kept by Discord, not by Bananasaurs, until someone deletes them.
 
 ## Who can see it
 

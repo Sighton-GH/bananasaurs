@@ -1775,10 +1775,16 @@ export const assistantProviderConfig = sqliteTable(
     enabled: integer('enabled').notNull().default(0),
     /** The owner's statement of the model's cost (ADR 0061 §2); overrides `AI_PROFILE_COST_CLASS`. */
     costClass: text('cost_class').notNull().default('unknown'),
+    /** ADR 0068: up to two more models, tried in order when the one before is busy. */
+    fallbackModelsJson: text('fallback_models_json').notNull().default('[]'),
+    /** ADR 0066: the Brave Search API key, sealed like `api_key_enc`. */
+    searchApiKeyEnc: text('search_api_key_enc'),
+    searchEnabled: integer('search_enabled').notNull().default(0),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     check('assistant_provider_config_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check('assistant_provider_config_search_enabled_bool', boolCheck(t.searchEnabled)),
     check(
       'assistant_provider_config_provider',
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
@@ -1853,11 +1859,18 @@ export const assistantBehaviours = sqliteTable(
     ticketChannelId: snowflake('ticket_channel_id'),
     reviewerRoleIdsJson: text('reviewer_role_ids_json').notNull().default('[]'),
     resourceIdsJson: text('resource_ids_json').notNull().default('[]'),
+    // ADR 0063: the one behaviour that answers a tag of the bot user itself.
+    answersBotTag: integer('answers_bot_tag').notNull().default(0),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.behaviourId] }),
+    // At most one per guild, enforced here rather than by caller discipline.
+    uniqueIndex('assistant_behaviours_one_bot_tag')
+      .on(t.guildId)
+      .where(sql`${t.answersBotTag} = 1`),
+    check('assistant_behaviours_answers_bot_tag_bool', boolCheck(t.answersBotTag)),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check(
       'assistant_behaviours_surface',
@@ -1870,6 +1883,21 @@ export const assistantBehaviours = sqliteTable(
       'assistant_behaviours_ticket_channel_snowflake',
       nullableSnowflakeCheck(t.ticketChannelId),
     ),
+  ],
+);
+
+/** ADR 0065: per-guild assistant settings that are not about one behaviour. */
+export const assistantSettings = sqliteTable(
+  'assistant_settings',
+  {
+    guildId: snowflake('guild_id').primaryKey(),
+    logChannelId: snowflake('log_channel_id'),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_settings_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_settings_log_channel_snowflake', nullableSnowflakeCheck(t.logChannelId)),
   ],
 );
 
