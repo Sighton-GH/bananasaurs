@@ -892,6 +892,23 @@ export const opsPortsFor = (
     return 'granted';
   },
   listAccountCapabilities: (accountId) => authzRepo.listAccountCapabilities(scope, accountId),
+  // ADR 0069: revoke one capability in this guild, the sibling of the grant
+  // above. The account lookup is instance-level through `instanceScope`;
+  // `not-held` covers both "never held" and "no guild access" — either way
+  // there is nothing to remove, and the operator hears that rather than a
+  // constraint error.
+  revokeAccountCapability: (input) => {
+    const account = accountRepo.findAccountByUsername(instanceScope, input.username);
+    if (account === undefined) return 'no-such-account';
+    if (!authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {
+      return 'not-held';
+    }
+    authzRepo.revokeAccountCapability(scope, {
+      accountId: account.accountId,
+      capability: input.capability,
+    });
+    return 'revoked';
+  },
 
   // Slice 13 (S13-D1/D2): guild access itself, granted and revoked. The exact
   // pattern `grantAccountCapability` above uses: the account lookup is
@@ -1298,17 +1315,19 @@ export const accountOpsFor = (
       lockedUntil: row.lockedUntil,
       createdAt: row.createdAt,
     })),
-  accountCreate: async (username) => {
+  accountCreate: async (username, password) => {
     if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
       return 'username-taken';
     }
-    // Generated, never chosen (S13-D3's rule applied to creation): the
-    // secret lands in no shell history and no form field. The account
+    // ADR 0069: a provided password is the dashboard's "I'll choose one" —
+    // hashed exactly like a generated one below. Generated, never chosen,
+    // stays the CLI default (S13-D3's rule applied to creation): the secret
+    // lands in no shell history and no form field. The account
     // starts non-owner with no guild access and no capabilities - least
     // privilege by construction, with every later grant an explicit,
     // audited step.
-    const password = generateToken();
-    const passwordHash = await hashPassword(password);
+    const chosen = password ?? generateToken();
+    const passwordHash = await hashPassword(chosen);
     const accountId = `acct_${randomBytes(16).toString('hex')}`;
     const at = now();
     accountRepo.createAccount(instanceScope, {
@@ -1318,7 +1337,7 @@ export const accountOpsFor = (
       isOwner: false,
       now: at,
     });
-    return { accountId, username, password, createdAt: at };
+    return { accountId, username, password: chosen, createdAt: at };
   },
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
@@ -1428,6 +1447,10 @@ export const accountOpsFor = (
    * rather than accepts, so the secret never lands in shell history or `ps`
    * output.
    *
+   * ADR 0069: a provided password is the dashboard's "type a new password" —
+   * hashed exactly like a generated one below. The route refuses short ones
+   * before this is called; the CLI keeps generating.
+   *
    * The session sweep is exactly `accountRevokeCredentials`' guild half, and
    * deliberately ONLY that half: a session is trust derived from the
    * password, so it dies with it, while an OAuth token is bound to the
@@ -1436,11 +1459,11 @@ export const accountOpsFor = (
    * plaintext is returned and never stored: the command prints it into `text`
    * once, and it appears in neither `data` nor the audit row (rule 4).
    */
-  accountSetPassword: async (username) => {
+  accountSetPassword: async (username, password) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
     if (row === undefined) return 'no-such-account';
-    const password = generateToken();
-    const passwordHash = await hashPassword(password);
+    const chosen = password ?? generateToken();
+    const passwordHash = await hashPassword(chosen);
     accountRepo.setPasswordHash(instanceScope, {
       accountId: row.accountId,
       passwordHash,
@@ -1459,7 +1482,7 @@ export const accountOpsFor = (
     return {
       username: row.username,
       accountId: row.accountId,
-      password,
+      password: chosen,
       sessionsRevoked,
       guildsTouched: guildScopes.length,
     };
