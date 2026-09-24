@@ -43,6 +43,7 @@ const geminiResponseSchema = z.object({
       promptTokenCount: z.number().int().nonnegative().optional(),
       candidatesTokenCount: z.number().int().nonnegative().optional(),
       totalTokenCount: z.number().int().nonnegative().optional(),
+      thoughtsTokenCount: z.number().int().nonnegative().optional(),
     })
     .optional(),
   modelVersion: z.string().optional(),
@@ -139,13 +140,18 @@ export class GeminiProvider implements TextProvider {
       ...(request.systemInstruction
         ? { system_instruction: { parts: [{ text: request.systemInstruction }] } }
         : {}),
-      ...(request.maxOutputTokens !== undefined || request.temperature !== undefined
+      ...(request.maxOutputTokens !== undefined ||
+      request.temperature !== undefined ||
+      request.thinkingBudget !== undefined
         ? {
             generationConfig: {
               ...(request.maxOutputTokens !== undefined
                 ? { maxOutputTokens: request.maxOutputTokens }
                 : {}),
               ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
+              ...(request.thinkingBudget !== undefined
+                ? { thinkingConfig: { thinkingBudget: request.thinkingBudget } }
+                : {}),
             },
           }
         : {}),
@@ -207,6 +213,13 @@ export class GeminiProvider implements TextProvider {
     const rawParts = (raw as { candidates?: { content?: { parts?: unknown } }[] }).candidates?.[0]
       ?.content?.parts;
     if (text === '' && toolCalls.length === 0) {
+      if (candidate?.finishReason === 'MAX_TOKENS') {
+        throw new ProviderError(
+          'invalid-response',
+          'Gemini stopped at MAX_TOKENS before answering',
+          false,
+        );
+      }
       const kind = candidate?.finishReason === 'SAFETY' ? 'safety-refusal' : 'invalid-response';
       throw new ProviderError(kind, 'Gemini returned no text', false);
     }
@@ -228,6 +241,9 @@ export class GeminiProvider implements TextProvider {
                 : {}),
               ...(usage.totalTokenCount !== undefined
                 ? { totalTokens: usage.totalTokenCount }
+                : {}),
+              ...(usage.thoughtsTokenCount !== undefined
+                ? { thinkingTokens: usage.thoughtsTokenCount }
                 : {}),
             },
           }
