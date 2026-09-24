@@ -7,3 +7,4 @@ export * from './reminders.js';
 export * from './safety-suffix.js';
 export * from './output-guard.js';
 export * from './split-message.js';
+export * from './chunker.js';
