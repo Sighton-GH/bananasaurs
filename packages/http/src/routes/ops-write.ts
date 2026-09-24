@@ -1,4 +1,4 @@
-import type { FastifyInstance } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
 import {
   CAPABILITIES,
@@ -9,8 +9,9 @@ import {
   panelDefinitionSchema,
   snowflakeIdSchema,
 } from '@bananasaurs/core';
-import { eligibilityRepo } from '@bananasaurs/storage';
+import { accountRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import type { SessionContext } from '../auth.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { isInstanceOwner } from './assistant.js';
 import { requireCapability } from './capability.js';
@@ -59,11 +60,25 @@ const accountCreateSchema = z.object({
       'a username must start with a lowercase letter or digit, and may then contain ' +
         'lowercase letters, digits, dot, dash, underscore',
     ),
-  // Explicit scope, reviewable before creation: access to THIS guild and
-  // which capabilities inside it. Defaults are the least-privilege floor -
-  // a fresh account reaches nothing.
+  // ADR 0069: access to the session's server is always granted, so the old
+  // dashboard's `grantThisGuild` checkbox is gone — but the field is still
+  // accepted and ignored, so an old bundle posting it does not break.
   grantThisGuild: z.boolean().default(false),
   capabilities: z.array(z.enum(CAPABILITIES)).default([]),
+  // "I'll choose one" (spec A2): absent means generate. The length rule is
+  // enforced in the route (`weak-password`), not the schema, so the refusal
+  // names the rule rather than a generic bad-request.
+  password: z.string().optional(),
+});
+
+/**
+ * Fewer than 12 characters is refused with `weak-password` (ADR 0069).
+ */
+const MIN_CHOSEN_PASSWORD_LENGTH = 12;
+
+const accountPasswordSetSchema = z.object({
+  // Absent means generate, mirroring the create page's default.
+  password: z.string().optional(),
 });
 
 const accountCapabilityGrantSchema = z.object({
@@ -149,6 +164,30 @@ const linkDomainBodySchema = z.object({
 const accountDisabledBodySchema = z.object({ disabled: z.boolean() });
 
 const accountPasswordBodySchema = z.object({ confirm: z.literal(true) });
+
+/**
+ * ADR 0069: the owner account cannot be changed through any dashboard
+ * account route — whoever asks. Answers 403 `owner-protected` (and true)
+ * when `username` belongs to an owner account, with one exception: the
+ * owner changing their own password passes `{ allowSelf: session }` on the
+ * password routes. Unknown names pass through, so a mistyped name stays a
+ * 404 rather than leaking which names are owners.
+ *
+ * Dashboard route layer only: the CLI recovery path (`bootstrap reissue`,
+ * ADR 0056) is untouched, so a human on the host can still recover.
+ */
+const refuseIfOwner = (
+  deps: HttpDeps,
+  username: string,
+  reply: FastifyReply,
+  opts: { allowSelf?: SessionContext } = {},
+): boolean => {
+  const account = accountRepo.findAccountByUsername(deps.scopes.instance(), username);
+  if (account?.isOwner !== true) return false;
+  if (opts.allowSelf !== undefined && account.accountId === opts.allowSelf.accountId) return false;
+  void reply.status(403).send({ error: 'owner-protected' });
+  return true;
+};
 
 export const registerOpsWriteRoutes = (
   app: FastifyInstance,
@@ -1105,6 +1144,7 @@ export const registerOpsWriteRoutes = (
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const parsed = accountDisabledBodySchema.safeParse(request.body);
       if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
@@ -1130,10 +1170,12 @@ export const registerOpsWriteRoutes = (
   );
 
   // Owner-provisioned account creation, web half: the account starts
-  // non-owner with nothing, and the guild access and capabilities the form
+  // non-owner, and the session's guild access plus the capabilities the form
   // named are granted here as real grants (the same levers the page edits
-  // with afterwards). The generated password is returned exactly once and
-  // appears in no audit row.
+  // with afterwards). Access to the session's server is always granted
+  // (ADR 0069) — there is no way to create an account that cannot reach it.
+  // A chosen password is hashed like a generated one; either way the
+  // plaintext is returned exactly once and appears in no audit row.
   app.post('/api/accounts', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
@@ -1143,26 +1185,21 @@ export const registerOpsWriteRoutes = (
     if (!parsed.success) {
       return reply.status(400).send({ error: 'bad-request', issues: parsed.error.issues });
     }
-    // A capability lives inside a guild, so granting one without the guild
-    // is a form mistake, not a state - refuse it before anything is created.
-    if (parsed.data.capabilities.length > 0 && !parsed.data.grantThisGuild) {
-      return reply.status(400).send({
-        error: 'capabilities-need-guild-access',
-        message:
-          'capabilities live inside a guild: grant this guild to the new account, or create it with no capabilities',
-      });
+    if (
+      parsed.data.password !== undefined &&
+      parsed.data.password.length < MIN_CHOSEN_PASSWORD_LENGTH
+    ) {
+      return reply.status(400).send({ error: 'weak-password' });
     }
 
-    const created = await deps.instance.accountCreate(parsed.data.username);
+    const created = await deps.instance.accountCreate(parsed.data.username, parsed.data.password);
     if (created === 'username-taken') {
       return reply.status(409).send({ error: 'username-taken' });
     }
 
     const ports = deps.portsFor(session.scope);
-    let guildAccess = false;
-    if (parsed.data.grantThisGuild) {
-      guildAccess = ports.accountGrantGuild(parsed.data.username) === 'granted';
-    }
+    const grantOutcome = ports.accountGrantGuild(parsed.data.username);
+    const guildAccess = grantOutcome === 'granted' || grantOutcome === 'already-had-it';
     const grantedCapabilities: string[] = [];
     if (guildAccess) {
       for (const capability of parsed.data.capabilities) {
@@ -1201,6 +1238,7 @@ export const registerOpsWriteRoutes = (
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+    if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
     const result = deps.instance.accountDelete(request.params.username);
     if (result === 'no-such-account') {
@@ -1228,6 +1266,7 @@ export const registerOpsWriteRoutes = (
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const result = deps.instance.accountRevokeCredentials(request.params.username);
       if (result === 'no-such-account') {
@@ -1257,6 +1296,9 @@ export const registerOpsWriteRoutes = (
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply, { allowSelf: session })) {
+        return reply;
+      }
 
       // The body is the operator's explicit confirmation, mirroring the
       // CLI's prompt: the response carries the new plaintext exactly once,
@@ -1276,7 +1318,59 @@ export const registerOpsWriteRoutes = (
         subjectType: 'account',
         subjectId: result.username,
         before: undefined,
-        after: { sessionsRevoked: result.sessionsRevoked, guildsTouched: result.guildsTouched },
+        after: {
+          chosen: false,
+          sessionsRevoked: result.sessionsRevoked,
+          guildsTouched: result.guildsTouched,
+        },
+      });
+      return reply.status(200).send(result);
+    },
+  );
+
+  // ADR 0069: set a chosen password, or generate one when the body names
+  // none. The legacy POST reset above stays working (the dashboard still
+  // calls it until Task 5); both land in the same `account.password_reset`
+  // audit, whose `after` names only whether the password was chosen — never
+  // the password itself.
+  app.put<{ Params: { username: string } }>(
+    '/api/accounts/:username/password',
+    async (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply, { allowSelf: session })) {
+        return reply;
+      }
+
+      const parsed = accountPasswordSetSchema.safeParse(request.body);
+      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (
+        parsed.data.password !== undefined &&
+        parsed.data.password.length < MIN_CHOSEN_PASSWORD_LENGTH
+      ) {
+        return reply.status(400).send({ error: 'weak-password' });
+      }
+
+      const result = await deps.instance.accountSetPassword(
+        request.params.username,
+        parsed.data.password,
+      );
+      if (result === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      const ports = deps.portsFor(session.scope);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.password_reset',
+        subjectType: 'account',
+        subjectId: result.username,
+        before: undefined,
+        after: {
+          chosen: parsed.data.password !== undefined,
+          sessionsRevoked: result.sessionsRevoked,
+          guildsTouched: result.guildsTouched,
+        },
       });
       return reply.status(200).send(result);
     },
@@ -1288,6 +1382,7 @@ export const registerOpsWriteRoutes = (
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.accountGrantGuild(request.params.username);
@@ -1312,6 +1407,7 @@ export const registerOpsWriteRoutes = (
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.accountRevokeGuild(request.params.username);
@@ -1341,6 +1437,7 @@ export const registerOpsWriteRoutes = (
       const session = guard.require(request, reply);
       if (session === undefined) return reply;
       if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const parsed = accountCapabilityGrantSchema.safeParse(request.body);
       if (!parsed.success) {
@@ -1375,6 +1472,48 @@ export const registerOpsWriteRoutes = (
           held: true,
           capability: parsed.data.capability,
           changed: outcome === 'granted',
+        },
+      });
+      return reply.status(200).send({ outcome });
+    },
+  );
+
+  // ADR 0069: revoke ONE capability in this guild — the edit page's
+  // Permissions section needs it, where today the only revoke removes all
+  // server access. A repeat revoke is audited with changed:false, mirroring
+  // the grant's already-held row; unknown accounts are usage answers (404)
+  // with no audit row.
+  app.delete<{ Params: { username: string; capability: string } }>(
+    '/api/accounts/:username/capabilities/:capability',
+    (request, reply) => {
+      const session = guard.require(request, reply);
+      if (session === undefined) return reply;
+      if (!requireCapability(session, 'accounts.manage', reply)) return reply;
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
+
+      const parsed = z.enum(CAPABILITIES).safeParse(request.params.capability);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'bad-request' });
+      }
+
+      const ports = deps.portsFor(session.scope);
+      const outcome = ports.revokeAccountCapability({
+        username: request.params.username,
+        capability: parsed.data,
+      });
+      if (outcome === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.capability_revoked',
+        subjectType: 'account',
+        subjectId: request.params.username,
+        before: { held: outcome === 'revoked' },
+        after: {
+          held: false,
+          capability: parsed.data,
+          changed: outcome === 'revoked',
         },
       });
       return reply.status(200).send({ outcome });

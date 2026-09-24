@@ -428,7 +428,7 @@ describe('ops-write routes', () => {
     expect(actions).toContain('account.deleted');
   });
 
-  it('creates an account at the least-privilege floor and audits it', async () => {
+  it('creates an account with this guild granted and audits it', async () => {
     const { cookie, csrf } = await signIn();
     grant(['accounts.manage']);
     const response = await app.inject({
@@ -447,16 +447,19 @@ describe('ops-write routes', () => {
     } = response.json();
     expect(body.username).toBe('mod-one');
     expect(body.password.length).toBeGreaterThan(20);
-    expect(body.guildAccess).toBe(false);
+    // ADR 0069: access to the session's server is always granted — the
+    // least-privilege floor is now "this server, no permissions".
+    expect(body.guildAccess).toBe(true);
     expect(body.capabilities).toEqual([]);
 
-    // Non-owner, no guild access, no capabilities: a fresh account reaches
-    // nothing until an explicit grant says otherwise.
+    // Non-owner with this guild's access and no capabilities: a fresh
+    // account reaches the server it was created in and nothing else until
+    // an explicit grant says otherwise.
     const instance = t.scopes.instance();
     const row = accountRepo.findAccountByUsername(instance, 'mod-one');
     expect(row).toBeDefined();
     expect(row!.isOwner).toBe(false);
-    expect(accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId)).toBe(false);
+    expect(accountRepo.hasGuildAccess(t.scopes.forGuild(GUILD), row!.accountId)).toBe(true);
     expect(authzRepo.listAccountCapabilities(t.scopes.forGuild(GUILD), row!.accountId)).toEqual([]);
 
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 10 });
@@ -468,7 +471,7 @@ describe('ops-write routes', () => {
     expect(JSON.stringify(created)).not.toContain(body.password);
   });
 
-  it('creates an account pre-scoped with this guild and named capabilities', async () => {
+  it('creates an account with named capabilities (grantThisGuild is ignored)', async () => {
     const { cookie, csrf } = await signIn();
     grant(['accounts.manage']);
     const response = await app.inject({
@@ -495,22 +498,29 @@ describe('ops-write routes', () => {
     ).toEqual(['audit.read', 'config.read']);
   });
 
-  it('refuses capabilities without guild access, duplicates, and bad usernames', async () => {
+  it('refuses short chosen passwords, duplicates, and bad usernames', async () => {
     const { cookie, csrf } = await signIn();
     grant(['accounts.manage']);
 
-    const noGuild = await app.inject({
+    // Capabilities ride on the always-granted guild access now: no
+    // `grantThisGuild` field is needed, and a stale one is ignored.
+    const scoped = await app.inject({
       method: 'POST',
       url: '/api/accounts',
       headers: { cookie, [CSRF]: csrf },
       payload: { username: 'mod-three', capabilities: ['audit.read'] },
     });
-    expect(noGuild.statusCode).toBe(400);
-    expect(noGuild.json()).toEqual({
-      error: 'capabilities-need-guild-access',
-      message:
-        'capabilities live inside a guild: grant this guild to the new account, or create it with no capabilities',
+    expect(scoped.statusCode).toBe(201);
+    expect(scoped.json()).toMatchObject({ guildAccess: true, capabilities: ['audit.read'] });
+
+    const weak = await app.inject({
+      method: 'POST',
+      url: '/api/accounts',
+      headers: { cookie, [CSRF]: csrf },
+      payload: { username: 'mod-four', password: 'short' },
     });
+    expect(weak.statusCode).toBe(400);
+    expect(weak.json()).toEqual({ error: 'weak-password' });
 
     const badName = await app.inject({
       method: 'POST',
@@ -531,7 +541,7 @@ describe('ops-write routes', () => {
 
     // None of the refusals created anything.
     const instance = t.scopes.instance();
-    expect(accountRepo.findAccountByUsername(instance, 'mod-three')).toBeUndefined();
+    expect(accountRepo.findAccountByUsername(instance, 'mod-four')).toBeUndefined();
     expect(accountRepo.findAccountByUsername(instance, '-mod')).toBeUndefined();
   });
 
