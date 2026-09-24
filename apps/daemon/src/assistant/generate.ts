@@ -57,6 +57,22 @@ export const generateAnswer = async (input: {
       try {
         return await input.provider.generateText({ ...request, model: models[current]! });
       } catch (err) {
+        // ADR 0077: a free-model daily cap never clears itself within this
+        // generation, so it is never "busy" in the retryable sense - but a
+        // PAID fallback model is unaffected by it, so try that one. A second
+        // `:free` model most likely shares the very same daily counter and
+        // would fail identically, wasting one of tomorrow's requests for
+        // nothing; rethrow instead of trying it.
+        if (
+          err instanceof ProviderError &&
+          err.kind === 'quota' &&
+          err.quotaScope === 'daily-free'
+        ) {
+          const next = models[current + 1];
+          if (next === undefined || next.endsWith(':free')) throw err;
+          current += 1;
+          continue;
+        }
         const busy =
           err instanceof ProviderError &&
           err.retryable &&
