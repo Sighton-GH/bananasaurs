@@ -57,6 +57,71 @@ describe('chunkDocument — markdown', () => {
     expect(chunks.length).toBeGreaterThan(1);
     for (const chunk of chunks) expect(chunk.text.length).toBeLessThanOrEqual(120);
   });
+
+  it('further splits a single oversized paragraph (no blank lines inside it) so every chunk stays under maxChars', () => {
+    const sentence = 'This sentence describes club policy in reasonable detail for a member. ';
+    const paragraph = sentence.repeat(Math.ceil(4_000 / sentence.length)).slice(0, 4_000);
+    expect(paragraph.length).toBe(4_000);
+    expect(paragraph).not.toContain('\n');
+    const text = ['## Policy', '', paragraph].join('\n');
+
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'policy.md' });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeLessThanOrEqual(1_500);
+      expect(chunk.headingPath).toBe('policy.md › Policy');
+      expect(chunk.lineStart).toBeGreaterThanOrEqual(1);
+      expect(chunk.lineEnd).toBeGreaterThanOrEqual(chunk.lineStart);
+    }
+    // The content survives the split (modulo the whitespace the sentence
+    // splitter consumes at cut points), in order.
+    const joined = chunks.map((c) => c.text).join('');
+    expect(joined.replace(/\s+/g, ' ')).toContain('This sentence describes club policy');
+  });
+
+  it('splits an oversized multi-line paragraph at line boundaries before falling back further', () => {
+    // 60 wrapped lines, ~30 chars each (no blank line between them, so this
+    // is one paragraph) totalling well over 1,500 characters.
+    const paragraphLines = Array.from({ length: 60 }, (_, i) => `Line ${i} of the club handbook.`);
+    const paragraph = paragraphLines.join('\n');
+    expect(paragraph.length).toBeGreaterThan(1_500);
+    const text = ['## Handbook', '', paragraph].join('\n');
+
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'handbook.md' });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeLessThanOrEqual(1_500);
+      expect(chunk.headingPath).toBe('handbook.md › Handbook');
+    }
+    // No line was cut mid-line: the split fell back no further than line
+    // boundaries, since each individual line is well under the cap.
+    for (const chunk of chunks) {
+      for (const line of chunk.text.split('\n')) {
+        expect(paragraphLines.includes(line) || line === '## Handbook').toBe(true);
+      }
+    }
+    expect(chunks.map((c) => c.text).join('\n').split('\n').filter((l) => l !== '## Handbook')).toEqual(
+      paragraphLines,
+    );
+  });
+
+  it('hard-splits a single oversized paragraph with no sentence or word boundaries', () => {
+    const paragraph = 'x'.repeat(4_000);
+    const text = ['## Blob', '', paragraph].join('\n');
+
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'blob.md', maxChars: 1_500 });
+    expect(chunks.length).toBeGreaterThan(1);
+    for (const chunk of chunks) {
+      expect(chunk.text.length).toBeLessThanOrEqual(1_500);
+      expect(chunk.headingPath).toBe('blob.md › Blob');
+    }
+    // The heading line is its own small paragraph/chunk ahead of the
+    // oversized one; concatenating every chunk's text (blank-line
+    // separators are not stored in either piece) reconstructs the heading
+    // line immediately followed by the untouched paragraph, with no
+    // characters lost or duplicated by the hard cut.
+    expect(chunks.map((c) => c.text).join('')).toBe(`## Blob${paragraph}`);
+  });
 });
 
 describe('chunkDocument — plain text and code windowing', () => {

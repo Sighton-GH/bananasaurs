@@ -175,10 +175,83 @@ interface Piece {
   readonly text: string;
 }
 
-const splitSectionByParagraph = (section: Section, maxChars: number): readonly Piece[] => {
-  if (section.text.length <= maxChars) {
-    return [{ startLine: section.startLine, endLine: section.endLine, text: section.text }];
+// Greedily packs ordered strings, joined by `sep`, into groups whose joined
+// length never exceeds `maxChars`. Shared by the paragraph-, line- and
+// sentence-level splitters below.
+const packStrings = (parts: readonly string[], sep: string, maxChars: number): readonly string[] => {
+  const groups: string[] = [];
+  let current = '';
+  for (const part of parts) {
+    const candidate = current === '' ? part : `${current}${sep}${part}`;
+    if (candidate.length <= maxChars) {
+      current = candidate;
+    } else {
+      if (current !== '') groups.push(current);
+      current = part;
+    }
   }
+  if (current !== '' || groups.length === 0) groups.push(current);
+  return groups;
+};
+
+const SENTENCE_SPLIT_RE = /(?<=[.?!])\s+/gu;
+
+const splitIntoSentences = (line: string): readonly string[] =>
+  line.split(SENTENCE_SPLIT_RE).filter((part) => part !== '');
+
+/** Last-resort fallback: cuts at a word boundary when one is close by, else exactly at `maxChars`. */
+const hardCut = (text: string, maxChars: number): readonly string[] => {
+  const chunks: string[] = [];
+  let rest = text;
+  while (rest.length > maxChars) {
+    const window = rest.slice(0, maxChars);
+    const spaceCut = window.lastIndexOf(' ');
+    const cut = spaceCut > 0 && spaceCut >= maxChars - 200 ? spaceCut + 1 : maxChars;
+    chunks.push(rest.slice(0, cut));
+    rest = rest.slice(cut);
+  }
+  if (rest.length > 0) chunks.push(rest);
+  return chunks;
+};
+
+/**
+ * Splits a single paragraph (no blank lines inside it) that is itself over
+ * `maxChars`, escalating through line boundaries, then sentence ends, then a
+ * hard cut at `maxChars` — whichever is the coarsest split that still fits.
+ * Line ranges stay correct throughout; sub-pieces cut out of one physical
+ * line necessarily share that line's number.
+ */
+const splitOversizedParagraph = (para: Piece, maxChars: number): readonly Piece[] => {
+  if (para.text.length <= maxChars) return [para];
+
+  const lines = para.text.split('\n');
+  if (lines.length > 1) {
+    const groups = packStrings(lines, '\n', maxChars);
+    const pieces: Piece[] = [];
+    let cursor = para.startLine;
+    for (const group of groups) {
+      const groupLineCount = group.split('\n').length;
+      const piece: Piece = { text: group, startLine: cursor, endLine: cursor + groupLineCount - 1 };
+      cursor += groupLineCount;
+      // A single line within the group can still be oversized on its own.
+      pieces.push(...splitOversizedParagraph(piece, maxChars));
+    }
+    return pieces;
+  }
+
+  const sentences = splitIntoSentences(para.text);
+  if (sentences.length > 1) {
+    return packStrings(sentences, ' ', maxChars).flatMap((group) =>
+      group.length <= maxChars
+        ? [{ text: group, startLine: para.startLine, endLine: para.endLine }]
+        : hardCut(group, maxChars).map((text) => ({ text, startLine: para.startLine, endLine: para.endLine })),
+    );
+  }
+
+  return hardCut(para.text, maxChars).map((text) => ({ text, startLine: para.startLine, endLine: para.endLine }));
+};
+
+const extractParagraphs = (section: Section): readonly Piece[] => {
   const lines = section.text.split('\n');
   const paragraphs: Piece[] = [];
   let paraLines: string[] = [];
@@ -199,10 +272,31 @@ const splitSectionByParagraph = (section: Section, maxChars: number): readonly P
     }
   });
   pushPara(section.startLine + lines.length - 1);
+  return paragraphs;
+};
+
+const splitSectionByParagraph = (section: Section, maxChars: number): readonly Piece[] => {
+  if (section.text.length <= maxChars) {
+    return [{ startLine: section.startLine, endLine: section.endLine, text: section.text }];
+  }
+  const paragraphs = extractParagraphs(section);
 
   const pieces: Piece[] = [];
   let current: Piece | undefined;
+  const flushCurrent = (): void => {
+    if (current !== undefined) {
+      pieces.push(current);
+      current = undefined;
+    }
+  };
   for (const para of paragraphs) {
+    if (para.text.length > maxChars) {
+      // A lone oversized paragraph is never merged with its neighbours; it
+      // is split on its own and spliced in as one or more standalone pieces.
+      flushCurrent();
+      pieces.push(...splitOversizedParagraph(para, maxChars));
+      continue;
+    }
     if (current === undefined) {
       current = para;
       continue;
@@ -215,7 +309,7 @@ const splitSectionByParagraph = (section: Section, maxChars: number): readonly P
       current = para;
     }
   }
-  if (current !== undefined) pieces.push(current);
+  flushCurrent();
   return pieces;
 };
 
