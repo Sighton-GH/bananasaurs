@@ -11,13 +11,29 @@ import {
 } from '@bananasaurs/core';
 import {
   assistantProvidersRepo,
-  eligibilityRepo,
+  type eligibilityRepo,
   type InstanceScope,
 } from '@bananasaurs/storage';
 
 export type ProviderId = 'gemini' | 'openrouter' | 'nvidia-nim';
 
 export type ChainSkipReason = 'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
+
+/**
+ * Only the fields the env seed reads. A full `Config` satisfies this
+ * structurally, so every real caller still passes one; this exists so
+ * `provider-config.ts`'s `chain()` can seed with an off-only literal when no
+ * process config was given to it, without constructing a fake `Config`.
+ */
+export interface ModelChainConfig {
+  readonly AI_PROVIDER: Config['AI_PROVIDER'];
+  readonly AI_MODEL?: Config['AI_MODEL'];
+  readonly AI_FALLBACK_MODELS?: Config['AI_FALLBACK_MODELS'];
+  readonly AI_PROFILE_COST_CLASS: Config['AI_PROFILE_COST_CLASS'];
+  readonly GEMINI_API_KEY?: Config['GEMINI_API_KEY'];
+  readonly OPENROUTER_API_KEY?: Config['OPENROUTER_API_KEY'];
+  readonly NVIDIA_NIM_API_KEY?: Config['NVIDIA_NIM_API_KEY'];
+}
 
 export interface ChainEntry {
   readonly providerId: ProviderId;
@@ -57,7 +73,7 @@ interface Candidate {
   readonly enabled: boolean;
 }
 
-const envKeyOf = (config: Config, provider: ProviderId): string | undefined =>
+const envKeyOf = (config: ModelChainConfig, provider: ProviderId): string | undefined =>
   provider === 'gemini'
     ? config.GEMINI_API_KEY
     : provider === 'openrouter'
@@ -74,7 +90,7 @@ const envKeyOf = (config: Config, provider: ProviderId): string | undefined =>
  */
 export const resolveModelChain = (deps: {
   instance: InstanceScope;
-  config: Config;
+  config: ModelChainConfig;
   openKey: (sealed: string) => string | undefined;
   eligibility: (provider: ProviderId) => eligibilityRepo.EligibilityRow | undefined;
   makeProvider: (provider: ProviderId, apiKey: string, costClass: ProviderCostClass) => TextProvider;
