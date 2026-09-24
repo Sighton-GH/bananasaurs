@@ -138,11 +138,9 @@ export const createProviderConfigStore = (
       const row = assistantProviderRepo.get(instance);
       if (row === undefined) return envConfig;
       // A saved row is authoritative for web search too: off there means off.
-      const {
-        BRAVE_SEARCH_API_KEY: _envSearchKey,
-        AI_FALLBACK_MODEL: _envFallback,
-        ...rest
-      } = envConfig;
+      const rest: Config = { ...envConfig };
+      delete rest.BRAVE_SEARCH_API_KEY;
+      delete rest.AI_FALLBACK_MODEL;
       const searchKey =
         row.searchEnabled === true && row.searchApiKeyEnc !== undefined
           ? open(key, row.searchApiKeyEnc)

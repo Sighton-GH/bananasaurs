@@ -27,11 +27,12 @@ describe('braveWebSearch (ADR 0066)', () => {
     expect(results).toEqual([
       { title: 'Guide', url: 'https://a.example/', description: 'LiPo care' },
     ]);
-    const [url, init] = fetch.mock.calls[0] ?? [];
-    expect(String(url)).toBe(
+    const url = fetch.mock.calls[0]?.[0] as string;
+    const init = fetch.mock.calls[0]?.[1];
+    expect(url).toBe(
       'https://api.search.brave.com/res/v1/web/search?q=lipo+storage&count=5&safesearch=strict',
     );
-    expect(String(url)).not.toContain('brave-secret');
+    expect(url).not.toContain('brave-secret');
     expect(new Headers(init?.headers).get('x-subscription-token')).toBe('brave-secret');
   });
 

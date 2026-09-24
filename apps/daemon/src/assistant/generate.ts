@@ -64,7 +64,7 @@ export const generateAnswer = async (input: {
         (err.kind === 'outage' || err.kind === 'rate-limit' || err.kind === 'timeout');
       if (!canFallBack) throw err;
       usedFallback = true;
-      return await input.provider.generateText({ ...request, model: input.fallbackModel! });
+      return await input.provider.generateText({ ...request, model: input.fallbackModel });
     }
   };
 
