@@ -15,6 +15,7 @@ import {
   deleteAccount,
   findAccountById,
   findAccountByUsername,
+  getPasswordSealed,
   grantAllCapabilities,
   grantGuildAccess,
   hasGuildAccess,
@@ -26,6 +27,7 @@ import {
   revokeGuildAccess,
   setAccountDisabled,
   setPasswordHash,
+  setPasswordSealed,
 } from './accounts.js';
 import {
   createAuthorizationCode,
@@ -108,6 +110,32 @@ describe('accounts are instance-level (ADR 0012, ADR 0027)', () => {
     seedAccount();
     setPasswordHash(instance, { accountId: ACCOUNT, passwordHash: '$argon2id$new' });
     expect(findAccountById(instance, ACCOUNT)?.passwordHash).toBe('$argon2id$new');
+  });
+});
+
+describe('password_sealed (ADR 0070)', () => {
+  it('is null on a freshly created account', () => {
+    seedAccount();
+    expect(getPasswordSealed(instance, ACCOUNT)).toBeNull();
+    expect(findAccountById(instance, ACCOUNT)?.passwordSealed).toBeNull();
+  });
+
+  it('stores and reads back the sealed value verbatim', () => {
+    seedAccount();
+    setPasswordSealed(instance, ACCOUNT, 'sealed-ciphertext');
+    expect(getPasswordSealed(instance, ACCOUNT)).toBe('sealed-ciphertext');
+    expect(findAccountById(instance, ACCOUNT)?.passwordSealed).toBe('sealed-ciphertext');
+  });
+
+  it('clears the sealed value back to null', () => {
+    seedAccount();
+    setPasswordSealed(instance, ACCOUNT, 'sealed-ciphertext');
+    setPasswordSealed(instance, ACCOUNT, null);
+    expect(getPasswordSealed(instance, ACCOUNT)).toBeNull();
+  });
+
+  it('reads null for an unknown account rather than throwing', () => {
+    expect(getPasswordSealed(instance, 'acct_missing')).toBeNull();
   });
 });
 
@@ -431,6 +459,14 @@ describe('deleteAccount (ADR 0045 D6)', () => {
     const result = deleteAccount(instance, { accountId: ACCOUNT, now: 5000 });
     expect(result.deleted).toBe(true);
     expect(findAccountById(instance, ACCOUNT)).toBeUndefined();
+  });
+
+  it('removes the sealed password with the row (ADR 0070)', () => {
+    seedAccount();
+    setPasswordSealed(instance, ACCOUNT, 'sealed-ciphertext');
+    deleteAccount(instance, { accountId: ACCOUNT, now: 5000 });
+    expect(findAccountById(instance, ACCOUNT)).toBeUndefined();
+    expect(getPasswordSealed(instance, ACCOUNT)).toBeNull();
   });
 
   it('revokes live tokens, counts them, and never rewrites an earlier revocation', () => {
