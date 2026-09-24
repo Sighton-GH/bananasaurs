@@ -100,9 +100,20 @@ export const registerAssistantTraceRoutes = (
 
     const parsed = usageQuerySchema.safeParse(request.query);
     if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    // The strip renders one bar per day, so the answer carries the whole
+    // window — oldest first, quiet days as zeros — rather than only the days
+    // with runs.
     const days = parsed.data.days ?? 14;
+    const counts = new Map(
+      traceRepo.dailyUsage(session.scope, deps.now() - days * DAY_MS).map((d) => [d.day, d]),
+    );
     return reply.status(200).send({
-      days: traceRepo.dailyUsage(session.scope, deps.now() - days * DAY_MS),
+      days: Array.from({ length: days }, (_, i) => {
+        const day = new Date(deps.now() - (days - 1 - i) * DAY_MS).toISOString().slice(0, 10);
+        return (
+          counts.get(day) ?? { day, answers: 0, failures: 0, fallbacks: 0, tokens: 0 }
+        );
+      }),
     });
   });
 };
