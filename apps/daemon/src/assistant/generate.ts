@@ -33,8 +33,8 @@ const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
 export const generateAnswer = async (input: {
   readonly provider: TextProvider;
   readonly model: string;
-  /** Tried once when the main model is overloaded or rate-limited. */
-  readonly fallbackModel?: string | undefined;
+  /** ADR 0068: tried in order when the model before is overloaded or rate-limited. */
+  readonly fallbackModels?: readonly string[] | undefined;
   readonly systemInstruction: string;
   readonly userText: string;
   readonly maxOutputTokens?: number;
@@ -46,25 +46,24 @@ export const generateAnswer = async (input: {
       }
     | undefined;
 }): Promise<{ readonly text: string; readonly trace: GenerationTrace }> => {
-  let usedFallback = false;
+  // The order of models to try; `current` only moves forward, so the answer
+  // after a tool round stays on the model that worked.
+  const models = [input.model, ...(input.fallbackModels ?? []).filter((m) => m !== input.model)];
+  let current = 0;
   const call = async (
     request: Omit<GenerateTextRequest, 'model'>,
   ): Promise<GenerateTextResponse> => {
-    const model =
-      usedFallback && input.fallbackModel !== undefined ? input.fallbackModel : input.model;
-    try {
-      return await input.provider.generateText({ ...request, model });
-    } catch (err) {
-      const canFallBack =
-        !usedFallback &&
-        input.fallbackModel !== undefined &&
-        input.fallbackModel !== input.model &&
-        err instanceof ProviderError &&
-        err.retryable &&
-        (err.kind === 'outage' || err.kind === 'rate-limit' || err.kind === 'timeout');
-      if (!canFallBack) throw err;
-      usedFallback = true;
-      return await input.provider.generateText({ ...request, model: input.fallbackModel });
+    for (;;) {
+      try {
+        return await input.provider.generateText({ ...request, model: models[current]! });
+      } catch (err) {
+        const busy =
+          err instanceof ProviderError &&
+          err.retryable &&
+          (err.kind === 'outage' || err.kind === 'rate-limit' || err.kind === 'timeout');
+        if (!busy || current + 1 >= models.length) throw err;
+        current += 1;
+      }
     }
   };
 
@@ -90,7 +89,13 @@ export const generateAnswer = async (input: {
   if (offered === undefined || calls.length === 0) {
     return {
       text: first.text,
-      trace: { model: first.model, tools: [], sources: [], web: false, usedFallback },
+      trace: {
+        model: first.model,
+        tools: [],
+        sources: [],
+        web: false,
+        usedFallback: current > 0,
+      },
     };
   }
 
@@ -134,7 +139,7 @@ export const generateAnswer = async (input: {
       tools: results.map((result) => ({ name: result.name, ok: result.ok })),
       sources: results.flatMap((result) => (result.ok ? result.sources : [])),
       web,
-      usedFallback,
+      usedFallback: current > 0,
     },
   };
 };

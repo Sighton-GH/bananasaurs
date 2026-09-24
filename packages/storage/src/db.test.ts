@@ -563,7 +563,7 @@ describe('migration 0036 adds the fallback model, web search and assistant setti
         api_key_enc: 'sealed',
         enabled: 1,
         cost_class: 'free',
-        fallback_model: null,
+        fallback_models_json: '[]',
         search_api_key_enc: null,
         search_enabled: 0,
         updated_at: 7,

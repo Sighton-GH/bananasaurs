@@ -138,8 +138,8 @@ export interface AiStatus {
   readonly costClass: 'free' | 'paid' | 'unknown';
   readonly secretSource: 'env' | 'file' | 'missing';
   readonly secretProblem?: 'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
-  /** Tried once when the main model is overloaded. */
-  readonly fallbackModel?: string;
+  /** ADR 0068: up to two more models, tried in order when the one before is busy. */
+  readonly fallbackModels?: readonly string[];
   /** ADR 0066. Absent while no Brave key is saved and search is off. */
   readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
@@ -200,6 +200,13 @@ export const PROVIDERS: readonly {
 export const providerName = (id: string): string =>
   PROVIDERS.find((p) => p.id === id)?.name ?? (id === 'off' ? 'None' : 'Unknown service');
 export const PROVIDER_URL = '/api/assistant/provider';
+/** ADR 0068: the models a pasted or saved key can use. */
+export const PROVIDER_MODELS_URL = '/api/assistant/provider/models';
+export interface ModelInfo {
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+}
 export const providerTermsUrl = (provider: string) =>
   `/api/providers/${encodeURIComponent(provider)}/terms`;
 /** ADR 0063: which behaviour answers a tag of the bot user itself. */

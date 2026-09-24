@@ -173,27 +173,66 @@ it('asks for the cost again when the model changes', () => {
   expect(store.status()).toMatchObject({ model: 'm2', costClass: 'unknown', keyConfigured: true });
 });
 
-it('saves a fallback model for the same service and drops it on a service switch', () => {
+it('saves up to two backup models in order for the same service (ADR 0068)', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
   store.save(
     {
       provider: 'gemini',
       model: 'gemini-2.5-flash',
-      fallbackModel: 'gemini-2.5-flash-lite',
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
       apiKey: 'k',
       enabled: true,
+      costClass: 'free',
     },
     10,
   );
-  expect(store.status().fallbackModel).toBe('gemini-2.5-flash-lite');
-  expect(store.effective(base).AI_FALLBACK_MODEL).toBe('gemini-2.5-flash-lite');
+  expect(store.status()).toMatchObject({
+    fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
+    costClass: 'free',
+  });
+  expect(store.effective(base).AI_FALLBACK_MODELS).toEqual([
+    'gemini-2.5-flash-lite',
+    'gemma-3-27b-it',
+  ]);
+  // Omitted keeps them; a new order resets the cost answer.
   store.save({ provider: 'gemini', enabled: true }, 11);
-  expect(store.status().fallbackModel).toBe('gemini-2.5-flash-lite');
-  store.save({ provider: 'gemini', fallbackModel: null, enabled: true }, 12);
-  expect(store.status().fallbackModel).toBeUndefined();
-  store.save({ provider: 'gemini', fallbackModel: 'x', enabled: true }, 13);
-  store.save({ provider: 'openrouter', model: 'm', apiKey: 'k2', enabled: true }, 14);
-  expect(store.status().fallbackModel).toBeUndefined();
+  expect(store.status()).toMatchObject({
+    fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
+    costClass: 'free',
+  });
+  store.save({ provider: 'gemini', fallbackModels: ['gemma-3-27b-it'], enabled: true }, 12);
+  expect(store.status()).toMatchObject({
+    fallbackModels: ['gemma-3-27b-it'],
+    costClass: 'unknown',
+  });
+  store.save({ provider: 'gemini', fallbackModels: [], enabled: true }, 13);
+  expect(store.status().fallbackModels).toBeUndefined();
+  store.save({ provider: 'gemini', fallbackModels: ['x'], enabled: true }, 14);
+  store.save({ provider: 'openrouter', model: 'm', apiKey: 'k2', enabled: true }, 15);
+  expect(store.status().fallbackModels).toBeUndefined();
+});
+
+it('lists Gemini models with a pasted key, or the saved one, never returning the key', async () => {
+  const seen: string[] = [];
+  const store = createProviderConfigStore(
+    t.scopes.instance(),
+    'a'.repeat(32),
+    'env',
+    undefined,
+    async (apiKey) => {
+      seen.push(apiKey);
+      return [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }];
+    },
+  );
+  await expect(store.listModels('gemini', 'pasted-key')).resolves.toEqual([
+    { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+  ]);
+  await expect(store.listModels('gemini')).rejects.toThrow('no-key');
+  store.save({ provider: 'gemini', model: 'm', apiKey: 'saved-key', enabled: true }, 10);
+  await store.listModels('gemini');
+  expect(seen).toEqual(['pasted-key', 'saved-key']);
+  // A saved key belongs to its service: never used to list another's models.
+  await expect(store.listModels('openrouter')).rejects.toThrow('unsupported');
 });
 
 it('keeps the Brave key write-only and applies it only while web search is on (ADR 0066)', () => {

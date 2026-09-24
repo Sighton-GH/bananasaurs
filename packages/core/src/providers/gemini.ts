@@ -235,3 +235,86 @@ export class GeminiProvider implements TextProvider {
     };
   }
 }
+
+/** One model a Gemini key can call for text answers (ADR 0068). */
+export interface GeminiModelInfo {
+  /** What requests use, without the `models/` prefix. */
+  readonly id: string;
+  readonly name: string;
+  readonly description?: string;
+  readonly inputTokenLimit?: number;
+}
+
+const modelListSchema = z.object({
+  models: z
+    .array(
+      z.object({
+        name: z.string(),
+        displayName: z.string().optional(),
+        description: z.string().optional(),
+        inputTokenLimit: z.number().int().optional(),
+        supportedGenerationMethods: z.array(z.string()).default([]),
+      }),
+    )
+    .default([]),
+  nextPageToken: z.string().optional(),
+});
+
+/** Listed with generateContent, but not text answers the assistant can use. */
+const NOT_TEXT = /(tts|image|embedding|aqa|audio|live|robotics|computer-use|veo|imagen)/i;
+
+/**
+ * The models this key can see that answer text (`generateContent`). This is
+ * what the key can see, not what its tier has quota for: a model with no
+ * quota fails like a busy one and the next model in the order is tried.
+ */
+export const listGeminiModels = async (options: {
+  readonly apiKey: string;
+  readonly baseUrl?: string;
+  readonly fetch?: typeof globalThis.fetch;
+  readonly timeoutMs?: number;
+}): Promise<readonly GeminiModelInfo[]> => {
+  const base = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+  const fetchImpl = options.fetch ?? globalThis.fetch;
+  const found: GeminiModelInfo[] = [];
+  let pageToken: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const url = `${base}/models?pageSize=1000${pageToken === undefined ? '' : `&pageToken=${encodeURIComponent(pageToken)}`}`;
+    let response: Response;
+    try {
+      response = await fetchImpl(url, {
+        headers: { 'x-goog-api-key': options.apiKey },
+        signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
+      });
+    } catch (error) {
+      throw new ProviderError('outage', 'Gemini model list request failed', true, {
+        cause: error,
+      });
+    }
+    if (!response.ok) {
+      const kind = statusKind(response.status);
+      throw new ProviderError(
+        kind,
+        `Gemini model list failed with HTTP ${response.status}`,
+        kind === 'rate-limit' || kind === 'outage',
+      );
+    }
+    const parsed = modelListSchema.safeParse(await response.json());
+    if (!parsed.success)
+      throw new ProviderError('invalid-response', 'Gemini returned an invalid model list', false);
+    for (const model of parsed.data.models) {
+      const id = model.name.replace(/^models\//, '');
+      if (!model.supportedGenerationMethods.includes('generateContent') || NOT_TEXT.test(id))
+        continue;
+      found.push({
+        id,
+        name: model.displayName ?? id,
+        ...(model.description === undefined ? {} : { description: model.description }),
+        ...(model.inputTokenLimit === undefined ? {} : { inputTokenLimit: model.inputTokenLimit }),
+      });
+    }
+    pageToken = parsed.data.nextPageToken;
+    if (pageToken === undefined || pageToken === '') break;
+  }
+  return found;
+};

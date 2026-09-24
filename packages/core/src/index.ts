@@ -559,7 +559,12 @@ export {
   providerMayTrain,
   type ProviderAudience,
 } from './providers/eligibility.js';
-export { GeminiProvider, type GeminiProviderOptions } from './providers/gemini.js';
+export {
+  GeminiProvider,
+  listGeminiModels,
+  type GeminiModelInfo,
+  type GeminiProviderOptions,
+} from './providers/gemini.js';
 export {
   assertOutboundRequestSafe,
   redactEvidenceText,

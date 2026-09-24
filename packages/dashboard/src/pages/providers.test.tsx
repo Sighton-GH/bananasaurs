@@ -101,7 +101,7 @@ describe('ProvidersPage', () => {
     stubPage(assistantBody());
     renderWithSession(<ProvidersPage />);
     expect(inputOf(await screen.findByRole('radio', { name: /Google Gemini/ })).checked).toBe(true);
-    expect(inputOf(screen.getByLabelText('Model')).value).toBe('gemini-2.5-flash');
+    expect(inputOf(screen.getByLabelText('First choice')).value).toBe('gemini-2.5-flash');
     const key = inputOf(screen.getByLabelText('API key'));
     expect(key.value).toBe('');
     expect(key.getAttribute('placeholder')).toBe('Saved. Leave blank to keep it');
@@ -148,7 +148,7 @@ describe('ProvidersPage', () => {
       'Saved. Leave blank to keep it',
     );
     fireEvent.click(screen.getByRole('radio', { name: 'OpenRouter' }));
-    expect(inputOf(screen.getByLabelText('Model')).value).toBe('');
+    expect(inputOf(screen.getByLabelText('First choice')).value).toBe('');
     expect(inputOf(screen.getByRole('radio', { name: 'Not sure' })).checked).toBe(true);
     expect(inputOf(screen.getByLabelText('API key')).getAttribute('placeholder')).toBe(
       'Paste the API key for OpenRouter',
@@ -494,7 +494,9 @@ describe('ProvidersPage', () => {
     await act(async () => {
       fireEvent.click(within(dialog).getByRole('button', { name: 'I checked these terms today' }));
     });
-    const post = mock.mock.calls.find((c) => c[1]?.method === 'POST')!;
+    const post = mock.mock.calls.find(
+      (c) => c[1]?.method === 'POST' && (c[0] as string) !== '/api/assistant/provider/models',
+    )!;
     expect(post[0] as string).toBe('/api/providers/nim-free/review');
     expect(bodyOf(post)).toEqual({});
     expect(
@@ -519,37 +521,41 @@ describe('ProvidersPage: backup model and web search (ADR 0066)', () => {
       )!,
     ) as Record<string, unknown>;
 
-  it('saves a backup model, and clears it with an empty field', async () => {
+  it('saves typed backup models in order when the list cannot load, and clears them', async () => {
     const mock = stubFetch([
       { url: '/api/assistant', body: assistantBody() },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
       { method: 'PUT', url: '/api/assistant/provider', body: SAVED_STATUS },
     ]);
     renderWithSession(<ProvidersPage />);
-    const field = await screen.findByLabelText('Backup model (optional)');
-    fireEvent.change(field, { target: { value: ' gemini-2.5-flash-lite ' } });
+    fireEvent.change(await screen.findByLabelText('Second choice (optional)'), {
+      target: { value: ' gemini-2.5-flash-lite ' },
+    });
+    fireEvent.change(screen.getByLabelText('Third choice (optional)'), {
+      target: { value: 'gemma-3-27b-it' },
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save AI setup' }));
     });
-    expect(putBody(mock).fallbackModel).toBe('gemini-2.5-flash-lite');
+    expect(putBody(mock).fallbackModels).toEqual(['gemini-2.5-flash-lite', 'gemma-3-27b-it']);
 
     cleanup();
     const mock2 = stubFetch([
       {
         url: '/api/assistant',
-        body: assistantBody({ aiStatus: { ...SAVED_STATUS, fallbackModel: 'old-lite' } }),
+        body: assistantBody({ aiStatus: { ...SAVED_STATUS, fallbackModels: ['old-lite'] } }),
       },
       { url: '/api/providers/eligibility', body: { warnings: [] } },
       { method: 'PUT', url: '/api/assistant/provider', body: SAVED_STATUS },
     ]);
     renderWithSession(<ProvidersPage />);
-    const saved = await screen.findByLabelText('Backup model (optional)');
-    expect(saved).toHaveProperty('value', 'old-lite');
-    fireEvent.change(saved, { target: { value: '' } });
+    const second = await screen.findByLabelText('Second choice (optional)');
+    expect(second).toHaveProperty('value', 'old-lite');
+    fireEvent.change(second, { target: { value: '' } });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save AI setup' }));
     });
-    expect(putBody(mock2).fallbackModel).toBeNull();
+    expect(putBody(mock2).fallbackModels).toEqual([]);
   });
 
   it('lets the owner save a Brave key and turn web search on, keeping the key write-only', async () => {
@@ -591,5 +597,113 @@ describe('ProvidersPage: backup model and web search (ADR 0066)', () => {
       'disabled',
       true,
     );
+  });
+});
+
+describe('ProvidersPage: Gemini model pickers (ADR 0068)', () => {
+  const MODELS = {
+    models: [
+      { id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' },
+      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite' },
+      { id: 'gemma-3-27b-it', name: 'Gemma 3 27B' },
+    ],
+  };
+  const calls = (mock: ReturnType<typeof stubFetch>, url: string) =>
+    mock.mock.calls.filter((c) => (c[0] as string) === url && c[1]?.method !== undefined);
+
+  it('loads the models for the saved key and saves three choices in order', async () => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'POST', url: '/api/assistant/provider/models', body: MODELS },
+      { method: 'PUT', url: '/api/assistant/provider', body: SAVED_STATUS },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const first = await screen.findByRole('combobox', { name: 'First choice' });
+    expect(first).toHaveProperty('value', 'gemini-2.5-flash');
+    expect(
+      within(first)
+        .getAllByRole('option')
+        .map((o) => o.textContent),
+    ).toEqual([
+      'Gemini 2.5 Flash (gemini-2.5-flash)',
+      'Gemini 2.5 Flash-Lite (gemini-2.5-flash-lite)',
+      'Gemma 3 27B (gemma-3-27b-it)',
+    ]);
+    expect(bodyOf(calls(mock, '/api/assistant/provider/models')[0]!)).toEqual({
+      provider: 'gemini',
+    });
+    const second = screen.getByRole('combobox', { name: 'Second choice (optional)' });
+    expect(within(second).getAllByRole('option')[0]?.textContent).toBe('None');
+    fireEvent.change(second, { target: { value: 'gemini-2.5-flash-lite' } });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Third choice (optional)' }), {
+      target: { value: 'gemma-3-27b-it' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save AI setup' }));
+    });
+    const put = bodyOf(calls(mock, '/api/assistant/provider').at(-1)!) as Record<string, unknown>;
+    expect(put.model).toBe('gemini-2.5-flash');
+    expect(put.fallbackModels).toEqual(['gemini-2.5-flash-lite', 'gemma-3-27b-it']);
+  });
+
+  it('loads with a newly pasted key when the key field is left', async () => {
+    const mock = stubFetch([
+      {
+        url: '/api/assistant',
+        body: assistantBody({
+          aiStatus: { ...SAVED_STATUS, keyConfigured: false, keyReadable: false, model: undefined },
+        }),
+      },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'POST', url: '/api/assistant/provider/models', body: MODELS },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    const key = await screen.findByLabelText('API key');
+    expect(calls(mock, '/api/assistant/provider/models')).toHaveLength(0);
+    fireEvent.change(key, { target: { value: 'pasted-key' } });
+    await act(async () => {
+      fireEvent.blur(key);
+    });
+    expect(bodyOf(calls(mock, '/api/assistant/provider/models')[0]!)).toEqual({
+      provider: 'gemini',
+      apiKey: 'pasted-key',
+    });
+    expect(await screen.findByRole('combobox', { name: 'First choice' })).toBeTruthy();
+  });
+
+  it('refuses the same model twice', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'POST', url: '/api/assistant/provider/models', body: MODELS },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('combobox', { name: 'First choice' });
+    fireEvent.change(screen.getByRole('combobox', { name: 'Second choice (optional)' }), {
+      target: { value: 'gemini-2.5-flash' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save AI setup' }));
+    });
+    expect(screen.getByText('Choose a different model for each place.')).toBeTruthy();
+  });
+
+  it('says when Gemini refuses the key and keeps the typed fields', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'POST',
+        url: '/api/assistant/provider/models',
+        status: 409,
+        body: { error: 'provider-refused', kind: 'authentication' },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    expect(
+      await screen.findByText("Gemini refused this key, so its models couldn't be loaded."),
+    ).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'First choice' })).toBeTruthy();
   });
 });

@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b8719fb2-b544-45ba-9b11-11c739121e9b",
+  "id": "48469c04-3ffd-453c-af46-6db934479d59",
   "prevId": "cb98a174-3653-48f4-a758-bce7c0f0c7b5",
   "tables": {
     "account_capabilities": {
@@ -1141,12 +1141,13 @@
           "autoincrement": false,
           "default": "'unknown'"
         },
-        "fallback_model": {
-          "name": "fallback_model",
+        "fallback_models_json": {
+          "name": "fallback_models_json",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'[]'"
         },
         "search_api_key_enc": {
           "name": "search_api_key_enc",

@@ -1,6 +1,11 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { CLUB_ASSISTANT_SKILLS, STARTER_SKILL_IDS, validateResourceUrl } from '@bananasaurs/core';
+import {
+  CLUB_ASSISTANT_SKILLS,
+  ProviderError,
+  STARTER_SKILL_IDS,
+  validateResourceUrl,
+} from '@bananasaurs/core';
 import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
@@ -44,7 +49,7 @@ const providerConfig = z.object({
   apiKey: z.string().min(1).max(1000).optional(),
   enabled: z.boolean(),
   costClass: z.enum(['free', 'paid', 'unknown']).optional(),
-  fallbackModel: z.string().min(1).max(200).nullable().optional(),
+  fallbackModels: z.array(z.string().trim().min(1).max(200)).max(2).optional(),
   searchApiKey: z.string().min(1).max(1000).optional(),
   searchEnabled: z.boolean().optional(),
 });
@@ -166,7 +171,7 @@ export const registerAssistantRoutes = (
         model: before.model ?? null,
         enabled: before.enabled,
         costClass: before.costClass,
-        fallbackModel: before.fallbackModel ?? null,
+        fallbackModels: before.fallbackModels ?? [],
         searchEnabled: before.webSearch?.enabled ?? false,
       },
       after: {
@@ -175,12 +180,41 @@ export const registerAssistantRoutes = (
         enabled: after.enabled,
         costClass: after.costClass,
         keyReplaced: parsed.data.apiKey !== undefined,
-        fallbackModel: after.fallbackModel ?? null,
+        fallbackModels: after.fallbackModels ?? [],
         searchEnabled: after.webSearch?.enabled ?? false,
         searchKeyReplaced: parsed.data.searchApiKey !== undefined,
       },
     });
     return reply.status(200).send(after);
+  });
+  // ADR 0068: the models a key can use, for the ordered model pickers. The
+  // pasted key is used once and dropped; it is never saved, logged or echoed.
+  app.post('/api/assistant/provider/models', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const store = deps.assistantProviderConfig;
+    if (store?.listModels === undefined)
+      return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
+    const parsed = z
+      .object({
+        provider: z.enum(['gemini', 'openrouter', 'nvidia-nim']),
+        apiKey: z.string().min(1).max(1000).optional(),
+      })
+      .strict()
+      .safeParse(request.body);
+    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    try {
+      const models = await store.listModels(parsed.data.provider, parsed.data.apiKey);
+      return reply.status(200).send({ models });
+    } catch (err) {
+      if (err instanceof ProviderError)
+        return reply.status(409).send({ error: 'provider-refused', kind: err.kind });
+      const message = err instanceof Error ? err.message : '';
+      if (message === 'no-key' || message === 'unsupported')
+        return reply.status(409).send({ error: message });
+      throw err;
+    }
   });
   app.put('/api/assistant/server-card', (request, reply) => {
     const session = guard.require(request, reply);

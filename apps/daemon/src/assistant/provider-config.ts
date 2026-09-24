@@ -1,5 +1,5 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
-import type { Config } from '@bananasaurs/core';
+import { listGeminiModels, type Config, type GeminiModelInfo } from '@bananasaurs/core';
 import { assistantProviderRepo, type InstanceScope } from '@bananasaurs/storage';
 
 const keyFrom = (secret: string): Buffer =>
@@ -34,8 +34,8 @@ export interface ProviderConfigStatus {
   readonly keyReadable: boolean;
   readonly costClass: ProviderCostClass;
   readonly secretSource: ProviderSecretSource;
-  /** Tried once when the main model is overloaded. */
-  readonly fallbackModel?: string;
+  /** ADR 0068: up to two more models, tried in order when the one before is busy. */
+  readonly fallbackModels?: readonly string[];
   /** ADR 0066. Absent while no Brave key is saved and search is off. */
   readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
@@ -49,14 +49,20 @@ export interface ProviderConfigStore {
       apiKey?: string | undefined;
       enabled: boolean;
       costClass?: ProviderCostClass | undefined;
-      /** `null` clears it; omitted keeps it. */
-      fallbackModel?: string | null | undefined;
+      /** ADR 0068: the backups in order; `[]` clears them, omitted keeps them. */
+      fallbackModels?: readonly string[] | undefined;
       /** Write-only; omitted keeps the saved key. */
       searchApiKey?: string | undefined;
       searchEnabled?: boolean | undefined;
     },
     now: number,
   ): void;
+  /**
+   * ADR 0068: the models a key can use for text answers. Uses `apiKey` when
+   * given (just pasted, not yet saved), else the saved key for that service.
+   * Throws `no-key` or `unsupported`; the key is never in the result.
+   */
+  listModels(provider: string, apiKey?: string): Promise<readonly GeminiModelInfo[]>;
 }
 /**
  * The provider as `.env` configures it: what runs when nothing is saved in
@@ -96,6 +102,8 @@ export const createProviderConfigStore = (
   masterSecret: string,
   secretSource: Exclude<ProviderSecretSource, 'missing'> = 'env',
   envBase?: Config,
+  geminiModels: (apiKey: string) => Promise<readonly GeminiModelInfo[]> = (apiKey) =>
+    listGeminiModels({ apiKey }),
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
   return {
@@ -123,7 +131,7 @@ export const createProviderConfigStore = (
         keyReadable: row.apiKeyEnc !== undefined && open(key, row.apiKeyEnc) !== undefined,
         costClass: row.costClass,
         secretSource,
-        ...(row.fallbackModel === undefined ? {} : { fallbackModel: row.fallbackModel }),
+        ...(row.fallbackModels === undefined ? {} : { fallbackModels: row.fallbackModels }),
         ...(row.searchApiKeyEnc === undefined && row.searchEnabled !== true
           ? {}
           : {
@@ -140,7 +148,7 @@ export const createProviderConfigStore = (
       // A saved row is authoritative for web search too: off there means off.
       const rest: Config = { ...envConfig };
       delete rest.BRAVE_SEARCH_API_KEY;
-      delete rest.AI_FALLBACK_MODEL;
+      delete rest.AI_FALLBACK_MODELS;
       const searchKey =
         row.searchEnabled === true && row.searchApiKeyEnc !== undefined
           ? open(key, row.searchApiKeyEnc)
@@ -155,7 +163,9 @@ export const createProviderConfigStore = (
       if (apiKey === undefined) return { ...base, AI_PROVIDER: 'off' };
       return {
         ...base,
-        ...(row.fallbackModel === undefined ? {} : { AI_FALLBACK_MODEL: row.fallbackModel }),
+        ...(row.fallbackModels === undefined
+          ? {}
+          : { AI_FALLBACK_MODELS: [...row.fallbackModels] }),
         AI_PROVIDER: row.provider,
         AI_MODEL: row.model,
         AI_PROFILE_COST_CLASS: row.costClass,
@@ -178,13 +188,11 @@ export const createProviderConfigStore = (
       const apiKeyEnc = input.apiKey !== undefined ? seal(key, input.apiKey) : same?.apiKeyEnc;
       // The fallback model runs on the same service and key, so it follows the
       // same rule; and the cost statement has to cover it too.
-      const fallbackModel =
-        input.fallbackModel === null ? undefined : (input.fallbackModel ?? same?.fallbackModel);
+      const fallbackModels = input.fallbackModels ?? same?.fallbackModels ?? [];
+      const sameOrder = fallbackModels.join('\n') === (same?.fallbackModels ?? []).join('\n');
       const costClass =
         input.costClass ??
-        (same !== undefined && model === same.model && fallbackModel === same.fallbackModel
-          ? same.costClass
-          : 'unknown');
+        (same !== undefined && model === same.model && sameOrder ? same.costClass : 'unknown');
       // Web search is its own service (ADR 0066): its key survives an AI
       // service switch.
       const searchApiKeyEnc =
@@ -195,11 +203,24 @@ export const createProviderConfigStore = (
         ...(apiKeyEnc === undefined ? {} : { apiKeyEnc }),
         enabled: input.enabled,
         costClass,
-        ...(fallbackModel === undefined ? {} : { fallbackModel }),
+        ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
         ...(searchApiKeyEnc === undefined ? {} : { searchApiKeyEnc }),
         searchEnabled: input.searchEnabled ?? current?.searchEnabled ?? false,
         updatedAt: now,
       });
+    },
+    async listModels(provider, apiKey) {
+      if (provider !== 'gemini') throw new Error('unsupported');
+      let listKey = apiKey;
+      if (listKey === undefined) {
+        const row = assistantProviderRepo.get(instance);
+        listKey =
+          row?.provider === 'gemini' && row.apiKeyEnc !== undefined
+            ? open(key, row.apiKeyEnc)
+            : undefined;
+      }
+      if (listKey === undefined) throw new Error('no-key');
+      return await geminiModels(listKey);
     },
   };
 };

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
+import { parseGuildId, ProviderError, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
 import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
@@ -654,7 +654,9 @@ describe('provider fallback model and web search (ADR 0066)', () => {
           keyReadable: true,
           costClass: 'free',
           secretSource: 'file',
-          ...(saved.at(-1)?.fallbackModel ? { fallbackModel: saved.at(-1)!.fallbackModel! } : {}),
+          ...(saved.at(-1)?.fallbackModels
+            ? { fallbackModels: [...saved.at(-1)!.fallbackModels!] }
+            : {}),
           ...(saved.at(-1)?.searchEnabled !== undefined
             ? { webSearch: { keyConfigured: true, enabled: saved.at(-1)!.searchEnabled! } }
             : {}),
@@ -680,13 +682,13 @@ describe('provider fallback model and web search (ADR 0066)', () => {
     await restart();
     const { cookie, csrf } = await signIn();
     const response = await putProvider(cookie, csrf, {
-      fallbackModel: 'gemini-2.5-flash-lite',
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
       searchApiKey: 'brave-raw-key',
       searchEnabled: true,
     });
     expect(response.statusCode).toBe(200);
     expect(saved[0]).toMatchObject({
-      fallbackModel: 'gemini-2.5-flash-lite',
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
       searchApiKey: 'brave-raw-key',
       searchEnabled: true,
     });
@@ -694,7 +696,7 @@ describe('provider fallback model and web search (ADR 0066)', () => {
       .tailAudit(t.scopes.forGuild(GUILD), {})
       .find((r) => r.action === 'assistant_provider.saved');
     expect(JSON.parse(row?.after ?? 'null')).toMatchObject({
-      fallbackModel: 'gemini-2.5-flash-lite',
+      fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
       searchEnabled: true,
       searchKeyReplaced: true,
     });
@@ -702,13 +704,16 @@ describe('provider fallback model and web search (ADR 0066)', () => {
     expect(JSON.stringify(response.json())).not.toContain('brave-raw-key');
   });
 
-  it('clears the fallback model with null and rejects a bad value', async () => {
+  it('clears the backups with an empty list and refuses more than two or a blank', async () => {
     grant('config.write');
     await restart();
     const { cookie, csrf } = await signIn();
-    expect((await putProvider(cookie, csrf, { fallbackModel: null })).statusCode).toBe(200);
-    expect(saved[0]?.fallbackModel).toBeNull();
-    expect((await putProvider(cookie, csrf, { fallbackModel: '' })).statusCode).toBe(400);
+    expect((await putProvider(cookie, csrf, { fallbackModels: [] })).statusCode).toBe(200);
+    expect(saved[0]?.fallbackModels).toEqual([]);
+    expect((await putProvider(cookie, csrf, { fallbackModels: ['a', 'b', 'c'] })).statusCode).toBe(
+      400,
+    );
+    expect((await putProvider(cookie, csrf, { fallbackModels: [''] })).statusCode).toBe(400);
   });
 
   it('keeps turning on web search and replacing its key owner-only', async () => {
@@ -782,5 +787,82 @@ describe('PUT /api/assistant/log-channel (ADR 0065)', () => {
     expect((await putLog(cookie, csrf, { channelId: LOG })).statusCode).toBe(403);
     grant('config.write');
     expect((await putLog(cookie, csrf, { channelId: 'general' })).statusCode).toBe(400);
+  });
+});
+
+describe('POST /api/assistant/provider/models (ADR 0068)', () => {
+  const listed = [{ id: 'gemini-2.5-flash', name: 'Gemini 2.5 Flash' }];
+  let calls: { provider: string; apiKey?: string | undefined }[];
+  const restart = async (
+    listModels: (provider: string, apiKey?: string) => Promise<typeof listed>,
+  ) => {
+    calls = [];
+    deps = {
+      ...deps,
+      assistantProviderConfig: {
+        status: () => ({
+          provider: 'gemini',
+          enabled: true,
+          modelConfigured: true,
+          keyConfigured: true,
+          keyReadable: true,
+          costClass: 'free',
+          secretSource: 'file',
+        }),
+        save: () => undefined,
+        listModels: async (provider, apiKey) => {
+          calls.push({ provider, apiKey });
+          return await listModels(provider, apiKey);
+        },
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+  const post = (cookie: string, csrf: string, payload: Record<string, unknown>) =>
+    app.inject({
+      method: 'POST',
+      url: '/api/assistant/provider/models',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload,
+    });
+
+  it('lists the models with a pasted key and never echoes the key', async () => {
+    grant('config.write');
+    await restart(async () => listed);
+    const { cookie, csrf } = await signIn();
+    const response = await post(cookie, csrf, { provider: 'gemini', apiKey: 'pasted-secret' });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ models: listed });
+    expect(calls).toEqual([{ provider: 'gemini', apiKey: 'pasted-secret' }]);
+    expect(response.body).not.toContain('pasted-secret');
+    const withSaved = await post(cookie, csrf, { provider: 'gemini' });
+    expect(withSaved.statusCode).toBe(200);
+    expect(calls[1]).toEqual({ provider: 'gemini', apiKey: undefined });
+  });
+
+  it('explains a missing key, an unsupported service and a rejected key', async () => {
+    grant('config.write');
+    await restart(async (_provider, apiKey) => {
+      if (apiKey === 'bad') throw new ProviderError('authentication', 'HTTP 403', false);
+      throw new Error(apiKey === undefined ? 'no-key' : 'unsupported');
+    });
+    const { cookie, csrf } = await signIn();
+    const noKey = await post(cookie, csrf, { provider: 'gemini' });
+    expect(noKey.statusCode).toBe(409);
+    expect(noKey.json()).toEqual({ error: 'no-key' });
+    const other = await post(cookie, csrf, { provider: 'openrouter', apiKey: 'k' });
+    expect(other.statusCode).toBe(409);
+    expect(other.json()).toEqual({ error: 'unsupported' });
+    const bad = await post(cookie, csrf, { provider: 'gemini', apiKey: 'bad' });
+    expect(bad.statusCode).toBe(409);
+    expect(bad.json()).toEqual({ error: 'provider-refused', kind: 'authentication' });
+  });
+
+  it('requires config.write', async () => {
+    grant('config.read');
+    await restart(async () => listed);
+    const { cookie, csrf } = await signIn();
+    expect((await post(cookie, csrf, { provider: 'gemini' })).statusCode).toBe(403);
   });
 });

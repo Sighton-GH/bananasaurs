@@ -13,7 +13,7 @@ it('round-trips the fallback model and the web search settings', () => {
   put(scope, {
     provider: 'gemini',
     model: 'gemini-2.5-flash',
-    fallbackModel: 'gemini-2.5-flash-lite',
+    fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
     apiKeyEnc: 'sealed-provider-key',
     enabled: true,
     costClass: 'free',
@@ -24,7 +24,7 @@ it('round-trips the fallback model and the web search settings', () => {
   expect(get(scope)).toEqual({
     provider: 'gemini',
     model: 'gemini-2.5-flash',
-    fallbackModel: 'gemini-2.5-flash-lite',
+    fallbackModels: ['gemini-2.5-flash-lite', 'gemma-3-27b-it'],
     apiKeyEnc: 'sealed-provider-key',
     enabled: true,
     costClass: 'free',

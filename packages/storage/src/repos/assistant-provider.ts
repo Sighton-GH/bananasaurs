@@ -8,13 +8,24 @@ export interface AssistantProviderConfigRow {
   readonly apiKeyEnc?: string;
   readonly enabled: boolean;
   readonly costClass: 'free' | 'paid' | 'unknown';
-  /** Tried once when the main model is overloaded. */
-  readonly fallbackModel?: string;
+  /** ADR 0068: up to two more models, tried in order. */
+  readonly fallbackModels?: readonly string[];
   /** ADR 0066: the sealed Brave Search API key. */
   readonly searchApiKeyEnc?: string;
   readonly searchEnabled?: boolean;
   readonly updatedAt: number;
 }
+/** Own prior write, still validated: a malformed list reads as no backups. */
+const fallbackModelsOf = (raw: string): { fallbackModels?: readonly string[] } => {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (!Array.isArray(value)) return {};
+    const models = value.filter((m): m is string => typeof m === 'string' && m !== '');
+    return models.length === 0 ? {} : { fallbackModels: models };
+  } catch {
+    return {};
+  }
+};
 export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefined =>
   readInstance(scope, (db) => {
     const row = db.select().from(assistantProviderConfig).get();
@@ -26,7 +37,7 @@ export const get = (scope: InstanceScope): AssistantProviderConfigRow | undefine
           ...(row.apiKeyEnc === null ? {} : { apiKeyEnc: row.apiKeyEnc }),
           enabled: row.enabled === 1,
           costClass: row.costClass as AssistantProviderConfigRow['costClass'],
-          ...(row.fallbackModel === null ? {} : { fallbackModel: row.fallbackModel }),
+          ...fallbackModelsOf(row.fallbackModelsJson),
           ...(row.searchApiKeyEnc === null ? {} : { searchApiKeyEnc: row.searchApiKeyEnc }),
           searchEnabled: row.searchEnabled === 1,
           updatedAt: row.updatedAt,
@@ -42,7 +53,7 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
         apiKeyEnc: input.apiKeyEnc ?? null,
         enabled: input.enabled ? 1 : 0,
         costClass: input.costClass,
-        fallbackModel: input.fallbackModel ?? null,
+        fallbackModelsJson: JSON.stringify(input.fallbackModels ?? []),
         searchApiKeyEnc: input.searchApiKeyEnc ?? null,
         searchEnabled: input.searchEnabled === true ? 1 : 0,
         updatedAt: input.updatedAt,
@@ -55,7 +66,7 @@ export const put = (scope: InstanceScope, input: AssistantProviderConfigRow): vo
           apiKeyEnc: input.apiKeyEnc ?? null,
           enabled: input.enabled ? 1 : 0,
           costClass: input.costClass,
-          fallbackModel: input.fallbackModel ?? null,
+          fallbackModelsJson: JSON.stringify(input.fallbackModels ?? []),
           searchApiKeyEnc: input.searchApiKeyEnc ?? null,
           searchEnabled: input.searchEnabled === true ? 1 : 0,
           updatedAt: input.updatedAt,

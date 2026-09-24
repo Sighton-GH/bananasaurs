@@ -4,7 +4,9 @@ import { ApiError } from '../api.js';
 import {
   ASSISTANT_URL,
   PROVIDERS,
+  PROVIDER_MODELS_URL,
   PROVIDER_URL,
+  type ModelInfo,
   providerTermsUrl,
   type AiStatus,
   type AssistantData,
@@ -115,8 +117,21 @@ function ServiceForm({
 }) {
   const session = useSession();
   const toast = useToast();
-  const [model, setModel] = useState(status?.model ?? '');
-  const [fallback, setFallback] = useState(status?.fallbackModel ?? '');
+  // ADR 0068: the first, second and third model to try, in order.
+  const [choices, setChoices] = useState<readonly [string, string, string]>([
+    status?.model ?? '',
+    status?.fallbackModels?.[0] ?? '',
+    status?.fallbackModels?.[1] ?? '',
+  ]);
+  const setChoice = (index: 0 | 1 | 2, value: string) =>
+    setChoices((current) => {
+      const next: [string, string, string] = [...current];
+      next[index] = value;
+      return next;
+    });
+  const [models, setModels] = useState<readonly ModelInfo[] | undefined>(undefined);
+  const [modelsNote, setModelsNote] = useState<string | undefined>(undefined);
+  const [choiceError, setChoiceError] = useState<string | undefined>(undefined);
   const [apiKey, setApiKey] = useState('');
   const [enabled, setEnabled] = useState(status?.enabled ?? false);
   const [cost, setCost] = useState<'free' | 'paid' | 'unknown'>(status?.costClass ?? 'unknown');
@@ -133,8 +148,9 @@ function ServiceForm({
   const savedService = status?.provider;
   useEffect(() => {
     if (savedService !== undefined && service !== savedService) {
-      setModel('');
-      setFallback('');
+      setChoices(['', '', '']);
+      setModels(undefined);
+      setModelsNote(undefined);
       setCost('unknown');
     }
   }, [service, savedService]);
@@ -147,17 +163,61 @@ function ServiceForm({
           ? `Paste the API key for ${chosen.name}`
           : undefined;
 
+  const loadModels = async (pastedKey?: string): Promise<void> => {
+    setModelsNote('Loading the models this key can use…');
+    try {
+      const result = await session.writeOrThrow<{ models: readonly ModelInfo[] }>(
+        PROVIDER_MODELS_URL,
+        { provider: 'gemini', ...(pastedKey === undefined ? {} : { apiKey: pastedKey }) },
+        'POST',
+      );
+      if (result === undefined) {
+        setModelsNote("Couldn't load the models. Type the model names instead.");
+        return;
+      }
+      setModels(result.models);
+      const top = result.models[0]?.id;
+      if (top !== undefined) setChoices((c) => (c[0] === '' ? [top, c[1], c[2]] : c));
+      setModelsNote(
+        result.models.length === 0
+          ? 'This key has no text models. Type the model names instead.'
+          : 'Models this key can see. A model your plan has no quota for is skipped like a busy one.',
+      );
+    } catch (err: unknown) {
+      const body = err instanceof ApiError ? err.body : undefined;
+      setModelsNote(
+        body?.error === 'no-key'
+          ? 'Paste the API key to load its models.'
+          : body?.error === 'provider-refused' &&
+              (body as { kind?: string }).kind === 'authentication'
+            ? "Gemini refused this key, so its models couldn't be loaded."
+            : "Couldn't load the models. Type the model names instead.",
+      );
+    }
+  };
+  const canList = service === 'gemini' && secretMissing !== true;
+  const savedKeyUsable = isSameService && status?.keyConfigured === true && status.keyReadable;
+  useEffect(() => {
+    if (canList && savedKeyUsable) void loadModels();
+    // Only when the service or the saved key changes.
+  }, [canList, savedKeyUsable]);
+
   const submit = async (): Promise<void> => {
+    const picked = choices.map((c) => c.trim()).filter((c) => c !== '');
+    if (new Set(picked).size !== picked.length) {
+      setChoiceError('Choose a different model for each place.');
+      return;
+    }
+    setChoiceError(undefined);
     setBusy(true);
     try {
       const body: Record<string, unknown> = { provider: service, enabled };
-      const trimmed = model.trim();
+      const trimmed = choices[0].trim();
       if (trimmed !== '') body.model = trimmed;
-      // Sent only when it changed: blank clears a saved backup model.
-      const fallbackTrimmed = fallback.trim();
-      const savedFallback = isSameService ? (status?.fallbackModel ?? '') : '';
-      if (fallbackTrimmed !== savedFallback)
-        body.fallbackModel = fallbackTrimmed === '' ? null : fallbackTrimmed;
+      // Sent only when the order changed: empty clears the backups.
+      const backups = [choices[1].trim(), choices[2].trim()].filter((m) => m !== '');
+      const savedBackups = isSameService ? (status?.fallbackModels ?? []) : [];
+      if (backups.join('\n') !== savedBackups.join('\n')) body.fallbackModels = backups;
       if (apiKey !== '') body.apiKey = apiKey;
       if (isOwner) body.costClass = cost;
       const result = await session.write<AiStatus>(PROVIDER_URL, body, 'PUT');
@@ -239,19 +299,6 @@ function ServiceForm({
           </p>
         )}
         {chosen !== undefined && (
-          <Field label="Model" hint={chosen.modelHint}>
-            <Input value={model} onChange={(e) => setModel(e.target.value)} />
-          </Field>
-        )}
-        {chosen !== undefined && (
-          <Field
-            label="Backup model (optional)"
-            hint="Tried once when the main model is busy, on the same service and key. Changing it asks the cost question again."
-          >
-            <Input value={fallback} onChange={(e) => setFallback(e.target.value)} />
-          </Field>
-        )}
-        {chosen !== undefined && (
           <div className="grid gap-1">
             {keyUnreadable && (
               <p role="alert" className="text-sm text-danger">
@@ -269,11 +316,71 @@ function ServiceForm({
                 autoComplete="new-password"
                 value={apiKey}
                 onChange={(e) => setApiKey(e.target.value)}
+                onBlur={() => {
+                  if (canList && apiKey !== '') void loadModels(apiKey);
+                }}
                 disabled={secretMissing}
                 {...(keyPlaceholder !== undefined ? { placeholder: keyPlaceholder } : {})}
               />
             </Field>
           </div>
+        )}
+        {chosen !== undefined && (
+          <fieldset className="grid gap-2">
+            <legend className="mb-1 block text-sm text-ink-muted">
+              Models to try, in order. If one is busy the next is used. Changing the order asks the
+              cost question again.
+            </legend>
+            {modelsNote !== undefined && <p className="text-xs text-ink-muted">{modelsNote}</p>}
+            {([0, 1, 2] as const).map((index) => {
+              const label =
+                index === 0
+                  ? 'First choice'
+                  : index === 1
+                    ? 'Second choice (optional)'
+                    : 'Third choice (optional)';
+              if (models === undefined || models.length === 0)
+                return (
+                  <Field
+                    key={index}
+                    label={label}
+                    {...(index === 0 ? { hint: chosen.modelHint } : {})}
+                  >
+                    <Input
+                      value={choices[index]}
+                      onChange={(e) => setChoice(index, e.target.value)}
+                    />
+                  </Field>
+                );
+              // A saved model the list no longer shows stays selectable.
+              const saved = choices[index];
+              const options =
+                saved !== '' && !models.some((m) => m.id === saved)
+                  ? [...models, { id: saved, name: 'Saved model' }]
+                  : models;
+              return (
+                <Field key={index} label={label}>
+                  <select
+                    value={saved}
+                    onChange={(e) => setChoice(index, e.target.value)}
+                    className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                  >
+                    {index !== 0 && <option value="">None</option>}
+                    {options.map((m) => (
+                      <option key={m.id} value={m.id}>
+                        {m.name} ({m.id})
+                      </option>
+                    ))}
+                  </select>
+                </Field>
+              );
+            })}
+            {choiceError !== undefined && (
+              <p role="alert" className="text-sm text-danger">
+                {choiceError}
+              </p>
+            )}
+          </fieldset>
         )}
         <div className="text-sm">
           <Checkbox

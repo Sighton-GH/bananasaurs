@@ -142,30 +142,67 @@ describe('generateAnswer (ADR 0067)', () => {
     });
   });
 
-  it('tries the fallback model once when the main model is overloaded', async () => {
-    const p = provider(new ProviderError('outage', 'HTTP 503', true), {
-      text: 'From the backup.',
-      model: 'lite',
-    });
+  it('tries the next model in order when one is overloaded (ADR 0068)', async () => {
+    const p = provider(
+      new ProviderError('outage', 'HTTP 503', true),
+      new ProviderError('rate-limit', 'HTTP 429', true),
+      { text: 'From the third.', model: 'third' },
+    );
     const result = await generateAnswer({
       provider: p,
-      model: 'main',
-      fallbackModel: 'lite',
+      model: 'first',
+      fallbackModels: ['second', 'third'],
       systemInstruction: 's',
       userText: 'q',
     });
-    expect(result.text).toBe('From the backup.');
-    expect(result.trace).toMatchObject({ model: 'lite', usedFallback: true });
-    expect(p.calls.map((c) => c.model)).toEqual(['main', 'lite']);
+    expect(result.text).toBe('From the third.');
+    expect(result.trace).toMatchObject({ model: 'third', usedFallback: true });
+    expect(p.calls.map((c) => c.model)).toEqual(['first', 'second', 'third']);
   });
 
-  it('does not use the fallback for a non-retryable error, and rethrows', async () => {
+  it('stays on the model that worked for the answer after a tool round', async () => {
+    const p = provider(
+      new ProviderError('outage', 'HTTP 503', true),
+      { text: '', model: 'second', toolCalls: [{ name: 'current_time', args: {} }] },
+      { text: 'Noon.', model: 'second' },
+    );
+    await generateAnswer({
+      provider: p,
+      model: 'first',
+      fallbackModels: ['second'],
+      systemInstruction: 's',
+      userText: 'q',
+      tools: {
+        declarations,
+        run: async () => ({ name: 'current_time', ok: true, text: '12:00', sources: [] }),
+      },
+    });
+    expect(p.calls.map((c) => c.model)).toEqual(['first', 'second', 'second']);
+  });
+
+  it('rethrows the last error when every model is busy', async () => {
+    const p = provider(
+      new ProviderError('outage', 'HTTP 503', true),
+      new ProviderError('outage', 'HTTP 503 again', true),
+    );
+    await expect(
+      generateAnswer({
+        provider: p,
+        model: 'first',
+        fallbackModels: ['second'],
+        systemInstruction: 's',
+        userText: 'q',
+      }),
+    ).rejects.toMatchObject({ message: 'HTTP 503 again', retryable: true });
+  });
+
+  it('does not use a backup for a non-retryable error, and rethrows', async () => {
     const p = provider(new ProviderError('invalid-request', 'HTTP 400', false));
     await expect(
       generateAnswer({
         provider: p,
         model: 'main',
-        fallbackModel: 'lite',
+        fallbackModels: ['lite'],
         systemInstruction: 's',
         userText: 'q',
       }),

@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { GeminiProvider } from './gemini.js';
+import { GeminiProvider, listGeminiModels } from './gemini.js';
 import { ProviderError } from './errors.js';
 
 const ok = (value: unknown): Response =>
@@ -192,6 +192,83 @@ describe('GeminiProvider', () => {
       await expect(
         provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] }),
       ).resolves.toMatchObject({ text: 'Answer.' });
+    });
+  });
+});
+
+describe('listGeminiModels (ADR 0068)', () => {
+  it('pages through the list with the key in a header, keeping text models only', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        ok({
+          models: [
+            {
+              name: 'models/gemini-2.5-flash',
+              displayName: 'Gemini 2.5 Flash',
+              description: 'Fast.',
+              inputTokenLimit: 1048576,
+              supportedGenerationMethods: ['generateContent', 'countTokens'],
+            },
+            {
+              name: 'models/text-embedding-004',
+              displayName: 'Embedding',
+              supportedGenerationMethods: ['embedContent'],
+            },
+            {
+              name: 'models/gemini-2.5-flash-preview-tts',
+              displayName: 'TTS',
+              supportedGenerationMethods: ['generateContent'],
+            },
+          ],
+          nextPageToken: 'page-2',
+        }),
+      )
+      .mockResolvedValueOnce(
+        ok({
+          models: [
+            {
+              name: 'models/gemini-2.5-flash-lite',
+              displayName: 'Gemini 2.5 Flash-Lite',
+              supportedGenerationMethods: ['generateContent'],
+            },
+            {
+              name: 'models/gemini-2.0-flash-exp-image-generation',
+              supportedGenerationMethods: ['generateContent'],
+            },
+          ],
+        }),
+      );
+    await expect(listGeminiModels({ apiKey: 'secret', fetch })).resolves.toEqual([
+      {
+        id: 'gemini-2.5-flash',
+        name: 'Gemini 2.5 Flash',
+        description: 'Fast.',
+        inputTokenLimit: 1048576,
+      },
+      { id: 'gemini-2.5-flash-lite', name: 'Gemini 2.5 Flash-Lite' },
+    ]);
+    const urls = fetch.mock.calls.map((c) => c[0] as string);
+    expect(urls).toEqual([
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000',
+      'https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000&pageToken=page-2',
+    ]);
+    for (const url of urls) expect(url).not.toContain('secret');
+    expect(new Headers(fetch.mock.calls[0]?.[1]?.headers).get('x-goog-api-key')).toBe('secret');
+  });
+
+  it('turns a rejected key into an authentication error', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('{}', { status: 400 }));
+    await expect(listGeminiModels({ apiKey: 'bad', fetch })).rejects.toMatchObject({
+      kind: 'invalid-request',
+    });
+    const denied = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('{}', { status: 403 }));
+    await expect(listGeminiModels({ apiKey: 'bad', fetch: denied })).rejects.toMatchObject({
+      kind: 'authentication',
     });
   });
 });

@@ -165,8 +165,20 @@ export const configSchema = z.object({
   GEMINI_API_KEY: z.string().min(1).optional(),
   OPENROUTER_API_KEY: z.string().min(1).optional(),
   NVIDIA_NIM_API_KEY: z.string().min(1).optional(),
-  /** Tried once when `AI_MODEL` is overloaded; same service and key. Overridden by AI setup. */
-  AI_FALLBACK_MODEL: z.string().min(1).optional(),
+  /**
+   * ADR 0068: up to two more models, comma-separated, tried in order when the
+   * one before is overloaded. Same service and key. Overridden by AI setup.
+   */
+  AI_FALLBACK_MODELS: z
+    .string()
+    .transform((v) =>
+      v
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    )
+    .pipe(z.array(z.string().min(1).max(200)).max(2, 'at most two backup models'))
+    .optional(),
   /** ADR 0066: web search is on only while this key is set. Overridden by AI setup. */
   BRAVE_SEARCH_API_KEY: z.string().min(1).optional(),
   /** The club's IANA time zone, for the assistant's `current_time` tool. */

@@ -425,7 +425,7 @@ export const createAssistantService = (
       const response = await generateAnswer({
         provider,
         model: currentConfig.AI_MODEL,
-        fallbackModel: currentConfig.AI_FALLBACK_MODEL,
+        fallbackModels: currentConfig.AI_FALLBACK_MODELS,
         tools: {
           declarations: toolDeclarations(toolPorts),
           run: (call) => runAssistantTool(call, toolPorts),

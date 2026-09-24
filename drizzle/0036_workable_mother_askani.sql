@@ -15,7 +15,7 @@ CREATE TABLE `__new_assistant_provider_config` (
 	`api_key_enc` text,
 	`enabled` integer DEFAULT 0 NOT NULL,
 	`cost_class` text DEFAULT 'unknown' NOT NULL,
-	`fallback_model` text,
+	`fallback_models_json` text DEFAULT '[]' NOT NULL,
 	`search_api_key_enc` text,
 	`search_enabled` integer DEFAULT 0 NOT NULL,
 	`updated_at` integer NOT NULL,
@@ -25,7 +25,7 @@ CREATE TABLE `__new_assistant_provider_config` (
 	CONSTRAINT "assistant_provider_config_enabled_bool" CHECK("__new_assistant_provider_config"."enabled" IN (0,1))
 ) STRICT;
 --> statement-breakpoint
-INSERT INTO `__new_assistant_provider_config`("config_id", "provider", "model", "api_key_enc", "enabled", "cost_class", "fallback_model", "search_api_key_enc", "search_enabled", "updated_at") SELECT "config_id", "provider", "model", "api_key_enc", "enabled", "cost_class", NULL, NULL, 0, "updated_at" FROM `assistant_provider_config`;--> statement-breakpoint
+INSERT INTO `__new_assistant_provider_config`("config_id", "provider", "model", "api_key_enc", "enabled", "cost_class", "fallback_models_json", "search_api_key_enc", "search_enabled", "updated_at") SELECT "config_id", "provider", "model", "api_key_enc", "enabled", "cost_class", '[]', NULL, 0, "updated_at" FROM `assistant_provider_config`;--> statement-breakpoint
 DROP TABLE `assistant_provider_config`;--> statement-breakpoint
 ALTER TABLE `__new_assistant_provider_config` RENAME TO `assistant_provider_config`;--> statement-breakpoint
 PRAGMA foreign_keys=ON;
