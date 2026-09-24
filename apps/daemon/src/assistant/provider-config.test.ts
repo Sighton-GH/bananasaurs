@@ -76,10 +76,7 @@ it('reports the saved model, cost class, secret source and whether the key decry
     costClass: 'unknown',
     secretSource: 'file',
   });
-  store.saveProvider(
-    { provider: 'gemini', apiKey: 'k', enabled: true, costClass: 'free' },
-    10,
-  );
+  store.saveProvider({ provider: 'gemini', apiKey: 'k', enabled: true, costClass: 'free' }, 10);
   store.saveChain([{ provider: 'gemini', model: 'gemini-2.5-flash' }], 10);
   expect(store.status()).toEqual({
     provider: 'gemini',
@@ -242,7 +239,10 @@ it('chain() resolves the stored chain into eligibility-checked, constructed prov
 it('providers() lists the stored providers without opening keys', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
   expect(store.providers()).toEqual([]);
-  store.saveProvider({ provider: 'gemini', apiKey: 'raw-key', enabled: true, costClass: 'free' }, 10);
+  store.saveProvider(
+    { provider: 'gemini', apiKey: 'raw-key', enabled: true, costClass: 'free' },
+    10,
+  );
   const [row] = store.providers();
   expect(row).toMatchObject({ provider: 'gemini', costClass: 'free', enabled: true });
   expect(row?.apiKeyEnc).not.toContain('raw-key');

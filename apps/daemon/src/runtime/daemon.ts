@@ -167,7 +167,8 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           instance: scopes.instance(),
           config,
           openKey: () => undefined,
-          eligibility: (providerId) => eligibilityRepo.findEligibility(scopes.instance(), providerId),
+          eligibility: (providerId) =>
+            eligibilityRepo.findEligibility(scopes.instance(), providerId),
           makeProvider,
         });
 
