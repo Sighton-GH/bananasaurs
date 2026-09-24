@@ -94,6 +94,13 @@ describe('buildSystemPrompt — omission of empty sections', () => {
     const withSources = promptWizardAnswers.parse({ ...minimalAnswers, citeSources: true });
     expect(buildSystemPrompt(withSources, CONTEXT)).toContain('USING SOURCES AND TOOLS');
   });
+
+  it('emits the exact plan sentence, with a straight apostrophe, when preferClubSources is true', () => {
+    const withPreferClub = promptWizardAnswers.parse({ ...minimalAnswers, preferClubSources: true });
+    expect(buildSystemPrompt(withPreferClub, CONTEXT)).toContain(
+      "Search the club's resources before answering from general knowledge. Use search_sources first, then read_chunk for the best result.",
+    );
+  });
 });
 
 describe('buildSystemPrompt — 4,000 character cap and trim order', () => {

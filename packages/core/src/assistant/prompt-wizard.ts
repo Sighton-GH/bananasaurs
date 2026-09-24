@@ -130,7 +130,7 @@ const buildSourcesSection = (answers: PromptWizardAnswers): Section | undefined 
   const lines: string[] = [];
   if (answers.preferClubSources) {
     lines.push(
-      'Search the club’s resources before answering from general knowledge. Use search_sources first, then read_chunk for the best result.',
+      "Search the club's resources before answering from general knowledge. Use search_sources first, then read_chunk for the best result.",
     );
   }
   if (answers.citeSources) {
