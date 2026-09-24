@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { ClubResource } from '@bananasaurs/core';
+import { TOOL_CATALOGUE, type ClubResource } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 
 const NOW = Date.UTC(2026, 8, 23, 19, 30); // 12:30 in Vancouver (PDT)
@@ -84,6 +84,20 @@ describe('toolDeclarations', () => {
       'my_reminders',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
+  });
+
+  it('never drifts from TOOL_CATALOGUE: every declaration equals its catalogue entry', () => {
+    const declared = toolDeclarations(ports());
+    expect(declared).toHaveLength(TOOL_CATALOGUE.length);
+    for (const entry of TOOL_CATALOGUE) {
+      const declaration = declared.find((d) => d.name === entry.name);
+      expect(declaration, entry.name).toBeDefined();
+      expect(declaration).toEqual({
+        name: entry.name,
+        description: entry.description,
+        parameters: entry.parameters,
+      });
+    }
   });
 });
 

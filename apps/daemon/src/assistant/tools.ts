@@ -2,6 +2,7 @@ import { z } from 'zod';
 import {
   redactEvidenceText,
   scanOutboundRequest,
+  TOOL_CATALOGUE,
   type ClubResource,
   type Reminder,
   type ToolCall,
@@ -72,55 +73,21 @@ const schemas = {
 } as const;
 type ToolName = keyof typeof schemas;
 
-const QUERY_PARAMETERS = {
-  type: 'object',
-  properties: { query: { type: 'string', description: 'What to search for.' } },
-  required: ['query'],
-};
-const NO_PARAMETERS = { type: 'object', properties: {} };
-
-export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] => [
-  {
-    name: 'search_archive',
-    description:
-      "Search past messages in this Discord server's archived channels that the asking member can see.",
-    parameters: QUERY_PARAMETERS,
-  },
-  {
-    name: 'open_resource',
-    description: 'Open one of the club resources listed in the instructions, by its id.',
-    parameters: {
-      type: 'object',
-      properties: { resourceId: { type: 'string', description: 'The resource id.' } },
-      required: ['resourceId'],
-    },
-  },
-  ...(ports.webSearch === undefined
-    ? []
-    : [
-        {
-          name: 'web_search',
-          description:
-            'Search the public web. Never put names, contact details or private club information in the query.',
-          parameters: QUERY_PARAMETERS,
-        },
-      ]),
-  {
-    name: 'server_info',
-    description: "The server's description and the channels the asking member can see.",
-    parameters: NO_PARAMETERS,
-  },
-  {
-    name: 'current_time',
-    description: "Today's date and the current time in the club's time zone.",
-    parameters: NO_PARAMETERS,
-  },
-  {
-    name: 'my_reminders',
-    description: "The asking member's own upcoming reminders.",
-    parameters: NO_PARAMETERS,
-  },
-];
+/**
+ * Declarations for the live provider request, derived from `TOOL_CATALOGUE`
+ * (`@bananasaurs/core`) so a declaration's name, description and parameters
+ * can never drift from what the skill detail page shows (a test asserts
+ * every entry here equals its catalogue entry). `web_search` is the one
+ * conditional entry: it drops out entirely while search is off (ADR 0066).
+ */
+export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =>
+  TOOL_CATALOGUE.filter(
+    (entry) => entry.name !== 'web_search' || ports.webSearch !== undefined,
+  ).map((entry) => ({
+    name: entry.name,
+    description: entry.description,
+    parameters: entry.parameters,
+  }));
 
 const MAX_RESULT_CHARS = 6_000;
 const evidence = (
