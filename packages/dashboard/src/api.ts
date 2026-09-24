@@ -79,7 +79,12 @@ export const apiFetch = async <T>(
   const headers: Record<string, string> = { ...(init.headers as Record<string, string>) };
   if (WRITE_METHODS.has(method)) {
     headers[CSRF_HEADER] = csrfToken;
-    headers['content-type'] = 'application/json';
+    // A bodiless write (the dashboard's DELETEs carry no body) must not claim
+    // `application/json`: Fastify rejects an empty labelled body before
+    // routing. Only label the request when a body is actually sent.
+    if (init.body !== undefined) {
+      headers['content-type'] = 'application/json';
+    }
   }
 
   const response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' });

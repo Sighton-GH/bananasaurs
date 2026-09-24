@@ -248,8 +248,11 @@ describe('login sets a session cookie with the right attributes (ADR 0029)', () 
     // can never send application/json. Parsing the body turned a route that
     // was unreachable from such a page into a login CSRF: a silent sign-in
     // to the attacker's account. Measured pre-fix: 500 without the OAuth
-    // routes, 401 with the root parser. This pins the 500 with the routes
-    // mounted, so the leak cannot return quietly.
+    // routes, 401 with the root parser. Task 2's error-handler change keeps
+    // Fastify's own 4xx statuses instead of flattening them to 500, so the
+    // unsupported-media-type refusal now answers 415 with its code — still a
+    // refusal, which is what this test pins, so the leak cannot return
+    // quietly.
     const withOAuth = createServer({
       deps: { ...deps, mcpPublicUrl: 'https://bot.test' },
       registerRoutes: registerOAuthRoutes,
@@ -261,8 +264,8 @@ describe('login sets a session cookie with the right attributes (ADR 0029)', () 
         headers: { 'content-type': 'application/x-www-form-urlencoded' },
         payload: new URLSearchParams({ username: 'owner', password: 'wrong' }).toString(),
       });
-      expect(response.statusCode).toBe(500);
-      expect(response.json()).toEqual({ error: 'internal' });
+      expect(response.statusCode).toBe(415);
+      expect(response.json()).toEqual({ error: 'FST_ERR_CTP_INVALID_MEDIA_TYPE' });
     } finally {
       await withOAuth.close();
     }
