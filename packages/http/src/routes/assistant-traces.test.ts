@@ -204,7 +204,7 @@ describe('assistant trace routes', () => {
     expect(response.json()).toEqual({ error: 'not-found' });
   });
 
-  it('serves the daily usage strip', async () => {
+  it('serves the daily usage strip with quiet days as zeros', async () => {
     clock = Date.UTC(2026, 8, 21, 12, 0, 0);
     grant('audit.read');
     const { cookie } = await signIn();
@@ -214,12 +214,16 @@ describe('assistant trace routes', () => {
     );
     const response = await app.inject({
       method: 'GET',
-      url: '/api/assistant/usage?days=14',
+      url: '/api/assistant/usage?days=3',
       headers: { cookie },
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
-      days: [{ day: '2026-09-21', answers: 1, failures: 0, fallbacks: 0, tokens: 130 }],
+      days: [
+        { day: '2026-09-19', answers: 0, failures: 0, fallbacks: 0, tokens: 0 },
+        { day: '2026-09-20', answers: 0, failures: 0, fallbacks: 0, tokens: 0 },
+        { day: '2026-09-21', answers: 1, failures: 0, fallbacks: 0, tokens: 130 },
+      ],
     });
   });
 });
