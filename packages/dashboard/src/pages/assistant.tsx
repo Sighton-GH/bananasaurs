@@ -677,7 +677,7 @@ export function AssistantPage() {
     <>
       <PageHeader
         title="Assistant"
-        purpose="How members reach the assistant, the instructions each behaviour follows, and who may use it."
+        purpose="Behaviours decide who answers, how they sound, and who may ask."
         actions={
           <>
             <Link href="/assistant/activity">

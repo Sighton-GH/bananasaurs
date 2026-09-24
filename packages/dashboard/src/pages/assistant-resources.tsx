@@ -212,7 +212,7 @@ export function AssistantResourcesPage() {
     <>
       <PageHeader
         title="Resources"
-        purpose="Reviewed sources the assistant may read, how fresh they are, and whether fetching them is working."
+        purpose="Resources are the websites, documents and GitHub repositories the assistant can read."
       />
       <DataState
         resource={assistant.resource}

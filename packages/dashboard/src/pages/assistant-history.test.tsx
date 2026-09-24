@@ -70,6 +70,17 @@ afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('AssistantHistoryPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    stubFetch(stubs({ traces: [ROW_NEW, ROW_MID], nextBefore: 1_790_000_001_000 }));
+    renderWithSession(<AssistantHistoryPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'History' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Every assistant run, with the details you need to see why it answered the way it did.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('renders rows, the usage strip and the older activity section', async () => {
     stubFetch(stubs({ traces: [ROW_NEW, ROW_MID], nextBefore: 1_790_000_001_000 }));
     renderWithSession(<AssistantHistoryPage />);

@@ -844,7 +844,7 @@ export function ProvidersPage() {
     <>
       <PageHeader
         title="AI setup"
-        purpose="Choose the AI service that answers member questions. Bananasaurs sends it the question and any server context you allow."
+        purpose="Choose which AI models answer, in what order, and connect the services they need."
       />
       <div className="max-w-4xl">
         <DataState resource={assistant.resource}>
