@@ -8,6 +8,7 @@ import {
   enabledResourcesForGuild,
   resolveAssistantBehaviour,
   extractEvidenceText,
+  SAFETY_SUFFIX,
   validateResourceUrl,
 } from './index.js';
 import { redactEvidenceText, scanOutboundRequest } from '../providers/outbound-safety.js';
@@ -250,6 +251,72 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
       'OTHER CLUB RESOURCES\nrules: Rules - https://example.com/rules',
     );
     expect(compiled.systemInstruction).not.toContain('open_resource');
+  });
+});
+
+describe('compileAssistantContext safety suffix (ADR 0074)', () => {
+  const resource = (id: string, title: string) => ({
+    id,
+    guildId: 'g1',
+    title,
+    url: `https://example.com/${id}`,
+    kind: 'website' as const,
+    enabled: true,
+    reviewedAt: '2026-09-01T00:00:00.000Z',
+  });
+  it('appends the suffix after the behaviour prompt and exposes protectedText and sections', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'SFU Racerbot club',
+      resources: [resource('web', 'Website')],
+      skills: [CLUB_ASSISTANT_SKILLS[0]!],
+      evidence: [],
+    });
+    const prompt = 'Use Canadian English.';
+    const promptAt = compiled.systemInstruction.indexOf(prompt);
+    const suffixAt = compiled.systemInstruction.indexOf(SAFETY_SUFFIX);
+    const cardAt = compiled.systemInstruction.indexOf('SERVER CARD');
+    expect(promptAt).toBeGreaterThanOrEqual(0);
+    expect(suffixAt).toBeGreaterThan(promptAt + prompt.length);
+    expect(cardAt).toBeGreaterThan(suffixAt + SAFETY_SUFFIX.length);
+    const skillsBlock = compiled.systemInstruction.slice(
+      compiled.systemInstruction.indexOf('ALLOWED SKILLS'),
+    );
+    // protectedText is the quotable prompt core: behaviour prompt, suffix and
+    // skills. The server card and resource list stay out so members may see them.
+    expect(compiled.protectedText).toBe(`${prompt}\n\n${SAFETY_SUFFIX}\n\n${skillsBlock}`);
+    expect(compiled.sections.map((section) => section.name)).toEqual([
+      'surface',
+      'behaviour-prompt',
+      'safety-suffix',
+      'evidence-rule',
+      'server-card',
+      'resources',
+      'skills',
+    ]);
+    // Sections carry the exact part texts joined into systemInstruction.
+    expect(compiled.sections.map((section) => section.text).join('\n\n')).toBe(
+      compiled.systemInstruction,
+    );
+    const byName = new Map(compiled.sections.map((section) => [section.name, section.text]));
+    expect(byName.get('behaviour-prompt')).toBe(prompt);
+    expect(byName.get('safety-suffix')).toBe(SAFETY_SUFFIX);
+    expect(byName.get('server-card')).toContain('SFU Racerbot club');
+    expect(byName.get('resources')).toContain('web: Website');
+    expect(byName.get('skills')).toBe(skillsBlock);
+  });
+  it('omits the empty resources section like the instruction join does', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'SFU Racerbot club',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(compiled.sections.map((section) => section.name)).not.toContain('resources');
+    expect(compiled.sections.map((section) => section.text).join('\n\n')).toBe(
+      compiled.systemInstruction,
+    );
   });
 });
 
