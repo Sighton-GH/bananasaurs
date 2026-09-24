@@ -59,6 +59,76 @@ const statusKind = (status: number): ProviderErrorKind => {
   return 'invalid-response';
 };
 
+/** ADR 0077: the OpenRouter (and NVIDIA NIM) error body shape. */
+const errorBodySchema = z.object({
+  error: z.object({
+    code: z.number().optional(),
+    message: z.string().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  }),
+});
+
+/** Never trust an upstream error body: bounded before it is even parsed. */
+const MAX_ERROR_BODY_CHARS = 4_096;
+
+const readErrorBody = async (response: Response): Promise<unknown> => {
+  let text: string;
+  try {
+    text = await response.text();
+  } catch {
+    return undefined;
+  }
+  try {
+    return JSON.parse(text.slice(0, MAX_ERROR_BODY_CHARS)) as unknown;
+  } catch {
+    return undefined;
+  }
+};
+
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/g;
+
+/**
+ * The provider's short reason for a non-2xx, safe to log: the error code and
+ * up to 160 characters of its message, control characters stripped. Never
+ * the request, headers, or key (CLAUDE.md rule 4).
+ */
+const shortReason = (detail: z.infer<typeof errorBodySchema> | undefined): string | undefined => {
+  if (detail === undefined) return undefined;
+  const { code, message } = detail.error;
+  const cleanMessage =
+    message === undefined ? undefined : message.replace(CONTROL_CHARS, '').slice(0, 160);
+  const parts = [
+    code === undefined ? undefined : `code ${code}`,
+    cleanMessage === undefined || cleanMessage === '' ? undefined : cleanMessage,
+  ].filter((part): part is string => part !== undefined);
+  return parts.length === 0 ? undefined : parts.join(': ');
+};
+
+/**
+ * ADR 0077: OpenRouter's docs give the free-model daily cap and the
+ * free-model per-minute cap the same HTTP status (429) and the same
+ * `error_type` (`rate_limit_exceeded`) - there is no field that positively
+ * distinguishes them. The conservative rule: only a `:free` model, and only
+ * when the message itself names the per-day limit.
+ */
+const DAILY_FREE_QUOTA_MESSAGE = /free[\s\S]{0,40}per[- ]?day|per[- ]?day[\s\S]{0,40}free/i;
+const isDailyFreeQuota = (model: string, message: string | undefined): boolean =>
+  model.endsWith(':free') && message !== undefined && DAILY_FREE_QUOTA_MESSAGE.test(message);
+
+/**
+ * `X-RateLimit-Reset` is not documented for this endpoint (ADR 0077); read
+ * defensively. Accepts seconds or milliseconds since epoch (disambiguated by
+ * magnitude) and only when finite and strictly in the future.
+ */
+const parseRateLimitReset = (headers: Headers, nowMs: number): number | undefined => {
+  const raw = headers.get('x-ratelimit-reset');
+  if (raw === null) return undefined;
+  const value = Number(raw);
+  if (!Number.isFinite(value)) return undefined;
+  const ms = value < 1_000_000_000_000 ? value * 1000 : value;
+  return ms > nowMs ? ms : undefined;
+};
+
 /**
  * A malformed `arguments` string still returns the call with empty args; the
  * tool's Zod schema will refuse it at execution time.
@@ -180,10 +250,26 @@ export class OpenAiCompatibleProvider implements TextProvider {
       );
     }
     if (!response.ok) {
+      const parsedBody = errorBodySchema.safeParse(await readErrorBody(response));
+      const detail = parsedBody.success ? parsedBody.data : undefined;
+      const reason = shortReason(detail);
+      if (response.status === 429 && isDailyFreeQuota(request.model, detail?.error.message)) {
+        const resetAt = parseRateLimitReset(response.headers, Date.now());
+        throw new ProviderError(
+          'quota',
+          reason === undefined
+            ? `${this.id} free-model daily limit reached`
+            : `${this.id} free-model daily limit reached (${reason})`,
+          false,
+          { quotaScope: 'daily-free', ...(resetAt === undefined ? {} : { resetAt }) },
+        );
+      }
       const kind = statusKind(response.status);
       throw new ProviderError(
         kind,
-        `${this.id} request failed with HTTP ${response.status}`,
+        reason === undefined
+          ? `${this.id} request failed with HTTP ${response.status}`
+          : `${this.id} request failed with HTTP ${response.status} (${reason})`,
         kind === 'rate-limit' || kind === 'outage',
       );
     }

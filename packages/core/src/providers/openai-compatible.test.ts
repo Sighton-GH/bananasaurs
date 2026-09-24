@@ -206,6 +206,110 @@ describe('OpenAI-compatible providers', () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
+  describe('non-2xx error detail (ADR 0077)', () => {
+    const dailyCapBody = JSON.stringify({
+      error: { code: 429, message: 'Rate limit exceeded: free-models-per-day' },
+    });
+
+    it('classifies a free-model daily cap 429 as a non-retryable quota error with resetAt', async () => {
+      const resetSeconds = Math.floor(Date.now() / 1000) + 3600;
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(dailyCapBody, {
+          status: 429,
+          headers: { 'x-ratelimit-reset': String(resetSeconds) },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({
+          model: 'nvidia/nemotron:free',
+          messages: [{ role: 'user', text: 'q' }],
+        })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        kind: 'quota',
+        retryable: false,
+        quotaScope: 'daily-free',
+        resetAt: resetSeconds * 1000,
+      });
+      expect((err as Error).message).toContain('free-model daily limit reached');
+      expect((err as Error).message).toContain('free-models-per-day');
+    });
+
+    it('treats a 429 on a :free model with no day-scoped message as an ordinary rate limit', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ error: { code: 429, message: 'Rate limit exceeded' } }), {
+            status: 429,
+          }),
+        );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({
+          model: 'nvidia/nemotron:free',
+          messages: [{ role: 'user', text: 'q' }],
+        }),
+      ).rejects.toMatchObject({ kind: 'rate-limit', retryable: true, quotaScope: undefined });
+    });
+
+    it('treats a daily-cap-worded 429 on a paid model as an ordinary rate limit', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(dailyCapBody, { status: 429 }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({
+          model: 'nvidia/nemotron',
+          messages: [{ role: 'user', text: 'q' }],
+        }),
+      ).rejects.toMatchObject({ kind: 'rate-limit', retryable: true });
+    });
+
+    it('does not throw from parsing a malformed, empty, or oversized error body', async () => {
+      const bodies = ['not-json{', '', `{"error":${'x'.repeat(5000)}`];
+      for (const body of bodies) {
+        const fetch = vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(new Response(body, { status: 429 }));
+        const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+        await expect(
+          provider.generateText({
+            model: 'nvidia/nemotron:free',
+            messages: [{ role: 'user', text: 'q' }],
+          }),
+        ).rejects.toMatchObject({ kind: 'rate-limit', retryable: true });
+      }
+    });
+
+    it('never puts the API key in the error message', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(JSON.stringify({ error: { code: 401, message: 'bad key' } }), {
+          status: 401,
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'super-secret-key', fetch });
+      const err = await provider
+        .generateText({ model: 'free-model', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect((err as Error).message).not.toContain('super-secret-key');
+    });
+
+    it('ignores an invalid X-RateLimit-Reset header', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        new Response(dailyCapBody, {
+          status: 429,
+          headers: { 'x-ratelimit-reset': 'not-a-number' },
+        }),
+      );
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm:free', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect((err as { resetAt?: number }).resetAt).toBeUndefined();
+    });
+  });
+
   it('ignores thinkingBudget instead of sending it', async () => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response.clone());
     const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
