@@ -170,6 +170,41 @@ describe('assistant command subscriber', () => {
     );
   });
 
+  it('always sets invocationId, and messageId plus reply references for mentions', async () => {
+    const h = harness();
+    await h.subscriber.handle(slash('ask', [{ name: 'question', value: 'When is the meeting?' }]));
+    expect(h.queued[0]?.invocationId).toBe('678901234567890123');
+    expect(h.queued[0]?.messageId).toBeUndefined();
+
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+      referencedMessageId: '890123456789012399',
+      referencedAuthorId: '901234567890123456',
+    });
+    expect(h.queued[1]).toMatchObject({
+      invocationId: '890123456789012345',
+      messageId: '890123456789012345',
+      referencedMessageId: '890123456789012399',
+      referencedAuthorId: '901234567890123456',
+    });
+  });
+
   it('posts one safe IT escalation to the configured channel and reviewer roles', async () => {
     const h = harness([{ ...club, surface: 'it-services', callerRoleIds: ['987654321098765432'] }]);
     h.invoke.mockResolvedValueOnce({
@@ -612,8 +647,9 @@ describe('assistant mention failure path', () => {
     await handler.run(payload, context);
     expect(h.invoke).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(1);
-    // Every stage was persisted, ending at 'answered' for a plain result.
+    // Every stage was persisted: the invoke, each posted part, then 'answered'.
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
       'invoke-done',
       'answered',
     ]);
@@ -679,6 +715,7 @@ describe('assistant mention failure path', () => {
     expect(h.send).toHaveBeenCalledTimes(2);
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
       'invoke-done',
+      'invoke-done',
       'answered',
     ]);
     // Attempt 2: only the escalation post is sent.
@@ -689,6 +726,7 @@ describe('assistant mention failure path', () => {
       allowedMentions: { parse: [], roles: ['111222333444555666'] },
     });
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
       'invoke-done',
       'answered',
       'escalation-sent',

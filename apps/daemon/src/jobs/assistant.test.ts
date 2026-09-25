@@ -1,14 +1,20 @@
 import { PassThrough } from 'node:stream';
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import {
   ProviderError,
   RetryAfterError,
   type AssistantBehaviour,
+  type DiscordMessageRef,
   type JobContext,
   type Logger,
   type OutgoingMessage,
 } from '@bananasaurs/core';
+import { conversationRepo, guildRepo, traceRepo } from '@bananasaurs/storage';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import type {
   AssistantCommandService,
   AssistantInvocation,
@@ -217,5 +223,346 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     expect(sent[0]?.message.content).toBe(
       'The AI service is busy right now. Try again in a minute. No action was taken.',
     );
+  });
+});
+
+/**
+ * Task 14: every answer joins a conversation, posts as Discord replies in
+ * parts with a staged cursor, shows typing best-effort, and writes a trace.
+ * Real storage (in-memory migrated database), faked service and Discord.
+ */
+describe('assistantInvokeHandler (Task 14: conversations, replies, typing, traces)', () => {
+  const BOT_ID = '901234567890123456';
+  const OTHER_ID = '666666666666666666';
+  const AMA = '444444444444444444';
+  const BO = '555555555555555555';
+
+  let t: MigratedTestDatabase;
+  let nowMs: number;
+
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+    nowMs = NOW;
+  });
+  afterEach(() => t.close());
+
+  const scope = () => t.scopes.forGuild(GUILD_ID);
+
+  interface Posted {
+    channelId: string;
+    message: OutgoingMessage;
+  }
+
+  const harness = (answer: (input: AssistantInvocation) => AssistantInvocationResult) => {
+    const inputs: AssistantInvocation[] = [];
+    const svc: AssistantCommandService = {
+      behavioursForGuild: async () => [behaviour],
+      invoke: async (input) => {
+        inputs.push(input);
+        return answer(input);
+      },
+    };
+    const sent: Posted[] = [];
+    let idSeq = 0;
+    const nextRef = (channelId: string): DiscordMessageRef => {
+      idSeq += 1;
+      return { channelId, messageId: `posted-${String(idSeq).padStart(3, '0')}` };
+    };
+    const send = vi.fn(async (channelId: string, message: OutgoingMessage) => {
+      sent.push({ channelId, message: message });
+      return nextRef(channelId);
+    });
+    const respond = vi.fn(async () => nextRef(CHANNEL_ID));
+    const sendTyping = vi.fn(async () => undefined);
+    const fetchMessageContent = vi.fn(
+      async (): Promise<
+        { authorId: string; authorName: string; content: string } | undefined
+      > => undefined,
+    );
+    const handler = assistantInvokeHandler({
+      guildId: GUILD_ID,
+      service: svc,
+      openToken: () => undefined,
+      respond,
+      send,
+      logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => nowMs,
+      conversations: { scope: scope(), botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+      sendTyping,
+      fetchMessageContent,
+    });
+    const run = async (
+      input: Record<string, unknown>,
+      cursor: string | null = null,
+    ): Promise<{ cursor: string | null; error?: unknown }> => {
+      let saved: string | null = cursor;
+      try {
+        await handler.run(handler.payload.parse(input), {
+          jobId: 1,
+          attempts: cursor === null ? 1 : 2,
+          cursor,
+          saveCursor: (c) => {
+            saved = c;
+          },
+        });
+      } catch (error) {
+        return { cursor: saved, error };
+      }
+      return { cursor: saved };
+    };
+    return { inputs, sent, send, respond, sendTyping, fetchMessageContent, run };
+  };
+
+  const mention = (over: Record<string, unknown> = {}): Record<string, unknown> => ({
+    channelId: CHANNEL_ID,
+    userId: AMA,
+    callerRoleIds: [],
+    behaviourId: behaviour.id,
+    command: 'ask',
+    input: { question: 'first question' },
+    source: 'mention',
+    invocationId: 'inv-1',
+    messageId: 'msg-1',
+    authorName: 'Ama',
+    ...over,
+  });
+
+  it('posts a mention answer as a reply; a 4,500-character answer posts 3 parts, only the first with replyTo', async () => {
+    const h = harness(() => ({ ok: true, content: 'x'.repeat(4_500) }));
+    await h.run(mention({ invocationId: 'inv-parts', messageId: 'msg-parts' }));
+
+    expect(h.sent).toHaveLength(3);
+    expect(h.sent[0]?.message).toMatchObject({
+      replyTo: 'msg-parts',
+      allowedMentions: { parse: [] },
+    });
+    expect(h.sent[0]?.message.content).toHaveLength(2_000);
+    expect(h.sent[1]?.message).not.toHaveProperty('replyTo');
+    expect(h.sent[2]?.message).not.toHaveProperty('replyTo');
+    for (const part of h.sent) {
+      expect(part.message.allowedMentions).toEqual({ parse: [] });
+    }
+  });
+
+  it('a crash after part 1 resumes with parts 2-3 only and never re-calls the provider', async () => {
+    let providerCalls = 0;
+    const h = harness(() => {
+      providerCalls += 1;
+      return { ok: true, content: 'x'.repeat(4_500) };
+    });
+    const successful: string[] = [];
+    let sends = 0;
+    h.send.mockImplementation(async (channelId: string, message: OutgoingMessage) => {
+      sends += 1;
+      const id = `posted-${String(sends).padStart(3, '0')}`;
+      if (sends === 2) throw new Error('discord 500');
+      successful.push(String(message.content));
+      return { channelId, messageId: id };
+    });
+    const payload = mention({ invocationId: 'inv-crash', messageId: 'msg-crash' });
+
+    const attempt1 = await h.run(payload);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(providerCalls).toBe(1);
+
+    const attempt2 = await h.run(payload, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(providerCalls).toBe(1);
+    // Part 1 posted once, parts 2-3 posted on the retry: three contents, each once.
+    expect(successful).toHaveLength(3);
+    expect(successful[0]).toHaveLength(2_000);
+    expect(new Set(successful).size).toBe(3);
+    const trace = traceRepo.getTrace(scope(), 'trace_inv-crash');
+    expect(trace?.discordMessageIds).toHaveLength(3);
+    expect(new Set(trace?.discordMessageIds).size).toBe(3);
+  });
+
+  it('a follow-up carries the first question and answer as history', async () => {
+    const h = harness((input) => ({
+      ok: true,
+      content: `answer to ${String((input.input as Record<string, string>).question)}`,
+    }));
+    await h.run(
+      mention({ invocationId: 'inv-f1', messageId: 'msg-f1', input: { question: 'first question' } }),
+    );
+    nowMs += 5 * 60_000;
+    await h.run(
+      mention({ invocationId: 'inv-f2', messageId: 'msg-f2', input: { question: 'second question' } }),
+    );
+
+    expect(h.inputs).toHaveLength(2);
+    const history = h.inputs[1]?.history ?? [];
+    expect(history[0]?.text).toBe('first question');
+    expect(history[1]?.text).toBe('answer to first question');
+  });
+
+  it('a reply by another member to the bot answer continues the conversation with both speakers labelled', async () => {
+    const h = harness((input) => ({
+      ok: true,
+      content: `answer to ${String((input.input as Record<string, string>).question)}`,
+    }));
+    await h.run(
+      mention({ invocationId: 'inv-r1', messageId: 'msg-r1', input: { question: 'first question' } }),
+    );
+    const postedId = (await h.send.mock.results[0]?.value) as DiscordMessageRef;
+    await h.run(
+      mention({
+        invocationId: 'inv-r2',
+        messageId: 'msg-r2',
+        userId: BO,
+        authorName: 'Bo',
+        referencedMessageId: postedId.messageId,
+        referencedAuthorId: BOT_ID,
+        input: { question: 'and parking?' },
+      }),
+    );
+
+    const first = conversationRepo.lookupMessage(scope(), 'msg-r1');
+    const second = conversationRepo.lookupMessage(scope(), 'msg-r2');
+    expect(second?.conversationId).toBe(first?.conversationId);
+    const history = h.inputs[1]?.history ?? [];
+    expect(history[0]?.text).toBe('Ama: first question');
+    expect(history.at(-1)?.text).toBe('Bo: and parking?');
+  });
+
+  it('a quoted reply carries the untrusted envelope with the author name', async () => {
+    const h = harness(() => ({ ok: true, content: 'yes, that is right' }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the hall opens at seven',
+    });
+    await h.run(
+      mention({
+        invocationId: 'inv-q',
+        messageId: 'msg-q',
+        referencedMessageId: 'unknown-777',
+        referencedAuthorId: OTHER_ID,
+        input: { question: 'is that right?' },
+      }),
+    );
+
+    expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, 'unknown-777');
+    expect(h.inputs[0]?.quoteEnvelope).toBe(
+      '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+    );
+  });
+
+  it('a quote fetch failure still posts the answer and flags the trace quote-unavailable', async () => {
+    const h = harness(() => ({ ok: true, content: 'answered without the quote' }));
+    h.fetchMessageContent.mockRejectedValue(new Error('discord 403'));
+    await h.run(
+      mention({
+        invocationId: 'inv-qf',
+        messageId: 'msg-qf',
+        referencedMessageId: 'unknown-778',
+        referencedAuthorId: OTHER_ID,
+      }),
+    );
+
+    expect(h.sent).toHaveLength(1);
+    expect(traceRepo.getTrace(scope(), 'trace_inv-qf')?.flags).toContain('quote-unavailable');
+  });
+
+  it('/ask links the respond message id so a later reply continues the conversation', async () => {
+    const h = harness((input) => ({
+      ok: true,
+      content: `answer to ${String((input.input as Record<string, string>).question)}`,
+    }));
+    const openToken = vi.fn((sealed: string): string | undefined =>
+      sealed === 'sealed-7' ? 'tok-7' : undefined,
+    );
+    const slashHandler = assistantInvokeHandler({
+      guildId: GUILD_ID,
+      service: {
+        behavioursForGuild: async () => [behaviour],
+        invoke: async (input) => {
+          h.inputs.push(input);
+          return { ok: true, content: `answer to ${String((input.input as Record<string, string>).question)}` };
+        },
+      },
+      openToken,
+      respond: h.respond,
+      send: h.send,
+      logger: pino({ level: 'silent' }),
+      logChannelId: () => undefined,
+      now: () => nowMs,
+      conversations: { scope: scope(), botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+      sendTyping: h.sendTyping,
+      fetchMessageContent: h.fetchMessageContent,
+    });
+    await slashHandler.run(
+      slashHandler.payload.parse({
+        channelId: CHANNEL_ID,
+        userId: AMA,
+        callerRoleIds: [],
+        behaviourId: behaviour.id,
+        command: 'ask',
+        input: { question: 'slash question' },
+        source: 'slash-command',
+        interaction: { interactionId: 'int-7', sealedToken: 'sealed-7' },
+        invocationId: 'int-7',
+        authorName: 'Ama',
+      }),
+      { jobId: 1, attempts: 1, cursor: null, saveCursor: () => undefined },
+    );
+
+    expect(h.respond).toHaveBeenCalledTimes(1);
+    const ref = (await h.respond.mock.results[0]?.value) as DiscordMessageRef;
+    expect(conversationRepo.lookupMessage(scope(), ref.messageId)?.role).toBe('assistant');
+
+    await h.run(
+      mention({
+        invocationId: 'inv-q7',
+        messageId: 'msg-q7',
+        userId: BO,
+        authorName: 'Bo',
+        referencedMessageId: ref.messageId,
+        referencedAuthorId: BOT_ID,
+        input: { question: 'tell me more' },
+      }),
+    );
+    const history = h.inputs.at(-1)?.history ?? [];
+    expect(history[0]?.text).toContain('slash question');
+    expect(conversationRepo.lookupMessage(scope(), 'msg-q7')?.conversationId).toBe(
+      conversationRepo.lookupMessage(scope(), ref.messageId)?.conversationId,
+    );
+  });
+
+  it('writes a trace with outcome, attempts, sections and discord message ids', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'short answer',
+      detail: {
+        sections: [
+          { name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' },
+          { name: 'history', chars: 8, estTokens: 2, text: 'user: hi' },
+        ],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [],
+        usage: {},
+        guard: { removed: [] },
+        history: [],
+      },
+    }));
+    await h.run(mention({ invocationId: 'inv-t', messageId: 'msg-t' }));
+
+    const trace = traceRepo.getTrace(scope(), 'trace_inv-t');
+    expect(trace).toMatchObject({ outcome: 'answered' });
+    expect(trace?.attempts).toHaveLength(1);
+    expect(trace?.sections.map((section) => section.name)).toEqual(
+      expect.arrayContaining(['behaviour-prompt', 'history']),
+    );
+    expect(trace?.discordMessageIds).toHaveLength(1);
+    expect(trace?.conversationId).toBe(conversationRepo.lookupMessage(scope(), 'msg-t')?.conversationId);
+  });
+
+  it('a typing failure never fails the job', async () => {
+    const h = harness(() => ({ ok: true, content: 'hello' }));
+    h.sendTyping.mockRejectedValue(new Error('typing failed'));
+    await expect(h.run(mention({ invocationId: 'inv-ty', messageId: 'msg-ty' }))).resolves.toBeDefined();
+    expect(h.sent).toHaveLength(1);
   });
 });
