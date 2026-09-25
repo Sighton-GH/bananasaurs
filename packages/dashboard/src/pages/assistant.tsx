@@ -5,11 +5,13 @@ import {
   ASSISTANT_URL,
   BOT_TAG_URL,
   LOG_CHANNEL_URL,
+  behaviourPreviewUrl,
   behaviourUrl,
   decisionReviewUrl,
   decisionSaveUrl,
   type AssistantBehaviourView,
   type AssistantData,
+  type BehaviourPreview,
   type DecisionRow,
   type TicketRow,
 } from '../api/assistant.js';
@@ -676,7 +678,7 @@ export function AssistantPage() {
   return (
     <>
       <PageHeader
-        title="Assistant"
+        title="Behaviours"
         purpose="Behaviours decide who answers, how they sound, and who may ask."
         actions={
           <>
@@ -992,6 +994,75 @@ function BehaviourPromptCard({
   );
 }
 
+/**
+ * Task 18: the full compiled prompt for one behaviour, fetched from
+ * `GET /api/assistant/behaviours/:id/preview`. Every section the model
+ * receives, in plain words with its size, each expandable to its text.
+ */
+const PREVIEW_LABELS: Readonly<Record<string, string>> = {
+  surface: 'How members reach it',
+  'behaviour-prompt': 'Your prompt',
+  'safety-suffix': 'Bananasaurs safety rules (locked)',
+  'evidence-rule': 'Evidence rule',
+  'server-card': 'Server card',
+  resources: 'Club resources',
+  skills: 'Allowed skills',
+};
+
+function BehaviourPreviewPanel({
+  behaviourId,
+  onClose,
+}: {
+  readonly behaviourId: string;
+  readonly onClose: () => void;
+}) {
+  const session = useSession();
+  const load = useCallback(
+    () => session.read<BehaviourPreview>(behaviourPreviewUrl(behaviourId)),
+    [session, behaviourId],
+  );
+  const preview = useResource('full prompt', load);
+  return (
+    <section
+      aria-label="Full prompt preview"
+      className="mt-2 rounded-sm border border-line bg-canvas p-3"
+    >
+      <div className="flex items-center justify-between gap-2">
+        <h3 className="text-sm font-medium">Full prompt</h3>
+        <Button className="px-1.5 py-0 text-xs" onClick={onClose}>
+          Close preview
+        </Button>
+      </div>
+      <DataState resource={preview.resource}>
+        {(data) => (
+          <>
+            <ul className="mt-2 grid gap-1">
+              {data.sections.map((section) => (
+                <li key={section.name}>
+                  <details className="rounded-sm border border-line bg-panel px-2 py-1">
+                    <summary className="cursor-pointer text-sm">
+                      <span>{PREVIEW_LABELS[section.name] ?? section.name}</span>{' '}
+                      <span className="text-xs text-ink-muted">
+                        {section.chars} characters · ~{section.estTokens} tokens
+                      </span>
+                    </summary>
+                    <pre className="mt-1 overflow-x-auto font-mono text-xs whitespace-pre-wrap">
+                      {section.text}
+                    </pre>
+                  </details>
+                </li>
+              ))}
+            </ul>
+            <p className="mt-2 text-sm text-ink-muted">
+              Total: {data.totalChars} characters · ~{data.totalEstTokens} tokens
+            </p>
+          </>
+        )}
+      </DataState>
+    </section>
+  );
+}
+
 function AssistantReady({
   data,
   session,
@@ -1012,6 +1083,7 @@ function AssistantReady({
   readonly onCreated: (id: string) => void;
 }) {
   const toast = useToast();
+  const [previewId, setPreviewId] = useState<string | undefined>(undefined);
   const current = useMemo(
     () => data.behaviours.find((b) => b.id === selected) ?? data.behaviours[0]!,
     [data.behaviours, selected],
@@ -1059,27 +1131,47 @@ function AssistantReady({
                   return name === undefined ? 'Mention role not set' : `Members mention @${name}`;
                 })();
           return (
-            <button
-              type="button"
+            <div
               key={item.id}
-              onClick={() => onSelect(item.id)}
-              aria-pressed={item.id === current.id}
-              className={`rounded-md border bg-panel p-3 text-left ${item.id === current.id ? 'border-ink' : 'border-line'}`}
+              className={`rounded-md border bg-panel p-3 ${item.id === current.id ? 'border-ink' : 'border-line'}`}
             >
-              <span className="text-xs text-ink-muted">
-                {item.surface === 'direct-command' ? 'Direct command' : `Tag @${item.surface}`}
-              </span>
-              <span className="mt-1 block font-mono text-sm">{mention}</span>
-              <span className="mt-2 flex items-center justify-between gap-2">
-                <strong>{item.name}</strong>
-                <span className="flex flex-wrap items-center gap-1">
-                  {item.answersBotTag === true && <Badge tone="ok">Tag @Bananasaurs</Badge>}
-                  <Badge tone={item.enabled ? 'ok' : 'neutral'}>
-                    {item.enabled ? 'On' : 'Off'}
-                  </Badge>
+              <button
+                type="button"
+                onClick={() => onSelect(item.id)}
+                aria-pressed={item.id === current.id}
+                className="block w-full text-left"
+              >
+                <span className="text-xs text-ink-muted">
+                  {item.surface === 'direct-command' ? 'Direct command' : `Tag @${item.surface}`}
                 </span>
-              </span>
-            </button>
+                <span className="mt-1 block font-mono text-sm">{mention}</span>
+                <span className="mt-2 flex items-center justify-between gap-2">
+                  <strong>{item.name}</strong>
+                  <span className="flex flex-wrap items-center gap-1">
+                    {item.answersBotTag === true && <Badge tone="ok">Tag @Bananasaurs</Badge>}
+                    <Badge tone={item.enabled ? 'ok' : 'neutral'}>
+                      {item.enabled ? 'On' : 'Off'}
+                    </Badge>
+                  </span>
+                </span>
+              </button>
+              <div className="mt-2 flex flex-wrap gap-2 border-t border-line pt-2">
+                <Link href={`/assistant/behaviours/${item.id}/wizard`}>
+                  <Button>Build with the wizard</Button>
+                </Link>
+                <Button
+                  onClick={() => setPreviewId((open) => (open === item.id ? undefined : item.id))}
+                >
+                  Preview the full prompt
+                </Button>
+              </div>
+              {previewId === item.id && (
+                <BehaviourPreviewPanel
+                  behaviourId={item.id}
+                  onClose={() => setPreviewId(undefined)}
+                />
+              )}
+            </div>
           );
         })}
       </section>

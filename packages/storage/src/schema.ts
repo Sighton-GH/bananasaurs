@@ -1923,6 +1923,9 @@ export const assistantBehaviours = sqliteTable(
     resourceIdsJson: text('resource_ids_json').notNull().default('[]'),
     // ADR 0063: the one behaviour that answers a tag of the bot user itself.
     answersBotTag: integer('answers_bot_tag').notNull().default(0),
+    // Task 18: the wizard's structured answers as JSON, so the dashboard can
+    // reopen them for editing. Null means hand-written or cleared.
+    promptWizardJson: text('prompt_wizard_json'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },

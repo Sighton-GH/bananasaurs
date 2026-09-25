@@ -2,8 +2,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import {
   CLUB_ASSISTANT_SKILLS,
+  DEFAULT_WIZARD_ANSWERS,
   parseGuildId,
   ProviderError,
+  SAFETY_SUFFIX,
+  SAFETY_SUFFIX_VERSION,
   skillInstructionLine,
   STARTER_SKILL_IDS,
   TOOL_CATALOGUE,
@@ -1118,5 +1121,179 @@ describe('GET /api/assistant/skills/:skillId', () => {
     expect(sendReminder.json<{ command?: unknown }>().command).toBeUndefined();
     const openResource = await get(cookie, 'open-resource');
     expect(openResource.json<{ command?: unknown }>().command).toBeUndefined();
+  });
+});
+
+describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
+  it('stores valid answers, keeps them when omitted, clears them on null, refuses invalid', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect(
+      (await put(cookie, csrf, body({ promptWizard: DEFAULT_WIZARD_ANSWERS.club }))).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toEqual(
+      DEFAULT_WIZARD_ANSWERS.club,
+    );
+    // Omitted keeps the stored answers; the version still moves on.
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 1, systemPrompt: 'Edited.' }))).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toEqual(
+      DEFAULT_WIZARD_ANSWERS.club,
+    );
+    // Explicit null clears them.
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 2, promptWizard: null }))).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toBeUndefined();
+    // Invalid answers are refused without touching the stored behaviour.
+    const bad = await put(cookie, csrf, body({ promptVersion: 3, promptWizard: { audience: [] } }));
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toEqual({ error: 'bad-request' });
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptVersion).toBe(3);
+  });
+
+  it('audits every saved field plus whether answers exist, never the answers text', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const answers = {
+      ...DEFAULT_WIZARD_ANSWERS.club,
+      clubFacts: 'The mascot is a backwards banana.',
+    };
+    expect((await put(cookie, csrf, body({ promptWizard: answers }))).statusCode).toBe(200);
+    const rows = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .filter(
+        (row) =>
+          row.action === 'assistant_behaviour.saved' ||
+          row.action === 'assistant_behaviour.created',
+      );
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]?.after ?? 'null') as unknown).toEqual({
+      name: 'Club',
+      surface: 'bananasaurs',
+      enabled: true,
+      allowedSkillIds: ['search-club'],
+      callerRoleIds: [],
+      resourceIds: [],
+      mentionRoleId: ROLE_A,
+      ticketChannelId: null,
+      reviewerRoleIds: [],
+      systemPrompt: 'Be helpful.',
+      promptWizard: true,
+    });
+    // The distinctive free-text answer must appear nowhere in the audit row.
+    expect(JSON.stringify(rows[0])).not.toContain('The mascot is a backwards banana.');
+  });
+
+  it('round-trips promptWizard through PUT into GET /api/assistant, and null clears it', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const readBehaviours = async (): Promise<{ promptWizard?: unknown }[]> =>
+      (await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } })).json<{
+        behaviours: { promptWizard?: unknown }[];
+      }>().behaviours;
+    expect(
+      (await put(cookie, csrf, body({ promptWizard: DEFAULT_WIZARD_ANSWERS.club }))).statusCode,
+    ).toBe(200);
+    expect(await readBehaviours()).toEqual([
+      expect.objectContaining({ id: 'club', promptWizard: DEFAULT_WIZARD_ANSWERS.club }),
+    ]);
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 1, promptWizard: null }))).statusCode,
+    ).toBe(200);
+    const cleared = await readBehaviours();
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).not.toHaveProperty('promptWizard');
+  });
+});
+
+describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
+  const get = (cookie: string, id: string) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/assistant/behaviours/${encodeURIComponent(id)}/preview`,
+      headers: { cookie },
+    });
+
+  it('requires config.read', async () => {
+    const { cookie } = await signIn();
+    expect((await get(cookie, 'club')).statusCode).toBe(403);
+  });
+
+  it('404s an unknown behaviour id', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'no-such-behaviour');
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not-found' });
+  });
+
+  it('returns the seven sections in order with sizes, and never member memories', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect((await put(cookie, csrf, body())).statusCode).toBe(200);
+    assistantRepo.putResource(scope, {
+      id: 'handbook',
+      guildId: GUILD,
+      title: 'Club handbook',
+      url: 'https://example.com/handbook',
+      kind: 'document',
+      enabled: true,
+      reviewedAt: new Date(clock).toISOString(),
+    });
+    assistantRepo.putMemory(
+      scope,
+      { id: 'm1', section: 'Likes', content: 'Loves pineapple pizza, hates Mondays' },
+      clock,
+    );
+    const response = await get(cookie, 'club');
+    expect(response.statusCode).toBe(200);
+    const parsed: {
+      sections: { name: string; chars: number; estTokens: number; text: string }[];
+      totalChars: number;
+      totalEstTokens: number;
+    } = response.json();
+    expect(parsed.sections.map((s) => s.name)).toEqual([
+      'surface',
+      'behaviour-prompt',
+      'safety-suffix',
+      'evidence-rule',
+      'server-card',
+      'resources',
+      'skills',
+    ]);
+    for (const section of parsed.sections) {
+      expect(section.chars).toBe(section.text.length);
+      expect(section.estTokens).toBe(Math.ceil(section.chars / 4));
+      expect(section.text.length).toBeGreaterThan(0);
+    }
+    expect(parsed.totalChars).toBe(parsed.sections.reduce((sum, s) => sum + s.chars, 0));
+    expect(parsed.totalEstTokens).toBe(Math.ceil(parsed.totalChars / 4));
+    expect(parsed.sections.find((s) => s.name === 'safety-suffix')?.text).toBe(SAFETY_SUFFIX);
+    expect(parsed.sections.find((s) => s.name === 'behaviour-prompt')?.text).toBe('Be helpful.');
+    expect(JSON.stringify(parsed)).not.toContain('Loves pineapple pizza');
+  });
+});
+
+describe('GET /api/assistant/safety-suffix (Task 18)', () => {
+  const get = (cookie: string) =>
+    app.inject({ method: 'GET', url: '/api/assistant/safety-suffix', headers: { cookie } });
+
+  it('requires config.read', async () => {
+    const { cookie } = await signIn();
+    expect((await get(cookie)).statusCode).toBe(403);
+  });
+
+  it('returns the locked version and the exact text', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ version: SAFETY_SUFFIX_VERSION, text: SAFETY_SUFFIX });
   });
 });

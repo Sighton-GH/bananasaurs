@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CLUB_ASSISTANT_SKILLS,
+  DEFAULT_WIZARD_ANSWERS,
   parseGuildId,
   STARTER_SKILL_IDS,
   type AssistantBehaviour,
@@ -414,5 +415,57 @@ describe('assistant settings (ADR 0065)', () => {
 
   it('refuses a log channel that is not a snowflake', () => {
     expect(() => setLogChannel(t.scopes.forGuild(G), 'general', 10)).toThrow();
+  });
+});
+
+describe('behaviour promptWizard answers (Task 18)', () => {
+  const behaviour = (id: string): AssistantBehaviour => ({
+    id,
+    guildId: G,
+    surface: 'bananasaurs',
+    mentionRoleId: '222222222222222222',
+    name: id,
+    systemPrompt: 'Be helpful.',
+    promptVersion: 1,
+    allowedSkillIds: ['search-club'],
+    reviewerRoleIds: [],
+    callerRoleIds: [],
+    resourceIds: [],
+    enabled: true,
+  });
+  const corrupt = (json: string) => {
+    t.raw
+      .prepare(
+        'UPDATE assistant_behaviours SET prompt_wizard_json = ? WHERE guild_id = ? AND behaviour_id = ?',
+      )
+      .run(json, G, 'club');
+  };
+
+  it('round-trips stored answers and clears them when a re-save omits them', () => {
+    const s = t.scopes.forGuild(G);
+    const answers = DEFAULT_WIZARD_ANSWERS.club;
+    putBehaviour(s, { ...behaviour('club'), promptWizard: answers }, 10);
+    expect(listBehaviours(s)[0]?.promptWizard).toEqual(answers);
+    // A re-save without answers writes the column back to null.
+    putBehaviour(s, behaviour('club'), 11);
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+    expect(
+      t.raw
+        .prepare(
+          'SELECT prompt_wizard_json AS json FROM assistant_behaviours WHERE guild_id = ? AND behaviour_id = ?',
+        )
+        .get(G, 'club'),
+    ).toEqual({ json: null });
+  });
+
+  it('reads corrupt or schema-invalid JSON as undefined instead of throwing', () => {
+    const s = t.scopes.forGuild(G);
+    putBehaviour(s, { ...behaviour('club'), promptWizard: DEFAULT_WIZARD_ANSWERS.club }, 10);
+    corrupt('not-json{');
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+    corrupt(JSON.stringify({ audience: [] }));
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+    corrupt(JSON.stringify(null));
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
   });
 });

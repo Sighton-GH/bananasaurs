@@ -216,6 +216,29 @@ export const BOT_TAG_URL = '/api/assistant/bot-tag';
 /** ADR 0065: the AI log channel. */
 export const LOG_CHANNEL_URL = '/api/assistant/log-channel';
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
+/** `GET /api/assistant/behaviours/:id/preview` (Task 18): the full compiled prompt with sizes. */
+export const behaviourPreviewUrl = (id: string) =>
+  `/api/assistant/behaviours/${encodeURIComponent(id)}/preview`;
+/** `GET /api/assistant/safety-suffix` (Task 18): the locked suffix the wizard shows read-only. */
+export const SAFETY_SUFFIX_URL = '/api/assistant/safety-suffix';
+
+export interface PreviewSection {
+  readonly name: string;
+  readonly chars: number;
+  readonly estTokens: number;
+  readonly text: string;
+}
+
+export interface BehaviourPreview {
+  readonly sections: readonly PreviewSection[];
+  readonly totalChars: number;
+  readonly totalEstTokens: number;
+}
+
+export interface SafetySuffix {
+  readonly version: number;
+  readonly text: string;
+}
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;
 export const decisionReviewUrl = (id: string) =>

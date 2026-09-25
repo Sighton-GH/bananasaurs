@@ -2,7 +2,11 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   CLUB_ASSISTANT_SKILLS,
+  compileAssistantContext,
+  promptWizardAnswers,
   ProviderError,
+  SAFETY_SUFFIX,
+  SAFETY_SUFFIX_VERSION,
   skillInstructionLine,
   STARTER_SKILL_IDS,
   TOOL_CATALOGUE,
@@ -127,6 +131,9 @@ const behaviour = z.object({
     .optional(),
   resourceIds: z.array(z.string()).max(100),
   enabled: z.boolean(),
+  // Task 18: the wizard's structured answers. Omitted keeps the stored
+  // answers; explicit null clears them; an object must validate.
+  promptWizard: promptWizardAnswers.nullable().optional(),
 });
 const botTag = z.object({ behaviourId: z.string().min(1).max(64).nullable() }).strict();
 const providerConfig = z.object({
@@ -401,6 +408,12 @@ export const registerAssistantRoutes = (
       return reply
         .status(409)
         .send({ error: 'prompt-version-conflict', currentVersion: existing.promptVersion });
+    // Omitted keeps the stored answers; explicit null clears them. The audit
+    // row records only whether answers exist, never the answers text.
+    const promptWizard =
+      parsed.data.promptWizard === undefined
+        ? existing?.promptWizard
+        : (parsed.data.promptWizard ?? undefined);
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: existing === undefined ? 'assistant_behaviour.created' : 'assistant_behaviour.saved',
@@ -421,6 +434,7 @@ export const registerAssistantRoutes = (
         ticketChannelId: parsed.data.ticket?.channelId ?? null,
         reviewerRoleIds: parsed.data.ticket?.reviewerRoleIds ?? [],
         systemPrompt: parsed.data.systemPrompt,
+        promptWizard: promptWizard !== undefined,
       },
     });
     assistantRepo.putBehaviour(
@@ -442,10 +456,47 @@ export const registerAssistantRoutes = (
         reviewerRoleIds: parsed.data.ticket?.reviewerRoleIds ?? [],
         resourceIds: parsed.data.resourceIds,
         enabled: parsed.data.enabled,
+        ...(promptWizard === undefined ? {} : { promptWizard }),
       },
       deps.now(),
     );
     return reply.status(200).send({ ok: true });
+  });
+  // Task 18: the locked safety suffix on its own, so the wizard can show it
+  // read-only next to the editable prompt.
+  app.get('/api/assistant/safety-suffix', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+    return reply.status(200).send({ version: SAFETY_SUFFIX_VERSION, text: SAFETY_SUFFIX });
+  });
+  // Task 18: the full compiled prompt for one behaviour — every section the
+  // model receives, with its size. Member memories are never included.
+  app.get('/api/assistant/behaviours/:id/preview', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+    const id = (request.params as { id: string }).id;
+    const behaviour = assistantRepo.listBehaviours(session.scope).find((item) => item.id === id);
+    if (behaviour === undefined) return reply.status(404).send({ error: 'not-found' });
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: assistantRepo.getServerCard(session.scope),
+      resources: assistantRepo.listResources(session.scope).filter((r) => r.enabled),
+      evidence: [],
+      skills: CLUB_ASSISTANT_SKILLS.filter((skill) => behaviour.allowedSkillIds.includes(skill.id)),
+      toolsAvailable: true,
+    });
+    const sections = compiled.sections.map((section) => ({
+      name: section.name,
+      chars: section.text.length,
+      estTokens: Math.ceil(section.text.length / 4),
+      text: section.text,
+    }));
+    const totalChars = sections.reduce((sum, section) => sum + section.chars, 0);
+    return reply
+      .status(200)
+      .send({ sections, totalChars, totalEstTokens: Math.ceil(totalChars / 4) });
   });
   // ADR 0065: the AI log channel for this guild; null turns logging off.
   app.put('/api/assistant/log-channel', (request, reply) => {
