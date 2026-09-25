@@ -117,7 +117,13 @@ describe('AssistantHistoryDetailPage', () => {
           trace: {
             ...DETAIL.trace,
             attempts: [
-              { provider: 'gemini', model: 'first-model', outcome: 'ok', ms: 900, keyLabel: 'Main key' },
+              {
+                provider: 'gemini',
+                model: 'first-model',
+                outcome: 'ok',
+                ms: 900,
+                keyLabel: 'Main key',
+              },
               { provider: 'openrouter', model: 'second-model', outcome: 'ok', ms: 100 },
             ],
           },

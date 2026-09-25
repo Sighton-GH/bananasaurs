@@ -151,7 +151,10 @@ export const runAssistantTool = async (
         if (found === undefined) return refused(name, 'No enabled resource has that id.');
         const source = { title: found.title, url: found.url };
         if (!['website', 'document', 'repository'].includes(found.kind))
-          return { ...evidence(name, `${found.title}: ${found.url}`, [source]), handles: [found.id] };
+          return {
+            ...evidence(name, `${found.title}: ${found.url}`, [source]),
+            handles: [found.id],
+          };
         const fetched = await ports.fetchResource(found.url);
         if (!fetched.ok)
           return refused(name, `The resource could not be opened (${fetched.code}).`);
