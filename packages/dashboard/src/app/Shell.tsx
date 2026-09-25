@@ -4,6 +4,7 @@ import { AccountsPage } from '../pages/accounts.js';
 import { AssistantHistoryDetailPage } from '../pages/assistant-history-detail.js';
 import { AssistantHistoryPage } from '../pages/assistant-history.js';
 import { AssistantPage } from '../pages/assistant.js';
+import { AssistantPromptWizardPage } from '../pages/assistant-prompt-wizard.js';
 import { AssistantResourcesPage } from '../pages/assistant-resources.js';
 import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
 import { AssistantSkillPage } from '../pages/assistant-skill.js';
@@ -173,6 +174,7 @@ function Pages() {
       <Route path="/providers" component={ProvidersPage} />
       <Route path="/assistant/setup" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
+      <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
       {/* Stub until Task 19 wires a real Conversations page. */}
       <Route path="/assistant/conversations">
         <StubPage
