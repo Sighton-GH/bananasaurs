@@ -107,6 +107,8 @@ export {
   purgeDedupeKey,
   reconcileDedupeKey,
   reconcileGuildPayload,
+  resourceRefreshDedupeKey,
+  resourceRefreshPayload,
   sweepDedupeKey,
   sweepEventDedupePayload,
   undoBatchPayload,
@@ -120,6 +122,7 @@ export {
   type ModPurgeCursor,
   type ModPurgePayload,
   type ReconcileGuildPayload,
+  type ResourceRefreshPayload,
   type SweepEventDedupePayload,
   type UndoBatchPayload,
 } from './jobs/kinds.js';

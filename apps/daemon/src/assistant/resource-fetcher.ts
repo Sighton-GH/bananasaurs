@@ -42,6 +42,7 @@ export type PinnedRequest = (
   url: URL,
   address: ResolvedAddress,
   timeoutMs: number,
+  extraHeaders?: Readonly<Record<string, string>>,
 ) => Promise<PinnedResponse>;
 export interface ReviewedResourceEvidence {
   readonly url: string;
@@ -50,13 +51,43 @@ export interface ReviewedResourceEvidence {
   readonly fetchedAt: number;
   readonly trust: 'untrusted-reviewed-resource';
 }
-export type ResourceFetchResult =
-  | {
-      readonly ok: true;
-      readonly evidence: ReviewedResourceEvidence;
-      readonly cache: 'hit' | 'miss';
-    }
-  | { readonly ok: false; readonly code: ResourceFetchFailureCode; readonly message: string };
+/**
+ * A prior fetch's validator, for a conditional request (ADR 0073: the
+ * resource cache re-chunks only when content actually changed).
+ */
+export interface ResourceConditional {
+  readonly etag?: string;
+  readonly lastModified?: string;
+}
+export interface ResourceFetchSuccess {
+  readonly ok: true;
+  /** Present (and `true`) only on `ResourceFetchNotModified`; narrows the conditional union without changing `ResourceFetchResult`'s two-variant shape. */
+  readonly notModified?: false;
+  readonly evidence: ReviewedResourceEvidence;
+  readonly cache: 'hit' | 'miss';
+  /** Only ever set on a fresh network fetch (`cache: 'miss'`), never a cache hit. */
+  readonly etag?: string;
+  readonly lastModified?: string;
+}
+export interface ResourceFetchNotModified {
+  readonly ok: true;
+  readonly notModified: true;
+}
+export interface ResourceFetchFailure {
+  readonly ok: false;
+  readonly code: ResourceFetchFailureCode;
+  readonly message: string;
+}
+/**
+ * The no-conditional-argument shape, unchanged from before ADR 0073: every
+ * existing caller (`service.ts`) calls `fetch(url)` with one argument and
+ * keeps compiling against exactly this two-variant union — a plain fetch can
+ * never receive a 304, so `notModified` cannot appear here.
+ */
+export type ResourceFetchResult = ResourceFetchSuccess | ResourceFetchFailure;
+/** The two-argument (conditional) shape, for the resource-cache refresh path. */
+export type ConditionalResourceFetchResult =
+  ResourceFetchSuccess | ResourceFetchNotModified | ResourceFetchFailure;
 export type ResourceFetchFailureCode =
   | 'invalid-url'
   | 'dns-failed'
@@ -68,7 +99,7 @@ export type ResourceFetchFailureCode =
   | 'timeout'
   | 'network';
 
-const fail = (code: ResourceFetchFailureCode, message: string): ResourceFetchResult => ({
+const fail = (code: ResourceFetchFailureCode, message: string): ResourceFetchFailure => ({
   ok: false,
   code,
   message,
@@ -134,7 +165,7 @@ export const resolvePublicAddress: ResolveHost = async (hostname) => {
   return answers.map(({ address, family }) => ({ address, family: family === 6 ? 6 : 4 }));
 };
 
-export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs) =>
+export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs, extraHeaders) =>
   new Promise((resolve, reject) => {
     let response: IncomingMessage | undefined;
     const request = httpsRequest(
@@ -142,7 +173,10 @@ export const pinnedHttpsRequest: PinnedRequest = (url, pinned, timeoutMs) =>
       {
         method: 'GET',
         agent: false,
-        headers: { accept: 'text/plain, text/markdown, text/html, application/json' },
+        headers: {
+          accept: 'text/plain, text/markdown, text/html, application/json',
+          ...extraHeaders,
+        },
         lookup: (_hostname, options, callback) => {
           if (typeof options === 'object' && options.all === true)
             return callback(null, [{ address: pinned.address, family: pinned.family }]);
@@ -216,18 +250,52 @@ export class ReviewedResourceFetcher {
     this.#now = options.now ?? Date.now;
   }
 
-  async fetch(rawUrl: string): Promise<ResourceFetchResult> {
+  /**
+   * The conditional overload, for the resource-cache refresh path: sends
+   * `If-None-Match`/`If-Modified-Since` when the caller has a prior
+   * validator, skips the in-memory cache (the persistent cache is what this
+   * path is revalidating against), and can resolve to `notModified`.
+   *
+   * Declared before the plain overload deliberately: `service.ts` (out of
+   * this task's scope) spells its test-port type as
+   * `ReturnType<ReviewedResourceFetcher['fetch']>`, and `ReturnType` over an
+   * overloaded method takes the *last* signature's return type — keeping the
+   * plain, `ResourceFetchResult`-returning overload last is what keeps that
+   * expression unchanged.
+   */
+  async fetch(
+    rawUrl: string,
+    conditional: ResourceConditional,
+  ): Promise<ConditionalResourceFetchResult>;
+  /**
+   * The plain (no-conditional) overload: identical behaviour to before ADR
+   * 0073, including the 5-minute in-memory cache — `service.ts`'s per-request
+   * live fetch keeps working unchanged until Task 16 moves it onto the
+   * persistent cache.
+   */
+  async fetch(rawUrl: string): Promise<ResourceFetchResult>;
+  async fetch(
+    rawUrl: string,
+    conditional?: ResourceConditional,
+  ): Promise<ConditionalResourceFetchResult> {
     let initial: URL;
     try {
       initial = validateResourceUrl(rawUrl);
     } catch {
       return fail('invalid-url', 'The reviewed resource URL is not an allowed public HTTPS URL.');
     }
-    const cached = this.#cache.get(initial.href);
-    if (cached !== undefined && this.#now() - cached.fetchedAt < this.#limits.cacheTtlMs)
-      return { ok: true, evidence: cached, cache: 'hit' };
-    const result = await this.#fetchFrom(initial, new Set(), 0);
-    if (result.ok) this.#cache.set(initial.href, result.evidence);
+    if (conditional === undefined) {
+      const cached = this.#cache.get(initial.href);
+      if (cached !== undefined && this.#now() - cached.fetchedAt < this.#limits.cacheTtlMs)
+        return { ok: true, evidence: cached, cache: 'hit' };
+    }
+    const extraHeaders: Record<string, string> = {};
+    if (conditional?.etag !== undefined) extraHeaders['if-none-match'] = conditional.etag;
+    if (conditional?.lastModified !== undefined)
+      extraHeaders['if-modified-since'] = conditional.lastModified;
+    const result = await this.#fetchFrom(initial, new Set(), 0, extraHeaders);
+    if (conditional === undefined && result.ok && result.notModified !== true)
+      this.#cache.set(initial.href, result.evidence);
     return result;
   }
 
@@ -235,7 +303,8 @@ export class ReviewedResourceFetcher {
     url: URL,
     visited: Set<string>,
     redirects: number,
-  ): Promise<ResourceFetchResult> {
+    extraHeaders: Readonly<Record<string, string>>,
+  ): Promise<ConditionalResourceFetchResult> {
     if (visited.has(url.href)) return fail('redirect', 'The reviewed resource redirect looped.');
     visited.add(url.href);
     let addresses: readonly ResolvedAddress[];
@@ -252,7 +321,10 @@ export class ReviewedResourceFetcher {
     let lastError: unknown;
     for (const address of addresses) {
       try {
-        response = await this.#request(url, address, this.#limits.timeoutMs);
+        response =
+          Object.keys(extraHeaders).length > 0
+            ? await this.#request(url, address, this.#limits.timeoutMs, extraHeaders)
+            : await this.#request(url, address, this.#limits.timeoutMs);
         break;
       } catch (error) {
         lastError = error;
@@ -263,6 +335,11 @@ export class ReviewedResourceFetcher {
         lastError instanceof Error && /timed out/i.test(lastError.message) ? 'timeout' : 'network',
         'The reviewed resource could not be retrieved safely.',
       );
+    }
+    if (response.status === 304) {
+      // No body to read; nothing changed since the caller's validator.
+      response.discard?.();
+      return { ok: true, notModified: true };
     }
     if (response.status >= 300 && response.status < 400) {
       response.discard?.();
@@ -280,7 +357,7 @@ export class ReviewedResourceFetcher {
           'The reviewed resource redirected outside allowed public HTTPS URLs.',
         );
       }
-      return this.#fetchFrom(redirected, visited, redirects + 1);
+      return this.#fetchFrom(redirected, visited, redirects + 1, extraHeaders);
     }
     if (response.status < 200 || response.status >= 300) {
       response.discard?.();
@@ -316,6 +393,8 @@ export class ReviewedResourceFetcher {
       mediaType,
       Buffer.concat(chunks).toString('utf8').replaceAll('\u0000', ''),
     );
+    const etag = response.headers.etag;
+    const lastModified = response.headers['last-modified'];
     return {
       ok: true,
       evidence: {
@@ -326,6 +405,8 @@ export class ReviewedResourceFetcher {
         trust: 'untrusted-reviewed-resource',
       },
       cache: 'miss',
+      ...(etag === undefined ? {} : { etag }),
+      ...(lastModified === undefined ? {} : { lastModified }),
     };
   }
 }

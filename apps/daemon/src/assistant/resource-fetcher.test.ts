@@ -204,4 +204,64 @@ describe('reviewed resource fetcher', () => {
     await expect(fetcher.fetch('https://example.com/')).resolves.toMatchObject({ cache: 'miss' });
     expect(request).toHaveBeenCalledTimes(2);
   });
+
+  describe('conditional requests (ADR 0073)', () => {
+    it('sends If-None-Match / If-Modified-Since and returns notModified on a 304, without reading a body', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(304));
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await expect(
+        fetcher.fetch('https://example.com/guide', {
+          etag: '"v1"',
+          lastModified: 'Wed, 01 Jan 2025 00:00:00 GMT',
+        }),
+      ).resolves.toEqual({ ok: true, notModified: true });
+      expect(request).toHaveBeenCalledWith(
+        new URL('https://example.com/guide'),
+        { address: '93.184.216.34', family: 4 },
+        5_000,
+        {
+          'if-none-match': '"v1"',
+          'if-modified-since': 'Wed, 01 Jan 2025 00:00:00 GMT',
+        },
+      );
+    });
+
+    it('returns the fresh body plus etag/last-modified when the content changed', async () => {
+      const request = vi.fn<PinnedRequest>(async () =>
+        response(200, 'new text', {
+          'content-type': 'text/plain',
+          etag: '"v2"',
+          'last-modified': 'Thu, 02 Jan 2025 00:00:00 GMT',
+        }),
+      );
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await expect(
+        fetcher.fetch('https://example.com/guide', { etag: '"v1"' }),
+      ).resolves.toMatchObject({
+        ok: true,
+        evidence: { text: 'new text' },
+        etag: '"v2"',
+        lastModified: 'Thu, 02 Jan 2025 00:00:00 GMT',
+      });
+    });
+
+    it('bypasses the in-memory freshness cache on the conditional path', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'body'));
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await fetcher.fetch('https://example.com/guide');
+      await fetcher.fetch('https://example.com/guide', { etag: '"v1"' });
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends no conditional headers, and 3 call arguments, when called with no conditional (unchanged from before ADR 0073)', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'body'));
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await fetcher.fetch('https://example.com/guide');
+      expect(request).toHaveBeenCalledWith(
+        new URL('https://example.com/guide'),
+        { address: '93.184.216.34', family: 4 },
+        5_000,
+      );
+    });
+  });
 });
