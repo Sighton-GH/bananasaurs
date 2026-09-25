@@ -193,6 +193,56 @@ describe('GeminiProvider', () => {
         provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] }),
       ).resolves.toMatchObject({ text: 'Answer.' });
     });
+
+    it('sends thinkingConfig when thinkingBudget is set', async () => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(ok({ candidates: [{ content: { parts: [{ text: 'Answer.' }] } }] }));
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+
+      await provider.generateText({
+        model: 'm',
+        messages: [{ role: 'user', text: 'q' }],
+        thinkingBudget: 512,
+      });
+
+      const body = JSON.parse(fetch.mock.calls[0]?.[1]?.body as string) as Record<string, unknown>;
+      expect(body.generationConfig).toEqual({ thinkingConfig: { thinkingBudget: 512 } });
+    });
+
+    it('reports thinking tokens from usageMetadata', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(
+        ok({
+          candidates: [{ content: { parts: [{ text: 'Answer.' }] } }],
+          usageMetadata: {
+            promptTokenCount: 1,
+            candidatesTokenCount: 2,
+            totalTokenCount: 3,
+            thoughtsTokenCount: 300,
+          },
+        }),
+      );
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+
+      await expect(
+        provider.generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] }),
+      ).resolves.toMatchObject({ usage: { thinkingTokens: 300 } });
+    });
+
+    it('names MAX_TOKENS when the model stops before answering', async () => {
+      const provider = new GeminiProvider({
+        apiKey: 'secret',
+        fetch: vi
+          .fn<typeof globalThis.fetch>()
+          .mockResolvedValue(ok({ candidates: [{ finishReason: 'MAX_TOKENS' }] })),
+      });
+      const error = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((value: unknown) => value);
+      expect(error).toBeInstanceOf(ProviderError);
+      expect(error).toMatchObject({ kind: 'invalid-response' });
+      expect(error instanceof Error ? error.message : String(error)).toContain('MAX_TOKENS');
+    });
   });
 });
 

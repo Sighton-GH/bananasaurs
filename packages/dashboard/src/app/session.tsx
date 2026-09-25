@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { apiFetch, ApiError, CSRF_HEADER, ReadonlyError, type SessionInfo } from '../api.js';
+import { accountErrorText } from '../api/ops.js';
 import { ReauthDialog } from '../ui/ReauthDialog.js';
 import { ToastProvider, useToast } from '../ui/Toast.js';
 
@@ -21,7 +22,11 @@ export interface Session {
    * read-only (`ReadonlyError`) or the request failed (`ApiError`), so callers
    * refresh only on success. The re-auth round trip is `apiFetch`'s.
    */
-  write<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T | undefined>;
+  write<T>(
+    url: string,
+    body: unknown,
+    method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  ): Promise<T | undefined>;
   /**
    * The same write, but status 400 and 409 propagate to the caller instead
    * of becoming a toast. Forms that render the server's answer inline (the
@@ -29,11 +34,16 @@ export interface Session {
    * `not-eligible` refusal) use this; everything else uses `write`. Any
    * other failure is handled itself (toast shown; `onLoggedOut()` called
    * for an expired session) and resolves `undefined`.
+   *
+   * A caller that renders one more status inline (Try-it's 429
+   * `rate-limited`) lists it in `rethrowStatuses`; every other caller keeps
+   * the default and is unaffected.
    */
   writeOrThrow<T>(
     url: string,
     body: unknown,
-    method?: 'POST' | 'PUT' | 'DELETE',
+    method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    rethrowStatuses?: readonly number[],
   ): Promise<T | undefined>;
   /**
    * Moves this session to another reachable guild without logging out
@@ -119,7 +129,14 @@ function SessionInner({
         return true;
       }
       if (err instanceof ApiError) {
-        toast({ tone: 'danger', title: 'The request failed', message: err.message });
+        // A refusal body carries `{ error: code }` with no `message`, so
+        // `err.message` would be the raw code — map known codes to their
+        // plain sentence first, keeping the raw code only as the fallback.
+        toast({
+          tone: 'danger',
+          title: 'The request failed',
+          message: accountErrorText(err.body.error) ?? err.message,
+        });
         return true;
       }
       return false;
@@ -127,7 +144,8 @@ function SessionInner({
     const writeOrThrow = async <T,>(
       url: string,
       body: unknown,
-      method: 'POST' | 'PUT' | 'DELETE' = 'POST',
+      method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
+      rethrowStatuses: readonly number[] = [],
     ): Promise<T | undefined> => {
       try {
         return await apiFetch<T>(url, session.csrfToken, requireReauth, {
@@ -135,7 +153,11 @@ function SessionInner({
           body: JSON.stringify(body),
         });
       } catch (err) {
-        if (err instanceof ApiError && (err.status === 400 || err.status === 409)) throw err;
+        if (
+          err instanceof ApiError &&
+          (err.status === 400 || err.status === 409 || rethrowStatuses.includes(err.status))
+        )
+          throw err;
         if (err instanceof ApiError) {
           handleWriteError(err);
           return undefined;
@@ -146,13 +168,17 @@ function SessionInner({
     const write = async <T,>(
       url: string,
       body: unknown,
-      method: 'POST' | 'PUT' | 'DELETE' = 'POST',
+      method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
     ): Promise<T | undefined> => {
       try {
         return await writeOrThrow<T>(url, body, method);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-          toast({ tone: 'danger', title: 'The request failed', message: err.message });
+          toast({
+            tone: 'danger',
+            title: 'The request failed',
+            message: accountErrorText(err.body.error) ?? err.message,
+          });
           return undefined;
         }
         throw err;

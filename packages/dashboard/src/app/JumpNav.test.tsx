@@ -73,6 +73,7 @@ describe('JumpNav', () => {
     expect(current.getAttribute('href')).toBe('/audit');
     expect(current.textContent).toContain('Audit');
     expect(current.textContent).toContain('Current');
+    // Task 19: Conversations is built, so no entry is still future.
     expect(within(nav).queryByText('Future')).toBeNull();
   });
 

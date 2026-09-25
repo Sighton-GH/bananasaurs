@@ -42,16 +42,15 @@ export const NAV: readonly NavEntry[] = [
   { path: '/config', label: 'Configuration', status: 'built', group: 'Advanced / System' },
   { path: '/accounts', label: 'Accounts', status: 'built', group: 'Advanced / System' },
   { path: '/mcp', label: 'Connected apps', status: 'built', group: 'Advanced / System' },
-  { path: '/assistant', label: 'Assistant', status: 'built', group: 'Assistant' },
+  // Task 9: the Assistant group is ordered setup-first, with History moved
+  // in from Advanced / System (ADR 0051 D6, revisited).
+  { path: '/assistant/setup', label: 'AI setup', status: 'built', group: 'Assistant' },
+  { path: '/assistant', label: 'Behaviours', status: 'built', group: 'Assistant' },
+  // Task 19: the Conversations list and transcript are built.
+  { path: '/assistant/conversations', label: 'Conversations', status: 'built', group: 'Assistant' },
+  { path: '/assistant/history', label: 'History', status: 'built', group: 'Assistant' },
   { path: '/assistant/skills', label: 'Skills', status: 'built', group: 'Assistant' },
-  { path: '/assistant/schedules', label: 'Schedules', status: 'built', group: 'Assistant' },
   { path: '/assistant/resources', label: 'Resources', status: 'built', group: 'Assistant' },
+  { path: '/assistant/schedules', label: 'Schedules', status: 'built', group: 'Assistant' },
   { path: '/memory', label: 'Memory', status: 'built', group: 'Assistant' },
-  { path: '/providers', label: 'AI setup', status: 'built', group: 'Assistant' },
-  {
-    path: '/assistant/activity',
-    label: 'Assistant history',
-    status: 'built',
-    group: 'Advanced / System',
-  },
 ];

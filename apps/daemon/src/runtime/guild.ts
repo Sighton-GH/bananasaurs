@@ -51,6 +51,7 @@ import {
   authzStoreFor,
   archiveRepo,
   assistantRepo,
+  conversationRepo,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -61,7 +62,9 @@ import {
   modPendingRepo,
   panelRepo,
   pipelineRepo,
+  resourceCacheRepo,
   roleRepo,
+  traceRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -74,11 +77,18 @@ import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
+import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
+import { ReviewedResourceFetcher } from '../assistant/resource-fetcher.js';
+import { conversationPruneHandler } from '../jobs/conversation-prune.js';
+import { createGitHubClient } from '../assistant/github-client.js';
+import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
+import type { ChainEntry } from '../assistant/model-chain.js';
+import type { QuotaLedger } from '../assistant/quota-ledger.js';
 import { memberChannels } from '../assistant/member-channels.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -130,6 +140,19 @@ export interface GuildRuntimeDeps {
    */
   readonly interactionTokenSealer: InteractionTokenSealer;
   readonly assistantConfig?: (() => Config) | undefined;
+  /** ADR 0075: the resolved, ordered model chain, from the composition root. */
+  readonly assistantChain?: (() => readonly ChainEntry[]) | undefined;
+  /**
+   * Task 8: the process-wide QuotaLedger, from the composition root. Absent
+   * in isolated uses, where the service falls back to its own ledger.
+   */
+  readonly quotaLedger?: QuotaLedger | undefined;
+  /**
+   * Task 17: the sealed GitHub token, opened for the GitHub client only.
+   * Supplied by the composition root (`daemon.ts` owns the provider store);
+   * absent in tests, in which case GitHub refreshes run unauthenticated.
+   */
+  readonly githubToken?: (() => string | undefined) | undefined;
 }
 
 /**
@@ -271,7 +294,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     ...reconcilePorts,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
     },
   };
 
@@ -560,7 +585,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       }),
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
     },
     now,
     logger,
@@ -673,14 +700,18 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       },
       responder: {
         defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+        respond: async (ref, message) => {
+          await discord.respondToInteraction(guildId, ref, message);
+        },
       },
       now,
       logger,
     } satisfies HistoryDeps,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
     },
     now,
     logger,
@@ -713,6 +744,10 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         );
       },
     },
+    deps.assistantChain ?? (() => []),
+    // A defaulted parameter accepts `undefined`: absent in isolated uses,
+    // where the service falls back to its own ledger.
+    deps.quotaLedger,
   );
   const { interactionTokenSealer } = deps;
 
@@ -751,13 +786,22 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       botUserId,
       service: assistantService,
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
       enqueue: (input) => {
         jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
       },
       sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
       logger,
+      lookupMessage: (messageId) => conversationRepo.lookupMessage(scope, messageId),
+      // Task 20: member 👍/👎 on a bot answer sets feedback and a trace
+      // flag; anything else (and the bot's own reactions) is ignored inside.
+      feedback: {
+        setFeedback: (messageId, vote) => conversationRepo.setFeedback(scope, messageId, vote),
+        addTraceFlag: (traceId, flag) => traceRepo.addTraceFlag(scope, traceId, flag),
+      },
     }),
   ];
 
@@ -773,6 +817,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         logger,
         logChannelId: () => assistantRepo.getAssistantSettings(scope).logChannelId,
         now,
+        // Task 14: every answer joins a conversation (ADR 0072), posts as
+        // Discord replies in staged parts, shows typing and writes a trace.
+        conversations: { scope, botUserId, botDisplayName: client.user?.username ?? 'bananasaurs' },
+        sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
+        fetchMessageContent: (channelId, messageId) =>
+          discord.fetchMessageContent(guildId, channelId, messageId),
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
@@ -787,6 +837,38 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         now,
         logger,
       }),
+      resourceRefreshHandler({
+        scope,
+        listResources: assistantRepo.listResources,
+        refresh: {
+          fetcher: new ReviewedResourceFetcher({ now }),
+          repo: resourceCacheRepo,
+          now,
+        },
+        // Task 17: GitHub kinds refresh through `github-refresh.ts` — the
+        // REST client is pinned to api.github.com (never global `fetch`) and
+        // raw file downloads reuse the reviewed fetcher like any other
+        // resource. The token is read per request and travels only in the
+        // `Authorization` header.
+        github: {
+          client: createGitHubClient({
+            token: deps.githubToken ?? (() => undefined),
+            fetch: createGithubFetch(),
+            guard: githubGuard,
+          }),
+          // Pinned to raw.githubusercontent.com: a redirect in a GitHub raw
+          // download can never carry the refresh to another host (hard rule 8).
+          fetcher: new ReviewedResourceFetcher({
+            now,
+            allowedHosts: ['raw.githubusercontent.com'],
+          }),
+          store: assistantRepo,
+          cache: resourceCacheRepo,
+          now,
+        },
+        logger,
+      }),
+      conversationPruneHandler(scope, { now, logger }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this
       // slice does not build (ADR 0020).

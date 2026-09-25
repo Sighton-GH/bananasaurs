@@ -155,9 +155,17 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
+    expect(
+      screen.getByText('Behaviours decide who answers, how they sound, and who may ask.'),
+    ).toBeTruthy();
+  });
+
   it('renders behaviours with their tag mapping, prompt editor and records', async () => {
     renderPage();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
     const club = screen.getByRole('button', { name: /Club assistant/ });
     expect(club.getAttribute('aria-pressed')).toBe('true');
     expect(within(club).getByText('Members mention @Club Assistant')).toBeTruthy();
@@ -191,7 +199,7 @@ describe('AssistantPage', () => {
 
   it('shows no AI status card and no answering claim outside the setup tracker', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
     expect(screen.queryByText('AI status')).toBeNull();
     expect(screen.queryByText('Off - the assistant will not answer')).toBeNull();
     expect(screen.queryByText('Enabled')).toBeNull();
@@ -199,7 +207,7 @@ describe('AssistantPage', () => {
 
   it('keeps skills, schedules and resources off this page (ADR 0060 declutter)', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
     expect(screen.queryByText('Things the assistant can do')).toBeNull();
     expect(screen.queryByText('Skill grants')).toBeNull();
     expect(screen.queryByText('Schedules and reminders')).toBeNull();
@@ -435,7 +443,7 @@ describe('AssistantPage', () => {
       ticket: { reviewerRoleIds: [] },
     };
     renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
-    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Ticket routing' })).toBeNull();
     expect(screen.queryByText(/Ticket routing is not exposed/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /IT services/ }));
@@ -530,7 +538,7 @@ describe('AssistantPage', () => {
 
   it('offers no control without a backing endpoint', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
     for (const label of [/Edit behaviour/, /Run test scenario/, /New reminder/]) {
       expect(screen.queryByRole('button', { name: label })).toBeNull();
     }
@@ -545,6 +553,93 @@ describe('AssistantPage', () => {
     expect(await screen.findByRole('alert')).toBeTruthy();
     expect(screen.getByText(/Could not load assistant settings/)).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Try again' })).toBeTruthy();
+  });
+});
+
+describe('AssistantPage: Try it (Task 20)', () => {
+  const TRY = { answer: 'Tried answer.', traceId: 'try_1', conversationId: 'try_c1' };
+  const renderTry = (tryRoute: { status?: number; body: unknown } = { body: TRY }) => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { method: 'POST', url: '/api/assistant/behaviours/club/try', ...tryRoute },
+    ]);
+    renderWithSession(<AssistantPage />);
+    return mock;
+  };
+  const tryCalls = (mock: ReturnType<typeof stubFetch>) =>
+    mock.mock.calls.filter((c) => c[0] === '/api/assistant/behaviours/club/try');
+
+  it('tries the selected behaviour and links the answer to its history detail', async () => {
+    const mock = renderTry();
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'when is the meeting?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    expect(await screen.findByText('Tried answer.')).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'View details' });
+    expect((link as HTMLAnchorElement).pathname).toBe('/assistant/history/try_1');
+    expect(bodyOf(tryCalls(mock)[0]!)).toEqual({ question: 'when is the meeting?' });
+  });
+
+  it('continues the conversation when asked, keeping the conversation id', async () => {
+    const mock = renderTry();
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'first question' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    await screen.findByText('Tried answer.');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'and parking?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue this conversation' }));
+    await screen.findByText('Tried answer.');
+    expect(bodyOf(tryCalls(mock)[1]!)).toEqual({
+      question: 'and parking?',
+      conversationId: 'try_c1',
+    });
+  });
+
+  it('reads the rate limit as an inline error, not only a toast', async () => {
+    renderTry({
+      status: 429,
+      body: {
+        error: 'rate-limited',
+        message: 'You have used your 20 tries for this hour. Try again later.',
+      },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'one too many' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    // The 429 must reach this call's inline alert — a toast alone is not enough.
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('You have used your 20 tries for this hour.');
+    expect(screen.queryByRole('link', { name: 'View details' })).toBeNull();
+  });
+
+  it('renders an unclosed code fence as text, not a code block', async () => {
+    renderTry({
+      body: { ...TRY, answer: 'Here is code:\n```js\nconst x = 1;\nno closing fence' },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'show code' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    const section = await screen.findByLabelText('Tried answer');
+    expect(section.querySelector('pre')).toBeNull();
+    expect(section.textContent).toContain('const x = 1;');
+  });
+
+  it('still renders a closed code fence as a code block', async () => {
+    renderTry({
+      body: { ...TRY, answer: 'Here is code:\n```js\nconst x = 1;\n```\ndone' },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'show code' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    const section = await screen.findByLabelText('Tried answer');
+    expect(section.querySelector('pre')?.textContent).toContain('const x = 1;');
   });
 });
 
@@ -699,5 +794,56 @@ describe('AssistantPage: shared resources (ADR 0067)', () => {
         'Every enabled resource is available to every behaviour. Tick the ones this behaviour should prefer.',
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('AssistantPage: prompt wizard and full-prompt preview (Task 18)', () => {
+  const PREVIEW = {
+    sections: [
+      { name: 'surface', chars: 12, estTokens: 3, text: 'surface text' },
+      { name: 'behaviour-prompt', chars: 20, estTokens: 5, text: 'prompt text' },
+      { name: 'safety-suffix', chars: 30, estTokens: 8, text: 'suffix text' },
+      { name: 'evidence-rule', chars: 13, estTokens: 4, text: 'evidence text' },
+      { name: 'server-card', chars: 11, estTokens: 3, text: 'server text' },
+      { name: 'resources', chars: 15, estTokens: 4, text: 'resources text' },
+      { name: 'skills', chars: 11, estTokens: 3, text: 'skills text' },
+    ],
+    totalChars: 122,
+    totalEstTokens: 31,
+  };
+
+  it('is titled Behaviours and links each behaviour card to its wizard', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { level: 1, name: 'Assistant' })).toBeNull();
+    const links = screen.getAllByRole('link', { name: 'Build with the wizard' });
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(
+      expect.arrayContaining([
+        '/assistant/behaviours/club/wizard',
+        '/assistant/behaviours/it/wizard',
+      ]),
+    );
+    expect(links).toHaveLength(2);
+  });
+
+  it('previews the full prompt with plain-words labels, sizes and expandable text', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { url: '/api/assistant/behaviours/club/preview', body: PREVIEW },
+    ]);
+    renderWithSession(<AssistantPage />);
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Preview the full prompt' })[0]!);
+    expect(await screen.findByText('How members reach it')).toBeTruthy();
+    expect(screen.getByText('Your prompt')).toBeTruthy();
+    expect(screen.getByText('Bananasaurs safety rules (locked)')).toBeTruthy();
+    expect(screen.getByText('Evidence rule')).toBeTruthy();
+    expect(screen.getByText('Server card')).toBeTruthy();
+    expect(screen.getByText('Club resources')).toBeTruthy();
+    expect(screen.getByText('Allowed skills')).toBeTruthy();
+    expect(screen.getByText(/20 characters · ~5 tokens/)).toBeTruthy();
+    expect(screen.getByText(/Total: 122 characters · ~31 tokens/)).toBeTruthy();
+    expect(screen.getByText('prompt text')).toBeTruthy();
+    expect(screen.getByText('Your prompt').closest('details')).toBeTruthy();
   });
 });

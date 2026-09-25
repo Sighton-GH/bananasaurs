@@ -1,0 +1,1 @@
+ALTER TABLE `assistant_behaviours` ADD `prompt_wizard_json` text;

@@ -29,6 +29,14 @@ export interface AccountRow {
   readonly accountId: string;
   readonly username: string;
   readonly passwordHash: string;
+  /**
+   * The sealed copy of the password, or `null` (ADR 0070). Present here (and
+   * not just behind `getPasswordSealed` below) so `listAccounts` can compute
+   * `revealable` without a second query per row — but never mapped onto
+   * `OpsAccount` any more than `passwordHash` is: `ops/wiring.ts` derives the
+   * boolean and drops the ciphertext at that boundary, field by field.
+   */
+  readonly passwordSealed: string | null;
   readonly isOwner: boolean;
   readonly disabled: boolean;
   readonly failedAttempts: number;
@@ -40,6 +48,7 @@ const toRow = (r: {
   accountId: string;
   username: string;
   passwordHash: string;
+  passwordSealed: string | null;
   isOwner: number;
   disabled: number;
   failedAttempts: number;
@@ -49,6 +58,7 @@ const toRow = (r: {
   accountId: r.accountId,
   username: r.username,
   passwordHash: r.passwordHash,
+  passwordSealed: r.passwordSealed,
   isOwner: r.isOwner === 1,
   disabled: r.disabled === 1,
   failedAttempts: r.failedAttempts,
@@ -60,6 +70,7 @@ const SELECT = {
   accountId: dashboardAccounts.accountId,
   username: dashboardAccounts.username,
   passwordHash: dashboardAccounts.passwordHash,
+  passwordSealed: dashboardAccounts.passwordSealed,
   isOwner: dashboardAccounts.isOwner,
   disabled: dashboardAccounts.disabled,
   failedAttempts: dashboardAccounts.failedAttempts,
@@ -190,6 +201,36 @@ export const setPasswordHash = (
       .where(eq(dashboardAccounts.accountId, input.accountId))
       .run();
   });
+
+/**
+ * Writes (or clears, with `null`) the sealed copy of an account's password
+ * (ADR 0070). Called from `ops/wiring.ts`'s `accountCreate` and
+ * `accountSetPassword`, alongside `setPasswordHash` above — never on its
+ * own, so the sealed copy and the sign-in hash always change together.
+ */
+export const setPasswordSealed = (
+  scope: InstanceScope,
+  accountId: string,
+  sealed: string | null,
+): void =>
+  writeInstance(scope, ({ db }) => {
+    db.update(dashboardAccounts)
+      .set({ passwordSealed: sealed })
+      .where(eq(dashboardAccounts.accountId, accountId))
+      .run();
+  });
+
+/** The sealed copy of an account's password, or `null` when none exists (ADR 0070). Never the plaintext. */
+export const getPasswordSealed = (scope: InstanceScope, accountId: string): string | null =>
+  readInstance(
+    scope,
+    (db) =>
+      db
+        .select({ passwordSealed: dashboardAccounts.passwordSealed })
+        .from(dashboardAccounts)
+        .where(eq(dashboardAccounts.accountId, accountId))
+        .get()?.passwordSealed ?? null,
+  );
 
 /**
  * Disables or re-enables an account (ADR 0045 Amendment 3, A3-1).

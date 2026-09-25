@@ -1,17 +1,84 @@
+import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
+import { z } from 'zod';
+
+export type ResourceKind =
+  'website' | 'document' | 'discord-channel' | 'repository' | 'note' | 'github-repo' | 'github-org';
 
 export interface ClubResource {
   readonly id: string;
   readonly guildId: string;
   readonly title: string;
   readonly url: string;
-  readonly kind: 'website' | 'document' | 'discord-channel' | 'repository' | 'note';
+  readonly kind: ResourceKind;
   readonly enabled: boolean;
   readonly reviewedAt: string;
   readonly lastFetchedAt?: number;
   readonly fetchStatus?: 'pending' | 'ok' | 'failed' | 'blocked';
   readonly fetchDetail?: string;
+  /** The org resource's id, for a `github-repo` discovered from a `github-org`. Absent otherwise. */
+  readonly parentId?: string;
+  /** GitHub import details, for `github-repo` / `github-org` kinds only. Absent otherwise. */
+  readonly meta?: ResourceMeta;
 }
+
+/**
+ * The `meta_json` payload for `github-repo` / `github-org` resources
+ * (Task 17, ADR 0073): which owner/repo/branch a resource imports, the glob
+ * `include` filter for a repo (absent means the default file selection), and
+ * the org import toggles. Stored as JSON text; parsed on read with
+ * `parseResourceMeta` — anything corrupt or schema-invalid reads as
+ * `undefined`, never throws.
+ */
+export const resourceMetaSchema = z
+  .object({
+    owner: z.string().min(1).max(100),
+    repo: z.string().min(1).max(200).optional(),
+    branch: z.string().min(1).max(200).optional(),
+    include: z.array(z.string().min(1).max(300)).max(40).optional(),
+    autoDiscovered: z.boolean().optional(),
+    includeForks: z.boolean().optional(),
+    includeArchived: z.boolean().optional(),
+  })
+  .strict();
+
+export type ResourceMeta = z.infer<typeof resourceMetaSchema>;
+
+export const parseResourceMeta = (raw: string | null | undefined): ResourceMeta | undefined => {
+  if (raw === null || raw === undefined) return undefined;
+  try {
+    const parsed = resourceMetaSchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+/**
+ * The resource id for an imported GitHub organisation (Task 17): short and
+ * readable (`gh-acme`), derived from the owner handle alone so re-importing
+ * the same org lands on the same row.
+ */
+export const githubOrgId = (owner: string): string => `gh-${owner.toLowerCase()}`;
+
+const slugPart = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+
+/**
+ * The resource id for a `github-repo` child of an org import (Task 17):
+ * readable while it fits (`gh-acme-widget`), otherwise truncated with a
+ * content hash suffix so it stays deterministic and within the 64-character
+ * resource id limit. Distinct repos always give distinct ids.
+ */
+export const githubChildId = (owner: string, repo: string): string => {
+  const plain = `gh-${slugPart(owner)}-${slugPart(repo)}`;
+  if (plain.length <= 64) return plain;
+  const hash = createHash('sha256').update(`${owner}/${repo}`, 'utf8').digest('hex').slice(0, 8);
+  return `gh-${`${slugPart(owner)}-${slugPart(repo)}`.slice(0, 48)}-${hash}`;
+};
 
 const privateV4 = (a: number, b: number): boolean =>
   a === 127 ||

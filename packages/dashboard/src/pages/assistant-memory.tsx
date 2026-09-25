@@ -69,7 +69,7 @@ export function AssistantMemoryPage() {
     <>
       <PageHeader
         title="Memory"
-        purpose="What the assistant remembers about your club: goals, teams and ongoing work. Operators review every entry. Members can be opted out, and their entries deleted, below."
+        purpose="Facts you have reviewed that the assistant may use."
         actions={
           <Button variant="primary" onClick={() => open('new')}>
             Add memory

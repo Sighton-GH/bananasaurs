@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../ids.js';
+import { assistantTraceSchema } from '../assistant/trace.js';
 
 /**
  * Job kinds and their payload schemas.
@@ -29,12 +30,21 @@ export const JOB_KINDS = {
   archiveExpiry: 'archive_expiry',
   /** One due-reminder delivery pass (Release 3, docs/RELEASE3_ASSISTANT_SCOPE.md). */
   deliverReminders: 'deliver_reminders',
+  /** The daily conversation auto-delete past the guild's retention (Task 19). */
+  conversationPrune: 'conversation_prune',
   /**
    * One assistant invocation (Release 3, B2): resource fetches and the
    * provider call are far too slow for the serial per-guild dispatch chain —
    * run them here so /ask cannot stall reaction roles, automod or /mod.
    */
   assistantInvoke: 'assistant_invoke',
+  /**
+   * One resource-cache refresh pass (ADR 0073): fetches (or, for a note,
+   * re-reads) a resource, re-chunks it only when its content changed, and
+   * writes the persistent cache the assistant reads from — the request path
+   * never fetches live.
+   */
+  resourceRefresh: 'resource_refresh',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -298,6 +308,22 @@ export type DeliverRemindersPayload = z.infer<typeof deliverRemindersPayload>;
  */
 export const deliverRemindersDedupeKey = (): string => JOB_KINDS.deliverReminders;
 
+export const conversationPrunePayload = z.object({
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+export type ConversationPrunePayload = z.infer<typeof conversationPrunePayload>;
+
+/**
+ * One pending prune per UTC day, across the process.
+ *
+ * Deliberately guild-free like `archiveExpiryDedupeKey`: the timer enqueues
+ * one job per guild per day under the same key, and the `(guild_id,
+ * dedupe_key)` index collapses per guild — a second `runOnce` on the same
+ * day enqueues nothing anywhere.
+ */
+export const conversationPruneDedupeKey = (day: string): string =>
+  `${JOB_KINDS.conversationPrune}:${day}`;
+
 /**
  * One assistant invocation, enqueued by the slash/mention subscriber the
  * moment cheap local routing is done (B2). The behaviour is re-resolved from
@@ -345,6 +371,33 @@ export const assistantInvokePayload = z.object({
    * anchored on it — 50820ad).
    */
   invocationId: z.string().min(1),
+  /**
+   * Task 14: the member's Discord message id, when the source is a message.
+   * The first answer part is posted as a Discord Reply to it, and it is
+   * linked to the conversation as the member's turn. Absent for slash
+   * invocations, which have no message yet (the respond call's returned id
+   * is linked instead).
+   */
+  messageId: z.string().min(1).optional(),
+  /**
+   * Task 14: the message this one replies to (`message_reference`), for the
+   * conversation resolver — which conversation a reply continues — and, for
+   * an unknown message, the quote fetched as untrusted context. Absent when
+   * this invocation is not a reply.
+   */
+  referencedMessageId: z.string().min(1).optional(),
+  /**
+   * Task 14: the author of the replied-to message, from
+   * `referenced_message.author` — never guessed. Tells a reply to our own
+   * message apart from a quoted reply to someone else's.
+   */
+  referencedAuthorId: z.string().min(1).optional(),
+  /**
+   * Task 14: the member's display name for history labels, when the producer
+   * knew one. The gateway events carry no name, so this is usually absent
+   * and the user id is stored instead — always best-effort, never fetched.
+   */
+  authorName: z.string().min(1).max(200).optional(),
 });
 export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
 
@@ -363,6 +416,39 @@ const invocationTrace = z.object({
   usedFallback: z.boolean().optional(),
 });
 
+/**
+ * Task 14: the full run detail the invoke job persists as an `AssistantTrace`.
+ * Carried in the cursor so a retry that resumes after `invoke-done` still
+ * writes the trace with the original sections, attempts, tool calls, usage
+ * and guard. The trace-read fields reuse `assistantTraceSchema`'s own shapes
+ * so the cursor can never drift from what the trace table accepts; the
+ * conversation history is validated the same way (the tool-call `args` and
+ * `providerParts` stay opaque JSON, as in the trace schema — the trace write
+ * never reads into them).
+ */
+const assistantInvokeDetail = z.object({
+  sections: assistantTraceSchema.shape.sections,
+  history: z.array(
+    z.object({
+      role: z.enum(['user', 'assistant', 'tool']),
+      text: z.string(),
+      toolCalls: z
+        .array(z.object({ id: z.string().optional(), name: z.string(), args: z.unknown() }))
+        .optional(),
+      toolName: z.string().optional(),
+      toolCallId: z.string().optional(),
+      providerParts: z.unknown().optional(),
+    }),
+  ),
+  attempts: assistantTraceSchema.shape.attempts,
+  toolCalls: assistantTraceSchema.shape.toolCalls,
+  usage: assistantTraceSchema.shape.usage,
+  guard: assistantTraceSchema.shape.guard,
+  model: z.string().optional(),
+  finishReason: assistantTraceSchema.shape.finishReason,
+  web: z.boolean().optional(),
+});
+
 export const assistantInvokeCursor = z.object({
   stage: z.enum(['invoke-done', 'answered', 'escalation-sent', 'logged']),
   result: z.discriminatedUnion('ok', [
@@ -376,10 +462,66 @@ export const assistantInvokeCursor = z.object({
           ticketId: z.string().min(1),
         })
         .optional(),
+      /**
+       * Task 20: trace flags the service attached to the result (currently
+       * only `resources-unavailable`). Carried so a retry that skips the
+       * invoke still writes them into the trace.
+       */
+      flags: z.array(z.string().min(1)).optional(),
       trace: invocationTrace.optional(),
+      detail: assistantInvokeDetail.optional(),
     }),
-    z.object({ ok: z.literal(false), content: z.string(), trace: invocationTrace.optional() }),
+    z.object({
+      ok: z.literal(false),
+      content: z.string(),
+      flags: z.array(z.string().min(1)).optional(),
+      trace: invocationTrace.optional(),
+      detail: assistantInvokeDetail.optional(),
+    }),
   ]),
+  /**
+   * Task 14: the conversation this invocation joined, created or continued in
+   * the invoke step and carried so a retry resumes it instead of re-resolving
+   * (and re-creating) it. Absent on pre-Task-14 rows and on invocations with
+   * no channel, which skip conversation work entirely.
+   */
+  conversationId: z.string().min(1).optional(),
+  /**
+   * Task 14: how the conversation was resolved
+   * (`packages/core/src/assistant/conversation.ts`). The schema lives here,
+   * next to the cursor, because the cursor is validated at the jobs boundary
+   * like every payload — `core`'s resolver type itself stays Zod-free.
+   */
+  resolution: z
+    .discriminatedUnion('kind', [
+      z.object({
+        kind: z.literal('continue'),
+        conversationId: z.string().min(1),
+        rule: z.enum(['reply-to-bot', 'reply-to-turn', 'follow-up']),
+      }),
+      z.object({
+        kind: z.literal('new'),
+        rule: z.enum(['quoted-reply', 'reply-to-unknown-bot-message', 'new-topic', 'fresh']),
+        quotedMessageId: z.string().min(1).optional(),
+      }),
+    ])
+    .optional(),
+  /**
+   * Task 14: durable posting progress — parts `[0, partsPosted)` already
+   * landed, so a retry posts from `partsPosted` and never re-posts a part
+   * (hard rule 6). Defaults keep pre-Task-14 rows valid: an old
+   * `invoke-done` row re-posts from part 0, an old later-stage row skips
+   * posting by stage rank as before.
+   */
+  partsPosted: z.number().int().nonnegative().default(0),
+  /** Task 14: every posted part's message id, in order, for links and the trace. */
+  postedMessageIds: z.array(z.string().min(1)).default([]),
+  /**
+   * Task 14: trace flags gathered before the invoke (currently only
+   * `quote-unavailable`), carried so a retry that skips the invoke still
+   * writes them into the trace.
+   */
+  flags: z.array(z.string().min(1)).default([]),
 });
 export type AssistantInvokeCursor = z.infer<typeof assistantInvokeCursor>;
 
@@ -390,3 +532,48 @@ export type AssistantInvokeCursor = z.infer<typeof assistantInvokeCursor>;
  */
 export const assistantInvokeDedupeKey = (invocationId: string): string =>
   `${JOB_KINDS.assistantInvoke}:${invocationId}`;
+
+/**
+ * The resource-cache refresh job (ADR 0073). `resourceId` absent means "every
+ * resource in the guild" — the hourly sweep and "Update all" both use
+ * this shape; `reason` is carried through to the trace/log line, not used to
+ * branch behaviour inside the handler.
+ */
+export const resourceRefreshPayload = z.object({
+  resourceId: z.string().min(1).max(64).optional(),
+  reason: z.enum(['hourly', 'manual', 'added', 'assistant']),
+});
+export type ResourceRefreshPayload = z.infer<typeof resourceRefreshPayload>;
+
+/**
+ * `resource_refresh:<resourceId|all>:<bucket>` — one pending refresh per
+ * resource (or per guild, for "all") per bucket, so a flapping timer or a
+ * double-tapped "Update now" collapses into the one already queued rather
+ * than piling up (ADR 0016). `added` carries no time bucket: a resource is
+ * added or edited rarely, and collapsing every edit within the pending job's
+ * lifetime into one refresh is exactly the point — the job re-reads the
+ * resource row at run time, so it always picks up the latest save.
+ */
+export const resourceRefreshDedupeKey = (
+  input:
+    | { readonly reason: 'hourly'; readonly resourceId?: string; readonly hourBucket: number }
+    | { readonly reason: 'manual'; readonly resourceId?: string; readonly minuteBucket: number }
+    | {
+        readonly reason: 'assistant';
+        readonly resourceId?: string;
+        readonly tenMinuteBucket: number;
+      }
+    | { readonly reason: 'added'; readonly resourceId: string },
+): string => {
+  const target = input.resourceId ?? 'all';
+  switch (input.reason) {
+    case 'hourly':
+      return `${JOB_KINDS.resourceRefresh}:${target}:${String(input.hourBucket)}`;
+    case 'manual':
+      return `${JOB_KINDS.resourceRefresh}:${target}:manual:${String(input.minuteBucket)}`;
+    case 'assistant':
+      return `${JOB_KINDS.resourceRefresh}:${target}:assistant:${String(input.tenMinuteBucket)}`;
+    case 'added':
+      return `${JOB_KINDS.resourceRefresh}:${target}:added`;
+  }
+};

@@ -1,26 +1,28 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { listGeminiModels, type Config, type GeminiModelInfo } from '@bananasaurs/core';
-import { assistantProviderRepo, type InstanceScope } from '@bananasaurs/storage';
+import {
+  assistantProviderRepo,
+  assistantProvidersRepo,
+  eligibilityRepo,
+  type InstanceScope,
+} from '@bananasaurs/storage';
+import {
+  makeProvider,
+  resolveModelChain,
+  type ChainEntry,
+  type ProviderId,
+} from './model-chain.js';
+import { openWithKey as open, sealWithKey as seal } from '../crypto/seal.js';
+
+/** Same display labels the 0039 migration gave a provider's copied key. */
+const PROVIDER_LABEL: Record<ProviderId, string> = {
+  gemini: 'Gemini',
+  openrouter: 'OpenRouter',
+  'nvidia-nim': 'NVIDIA NIM',
+};
 
 const keyFrom = (secret: string): Buffer =>
   createHash('sha256').update(`bananasaurs:assistant-provider:${secret}`, 'utf8').digest();
-const seal = (key: Buffer, value: string): string => {
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key, nonce);
-  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-  return Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString('base64');
-};
-const open = (key: Buffer, value: string): string | undefined => {
-  try {
-    const raw = Buffer.from(value, 'base64');
-    if (raw.length < 29) return undefined;
-    const decipher = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12));
-    decipher.setAuthTag(raw.subarray(12, 28));
-    return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
-  } catch {
-    return undefined;
-  }
-};
 export type ProviderSecretSource = 'env' | 'file' | 'missing';
 export type ProviderCostClass = 'free' | 'paid' | 'unknown';
 export interface ProviderConfigStatus {
@@ -59,10 +61,57 @@ export interface ProviderConfigStore {
   ): void;
   /**
    * ADR 0068: the models a key can use for text answers. Uses `apiKey` when
-   * given (just pasted, not yet saved), else the saved key for that service.
-   * Throws `no-key` or `unsupported`; the key is never in the result.
+   * given (just pasted, not yet saved), else the first saved key for that
+   * provider. Throws `no-key` or `unsupported`; the key is never in the
+   * result.
    */
   listModels(provider: string, apiKey?: string): Promise<readonly GeminiModelInfo[]>;
+  /** Task 6b: the stored keys, sealed values never opened. */
+  keys(): readonly assistantProvidersRepo.StoredKey[];
+  /** Seals `apiKey` and stores a new labelled key for `provider`. Returns its id. */
+  addKey(
+    input: {
+      provider: ProviderId;
+      label: string;
+      apiKey: string;
+      costClass?: ProviderCostClass | undefined;
+      enabled?: boolean | undefined;
+    },
+    now: number,
+  ): string;
+  /** Write-only; an omitted `apiKey` keeps the saved one. */
+  updateKey(
+    keyId: string,
+    input: {
+      label?: string | undefined;
+      apiKey?: string | undefined;
+      costClass?: ProviderCostClass | undefined;
+      enabled?: boolean | undefined;
+    },
+    now: number,
+  ): void;
+  /** Cascades: every chain entry on this key goes with it. */
+  removeKey(keyId: string): void;
+  /**
+   * ADR 0075 / Task 6b: the resolved, ordered model chain — each entry's key
+   * opened and its own provider's eligibility checked, ready for the service
+   * to pick the first usable one.
+   */
+  chain(): readonly ChainEntry[];
+  /** Replaces the whole chain; empty clears it. */
+  saveChain(rows: readonly { keyId: string; model: string }[], now: number): void;
+  saveGithubToken(token: string | null): void;
+  /** Whether the stored key opens under this daemon's secret; false when unknown. */
+  isKeyReadable(keyId: string): boolean;
+  /** Whether a GitHub token is saved; the token itself is never returned. */
+  githubTokenConfigured(): boolean;
+  /**
+   * Task 17: the sealed GitHub token, opened for the GitHub client. The
+   * plaintext is returned to the caller for the `Authorization` header only —
+   * never logged, never in status()/audit/errors. `undefined` while none is
+   * saved or while it does not open under this daemon's secret.
+   */
+  githubToken(): string | undefined;
 }
 /**
  * The provider as `.env` configures it: what runs when nothing is saved in
@@ -93,9 +142,11 @@ export const envProviderStatus = (
 };
 
 /**
- * `envBase` is the process config. With no saved row the env provider runs
- * and `status()` reports it; once the dashboard saves a row, the row is
- * authoritative, and switched off there means off.
+ * `envBase` is the process config. With nothing saved, both the keys table
+ * and the model chain are empty (Task 6b, ADR 0075) and the env provider
+ * runs as `.env` configured it; once the dashboard saves a key and a chain,
+ * they are authoritative, and an empty or disabled chain there means off —
+ * env is never silently resurrected under a saved-but-empty configuration.
  */
 export const createProviderConfigStore = (
   instance: InstanceScope,
@@ -108,10 +159,21 @@ export const createProviderConfigStore = (
   const key = keyFrom(masterSecret);
   return {
     status() {
-      const row = assistantProviderRepo.get(instance);
-      if (row === undefined && envBase !== undefined && envBase.AI_PROVIDER !== 'off')
-        return envProviderStatus(envBase, secretSource);
-      if (row === undefined)
+      const storedKeys = assistantProvidersRepo.listKeys(instance);
+      const chainRows = assistantProvidersRepo.getModelChain(instance);
+      const searchRow = assistantProviderRepo.get(instance);
+      const webSearch =
+        searchRow?.searchApiKeyEnc === undefined && searchRow?.searchEnabled !== true
+          ? {}
+          : {
+              webSearch: {
+                keyConfigured: searchRow.searchApiKeyEnc !== undefined,
+                enabled: searchRow.searchEnabled === true,
+              },
+            };
+      if (storedKeys.length === 0 && chainRows.length === 0) {
+        if (envBase !== undefined && envBase.AI_PROVIDER !== 'off')
+          return { ...envProviderStatus(envBase, secretSource), ...webSearch };
         return {
           provider: 'off',
           enabled: false,
@@ -120,74 +182,93 @@ export const createProviderConfigStore = (
           keyReadable: false,
           costClass: 'unknown',
           secretSource,
+          ...webSearch,
         };
+      }
+      const entry0 = chainRows[0];
+      if (entry0 === undefined)
+        return {
+          provider: 'off',
+          enabled: false,
+          modelConfigured: false,
+          keyConfigured: false,
+          keyReadable: false,
+          costClass: 'unknown',
+          secretSource,
+          ...webSearch,
+        };
+      const storedKey = storedKeys.find((k) => k.keyId === entry0.keyId);
+      const keyConfigured = storedKey !== undefined;
+      // Opened and dropped: the plaintext never leaves this expression.
+      const keyReadable = keyConfigured && open(key, storedKey.apiKeyEnc) !== undefined;
+      const fallbackModels = chainRows
+        .slice(1)
+        .filter((row) => row.provider === entry0.provider)
+        .map((row) => row.model);
       return {
-        provider: row.provider,
-        ...(row.model === undefined ? {} : { model: row.model }),
-        enabled: row.enabled,
-        modelConfigured: row.model !== undefined,
-        keyConfigured: row.apiKeyEnc !== undefined,
-        // Opened and dropped: the plaintext never leaves this expression.
-        keyReadable: row.apiKeyEnc !== undefined && open(key, row.apiKeyEnc) !== undefined,
-        costClass: row.costClass,
+        provider: entry0.provider,
+        model: entry0.model,
+        enabled: storedKey?.enabled ?? false,
+        modelConfigured: true,
+        keyConfigured,
+        keyReadable,
+        costClass: storedKey?.costClass ?? 'unknown',
         secretSource,
-        ...(row.fallbackModels === undefined ? {} : { fallbackModels: row.fallbackModels }),
-        ...(row.searchApiKeyEnc === undefined && row.searchEnabled !== true
-          ? {}
-          : {
-              webSearch: {
-                keyConfigured: row.searchApiKeyEnc !== undefined,
-                enabled: row.searchEnabled === true,
-              },
-            }),
+        ...(fallbackModels.length === 0 ? {} : { fallbackModels }),
+        ...webSearch,
       };
     },
     effective(envConfig) {
-      const row = assistantProviderRepo.get(instance);
-      if (row === undefined) return envConfig;
+      const storedKeys = assistantProvidersRepo.listKeys(instance);
+      const chainRows = assistantProvidersRepo.getModelChain(instance);
+      const searchRow = assistantProviderRepo.get(instance);
       // A saved row is authoritative for web search too: off there means off.
       const rest: Config = { ...envConfig };
       delete rest.BRAVE_SEARCH_API_KEY;
       delete rest.AI_FALLBACK_MODELS;
       const searchKey =
-        row.searchEnabled === true && row.searchApiKeyEnc !== undefined
-          ? open(key, row.searchApiKeyEnc)
+        searchRow?.searchEnabled === true && searchRow.searchApiKeyEnc !== undefined
+          ? open(key, searchRow.searchApiKeyEnc)
           : undefined;
       const base: Config = {
         ...rest,
         ...(searchKey === undefined ? {} : { BRAVE_SEARCH_API_KEY: searchKey }),
       };
-      if (!row.enabled || row.provider === 'off' || row.apiKeyEnc === undefined)
-        return { ...base, AI_PROVIDER: 'off' };
-      const apiKey = open(key, row.apiKeyEnc);
+      if (storedKeys.length === 0 && chainRows.length === 0) return base;
+      const entry0 = chainRows[0];
+      if (entry0 === undefined) return { ...base, AI_PROVIDER: 'off' };
+      const storedKey = storedKeys.find((k) => k.keyId === entry0.keyId);
+      if (storedKey === undefined || !storedKey.enabled) return { ...base, AI_PROVIDER: 'off' };
+      const apiKey = open(key, storedKey.apiKeyEnc);
       if (apiKey === undefined) return { ...base, AI_PROVIDER: 'off' };
+      const fallbackModels = chainRows
+        .slice(1)
+        .filter((row) => row.provider === entry0.provider)
+        .map((row) => row.model);
       return {
         ...base,
-        ...(row.fallbackModels === undefined
-          ? {}
-          : { AI_FALLBACK_MODELS: [...row.fallbackModels] }),
-        AI_PROVIDER: row.provider,
-        AI_MODEL: row.model,
-        AI_PROFILE_COST_CLASS: row.costClass,
-        ...(row.provider === 'gemini'
+        ...(fallbackModels.length === 0 ? {} : { AI_FALLBACK_MODELS: fallbackModels }),
+        AI_PROVIDER: entry0.provider,
+        AI_MODEL: entry0.model,
+        AI_PROFILE_COST_CLASS: storedKey.costClass,
+        ...(entry0.provider === 'gemini'
           ? { GEMINI_API_KEY: apiKey }
-          : row.provider === 'openrouter'
+          : entry0.provider === 'openrouter'
             ? { OPENROUTER_API_KEY: apiKey }
             : { NVIDIA_NIM_API_KEY: apiKey }),
       };
     },
     save(input, now) {
+      // ADR 0075 / Task 6b: the AI provider, model and key columns on this
+      // row are no longer read (several keys and the chain live in their own
+      // tables now) — only the web-search fields below still take effect.
+      // The columns stay written for the no-destructive-migration guarantee
+      // and because `save`'s shape has to keep accepting the same input for
+      // every existing caller until Task 8 replaces the dashboard route.
       const current = assistantProviderRepo.get(instance);
-      // Omitted fields keep what is saved, so re-saving to flip `enabled` does
-      // not drop anything. But the key, model and cost statement belong to the
-      // service they were entered for: switching service drops them, so one
-      // company's key is never sent to another; and a "free" statement is about
-      // one model, so a new model needs it stated again (final review, 2026-09-23).
       const same = current?.provider === input.provider ? current : undefined;
       const model = input.model ?? same?.model;
       const apiKeyEnc = input.apiKey !== undefined ? seal(key, input.apiKey) : same?.apiKeyEnc;
-      // The fallback model runs on the same service and key, so it follows the
-      // same rule; and the cost statement has to cover it too.
       const fallbackModels = input.fallbackModels ?? same?.fallbackModels ?? [];
       const sameOrder = fallbackModels.join('\n') === (same?.fallbackModels ?? []).join('\n');
       const costClass =
@@ -208,19 +289,125 @@ export const createProviderConfigStore = (
         searchEnabled: input.searchEnabled ?? current?.searchEnabled ?? false,
         updatedAt: now,
       });
+      // Task 6b fix round 1: `status()`/`effective()`/`chain()` read the keys
+      // and chain tables, not the row above — so this legacy single-provider
+      // route has to write there too, or every dashboard save silently does
+      // nothing (the controller-caught regression). This replaces the whole
+      // chain with (at most) this one provider's models, which is correct
+      // for this route's single-provider view; it stops being the only save
+      // path once Task 8 ships the multi-key dashboard.
+      if (input.provider === 'off') {
+        assistantProvidersRepo.setModelChain(instance, [], now);
+        return;
+      }
+      const keyId = `key_${input.provider}`;
+      const existingKey = assistantProvidersRepo.listKeys(instance).find((k) => k.keyId === keyId);
+      if (existingKey === undefined && input.apiKey === undefined) {
+        // Nothing to seal into a key row (api_key_enc is NOT NULL) and none
+        // saved yet: leave the chain empty so status() reports this provider
+        // as configured with no key, the closest match to today's
+        // keyConfigured: false under the new schema.
+        assistantProvidersRepo.setModelChain(instance, [], now);
+        return;
+      }
+      if (existingKey === undefined) {
+        assistantProvidersRepo.addKey(instance, {
+          keyId,
+          provider: input.provider,
+          label: PROVIDER_LABEL[input.provider],
+          apiKeyEnc: seal(key, input.apiKey as string),
+          costClass,
+          enabled: input.enabled,
+          now,
+        });
+      } else {
+        assistantProvidersRepo.updateKey(instance, keyId, {
+          ...(input.apiKey === undefined ? {} : { apiKeyEnc: seal(key, input.apiKey) }),
+          costClass,
+          enabled: input.enabled,
+          now,
+        });
+      }
+      if (model === undefined) {
+        // No model named yet, by this save or an earlier one on this
+        // provider: nothing to chain, even though the key now exists.
+        assistantProvidersRepo.setModelChain(instance, [], now);
+        return;
+      }
+      const models = [...new Set([model, ...fallbackModels])].slice(0, 6);
+      assistantProvidersRepo.setModelChain(
+        instance,
+        models.map((m) => ({ keyId, model: m })),
+        now,
+      );
     },
     async listModels(provider, apiKey) {
       if (provider !== 'gemini') throw new Error('unsupported');
       let listKey = apiKey;
       if (listKey === undefined) {
-        const row = assistantProviderRepo.get(instance);
-        listKey =
-          row?.provider === 'gemini' && row.apiKeyEnc !== undefined
-            ? open(key, row.apiKeyEnc)
-            : undefined;
+        // With several Gemini keys and no pasted key, this uses the first stored Gemini key (by key id).
+        const storedKey = assistantProvidersRepo
+          .listKeys(instance)
+          .find((k) => k.provider === 'gemini');
+        listKey = storedKey !== undefined ? open(key, storedKey.apiKeyEnc) : undefined;
       }
       if (listKey === undefined) throw new Error('no-key');
       return await geminiModels(listKey);
+    },
+    keys() {
+      return assistantProvidersRepo.listKeys(instance);
+    },
+    addKey(input, now) {
+      return assistantProvidersRepo.addKey(instance, {
+        provider: input.provider,
+        label: input.label,
+        apiKeyEnc: seal(key, input.apiKey),
+        costClass: input.costClass ?? 'unknown',
+        enabled: input.enabled ?? true,
+        now,
+      });
+    },
+    updateKey(keyId, input, now) {
+      assistantProvidersRepo.updateKey(instance, keyId, {
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.apiKey === undefined ? {} : { apiKeyEnc: seal(key, input.apiKey) }),
+        ...(input.costClass === undefined ? {} : { costClass: input.costClass }),
+        ...(input.enabled === undefined ? {} : { enabled: input.enabled }),
+        now,
+      });
+    },
+    removeKey(keyId) {
+      assistantProvidersRepo.removeKey(instance, keyId);
+    },
+    chain() {
+      return resolveModelChain({
+        instance,
+        config: envBase ?? { AI_PROVIDER: 'off', AI_PROFILE_COST_CLASS: 'unknown' },
+        openKey: (sealed) => open(key, sealed),
+        eligibility: (providerId) => eligibilityRepo.findEligibility(instance, providerId),
+        makeProvider,
+      });
+    },
+    saveChain(rows, now) {
+      assistantProvidersRepo.setModelChain(instance, rows, now);
+    },
+    saveGithubToken(token) {
+      assistantProvidersRepo.setGithubTokenEnc(instance, token === null ? null : seal(key, token));
+    },
+    isKeyReadable(keyId) {
+      const stored = assistantProvidersRepo.listKeys(instance).find((k) => k.keyId === keyId);
+      if (stored === undefined) return false;
+      // Opened and dropped: the plaintext never leaves this expression.
+      return open(key, stored.apiKeyEnc) !== undefined;
+    },
+    githubTokenConfigured() {
+      return assistantProvidersRepo.getGithubTokenEnc(instance) !== null;
+    },
+    githubToken() {
+      const sealed = assistantProvidersRepo.getGithubTokenEnc(instance);
+      if (sealed === null) return undefined;
+      const opened = open(key, sealed);
+      return opened === undefined || opened === '' ? undefined : opened;
     },
   };
 };

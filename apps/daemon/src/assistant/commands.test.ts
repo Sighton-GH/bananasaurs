@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import type { AssistantBehaviour, AssistantInvokePayload, DomainEvent } from '@bananasaurs/core';
+import type {
+  AssistantBehaviour,
+  AssistantInvokePayload,
+  DomainEvent,
+  KnownMessage,
+  ReactionEvent,
+} from '@bananasaurs/core';
 import { ProviderError, RetryAfterError } from '@bananasaurs/core';
 import {
   createAssistantCommandSubscriber,
@@ -9,6 +15,7 @@ import {
 } from './commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { createInteractionTokenSealer } from './interaction-token.js';
+import { PROVIDER_FAILURE_LOG_REASON } from './provider-failure.js';
 
 const guildId = '234567890123456789';
 const channelId = '345678901234567890';
@@ -47,7 +54,10 @@ const club: AssistantBehaviour = {
  * the captured queue through the real handler, so these tests exercise the
  * whole path a production event travels.
  */
-const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => {
+const harness = (
+  behaviours: readonly AssistantBehaviour[] = [direct, club],
+  lookupMessage?: (messageId: string) => KnownMessage | undefined,
+) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
       ok: true,
@@ -102,6 +112,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
       sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
+      ...(lookupMessage === undefined ? {} : { lookupMessage }),
     }),
   };
 };
@@ -159,6 +170,41 @@ describe('assistant command subscriber', () => {
         allowedMentions: { parse: [] },
       }),
     );
+  });
+
+  it('always sets invocationId, and messageId plus reply references for mentions', async () => {
+    const h = harness();
+    await h.subscriber.handle(slash('ask', [{ name: 'question', value: 'When is the meeting?' }]));
+    expect(h.queued[0]?.invocationId).toBe('678901234567890123');
+    expect(h.queued[0]?.messageId).toBeUndefined();
+
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012345',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+      referencedMessageId: '890123456789012399',
+      referencedAuthorId: '901234567890123456',
+    });
+    expect(h.queued[1]).toMatchObject({
+      invocationId: '890123456789012345',
+      messageId: '890123456789012345',
+      referencedMessageId: '890123456789012399',
+      referencedAuthorId: '901234567890123456',
+    });
   });
 
   it('posts one safe IT escalation to the configured channel and reviewer roles', async () => {
@@ -227,6 +273,44 @@ describe('assistant command subscriber', () => {
         behaviourId: 'club',
         command: 'ask',
         input: { question: 'when is the meeting?' },
+        source: 'mention',
+      }),
+    ]);
+  });
+
+  it('routes an untagged Discord Reply to a known bot answer, via lookupMessage (ADR 0072)', async () => {
+    const repliedTo = '890123456789012399';
+    const lookupMessage = (id: string): KnownMessage | undefined =>
+      id === repliedTo
+        ? { conversationId: 'conv-1', role: 'assistant', channelId, behaviourId: 'club' }
+        : undefined;
+    const h = harness([direct, club], lookupMessage);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012347',
+      authorId: userId,
+      authorIsBot: false,
+      content: 'and what about parking?',
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+      referencedMessageId: repliedTo,
+      referencedAuthorId: '901234567890123456',
+    });
+    expect(h.queued).toEqual([
+      expect.objectContaining({
+        behaviourId: 'club',
+        command: 'ask',
+        input: { question: 'and what about parking?' },
         source: 'mention',
       }),
     ]);
@@ -565,8 +649,9 @@ describe('assistant mention failure path', () => {
     await handler.run(payload, context);
     expect(h.invoke).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(1);
-    // Every stage was persisted, ending at 'answered' for a plain result.
+    // Every stage was persisted: the invoke, each posted part, then 'answered'.
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
+      'invoke-done',
       'invoke-done',
       'answered',
     ]);
@@ -632,6 +717,7 @@ describe('assistant mention failure path', () => {
     expect(h.send).toHaveBeenCalledTimes(2);
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
       'invoke-done',
+      'invoke-done',
       'answered',
     ]);
     // Attempt 2: only the escalation post is sent.
@@ -643,6 +729,7 @@ describe('assistant mention failure path', () => {
     });
     expect(cursors.map((c) => (JSON.parse(c) as { stage: string }).stage)).toEqual([
       'invoke-done',
+      'invoke-done',
       'answered',
       'escalation-sent',
     ]);
@@ -650,6 +737,122 @@ describe('assistant mention failure path', () => {
     await handler.run(payload, { ...context, attempts: 3, cursor: cursors.at(-1)! });
     expect(h.invoke).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('assistant answer feedback reactions (Task 20)', () => {
+  const BOT = '901234567890123456';
+  const MESSAGE = '890123456789012345';
+  const TRACE = 'trace_feedback_1';
+  const assistantLink = (messageId: string): KnownMessage | undefined =>
+    messageId === MESSAGE
+      ? { conversationId: 'conv-1', role: 'assistant', channelId, behaviourId: 'club' }
+      : undefined;
+  const userLink = (messageId: string): KnownMessage | undefined =>
+    messageId === MESSAGE
+      ? { conversationId: 'conv-1', role: 'user', channelId, behaviourId: 'club' }
+      : undefined;
+  const feedbackHarness = (
+    lookupMessage: (messageId: string) => KnownMessage | undefined = assistantLink,
+  ) => {
+    const setFeedback = vi.fn(
+      (
+        _messageId: string,
+        _feedback: 'up' | 'down' | null,
+      ): {
+        updated: boolean;
+        traceId: string | undefined;
+      } => ({ updated: true, traceId: TRACE }),
+    );
+    const addTraceFlag = vi.fn((_traceId: string, _flag: string): boolean => true);
+    const subscriber = createAssistantCommandSubscriber({
+      botUserId: BOT,
+      guildId,
+      service: {
+        behavioursForGuild: vi.fn(async () => [direct, club]),
+        invoke: vi.fn(async () => ({ ok: true as const, content: 'unused' })),
+      },
+      defer: vi.fn(async () => undefined),
+      respond: vi.fn(async () => undefined),
+      enqueue: vi.fn(),
+      sealToken: (token) => token,
+      now: () => 1,
+      logger: pino({ level: 'silent' }),
+      lookupMessage,
+      feedback: { setFeedback, addTraceFlag },
+    });
+    return { setFeedback, addTraceFlag, subscriber };
+  };
+  // Overrides are the real reaction event shape, partial: a single-kind
+  // `Extract` would narrow to `never` (the event's kind is a union), so the
+  // helper takes `Partial<ReactionEvent>` and returns the full event.
+  const reaction = (over: Partial<ReactionEvent> = {}): ReactionEvent => ({
+    kind: 'reactionAdd',
+    guildId,
+    receivedAtMs: 1,
+    channelId,
+    messageId: MESSAGE,
+    userId,
+    emoji: 'u:1f44d',
+    wasPartial: false,
+    ...over,
+  });
+
+  it('records a thumbs-up and flags the trace', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, 'up');
+    expect(h.addTraceFlag).toHaveBeenCalledWith(TRACE, 'feedback:up');
+  });
+
+  it('records a thumbs-down and flags the trace', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ emoji: 'u:1f44e' }));
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, 'down');
+    expect(h.addTraceFlag).toHaveBeenCalledWith(TRACE, 'feedback:down');
+  });
+
+  it('clears feedback when the reaction is removed, without touching trace flags', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ kind: 'reactionRemove' }));
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, null);
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a reaction on an unlinked message', async () => {
+    const h = feedbackHarness(() => undefined);
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a reaction on a user-role message', async () => {
+    const h = feedbackHarness(userLink);
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('counts only thumbs-up and thumbs-down', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ emoji: 'u:2714' }));
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('ignores the bot’s own reactions', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ userId: BOT }));
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('adds no trace flag when the message link is gone', async () => {
+    const h = feedbackHarness();
+    h.setFeedback.mockReturnValueOnce({ updated: false, traceId: undefined });
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, 'up');
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
   });
 });
 
@@ -893,8 +1096,10 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
     await expect(d.run(4, null)).resolves.toBeUndefined();
     const logged = embed(logPosts(d.send)[0]!);
     expect(logged.title).toBe('Mention · failed');
+    // Hard rule 4: the log channel gets the fixed sentence, never the
+    // provider's text.
     expect(logged.fields).toEqual(
-      expect.arrayContaining([{ name: 'Reason', value: 'Gemini request failed with HTTP 503' }]),
+      expect.arrayContaining([{ name: 'Reason', value: PROVIDER_FAILURE_LOG_REASON }]),
     );
   });
 });

@@ -3,14 +3,19 @@ import {
   assertProviderEligible,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
-  createNvidiaNimProvider,
-  createOpenRouterProvider,
-  GeminiProvider,
+  estimateTokens,
+  JOB_KINDS,
   providerMayTrain,
+  ProviderError,
   redactEvidenceText,
+  resourceRefreshDedupeKey,
   SafeProvider,
   safeLogFields,
+  stripNewTopic,
+  type AssistantTrace,
+  type CompiledAssistantContext,
   type Config,
+  type GenerationMessage,
   type Logger,
   type TextProvider,
   validateReminderDraft,
@@ -19,7 +24,11 @@ import {
   archiveRepo,
   archiveSearchRepo,
   assistantRepo,
+  conversationRepo,
   eligibilityRepo,
+  jobRepo,
+  resourceCacheRepo,
+  traceRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -27,42 +36,23 @@ import type {
   AssistantCommandService,
   AssistantInvocation,
   AssistantInvocationResult,
+  AssistantTraceDetail,
+  InvocationTrace,
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
-import { generateAnswer, type GenerationTrace } from './generate.js';
+import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
+import { type ChainEntry, type ProviderId } from './model-chain.js';
+import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { QuotaLedger } from './quota-ledger.js';
 import {
   runAssistantTool,
+  relativeUpdated,
   toolDeclarations,
   type ArchiveHit,
   type AssistantToolPorts,
   type WebResult,
 } from './tools.js';
-import { ReviewedResourceFetcher } from './resource-fetcher.js';
-
-export const providerFor = (config: Config): TextProvider | undefined => {
-  if (config.AI_PROVIDER === 'off' || config.AI_MODEL === undefined) return undefined;
-  if (config.AI_PROVIDER === 'gemini' && config.GEMINI_API_KEY !== undefined)
-    return new SafeProvider(
-      new GeminiProvider({ apiKey: config.GEMINI_API_KEY }),
-      config.AI_PROFILE_COST_CLASS,
-      {
-        monthlyCapUsdMicros: 0,
-      },
-    );
-  if (config.AI_PROVIDER === 'openrouter' && config.OPENROUTER_API_KEY !== undefined)
-    return new SafeProvider(
-      createOpenRouterProvider({ apiKey: config.OPENROUTER_API_KEY }),
-      config.AI_PROFILE_COST_CLASS,
-      { monthlyCapUsdMicros: 0 },
-    );
-  if (config.AI_PROVIDER === 'nvidia-nim' && config.NVIDIA_NIM_API_KEY !== undefined)
-    return new SafeProvider(
-      createNvidiaNimProvider({ apiKey: config.NVIDIA_NIM_API_KEY }),
-      config.AI_PROFILE_COST_CLASS,
-      { monthlyCapUsdMicros: 0 },
-    );
-  return undefined;
-};
+import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -75,12 +65,95 @@ export const sanitizeMentionsForProvider = (text: string): string =>
     .replace(/<@&\d{17,20}>/g, '@role')
     .replace(/<@!?\d{17,20}>/g, '@user')
     .replace(/<#\d{17,20}>/g, '#channel');
+
+/**
+ * Task 14: the trace's `sections` are the compiled context sections as
+ * `context.ts` names them, plus `history` when history was sent (ruling).
+ * The quoted envelope is user text, not a section — like the evidence
+ * envelope it travels in the messages, never the system instruction.
+ */
+const traceSections = (
+  context: CompiledAssistantContext,
+  history: readonly GenerationMessage[],
+): AssistantTrace['sections'] => {
+  const sections = context.sections.map((section) => ({
+    name: section.name,
+    chars: section.text.length,
+    estTokens: estimateTokens(section.text),
+    text: section.text,
+  }));
+  if (history.length === 0) return sections;
+  const text = history.map((message) => `${message.role}: ${message.text}`).join('\n\n');
+  return [
+    ...sections,
+    { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
+  ];
+};
 export interface AssistantServiceTestPorts {
   readonly provider?: TextProvider | undefined;
   readonly fetchResource?:
     ((url: string) => ReturnType<ReviewedResourceFetcher['fetch']>) | undefined;
   /** Replaces Brave's HTTP call in tests. */
   readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
+  /**
+   * Task 20: replaces the pre-retrieval cache search in tests — throw from
+   * it to simulate an unreadable resource cache (`resources-unavailable`).
+   */
+  readonly cacheSearch?:
+    | ((
+        query: string,
+        resourceIds: readonly string[],
+      ) => readonly {
+        readonly resourceId: string;
+        readonly chunkId: string;
+        readonly docId: string;
+        readonly headingPath: string;
+        readonly snippet: string;
+      }[])
+    | undefined;
+}
+
+/** One chunk/resource-backed source for the answer's sources line. */
+interface AnswerSource {
+  readonly title: string;
+  readonly url: string;
+  readonly heading?: string | undefined;
+}
+
+/**
+ * Task 20: the short line ending an answer — at most three entries, deduped
+ * by URL, each a resource title (plus `› heading` when the evidence names
+ * one). Empty when nothing chunk/resource-backed was used, in which case the
+ * caller appends nothing.
+ */
+const sourcesLine = (sources: readonly AnswerSource[]): string => {
+  const seen = new Set<string>();
+  const entries: string[] = [];
+  for (const source of sources) {
+    if (source.url === '' || seen.has(source.url)) continue;
+    seen.add(source.url);
+    entries.push(
+      source.heading === undefined || source.heading === ''
+        ? source.title
+        : `${source.title} › ${source.heading}`,
+    );
+    if (entries.length >= 3) break;
+  }
+  if (entries.length === 0) return '';
+  return `\n\n-# Sources: ${entries.join(' · ')}`;
+};
+
+/** Task 20: dashboard Try-it in and out. */
+export interface AssistantTryItInput {
+  readonly behaviourId: string;
+  readonly question: string;
+  readonly conversationId?: string | undefined;
+  readonly accountUsername: string;
+}
+export interface AssistantTryItResult {
+  readonly answer: string;
+  readonly traceId: string;
+  readonly conversationId: string;
 }
 
 /** What the tools need from live Discord (ADR 0067). */
@@ -102,18 +175,65 @@ export const createAssistantService = (
   liveConfig: () => Config = () => config,
   logger: Pick<Logger, 'warn'> = { warn: () => undefined },
   discord: AssistantDiscordPorts = { memberChannels: () => Promise.resolve([]) },
-): AssistantCommandService => {
+  /**
+   * ADR 0075: the ordered, resolved model chain — built by
+   * `ProviderConfigStore.chain()` at the composition root and handed down
+   * through `guild.ts`, one call per invocation so a dashboard change is
+   * live on the next request. Empty when no store exists.
+   */
+  chain: () => readonly ChainEntry[] = () => [],
+  /**
+   * Task 8: the process-wide QuotaLedger, constructed once in
+   * `runtime/daemon.ts` and shared by every guild so a spent `:free`
+   * allowance stays spent across guilds until its reset. Defaults to a fresh
+   * ledger (one per service) for tests that do not pass one.
+   */
+  quotaLedger: QuotaLedger = new QuotaLedger(),
+): AssistantCommandService & {
+  tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
+} => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
-  const currentProvider = (): TextProvider | undefined => {
+  //
+  // ADR 0075: a test-injected provider becomes a one-entry chain so the rest
+  // of this function has one code path regardless of where the provider came
+  // from. It is never itself eligibility-checked here — that still happens
+  // below, exactly as it did before the chain existed (ruling: "the
+  // eligibility check still applies to it exactly as today").
+  const currentChain = (): readonly ChainEntry[] => {
+    const raw = testPorts.provider;
+    if (raw === undefined) return chain();
     const current = liveConfig();
-    const rawProvider = testPorts.provider ?? providerFor(current);
-    return rawProvider === undefined || rawProvider instanceof SafeProvider
-      ? rawProvider
-      : new SafeProvider(rawProvider, current.AI_PROFILE_COST_CLASS, { monthlyCapUsdMicros: 0 });
+    const wrapped =
+      raw instanceof SafeProvider
+        ? raw
+        : new SafeProvider(raw, current.AI_PROFILE_COST_CLASS, { monthlyCapUsdMicros: 0 });
+    return [
+      {
+        providerId: raw.id as ProviderId,
+        model: current.AI_MODEL ?? 'test-model',
+        keyId: 'key_test',
+        keyLabel: 'Test provider',
+        provider: wrapped,
+        skip: undefined,
+        mayTrain: false,
+      },
+    ];
   };
-  const resourceFetcher = new ReviewedResourceFetcher({ now });
-  const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
+  // Task 16: no per-request live fetching. The fetcher port stays so tests
+  // can assert it is never called; the refresh job owns all network I/O.
+  const fetchResource =
+    testPorts.fetchResource ??
+    (() => Promise.reject(new Error('live resource fetch is disabled; the cache owns reads')));
+  /**
+   * One ledger per service instance (per daemon, not per request): a spent
+   * `:free` daily allowance stays spent for later requests until its reset.
+   * Keys are instance-level, so the ledger is keyed by key id, not guild.
+   * Task 8: the ledger arrives from the composition root so every guild
+   * shares one process-wide instance; the default keeps isolated tests
+   * independent.
+   */
+  const ledger = quotaLedger;
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
   const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
     if (query.trim() === '') return [];
@@ -139,11 +259,23 @@ export const createAssistantService = (
   };
   const invokeOnce = async (
     input: AssistantInvocation,
-    sink: { trace?: GenerationTrace },
+    sink: {
+      trace?: Omit<InvocationTrace, 'latencyMs'>;
+      detail?: AssistantTraceDetail;
+      resourcesUnavailable?: boolean;
+    },
+    opts: {
+      /** Task 20: Try-it is authorised by `config.write`, not caller roles. */
+      skipCallerGate?: boolean;
+      /** Task 20: Try-it never reads member memories. */
+      skipMemberMemories?: boolean;
+      /** Task 20: Try-it answers an escalation as text, never opening a ticket. */
+      skipTicketWrite?: boolean;
+    } = {},
   ): Promise<AssistantInvocationResult> => {
     {
       const currentConfig = liveConfig();
-      const provider = currentProvider();
+      const chainEntries = currentChain();
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -162,8 +294,10 @@ export const createAssistantService = (
       const owner = input.userId === config.BANANASAURS_OWNER_USER_ID;
       // Owners can complete first-run setup before any caller role is selected.
       // Everyone else still fails closed against the behaviour allowlist.
+      // Try-it skips this gate: `config.write` already authorised the caller.
       if (
         !owner &&
+        !opts.skipCallerGate &&
         !input.behaviour.callerRoleIds.some((roleId) => input.callerRoleIds.includes(roleId))
       )
         return {
@@ -277,119 +411,135 @@ export const createAssistantService = (
                   .slice(0, 1_900),
         };
       }
-      if (provider === undefined || currentConfig.AI_MODEL === undefined)
+      if (chainEntries.length === 0) {
         return {
           ok: false,
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
+      }
       // Hard rule 5 (ADR 0062): the provider_eligibility table is consulted
-      // on the request path. A missing terms record, or one that does not
-      // allow production use, fails closed before any member content crosses
-      // the provider boundary (finding 1). A provider that may train on input
-      // is allowed by owner decision and raises a warning instead.
-      const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
+      // on the request path. A chain entry from `resolveModelChain` already
+      // ran this exact check while building the chain — re-running it here
+      // just re-reads the same row. Only a raw `testPorts.provider` never
+      // went through the resolver, so it is the one path that still needs
+      // its own check, run here for the first and only time.
+      //
+      // Task 6b (carried from Task 6's review): chain entries use
+      // `ChainEntry.mayTrain` for the training warning instead; the warning
+      // fires below, once the loop shows which entries were actually tried.
+      const usingTestProvider = testPorts.provider !== undefined;
+      if (usingTestProvider) {
+        const provider = chainEntries[0]?.provider;
+        if (provider !== undefined) {
+          const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
+          try {
+            if (eligibilityRow === undefined)
+              throw new Error(`no provider_eligibility row for ${provider.id}`);
+            assertProviderEligible(
+              {
+                trainsOnInput: eligibilityRow.trainsOnInput,
+                productionUseAllowed: eligibilityRow.productionUseAllowed,
+                evidenceUrl: eligibilityRow.evidenceUrl,
+                reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
+              },
+              'club',
+            );
+          } catch {
+            assistantRepo.recordSkillActivity(scope, {
+              id: randomUUID(),
+              at: now(),
+              behaviourId: input.behaviour.id,
+              skillId: skill,
+              actorId: input.userId,
+              outcome: 'denied',
+              detail: 'Provider terms are not recorded or do not allow this use.',
+            });
+            return {
+              ok: false,
+              content:
+                "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+            };
+          }
+          if (providerMayTrain(eligibilityRow))
+            logger.warn(
+              safeLogFields({
+                component: 'assistant',
+                guildId: input.guildId,
+                reason: 'provider-may-train',
+              }),
+              'assistant provider may train on server content',
+            );
+        }
+      }
+      // Task 16: no per-request live fetching. The prompt carries a short
+      // catalogue (preferred first, at most 60 lines) plus up to four
+      // pre-retrieved cache snippets; the model opens more via tools.
+      // Task 20: an unreadable resource store must not fail the answer —
+      // the model answers without evidence and the run is flagged
+      // `resources-unavailable` instead.
+      let resources: ReturnType<typeof assistantRepo.listResources> = [];
+      let ordered: typeof resources = [];
+      let catalogueLines: string[] = [];
+      let preRetrieved: readonly {
+        readonly resourceId: string;
+        readonly chunkId: string;
+        readonly docId: string;
+        readonly headingPath: string;
+        readonly snippet: string;
+      }[] = [];
       try {
-        if (eligibilityRow === undefined)
-          throw new Error(`no provider_eligibility row for ${provider.id}`);
-        assertProviderEligible(
-          {
-            trainsOnInput: eligibilityRow.trainsOnInput,
-            productionUseAllowed: eligibilityRow.productionUseAllowed,
-            evidenceUrl: eligibilityRow.evidenceUrl,
-            reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
-          },
-          'club',
+        resources = assistantRepo.listResources(scope).filter((r) => r.enabled);
+        const emphasised = resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
+        ordered = [...emphasised, ...resources.filter((r) => !emphasised.includes(r))];
+        const freshnessById = new Map(
+          resourceCacheRepo.resourceFreshness(scope).map((f) => [f.resourceId, f.fetchedAt]),
         );
+        catalogueLines = ordered.slice(0, 60).map((r) => {
+          const fetchedAt = freshnessById.get(r.id);
+          return `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(fetchedAt, now())}`;
+        });
+        const memberQuestion = textOf(input.input).slice(0, 200);
+        const searchCache =
+          testPorts.cacheSearch ??
+          ((query: string, resourceIds: readonly string[]) =>
+            resourceCacheRepo.searchChunks(scope, { query, resourceIds, limit: 4 }));
+        preRetrieved =
+          memberQuestion.trim() === ''
+            ? []
+            : searchCache(
+                memberQuestion,
+                ordered.map((r) => r.id),
+              );
       } catch {
-        assistantRepo.recordSkillActivity(scope, {
-          id: randomUUID(),
-          at: now(),
-          behaviourId: input.behaviour.id,
-          skillId: skill,
-          actorId: input.userId,
-          outcome: 'denied',
-          detail: 'Provider terms are not recorded or do not allow this use.',
-        });
-        return {
-          ok: false,
-          content:
-            "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
-        };
+        sink.resourcesUnavailable = true;
+        resources = [];
+        ordered = [];
+        catalogueLines = [];
+        preRetrieved = [];
       }
-      if (providerMayTrain(eligibilityRow))
-        logger.warn(
-          safeLogFields({
-            component: 'assistant',
-            guildId: input.guildId,
-            reason: 'provider-may-train',
-          }),
-          'assistant provider may train on server content',
-        );
-      // ADR 0067: every enabled resource is available to every behaviour. The
-      // behaviour's own list is fetched up front as preferred evidence; with
-      // tools the model opens the others itself, without them all are fetched.
-      const resources = assistantRepo.listResources(scope).filter((r) => r.enabled);
-      const emphasised = resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
-      const toolsAvailable = provider.capabilities.has('tools');
-      const prefetch = toolsAvailable
-        ? emphasised
-        : [...emphasised, ...resources.filter((r) => !emphasised.includes(r))];
-      const fetched = await Promise.all(
-        prefetch
-          .filter((resource) => ['website', 'document', 'repository'].includes(resource.kind))
-          .map(async (resource) => ({
-            resource,
-            result: await fetchResource(resource.url),
-          })),
+      const toolsAvailable = chainEntries.some(
+        (entry) => entry.provider?.capabilities.has('tools') === true,
       );
-      // Evidence-appropriate safety policy (should-fix, round 2): fetched
-      // public evidence is redact-and-continue, never hard-refuse. A club
-      // page that prints a contact email used to fail the whole request at
-      // the provider preflight and leave no activity row.
-      const redactedEvidence = fetched.flatMap(({ resource, result }) => {
-        if (!result.ok) return [];
-        const redacted = redactEvidenceText(result.evidence.text);
-        return [
-          {
-            resource,
-            result,
-            text: redacted.text,
-            detectors: redacted.detectors,
-          },
-        ];
+      const byResourceId = new Map(resources.map((r) => [r.id, r]));
+      const evidence = preRetrieved.map((hit) => {
+        const resource = byResourceId.get(hit.resourceId);
+        const text = redactEvidenceText(hit.snippet).text;
+        return {
+          sourceId: hit.resourceId,
+          title: resource?.title ?? hit.resourceId,
+          text,
+          accessible: true,
+          chunkId: hit.chunkId,
+        };
       });
-      for (const { resource, result, detectors } of redactedEvidence) {
-        assistantRepo.recordResourceFetch(scope, resource.id, {
-          status: 'ok',
-          at: now(),
-          detail:
-            `${result.evidence.mediaType}; ${result.evidence.text.length.toLocaleString('en-CA')} characters; cache=${result.cache}` +
-            (detectors.length > 0 ? `; redacted: ${detectors.join(', ')}` : ''),
-        });
-      }
-      for (const { resource, result } of fetched) {
-        if (result.ok) continue;
-        assistantRepo.recordResourceFetch(scope, resource.id, {
-          status:
-            result.code === 'private-address' || result.code === 'invalid-url'
-              ? 'blocked'
-              : 'failed',
-          at: now(),
-          detail: `${result.code}: ${result.message}`,
-        });
-      }
-      const evidence = redactedEvidence.map(({ resource, text }) => ({
-        sourceId: resource.id,
-        title: resource.title,
-        text,
-        accessible: true,
-      }));
       const context = compileAssistantContext({
         behaviour: input.behaviour,
         serverCard:
           assistantRepo.getServerCard(scope) +
-          (assistantRepo.memoryPreference(scope, input.userId).optedOut
+          // Try-it never reads member memories: the short-circuit keeps even
+          // the preference read from happening.
+          (opts.skipMemberMemories || assistantRepo.memoryPreference(scope, input.userId).optedOut
             ? ''
             : '\nCurated memory:\n' +
               assistantRepo
@@ -403,8 +553,23 @@ export const createAssistantService = (
         evidence,
         skills: permittedSkills,
         toolsAvailable,
+        catalogueLines,
       });
       const isIt = input.behaviour.surface === 'it-services';
+      const enqueueAssistantRefresh = (resourceId: string): boolean => {
+        const tenMinuteBucket = Math.floor(now() / 600_000);
+        const result = jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.resourceRefresh,
+          payload: JSON.stringify({ resourceId, reason: 'assistant' }),
+          dedupeKey: resourceRefreshDedupeKey({
+            reason: 'assistant',
+            resourceId,
+            tenMinuteBucket,
+          }),
+          now: now(),
+        });
+        return result.enqueued;
+      };
       const toolPorts: AssistantToolPorts = {
         userId: input.userId,
         now,
@@ -421,15 +586,194 @@ export const createAssistantService = (
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
         reminders: () => assistantRepo.listReminders(scope),
-      };
-      const response = await generateAnswer({
-        provider,
-        model: currentConfig.AI_MODEL,
-        fallbackModels: currentConfig.AI_FALLBACK_MODELS,
-        tools: {
-          declarations: toolDeclarations(toolPorts),
-          run: (call) => runAssistantTool(call, toolPorts),
+        cacheSearch: (q) =>
+          resourceCacheRepo.searchChunks(scope, {
+            query: q.query,
+            ...(q.resourceIds === undefined ? {} : { resourceIds: q.resourceIds }),
+            limit: q.limit,
+          }),
+        cacheChunk: (chunkId) => {
+          const c = resourceCacheRepo.getChunk(scope, chunkId);
+          return c === undefined
+            ? undefined
+            : {
+                chunkId: c.chunkId,
+                docId: c.docId,
+                resourceId: c.resourceId,
+                headingPath: c.headingPath,
+                text: c.text,
+              };
         },
+        cacheNeighbours: (chunkId, n) =>
+          resourceCacheRepo.neighbours(scope, chunkId, n).map((c) => ({
+            chunkId: c.chunkId,
+            docId: c.docId,
+            resourceId: c.resourceId,
+            headingPath: c.headingPath,
+            text: c.text,
+          })),
+        cacheOutline: (docId) => resourceCacheRepo.outline(scope, docId),
+        cacheDocument: (docId) => {
+          const found = resourceCacheRepo.listDocuments(scope).find((d) => d.docId === docId);
+          return found === undefined
+            ? undefined
+            : {
+                docId: found.docId,
+                resourceId: found.resourceId,
+                title: found.title,
+                url: found.url,
+              };
+        },
+        cacheResourceDocs: (resourceId) =>
+          resourceCacheRepo.listDocuments(scope, resourceId).map((d) => ({
+            docId: d.docId,
+            resourceId: d.resourceId,
+            title: d.title,
+            url: d.url,
+          })),
+        cacheResourceChunks: (docId, limit) =>
+          resourceCacheRepo
+            .outline(scope, docId)
+            .slice(0, limit)
+            .flatMap((row) => {
+              const c = resourceCacheRepo.getChunk(scope, row.chunkId);
+              return c === undefined
+                ? []
+                : [
+                    {
+                      chunkId: c.chunkId,
+                      docId: c.docId,
+                      resourceId: c.resourceId,
+                      headingPath: c.headingPath,
+                      text: c.text,
+                    },
+                  ];
+            }),
+        cacheFreshness: () => {
+          const latest = new Map<string, number>();
+          for (const row of resourceCacheRepo.resourceFreshness(scope)) {
+            const { resourceId, fetchedAt } = row;
+            // A never-fetched document carries no timestamp; it must not
+            // break the freshness map — the catalogue then shows
+            // "not fetched yet".
+            if (fetchedAt === undefined) continue;
+            const prev = latest.get(resourceId);
+            if (prev === undefined || fetchedAt > prev) latest.set(resourceId, fetchedAt);
+          }
+          return [...latest].map(([resourceId, fetchedAt]) => ({ resourceId, fetchedAt }));
+        },
+        enqueueRefresh: enqueueAssistantRefresh,
+      };
+      const declarations = toolDeclarations(toolPorts);
+      /**
+       * A failed loop maps back to today's member-facing texts (ruling): a
+       * daily cap throws so the job answers its reset reply; a busy last
+       * attempt throws retryable so the job's spaced retries still apply;
+       * eligibility-only skips are the terms refusal; other skips are "not
+       * configured"; a guard failure answers the fixed text.
+       *
+       * Every answered-or-refused mapping also carries the trace detail, so
+       * the job persists what the model saw even when it refused.
+       */
+      const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
+        const loopDetail = (): AssistantTraceDetail => ({
+          sections: traceSections(context, historyForLoop),
+          history: historyForLoop,
+          attempts: failed.attempts,
+          toolCalls: failed.toolCalls,
+          usage: failed.usage,
+          guard: failed.guard,
+        });
+        if (failed.dailyQuota !== undefined) {
+          throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
+            quotaScope: 'daily-free',
+            ...(failed.dailyQuota.resetAt === undefined
+              ? {}
+              : { resetAt: failed.dailyQuota.resetAt }),
+          });
+        }
+        const tried = failed.attempts.filter((attempt) => attempt.outcome !== 'skipped');
+        const lastTried = tried.at(-1);
+        if (
+          lastTried?.outcome === 'busy' ||
+          lastTried?.outcome === 'rate-limit' ||
+          lastTried?.outcome === 'timeout'
+        ) {
+          const kind =
+            lastTried.outcome === 'rate-limit'
+              ? ('rate-limit' as const)
+              : lastTried.outcome === 'timeout'
+                ? ('timeout' as const)
+                : ('outage' as const);
+          throw new ProviderError(
+            kind,
+            `Every assistant model is busy (${lastTried.outcome})`,
+            true,
+          );
+        }
+        const allSkipped =
+          failed.attempts.length > 0 &&
+          failed.attempts.every((attempt) => attempt.outcome === 'skipped');
+        if (
+          allSkipped &&
+          failed.attempts.every(
+            (attempt) => attempt.reason === 'ineligible' || attempt.reason === 'unverified',
+          )
+        ) {
+          assistantRepo.recordSkillActivity(scope, {
+            id: randomUUID(),
+            at: now(),
+            behaviourId: input.behaviour.id,
+            skillId: skill,
+            actorId: input.userId,
+            outcome: 'denied',
+            detail: 'Provider terms are not recorded or do not allow this use.',
+          });
+          return {
+            ok: false,
+            content:
+              "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+            detail: loopDetail(),
+          };
+        }
+        if (failed.attempts.length === 0 || allSkipped) {
+          return {
+            ok: false,
+            content:
+              'The free AI provider is not configured, so no content was sent outside the server.',
+            detail: loopDetail(),
+          };
+        }
+        if (lastTried?.outcome === 'error' && lastTried.reason === 'empty-answer') {
+          return {
+            ok: false,
+            content: "I couldn't finish that answer — please try again.",
+            detail: loopDetail(),
+          };
+        }
+        if (lastTried?.outcome === 'error') {
+          // A non-guard failure keeps the last attempt's original error —
+          // same kind, same retryable flag — so e.g. a non-daily `quota`
+          // error is not normalised into `invalid-request`.
+          if (failed.lastError instanceof ProviderError) throw failed.lastError;
+          throw new ProviderError(
+            'invalid-request',
+            lastTried.reason ?? 'The assistant request failed.',
+            false,
+          );
+        }
+        // The old "I could not complete that request" fallback was
+        // unreachable: every failed loop either threw or returned above. The
+        // annotation makes that exhaustiveness a compile error if a new
+        // attempt outcome ever appears.
+        const unreachableOutcome: 'ok' | 'skipped' | undefined = lastTried?.outcome;
+        throw new Error(`unreachable assistant loop failure: ${String(unreachableOutcome)}`);
+      };
+      // Task 14: the job-built conversation history travels ahead of the
+      // current user text. Absent (or empty) means a history-free request.
+      const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      const loop = await runToolLoop({
+        chain: chainEntries,
         systemInstruction:
           context.systemInstruction +
           (isIt
@@ -438,18 +782,95 @@ export const createAssistantService = (
           (input.command === 'decision' || input.command === 'review-plan'
             ? '\nReturn analysis as a DRAFT. State that it is not club policy and has not been saved. Do not claim persistence.'
             : ''),
-        userText: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
+        protectedText: context.protectedText,
+        history: historyForLoop,
+        userText: [
+          sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
+          context.evidenceEnvelope,
+          ...(input.quoteEnvelope === undefined ? [] : [input.quoteEnvelope]),
+        ]
           .filter(Boolean)
           .join('\n\n'),
-        maxOutputTokens: 800,
-        temperature: 0.2,
-      });
-      sink.trace = {
-        ...response.trace,
-        sources: [
-          ...redactedEvidence.map(({ resource }) => ({ title: resource.title, url: resource.url })),
-          ...response.trace.sources,
+        // Task 16: every catalogue id plus the pre-retrieved chunk and doc
+        // ids may be opened in a follow-up round.
+        initialHandles: [
+          ...ordered.slice(0, 60).map((resource) => resource.id),
+          ...preRetrieved.flatMap((hit) => [hit.chunkId, hit.docId]),
         ],
+        tools: {
+          firstRound: declarations,
+          idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
+          run: (call) => runAssistantTool(call, toolPorts),
+        },
+        quotaLedger: ledger,
+        now,
+      });
+      // The loop records exactly one attempt per entry, in chain order, so
+      // each attempt lines up with the entry that produced it.
+      let warnedMayTrain = false;
+      loop.attempts.forEach((attempt, index) => {
+        if (
+          attempt.outcome !== 'skipped' &&
+          chainEntries[index]?.mayTrain === true &&
+          !warnedMayTrain
+        ) {
+          warnedMayTrain = true;
+          logger.warn(
+            safeLogFields({
+              component: 'assistant',
+              guildId: input.guildId,
+              reason: 'provider-may-train',
+            }),
+            'assistant provider may train on server content',
+          );
+        }
+      });
+      if (loop.outcome === 'failed') return mapLoopFailure(loop);
+      const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
+      // Task 20: the sources line — only chunk/resource-backed evidence: the
+      // pre-retrieved snippets (with their headings) plus tool results that
+      // opened a known enabled resource. A web-only answer keeps just the
+      // Brave attribution and grows no line.
+      const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
+      // The escalation summary is built from the loop text below — before
+      // the sources line is appended — so a ticket never carries it. Only a
+      // normal answer grows the line.
+      const baseAnswer = loop.web ? `${loop.text}${BRAVE_ATTRIBUTION}` : loop.text;
+      const answerText =
+        baseAnswer +
+        sourcesLine([
+          ...preRetrieved.map((hit) => ({
+            title: byResourceId.get(hit.resourceId)?.title ?? hit.resourceId,
+            url: byResourceId.get(hit.resourceId)?.url ?? '',
+            heading: hit.headingPath,
+          })),
+          ...loop.sources
+            .filter((source) => knownResource.has(`${source.title}${source.url}`))
+            .map((source) => ({ title: source.title, url: source.url })),
+        ]);
+      sink.detail = {
+        sections: traceSections(context, historyForLoop),
+        history: historyForLoop,
+        attempts: loop.attempts,
+        toolCalls: loop.toolCalls,
+        usage: loop.usage,
+        guard: loop.guard,
+        ...(loop.model === undefined ? {} : { model: loop.model }),
+        ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
+        ...(loop.web ? { web: true } : {}),
+      };
+      sink.trace = {
+        ...(loop.model === undefined ? {} : { model: loop.model }),
+        tools: loop.toolCalls.map(({ name, ok }) => ({ name, ok })),
+        sources: [
+          ...preRetrieved.map((hit) => ({
+            title: byResourceId.get(hit.resourceId)?.title ?? hit.resourceId,
+            url: byResourceId.get(hit.resourceId)?.url ?? '',
+          })),
+          ...loop.sources,
+        ],
+        web: loop.web,
+        usedFallback: loop.attempts.length > 1,
       };
       assistantRepo.recordSkillActivity(scope, {
         id: randomUUID(),
@@ -458,20 +879,23 @@ export const createAssistantService = (
         skillId: skill,
         actorId: input.userId,
         outcome: 'completed',
+        // Task 20: the one observable trace of an unreadable cache on the
+        // Discord path, where the stored trace's flags are the job's to write.
+        ...(sink.resourcesUnavailable === true ? { detail: 'resources-unavailable' } : {}),
       });
       if (input.command === 'remember') {
         const id = `memory-${randomUUID()}`;
         assistantRepo.insertDecisionDraft(scope, {
           id,
           kind: 'memory',
-          summary: response.text.slice(0, 4_000),
+          summary: answerText.slice(0, 4_000),
           requesterId: input.userId,
           provenance: `Assistant memory proposal; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
           at: now(),
         });
         return {
           ok: true,
-          content: `${response.text}
+          content: `${answerText}
 
 Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and save it in the dashboard.`,
         };
@@ -481,19 +905,19 @@ Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and
         assistantRepo.insertDecisionDraft(scope, {
           id,
           kind: input.command,
-          summary: response.text.slice(0, 4_000),
+          summary: answerText.slice(0, 4_000),
           requesterId: input.userId,
           provenance: `Discord ${input.source}; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
           at: now(),
         });
         return {
           ok: true,
-          content: `${response.text}
+          content: `${answerText}
 
 Draft ID: ${id}. This is analysis, not club policy. An owner must review and save it from the dashboard.`,
         };
       }
-      if (isIt && response.text.startsWith('ESCALATE:')) {
+      if (isIt && baseAnswer.startsWith('ESCALATE:')) {
         if (
           input.behaviour.ticketChannelId === undefined ||
           input.behaviour.reviewerRoleIds.length === 0
@@ -503,7 +927,10 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             content:
               'This needs human action, but IT ticket routing is not fully configured. No ticket was created.',
           };
-        const summary = response.text.slice('ESCALATE:'.length).trim().slice(0, 1_500);
+        const summary = baseAnswer.slice('ESCALATE:'.length).trim().slice(0, 1_500);
+        // Task 20: Try-it answers the escalation as text — opening a real
+        // ticket from a dashboard test would page reviewers for nothing.
+        if (opts.skipTicketWrite === true) return { ok: true, content: summary };
         const ticketId = `it-${randomUUID()}`;
         const created = assistantRepo.insertTicket(scope, {
           id: ticketId,
@@ -534,16 +961,175 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
           },
         };
       }
-      return { ok: true, content: response.text };
+      return { ok: true, content: answerText };
     }
   };
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
       const started = now();
-      const sink: { trace?: GenerationTrace } = {};
+      const sink: {
+        trace?: Omit<InvocationTrace, 'latencyMs'>;
+        detail?: AssistantTraceDetail;
+        resourcesUnavailable?: boolean;
+      } = {};
       const result = await invokeOnce(input, sink);
-      return { ...result, trace: { ...sink.trace, latencyMs: now() - started } };
+      // Task 20: the Discord path's stored trace is the job's to write, so
+      // the flag travels on the result (see `AssistantInvocationResult.flags`).
+      const flags = sink.resourcesUnavailable === true ? ['resources-unavailable'] : [];
+      return {
+        ...result,
+        ...(flags.length === 0 ? {} : { flags: [...(result.flags ?? []), ...flags] }),
+        trace: { ...sink.trace, latencyMs: now() - started },
+        ...(sink.detail === undefined ? {} : { detail: sink.detail }),
+      };
+    },
+    /**
+     * Task 20: dashboard Try-it — the same pipeline as `invoke`, but the
+     * caller is a dashboard operator (authorised by `config.write`, not
+     * caller roles), nothing is posted to Discord, no typing is sent, and
+     * member memories are never read. The conversation and trace are stored
+     * with `source: 'dashboard-test'` under the bot's own user id (the
+     * columns require a Discord snowflake); the trace flag
+     * `dashboard-account:<username>` says who really asked. The per-request
+     * rate limit lives in the HTTP route, not here.
+     */
+    async tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult> {
+      const started = now();
+      const behaviour = assistantRepo.listBehaviours(scope).find((b) => b.id === input.behaviourId);
+      if (behaviour === undefined) throw new Error('unknown-behaviour');
+      if (!behaviour.enabled) throw new Error('behaviour-disabled');
+      const botUserId = config.DISCORD_APPLICATION_ID;
+      const question = input.question;
+      let conversationId = input.conversationId;
+      if (
+        conversationId === undefined ||
+        conversationRepo.getConversation(scope, conversationId) === undefined
+      ) {
+        conversationId = `try_${randomUUID()}`;
+        const title = question.slice(0, 120);
+        conversationRepo.createConversation(scope, {
+          conversationId,
+          // No Discord channel is involved; the bot id is a valid snowflake
+          // that satisfies the column CHECK.
+          channelId: botUserId,
+          behaviourId: behaviour.id,
+          startedBy: botUserId,
+          title: title === '' ? 'Dashboard try-it' : title,
+          source: 'dashboard-test',
+          at: now(),
+        });
+      }
+      const stampAfter = (turns: readonly { readonly at: number }[]): number =>
+        Math.max(now(), ...turns.map((turn) => turn.at + 1));
+      const userTurnId = `try_${randomUUID()}_u`;
+      conversationRepo.appendTurn(scope, {
+        conversationId,
+        turnId: userTurnId,
+        at: stampAfter(conversationRepo.listTurns(scope, conversationId)),
+        role: 'user',
+        authorId: botUserId,
+        authorName: input.accountUsername,
+        text: question,
+      });
+      // The conversation so far (never the turn just written) travels ahead
+      // of the current question — the same 12-turn / 6,000-character window
+      // the Discord path gets.
+      const history: GenerationMessage[] = conversationRepo
+        .recentTurns(scope, conversationId, { maxTurns: 12, maxChars: 6_000 })
+        .flatMap((turn) =>
+          turn.turnId === userTurnId || (turn.role !== 'user' && turn.role !== 'assistant')
+            ? []
+            : [{ role: turn.role, text: turn.text }],
+        );
+      const sink: {
+        trace?: Omit<InvocationTrace, 'latencyMs'>;
+        detail?: AssistantTraceDetail;
+        resourcesUnavailable?: boolean;
+      } = {};
+      const traceId = `try_${randomUUID()}`;
+      let result: AssistantInvocationResult;
+      let outcome: AssistantTrace['outcome'] = 'answered';
+      try {
+        result = await invokeOnce(
+          {
+            guildId: scope.guildId,
+            channelId: undefined,
+            userId: botUserId,
+            callerRoleIds: [],
+            behaviour,
+            command: 'ask',
+            input: { question },
+            // Neither fits exactly — no Discord message or interaction is
+            // involved — but the field requires one; the stored trace says
+            // `dashboard-test` regardless.
+            source: 'slash-command',
+            invocationId: userTurnId,
+            history,
+          },
+          sink,
+          { skipCallerGate: true, skipMemberMemories: true, skipTicketWrite: true },
+        );
+        if (!result.ok) outcome = 'refused';
+      } catch (err) {
+        outcome = 'failed';
+        if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
+          result = { ok: false, content: dailyQuotaReply(err.resetAt, now()) };
+        } else if (err instanceof ProviderError && err.retryable) {
+          result = { ok: false, content: BUSY_REPLY };
+        } else {
+          logger.warn(
+            safeLogFields({ component: 'assistant', guildId: scope.guildId, err }),
+            'dashboard try-it failed before a response was produced',
+          );
+          result = {
+            ok: false,
+            content: 'I could not complete that request. No action was taken.',
+          };
+        }
+      }
+      const assistantTurnId = `try_${randomUUID()}_a`;
+      conversationRepo.appendTurn(scope, {
+        conversationId,
+        turnId: assistantTurnId,
+        at: stampAfter(conversationRepo.listTurns(scope, conversationId)),
+        role: 'assistant',
+        authorName: 'Bananasaurs',
+        text: result.content,
+        traceId,
+      });
+      const detail = result.detail;
+      traceRepo.insertTrace(scope, {
+        traceId,
+        at: now(),
+        userId: botUserId,
+        behaviourId: behaviour.id,
+        command: 'ask',
+        source: 'dashboard-test',
+        conversationId,
+        turnId: assistantTurnId,
+        question,
+        answer: result.content,
+        outcome,
+        durationMs: Math.max(0, now() - started),
+        attempts: detail?.attempts ?? [],
+        ...(detail?.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
+        usage: detail?.usage ?? {},
+        sections: detail?.sections ?? [],
+        toolCalls: detail?.toolCalls ?? [],
+        guard: detail?.guard ?? { removed: [] },
+        timeline: [
+          { label: 'received', atMs: 0 },
+          { label: 'answered', atMs: Math.max(0, now() - started) },
+        ],
+        discordMessageIds: [],
+        sources: [...(result.trace?.sources ?? [])],
+        flags: [
+          `dashboard-account:${input.accountUsername}`,
+          ...(sink.resourcesUnavailable === true ? ['resources-unavailable'] : []),
+        ],
+      });
+      return { answer: result.content, traceId, conversationId };
     },
   };
 };

@@ -462,6 +462,7 @@ describe('automod, end to end on the fake gateway', () => {
       accountRevokeCredentials: notUsedByDoctorInstance('accountRevokeCredentials'),
       accountCreate: notUsedByDoctorInstance('accountCreate'),
       accountSetPassword: notUsedByDoctorInstance('accountSetPassword'),
+      accountRevealPassword: notUsedByDoctorInstance('accountRevealPassword'),
     };
 
     const dispatcher = createDispatcher({

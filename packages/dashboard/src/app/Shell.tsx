@@ -1,10 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
+import { AccountEditPage } from '../pages/account-edit.js';
+import { AccountNewPage } from '../pages/account-new.js';
 import { AccountsPage } from '../pages/accounts.js';
-import { AssistantActivityPage } from '../pages/assistant-activity.js';
+import { AssistantConversationPage } from '../pages/assistant-conversation.js';
+import { AssistantConversationsPage } from '../pages/assistant-conversations.js';
+import { AssistantHistoryDetailPage } from '../pages/assistant-history-detail.js';
+import { AssistantHistoryPage } from '../pages/assistant-history.js';
 import { AssistantPage } from '../pages/assistant.js';
+import { AssistantPromptWizardPage } from '../pages/assistant-prompt-wizard.js';
 import { AssistantResourcesPage } from '../pages/assistant-resources.js';
 import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
+import { AssistantSkillPage } from '../pages/assistant-skill.js';
 import { AssistantSkillsPage } from '../pages/assistant-skills.js';
 import { AssistantMemoryPage } from '../pages/assistant-memory.js';
 import { ArchivePage } from '../pages/archive.js';
@@ -165,13 +172,25 @@ function Pages() {
       <Route path="/backups" component={BackupsPage} />
       <Route path="/config" component={ConfigPage} />
       <Route path="/accounts" component={AccountsPage} />
+      {/* /accounts/new must come before /accounts/:username or "new" reads as a username. */}
+      <Route path="/accounts/new" component={AccountNewPage} />
+      <Route path="/accounts/:username" component={AccountEditPage} />
       <Route path="/mcp" component={McpPage} />
+      {/* /providers is an alias of the AI setup page; /assistant/setup is the NAV entry (Task 9). */}
       <Route path="/providers" component={ProvidersPage} />
+      <Route path="/assistant/setup" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
+      <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
+      {/* Task 19: the Conversations list, with the transcript right after it. */}
+      <Route path="/assistant/conversations" component={AssistantConversationsPage} />
+      <Route path="/assistant/conversations/:id" component={AssistantConversationPage} />
       <Route path="/assistant/skills" component={AssistantSkillsPage} />
+      <Route path="/assistant/skills/:skillId" component={AssistantSkillPage} />
       <Route path="/assistant/schedules" component={AssistantSchedulesPage} />
       <Route path="/assistant/resources" component={AssistantResourcesPage} />
-      <Route path="/assistant/activity" component={AssistantActivityPage} />
+      <Route path="/assistant/history/:traceId" component={AssistantHistoryDetailPage} />
+      <Route path="/assistant/history" component={AssistantHistoryPage} />
+      <Route path="/assistant/activity" component={AssistantHistoryPage} />
       <Route path="/resources" component={AssistantResourcesPage} />
       <Route path="/memory" component={AssistantMemoryPage} />
       <Route path="/ai" component={AssistantPage} />

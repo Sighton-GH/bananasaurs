@@ -41,6 +41,22 @@ describe('scanOutboundRequest', () => {
     expect(message).toContain('no content was sent');
     expect(message).not.toContain('abc123456789secret');
   });
+
+  it('scans tool-result text like any other message', () => {
+    const toolRequest: GenerateTextRequest = {
+      model: 'test',
+      messages: [
+        { role: 'user', text: 'What time is it?' },
+        { role: 'tool', text: 'contact bryan@example.com', toolName: 't', toolCallId: 'c1' },
+      ],
+    };
+    expect(scanOutboundRequest(toolRequest).findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: 'personal-data', location: 'message-1-tool' }),
+      ]),
+    );
+    expect(scanOutboundRequest(toolRequest).safe).toBe(false);
+  });
 });
 
 describe('scanOutboundRequest false-positive regressions (review finding 2)', () => {

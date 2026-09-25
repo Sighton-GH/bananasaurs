@@ -46,6 +46,8 @@ export interface GenerateTextRequest {
   readonly maxOutputTokens?: number;
   readonly temperature?: number;
   readonly signal?: AbortSignal;
+  /** Hint for providers with a thinking budget (Gemini); ignored elsewhere. */
+  readonly thinkingBudget?: number;
   /** Offered only by providers with the `tools` capability. */
   readonly tools?: readonly ToolDeclaration[];
 }
@@ -54,6 +56,7 @@ export interface ProviderUsage {
   readonly promptTokens?: number;
   readonly completionTokens?: number;
   readonly totalTokens?: number;
+  readonly thinkingTokens?: number;
 }
 
 export interface GenerateTextResponse {

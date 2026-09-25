@@ -1,5 +1,12 @@
 import { and, asc, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
-import type { AssistantBehaviour, ClubResource, Reminder, ReminderStatus } from '@bananasaurs/core';
+import type {
+  AssistantBehaviour,
+  ClubResource,
+  PromptWizardAnswers,
+  Reminder,
+  ReminderStatus,
+} from '@bananasaurs/core';
+import { parseResourceMeta, promptWizardAnswers } from '@bananasaurs/core';
 import {
   assistantBehaviours,
   assistantReminders,
@@ -13,6 +20,8 @@ import {
   assistantMemoryPreferences,
   assistantSettings,
 } from '../schema.js';
+import { forgetAuthor } from './conversations.js';
+import { deleteTracesForUser } from './traces.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -22,22 +31,37 @@ const array = (raw: string): readonly string[] => {
     throw new Error('assistant list column is invalid');
   return value;
 };
-const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehaviour => ({
-  id: r.behaviourId,
-  guildId: r.guildId,
-  surface: r.surface as AssistantBehaviour['surface'],
-  ...(r.mentionRoleId === null ? {} : { mentionRoleId: r.mentionRoleId }),
-  name: r.name,
-  systemPrompt: r.systemPrompt,
-  promptVersion: r.promptVersion,
-  allowedSkillIds: array(r.skillIdsJson),
-  callerRoleIds: array(r.callerRoleIdsJson),
-  ...(r.ticketChannelId === null ? {} : { ticketChannelId: r.ticketChannelId }),
-  reviewerRoleIds: array(r.reviewerRoleIdsJson),
-  resourceIds: array(r.resourceIdsJson),
-  enabled: r.enabled === 1,
-  answersBotTag: r.answersBotTag === 1,
-});
+const toPromptWizard = (raw: string | null): PromptWizardAnswers | undefined => {
+  if (raw === null) return undefined;
+  try {
+    const parsed = promptWizardAnswers.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehaviour => {
+  const promptWizard = toPromptWizard(r.promptWizardJson);
+  return {
+    id: r.behaviourId,
+    guildId: r.guildId,
+    surface: r.surface as AssistantBehaviour['surface'],
+    ...(r.mentionRoleId === null ? {} : { mentionRoleId: r.mentionRoleId }),
+    name: r.name,
+    systemPrompt: r.systemPrompt,
+    promptVersion: r.promptVersion,
+    allowedSkillIds: array(r.skillIdsJson),
+    callerRoleIds: array(r.callerRoleIdsJson),
+    ...(r.ticketChannelId === null ? {} : { ticketChannelId: r.ticketChannelId }),
+    reviewerRoleIds: array(r.reviewerRoleIdsJson),
+    resourceIds: array(r.resourceIdsJson),
+    enabled: r.enabled === 1,
+    answersBotTag: r.answersBotTag === 1,
+    // Anything invalid reads as undefined and never throws: a hand-edited or
+    // older-database value must not break the behaviours list.
+    ...(promptWizard === undefined ? {} : { promptWizard }),
+  };
+};
 export const listBehaviours = (scope: GuildScope): readonly AssistantBehaviour[] =>
   read(scope, (db) =>
     db
@@ -72,6 +96,10 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         // Only setBotTagBehaviour changes this flag (ADR 0063): a new
         // behaviour starts unflagged and a re-save leaves it as it was.
         answersBotTag: 0,
+        // Absent answers mean hand-written or cleared: stored as NULL, never
+        // as the string "undefined".
+        promptWizardJson:
+          input.promptWizard === undefined ? null : JSON.stringify(input.promptWizard),
         createdAt: now,
         updatedAt: now,
       })
@@ -89,6 +117,8 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
           ticketChannelId: input.ticketChannelId ?? null,
           reviewerRoleIdsJson: JSON.stringify(input.reviewerRoleIds),
           resourceIdsJson: JSON.stringify(input.resourceIds),
+          promptWizardJson:
+            input.promptWizard === undefined ? null : JSON.stringify(input.promptWizard),
           updatedAt: now,
         },
       })
@@ -150,18 +180,58 @@ export const setLogChannel = (scope: GuildScope, channelId: string | null, now: 
       })
       .run();
   });
-const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => ({
-  id: r.resourceId,
-  guildId: r.guildId,
-  title: r.title,
-  url: r.url,
-  kind: r.kind as ClubResource['kind'],
-  enabled: r.enabled === 1,
-  reviewedAt: new Date(r.reviewedAt).toISOString(),
-  ...(r.lastFetchedAt === null ? {} : { lastFetchedAt: r.lastFetchedAt }),
-  fetchStatus: r.fetchStatus as 'pending' | 'ok' | 'failed' | 'blocked',
-  ...(r.content === null ? {} : { fetchDetail: r.content }),
-});
+
+/**
+ * Task 19: how long a conversation lives past its last activity, in days —
+ * 61 (2 months), 182 (6 months) or 365 (12 months). `null` keeps forever. A
+ * guild with no settings row reads the default 182; anything else is refused
+ * by the table CHECK, the same way `setLogChannel` leans on its snowflake
+ * CHECK rather than re-validating.
+ */
+export type ConversationRetentionDays = 61 | 182 | 365;
+export const CONVERSATION_RETENTION_DEFAULT: ConversationRetentionDays = 182;
+export const getConversationRetention = (scope: GuildScope): ConversationRetentionDays | null =>
+  read(scope, (db) => {
+    const row = db.select().from(assistantSettings).where(scope.only(assistantSettings)).get();
+    if (row === undefined) return CONVERSATION_RETENTION_DEFAULT;
+    if (row.conversationRetentionDays === null) return null;
+    return row.conversationRetentionDays as ConversationRetentionDays;
+  });
+/** Upserts only the retention (plus `updatedAt`), so a log channel survives it and vice versa. */
+export const setConversationRetention = (
+  scope: GuildScope,
+  days: ConversationRetentionDays | null,
+  now: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantSettings)
+      .values({ guildId: scope.guildId, conversationRetentionDays: days, updatedAt: now })
+      .onConflictDoUpdate({
+        target: assistantSettings.guildId,
+        set: { conversationRetentionDays: days, updatedAt: now },
+      })
+      .run();
+  });
+const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => {
+  // `meta_json` this process wrote is still untrusted on the way back in
+  // (CLAUDE.md rule 3, the same reason `jobs.payload` has a validator): a
+  // hand-edited or corrupt value reads as absent, never throws.
+  const meta = parseResourceMeta(r.metaJson);
+  return {
+    id: r.resourceId,
+    guildId: r.guildId,
+    title: r.title,
+    url: r.url,
+    kind: r.kind as ClubResource['kind'],
+    enabled: r.enabled === 1,
+    reviewedAt: new Date(r.reviewedAt).toISOString(),
+    ...(r.lastFetchedAt === null ? {} : { lastFetchedAt: r.lastFetchedAt }),
+    fetchStatus: r.fetchStatus as 'pending' | 'ok' | 'failed' | 'blocked',
+    ...(r.content === null ? {} : { fetchDetail: r.content }),
+    ...(r.parentId === null ? {} : { parentId: r.parentId }),
+    ...(meta === undefined ? {} : { meta }),
+  };
+};
 export const listResources = (scope: GuildScope): readonly ClubResource[] =>
   read(scope, (db) =>
     db
@@ -183,6 +253,11 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
         kind: input.kind,
         enabled: input.enabled ? 1 : 0,
         reviewedAt: Date.parse(input.reviewedAt),
+        // Absent means cleared (the same normalise-to-NULL discipline
+        // `putBehaviour` follows): a re-save without meta/parent must not
+        // keep the stale import details.
+        parentId: input.parentId ?? null,
+        metaJson: input.meta === undefined ? null : JSON.stringify(input.meta),
       })
       .onConflictDoUpdate({
         target: [assistantResources.guildId, assistantResources.resourceId],
@@ -195,6 +270,8 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
           lastFetchedAt: null,
           fetchStatus: 'pending',
           content: null,
+          parentId: input.parentId ?? null,
+          metaJson: input.meta === undefined ? null : JSON.stringify(input.meta),
         },
       })
       .run();
@@ -879,9 +956,16 @@ export const setMemoryOptOut = (
       })
       .run();
   });
-export const forgetMember = (scope: GuildScope, userId: string, now: number): number =>
-  write(scope, ({ db }) => {
-    const removed = db
+/**
+ * Forgets a member: drops their curated memories, opts them out, removes
+ * their conversation turns (Task 19) and deletes their assistant traces, which
+ * hold their question and answer. Each delete runs as its own write right
+ * after, in the same function — `write()` forbids nesting one transaction
+ * inside another, so they cannot share one.
+ */
+export const forgetMember = (scope: GuildScope, userId: string, now: number): number => {
+  const removed = write(scope, ({ db }) => {
+    const deleted = db
       .delete(assistantMemories)
       .where(scope.only(assistantMemories, eq(assistantMemories.subjectId, userId)))
       .run().changes;
@@ -892,5 +976,9 @@ export const forgetMember = (scope: GuildScope, userId: string, now: number): nu
         set: { optedOut: 1, updatedAt: now },
       })
       .run();
-    return removed;
+    return deleted;
   });
+  forgetAuthor(scope, userId);
+  deleteTracesForUser(scope, userId);
+  return removed;
+};

@@ -18,6 +18,7 @@ import { bindOpsSocket, SocketInUseError, type OpsSocketServer } from './ops/soc
 import { announceCommands } from './runtime/commands.js';
 import { startDashboardApi, type DashboardApi } from './http/wiring.js';
 import { resolveProviderSecret } from './assistant/provider-secret.js';
+import { createPasswordVault } from './ops/password-vault.js';
 import { createDaemon } from './runtime/daemon.js';
 import { buildDoctorReport, formatDoctorReport } from './runtime/doctor.js';
 import {
@@ -273,6 +274,23 @@ async function main(): Promise<void> {
       'dashboard provider keys are unavailable: no usable key-encryption secret',
     );
 
+  // ADR 0070: the account password vault, resolved the same way and right
+  // beside the provider secret above — env wins, else its own 0600 key file
+  // (`account-password.key`, distinct from the provider secret's file),
+  // created on first run. Unavailable here just means new passwords are
+  // stored as a hash only (no sealed copy) and reveal answers 409 — never a
+  // reason to refuse startup.
+  const passwordVault = createPasswordVault({
+    envSecret: config.ACCOUNT_PASSWORD_SECRET_KEY,
+    dataDir: config.BANANASAURS_DATA_DIR,
+    readonly: config.BANANASAURS_READONLY,
+  });
+  if (!passwordVault.available)
+    log.warn(
+      safeLogFields({ component: 'accounts' }),
+      'the account password vault is unavailable: new account passwords will not be revealable',
+    );
+
   let shuttingDown = false;
   const daemon = createDaemon({
     config,
@@ -283,6 +301,7 @@ async function main(): Promise<void> {
     raw: opened.raw,
     now: () => Date.now(),
     providerSecret,
+    passwordVault,
     onFatal: (reason) => {
       log.fatal(safeLogFields({ component: 'startup', reason }), 'stopping');
       void shutdown('fatal', EXIT_UNAVAILABLE);
@@ -309,6 +328,9 @@ async function main(): Promise<void> {
       ...(daemon.providerSecretProblem === undefined
         ? {}
         : { assistantSecretProblem: daemon.providerSecretProblem }),
+      // Task 8: the one process-wide ledger — the same instance every
+      // guild's assistant loop shares — so the allowance pill agrees.
+      assistantQuotaLedger: daemon.quotaLedger,
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and

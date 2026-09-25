@@ -97,6 +97,8 @@ export {
   archiveBackfillPayload,
   archiveExpiryDedupeKey,
   archiveExpiryPayload,
+  conversationPruneDedupeKey,
+  conversationPrunePayload,
   deliverRemindersDedupeKey,
   deliverRemindersPayload,
   JOB_KINDS,
@@ -107,6 +109,8 @@ export {
   purgeDedupeKey,
   reconcileDedupeKey,
   reconcileGuildPayload,
+  resourceRefreshDedupeKey,
+  resourceRefreshPayload,
   sweepDedupeKey,
   sweepEventDedupePayload,
   undoBatchPayload,
@@ -114,12 +118,14 @@ export {
   type AdoptPanelPayload,
   type ArchiveBackfillPayload,
   type ArchiveExpiryPayload,
+  type ConversationPrunePayload,
   type DeliverRemindersPayload,
   type JobKind,
   type LogMessageDeletePayload,
   type ModPurgeCursor,
   type ModPurgePayload,
   type ReconcileGuildPayload,
+  type ResourceRefreshPayload,
   type SweepEventDedupePayload,
   type UndoBatchPayload,
 } from './jobs/kinds.js';
@@ -512,6 +518,14 @@ export {
   type OpsSettingChange,
   type OpsSettingSpec,
 } from './ops/settings.js';
+export {
+  ACCOUNT_ROLES,
+  CAPABILITY_INFO,
+  roleForCapabilities,
+  type AccountRole,
+  type AccountRoleId,
+  type CapabilityInfo,
+} from './account-roles.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
 export {
   STATUS_COMMAND_NAME,

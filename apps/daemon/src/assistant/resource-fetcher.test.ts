@@ -204,4 +204,133 @@ describe('reviewed resource fetcher', () => {
     await expect(fetcher.fetch('https://example.com/')).resolves.toMatchObject({ cache: 'miss' });
     expect(request).toHaveBeenCalledTimes(2);
   });
+
+  describe('allowedHosts (Task 17 fix: GitHub raw downloads stay on raw.githubusercontent.com)', () => {
+    it('refuses a redirect off the allowlist without requesting the target', async () => {
+      const request = vi.fn<PinnedRequest>(async (url) => {
+        if (url.hostname === 'raw.githubusercontent.com')
+          return response(302, '', { location: 'https://example.com/evil' });
+        return response(200, 'evil');
+      });
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        allowedHosts: ['raw.githubusercontent.com'],
+      });
+      await expect(
+        fetcher.fetch('https://raw.githubusercontent.com/acme/widget/main/README.md'),
+      ).resolves.toEqual({
+        ok: false,
+        code: 'redirect',
+        message: 'The reviewed resource redirected outside the allowed hosts.',
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows a redirect that stays on the allowlist', async () => {
+      const request = vi.fn<PinnedRequest>(async (url) =>
+        url.pathname === '/start'
+          ? response(302, '', { location: 'https://raw.githubusercontent.com/final' })
+          : response(200, 'final'),
+      );
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        allowedHosts: ['raw.githubusercontent.com'],
+      });
+      await expect(fetcher.fetch('https://raw.githubusercontent.com/start')).resolves.toMatchObject(
+        { ok: true, evidence: { text: 'final' } },
+      );
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses an initial URL off the allowlist without any request', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'evil'));
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        allowedHosts: ['raw.githubusercontent.com'],
+      });
+      await expect(fetcher.fetch('https://example.com/guide')).resolves.toEqual({
+        ok: false,
+        code: 'redirect',
+        message: 'The reviewed resource redirected outside the allowed hosts.',
+      });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('without allowedHosts still follows a public redirect as before', async () => {
+      const request = vi.fn<PinnedRequest>(async (url) =>
+        url.hostname === 'one.example'
+          ? response(302, '', { location: 'https://two.example/final' })
+          : response(200, 'final'),
+      );
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await expect(fetcher.fetch('https://one.example/start')).resolves.toMatchObject({
+        ok: true,
+        evidence: { text: 'final' },
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('conditional requests (ADR 0073)', () => {
+    it('sends If-None-Match / If-Modified-Since and returns notModified on a 304, without reading a body', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(304));
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await expect(
+        fetcher.fetch('https://example.com/guide', {
+          etag: '"v1"',
+          lastModified: 'Wed, 01 Jan 2025 00:00:00 GMT',
+        }),
+      ).resolves.toEqual({ ok: true, notModified: true });
+      expect(request).toHaveBeenCalledWith(
+        new URL('https://example.com/guide'),
+        { address: '93.184.216.34', family: 4 },
+        5_000,
+        {
+          'if-none-match': '"v1"',
+          'if-modified-since': 'Wed, 01 Jan 2025 00:00:00 GMT',
+        },
+      );
+    });
+
+    it('returns the fresh body plus etag/last-modified when the content changed', async () => {
+      const request = vi.fn<PinnedRequest>(async () =>
+        response(200, 'new text', {
+          'content-type': 'text/plain',
+          etag: '"v2"',
+          'last-modified': 'Thu, 02 Jan 2025 00:00:00 GMT',
+        }),
+      );
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await expect(
+        fetcher.fetch('https://example.com/guide', { etag: '"v1"' }),
+      ).resolves.toMatchObject({
+        ok: true,
+        evidence: { text: 'new text' },
+        etag: '"v2"',
+        lastModified: 'Thu, 02 Jan 2025 00:00:00 GMT',
+      });
+    });
+
+    it('bypasses the in-memory freshness cache on the conditional path', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'body'));
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await fetcher.fetch('https://example.com/guide');
+      await fetcher.fetch('https://example.com/guide', { etag: '"v1"' });
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('sends no conditional headers, and 3 call arguments, when called with no conditional (unchanged from before ADR 0073)', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'body'));
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await fetcher.fetch('https://example.com/guide');
+      expect(request).toHaveBeenCalledWith(
+        new URL('https://example.com/guide'),
+        { address: '93.184.216.34', family: 4 },
+        5_000,
+      );
+    });
+  });
 });

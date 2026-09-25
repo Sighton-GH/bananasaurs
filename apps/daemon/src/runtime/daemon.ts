@@ -23,6 +23,7 @@ import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/dis
 import {
   assistantRepo,
   automodRuleRepo,
+  eligibilityRepo,
   guildRepo,
   jobRepo,
   oauthRepo,
@@ -31,12 +32,21 @@ import {
   type ScopeFactory,
 } from '@bananasaurs/storage';
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
+import {
+  createPasswordVault,
+  unavailableVault,
+  type PasswordVault,
+} from '../ops/password-vault.js';
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
+import { createConversationPruneTimer } from './conversation-prune-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
+import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { createProviderConfigStore } from '../assistant/provider-config.js';
+import { QuotaLedger } from '../assistant/quota-ledger.js';
+import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 
@@ -77,6 +87,14 @@ export interface DaemonDeps {
    * test ever writes a key file into a real data directory.
    */
   readonly providerSecret?: ProviderSecretResolution | undefined;
+  /**
+   * The account password vault (ADR 0070), resolved by `index.ts` next to
+   * the provider secret, from env or the data-dir key file. Absent in
+   * tests, which fall back to `ACCOUNT_PASSWORD_SECRET_KEY` alone so no
+   * test ever writes a key file into a real data directory — the same
+   * posture `providerSecret` above documents.
+   */
+  readonly passwordVault?: PasswordVault | undefined;
 }
 
 export interface Daemon {
@@ -92,6 +110,11 @@ export interface Daemon {
   /** The dashboard API's seam into process-level facts (`HttpDeps.instance`). */
   readonly instance: OpsInstance;
   readonly providerStore?: ReturnType<typeof createProviderConfigStore> | undefined;
+  /**
+   * Task 8: the one process-wide QuotaLedger, shared by every guild's
+   * assistant loop and read by the dashboard's allowance pill.
+   */
+  readonly quotaLedger: QuotaLedger;
   /** Why no provider store exists, for the dashboard's setup step; absent when one does. */
   readonly providerSecretProblem?:
     'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
@@ -153,6 +176,42 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           config,
         );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
+  // ADR 0075: when no provider store exists (no encryption secret), nothing
+  // was ever saved through it either — the dashboard's save routes all go
+  // through the store — so the several-providers and model-chain tables are
+  // guaranteed empty, and the resolver's own env-seed path is exactly what
+  // should run.
+  const assistantChain = (): readonly ChainEntry[] =>
+    providerStore !== undefined
+      ? providerStore.chain()
+      : resolveModelChain({
+          instance: scopes.instance(),
+          config,
+          openKey: () => undefined,
+          eligibility: (providerId) =>
+            eligibilityRepo.findEligibility(scopes.instance(), providerId),
+          makeProvider,
+        });
+  // Task 8: one process-wide ledger for every guild's assistant loop and the
+  // dashboard's allowance pill — a spent `:free` allowance stays spent until
+  // its reset no matter which guild spent it. Returned below so `index.ts`
+  // can hand the same instance to the dashboard wiring; never copied.
+  const quotaLedger = new QuotaLedger();
+
+  // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
+  // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
+  // data-dir key file here, so no test constructed without `deps.passwordVault`
+  // ever writes one into a real directory. `index.ts` is the one caller that
+  // resolves the file and passes the result in as `deps.passwordVault`.
+  const passwordVault: PasswordVault =
+    deps.passwordVault ??
+    (config.ACCOUNT_PASSWORD_SECRET_KEY === undefined
+      ? unavailableVault('no key configured')
+      : createPasswordVault({
+          envSecret: config.ACCOUNT_PASSWORD_SECRET_KEY,
+          dataDir: config.BANANASAURS_DATA_DIR,
+          readonly: config.BANANASAURS_READONLY,
+        }));
 
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();
   for (const guildId of guildIds) {
@@ -171,6 +230,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         now,
         interactionTokenSealer,
         assistantConfig,
+        assistantChain,
+        quotaLedger,
+        // Task 17: the GitHub client reads the sealed token per request, for
+        // the `Authorization` header only — it never reaches logs or audit.
+        githubToken: () => providerStore?.githubToken(),
       }),
     });
   }
@@ -195,12 +259,31 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     logger,
   });
 
+  // ADR 0073: the hourly resource-cache refresh producer. One
+  // `resource_refresh` job per guild per hour, beside the other timers.
+  const resourceRefreshTimer = createResourceRefreshTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    now,
+    logger,
+  });
+
   const archiveExpiryTimer = createArchiveExpiryTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     // Item 7: the OAuth purge is instance-level, not per-guild, so it rides
     // the timer's once-a-day `runOnce` rather than the per-guild expiry jobs.
     purgeOAuth: (nowMs) => oauthRepo.purgeExpired(instanceScope, nowMs),
+    now,
+    logger,
+  });
+
+  // Task 19: the daily conversation-prune producer. One prune job per guild
+  // per UTC day, beside the archive-expiry timer — the job table has no
+  // scheduler, so this `setInterval` is what says when.
+  const conversationPruneTimer = createConversationPruneTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     now,
     logger,
   });
@@ -217,6 +300,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     now,
     backupTimer,
     chosenAiProvider: () => providerStore?.status().provider ?? config.AI_PROVIDER,
+    passwordVault,
   });
 
   /**
@@ -275,7 +359,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         instance,
         responder: {
           defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-          respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+          respond: async (ref, message) => {
+            await discord.respondToInteraction(guildId, ref, message);
+          },
         },
         now,
         logger,
@@ -481,6 +567,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ops,
     portsFor,
     instance,
+    quotaLedger,
     // Returned, not only closed over: `index.ts` hands it to the dashboard, and
     // before 2026-09-23 it was never returned, so the dashboard had no store.
     ...(providerStore === undefined ? {} : { providerStore }),
@@ -500,7 +587,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer.unref();
       backupTimer.start();
       archiveExpiryTimer.start();
+      conversationPruneTimer.start();
       reminderDeliveryTimer.start();
+      resourceRefreshTimer.start();
     },
 
     async stop() {
@@ -508,7 +597,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer = undefined;
       backupTimer.stop();
       archiveExpiryTimer.stop();
+      conversationPruneTimer.stop();
       reminderDeliveryTimer.stop();
+      resourceRefreshTimer.stop();
       await settle();
     },
 

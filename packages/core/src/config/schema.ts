@@ -23,6 +23,10 @@ export const SECRET_CONFIG_KEYS = [
   'OPENROUTER_API_KEY',
   'NVIDIA_NIM_API_KEY',
   'BRAVE_SEARCH_API_KEY',
+  /** ADR 0061 §3: the master secret sealing dashboard-entered provider keys. Must never be printed (hard rule 4). */
+  'ASSISTANT_PROVIDER_SECRET_KEY',
+  /** ADR 0070: the master secret sealing non-owner account passwords. Must never be printed (hard rule 4). */
+  'ACCOUNT_PASSWORD_SECRET_KEY',
 ] as const;
 
 export type SecretConfigKey = (typeof SECRET_CONFIG_KEYS)[number];
@@ -195,6 +199,15 @@ export const configSchema = z.object({
     .default('America/Vancouver'),
   /** AES-GCM master secret for write-only provider keys stored through the dashboard. */
   ASSISTANT_PROVIDER_SECRET_KEY: z.string().min(32).optional(),
+  /**
+   * AES-GCM master secret for the sealed copy of non-owner account passwords
+   * (ADR 0070) — the same shape as `ASSISTANT_PROVIDER_SECRET_KEY` above (a
+   * value here, or a 0600 key file). Listed in `SECRET_CONFIG_KEYS` so
+   * `redactConfig` (`config get`, the startup debug log) never prints it;
+   * deliberately NOT added to `packages/core/src/logging`'s `safeLogFields`
+   * allowlist, which permits nothing by default (hard rule 4).
+   */
+  ACCOUNT_PASSWORD_SECRET_KEY: z.string().min(32).optional(),
 });
 
 export type Config = z.infer<typeof configSchema>;

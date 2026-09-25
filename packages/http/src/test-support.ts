@@ -656,6 +656,26 @@ export const testPortsFor = (
     return 'granted';
   },
   listAccountCapabilities: (accountId) => authzRepo.listAccountCapabilities(scope, accountId),
+  // ADR 0069: the same real-repo behaviour `apps/daemon/src/ops/wiring.ts`
+  // wires — the account lookup through `opts.instanceScope`, then the
+  // guild-scoped revoke. `not-held` covers "never held" and "no guild
+  // access" alike: either way there is nothing to remove.
+  revokeAccountCapability: (input) => {
+    const instanceScope = opts.instanceScope;
+    if (instanceScope === undefined) {
+      throw new Error('revokeAccountCapability needs opts.instanceScope: pass t.scopes.instance()');
+    }
+    const account = accountRepo.findAccountByUsername(instanceScope, input.username);
+    if (account === undefined) return 'no-such-account';
+    if (!authzRepo.listAccountCapabilities(scope, account.accountId).includes(input.capability)) {
+      return 'not-held';
+    }
+    authzRepo.revokeAccountCapability(scope, {
+      accountId: account.accountId,
+      capability: input.capability,
+    });
+    return 'revoked';
+  },
   // Slice 13 (S13-D1/D2): the same real-repo behaviour
   // `apps/daemon/src/ops/wiring.ts` wires — `findAccountByUsername` through
   // `opts.instanceScope`, then the guild-scoped access write. The pre-check
@@ -871,6 +891,12 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       disabled: row.disabled,
       lockedUntil: row.lockedUntil,
       createdAt: row.createdAt,
+      // ADR 0070: `revealable` follows the stored sealed copy (a non-owner
+      // row with one) — the same real logic as the canonical
+      // implementation, false in practice here only because
+      // `accountCreate`/`accountSetPassword` below never call
+      // `setPasswordSealed`.
+      revealable: row.passwordSealed !== null && !row.isOwner,
     })),
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
@@ -910,13 +936,15 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   },
   // The web half of account creation, against the test database: same
   // least-privilege shape as the canonical `accountOpsFor` - non-owner, no
-  // guild access, no capabilities, generated password hashed with Argon2id.
-  accountCreate: async (username) => {
+  // guild access, no capabilities, password hashed with Argon2id. ADR 0069:
+  // a provided password (the dashboard's "I'll choose one") is hashed like
+  // a generated one; the route refuses short ones before this is called.
+  accountCreate: async (username, password) => {
     if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
       return 'username-taken';
     }
-    const password = generateToken();
-    const passwordHash = await hashPassword(password);
+    const chosen = password ?? generateToken();
+    const passwordHash = await hashPassword(chosen);
     const accountId = `acct_test_${username}`;
     const at = now();
     accountRepo.createAccount(instanceScope, {
@@ -926,16 +954,25 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       isOwner: false,
       now: at,
     });
-    return { accountId, username, password, createdAt: at };
+    return { accountId, username, password: chosen, createdAt: at };
   },
   accountRevokeCredentials: () => {
     throw new Error('not used by the dashboard routes under test');
   },
-  // Slice 13 (S13-D3/D4): the operator CLI's password reset. Not a dashboard
-  // route — and `testInstanceFor` has no `guildScopes` to sweep sessions
-  // across, where the canonical `accountOpsFor` does — so this throws like
-  // `accountRevokeCredentials` above rather than half-implementing the sweep.
+  // Slice 13 (S13-D3/D4) plus ADR 0069's PUT route: the password reset and
+  // the chosen-password set. `testInstanceFor` has no `guildScopes` to sweep
+  // sessions across, where the canonical `accountOpsFor` does — so this
+  // throws like `accountRevokeCredentials` above rather than
+  // half-implementing the sweep, and the dashboard password routes stub it
+  // (see `accounts-owner.test.ts`).
   accountSetPassword: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  // ADR 0070: this test instance seals nothing (see `accountList` above), so
+  // the real logic would always answer `not-revealable` — a route test that
+  // wants a revealable account overrides this with its own stub, the same
+  // pattern `accountSetPassword` above documents.
+  accountRevealPassword: () => {
     throw new Error('not used by the dashboard routes under test');
   },
 });

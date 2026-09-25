@@ -38,6 +38,22 @@ function ThrowProbe({ onSettled }: { readonly onSettled: (settled: Settled) => v
   );
 }
 
+function RethrowProbe({ onSettled }: { readonly onSettled: (settled: Settled) => void }) {
+  const session = useSession();
+  return (
+    <button
+      onClick={() =>
+        void session.writeOrThrow('/api/killswitch', { on: true }, 'POST', [429]).then(
+          (value) => onSettled({ value, error: undefined }),
+          (error: unknown) => onSettled({ value: undefined, error }),
+        )
+      }
+    >
+      write-or-rethrow-429
+    </button>
+  );
+}
+
 describe('SessionProvider', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -109,6 +125,53 @@ describe('SessionProvider', () => {
       '/api/killswitch',
       '/api/reauth',
       '/api/killswitch',
+    ]);
+  });
+
+  it('a PATCH that hits reauth-required retries through the same dialog as a PUT', async () => {
+    let attempts = 0;
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/assistant/keys/key_a') {
+        attempts += 1;
+        return attempts === 1
+          ? new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === '/api/reauth') {
+        return new Response('{}', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', mock);
+    function PatchProbe() {
+      const session = useSession();
+      return (
+        <button
+          onClick={() =>
+            void session.write('/api/assistant/keys/key_a', { enabled: false }, 'PATCH')
+          }
+        >
+          write-patch
+        </button>
+      );
+    }
+    renderWithSession(<PatchProbe />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-patch'));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm your password' });
+    fireEvent.change(dialog.querySelector('input[type=password]')!, {
+      target: { value: 'hunter22hunter22' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    });
+    expect(attempts).toBe(2);
+    expect(mock.mock.calls.map((c) => c[0] as string)).toEqual([
+      '/api/assistant/keys/key_a',
+      '/api/reauth',
+      '/api/assistant/keys/key_a',
     ]);
   });
 
@@ -254,6 +317,37 @@ describe('SessionProvider', () => {
     expect(screen.getByRole('status').textContent).toBe('');
   });
 
+  it('writeOrThrow rethrows a listed extra status without a toast', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 429, body: { error: 'rate-limited' } },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<RethrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-rethrow-429'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    const settled = onSettled.mock.calls[0]![0] as Settled;
+    expect(settled.value).toBeUndefined();
+    expect(settled.error).toBeInstanceOf(ApiError);
+    expect((settled.error as ApiError).status).toBe(429);
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('writeOrThrow without the option still toasts a 429 and resolves undefined', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 429, body: { error: 'rate-limited' } },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
+    expect(screen.getByRole('status').textContent).not.toBe('');
+  });
+
   it('writeOrThrow on a read-only 503 shows the hold toast and resolves undefined', async () => {
     stubFetch([
       {
@@ -271,6 +365,18 @@ describe('SessionProvider', () => {
     expect(onSettled).toHaveBeenCalledTimes(1);
     expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
     expect(screen.getByRole('status').textContent).toContain('BANANASAURS_READONLY is set');
+  });
+
+  it('a 403 owner-protected refusal shows a plain sentence, not the raw code', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 403, body: { error: 'owner-protected' } },
+    ]);
+    renderWithSession(<Probe />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write'));
+    });
+    expect(screen.getByRole('status').textContent).toContain("The owner account can't be changed.");
+    expect(screen.getByRole('status').textContent).not.toContain('owner-protected');
   });
 
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {

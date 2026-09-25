@@ -5,7 +5,10 @@ import {
   safeLogFields,
   type AssistantBehaviour,
   type AssistantInvokePayload,
+  type AssistantTrace,
   type DomainEvent,
+  type GenerationMessage,
+  type KnownMessage,
   type Logger,
   type MessageEvent,
   type OutgoingMessage,
@@ -39,6 +42,18 @@ export interface AssistantInvocation {
   readonly source: 'slash-command' | 'mention';
   /** Discord interaction or message id that produced this invocation; the dedupe anchor. */
   readonly invocationId?: string | undefined;
+  /**
+   * Task 14: the conversation so far, built by the invoke job from stored
+   * turns (the current question is its last turn). The service forwards it
+   * to the tool loop ahead of the current user text. Absent means a fresh,
+   * history-free request.
+   */
+  readonly history?: readonly GenerationMessage[] | undefined;
+  /**
+   * Task 14: a quoted message as untrusted evidence, appended to the user
+   * text by the service — never to the system instruction.
+   */
+  readonly quoteEnvelope?: string | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
@@ -60,9 +75,42 @@ export type AssistantInvocationResult =
         readonly reviewerRoleIds: readonly string[];
         readonly ticketId: string;
       };
+      /**
+       * Task 20: trace flags the run gathered that the stored trace — not
+       * the member-facing answer — must carry (currently only
+       * `resources-unavailable`, set when the resource cache could not be
+       * read). The invoke job merges these into its own flags before the
+       * trace write; the cursor schema carries them so a retry keeps them.
+       */
+      readonly flags?: readonly string[];
       readonly trace?: InvocationTrace;
+      readonly detail?: AssistantTraceDetail | undefined;
     }
-  | { readonly ok: false; readonly content: string; readonly trace?: InvocationTrace };
+  | {
+      readonly ok: false;
+      readonly content: string;
+      readonly flags?: readonly string[];
+      readonly trace?: InvocationTrace;
+      readonly detail?: AssistantTraceDetail | undefined;
+    };
+
+/**
+ * Task 14: the full run detail the invoke job persists as an `AssistantTrace`.
+ * The small `InvocationTrace` above stays the AI log channel's shape; this
+ * carries everything the History pages need — the compiled sections plus the
+ * history section, the loop attempts and tool calls.
+ */
+export interface AssistantTraceDetail {
+  readonly sections: AssistantTrace['sections'];
+  readonly history: readonly GenerationMessage[];
+  readonly attempts: AssistantTrace['attempts'];
+  readonly toolCalls: AssistantTrace['toolCalls'];
+  readonly usage: AssistantTrace['usage'];
+  readonly guard: AssistantTrace['guard'];
+  readonly model?: string | undefined;
+  readonly finishReason?: string | undefined;
+  readonly web?: boolean | undefined;
+}
 
 /**
  * The live assistant service sits behind this port. Its implementation owns
@@ -106,6 +154,30 @@ export interface AssistantCommandDeps {
   }) => void;
   readonly now: () => number;
   readonly logger: Logger;
+  /**
+   * Storage's `conversationRepo.lookupMessage`, scoped to this guild —
+   * whether a message id is a known conversation turn (ADR 0072). Lets an
+   * untagged Discord Reply to a known bot answer route to that
+   * conversation's behaviour. Optional so every existing caller (and every
+   * test-only `AssistantCommandDeps` fixture) keeps compiling unchanged;
+   * omitting it just means untagged replies are never routed.
+   */
+  readonly lookupMessage?: (messageId: string) => KnownMessage | undefined;
+  /**
+   * Task 20: member 👍/👎 reactions on bot answers. Guild-scoped closures
+   * over `conversationRepo.setFeedback` and `traceRepo.addTraceFlag` (wired
+   * in `runtime/guild.ts`), so this subscriber stays storage-free like the
+   * rest of the file. Absent in tests that do not exercise reactions.
+   */
+  readonly feedback?:
+    | {
+        readonly setFeedback: (
+          messageId: string,
+          feedback: 'up' | 'down' | null,
+        ) => { updated: boolean; traceId: string | undefined };
+        readonly addTraceFlag: (traceId: string, flag: string) => boolean;
+      }
+    | undefined;
 }
 
 const COMMANDS = new Set<AssistantCommand>([
@@ -191,8 +263,42 @@ export const createAssistantCommandSubscriber = (deps: AssistantCommandDeps): Su
     if (event.guildId !== deps.guildId) return;
     if (event.kind === 'slashCommand') await handleSlash(deps, event);
     if (event.kind === 'messageCreate') await handleMention(deps, event);
+    if (event.kind === 'reactionAdd' || event.kind === 'reactionRemove')
+      handleFeedback(deps, event);
   },
 });
+
+/**
+ * Task 20: 👍/👎 feedback on bot answers. Only reactions on messages linked
+ * as an `assistant` turn count; the bot's own reactions are ignored (its
+ * seeded/own reactions must never read as member feedback). Removing the
+ * reaction clears the feedback; trace flags are append-only, so clearing
+ * writes no flag.
+ */
+function handleFeedback(
+  deps: AssistantCommandDeps,
+  event: Extract<DomainEvent, { kind: 'reactionAdd' | 'reactionRemove' }>,
+): void {
+  const feedback = deps.feedback;
+  if (feedback === undefined) return;
+  if (event.userId === deps.botUserId) return;
+  const vote =
+    event.emoji === 'u:1f44d'
+      ? ('up' as const)
+      : event.emoji === 'u:1f44e'
+        ? ('down' as const)
+        : undefined;
+  if (vote === undefined) return;
+  const known = deps.lookupMessage?.(event.messageId);
+  if (known === undefined || known.role !== 'assistant') return;
+  if (event.kind === 'reactionRemove') {
+    feedback.setFeedback(event.messageId, null);
+    return;
+  }
+  const stored = feedback.setFeedback(event.messageId, vote);
+  if (stored.updated && stored.traceId !== undefined)
+    feedback.addTraceFlag(stored.traceId, `feedback:${vote}`);
+}
 
 async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent): Promise<void> {
   if (!COMMANDS.has(event.commandName as AssistantCommand)) return;
@@ -239,7 +345,7 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
 
 async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): Promise<void> {
   const behaviours = await deps.service.behavioursForGuild(event.guildId);
-  const route = routeAssistantMention(event, behaviours, deps.botUserId);
+  const route = routeAssistantMention(event, behaviours, deps.botUserId, deps.lookupMessage);
   if (route.kind === 'not-addressed') return;
   if (route.kind === 'ambiguous') {
     // Hard rule 6: this subscriber holds no idempotency key of its own, and
@@ -259,7 +365,9 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
 
   // Same split as handleSlash: routing is cheap and inline, the invoke is a
   // job (B2). The escalation delivery lives in the job handler with the
-  // invoke that produces it.
+  // invoke that produces it. Task 14: the payload also carries the message
+  // identity the job needs — the message id for the reply and the link, and
+  // the reply reference for the conversation resolver.
   try {
     deps.enqueue({
       kind: JOB_KINDS.assistantInvoke,
@@ -272,6 +380,13 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         input: { question: route.prompt },
         source: 'mention',
         invocationId: event.messageId,
+        messageId: event.messageId,
+        ...(event.referencedMessageId === undefined
+          ? {}
+          : { referencedMessageId: event.referencedMessageId }),
+        ...(event.referencedAuthorId === undefined
+          ? {}
+          : { referencedAuthorId: event.referencedAuthorId }),
       },
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
       now: deps.now(),

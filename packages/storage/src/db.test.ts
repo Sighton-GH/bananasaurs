@@ -566,8 +566,58 @@ describe('migration 0036 adds the fallback model, web search and assistant setti
         fallback_models_json: '[]',
         search_api_key_enc: null,
         search_enabled: 0,
+        // ADR 0075 (migration 0038) adds this column after this test's own
+        // migration; the row it seeded predates it, so it reads back null.
+        github_token_enc: null,
         updated_at: 7,
       },
+    ]);
+    raw.close();
+  });
+});
+
+describe('migration 0039 keeps one chain row per model when 0038 duplicated fallbacks', () => {
+  it('migrates past the chain unique index with a fallback list that repeats the primary', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    const migrationsFolderUpTo = (lastIdx: number): string => {
+      const journal = JSON.parse(
+        fs.readFileSync(path.join(MIGRATIONS_FOLDER, 'meta', '_journal.json'), 'utf8'),
+      ) as { version: string; dialect: string; entries: { idx: number; tag: string }[] };
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'chain-dedupe-migration-'));
+      fs.mkdirSync(path.join(dir, 'meta'));
+      const entries = journal.entries.filter((entry) => entry.idx <= lastIdx);
+      fs.writeFileSync(
+        path.join(dir, 'meta', '_journal.json'),
+        JSON.stringify({ ...journal, entries }),
+      );
+      for (const entry of entries)
+        fs.copyFileSync(
+          path.join(MIGRATIONS_FOLDER, `${entry.tag}.sql`),
+          path.join(dir, `${entry.tag}.sql`),
+        );
+      return dir;
+    };
+    runMigrations(raw, db, migrationsFolderUpTo(36));
+    // 0038 copies the primary plus every fallback with no dedupe: a
+    // fallback list that repeats the primary (or itself) leaves duplicate
+    // (provider, model) rows for 0039's chain copy to carry over. Seed
+    // before 0038 runs, the way a real upgrade would find the row.
+    raw
+      .prepare(
+        `INSERT INTO assistant_provider_config (config_id, provider, model, api_key_enc, enabled, cost_class, fallback_models_json, updated_at)
+         VALUES ('active', 'gemini', 'gemini-2.5-flash', 'sealed', 1, 'free', '["gemini-2.5-flash", "gemini-2.5-pro", "gemini-2.5-pro"]', 7)`,
+      )
+      .run();
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    expect(
+      raw.prepare('SELECT key_id, model FROM assistant_model_chain ORDER BY position').all(),
+    ).toEqual([
+      { key_id: 'key_gemini', model: 'gemini-2.5-flash' },
+      { key_id: 'key_gemini', model: 'gemini-2.5-pro' },
     ]);
     raw.close();
   });

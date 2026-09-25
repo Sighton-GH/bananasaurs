@@ -23,6 +23,7 @@ import {
 } from './policy.js';
 import { dashboardAuditBase } from './routes/audit-base.js';
 import { secretsMatch } from './secrets.js';
+import type { GithubRouteClient } from './routes/assistant-github.js';
 
 /**
  * The dashboard API.
@@ -64,6 +65,14 @@ export interface AssistantProviderStatus {
   /** ADR 0066. Absent while no Brave key is saved and search is off. */
   readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
+
+/**
+ * Why a model-chain entry has no usable provider (Task 8). Restated here
+ * rather than imported: the store type lives in `apps/daemon`, which
+ * `packages/http` must not import (ADR 0014) — and `core` does not export it.
+ */
+export type AssistantChainSkipReason =
+  'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
 
 export interface HttpDeps extends AuthDeps {
   readonly logger: Logger;
@@ -115,6 +124,62 @@ export interface HttpDeps extends AuthDeps {
           provider: string,
           apiKey?: string,
         ): Promise<readonly { id: string; name: string; description?: string }[]>;
+        /** Task 8: several labelled keys; the sealed values are never opened here. */
+        keys?(): readonly {
+          readonly keyId: string;
+          readonly provider: string;
+          readonly label: string;
+          readonly costClass: 'free' | 'paid' | 'unknown';
+          readonly enabled: boolean;
+        }[];
+        addKey?(
+          input: {
+            provider: 'gemini' | 'openrouter' | 'nvidia-nim';
+            label: string;
+            apiKey: string;
+            costClass?: 'free' | 'paid' | 'unknown' | undefined;
+            enabled?: boolean | undefined;
+          },
+          now: number,
+        ): string;
+        updateKey?(
+          keyId: string,
+          input: {
+            label?: string | undefined;
+            apiKey?: string | undefined;
+            costClass?: 'free' | 'paid' | 'unknown' | undefined;
+            enabled?: boolean | undefined;
+          },
+          now: number,
+        ): void;
+        removeKey?(keyId: string): void;
+        chain?(): readonly {
+          readonly providerId: string;
+          readonly model: string;
+          readonly keyId: string;
+          readonly keyLabel: string;
+          readonly provider:
+            | {
+                readonly id: string;
+                readonly capabilities: ReadonlySet<string>;
+                generateText(request: {
+                  readonly model: string;
+                  readonly messages: readonly { readonly role: string; readonly text: string }[];
+                }): Promise<{ readonly text: string; readonly model: string }>;
+              }
+            | undefined;
+          readonly skip?: AssistantChainSkipReason | undefined;
+          readonly mayTrain: boolean;
+        }[];
+        saveChain?(rows: readonly { keyId: string; model: string }[], now: number): void;
+        saveGithubToken?(token: string | null): void;
+        isKeyReadable?(keyId: string): boolean;
+        githubTokenConfigured?(): boolean;
+        /**
+         * Task 17: the sealed GitHub token, opened for the client's
+         * `Authorization` header only. Absent in older wiring.
+         */
+        githubToken?(): string | undefined;
       }
     | undefined;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
@@ -125,6 +190,31 @@ export interface HttpDeps extends AuthDeps {
         channels: readonly { id: string; name: string }[];
       }>)
     | undefined;
+  /**
+   * ADR 0073: adding or editing a resource enqueues a cache refresh with
+   * reason `added`, so a newly added resource has cached chunks before the
+   * next hourly sweep. Injected (wired in `apps/daemon/src/http/wiring.ts`)
+   * rather than a `jobRepo` call inside the route, so the route body stays
+   * about validation and audit — and so route tests can inject a spy.
+   * Absent in isolated route tests, and then nothing is enqueued.
+   */
+  readonly enqueueResourceRefresh?:
+    ((scope: GuildScope, resourceId: string, reason: 'added') => void) | undefined;
+  /**
+   * Task 8: the shared QuotaLedger's reset for one key, wired in
+   * `apps/daemon/src/http/wiring.ts` from the single process-wide ledger
+   * (`apps/daemon/src/runtime/daemon.ts`). Absent in isolated route tests,
+   * and then no allowance reset is shown.
+   */
+  readonly assistantAllowanceResetsAt?: ((keyId: string) => number | undefined) | undefined;
+  /**
+   * Task 17: the GitHub REST client factory for the "Add from GitHub"
+   * routes. Built by the daemon's HTTP wiring around the pinned fetch and
+   * the sealed token (which never crosses this boundary — it stays inside
+   * the client's `Authorization` header). Absent in isolated route tests,
+   * in which case the GitHub routes answer 503.
+   */
+  readonly githubClient?: (() => GithubRouteClient) | undefined;
 }
 
 /**
@@ -304,9 +394,36 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   // an omission: it is what stops a cross-origin page reading the body of
   // `GET /api/session` and learning the CSRF token.
 
+  // The dashboard's `apiFetch` used to label every write — including a
+  // bodiless DELETE — `content-type: application/json`. Fastify's default JSON
+  // parser rejects an empty JSON body (`FST_ERR_CTP_EMPTY_JSON_BODY`, 400)
+  // before routing, and the error handler below flattened that 400 into a 500
+  // `internal`. Accept an empty body as `undefined`, but only for DELETE: any
+  // other method with an empty labelled body is still a client mistake. The
+  // instance `bodyLimit` still applies — a too-large body answers 413, which
+  // the 4xx branch below passes through unchanged. Every other case delegates
+  // to Fastify's own default JSON parser, so `secure-json-parse` keeps
+  // rejecting `__proto__` / `constructor.prototype` keys exactly as before.
+  const defaultJsonParser = app.getDefaultJsonParser('error', 'error');
+  app.removeContentTypeParser('application/json');
+  app.addContentTypeParser('application/json', { parseAs: 'string' }, (request, body, done) => {
+    const text = typeof body === 'string' ? body : body.toString('utf8');
+    if (text.length === 0 && request.method === 'DELETE') return done(null, undefined);
+    void defaultJsonParser(request, text, done);
+  });
+
   app.setErrorHandler((err, _request, reply) => {
     if (isReadonlyRefusal(err)) {
       void reply.status(READONLY_STATUS).send(READONLY_BODY);
+      return;
+    }
+    // Fastify's own client errors (bad JSON, empty JSON body on a non-DELETE,
+    // too-large body) carry their status: answer it with the error code rather
+    // than flattening every 4xx into a 500 `internal`.
+    const status = (err as { statusCode?: unknown }).statusCode;
+    if (typeof status === 'number' && status >= 400 && status < 500) {
+      const code = (err as { code?: unknown }).code;
+      void reply.status(status).send({ error: typeof code === 'string' ? code : 'bad-request' });
       return;
     }
     // The message only, never the error object: a thrown value could carry a

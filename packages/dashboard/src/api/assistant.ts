@@ -2,6 +2,8 @@ import type {
   AssistantBehaviour,
   AssistantSkill,
   ClubResource,
+  JSONSchema,
+  JSONSchemaProperty,
   ReminderStatus,
 } from '@bananasaurs/core';
 
@@ -209,11 +211,95 @@ export interface ModelInfo {
 }
 export const providerTermsUrl = (provider: string) =>
   `/api/providers/${encodeURIComponent(provider)}/terms`;
+/** Task 8: several labelled keys across several providers, one ordered model chain. */
+export const ASSISTANT_PROVIDERS_URL = '/api/assistant/providers';
+export const ASSISTANT_KEYS_URL = '/api/assistant/keys';
+export const assistantKeyUrl = (keyId: string) =>
+  `/api/assistant/keys/${encodeURIComponent(keyId)}`;
+export const MODEL_CHAIN_URL = '/api/assistant/model-chain';
+export const MODEL_CHAIN_TEST_URL = '/api/assistant/model-chain/test';
+export const GITHUB_TOKEN_URL = '/api/assistant/github-token';
+export type SetupEligibility = 'eligible' | 'may-train' | 'ineligible' | 'unverified';
+export type ChainStatus =
+  | 'ready'
+  | 'no-key'
+  | 'key-unreadable'
+  | 'disabled'
+  | 'ineligible'
+  | 'unverified'
+  | 'allowance-used';
+export interface SetupProviderRow {
+  readonly provider: string;
+  readonly eligibility: SetupEligibility;
+  readonly supportsTools: boolean;
+  readonly keyCount: number;
+}
+export interface SetupKeyRow {
+  readonly keyId: string;
+  readonly provider: string;
+  readonly label: string;
+  readonly costClass: 'free' | 'paid' | 'unknown';
+  readonly enabled: boolean;
+  readonly readable: boolean;
+  readonly allowanceResetsAt?: number;
+}
+export interface SetupChainRow {
+  readonly position: number;
+  readonly keyId: string;
+  readonly keyLabel: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly status: ChainStatus;
+  readonly allowanceResetsAt?: number;
+}
+export interface AssistantSetupData {
+  readonly providers: readonly SetupProviderRow[];
+  readonly keys: readonly SetupKeyRow[];
+  readonly chain: readonly SetupChainRow[];
+  readonly webSearch: { readonly keyConfigured: boolean; readonly enabled: boolean };
+  readonly github: { readonly tokenConfigured: boolean };
+}
 /** ADR 0063: which behaviour answers a tag of the bot user itself. */
 export const BOT_TAG_URL = '/api/assistant/bot-tag';
 /** ADR 0065: the AI log channel. */
 export const LOG_CHANNEL_URL = '/api/assistant/log-channel';
 export const behaviourUrl = (id: string) => `/api/assistant/behaviours/${encodeURIComponent(id)}`;
+/** `GET /api/assistant/behaviours/:id/preview` (Task 18): the full compiled prompt with sizes. */
+export const behaviourPreviewUrl = (id: string) =>
+  `/api/assistant/behaviours/${encodeURIComponent(id)}/preview`;
+/** `GET /api/assistant/safety-suffix` (Task 18): the locked suffix the wizard shows read-only. */
+export const SAFETY_SUFFIX_URL = '/api/assistant/safety-suffix';
+
+/** `POST /api/assistant/behaviours/:id/try` (Task 20): run a behaviour from the dashboard. */
+export const behaviourTryUrl = (id: string) =>
+  `/api/assistant/behaviours/${encodeURIComponent(id)}/try`;
+export interface TryItRequest {
+  readonly question: string;
+  readonly conversationId?: string;
+}
+export interface TryItResponse {
+  readonly answer: string;
+  readonly traceId: string;
+  readonly conversationId: string;
+}
+
+export interface PreviewSection {
+  readonly name: string;
+  readonly chars: number;
+  readonly estTokens: number;
+  readonly text: string;
+}
+
+export interface BehaviourPreview {
+  readonly sections: readonly PreviewSection[];
+  readonly totalChars: number;
+  readonly totalEstTokens: number;
+}
+
+export interface SafetySuffix {
+  readonly version: number;
+  readonly text: string;
+}
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;
 export const decisionReviewUrl = (id: string) =>
@@ -221,6 +307,81 @@ export const decisionReviewUrl = (id: string) =>
 export const decisionSaveUrl = (id: string) =>
   `/api/assistant/decisions/${encodeURIComponent(id)}/save`;
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
+/** ADR 0073: cached-document freshness per resource — fetchedAt/chunks/bytes/lastError, one row per resource that has ever been cached. */
+export interface ResourceFreshnessRow {
+  readonly resourceId: string;
+  readonly fetchedAt?: number;
+  readonly chunks: number;
+  readonly bytes: number;
+  readonly lastError?: string;
+}
+export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
+export const resourceRefreshUrl = (id: string) =>
+  `/api/assistant/resources/${encodeURIComponent(id)}/refresh`;
+export const RESOURCE_REFRESH_ALL_URL = '/api/assistant/resources/refresh';
+/** Task 17: "Add from GitHub" — preview a repo/org URL, then import it as cached resources. */
+export const GITHUB_PREVIEW_URL = '/api/assistant/github/preview';
+export const GITHUB_IMPORT_URL = '/api/assistant/github/import';
+export type GithubPreviewTarget =
+  | { readonly kind: 'org'; readonly owner: string }
+  | {
+      readonly kind: 'repo';
+      readonly owner: string;
+      readonly repo: string;
+      readonly branch?: string;
+    };
+export interface GithubPreviewRepo {
+  readonly name: string;
+  readonly description: string | null;
+  readonly fork: boolean;
+  readonly archived: boolean;
+}
+export interface GithubPreview {
+  readonly target: GithubPreviewTarget;
+  readonly authenticated: boolean;
+  readonly repos?: readonly GithubPreviewRepo[];
+  readonly truncated?: boolean;
+  readonly files?: readonly string[];
+}
+export interface GithubImportResult {
+  readonly created: number;
+}
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;
 export const STARTER_URL = '/api/assistant/skill-grants/starter';
+
+/** `GET /api/assistant/skills/:skillId` (Task 9): one skill in full. */
+export const skillUrl = (skillId: string) => `/api/assistant/skills/${encodeURIComponent(skillId)}`;
+
+export interface SkillBehaviourRow {
+  readonly id: string;
+  readonly name: string;
+  readonly allowed: boolean;
+}
+export interface SkillCommandOption {
+  readonly name: string;
+  readonly required: boolean;
+  readonly description: string;
+}
+export interface SkillCommand {
+  readonly name: string;
+  readonly options: readonly SkillCommandOption[];
+}
+/** One property of a tool's parameters, as the daemon declares it. */
+export type SkillToolParameter = JSONSchemaProperty;
+export interface SkillTool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: JSONSchema;
+  readonly rounds: 'first' | 'all';
+  readonly outputLimit: string;
+}
+export interface SkillDetail {
+  readonly skill: AssistantSkill;
+  readonly instructionLine: string;
+  readonly behaviours: readonly SkillBehaviourRow[];
+  readonly whoCanUse: string;
+  readonly tools: readonly SkillTool[];
+  readonly command?: SkillCommand;
+  readonly recentRuns: readonly ActivityRow[];
+}

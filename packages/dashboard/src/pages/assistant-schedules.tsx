@@ -30,7 +30,7 @@ export function AssistantSchedulesPage() {
     <>
       <PageHeader
         title="Schedules"
-        purpose="Reminders the assistant will deliver: where they go, when they run, and whether delivery is working."
+        purpose="Reminders the assistant will post, and what already went out."
       />
       <DataState
         resource={assistant.resource}

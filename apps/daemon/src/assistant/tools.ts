@@ -1,7 +1,9 @@
 import { z } from 'zod';
 import {
+  humaniseDuration,
   redactEvidenceText,
   scanOutboundRequest,
+  TOOL_CATALOGUE,
   type ClubResource,
   type Reminder,
   type ToolCall,
@@ -10,10 +12,12 @@ import {
 import type { ResourceFetchResult } from './resource-fetcher.js';
 
 /**
- * The read-only tools the model may call in its one tool round (ADR 0067).
- * Nothing here writes. Every argument passes a Zod schema before a tool runs,
- * and every result is redacted like other evidence before it goes back to the
- * provider (hard rule 3).
+ * The read-only tools the model may call (ADR 0067, Task 16).
+ * Cache tools read the persistent resource cache through guild-scoped ports;
+ * nothing here writes except `refresh_source`/`open_resource`'s refresh
+ * request, which enqueues a job. Every argument passes a Zod schema before a
+ * tool runs, and every result is redacted like other evidence before it goes
+ * back to the provider (hard rule 3).
  */
 
 export interface ArchiveHit {
@@ -27,6 +31,34 @@ export interface WebResult {
   readonly title: string;
   readonly url: string;
   readonly description: string;
+}
+
+export interface CacheSearchHit {
+  readonly chunkId: string;
+  readonly docId: string;
+  readonly resourceId: string;
+  readonly headingPath: string;
+  readonly snippet: string;
+}
+
+export interface CacheStoredChunk {
+  readonly chunkId: string;
+  readonly docId: string;
+  readonly resourceId: string;
+  readonly headingPath: string;
+  readonly text: string;
+}
+
+export interface CacheOutlineEntry {
+  readonly chunkId: string;
+  readonly headingPath: string;
+}
+
+export interface CacheStoredDoc {
+  readonly docId: string;
+  readonly resourceId: string;
+  readonly title: string;
+  readonly url: string;
 }
 
 /** Everything a tool can reach, already scoped to one guild and one asking member. */
@@ -43,6 +75,24 @@ export interface AssistantToolPorts {
   readonly serverCard: () => string;
   readonly visibleChannels: () => Promise<readonly { id: string; name: string }[]>;
   readonly reminders: () => readonly Reminder[];
+  /** Guild-scoped cache reads (hard rule 2: the closures capture the request scope). */
+  readonly cacheSearch: (input: {
+    readonly query: string;
+    readonly resourceIds?: readonly string[];
+    readonly limit: number;
+  }) => readonly CacheSearchHit[];
+  readonly cacheChunk: (chunkId: string) => CacheStoredChunk | undefined;
+  readonly cacheNeighbours: (chunkId: string, n: 0 | 1 | 2) => readonly CacheStoredChunk[];
+  readonly cacheOutline: (docId: string) => readonly CacheOutlineEntry[];
+  readonly cacheDocument: (docId: string) => CacheStoredDoc | undefined;
+  readonly cacheResourceDocs: (resourceId: string) => readonly CacheStoredDoc[];
+  readonly cacheResourceChunks: (docId: string, limit: number) => readonly CacheStoredChunk[];
+  readonly cacheFreshness: () => readonly {
+    readonly resourceId: string;
+    readonly fetchedAt?: number;
+  }[];
+  /** Enqueues a resource_refresh (reason assistant); false when the 10-minute dedupe already holds one. */
+  readonly enqueueRefresh: (resourceId: string) => boolean;
 }
 
 export interface ToolSource {
@@ -58,6 +108,11 @@ export interface AssistantToolResult {
   readonly sources: readonly ToolSource[];
   /** True when the result came from Brave (the answer must say so). */
   readonly web?: boolean;
+  /**
+   * IDs follow-up rounds may open (ADR 0071): cache tools return the ids
+   * they actually showed; every other tool returns none.
+   */
+  readonly handles?: readonly string[];
 }
 
 const query = z.object({ query: z.string().trim().min(1).max(200) }).strict();
@@ -69,58 +124,39 @@ const schemas = {
   server_info: none,
   current_time: none,
   my_reminders: none,
+  list_sources: z.object({ filter: z.string().trim().min(1).max(80).optional() }).strict(),
+  search_sources: z
+    .object({
+      query: z.string().trim().min(2).max(200),
+      sourceIds: z.array(z.string().min(1).max(64)).max(10).optional(),
+    })
+    .strict(),
+  read_chunk: z
+    .object({
+      chunkId: z.string().min(1).max(128),
+      neighbours: z.union([z.literal(0), z.literal(1), z.literal(2)]).optional(),
+    })
+    .strict(),
+  outline: z.object({ docId: z.string().min(1).max(128) }).strict(),
+  refresh_source: z.object({ resourceId: z.string().min(1).max(64) }).strict(),
 } as const;
 type ToolName = keyof typeof schemas;
 
-const QUERY_PARAMETERS = {
-  type: 'object',
-  properties: { query: { type: 'string', description: 'What to search for.' } },
-  required: ['query'],
-};
-const NO_PARAMETERS = { type: 'object', properties: {} };
-
-export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] => [
-  {
-    name: 'search_archive',
-    description:
-      "Search past messages in this Discord server's archived channels that the asking member can see.",
-    parameters: QUERY_PARAMETERS,
-  },
-  {
-    name: 'open_resource',
-    description: 'Open one of the club resources listed in the instructions, by its id.',
-    parameters: {
-      type: 'object',
-      properties: { resourceId: { type: 'string', description: 'The resource id.' } },
-      required: ['resourceId'],
-    },
-  },
-  ...(ports.webSearch === undefined
-    ? []
-    : [
-        {
-          name: 'web_search',
-          description:
-            'Search the public web. Never put names, contact details or private club information in the query.',
-          parameters: QUERY_PARAMETERS,
-        },
-      ]),
-  {
-    name: 'server_info',
-    description: "The server's description and the channels the asking member can see.",
-    parameters: NO_PARAMETERS,
-  },
-  {
-    name: 'current_time',
-    description: "Today's date and the current time in the club's time zone.",
-    parameters: NO_PARAMETERS,
-  },
-  {
-    name: 'my_reminders',
-    description: "The asking member's own upcoming reminders.",
-    parameters: NO_PARAMETERS,
-  },
-];
+/**
+ * Declarations for the live provider request, derived from `TOOL_CATALOGUE`
+ * (`@bananasaurs/core`) so a declaration's name, description and parameters
+ * can never drift from what the skill detail page shows (a test asserts
+ * every entry here equals its catalogue entry). `web_search` is the one
+ * conditional entry: it drops out entirely while search is off (ADR 0066).
+ */
+export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =>
+  TOOL_CATALOGUE.filter(
+    (entry) => entry.name !== 'web_search' || ports.webSearch !== undefined,
+  ).map((entry) => ({
+    name: entry.name,
+    description: entry.description,
+    parameters: entry.parameters,
+  }));
 
 const MAX_RESULT_CHARS = 6_000;
 const evidence = (
@@ -147,6 +183,19 @@ const clock = (ports: AssistantToolPorts, at: number): string =>
     timeStyle: 'short',
     hourCycle: 'h23',
   }).format(at);
+
+/**
+ * "3 hours ago" / "not fetched yet" for catalogue and list_sources lines.
+ * One shared helper (Task 16 fix round 1): service.ts's catalogue uses this
+ * too instead of its own copy.
+ */
+export const relativeUpdated = (fetchedAt: number | undefined, now: number): string =>
+  fetchedAt === undefined
+    ? 'not fetched yet'
+    : `${humaniseDuration(Math.max(0, now - fetchedAt))} ago`;
+
+const enabledById = (ports: AssistantToolPorts, resourceId: string): ClubResource | undefined =>
+  ports.resources().find((r) => r.id === resourceId && r.enabled);
 
 export const runAssistantTool = async (
   call: ToolCall,
@@ -175,15 +224,63 @@ export const runAssistantTool = async (
       }
       case 'open_resource': {
         const { resourceId } = parsed.data as { resourceId: string };
-        const found = ports.resources().find((r) => r.id === resourceId && r.enabled);
-        if (found === undefined) return refused(name, 'No enabled resource has that id.');
+        const found = enabledById(ports, resourceId);
+        if (found === undefined) return refused(name, 'unknown id');
         const source = { title: found.title, url: found.url };
-        if (!['website', 'document', 'repository'].includes(found.kind))
-          return evidence(name, `${found.title}: ${found.url}`, [source]);
-        const fetched = await ports.fetchResource(found.url);
-        if (!fetched.ok)
-          return refused(name, `The resource could not be opened (${fetched.code}).`);
-        return evidence(name, `${found.title}\n${fetched.evidence.text}`, [source]);
+        if (!['website', 'document', 'repository', 'note'].includes(found.kind))
+          return {
+            ...evidence(name, `${found.title}: ${found.url}`, [source]),
+            handles: [found.id],
+          };
+        const docs = ports.cacheResourceDocs(found.id);
+        const doc = docs[0];
+        if (doc === undefined) {
+          ports.enqueueRefresh(found.id);
+          return {
+            ...evidence(
+              name,
+              "This source hasn't been fetched yet; an update has been requested.",
+              [source],
+            ),
+            handles: [found.id],
+          };
+        }
+        const chunks = ports.cacheResourceChunks(doc.docId, 10);
+        if (chunks.length === 0) {
+          ports.enqueueRefresh(found.id);
+          return {
+            ...evidence(
+              name,
+              "This source hasn't been fetched yet; an update has been requested.",
+              [source],
+            ),
+            handles: [found.id],
+          };
+        }
+        const head = `${found.title}\n${doc.url}\n`;
+        const lines: string[] = [];
+        let used = head.length;
+        const shown: string[] = [];
+        for (const chunk of chunks) {
+          const line = `[${chunk.chunkId}] ${chunk.headingPath}: ${chunk.text}`;
+          if (used + line.length + 1 > 4_000) break;
+          lines.push(line);
+          shown.push(chunk.chunkId);
+          used += line.length + 1;
+        }
+        if (lines.length === 0) {
+          const first = chunks[0]!;
+          const room = Math.max(
+            0,
+            4_000 - head.length - `[${first.chunkId}] ${first.headingPath}: `.length - 1,
+          );
+          lines.push(`[${first.chunkId}] ${first.headingPath}: ${first.text.slice(0, room)}`);
+          shown.push(first.chunkId);
+        }
+        return {
+          ...evidence(name, `${head}${lines.join('\n')}`.slice(0, 4_000), [source]),
+          handles: [...shown, doc.docId],
+        };
       }
       case 'web_search': {
         const { query: q } = parsed.data as z.infer<typeof query>;
@@ -222,6 +319,152 @@ export const runAssistantTool = async (
           );
         if (mine.length === 0) return evidence(name, 'No upcoming reminders.');
         return evidence(name, mine.map((r) => `${clock(ports, r.dueAt)}: ${r.text}`).join('\n'));
+      }
+      case 'list_sources': {
+        const { filter } = parsed.data as { filter?: string };
+        const freshness = new Map(ports.cacheFreshness().map((f) => [f.resourceId, f.fetchedAt]));
+        const needle = filter?.toLowerCase();
+        const all = ports.resources().filter((r) => r.enabled);
+        const matching =
+          needle === undefined
+            ? all
+            : all.filter(
+                (r) =>
+                  r.id.toLowerCase().includes(needle) || r.title.toLowerCase().includes(needle),
+              );
+        const lines = matching
+          .slice(0, 30)
+          .map(
+            (r) =>
+              `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(freshness.get(r.id), ports.now())}`,
+          );
+        if (lines.length === 0) return evidence(name, 'No sources match that filter.');
+        return {
+          ...evidence(name, lines.join('\n')),
+          handles: matching.slice(0, 30).map((r) => r.id),
+        };
+      }
+      case 'search_sources': {
+        const { query: q, sourceIds } = parsed.data as {
+          query: string;
+          sourceIds?: string[];
+        };
+        // A search with no sourceIds stays inside the guild's enabled
+        // resources: a disabled resource (e.g. a repo that went private) is
+        // never searchable, even though its chunks are still cached.
+        const enabledIds = ports
+          .resources()
+          .filter((r) => r.enabled)
+          .map((r) => r.id);
+        if (sourceIds !== undefined) {
+          const known = new Set(enabledIds);
+          for (const id of sourceIds) {
+            if (!known.has(id)) return refused(name, 'unknown id');
+          }
+        }
+        const hits = ports.cacheSearch({
+          query: q,
+          resourceIds: sourceIds ?? enabledIds,
+          limit: 6,
+        });
+        if (hits.length === 0)
+          return evidence(name, 'No matching passages. Try different words, or list_sources.');
+        const byId = new Map(ports.resources().map((r) => [r.id, r]));
+        const enabled = new Set(enabledIds);
+        const lines: string[] = [];
+        const handles: string[] = [];
+        let used = 0;
+        for (const hit of hits.slice(0, 6)) {
+          if (!enabled.has(hit.resourceId)) continue;
+          const title = byId.get(hit.resourceId)?.title ?? hit.resourceId;
+          const snippet = hit.snippet.length > 300 ? `${hit.snippet.slice(0, 299)}…` : hit.snippet;
+          const line = `[${hit.chunkId}] ${title} › ${hit.headingPath}: ${snippet}`;
+          if (used + line.length + (lines.length > 0 ? 1 : 0) > 2_000) break;
+          lines.push(line);
+          handles.push(hit.chunkId, hit.docId);
+          used += line.length + (lines.length > 1 ? 1 : 0);
+        }
+        if (lines.length === 0)
+          return evidence(name, 'No matching passages. Try different words, or list_sources.');
+        return { ...evidence(name, lines.join('\n')), handles };
+      }
+      case 'read_chunk': {
+        const { chunkId, neighbours } = parsed.data as {
+          chunkId: string;
+          neighbours?: 0 | 1 | 2;
+        };
+        const center = ports.cacheChunk(chunkId);
+        if (center === undefined) return refused(name, 'unknown id');
+        if (enabledById(ports, center.resourceId) === undefined) return refused(name, 'unknown id');
+        const rows = ports.cacheNeighbours(chunkId, neighbours ?? 1);
+        const shown = rows.length > 0 ? rows : [center];
+        const found = enabledById(ports, center.resourceId);
+        const title = found?.title ?? center.resourceId;
+        const url = found?.url ?? '';
+        const sourceList = found === undefined ? [] : [{ title: found.title, url: found.url }];
+        const head =
+          url === ''
+            ? `${title} › ${center.headingPath}\n`
+            : `${title} › ${center.headingPath}\n${url}\n`;
+        let used = head.length;
+        const lines: string[] = [];
+        const handles: string[] = [];
+        for (const row of shown) {
+          const line = `[${row.chunkId}] ${row.text}`;
+          if (used + line.length + 1 > 4_000) break;
+          lines.push(line);
+          handles.push(row.chunkId);
+          used += line.length + 1;
+        }
+        if (lines.length === 0) {
+          const first = shown[0] ?? center;
+          const room = Math.max(0, 4_000 - head.length - `[${first.chunkId}] `.length - 1);
+          lines.push(`[${first.chunkId}] ${first.text.slice(0, room)}`);
+          handles.push(first.chunkId);
+        }
+        handles.push(center.docId);
+        return {
+          ...evidence(name, `${head}${lines.join('\n\n')}`.slice(0, 4_000), sourceList),
+          handles,
+        };
+      }
+      case 'outline': {
+        const { docId } = parsed.data as { docId: string };
+        const rows = ports.cacheOutline(docId);
+        // The outline rows carry no resource id, so the doc (or the first
+        // row's chunk) names the resource whose enabled flag decides: a
+        // disabled resource's outline is unknown, like its chunks.
+        const outlineResourceId =
+          ports.cacheDocument(docId)?.resourceId ??
+          (rows[0] === undefined ? undefined : ports.cacheChunk(rows[0].chunkId)?.resourceId);
+        if (outlineResourceId === undefined || enabledById(ports, outlineResourceId) === undefined)
+          return refused(name, 'unknown id');
+        if (rows.length === 0) {
+          return { ...evidence(name, 'No headings cached.'), handles: [] };
+        }
+        const lines: string[] = [];
+        const handles: string[] = [];
+        let used = 0;
+        for (const row of rows) {
+          const line = `[${row.chunkId}] ${row.headingPath}`;
+          if (used + line.length + 1 > 1_500) break;
+          lines.push(line);
+          handles.push(row.chunkId);
+          used += line.length + 1;
+        }
+        return { ...evidence(name, lines.join('\n')), handles };
+      }
+      case 'refresh_source': {
+        const { resourceId } = parsed.data as { resourceId: string };
+        const found = enabledById(ports, resourceId);
+        if (found === undefined) return refused(name, 'unknown id');
+        const enqueued = ports.enqueueRefresh(found.id);
+        return evidence(
+          name,
+          enqueued
+            ? 'Refresh started; updated content will be available in about a minute.'
+            : 'Already refreshed in the last 10 minutes.',
+        );
       }
     }
   } catch (err) {

@@ -1,5 +1,7 @@
 # 0068. Load the models a key can use; up to three models in order
 
+Superseded in part by ADR 0075 (one ordered model chain across providers).
+
 Date: 2026-09-23
 Status: accepted (owner request 2026-09-23); amends the single backup model of ADR 0067's
 branch before release

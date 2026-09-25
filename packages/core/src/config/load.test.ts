@@ -204,4 +204,20 @@ describe('redactConfig', () => {
     expect(JSON.stringify(r)).not.toContain('MIDDLE');
     expect(JSON.stringify(r)).not.toContain('SUFFIX');
   });
+
+  it('redacts the provider and account-password master secrets (ADR 0070)', () => {
+    const providerSecret = 'p'.repeat(32);
+    const redactedProvider = redactConfig(
+      parseConfig({ ...VALID, ASSISTANT_PROVIDER_SECRET_KEY: providerSecret }),
+    );
+    expect(redactedProvider['ASSISTANT_PROVIDER_SECRET_KEY']).toBe('<redacted>');
+    expect(JSON.stringify(redactedProvider)).not.toContain(providerSecret);
+
+    const accountSecret = 'q'.repeat(32);
+    const redactedAccount = redactConfig(
+      parseConfig({ ...VALID, ACCOUNT_PASSWORD_SECRET_KEY: accountSecret }),
+    );
+    expect(redactedAccount['ACCOUNT_PASSWORD_SECRET_KEY']).toBe('<redacted>');
+    expect(JSON.stringify(redactedAccount)).not.toContain(accountSecret);
+  });
 });

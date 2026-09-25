@@ -221,6 +221,7 @@ const portsFor = (s: GuildScope): OpsPorts => ({
   archiveSearch: notNeeded('archiveSearch'),
   archiveReindex: notNeeded('archiveReindex'),
   grantAccountCapability: notNeeded('grantAccountCapability'),
+  revokeAccountCapability: notNeeded('revokeAccountCapability'),
   listAccountCapabilities: notNeeded('listAccountCapabilities'),
   listGuildChannels: notNeeded('listGuildChannels'),
   findGuildMessage: notNeeded('findGuildMessage'),
@@ -264,6 +265,7 @@ const instance: OpsInstance = {
   accountRevokeCredentials: notNeeded('accountRevokeCredentials'),
   accountCreate: notNeeded('accountCreate'),
   accountSetPassword: notNeeded('accountSetPassword'),
+  accountRevealPassword: notNeeded('accountRevealPassword'),
 };
 
 const actor: Actor = { type: 'operator_cli', id: undefined, roleIds: [], unixUserClaimed: 'test' };

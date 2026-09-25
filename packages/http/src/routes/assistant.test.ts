@@ -1,7 +1,27 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, ProviderError, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
-import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
+import {
+  CLUB_ASSISTANT_SKILLS,
+  DEFAULT_WIZARD_ANSWERS,
+  JOB_KINDS,
+  parseGuildId,
+  ProviderError,
+  resourceRefreshDedupeKey,
+  SAFETY_SUFFIX,
+  SAFETY_SUFFIX_VERSION,
+  skillInstructionLine,
+  STARTER_SKILL_IDS,
+  TOOL_CATALOGUE,
+  type Capability,
+} from '@bananasaurs/core';
+import {
+  accountRepo,
+  assistantRepo,
+  authzRepo,
+  effectRepo,
+  guildRepo,
+  jobRepo,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -864,5 +884,567 @@ describe('POST /api/assistant/provider/models (ADR 0068)', () => {
     await restart(async () => listed);
     const { cookie, csrf } = await signIn();
     expect((await post(cookie, csrf, { provider: 'gemini' })).statusCode).toBe(403);
+  });
+});
+
+describe('PUT /api/assistant/resources/:id (ADR 0073 enqueue on add)', () => {
+  const putResource = (
+    cookie: string,
+    csrf: string,
+    over: Record<string, unknown> & { id?: string } = {},
+  ) =>
+    app.inject({
+      method: 'PUT',
+      url: `/api/assistant/resources/${over.id ?? 'res-1'}`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: {
+        id: 'res-1',
+        title: 'A resource',
+        url: 'https://example.com/guide',
+        kind: 'website',
+        enabled: true,
+        reviewedAt: new Date(0).toISOString(),
+        ...over,
+      },
+    });
+
+  /**
+   * The production-shaped enqueue behind the route (mirrors
+   * `apps/daemon/src/http/wiring.ts`): these two tests prove the dedupe
+   * behaviour the wiring gets, while the spy test below proves the route
+   * calls whatever it is given.
+   */
+  const withJobEnqueue = async (): Promise<void> => {
+    deps = {
+      ...deps,
+      enqueueResourceRefresh: (scope, resourceId, reason) => {
+        jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.resourceRefresh,
+          payload: JSON.stringify({ resourceId, reason }),
+          dedupeKey: resourceRefreshDedupeKey({ reason, resourceId }),
+          now: clock,
+        });
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+
+  it('enqueues one resource_refresh job with reason added on create', async () => {
+    grant('config.write');
+    await withJobEnqueue();
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect((await putResource(cookie, csrf)).statusCode).toBe(200);
+
+    const jobs = jobRepo.listJobs(scope, {});
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.kind).toBe('resource_refresh');
+    expect(jobs[0]?.payload).toBe(JSON.stringify({ resourceId: 'res-1', reason: 'added' }));
+  });
+
+  it('enqueues again on an edit, and a second save in the same instant collapses to one pending job', async () => {
+    grant('config.write');
+    await withJobEnqueue();
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    await putResource(cookie, csrf);
+    await putResource(cookie, csrf, { title: 'Edited title' });
+
+    // Both saves land inside the same still-queued job (no time bucket for
+    // 'added' — see resourceRefreshDedupeKey), so there is still exactly one.
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(1);
+  });
+
+  it('refuses an unsafe URL and enqueues nothing', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    const res = await putResource(cookie, csrf, { url: 'https://127.0.0.1/' });
+    expect(res.statusCode).toBe(400);
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
+  });
+
+  it('calls the injected enqueue with reason added on create and on edit, and enqueues nothing without it', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const calls: { resourceId: string; reason: string }[] = [];
+    deps = {
+      ...deps,
+      enqueueResourceRefresh: (scope, resourceId, reason) => {
+        expect(scope.guildId).toBe(GUILD);
+        calls.push({ resourceId, reason });
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const headers = { cookie, [CSRF_HEADER]: csrf };
+    const payload = {
+      id: 'res-1',
+      title: 'A resource',
+      url: 'https://example.com/guide',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(0).toISOString(),
+    };
+    expect(
+      (await app.inject({ method: 'PUT', url: '/api/assistant/resources/res-1', headers, payload }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: '/api/assistant/resources/res-1',
+          headers,
+          payload: { ...payload, title: 'Edited title' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(calls).toEqual([
+      { resourceId: 'res-1', reason: 'added' },
+      { resourceId: 'res-1', reason: 'added' },
+    ]);
+  });
+
+  it('enqueues nothing when no enqueue function is injected', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/resources/res-1',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: {
+        id: 'res-1',
+        title: 'A resource',
+        url: 'https://example.com/guide',
+        kind: 'website',
+        enabled: true,
+        reviewedAt: new Date(0).toISOString(),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
+  });
+});
+
+describe('GET /api/assistant/skills/:skillId', () => {
+  const get = (cookie: string, skillId: string) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/assistant/skills/${encodeURIComponent(skillId)}`,
+      headers: { cookie },
+    });
+
+  it('requires config.read', async () => {
+    const { cookie } = await signIn();
+    expect((await get(cookie, 'search-club')).statusCode).toBe(403);
+  });
+
+  it('404s an unknown skill id', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'no-such-skill');
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not-found' });
+  });
+
+  it('returns the skill, its exact instruction line, its tools and every behaviour with allowed', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    expect(
+      (await put(cookie, csrf, body({ id: 'club', allowedSkillIds: ['search-club'] }))).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await put(
+          cookie,
+          csrf,
+          body({
+            id: 'help',
+            surface: 'help',
+            mentionRoleId: ROLE_B,
+            name: 'Help',
+            allowedSkillIds: [],
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    const response = await get(cookie, 'search-club');
+    expect(response.statusCode).toBe(200);
+    const skill = CLUB_ASSISTANT_SKILLS.find((s) => s.id === 'search-club')!;
+    const parsed: {
+      skill: { id: string };
+      instructionLine: string;
+      behaviours: { id: string; name: string; allowed: boolean }[];
+      whoCanUse: string;
+      tools: { name: string }[];
+      command?: { name: string; options: unknown[] };
+      recentRuns: unknown[];
+    } = response.json();
+    expect(parsed.skill.id).toBe('search-club');
+    expect(parsed.instructionLine).toBe(skillInstructionLine(skill));
+    expect(parsed.behaviours).toEqual(
+      expect.arrayContaining([
+        { id: 'club', name: 'Club', allowed: true },
+        { id: 'help', name: 'Help', allowed: false },
+      ]),
+    );
+    expect(parsed.tools.map((t) => t.name)).toEqual(
+      TOOL_CATALOGUE.filter((t) => t.skills.includes('search-club')).map((t) => t.name),
+    );
+    // Every read tool lists the question-answering skill.
+    expect(parsed.tools.length).toBe(TOOL_CATALOGUE.length);
+    expect(parsed.recentRuns).toEqual([]);
+  });
+
+  it('names the caller roles from the directory, falls back without one, and states owner-only skills plainly', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    // No caller roles configured on the one allowed behaviour yet.
+    expect((await put(cookie, csrf, body({ allowedSkillIds: ['search-club'] }))).statusCode).toBe(
+      200,
+    );
+    const unconfigured = await get(cookie, 'search-club');
+    expect(unconfigured.json<{ whoCanUse: string }>().whoCanUse).toBe(
+      'Only the server owner, until a behaviour that allows it has Who can ask roles.',
+    );
+    expect(
+      (
+        await put(
+          cookie,
+          csrf,
+          body({
+            promptVersion: 1,
+            callerRoleIds: [ROLE_A, ROLE_B],
+            allowedSkillIds: ['search-club'],
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    const withoutDirectory = await get(cookie, 'search-club');
+    expect(withoutDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
+      '@a role that left the server, @a role that left the server, and the server owner',
+    );
+    deps = {
+      ...deps,
+      assistantDirectories: () =>
+        Promise.resolve({
+          roles: [
+            { id: ROLE_A, name: 'Member', position: 10 },
+            { id: ROLE_B, name: 'Helper', position: 5 },
+          ],
+          members: [],
+          channels: [],
+        }),
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const withDirectory = await get(cookie, 'search-club');
+    expect(withDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
+      '@Member, @Helper, and the server owner',
+    );
+    const ownerOnly = await get(cookie, 'send-reminder');
+    expect(ownerOnly.json<{ whoCanUse: string }>().whoCanUse).toBe('Only the server owner.');
+  });
+
+  it("lists up to 50 of this skill's own activity rows, newest first, never another skill's", async () => {
+    grant('config.read');
+    const scope = t.scopes.forGuild(GUILD);
+    for (let i = 0; i < 55; i += 1) {
+      assistantRepo.recordSkillActivity(scope, {
+        id: `a${i}`,
+        at: clock + i,
+        behaviourId: 'club',
+        skillId: 'search-club',
+        actorId: ROLE_A,
+        outcome: 'completed',
+      });
+    }
+    assistantRepo.recordSkillActivity(scope, {
+      id: 'other',
+      at: clock + 1000,
+      behaviourId: 'club',
+      skillId: 'create-reminder',
+      actorId: ROLE_A,
+      outcome: 'completed',
+    });
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'search-club');
+    const parsed: { recentRuns: { id: string; skillId: string; at: number }[] } = response.json();
+    expect(parsed.recentRuns).toHaveLength(50);
+    expect(parsed.recentRuns.every((row) => row.skillId === 'search-club')).toBe(true);
+    expect(parsed.recentRuns[0]?.id).toBe('a54');
+  });
+
+  // The command shapes below are copied by hand from `RELEASE_3_COMMANDS`
+  // (`packages/discord/src/rest/commands.ts`), not imported: `packages/http`
+  // may not depend on `@bananasaurs/discord` (`no-restricted-imports`,
+  // ADR 0014 - that package is discord.js-only, reachable from the effect
+  // gateway and the daemon composition root). This test is the drift check
+  // a human re-reads when either file changes.
+  const LIVE_COMMANDS: Readonly<Record<string, { name: string; options: unknown[] }>> = {
+    'search-club': {
+      name: 'find',
+      options: [{ name: 'query', required: true, description: 'What to find' }],
+    },
+    'create-reminder': {
+      name: 'remind',
+      options: [
+        {
+          name: 'when',
+          required: true,
+          description: 'When to send it, including date or time zone',
+        },
+        { name: 'text', required: true, description: 'Reminder text' },
+      ],
+    },
+    'propose-memory': {
+      name: 'remember',
+      options: [
+        {
+          name: 'request',
+          required: true,
+          description: 'What the assistant should consider remembering',
+        },
+      ],
+    },
+    'record-decision': {
+      name: 'decision',
+      options: [
+        { name: 'topic', required: true, description: 'Decision topic' },
+        { name: 'context', required: false, description: 'Optional context or constraints' },
+      ],
+    },
+    'review-plan': {
+      name: 'review-plan',
+      options: [{ name: 'plan', required: true, description: 'Plan to review' }],
+    },
+    'onboarding-guide': {
+      name: 'onboard',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'draft-agenda': {
+      name: 'agenda',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'summarise-meeting': {
+      name: 'summarise',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'draft-announcement': {
+      name: 'announce',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'event-checklist': {
+      name: 'checklist',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'draft-handoff': {
+      name: 'handoff',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+  };
+
+  it('gives every skill named in RELEASE_3_COMMANDS its exact slash command and options', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    for (const skill of CLUB_ASSISTANT_SKILLS) {
+      const response = await get(cookie, skill.id);
+      const parsed: { command?: { name: string; options: unknown[] } } = response.json();
+      expect(parsed.command, skill.id).toEqual(LIVE_COMMANDS[skill.id]);
+    }
+    // Every skill this route maps to a command is one the test above checked byte-for-byte.
+    expect(Object.keys(LIVE_COMMANDS).sort()).toEqual(
+      CLUB_ASSISTANT_SKILLS.filter((s) => LIVE_COMMANDS[s.id] !== undefined)
+        .map((s) => s.id)
+        .sort(),
+    );
+  });
+
+  it('leaves owner-only send-reminder and tool-only open-resource without a slash command', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const sendReminder = await get(cookie, 'send-reminder');
+    expect(sendReminder.json<{ command?: unknown }>().command).toBeUndefined();
+    const openResource = await get(cookie, 'open-resource');
+    expect(openResource.json<{ command?: unknown }>().command).toBeUndefined();
+  });
+});
+
+describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
+  it('stores valid answers, keeps them when omitted, clears them on null, refuses invalid', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect(
+      (await put(cookie, csrf, body({ promptWizard: DEFAULT_WIZARD_ANSWERS.club }))).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toEqual(
+      DEFAULT_WIZARD_ANSWERS.club,
+    );
+    // Omitted keeps the stored answers; the version still moves on.
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 1, systemPrompt: 'Edited.' }))).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toEqual(
+      DEFAULT_WIZARD_ANSWERS.club,
+    );
+    // Explicit null clears them.
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 2, promptWizard: null }))).statusCode,
+    ).toBe(200);
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toBeUndefined();
+    // Invalid answers are refused without touching the stored behaviour.
+    const bad = await put(cookie, csrf, body({ promptVersion: 3, promptWizard: { audience: [] } }));
+    expect(bad.statusCode).toBe(400);
+    expect(bad.json()).toEqual({ error: 'bad-request' });
+    expect(assistantRepo.listBehaviours(scope)[0]?.promptVersion).toBe(3);
+  });
+
+  it('audits every saved field plus whether answers exist, never the answers text', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const answers = {
+      ...DEFAULT_WIZARD_ANSWERS.club,
+      clubFacts: 'The mascot is a backwards banana.',
+    };
+    expect((await put(cookie, csrf, body({ promptWizard: answers }))).statusCode).toBe(200);
+    const rows = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .filter(
+        (row) =>
+          row.action === 'assistant_behaviour.saved' ||
+          row.action === 'assistant_behaviour.created',
+      );
+    expect(rows).toHaveLength(1);
+    expect(JSON.parse(rows[0]?.after ?? 'null') as unknown).toEqual({
+      name: 'Club',
+      surface: 'bananasaurs',
+      enabled: true,
+      allowedSkillIds: ['search-club'],
+      callerRoleIds: [],
+      resourceIds: [],
+      mentionRoleId: ROLE_A,
+      ticketChannelId: null,
+      reviewerRoleIds: [],
+      systemPrompt: 'Be helpful.',
+      promptWizard: true,
+    });
+    // The distinctive free-text answer must appear nowhere in the audit row.
+    expect(JSON.stringify(rows[0])).not.toContain('The mascot is a backwards banana.');
+  });
+
+  it('round-trips promptWizard through PUT into GET /api/assistant, and null clears it', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const readBehaviours = async (): Promise<{ promptWizard?: unknown }[]> =>
+      (await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } })).json<{
+        behaviours: { promptWizard?: unknown }[];
+      }>().behaviours;
+    expect(
+      (await put(cookie, csrf, body({ promptWizard: DEFAULT_WIZARD_ANSWERS.club }))).statusCode,
+    ).toBe(200);
+    expect(await readBehaviours()).toEqual([
+      expect.objectContaining({ id: 'club', promptWizard: DEFAULT_WIZARD_ANSWERS.club }),
+    ]);
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 1, promptWizard: null }))).statusCode,
+    ).toBe(200);
+    const cleared = await readBehaviours();
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).not.toHaveProperty('promptWizard');
+  });
+});
+
+describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
+  const get = (cookie: string, id: string) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/assistant/behaviours/${encodeURIComponent(id)}/preview`,
+      headers: { cookie },
+    });
+
+  it('requires config.read', async () => {
+    const { cookie } = await signIn();
+    expect((await get(cookie, 'club')).statusCode).toBe(403);
+  });
+
+  it('404s an unknown behaviour id', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'no-such-behaviour');
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not-found' });
+  });
+
+  it('returns the seven sections in order with sizes, and never member memories', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect((await put(cookie, csrf, body())).statusCode).toBe(200);
+    assistantRepo.putResource(scope, {
+      id: 'handbook',
+      guildId: GUILD,
+      title: 'Club handbook',
+      url: 'https://example.com/handbook',
+      kind: 'document',
+      enabled: true,
+      reviewedAt: new Date(clock).toISOString(),
+    });
+    assistantRepo.putMemory(
+      scope,
+      { id: 'm1', section: 'Likes', content: 'Loves pineapple pizza, hates Mondays' },
+      clock,
+    );
+    const response = await get(cookie, 'club');
+    expect(response.statusCode).toBe(200);
+    const parsed: {
+      sections: { name: string; chars: number; estTokens: number; text: string }[];
+      totalChars: number;
+      totalEstTokens: number;
+    } = response.json();
+    expect(parsed.sections.map((s) => s.name)).toEqual([
+      'surface',
+      'behaviour-prompt',
+      'safety-suffix',
+      'evidence-rule',
+      'server-card',
+      'resources',
+      'skills',
+    ]);
+    for (const section of parsed.sections) {
+      expect(section.chars).toBe(section.text.length);
+      expect(section.estTokens).toBe(Math.ceil(section.chars / 4));
+      expect(section.text.length).toBeGreaterThan(0);
+    }
+    expect(parsed.totalChars).toBe(parsed.sections.reduce((sum, s) => sum + s.chars, 0));
+    expect(parsed.totalEstTokens).toBe(Math.ceil(parsed.totalChars / 4));
+    expect(parsed.sections.find((s) => s.name === 'safety-suffix')?.text).toBe(SAFETY_SUFFIX);
+    expect(parsed.sections.find((s) => s.name === 'behaviour-prompt')?.text).toBe('Be helpful.');
+    expect(JSON.stringify(parsed)).not.toContain('Loves pineapple pizza');
+  });
+});
+
+describe('GET /api/assistant/safety-suffix (Task 18)', () => {
+  const get = (cookie: string) =>
+    app.inject({ method: 'GET', url: '/api/assistant/safety-suffix', headers: { cookie } });
+
+  it('requires config.read', async () => {
+    const { cookie } = await signIn();
+    expect((await get(cookie)).statusCode).toBe(403);
+  });
+
+  it('returns the locked version and the exact text', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ version: SAFETY_SUFFIX_VERSION, text: SAFETY_SUFFIX });
   });
 });

@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   CLUB_ASSISTANT_SKILLS,
+  DEFAULT_WIZARD_ANSWERS,
   parseGuildId,
   STARTER_SKILL_IDS,
   type AssistantBehaviour,
+  type AssistantTrace,
 } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { guildRepo } from '../index.js';
@@ -34,7 +36,11 @@ import {
   setBotTagBehaviour,
   getAssistantSettings,
   setLogChannel,
+  getConversationRetention,
+  setConversationRetention,
 } from './assistant.js';
+import { appendTurn, createConversation, getConversation, recentTurns } from './conversations.js';
+import { getTrace, insertTrace } from './traces.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
 beforeEach(() => {
@@ -414,5 +420,294 @@ describe('assistant settings (ADR 0065)', () => {
 
   it('refuses a log channel that is not a snowflake', () => {
     expect(() => setLogChannel(t.scopes.forGuild(G), 'general', 10)).toThrow();
+  });
+});
+
+describe('github-repo / github-org kinds with parentId + meta (Task 17)', () => {
+  const org = {
+    id: 'gh-acme',
+    guildId: G,
+    title: 'acme',
+    url: 'https://github.com/acme',
+    kind: 'github-org' as const,
+    enabled: true,
+    reviewedAt: new Date(10).toISOString(),
+    meta: { owner: 'acme', includeForks: false, includeArchived: false },
+  };
+  const child = {
+    id: 'gh-acme-widget',
+    guildId: G,
+    title: 'acme/widget',
+    url: 'https://github.com/acme/widget',
+    kind: 'github-repo' as const,
+    enabled: true,
+    reviewedAt: new Date(11).toISOString(),
+    parentId: 'gh-acme',
+    meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+  };
+
+  it('round-trips the org and its auto-discovered child', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, org);
+    putResource(s, child);
+    const rows = listResources(s);
+    expect(rows.find((r) => r.id === 'gh-acme')).toMatchObject({
+      kind: 'github-org',
+      meta: { owner: 'acme', includeForks: false, includeArchived: false },
+    });
+    expect(rows.find((r) => r.id === 'gh-acme')?.parentId).toBeUndefined();
+    expect(rows.find((r) => r.id === 'gh-acme-widget')).toMatchObject({
+      kind: 'github-repo',
+      parentId: 'gh-acme',
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+    });
+  });
+
+  it('reads resources without meta or parent as absent fields', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, {
+      id: 'web',
+      guildId: G,
+      title: 'Site',
+      url: 'https://sfuracerbot.ca',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(10).toISOString(),
+    });
+    const row = listResources(s).find((r) => r.id === 'web');
+    expect(row?.parentId).toBeUndefined();
+    expect(row?.meta).toBeUndefined();
+  });
+
+  it('reads corrupt meta_json as undefined instead of throwing', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, org);
+    t.raw
+      .prepare(
+        'UPDATE assistant_resources SET meta_json = ? WHERE guild_id = ? AND resource_id = ?',
+      )
+      .run('not-json{', G, 'gh-acme');
+    expect(listResources(s).find((r) => r.id === 'gh-acme')?.meta).toBeUndefined();
+    t.raw
+      .prepare(
+        'UPDATE assistant_resources SET meta_json = ? WHERE guild_id = ? AND resource_id = ?',
+      )
+      .run(JSON.stringify({ repo: 'widget' }), G, 'gh-acme');
+    expect(listResources(s).find((r) => r.id === 'gh-acme')?.meta).toBeUndefined();
+  });
+
+  it('clearing meta and parent on re-put stores NULL', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, child);
+    putResource(s, {
+      id: child.id,
+      guildId: child.guildId,
+      title: child.title,
+      url: child.url,
+      kind: child.kind,
+      enabled: child.enabled,
+      reviewedAt: child.reviewedAt,
+    });
+    const row = listResources(s).find((r) => r.id === 'gh-acme-widget');
+    expect(row?.parentId).toBeUndefined();
+    expect(row?.meta).toBeUndefined();
+    expect(
+      t.raw
+        .prepare(
+          'SELECT parent_id AS p, meta_json AS m FROM assistant_resources WHERE guild_id = ? AND resource_id = ?',
+        )
+        .get(G, 'gh-acme-widget'),
+    ).toEqual({ p: null, m: null });
+  });
+});
+
+describe('behaviour promptWizard answers (Task 18)', () => {
+  const behaviour = (id: string): AssistantBehaviour => ({
+    id,
+    guildId: G,
+    surface: 'bananasaurs',
+    mentionRoleId: '222222222222222222',
+    name: id,
+    systemPrompt: 'Be helpful.',
+    promptVersion: 1,
+    allowedSkillIds: ['search-club'],
+    reviewerRoleIds: [],
+    callerRoleIds: [],
+    resourceIds: [],
+    enabled: true,
+  });
+  const corrupt = (json: string) => {
+    t.raw
+      .prepare(
+        'UPDATE assistant_behaviours SET prompt_wizard_json = ? WHERE guild_id = ? AND behaviour_id = ?',
+      )
+      .run(json, G, 'club');
+  };
+
+  it('round-trips stored answers and clears them when a re-save omits them', () => {
+    const s = t.scopes.forGuild(G);
+    const answers = DEFAULT_WIZARD_ANSWERS.club;
+    putBehaviour(s, { ...behaviour('club'), promptWizard: answers }, 10);
+    expect(listBehaviours(s)[0]?.promptWizard).toEqual(answers);
+    // A re-save without answers writes the column back to null.
+    putBehaviour(s, behaviour('club'), 11);
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+    expect(
+      t.raw
+        .prepare(
+          'SELECT prompt_wizard_json AS json FROM assistant_behaviours WHERE guild_id = ? AND behaviour_id = ?',
+        )
+        .get(G, 'club'),
+    ).toEqual({ json: null });
+  });
+
+  it('reads corrupt or schema-invalid JSON as undefined instead of throwing', () => {
+    const s = t.scopes.forGuild(G);
+    putBehaviour(s, { ...behaviour('club'), promptWizard: DEFAULT_WIZARD_ANSWERS.club }, 10);
+    corrupt('not-json{');
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+    corrupt(JSON.stringify({ audience: [] }));
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+    corrupt(JSON.stringify(null));
+    expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+  });
+});
+
+describe('conversation retention (Task 19)', () => {
+  const OTHER_GUILD = parseGuildId('999999999999999999');
+
+  it('defaults to 6 months, round-trips the four choices, and keeps each guild its own', () => {
+    const s = t.scopes.forGuild(G);
+    expect(getConversationRetention(s)).toBe(182);
+    for (const days of [61, 365, null, 182] as const) {
+      setConversationRetention(s, days, 10);
+      expect(getConversationRetention(s)).toBe(days);
+    }
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    expect(getConversationRetention(other)).toBe(182);
+    setConversationRetention(other, 61, 11);
+    expect(getConversationRetention(s)).toBe(182);
+    expect(getConversationRetention(other)).toBe(61);
+  });
+
+  it('keeps the log channel when the retention changes, and vice versa', () => {
+    const s = t.scopes.forGuild(G);
+    setLogChannel(s, '444444444444444444', 10);
+    setConversationRetention(s, 61, 11);
+    expect(getAssistantSettings(s)).toEqual({ logChannelId: '444444444444444444' });
+    expect(getConversationRetention(s)).toBe(61);
+    setLogChannel(s, null, 12);
+    expect(getConversationRetention(s)).toBe(61);
+  });
+
+  it('refuses a retention outside 61, 182 and 365 days', () => {
+    const s = t.scopes.forGuild(G);
+    expect(() => setConversationRetention(s, 30 as 61, 10)).toThrow();
+    expect(getConversationRetention(s)).toBe(182);
+  });
+});
+
+describe('forgetMember removes conversation turns (Task 19)', () => {
+  const MEMBER = '444444444444444444';
+  const OTHER = '555555555555555555';
+
+  it("deletes the member's turns and drops conversations left with no user turn", () => {
+    const s = t.scopes.forGuild(G);
+    createConversation(s, {
+      conversationId: 'conv-mine',
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'my question',
+      source: 'discord',
+      at: 1_000,
+    });
+    appendTurn(s, {
+      conversationId: 'conv-mine',
+      turnId: 'turn-user',
+      at: 1_000,
+      role: 'user',
+      authorId: MEMBER,
+      authorName: 'Bryan',
+      text: 'where is the handbook?',
+    });
+    appendTurn(s, {
+      conversationId: 'conv-mine',
+      turnId: 'turn-assistant',
+      at: 1_001,
+      role: 'assistant',
+      authorName: 'Bananasaurs',
+      text: 'in the resources.',
+    });
+    createConversation(s, {
+      conversationId: 'conv-theirs',
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: OTHER,
+      title: 'their question',
+      source: 'discord',
+      at: 2_000,
+    });
+    appendTurn(s, {
+      conversationId: 'conv-theirs',
+      turnId: 'turn-other',
+      at: 2_000,
+      role: 'user',
+      authorId: OTHER,
+      authorName: 'Sasha',
+      text: 'when is the meeting?',
+    });
+
+    forgetMember(s, MEMBER, 3_000);
+
+    expect(getConversation(s, 'conv-mine')).toBeUndefined();
+    expect(recentTurns(s, 'conv-mine', { maxTurns: 12, maxChars: 6_000 })).toEqual([]);
+    expect(getConversation(s, 'conv-theirs')).toBeDefined();
+    expect(recentTurns(s, 'conv-theirs', { maxTurns: 12, maxChars: 6_000 })).toHaveLength(1);
+  });
+
+  /** Stored-data fixture: fixed ids and timestamps, no narrative. */
+  const traceFixture = (over: Partial<AssistantTrace> = {}): AssistantTrace => ({
+    traceId: 'trace-1',
+    at: 1_790_000_000_000,
+    userId: MEMBER,
+    channelId: '333333333333333333',
+    behaviourId: 'club',
+    command: 'ask',
+    source: 'mention',
+    conversationId: 'conv-mine',
+    turnId: 'turn-assistant',
+    question: 'where is the handbook?',
+    answer: 'in the resources.',
+    outcome: 'answered',
+    durationMs: 1200,
+    attempts: [{ provider: 'gemini', model: 'gemini-2.5-flash', outcome: 'ok', ms: 900 }],
+    finishReason: 'stop',
+    usage: { promptTokens: 100, completionTokens: 20, thinkingTokens: 10 },
+    sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
+    toolCalls: [],
+    guard: { removed: [] },
+    timeline: [{ label: 'posted', atMs: 1200 }],
+    discordMessageIds: [],
+    sources: [],
+    flags: [],
+    ...over,
+  });
+
+  it("deletes the member's assistant traces and keeps everyone else's", () => {
+    const OTHER_GUILD = parseGuildId('999999999999999999');
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const s = t.scopes.forGuild(G);
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    insertTrace(s, traceFixture({ traceId: 'mine', userId: MEMBER }));
+    insertTrace(s, traceFixture({ traceId: 'theirs', userId: OTHER }));
+    insertTrace(other, traceFixture({ traceId: 'mine', userId: MEMBER }));
+
+    forgetMember(s, MEMBER, 3_000);
+
+    expect(getTrace(s, 'mine')).toBeUndefined();
+    expect(getTrace(s, 'theirs')).toBeDefined();
+    expect(getTrace(other, 'mine')).toBeDefined();
   });
 });

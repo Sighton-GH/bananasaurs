@@ -1408,6 +1408,13 @@ export const dashboardAccounts = sqliteTable(
     username: text('username').notNull(),
     /** Argon2id. */
     passwordHash: text('password_hash').notNull(),
+    /**
+     * The sealed copy of the plaintext password, so the owner can reveal it
+     * after re-authenticating (ADR 0070). Never the sign-in authority — that
+     * stays `password_hash` above — null when the vault was unavailable at
+     * set time or the account is an owner (owner accounts never get one).
+     */
+    passwordSealed: text('password_sealed'),
     totpSecretEnc: text('totp_secret_enc'),
     totpEnrolled: integer('totp_enrolled').notNull().default(0),
     isOwner: integer('is_owner').notNull().default(0),
@@ -1780,6 +1787,8 @@ export const assistantProviderConfig = sqliteTable(
     /** ADR 0066: the Brave Search API key, sealed like `api_key_enc`. */
     searchApiKeyEnc: text('search_api_key_enc'),
     searchEnabled: integer('search_enabled').notNull().default(0),
+    /** ADR 0075: the GitHub token, sealed like `api_key_enc`. */
+    githubTokenEnc: text('github_token_enc'),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
@@ -1790,6 +1799,59 @@ export const assistantProviderConfig = sqliteTable(
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
     ),
     check('assistant_provider_config_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+// Task 6b (ADR 0075 follow-up, owner request 2026-09-24): several sealed keys
+// per provider, each with its own owner-chosen label, so the same provider
+// account can appear more than once (e.g. two Gemini keys as a fallback pair)
+// and keys from the same account can be told apart in the dashboard.
+// Instance-level like the table it replaces (`assistant_providers`); terms
+// eligibility stays per *provider*, not per key (hard rule 5).
+export const assistantProviderKeys = sqliteTable(
+  'assistant_provider_keys',
+  {
+    keyId: text('key_id').primaryKey(),
+    provider: text('provider').notNull(),
+    /** Owner-chosen, e.g. "Personal Gemini key". Never a secret itself. */
+    label: text('label').notNull(),
+    apiKeyEnc: text('api_key_enc').notNull(),
+    /** The owner's statement of the key's cost (ADR 0061 §2). */
+    costClass: text('cost_class').notNull().default('unknown'),
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: integer('created_at').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    check(
+      'assistant_provider_keys_provider',
+      sql`${t.provider} IN ('gemini','openrouter','nvidia-nim')`,
+    ),
+    check('assistant_provider_keys_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check('assistant_provider_keys_enabled_bool', boolCheck(t.enabled)),
+    check('assistant_provider_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
+  ],
+);
+
+// Task 6b: the one ordered model chain, at most 6 entries. Each entry names a
+// key plus a model — not a provider directly, so the same model can be
+// listed twice under two different keys as a fallback pair. Positions are
+// dense from 0. The foreign key keeps a chain entry from naming a key that
+// does not exist, and removing a key drops its chain rows with it.
+export const assistantModelChain = sqliteTable(
+  'assistant_model_chain',
+  {
+    position: integer('position').primaryKey(),
+    keyId: text('key_id').notNull(),
+    model: text('model').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantProviderKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    unique('assistant_model_chain_key_model').on(t.keyId, t.model),
+    check('assistant_model_chain_position', sql`${t.position} BETWEEN 0 AND 5`),
   ],
 );
 
@@ -1861,6 +1923,9 @@ export const assistantBehaviours = sqliteTable(
     resourceIdsJson: text('resource_ids_json').notNull().default('[]'),
     // ADR 0063: the one behaviour that answers a tag of the bot user itself.
     answersBotTag: integer('answers_bot_tag').notNull().default(0),
+    // Task 18: the wizard's structured answers as JSON, so the dashboard can
+    // reopen them for editing. Null means hand-written or cleared.
+    promptWizardJson: text('prompt_wizard_json'),
     createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
@@ -1892,12 +1957,19 @@ export const assistantSettings = sqliteTable(
   {
     guildId: snowflake('guild_id').primaryKey(),
     logChannelId: snowflake('log_channel_id'),
+    // Task 19: auto-delete window in days (61/182/365) or NULL for keep
+    // forever. The default (6 months) backfills existing rows on migrate.
+    conversationRetentionDays: integer('conversation_retention_days').default(182),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_settings_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_settings_log_channel_snowflake', nullableSnowflakeCheck(t.logChannelId)),
+    check(
+      'assistant_settings_conversation_retention_days',
+      sql`(${t.conversationRetentionDays} IS NULL OR ${t.conversationRetentionDays} IN (61,182,365))`,
+    ),
   ],
 );
 
@@ -1914,13 +1986,21 @@ export const assistantResources = sqliteTable(
     lastFetchedAt: integer('last_fetched_at'),
     fetchStatus: text('fetch_status').notNull().default('pending'),
     content: text('content'),
+    // Task 17 (ADR 0073): an auto-discovered repo's org resource id, and the
+    // GitHub import details as JSON. Both nullable: every pre-existing row
+    // reads back with neither, and clearing either on re-put stores NULL.
+    // Deliberately no foreign key on `parentId`: deleting a disabled org must
+    // never cascade into the children the owner may have edited, and an
+    // edited child keeps its (now dangling) parent id as provenance.
+    parentId: text('parent_id'),
+    metaJson: text('meta_json'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.resourceId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check(
       'assistant_resources_kind',
-      sql`${t.kind} IN ('website','document','discord-channel','repository','note')`,
+      sql`${t.kind} IN ('website','document','discord-channel','repository','note','github-repo','github-org')`,
     ),
     check('assistant_resources_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_resources_enabled_bool', boolCheck(t.enabled)),
@@ -2045,5 +2125,200 @@ export const assistantDecisions = sqliteTable(
     check('assistant_decisions_requester_id_snowflake', snowflakeCheck(t.requesterId)),
     check('assistant_decisions_kind', sql`${t.kind} IN ('decision','review-plan','memory')`),
     check('assistant_decisions_status', sql`${t.status} IN ('draft','reviewed','saved')`),
+  ],
+);
+
+// ADR 0076: one row per assistant run. The queryable columns (who, when,
+// behaviour, outcome, conversation, tokens) stay real columns so the History
+// list filters without parsing JSON; the full run is `body_json`, capped at
+// 200 KB by `capTrace` before it reaches this table. Rows die with their
+// conversation through the prune job, and with their guild through the FK.
+export const assistantTraces = sqliteTable(
+  'assistant_traces',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    traceId: text('trace_id').notNull(),
+    at: integer('at').notNull(),
+    userId: snowflake('user_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    outcome: text('outcome').notNull(),
+    conversationId: text('conversation_id'),
+    durationMs: integer('duration_ms').notNull(),
+    totalTokens: integer('total_tokens'),
+    bodyJson: text('body_json').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.traceId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_traces_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_traces_user_id_snowflake', snowflakeCheck(t.userId)),
+    check('assistant_traces_outcome', sql`${t.outcome} IN ('answered','refused','failed')`),
+    index('assistant_traces_recent').on(t.guildId, t.at),
+    index('assistant_traces_conversation').on(t.guildId, t.conversationId),
+  ],
+);
+
+// ADR 0073: the persistent resource cache. One row per fetched document
+// (a reviewed resource's URL, or a note's own text); `resource_chunks` holds
+// the chunker's output for search and `resource_chunks_fts`
+// (drizzle/hand-written, ADR 0049 pattern) indexes `resource_chunks.text`.
+export const resourceDocuments = sqliteTable(
+  'resource_documents',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    docId: text('doc_id').notNull(),
+    resourceId: text('resource_id').notNull(),
+    url: text('url').notNull(),
+    path: text('path').notNull(),
+    title: text('title').notNull(),
+    etag: text('etag'),
+    lastModified: text('last_modified'),
+    // Empty until the first successful fetch or note chunk; never NULL, so a
+    // change-comparison never has to special-case "no prior hash".
+    contentHash: text('content_hash').notNull().default(''),
+    fetchedAt: integer('fetched_at').notNull(),
+    bytes: integer('bytes').notNull().default(0),
+    status: text('status').notNull().default('ok'),
+    error: text('error'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.docId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.resourceId],
+      foreignColumns: [assistantResources.guildId, assistantResources.resourceId],
+    }).onDelete('cascade'),
+    check('resource_documents_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('resource_documents_status', sql`${t.status} IN ('ok','error')`),
+    index('resource_documents_resource').on(t.guildId, t.resourceId),
+  ],
+);
+
+export const resourceChunks = sqliteTable(
+  'resource_chunks',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    chunkId: text('chunk_id').notNull(),
+    docId: text('doc_id').notNull(),
+    resourceId: text('resource_id').notNull(),
+    ordinal: integer('ordinal').notNull(),
+    headingPath: text('heading_path').notNull(),
+    lineStart: integer('line_start').notNull(),
+    lineEnd: integer('line_end').notNull(),
+    text: text('text').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.chunkId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.docId],
+      foreignColumns: [resourceDocuments.guildId, resourceDocuments.docId],
+    }).onDelete('cascade'),
+    check('resource_chunks_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    index('resource_chunks_doc').on(t.guildId, t.docId, t.ordinal),
+    index('resource_chunks_resource').on(t.guildId, t.resourceId),
+  ],
+);
+
+/**
+ * A conversation thread (ADR 0072). `conversationId` is app-generated, not a
+ * snowflake. `status` starts `open`; `latestForAuthor` (repos/conversations.ts)
+ * only ever considers `open` conversations for the follow-up window.
+ */
+export const assistantConversations = sqliteTable(
+  'assistant_conversations',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    startedBy: snowflake('started_by').notNull(),
+    title: text('title').notNull(),
+    source: text('source').notNull(),
+    status: text('status').notNull().default('open'),
+    createdAt: integer('created_at').notNull(),
+    lastActivityAt: integer('last_activity_at').notNull(),
+    turnCount: integer('turn_count').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.conversationId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_conversations_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversations_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('assistant_conversations_started_by_snowflake', snowflakeCheck(t.startedBy)),
+    check('assistant_conversations_source', sql`${t.source} IN ('discord','dashboard-test')`),
+    check('assistant_conversations_status', sql`${t.status} IN ('open','ended')`),
+    index('assistant_conversations_activity').on(t.guildId, t.lastActivityAt),
+    index('assistant_conversations_author').on(
+      t.guildId,
+      t.channelId,
+      t.startedBy,
+      t.lastActivityAt,
+    ),
+  ],
+);
+
+/**
+ * One turn of a conversation. `authorId` is null for an `assistant` turn, and
+ * holds the *quoted* message's author for a `quote` turn — which may or may
+ * not be the member who started the conversation. `feedback` is set from a
+ * dashboard reaction on the linked message (`setFeedback`), never inferred.
+ */
+export const assistantConversationTurns = sqliteTable(
+  'assistant_conversation_turns',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    at: integer('at').notNull(),
+    role: text('role').notNull(),
+    authorId: snowflake('author_id'),
+    authorName: text('author_name').notNull(),
+    text: text('text').notNull(),
+    traceId: text('trace_id'),
+    feedback: text('feedback'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.turnId] }),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_turns_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversation_turns_author_id_snowflake', nullableSnowflakeCheck(t.authorId)),
+    check('assistant_conversation_turns_role', sql`${t.role} IN ('user','assistant','quote')`),
+    check(
+      'assistant_conversation_turns_feedback',
+      sql`(${t.feedback} IS NULL OR ${t.feedback} IN ('up','down'))`,
+    ),
+    index('assistant_conversation_turns_conversation').on(t.guildId, t.conversationId, t.at),
+  ],
+);
+
+/**
+ * Which conversation turn a real Discord message belongs to — how
+ * `lookupMessage` answers "is this message known". Only `user` and
+ * `assistant` turns are linked here; a `quote` turn's source message is
+ * someone else's and is never registered as ours to continue (see
+ * `KnownMessage` in `@bananasaurs/core`).
+ */
+export const assistantConversationMessages = sqliteTable(
+  'assistant_conversation_messages',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    role: text('role').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId] }),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversation_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('assistant_conversation_messages_role', sql`${t.role} IN ('user','assistant')`),
   ],
 );

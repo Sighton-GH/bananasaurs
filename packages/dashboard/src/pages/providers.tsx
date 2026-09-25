@@ -1,18 +1,25 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Link } from 'wouter';
 import { ApiError } from '../api.js';
 import {
+  ASSISTANT_PROVIDERS_URL,
   ASSISTANT_URL,
-  PROVIDERS,
+  ASSISTANT_KEYS_URL,
+  GITHUB_TOKEN_URL,
+  MODEL_CHAIN_TEST_URL,
+  MODEL_CHAIN_URL,
   PROVIDER_MODELS_URL,
   PROVIDER_URL,
-  type ModelInfo,
+  providerName,
+  PROVIDERS,
   providerTermsUrl,
-  type AiStatus,
+  assistantKeyUrl,
   type AssistantData,
-  type AssistantSetup,
-  type ProviderId,
+  type AssistantSetupData,
+  type AiStatus,
+  type ModelInfo,
   type ProviderTerms,
+  type SetupChainRow,
+  type SetupKeyRow,
 } from '../api/assistant.js';
 import type { EligibilityWarning, ProviderReviewResult } from '../api/ops.js';
 import { useSession } from '../app/session.js';
@@ -24,7 +31,10 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
+import { HelpTip } from '../ui/HelpTip.js';
+import { OrderedList } from '../ui/OrderedList.js';
 import { PageHeader } from '../ui/PageHeader.js';
+import { StatusPill } from '../ui/StatusPill.js';
 import { useToast } from '../ui/Toast.js';
 
 const REASON_TEXT: Record<EligibilityWarning['reason'], string> = {
@@ -46,421 +56,716 @@ const trainsLabel = (trainsOnInput: string): string =>
       ? 'May train on your data'
       : 'Not stated';
 
-/** The setup steps the status line reads, in the order the owner meets them. */
-const STATUS_STEP_IDS = ['connect', 'terms', 'cost'] as const;
+/** ADR 0062: the training warning the provider cards show when `may-train`. */
+const MAY_TRAIN_COPY =
+  'This service’s terms record says it may train on your data. Member questions and server excerpts sent to it may be used for training.';
 
-/** One badge plus one sentence: answering, or what still blocks answers. */
-function StatusLine({ setup }: { readonly setup: AssistantSetup | undefined }) {
-  if (setup === undefined) return null;
-  // A warning step works (ADR 0062): it is shown, never treated as unfinished.
-  const warnings = setup.steps.filter((s) => s.state === 'warning');
-  if (setup.answering) {
-    return (
-      <div className="space-y-2">
-        <p className="flex flex-wrap items-center gap-2 text-sm">
-          <Badge tone="ok">Answering</Badge>
-          <span>The assistant can answer members.</span>
-        </p>
-        {warnings.map((step) => (
-          <p key={step.id} role="note" className="flex flex-wrap items-center gap-2 text-sm">
-            <Badge tone="hold">Warning</Badge>
-            <span>{step.detail}</span>
-          </p>
-        ))}
-      </div>
-    );
-  }
-  const next = STATUS_STEP_IDS.map((id) => setup.steps.find((s) => s.id === id)).find(
-    (s) => s !== undefined && s.state !== 'done' && s.state !== 'warning',
-  );
-  if (next === undefined) {
-    return (
-      <p className="flex flex-wrap items-center gap-2 text-sm">
-        <Badge tone="hold">Not answering yet</Badge>
-        <span>
-          Finish setup on the{' '}
-          <Link href="/assistant" className="underline">
-            Assistant page
-          </Link>
-          .
-        </span>
-      </p>
-    );
-  }
+const CHAIN_REASON: Record<Exclude<SetupChainRow['status'], 'ready' | 'allowance-used'>, string> = {
+  'no-key': 'This key is gone. Choose another key or add it again.',
+  'key-unreadable': "The saved key can't be read on this host. Paste it again.",
+  disabled: 'This key is disabled.',
+  ineligible: "This service's terms do not allow answering member questions.",
+  unverified: 'No terms record for this service yet. Record the terms below.',
+};
+
+const costWords = (costClass: string): string =>
+  costClass === 'free' ? 'Free' : costClass === 'paid' ? 'Paid' : 'Not sure';
+
+/** The six setup steps, in the order the owner meets them. */
+function ChecklistSection({
+  setup,
+  assistant,
+}: {
+  readonly setup: AssistantSetupData;
+  readonly assistant: AssistantData | undefined;
+}) {
+  const keyedProviders = new Set(setup.keys.map((key) => key.provider));
+  const termsDone =
+    setup.keys.length > 0 &&
+    [...keyedProviders].every((provider) => {
+      const eligibility = setup.providers.find((row) => row.provider === provider)?.eligibility;
+      return eligibility === 'eligible' || eligibility === 'may-train';
+    });
+  const items: readonly { readonly name: string; readonly done: boolean }[] = [
+    { name: 'Add a provider key', done: setup.keys.length > 0 },
+    { name: 'Record the terms', done: termsDone },
+    { name: 'Set the model order', done: setup.chain.length > 0 },
+    { name: 'Build the behaviour prompt', done: (assistant?.behaviours.length ?? 0) > 0 },
+    { name: 'Add resources', done: (assistant?.resources.length ?? 0) > 0 },
+    { name: 'Answer a test question', done: (assistant?.activity.length ?? 0) > 0 },
+  ];
   return (
-    <p className="flex flex-wrap items-center gap-2 text-sm">
-      <Badge tone="hold">Not answering yet</Badge>
-      <span>{next.detail}</span>
-    </p>
+    <Card title="Setup checklist">
+      <ul className="grid gap-1.5">
+        {items.map((item) => (
+          <li key={item.name} className="flex flex-wrap items-center gap-2 text-sm">
+            <Badge tone={item.done ? 'ok' : 'neutral'}>{item.done ? 'Done' : 'To do'}</Badge>
+            <span>{item.name}</span>
+          </li>
+        ))}
+      </ul>
+    </Card>
   );
 }
 
-/**
- * The saved AI service, prefilled from `aiStatus` and never reset: after a
- * save the fields keep what the owner entered, and a reload re-reads the same
- * saved values. The key input stays empty and write-only throughout.
- */
-function ServiceForm({
-  status,
-  connectDetail,
-  isOwner,
-  service,
-  onServiceChange,
-  onSaved,
+interface ChainDraft {
+  readonly keyId: string;
+  readonly model: string;
+}
+
+interface TestOutcome {
+  readonly ok: boolean;
+  readonly reply?: string;
+  readonly error?: string;
+}
+
+/** Model order: an OrderedList of key + model rows with a status pill and a Test button each. */
+function ModelOrderSection({
+  setup,
+  onChanged,
 }: {
-  readonly status: AiStatus | undefined;
-  readonly connectDetail: string | undefined;
-  readonly isOwner: boolean;
-  readonly service: ProviderId;
-  readonly onServiceChange: (service: ProviderId) => void;
-  readonly onSaved: () => void;
+  readonly setup: AssistantSetupData;
+  readonly onChanged: () => void;
 }) {
   const session = useSession();
   const toast = useToast();
-  // ADR 0068: the first, second and third model to try, in order.
-  const [choices, setChoices] = useState<readonly [string, string, string]>([
-    status?.model ?? '',
-    status?.fallbackModels?.[0] ?? '',
-    status?.fallbackModels?.[1] ?? '',
-  ]);
-  const setChoice = (index: 0 | 1 | 2, value: string) =>
-    setChoices((current) => {
-      const next: [string, string, string] = [...current];
-      next[index] = value;
-      return next;
-    });
-  const [models, setModels] = useState<readonly ModelInfo[] | undefined>(undefined);
-  const [modelsNote, setModelsNote] = useState<string | undefined>(undefined);
-  const [choiceError, setChoiceError] = useState<string | undefined>(undefined);
-  const [apiKey, setApiKey] = useState('');
-  const [enabled, setEnabled] = useState(status?.enabled ?? false);
-  const [cost, setCost] = useState<'free' | 'paid' | 'unknown'>(status?.costClass ?? 'unknown');
-  const [busy, setBusy] = useState(false);
+  const [rows, setRows] = useState<readonly ChainDraft[]>(() =>
+    setup.chain.map((entry) => ({ keyId: entry.keyId, model: entry.model })),
+  );
+  const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [testing, setTesting] = useState<number | undefined>(undefined);
+  const [results, setResults] = useState<Readonly<Record<number, TestOutcome>>>({});
 
-  const chosen = PROVIDERS.find((p) => p.id === service);
-  const secretMissing = status?.secretSource === 'missing';
-  const keyUnreadable = status?.keyConfigured === true && !status.keyReadable;
-  // The saved key belongs to the saved service: switching service drops it
-  // (the server clears key, model and cost), so the "Saved" placeholder and
-  // the prefilled model and cost only apply while the chosen radio matches.
-  const isSameService = status?.provider === service;
-  const switchedService = chosen !== undefined && !isSameService;
-  const savedService = status?.provider;
+  const keyOf = (keyId: string): SetupKeyRow | undefined =>
+    setup.keys.find((key) => key.keyId === keyId);
+  const labelOf = (keyId: string): string => keyOf(keyId)?.label ?? keyId;
+
   useEffect(() => {
-    if (savedService !== undefined && service !== savedService) {
-      setChoices(['', '', '']);
-      setModels(undefined);
-      setModelsNote(undefined);
-      setCost('unknown');
-    }
-  }, [service, savedService]);
-  const keyPlaceholder =
-    secretMissing === true
-      ? undefined
-      : isSameService && status?.keyConfigured === true && status.keyReadable
-        ? 'Saved. Leave blank to keep it'
-        : switchedService && chosen !== undefined
-          ? `Paste the API key for ${chosen.name}`
-          : undefined;
-
-  const loadModels = async (pastedKey?: string): Promise<void> => {
-    setModelsNote('Loading the models this key can use…');
-    try {
-      const result = await session.writeOrThrow<{ models: readonly ModelInfo[] }>(
+    if (!setup.keys.some((key) => key.provider === 'gemini')) return;
+    let live = true;
+    session
+      .writeOrThrow<{ models: readonly ModelInfo[] }>(
         PROVIDER_MODELS_URL,
-        { provider: 'gemini', ...(pastedKey === undefined ? {} : { apiKey: pastedKey }) },
+        { provider: 'gemini' },
         'POST',
-      );
-      if (result === undefined) {
-        setModelsNote("Couldn't load the models. Type the model names instead.");
-        return;
-      }
-      setModels(result.models);
-      const top = result.models[0]?.id;
-      if (top !== undefined) setChoices((c) => (c[0] === '' ? [top, c[1], c[2]] : c));
-      setModelsNote(
-        result.models.length === 0
-          ? 'This key has no text models. Type the model names instead.'
-          : 'Models this key can see. A model your plan has no quota for is skipped like a busy one.',
-      );
-    } catch (err: unknown) {
-      const body = err instanceof ApiError ? err.body : undefined;
-      setModelsNote(
-        body?.error === 'no-key'
-          ? 'Paste the API key to load its models.'
-          : body?.error === 'provider-refused' &&
-              (body as { kind?: string }).kind === 'authentication'
-            ? "Gemini refused this key, so its models couldn't be loaded."
-            : "Couldn't load the models. Type the model names instead.",
-      );
-    }
-  };
-  const canList = service === 'gemini' && secretMissing !== true;
-  const savedKeyUsable = isSameService && status?.keyConfigured === true && status.keyReadable;
-  useEffect(() => {
-    if (canList && savedKeyUsable) void loadModels();
-    // Only when the service or the saved key changes.
-  }, [canList, savedKeyUsable]);
+      )
+      .then((result) => {
+        if (live && result !== undefined) setGeminiModels(result.models);
+      })
+      .catch(() => {
+        // No list (no key yet, or the service refused it): the rows stay typed fields.
+      });
+    return () => {
+      live = false;
+    };
+  }, [session, setup.keys]);
 
-  const submit = async (): Promise<void> => {
-    const picked = choices.map((c) => c.trim()).filter((c) => c !== '');
-    if (new Set(picked).size !== picked.length) {
-      setChoiceError('Choose a different model for each place.');
+  const savedByPair = new Map(setup.chain.map((entry) => [`${entry.keyId} ${entry.model}`, entry]));
+
+  const save = async (): Promise<void> => {
+    if (rows.some((row) => row.model.trim() === '' || row.keyId === '')) {
+      setError('Name a model and pick a key for every row.');
       return;
     }
-    setChoiceError(undefined);
-    setBusy(true);
+    setError(undefined);
+    setSaving(true);
     try {
-      const body: Record<string, unknown> = { provider: service, enabled };
-      const trimmed = choices[0].trim();
-      if (trimmed !== '') body.model = trimmed;
-      // Sent only when the order changed: empty clears the backups.
-      const backups = [choices[1].trim(), choices[2].trim()].filter((m) => m !== '');
-      const savedBackups = isSameService ? (status?.fallbackModels ?? []) : [];
-      if (backups.join('\n') !== savedBackups.join('\n')) body.fallbackModels = backups;
-      if (apiKey !== '') body.apiKey = apiKey;
-      if (isOwner) body.costClass = cost;
-      const result = await session.write<AiStatus>(PROVIDER_URL, body, 'PUT');
+      const result = await session.write<{ ok: boolean; count: number }>(
+        MODEL_CHAIN_URL,
+        { entries: rows.map((row) => ({ keyId: row.keyId, model: row.model.trim() })) },
+        'PUT',
+      );
+      if (result === undefined) return;
+      toast({ tone: 'ok', title: 'Model order saved' });
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const testRow = async (index: number): Promise<void> => {
+    setTesting(index);
+    try {
+      const result = await session.writeOrThrow<TestOutcome & { latencyMs: number }>(
+        MODEL_CHAIN_TEST_URL,
+        { position: index },
+        'POST',
+      );
+      if (result === undefined) return;
+      setResults((current) => ({ ...current, [index]: result }));
+    } catch {
+      setResults((current) => ({
+        ...current,
+        [index]: { ok: false, error: 'The test request failed.' },
+      }));
+    } finally {
+      setTesting(undefined);
+    }
+  };
+
+  return (
+    <Card title="Model order">
+      {rows.length === 0 ? (
+        <p className="text-sm text-ink-muted">
+          No models yet. Add a key below, then add a row here to choose what answers first.
+        </p>
+      ) : (
+        <OrderedList
+          items={rows}
+          itemKey={(row) => `${row.keyId} ${row.model}`}
+          itemLabel={(row) => `${row.model} on ${labelOf(row.keyId)}`}
+          renderItem={(row, index) => {
+            const number = index + 1;
+            const key = keyOf(row.keyId);
+            const saved = savedByPair.get(`${row.keyId} ${row.model}`);
+            const result = results[index];
+            const pill =
+              saved === undefined ? (
+                <StatusPill tone="attention">Needs attention</StatusPill>
+              ) : saved.status === 'ready' ? (
+                <StatusPill tone="ready">Ready</StatusPill>
+              ) : saved.status === 'disabled' ? (
+                <StatusPill tone="off">Off</StatusPill>
+              ) : (
+                <StatusPill tone="attention">Needs attention</StatusPill>
+              );
+            const reason =
+              saved === undefined
+                ? 'Not saved yet. Save the order to check this row.'
+                : saved.status === 'ready' || saved.status === 'disabled'
+                  ? undefined
+                  : saved.status === 'allowance-used'
+                    ? `Free allowance used — resets ${new Date(saved.allowanceResetsAt ?? 0).toLocaleString()}`
+                    : CHAIN_REASON[saved.status];
+            return (
+              <div className="grid gap-1.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <label className="grid gap-0.5 text-xs text-ink-muted">
+                    Key for row {number}
+                    <select
+                      aria-label={`Key for row ${number}`}
+                      value={row.keyId}
+                      onChange={(event) => {
+                        const keyId = event.target.value;
+                        setRows((current) =>
+                          current.map((r, i) => (i === index ? { ...r, keyId } : r)),
+                        );
+                      }}
+                      className="mt-0.5 block rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+                    >
+                      {setup.keys.map((option) => (
+                        <option key={option.keyId} value={option.keyId}>
+                          {option.label} ({providerName(option.provider)})
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  {key?.provider === 'gemini' && geminiModels !== undefined ? (
+                    <label className="grid min-w-40 flex-1 gap-0.5 text-xs text-ink-muted">
+                      Model for row {number}
+                      <select
+                        aria-label={`Model for row ${number}`}
+                        value={row.model}
+                        onChange={(event) => {
+                          const model = event.target.value;
+                          setRows((current) =>
+                            current.map((r, i) => (i === index ? { ...r, model } : r)),
+                          );
+                        }}
+                        className="mt-0.5 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-sm text-ink"
+                      >
+                        {row.model !== '' && !geminiModels.some((m) => m.id === row.model) && (
+                          <option value={row.model}>{row.model}</option>
+                        )}
+                        {geminiModels.map((m) => (
+                          <option key={m.id} value={m.id}>
+                            {m.name} ({m.id})
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  ) : (
+                    <Field label={`Model for row ${number}`}>
+                      <Input
+                        value={row.model}
+                        onChange={(event) => {
+                          const model = event.target.value;
+                          setRows((current) =>
+                            current.map((r, i) => (i === index ? { ...r, model } : r)),
+                          );
+                        }}
+                        placeholder={
+                          key?.provider === 'gemini'
+                            ? 'For example gemini-2.5-flash'
+                            : 'The model id'
+                        }
+                      />
+                    </Field>
+                  )}
+                </div>
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                  {pill}
+                  {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
+                </div>
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    busy={testing === index}
+                    onClick={() => void testRow(index)}
+                    aria-label={
+                      row.model === ''
+                        ? `Test row ${number}`
+                        : `Test ${row.model} on ${labelOf(row.keyId)}`
+                    }
+                  >
+                    Test
+                  </Button>
+                  <Button
+                    onClick={() => setRows((current) => current.filter((_, i) => i !== index))}
+                    aria-label={`Remove row ${number}`}
+                  >
+                    Remove
+                  </Button>
+                  {result !== undefined &&
+                    (result.ok ? (
+                      <span className="text-sm text-ink-muted">
+                        Row {number} answered “{result.reply ?? 'ready'}”.
+                      </span>
+                    ) : (
+                      <span role="alert" className="text-sm text-danger">
+                        {result.error ?? 'The test request failed.'}
+                      </span>
+                    ))}
+                </div>
+              </div>
+            );
+          }}
+          onReorder={(next) => setRows(next)}
+          label="Model order"
+        />
+      )}
+      {error !== undefined && (
+        <p role="alert" className="mt-2 text-sm text-danger">
+          {error}
+        </p>
+      )}
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <Button
+          onClick={() =>
+            setRows((current) => [...current, { keyId: setup.keys[0]?.keyId ?? '', model: '' }])
+          }
+          disabled={setup.keys.length === 0}
+          title={setup.keys.length === 0 ? 'Add a key first' : undefined}
+        >
+          Add a row
+        </Button>
+        <Button variant="primary" busy={saving} onClick={() => void save()}>
+          Save order
+        </Button>
+      </div>
+    </Card>
+  );
+}
+
+/** API keys: the list with Edit / Disable / Delete plus the "Add a key" form. */
+function KeysSection({
+  setup,
+  onChanged,
+}: {
+  readonly setup: AssistantSetupData;
+  readonly onChanged: () => void;
+}) {
+  const session = useSession();
+  const toast = useToast();
+  const [provider, setProvider] = useState<'gemini' | 'openrouter' | 'nvidia-nim'>('gemini');
+  const [label, setLabel] = useState('');
+  const [apiKey, setApiKey] = useState('');
+  const [cost, setCost] = useState<'free' | 'paid' | 'unknown'>('unknown');
+  const [addError, setAddError] = useState<string | undefined>(undefined);
+  const [adding, setAdding] = useState(false);
+  const [editing, setEditing] = useState<string | undefined>(undefined);
+  const [editLabel, setEditLabel] = useState('');
+  const [editKey, setEditKey] = useState('');
+  const [editCost, setEditCost] = useState<'free' | 'paid' | 'unknown'>('unknown');
+  const [confirmingDisable, setConfirmingDisable] = useState<SetupKeyRow | undefined>(undefined);
+  const [confirmingDelete, setConfirmingDelete] = useState<SetupKeyRow | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+
+  const add = async (): Promise<void> => {
+    if (label.trim() === '' || apiKey === '') {
+      setAddError('Add a label and paste the key.');
+      return;
+    }
+    setAddError(undefined);
+    setAdding(true);
+    try {
+      const result = await session.write<{ keyId: string }>(
+        ASSISTANT_KEYS_URL,
+        { provider, label: label.trim(), apiKey, costClass: cost },
+        'POST',
+      );
       if (result === undefined) return;
       // The key is write-only: drop it from the page the moment it is stored.
       setApiKey('');
-      onSaved();
-      let message = 'Your changes are saved.';
-      try {
-        const fresh = await session.read<AssistantData>(ASSISTANT_URL);
-        const detail = fresh.setup?.steps.find((s) => s.id === 'connect')?.detail;
-        if (detail !== undefined && detail !== '') message = detail;
-      } catch {
-        // The reload above already shows the fresh state; keep the generic note.
-      }
-      toast({ tone: 'ok', title: 'AI setup saved', message });
+      setLabel('');
+      toast({ tone: 'ok', title: 'Key added' });
+      onChanged();
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const startEdit = (key: SetupKeyRow): void => {
+    setEditing(key.keyId);
+    setEditLabel(key.label);
+    setEditKey('');
+    setEditCost(key.costClass);
+  };
+
+  const saveEdit = async (key: SetupKeyRow): Promise<void> => {
+    const body: Record<string, unknown> = {};
+    if (editLabel.trim() !== '' && editLabel.trim() !== key.label) body.label = editLabel.trim();
+    if (editKey !== '') body.apiKey = editKey;
+    if (editCost !== key.costClass) body.costClass = editCost;
+    if (Object.keys(body).length === 0) {
+      setEditing(undefined);
+      return;
+    }
+    setBusy(true);
+    try {
+      if (
+        (await session.write<{ ok: boolean }>(assistantKeyUrl(key.keyId), body, 'PATCH')) ===
+        undefined
+      )
+        return;
+      setEditKey('');
+      setEditing(undefined);
+      toast({ tone: 'ok', title: 'Key saved' });
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const setEnabled = async (key: SetupKeyRow, enabled: boolean): Promise<void> => {
+    setBusy(true);
+    try {
+      if (
+        (await session.write<{ ok: boolean }>(assistantKeyUrl(key.keyId), { enabled }, 'PATCH')) ===
+        undefined
+      )
+        return;
+      setConfirmingDisable(undefined);
+      toast({ tone: 'ok', title: enabled ? 'Key enabled' : 'Key disabled' });
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const remove = async (key: SetupKeyRow): Promise<void> => {
+    setBusy(true);
+    try {
+      const result = await session.write<{ ok: boolean }>(
+        assistantKeyUrl(key.keyId),
+        undefined,
+        'DELETE',
+      );
+      if (result === undefined) return;
+      setConfirmingDelete(undefined);
+      toast({ tone: 'ok', title: 'Key deleted' });
+      onChanged();
     } finally {
       setBusy(false);
     }
   };
 
   return (
-    <Card title="AI service">
-      <form
-        className="grid gap-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          void submit();
-        }}
-      >
-        <fieldset>
-          <legend className="mb-1 block text-sm text-ink-muted">Service</legend>
-          <div className="grid gap-2">
-            <div className="flex items-start gap-2 text-sm">
-              <input
-                id="service-off"
-                type="radio"
-                name="ai-service"
-                value="off"
-                checked={service === 'off'}
-                onChange={() => onServiceChange('off')}
-                className="mt-1"
-              />
-              <label htmlFor="service-off">None (AI off)</label>
-            </div>
-            {PROVIDERS.map((p) => (
-              <div key={p.id} className="flex items-start gap-2 text-sm">
-                <input
-                  id={`service-${p.id}`}
-                  type="radio"
-                  name="ai-service"
-                  value={p.id}
-                  checked={service === p.id}
-                  onChange={() => onServiceChange(p.id)}
-                  className="mt-1"
-                />
-                <div>
-                  <label htmlFor={`service-${p.id}`} className="font-medium">
-                    {p.name}
-                  </label>
-                  <p className="text-ink-muted">{p.summary}</p>
-                  <p>
-                    <a className="underline" href={p.termsUrl} target="_blank" rel="noreferrer">
-                      Read the terms
-                    </a>{' '}
-                    ·{' '}
-                    <a className="underline" href={p.keyUrl} target="_blank" rel="noreferrer">
-                      Get an API key
-                    </a>
-                  </p>
-                </div>
-              </div>
-            ))}
-          </div>
-        </fieldset>
-        {switchedService && (
-          <p className="text-sm text-ink-muted">
-            Switching service clears the saved key, model and cost answer.
-          </p>
-        )}
-        {chosen !== undefined && (
-          <div className="grid gap-1">
-            {keyUnreadable && (
-              <p role="alert" className="text-sm text-danger">
-                The saved key can&apos;t be read on this host. Paste it again.
-              </p>
-            )}
-            <Field
-              label="API key"
-              {...(secretMissing === true && connectDetail !== undefined
-                ? { hint: connectDetail }
-                : {})}
+    <Card title="API keys">
+      {setup.keys.length === 0 ? (
+        <p className="text-sm text-ink-muted">No keys yet. Add one below.</p>
+      ) : (
+        <ul className="grid gap-2" aria-label="Saved keys">
+          {setup.keys.map((key) => (
+            <li
+              key={key.keyId}
+              className="grid gap-1.5 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm"
             >
-              <Input
-                type="password"
-                autoComplete="new-password"
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                onBlur={() => {
-                  if (canList && apiKey !== '') void loadModels(apiKey);
-                }}
-                disabled={secretMissing}
-                {...(keyPlaceholder !== undefined ? { placeholder: keyPlaceholder } : {})}
-              />
-            </Field>
-          </div>
-        )}
-        {chosen !== undefined && (
-          <fieldset className="grid gap-2">
-            <legend className="mb-1 block text-sm text-ink-muted">
-              Models to try, in order. If one is busy the next is used. Changing the order asks the
-              cost question again.
-            </legend>
-            {modelsNote !== undefined && <p className="text-xs text-ink-muted">{modelsNote}</p>}
-            {([0, 1, 2] as const).map((index) => {
-              const label =
-                index === 0
-                  ? 'First choice'
-                  : index === 1
-                    ? 'Second choice (optional)'
-                    : 'Third choice (optional)';
-              if (models === undefined || models.length === 0)
-                return (
-                  <Field
-                    key={index}
-                    label={label}
-                    {...(index === 0 ? { hint: chosen.modelHint } : {})}
-                  >
+              <p>
+                <strong>{key.label}</strong> · {providerName(key.provider)} ·{' '}
+                {costWords(key.costClass)} ·{' '}
+                {!key.enabled ? 'Off' : !key.readable ? "Can't be read" : 'On'}
+              </p>
+              {key.allowanceResetsAt !== undefined && (
+                <p className="text-ink-muted">
+                  Free allowance used — resets {new Date(key.allowanceResetsAt).toLocaleString()}
+                </p>
+              )}
+              {editing === key.keyId ? (
+                <div className="grid gap-2">
+                  <Field label="Label">
+                    <Input value={editLabel} onChange={(e) => setEditLabel(e.target.value)} />
+                  </Field>
+                  <Field label="API key">
                     <Input
-                      value={choices[index]}
-                      onChange={(e) => setChoice(index, e.target.value)}
+                      type="password"
+                      autoComplete="new-password"
+                      value={editKey}
+                      onChange={(e) => setEditKey(e.target.value)}
+                      placeholder="Saved. Leave blank to keep it"
                     />
                   </Field>
-                );
-              // A saved model the list no longer shows stays selectable.
-              const saved = choices[index];
-              const options =
-                saved !== '' && !models.some((m) => m.id === saved)
-                  ? [...models, { id: saved, name: 'Saved model' }]
-                  : models;
-              return (
-                <Field key={index} label={label}>
-                  <select
-                    value={saved}
-                    onChange={(e) => setChoice(index, e.target.value)}
-                    className="mt-1 block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+                  <fieldset>
+                    <legend className="mb-1 block text-sm text-ink-muted">Cost</legend>
+                    <div className="flex flex-col gap-1 text-sm">
+                      {(
+                        [
+                          ['free', 'Free'],
+                          ['paid', 'Paid'],
+                          ['unknown', 'Not sure'],
+                        ] as const
+                      ).map(([value, words]) => (
+                        <label key={value} className="inline-flex items-center gap-2">
+                          <input
+                            type="radio"
+                            name={`cost-${key.keyId}`}
+                            value={value}
+                            checked={editCost === value}
+                            onChange={() => setEditCost(value)}
+                          />
+                          {words}
+                        </label>
+                      ))}
+                    </div>
+                  </fieldset>
+                  <div className="flex flex-wrap gap-2">
+                    <Button variant="primary" busy={busy} onClick={() => void saveEdit(key)}>
+                      Save key
+                    </Button>
+                    <Button onClick={() => setEditing(undefined)}>Cancel</Button>
+                  </div>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Button onClick={() => startEdit(key)} aria-label={`Edit ${key.label}`}>
+                    Edit
+                  </Button>
+                  {key.enabled ? (
+                    <Button
+                      onClick={() => setConfirmingDisable(key)}
+                      aria-label={`Disable ${key.label}`}
+                    >
+                      Disable
+                    </Button>
+                  ) : (
+                    <Button
+                      busy={busy}
+                      onClick={() => void setEnabled(key, true)}
+                      aria-label={`Enable ${key.label}`}
+                    >
+                      Enable
+                    </Button>
+                  )}
+                  <Button
+                    variant="danger"
+                    onClick={() => setConfirmingDelete(key)}
+                    aria-label={`Delete ${key.label}`}
                   >
-                    {index !== 0 && <option value="">None</option>}
-                    {options.map((m) => (
-                      <option key={m.id} value={m.id}>
-                        {m.name} ({m.id})
-                      </option>
-                    ))}
-                  </select>
-                </Field>
-              );
-            })}
-            {choiceError !== undefined && (
-              <p role="alert" className="text-sm text-danger">
-                {choiceError}
-              </p>
-            )}
-          </fieldset>
-        )}
-        <div className="text-sm">
-          <Checkbox
-            label="Use this service for member questions"
-            checked={enabled}
-            onChange={(e) => setEnabled(e.target.checked)}
-          />
-          <p className="mt-1 text-xs text-ink-muted">
-            Nothing is sent until the terms are recorded and the cost is confirmed below.
-          </p>
+                    Delete
+                  </Button>
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+      <form
+        className="mt-4 grid gap-3 border-t border-line pt-3"
+        onSubmit={(event) => {
+          event.preventDefault();
+          void add();
+        }}
+      >
+        <p className="flex flex-wrap items-center gap-1 text-sm font-medium">
+          Add a key{' '}
+          <HelpTip label="API key allowances">
+            Keys from the same provider account share that account’s allowance — add a key from a
+            different account if you want a real backup.
+          </HelpTip>
+        </p>
+        <div className="grid gap-3 sm:grid-cols-2">
+          <label className="grid gap-0.5 text-sm">
+            <span className="mb-1 block text-ink-muted">Service</span>
+            <select
+              aria-label="Service"
+              value={provider}
+              onChange={(e) =>
+                setProvider(e.target.value as 'gemini' | 'openrouter' | 'nvidia-nim')
+              }
+              className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
+            >
+              {PROVIDERS.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+          </label>
+          <Field label="Label" hint="1–60 characters, so you can tell backups apart">
+            <Input value={label} onChange={(e) => setLabel(e.target.value)} maxLength={60} />
+          </Field>
         </div>
+        <Field label="API key">
+          <Input
+            type="password"
+            autoComplete="new-password"
+            value={apiKey}
+            onChange={(e) => setApiKey(e.target.value)}
+          />
+        </Field>
         <fieldset>
-          <legend className="mb-1 block text-sm text-ink-muted">Is this model free to use?</legend>
+          <legend className="mb-1 block text-sm text-ink-muted">Is this key free to use?</legend>
           <div className="flex flex-col gap-1 text-sm">
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="radio"
-                name="cost-class"
-                value="free"
-                checked={cost === 'free'}
-                onChange={() => setCost('free')}
-                disabled={!isOwner}
-              />
-              Yes, it&apos;s free
-            </label>
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="radio"
-                name="cost-class"
-                value="paid"
-                checked={cost === 'paid'}
-                onChange={() => setCost('paid')}
-                disabled={!isOwner}
-              />
-              No, it costs money
-            </label>
-            <label className="inline-flex items-center gap-2">
-              <input
-                type="radio"
-                name="cost-class"
-                value="unknown"
-                checked={cost === 'unknown'}
-                onChange={() => setCost('unknown')}
-                disabled={!isOwner}
-              />
-              Not sure
-            </label>
+            {(
+              [
+                ['free', 'Free'],
+                ['paid', 'Paid'],
+                ['unknown', 'Not sure'],
+              ] as const
+            ).map(([value, words]) => (
+              <label key={value} className="inline-flex items-center gap-2">
+                <input
+                  type="radio"
+                  name="cost-new"
+                  value={value}
+                  checked={cost === value}
+                  onChange={() => setCost(value)}
+                />
+                {words}
+              </label>
+            ))}
           </div>
           <p className="mt-1 text-xs text-ink-muted">
-            Bananasaurs has a $0 spending limit, so only free models can be used. Marking a paid
-            model as free could put charges on your account.
+            Bananasaurs has a $0 spending limit, so only free models can be used.
           </p>
-          {!isOwner && (
-            <p className="mt-1 text-xs text-ink-muted">Only the server owner can change this.</p>
-          )}
         </fieldset>
-        <div className="flex flex-wrap items-center gap-3">
-          <Button
-            variant="primary"
-            type="submit"
-            busy={busy}
-            disabled={secretMissing}
-            title={
-              secretMissing === true
-                ? 'Saving is unavailable until the key store is configured on the host'
-                : undefined
-            }
-          >
-            Save AI setup
+        {addError !== undefined && (
+          <p role="alert" className="text-sm text-danger">
+            {addError}
+          </p>
+        )}
+        <div>
+          <Button variant="primary" type="submit" busy={adding}>
+            Add key
           </Button>
-          {secretMissing === true && connectDetail !== undefined && (
-            <span className="text-sm text-ink-muted">{connectDetail}</span>
-          )}
         </div>
       </form>
+      <ConfirmDialog
+        open={confirmingDisable !== undefined}
+        title={`${confirmingDisable?.label ?? ''} — turn this key off?`}
+        scope={
+          <p>
+            Rows in the model order that use {confirmingDisable?.label ?? 'this key'} stop answering
+            until it is enabled again.
+          </p>
+        }
+        confirmLabel="Disable key"
+        busy={busy}
+        onConfirm={() =>
+          confirmingDisable !== undefined && void setEnabled(confirmingDisable, false)
+        }
+        onCancel={() => setConfirmingDisable(undefined)}
+      />
+      <ConfirmDialog
+        open={confirmingDelete !== undefined}
+        title={`Delete ${confirmingDelete?.label ?? ''}?`}
+        scope={
+          <p>
+            This deletes the key and also removes its rows from the model order. This cannot be
+            undone.
+          </p>
+        }
+        confirmLabel="Delete key"
+        danger
+        busy={busy}
+        onConfirm={() => confirmingDelete !== undefined && void remove(confirmingDelete)}
+        onCancel={() => setConfirmingDelete(undefined)}
+      />
     </Card>
   );
 }
 
-/** The owner-only terms form, prefilled from the stored record when one exists. */
+/** One provider card: status pill, terms status, the may-train warning, key count. */
+function ProvidersSection({
+  setup,
+  providerTerms,
+  isOwner,
+  onChanged,
+}: {
+  readonly setup: AssistantSetupData;
+  readonly providerTerms: ProviderTerms | null;
+  readonly isOwner: boolean;
+  readonly onChanged: () => void;
+}) {
+  const termsSentence = (eligibility: string): string => {
+    if (eligibility === 'eligible')
+      return 'Terms recorded: this service does not train on your data.';
+    if (eligibility === 'may-train') return MAY_TRAIN_COPY;
+    if (eligibility === 'ineligible')
+      return "This service's terms do not allow answering member questions.";
+    return 'No terms record yet. Record what the terms say before using this service.';
+  };
+  return (
+    <Card title="Providers">
+      <ul className="grid gap-2" aria-label="Providers">
+        {setup.providers.map((row) => {
+          const info = PROVIDERS.find((p) => p.id === row.provider);
+          const pill =
+            row.keyCount === 0 ? (
+              <StatusPill tone="off">Off</StatusPill>
+            ) : row.eligibility === 'eligible' ? (
+              <StatusPill tone="ready">Ready</StatusPill>
+            ) : (
+              <StatusPill tone="attention">Needs attention</StatusPill>
+            );
+          return (
+            <li
+              key={row.provider}
+              className="grid gap-1.5 rounded-sm border border-line bg-canvas px-2 py-1.5 text-sm"
+            >
+              <p className="flex flex-wrap items-center gap-2">
+                <strong>{info?.name ?? row.provider}</strong>
+                {pill}
+              </p>
+              <p className="text-ink-muted">{termsSentence(row.eligibility)}</p>
+              <p className="text-ink-muted">
+                {row.keyCount === 1 ? '1 key' : `${String(row.keyCount)} keys`}
+              </p>
+            </li>
+          );
+        })}
+      </ul>
+      {setup.providers
+        .filter((row) => row.keyCount > 0)
+        .map((row) => {
+          const info = PROVIDERS.find((p) => p.id === row.provider);
+          if (info === undefined) return null;
+          return (
+            <div key={row.provider} className="mt-4">
+              <TermsCard
+                info={info}
+                terms={providerTerms?.provider === info.id ? providerTerms : null}
+                isOwner={isOwner}
+                onSaved={onChanged}
+              />
+            </div>
+          );
+        })}
+    </Card>
+  );
+}
+
 /**
  * ADR 0066: web search through the Brave Search API. Owner-only, because it
  * sends queries to a new outside service. The key is write-only.
@@ -562,6 +867,76 @@ function WebSearchCard({
           <p className="text-xs text-ink-muted">Only the server owner can change web search.</p>
         )}
       </form>
+    </Card>
+  );
+}
+
+/** The GitHub token: optional, write-only, cleared with null. */
+function GithubSection({
+  tokenConfigured,
+  onChanged,
+}: {
+  readonly tokenConfigured: boolean;
+  readonly onChanged: () => void;
+}) {
+  const session = useSession();
+  const toast = useToast();
+  const [token, setToken] = useState('');
+  const [busy, setBusy] = useState(false);
+
+  const save = async (value: string | null): Promise<void> => {
+    setBusy(true);
+    try {
+      const result = await session.write<{ ok: boolean; tokenConfigured: boolean }>(
+        GITHUB_TOKEN_URL,
+        { token: value },
+        'PUT',
+      );
+      if (result === undefined) return;
+      // The token is write-only: drop it from the page the moment it is stored.
+      setToken('');
+      toast({ tone: 'ok', title: value === null ? 'GitHub token cleared' : 'GitHub token saved' });
+      onChanged();
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="GitHub token (optional)">
+      <div className="grid gap-3">
+        <p className="text-sm text-ink-muted">
+          Without a token GitHub allows 60 requests an hour, so organisations refresh once a day and
+          only README files are read.
+        </p>
+        {tokenConfigured && (
+          <p className="text-sm text-ink-muted">Saved. Saving a new token replaces it.</p>
+        )}
+        <Field label="GitHub token">
+          <Input
+            type="password"
+            autoComplete="new-password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            {...(tokenConfigured ? { placeholder: 'Saved. Leave blank to keep it' } : {})}
+          />
+        </Field>
+        <div className="flex flex-wrap gap-2">
+          <Button
+            variant="primary"
+            busy={busy}
+            disabled={token === ''}
+            onClick={() => void save(token)}
+          >
+            Save token
+          </Button>
+          {tokenConfigured && (
+            <Button busy={busy} onClick={() => void save(null)}>
+              Clear token
+            </Button>
+          )}
+        </div>
+      </div>
     </Card>
   );
 }
@@ -704,25 +1079,21 @@ function TermsForm({
 }
 
 /**
- * The stored terms record for the saved service, plus the owner-only form.
- * Shown only for a service the dashboard knows; anything else (off, unknown)
- * has no record to show.
+ * The stored terms record for one provider, plus the owner-only form.
+ * A stored record reads as a summary; the form stays hidden until the
+ * owner asks to update it, so a first-time reader sees what is true.
  */
 function TermsCard({
   info,
   terms,
   isOwner,
-  chosenService,
   onSaved,
 }: {
   readonly info: (typeof PROVIDERS)[number];
   readonly terms: ProviderTerms | null;
   readonly isOwner: boolean;
-  readonly chosenService: ProviderId;
   readonly onSaved: () => void;
 }) {
-  // A stored record reads as a summary; the form stays hidden until the
-  // owner asks to update it, so a first-time reader sees what is true.
   const [editing, setEditing] = useState(false);
   return (
     <Card title="Terms record">
@@ -754,10 +1125,6 @@ function TermsCard({
       )}
       {!isOwner ? (
         <p className="mt-3 text-sm text-ink-muted">Only the server owner can record the terms.</p>
-      ) : chosenService !== info.id ? (
-        <p className="mt-3 text-sm text-ink-muted">
-          Save the AI service first, then record its terms.
-        </p>
       ) : terms === null ? (
         <TermsForm
           key={info.id}
@@ -789,18 +1156,24 @@ function TermsCard({
 }
 
 /**
- * `/providers`: the first-time AI setup page. The service form and the terms
- * record (docs/17, ADR 0061) sit above the training-eligibility rows `doctor`
- * warns about (`bananasaurs provider status` / `provider review`). "I checked
- * these terms today" records that the owner re-checked the row as it stands —
- * it writes the review date, never the row's claims. Changing a provider's
- * training flag or production eligibility stays a config change on the host.
+ * `/providers` and `/assistant/setup`: the AI setup page. The setup checklist
+ * comes first, then the ordered model list with its fallbacks, the labelled
+ * API keys, one card per provider, web search, and the optional GitHub token.
+ * "I checked these terms today" records that the owner re-checked the row as
+ * it stands — it writes the review date, never the row's claims. Changing a
+ * provider's training flag or production eligibility stays a config change on
+ * the host.
  */
 export function ProvidersPage() {
   const session = useSession();
   const toast = useToast();
+  const loadSetup = useCallback(
+    () => session.read<AssistantSetupData>(ASSISTANT_PROVIDERS_URL),
+    [session],
+  );
+  const setup = useResource('the AI setup', loadSetup);
   const loadAssistant = useCallback(() => session.read<AssistantData>(ASSISTANT_URL), [session]);
-  const assistant = useResource('the AI setup', loadAssistant);
+  const assistant = useResource('the assistant', loadAssistant);
   const loadWarnings = useCallback(
     () =>
       session
@@ -814,6 +1187,7 @@ export function ProvidersPage() {
   const [reviewBusy, setReviewBusy] = useState(false);
 
   const reloadAll = () => {
+    setup.reload();
     assistant.reload();
     warnings.reload();
   };
@@ -844,21 +1218,17 @@ export function ProvidersPage() {
     <>
       <PageHeader
         title="AI setup"
-        purpose="Choose the AI service that answers member questions. Bananasaurs sends it the question and any server context you allow."
+        purpose="Choose which AI models answer, in what order, and connect the services they need."
       />
       <div className="max-w-4xl">
-        <DataState resource={assistant.resource}>
-          {(data) => {
-            const saved = data.aiStatus?.provider;
-            const initialService: ProviderId =
-              saved === 'off' ||
-              saved === 'gemini' ||
-              saved === 'openrouter' ||
-              saved === 'nvidia-nim'
-                ? saved
-                : 'off';
-            return <SetupBody data={data} initialService={initialService} onChanged={reloadAll} />;
-          }}
+        <DataState resource={setup.resource}>
+          {(data) => (
+            <SetupBody
+              setup={data}
+              assistant={assistant.resource.state === 'ready' ? assistant.resource.data : undefined}
+              onChanged={reloadAll}
+            />
+          )}
         </DataState>
         <div className="mt-4">
           <DataState
@@ -938,57 +1308,44 @@ export function ProvidersPage() {
   );
 }
 
-/**
- * The assistant-dependent half of the page, mounted once the setup loads so
- * the service choice starts at the saved value. A save reloads the resources,
- * which re-reads the same saved values — the fields are initialised from the
- * server, never from blank defaults.
- */
 function SetupBody({
-  data,
-  initialService,
+  setup,
+  assistant,
   onChanged,
 }: {
-  readonly data: AssistantData;
-  readonly initialService: ProviderId;
+  readonly setup: AssistantSetupData;
+  readonly assistant: AssistantData | undefined;
   readonly onChanged: () => void;
 }) {
-  const [service, setService] = useState<ProviderId>(initialService);
-  const status = data.aiStatus;
-  const savedInfo = PROVIDERS.find((p) => p.id === status?.provider);
+  const chainSignature = JSON.stringify(setup.chain.map((c) => [c.keyId, c.model]));
   return (
     <>
-      <StatusLine setup={data.setup} />
+      <ChecklistSection setup={setup} assistant={assistant} />
       <div className="mt-4">
-        <ServiceForm
-          status={status}
-          connectDetail={data.setup?.steps.find((s) => s.id === 'connect')?.detail}
-          isOwner={data.viewerIsOwner ?? false}
-          service={service}
-          onServiceChange={setService}
-          onSaved={onChanged}
+        <ModelOrderSection key={chainSignature} setup={setup} onChanged={onChanged} />
+      </div>
+      <div className="mt-4">
+        <KeysSection setup={setup} onChanged={onChanged} />
+      </div>
+      <div className="mt-4">
+        <ProvidersSection
+          setup={setup}
+          providerTerms={assistant?.providerTerms ?? null}
+          isOwner={assistant?.viewerIsOwner ?? false}
+          onChanged={onChanged}
         />
       </div>
       <div className="mt-4">
         <WebSearchCard
-          key={`web-${String(status?.webSearch?.enabled ?? false)}`}
-          status={status}
-          isOwner={data.viewerIsOwner ?? false}
+          key={`web-${String(assistant?.aiStatus?.webSearch?.enabled ?? false)}`}
+          status={assistant?.aiStatus}
+          isOwner={assistant?.viewerIsOwner ?? false}
           onSaved={onChanged}
         />
       </div>
-      {savedInfo !== undefined && (
-        <div className="mt-4">
-          <TermsCard
-            key={savedInfo.id}
-            info={savedInfo}
-            terms={data.providerTerms ?? null}
-            isOwner={data.viewerIsOwner ?? false}
-            chosenService={service}
-            onSaved={onChanged}
-          />
-        </div>
-      )}
+      <div className="mt-4">
+        <GithubSection tokenConfigured={setup.github.tokenConfigured} onChanged={onChanged} />
+      </div>
     </>
   );
 }

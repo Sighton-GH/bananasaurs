@@ -57,6 +57,10 @@ const INSTANCE_LEVEL = new Set<string>([
   'provider_eligibility',
   // Release 3: one encrypted provider configuration for the daemon.
   'assistant_provider_config',
+  // ADR 0075 / Task 6b: instance-level provider configuration — several
+  // labelled keys per provider and one ordered model chain of key + model.
+  'assistant_provider_keys',
+  'assistant_model_chain',
 ]);
 
 /**
@@ -96,6 +100,8 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'attachment_id',
   'required_role_id',
   'principal_id',
+  // ADR 0072: assistant_conversations.started_by.
+  'started_by',
 ]);
 
 interface ColumnInfo {
@@ -1151,13 +1157,15 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
     expect(columns(table).map((c) => c.name)).not.toContain('guild_id');
   });
 
-  it('INSTANCE_LEVEL contains exactly the eight expected names', () => {
-    // The tripwire. An eighth table cannot join the exemption without this
+  it('INSTANCE_LEVEL contains exactly the ten expected names', () => {
+    // The tripwire. A ninth table cannot join the exemption without this
     // failing and a human reading ADR 0045 — or ADR 0044 §7 for
-    // provider_eligibility.
+    // provider_eligibility, or ADR 0075 for the provider chain tables.
     expect([...INSTANCE_LEVEL].sort()).toEqual(
       [
         'assistant_provider_config',
+        'assistant_provider_keys',
+        'assistant_model_chain',
         'bootstrap_tokens',
         'dashboard_accounts',
         'provider_eligibility',

@@ -3,18 +3,30 @@ import {
   assistantInvokePayload,
   JOB_KINDS,
   ProviderError,
+  resolveConversation,
   RetryAfterError,
   safeLogFields,
+  splitForDiscord,
+  stripNewTopic,
   type AssistantInvokePayload,
+  type AssistantInvokeCursor,
+  type ConversationResolution,
+  type DiscordMessageRef,
+  type GenerationMessage,
   type JobHandler,
   type Logger,
   type OutgoingMessage,
 } from '@bananasaurs/core';
+import { conversationRepo, traceRepo, type GuildScope } from '@bananasaurs/storage';
 import type {
   AssistantCommandService,
   AssistantInvocationResult,
+  AssistantTraceDetail,
   InvocationTrace,
 } from '../assistant/commands.js';
+import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
+import { buildConversationContext } from '../assistant/conversation-context.js';
+import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 
 /**
@@ -22,12 +34,13 @@ import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-me
  *
  * The subscriber (`apps/daemon/src/assistant/commands.ts`) does only the
  * cheap work inline - defer the interaction, route the mention - and
- * enqueues this job for everything expensive: resource fetches and the
- * provider call. Without this split one slow /ask stalls reaction roles,
- * automod and /mod behind it in the per-guild chain, and a provider hang
- * exceeds Discord's interaction window while the chain waits.
+ * enqueues this job for everything expensive: the conversation lookup, the
+ * quote fetch, resource fetches and the provider call. Without this split
+ * one slow /ask stalls reaction roles, automod and /mod behind it in the
+ * per-guild chain, and a provider hang exceeds Discord's interaction window
+ * while the chain waits.
  *
- * Two invariants the independent audit pinned down:
+ * Four invariants the independent audit pinned down, plus Task 14's:
  *
  * - The behaviour is re-resolved at run time rather than trusted from the
  *   payload: a prompt edit or disable between enqueue and run takes effect,
@@ -37,6 +50,14 @@ import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-me
  *   again - a second invoke would repeat the provider spend and could
  *   duplicate the ticket and skill-activity effects. The cursor carries the
  *   finished result (and whether the answer landed) across attempts.
+ * - Every answer joins a conversation (ADR 0072): replies and same-author
+ *   follow-ups keep context, a tagged reply to someone else's message brings
+ *   that message in as untrusted quoted context, and the answer posts as a
+ *   Discord reply split into safe parts. `partsPosted`/`postedMessageIds`
+ *   make a retry resume mid-parts without re-posting (hard rule 6); the
+ *   provider is never called again once `invoke-done` is saved.
+ * - Typing is best-effort and exempt from hard rule 6: its failure never
+ *   fails the job.
  */
 const reply = (content: string): OutgoingMessage => ({
   content: content.slice(0, 2_000),
@@ -48,16 +69,120 @@ type CursorStage = 'invoke-done' | 'answered' | 'escalation-sent' | 'logged';
 interface StagedCursor {
   readonly stage: CursorStage;
   readonly result: AssistantInvocationResult;
+  readonly conversationId?: string | undefined;
+  readonly resolution?: ConversationResolution | undefined;
+  readonly partsPosted: number;
+  readonly postedMessageIds: readonly string[];
+  readonly flags: readonly string[];
 }
 const STAGES: readonly CursorStage[] = ['invoke-done', 'answered', 'escalation-sent', 'logged'];
 /** Total order over stages: a retry resumes AFTER the furthest stage reached. */
 const stageRank = (stage: CursorStage): number => STAGES.indexOf(stage);
 
-/** Zod's optional fields come back as `undefined`; the result type wants them absent. */
-const stripUndefined = (value: object): InvocationTrace =>
-  Object.fromEntries(
-    Object.entries(value).filter(([, v]) => v !== undefined),
-  ) as unknown as InvocationTrace;
+/** A cursor result's validated run detail, minus the absent-marker. */
+type CursorDetail = Exclude<AssistantInvokeCursor['result']['detail'], undefined>;
+/** A cursor result's validated log-channel trace, minus the absent-marker. */
+type CursorTrace = Exclude<AssistantInvokeCursor['result']['trace'], undefined>;
+/** The cursor's validated conversation resolution, minus the absent-marker. */
+type CursorResolution = Exclude<AssistantInvokeCursor['resolution'], undefined>;
+
+/**
+ * Zod's optional fields come back as `undefined`; the result type wants them
+ * absent, so each optional is spread only when defined — the compiler, not a
+ * cast, proves the rebuilt shape.
+ */
+const rebuildTrace = (trace: CursorTrace): InvocationTrace => ({
+  latencyMs: trace.latencyMs,
+  ...(trace.model === undefined ? {} : { model: trace.model }),
+  ...(trace.tools === undefined
+    ? {}
+    : { tools: trace.tools.map((tool) => ({ name: tool.name, ok: tool.ok })) }),
+  ...(trace.sources === undefined
+    ? {}
+    : { sources: trace.sources.map((source) => ({ title: source.title, url: source.url })) }),
+  ...(trace.web === undefined ? {} : { web: trace.web }),
+  ...(trace.usedFallback === undefined ? {} : { usedFallback: trace.usedFallback }),
+});
+
+/** Rebuilds the run detail the trace write reads, omitting every absent optional. */
+const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
+  sections: detail.sections.map((section) => ({
+    name: section.name,
+    chars: section.chars,
+    estTokens: section.estTokens,
+    text: section.text,
+  })),
+  history: detail.history.map((message) => ({
+    role: message.role,
+    text: message.text,
+    ...(message.toolCalls === undefined
+      ? {}
+      : {
+          toolCalls: message.toolCalls.map((call) => ({
+            ...(call.id === undefined ? {} : { id: call.id }),
+            name: call.name,
+            args: call.args,
+          })),
+        }),
+    ...(message.toolName === undefined ? {} : { toolName: message.toolName }),
+    ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+    ...(message.providerParts === undefined ? {} : { providerParts: message.providerParts }),
+  })),
+  attempts: detail.attempts.map((attempt) => ({
+    provider: attempt.provider,
+    model: attempt.model,
+    ...(attempt.keyLabel === undefined ? {} : { keyLabel: attempt.keyLabel }),
+    outcome: attempt.outcome,
+    ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+    ms: attempt.ms,
+  })),
+  toolCalls: detail.toolCalls.map((call) => ({
+    round: call.round,
+    name: call.name,
+    args: call.args,
+    ok: call.ok,
+    ...(call.refused === undefined ? {} : { refused: call.refused }),
+    ms: call.ms,
+    preview: call.preview,
+  })),
+  usage: {
+    ...(detail.usage.promptTokens === undefined ? {} : { promptTokens: detail.usage.promptTokens }),
+    ...(detail.usage.completionTokens === undefined
+      ? {}
+      : { completionTokens: detail.usage.completionTokens }),
+    ...(detail.usage.thinkingTokens === undefined
+      ? {}
+      : { thinkingTokens: detail.usage.thinkingTokens }),
+  },
+  guard: {
+    removed: [...detail.guard.removed],
+    ...(detail.guard.blocked === undefined ? {} : { blocked: detail.guard.blocked }),
+  },
+  ...(detail.model === undefined ? {} : { model: detail.model }),
+  ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
+  ...(detail.web === undefined ? {} : { web: detail.web }),
+});
+
+/**
+ * Rebuilds the resolution so its shape matches exactly: the `new` variant's
+ * `quotedMessageId` is omitted when undefined rather than assigned as such.
+ */
+const rebuildResolution = (resolution: CursorResolution): ConversationResolution => {
+  if (resolution.kind === 'continue') {
+    return {
+      kind: 'continue',
+      conversationId: resolution.conversationId,
+      rule: resolution.rule,
+    };
+  }
+  return {
+    kind: 'new',
+    rule: resolution.rule,
+    ...(resolution.quotedMessageId === undefined
+      ? {}
+      : { quotedMessageId: resolution.quotedMessageId }),
+  };
+};
 
 const parseCursor = (cursor: string | null): StagedCursor | undefined => {
   if (cursor === null) return undefined;
@@ -66,15 +191,41 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
     // "no progress", never a TypeError on every retry.
     const parsed = assistantInvokeCursor.safeParse(JSON.parse(cursor));
     if (!parsed.success) return undefined;
-    const { stage, result } = parsed.data;
-    const trace = result.trace === undefined ? {} : { trace: stripUndefined(result.trace) };
-    if (!result.ok) return { stage, result: { ok: false, content: result.content, ...trace } };
+    const { stage, result, conversationId, resolution, partsPosted, postedMessageIds, flags } =
+      parsed.data;
+    const trace = result.trace === undefined ? {} : { trace: rebuildTrace(result.trace) };
+    const detail = result.detail === undefined ? {} : { detail: rebuildDetail(result.detail) };
+    const rest = {
+      ...(conversationId === undefined ? {} : { conversationId }),
+      ...(resolution === undefined ? {} : { resolution: rebuildResolution(resolution) }),
+      partsPosted,
+      postedMessageIds,
+      flags,
+    };
+    // Task 20: the service-attached result flags (e.g.
+    // `resources-unavailable`) travel in the cursor alongside the job's own
+    // `quote-unavailable` flags so a retry keeps both.
+    const resultFlags = result.flags === undefined ? {} : { flags: [...result.flags] };
+    if (!result.ok)
+      return {
+        stage,
+        result: { ok: false, content: result.content, ...resultFlags, ...trace, ...detail },
+        ...rest,
+      };
     return {
       stage,
       result:
         result.escalation === undefined
-          ? { ok: true, content: result.content, ...trace }
-          : { ok: true, content: result.content, escalation: result.escalation, ...trace },
+          ? { ok: true, content: result.content, ...resultFlags, ...trace, ...detail }
+          : {
+              ok: true,
+              content: result.content,
+              escalation: result.escalation,
+              ...resultFlags,
+              ...trace,
+              ...detail,
+            },
+      ...rest,
     };
   } catch {
     return undefined;
@@ -92,7 +243,6 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
  */
 const PROVIDER_RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
 const PROVIDER_RETRY_CEILING = PROVIDER_RETRY_DELAYS_MS.length + 1;
-const BUSY_REPLY = 'The AI service is busy right now. Try again in a minute. No action was taken.';
 
 export const assistantInvokeHandler = (deps: {
   guildId: string;
@@ -102,17 +252,45 @@ export const assistantInvokeHandler = (deps: {
   respond: (
     ref: { interactionId: string; token: string },
     message: OutgoingMessage,
-  ) => Promise<void>;
-  send: (channelId: string, message: OutgoingMessage) => Promise<unknown>;
+  ) => Promise<DiscordMessageRef | undefined>;
+  send: (channelId: string, message: OutgoingMessage) => Promise<DiscordMessageRef | undefined>;
   logger: Logger;
   /** ADR 0065: the AI log channel, read at run time; undefined means no log. */
   logChannelId: () => string | undefined;
   now: () => number;
+  /**
+   * Task 14: conversation wiring. Optional so pre-Task-14 callers (and the
+   * golden-evaluation pair, which drives the real subscriber and handler
+   * with no database) keep compiling: without it the job answers with no
+   * history, no quote, no links and no trace. Production always wires it.
+   */
+  conversations?:
+    | {
+        readonly scope: GuildScope;
+        /** This bot's user id, telling our own messages apart from quotes. */
+        readonly botUserId: string;
+        /** This bot's display name, used for the assistant turn and labels. */
+        readonly botDisplayName: string;
+      }
+    | undefined;
+  /** Task 14: the typing indicator. Best-effort; absent means no typing. */
+  sendTyping?: ((channelId: string) => Promise<void>) | undefined;
+  /** Task 14: quoted-message fetch for unknown references. Absent means no quote. */
+  fetchMessageContent?:
+    | ((
+        channelId: string,
+        messageId: string,
+      ) => Promise<{ authorId: string; authorName: string; content: string } | undefined>)
+    | undefined;
 }): JobHandler<AssistantInvokePayload> => ({
   kind: JOB_KINDS.assistantInvoke,
   payload: assistantInvokePayload,
   async run(payload, context) {
-    const answer = async (content: string): Promise<void> => {
+    const startedAt = deps.now();
+    // One-shot delivery for the pre-invoke failure paths (deleted behaviour,
+    // daily cap, exhausted busy retries): short fixed strings that predate
+    // Task 14's staged posting and stay exactly as they were.
+    const answerSingle = async (content: string): Promise<void> => {
       if (payload.interaction !== undefined) {
         const token = deps.openToken(payload.interaction.sealedToken);
         if (token === undefined) return; // fresh runs fail closed above; a stranded cursor skips the answer only
@@ -186,8 +364,36 @@ export const assistantInvokeHandler = (deps: {
       }
     };
 
+    // `recentTurns` orders by (at, turnId), and our turn ids sort the
+    // assistant turn (`turn_<k>_a`) before the user turn (`turn_<k>_u`) —
+    // so equal timestamps would misorder the history. Stamp each turn
+    // strictly after every existing one; under a live clock this is just
+    // `now()`.
+    const nextAt = (existing: readonly { readonly at: number }[]): number =>
+      Math.max(deps.now(), ...existing.map((turn) => turn.at + 1));
+
+    const saveStaged = (stage: CursorStage, result: AssistantInvocationResult): void => {
+      context.saveCursor(
+        JSON.stringify({
+          stage,
+          result,
+          ...(conversationId === undefined ? {} : { conversationId }),
+          ...(resolution === undefined ? {} : { resolution }),
+          partsPosted,
+          postedMessageIds,
+          flags,
+        } satisfies StagedCursor),
+      );
+    };
+
     // Stage 1: the invoke. Skipped on a retry that already finished it.
     let result: AssistantInvocationResult;
+    let conversationId: string | undefined = prior?.conversationId;
+    let resolution: ConversationResolution | undefined = prior?.resolution;
+    let partsPosted = prior?.partsPosted ?? 0;
+    let postedMessageIds: string[] = [...(prior?.postedMessageIds ?? [])];
+    const flags: string[] = [...(prior?.flags ?? [])];
+    let invokeDoneAt = startedAt;
     if (prior !== undefined) {
       result = prior.result;
     } else {
@@ -196,9 +402,134 @@ export const assistantInvokeHandler = (deps: {
         const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
         if (behaviour === undefined || !behaviour.enabled) {
           const text = 'That assistant behaviour is no longer available. No action was taken.';
-          await answer(text);
+          await answerSingle(text);
           await logFailure(text, 'The behaviour was deleted or turned off before the request ran.');
           return;
+        }
+        // Typing first, best-effort: a failure here must never fail the job.
+        if (payload.channelId !== undefined && deps.sendTyping !== undefined) {
+          try {
+            await deps.sendTyping(payload.channelId);
+          } catch (err) {
+            deps.logger.warn(
+              safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+              'assistant typing indicator failed; continuing',
+            );
+          }
+        }
+        // The conversation join: resolve, fetch an unknown quote, create the
+        // row and the quote and user turns, then build the history. The ids derive from
+        // the invocation anchor, so a retry reuses the same conversation and
+        // turns instead of duplicating them. Needs a channel; a slash
+        // invocation without one answers history-free.
+        const rawQuestion = Object.values(payload.input).join('\n');
+        const strippedQuestion = stripNewTopic(rawQuestion);
+        let history: readonly GenerationMessage[] = [];
+        let quoteEnvelope: string | undefined;
+        if (payload.channelId !== undefined && deps.conversations !== undefined) {
+          const conv = deps.conversations;
+          const channelId = payload.channelId;
+          const resolved = resolveConversation({
+            now: deps.now(),
+            channelId,
+            authorId: payload.userId,
+            botUserId: conv.botUserId,
+            text: rawQuestion,
+            ...(payload.referencedMessageId === undefined
+              ? {}
+              : { referencedMessageId: payload.referencedMessageId }),
+            ...(payload.referencedAuthorId === undefined
+              ? {}
+              : { referencedAuthorId: payload.referencedAuthorId }),
+            lookupMessage: (messageId) => conversationRepo.lookupMessage(conv.scope, messageId),
+            latestForAuthor: (authorId, scopeChannelId) =>
+              conversationRepo.latestForAuthor(conv.scope, authorId, scopeChannelId),
+          });
+          resolution = resolved;
+          // Quoted rules name a message we do not know: fetch it in the same
+          // channel as untrusted evidence. A fetch failure flags the trace
+          // `quote-unavailable` and continues without the quote (ruling).
+          let quoted: { authorId: string; authorName: string; content: string } | undefined;
+          if (resolved.kind === 'new' && resolved.quotedMessageId !== undefined) {
+            if (deps.fetchMessageContent === undefined) {
+              flags.push('quote-unavailable');
+            } else {
+              try {
+                const fetched = await deps.fetchMessageContent(channelId, resolved.quotedMessageId);
+                if (fetched === undefined) flags.push('quote-unavailable');
+                else
+                  quoted = {
+                    authorId: fetched.authorId,
+                    authorName: fetched.authorName,
+                    content: fetched.content,
+                  };
+              } catch (err) {
+                deps.logger.warn(
+                  safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                  'assistant quoted message fetch failed; continuing without the quote',
+                );
+                flags.push('quote-unavailable');
+              }
+            }
+          }
+          const key = payload.invocationId;
+          conversationId = resolved.kind === 'continue' ? resolved.conversationId : `conv_${key}`;
+          const userTurnId = `turn_${key}_u`;
+          if (conversationRepo.getConversation(conv.scope, conversationId) === undefined) {
+            const title = strippedQuestion.slice(0, 120);
+            conversationRepo.createConversation(conv.scope, {
+              conversationId,
+              channelId,
+              behaviourId: payload.behaviourId,
+              startedBy: payload.userId,
+              title: title === '' ? 'Assistant conversation' : title,
+              source: 'discord',
+              at: deps.now(),
+            });
+          }
+          // A new conversation that starts from a quoted message stores the
+          // quote as the opening `quote` turn, before the user turn: the
+          // pinned-quote window and the transcript both read it from there.
+          // The id derives from the invocation anchor like the user turn, so
+          // a retry reuses it instead of duplicating it.
+          if (resolved.kind === 'new' && quoted !== undefined) {
+            const quoteTurnId = `turn_${key}_q`;
+            const beforeQuote = conversationRepo.listTurns(conv.scope, conversationId);
+            if (!beforeQuote.some((turn) => turn.turnId === quoteTurnId)) {
+              conversationRepo.appendTurn(conv.scope, {
+                conversationId,
+                turnId: quoteTurnId,
+                at: nextAt(beforeQuote),
+                role: 'quote',
+                authorId: quoted.authorId,
+                authorName: quoted.authorName,
+                text: quoted.content,
+              });
+            }
+          }
+          const beforeUser = conversationRepo.listTurns(conv.scope, conversationId);
+          if (!beforeUser.some((turn) => turn.turnId === userTurnId)) {
+            conversationRepo.appendTurn(conv.scope, {
+              conversationId,
+              turnId: userTurnId,
+              at: nextAt(beforeUser),
+              role: 'user',
+              authorId: payload.userId,
+              authorName: payload.authorName ?? payload.userId,
+              text: strippedQuestion,
+            });
+          }
+          const built = buildConversationContext({
+            scope: conv.scope,
+            resolution: resolved,
+            ...(quoted === undefined ? {} : { quoted }),
+            botDisplayName: conv.botDisplayName,
+            // The turn just written above is stored, never history: the
+            // question reaches the model once, as the request's user text.
+            excludeTurnId: userTurnId,
+          });
+          history = built.history;
+          quoteEnvelope = built.quoteEnvelope;
         }
         result = await deps.service.invoke({
           guildId: deps.guildId,
@@ -210,8 +541,31 @@ export const assistantInvokeHandler = (deps: {
           input: payload.input,
           source: payload.source,
           invocationId: payload.invocationId,
+          history,
+          ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
         });
+        invokeDoneAt = deps.now();
+        // Task 20: flags the service attached to the result (currently only
+        // `resources-unavailable`) join the job's own flags before the trace
+        // write — the same way `quote-unavailable` above does — and persist
+        // in the cursor via `saveStaged`, so a retry keeps them.
+        for (const flag of result.flags ?? []) {
+          if (!flags.includes(flag)) flags.push(flag);
+        }
       } catch (err) {
+        // ADR 0077: a daily free-model cap answers at once - no job retry,
+        // no RetryAfterError - because a retry only burns another of
+        // tomorrow's requests for the same guaranteed failure.
+        if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
+          const text = dailyQuotaReply(err.resetAt, deps.now());
+          deps.logger.warn(
+            safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+            'assistant invocation hit a daily free-model quota cap; answering at once',
+          );
+          await answerSingle(text);
+          await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
+          return;
+        }
         if (
           err instanceof ProviderError &&
           err.retryable &&
@@ -241,21 +595,156 @@ export const assistantInvokeHandler = (deps: {
           err instanceof ProviderError && err.retryable
             ? BUSY_REPLY
             : 'I could not complete that request. No action was taken.';
-        await answer(text);
-        await logFailure(text, err instanceof Error ? err.message : 'unknown error');
+        await answerSingle(text);
+        await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
         return;
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here
       // on retries with this cursor and never re-invokes.
-      context.saveCursor(JSON.stringify({ stage: 'invoke-done', result } satisfies StagedCursor));
+      partsPosted = 0;
+      postedMessageIds = [];
+      saveStaged('invoke-done', result);
     }
 
-    // Stage 2: the answer. Persisted for EVERY result, not only escalation
-    // ones: a crash or completion retry after the send must not repeat the
-    // member-facing answer (independent audit, round 2).
+    // One part, posted where it belongs: a mention's first part replies to
+    // the member's message, later parts are plain sends; a slash answer's
+    // first part follows up the interaction (capturing its message id) and
+    // later parts go to the channel. Returns the posted message id, or
+    // `undefined` when Discord reported none (or there was nowhere to post).
+    const postPart = async (
+      index: number,
+      text: string,
+      slashToken: string | undefined,
+    ): Promise<string | undefined> => {
+      const message = (replyTo?: string): OutgoingMessage =>
+        replyTo === undefined
+          ? { content: text, allowedMentions: { parse: [] } }
+          : { content: text, allowedMentions: { parse: [] }, replyTo };
+      if (payload.interaction !== undefined) {
+        if (index === 0) {
+          // A stranded slash cursor whose token is gone skips the answer
+          // only (as before Task 14): the escalation and log stages below
+          // still run.
+          if (slashToken === undefined) return undefined;
+          const ref = await deps.respond(
+            { interactionId: payload.interaction.interactionId, token: slashToken },
+            message(),
+          );
+          return ref?.messageId;
+        }
+        if (payload.channelId === undefined) {
+          deps.logger.warn(
+            safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+            'assistant follow-up part has no channel; dropping the remainder',
+          );
+          return undefined;
+        }
+        const ref = await deps.send(payload.channelId, message());
+        return ref?.messageId;
+      }
+      if (payload.channelId === undefined) {
+        deps.logger.warn(
+          safeLogFields({ component: 'assistant-job', guildId: deps.guildId }),
+          'assistant mention answer has no channel; dropping the remainder',
+        );
+        return undefined;
+      }
+      if (index === 0 && payload.messageId !== undefined) {
+        const ref = await deps.send(payload.channelId, message(payload.messageId));
+        return ref?.messageId;
+      }
+      const ref = await deps.send(payload.channelId, message());
+      return ref?.messageId;
+    };
+
+    // Stage 2: the staged answer. Parts `[0, partsPosted)` already landed, so
+    // a retry posts only the rest; every part is saved before the next, so a
+    // crash mid-parts never re-posts one (hard rule 6). Afterwards the
+    // assistant turn, the message links and the trace land exactly once.
     if (reached < stageRank('answered')) {
-      await answer(result.content);
-      context.saveCursor(JSON.stringify({ stage: 'answered', result } satisfies StagedCursor));
+      const parts = splitForDiscord(result.content);
+      const slashToken =
+        payload.interaction === undefined
+          ? undefined
+          : deps.openToken(payload.interaction.sealedToken);
+      // Fresh slash runs passed the fail-closed check above, so the token is
+      // good; a stranded retry with a dead token skips the whole answer.
+      const answerable = payload.interaction === undefined || slashToken !== undefined;
+      if (answerable) {
+        for (let index = partsPosted; index < parts.length; index += 1) {
+          const posted = await postPart(index, parts[index]!, slashToken);
+          if (posted !== undefined) postedMessageIds.push(posted);
+          partsPosted = index + 1;
+          saveStaged('invoke-done', result);
+        }
+      }
+      if (conversationId !== undefined && deps.conversations !== undefined) {
+        const conv = deps.conversations;
+        const key = payload.invocationId;
+        const assistantTurnId = `turn_${key}_a`;
+        const beforeAssistant = conversationRepo.listTurns(conv.scope, conversationId);
+        if (!beforeAssistant.some((turn) => turn.turnId === assistantTurnId)) {
+          conversationRepo.appendTurn(conv.scope, {
+            conversationId,
+            turnId: assistantTurnId,
+            at: nextAt(beforeAssistant),
+            role: 'assistant',
+            authorName: conv.botDisplayName,
+            text: result.content,
+            // Task 20: the turn carries its trace id so a later 👍/👎
+            // reaction on a linked message can flag the matching trace.
+            traceId: `trace_${key}`,
+          });
+        }
+        if (payload.messageId !== undefined) {
+          conversationRepo.linkMessages(conv.scope, conversationId, `turn_${key}_u`, 'user', [
+            payload.messageId,
+          ]);
+        }
+        if (postedMessageIds.length > 0) {
+          conversationRepo.linkMessages(
+            conv.scope,
+            conversationId,
+            assistantTurnId,
+            'assistant',
+            postedMessageIds,
+          );
+        }
+        const traceId = `trace_${key}`;
+        if (traceRepo.getTrace(conv.scope, traceId) === undefined) {
+          const detail = result.detail;
+          traceRepo.insertTrace(conv.scope, {
+            traceId,
+            at: deps.now(),
+            userId: payload.userId,
+            ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
+            behaviourId: payload.behaviourId,
+            command: payload.command,
+            source: payload.source,
+            conversationId,
+            turnId: assistantTurnId,
+            question: Object.values(payload.input).join('\n'),
+            answer: result.content,
+            outcome: result.ok ? 'answered' : 'refused',
+            durationMs: result.trace?.latencyMs ?? 0,
+            attempts: detail?.attempts ?? [],
+            ...(detail?.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
+            usage: detail?.usage ?? {},
+            sections: detail?.sections ?? [],
+            toolCalls: detail?.toolCalls ?? [],
+            guard: detail?.guard ?? { removed: [] },
+            timeline: [
+              { label: 'received', atMs: 0 },
+              { label: 'invoke-done', atMs: Math.max(0, invokeDoneAt - startedAt) },
+              { label: 'answered', atMs: Math.max(0, deps.now() - startedAt) },
+            ],
+            discordMessageIds: [...postedMessageIds],
+            sources: [...(result.trace?.sources ?? [])],
+            flags: [...flags],
+          });
+        }
+      }
+      saveStaged('answered', result);
     }
 
     // Stage 3: the escalation post, with its own sent marker for the same
@@ -275,9 +764,7 @@ export const assistantInvokeHandler = (deps: {
           ),
         allowedMentions: { parse: [], roles: result.escalation.reviewerRoleIds },
       });
-      context.saveCursor(
-        JSON.stringify({ stage: 'escalation-sent', result } satisfies StagedCursor),
-      );
+      saveStaged('escalation-sent', result);
     }
 
     // Stage 4: the AI log channel (ADR 0065), after the member has their
@@ -292,7 +779,7 @@ export const assistantInvokeHandler = (deps: {
           trace: result.trace,
         }),
       );
-      context.saveCursor(JSON.stringify({ stage: 'logged', result } satisfies StagedCursor));
+      saveStaged('logged', result);
     }
   },
 });

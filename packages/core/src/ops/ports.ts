@@ -536,6 +536,13 @@ export interface OpsAccount {
   readonly disabled: boolean;
   readonly lockedUntil: number | null;
   readonly createdAt: number;
+  /**
+   * Whether the owner can reveal this account's password (ADR 0070): a
+   * sealed copy exists and the account is not itself an owner — owner
+   * accounts never get one, whoever asks. Never the sealed value itself,
+   * which stops at `ops/wiring.ts` the same way `passwordHash` does.
+   */
+  readonly revealable: boolean;
 }
 
 /**
@@ -623,6 +630,27 @@ export type OpsAccountSetPasswordResult =
       readonly password: string;
       readonly sessionsRevoked: number;
       readonly guildsTouched: number;
+    };
+
+/**
+ * What `POST /api/accounts/:username/reveal-password` did (ADR 0070).
+ *
+ * `'not-revealable'` covers every way the plaintext cannot be recovered —
+ * no sealed copy, the vault unavailable, or the sealed value not opening
+ * under the current key — deliberately one answer rather than three, so the
+ * route never has to explain the vault's internal state to the dashboard.
+ * The owner-target refusal (`403 owner-protected`) and the caller's
+ * own-capability check (`403 owner-only`) happen at the route layer, before
+ * this is called, the same split every other owner-protected account route
+ * uses.
+ */
+export type OpsAccountRevealResult =
+  | 'no-such-account'
+  | 'not-revealable'
+  | {
+      readonly username: string;
+      /** Shown once, in the response only. Never in the audit row, never logged. */
+      readonly password: string;
     };
 
 /** One guild channel as the pickers show it: display name plus the snowflake. */
@@ -1220,6 +1248,21 @@ export interface OpsPorts {
     readonly grantedBy: string;
   }): 'granted' | 'already-held' | 'no-such-account' | 'no-guild-access';
 
+  /**
+   * ADR 0069: revoke ONE dashboard account capability in THIS guild, the
+   * sibling of `grantAccountCapability` above — the edit page's permission
+   * section needs it, where today the only revoke removes all server access.
+   *
+   * `'not-held'` is a real answer, not a refusal: revoking a capability the
+   * account does not hold changes nothing, and re-running the revoke must say
+   * so rather than fail. `'no-such-account'` is the usage answer for a
+   * mistyped name.
+   */
+  revokeAccountCapability(input: {
+    readonly username: string;
+    readonly capability: Capability;
+  }): 'revoked' | 'not-held' | 'no-such-account';
+
   /** The capabilities one account holds in THIS guild — the read half of the grant above. */
   listAccountCapabilities(accountId: string): readonly string[];
 
@@ -1485,8 +1528,17 @@ export interface OpsInstance {
    * password is hashed with Argon2id in the wiring, the plaintext is
    * returned exactly once and never stored. `'username-taken'` is the usage
    * answer for a name an existing account already holds.
+   *
+   * ADR 0069: the dashboard's create page lets the operator choose the
+   * password instead of taking a generated one. A provided password is
+   * hashed exactly like a generated one; the route refuses short ones
+   * (`weak-password`, fewer than 12 characters) before this is called, so
+   * the CLI's generate-only path keeps calling with no second argument.
    */
-  accountCreate(username: string): Promise<OpsAccountCreateResult | 'username-taken'>;
+  accountCreate(
+    username: string,
+    password?: string,
+  ): Promise<OpsAccountCreateResult | 'username-taken'>;
   /**
    * Disables or re-enables one dashboard account by username (ADR 0045 D6).
    *
@@ -1540,8 +1592,26 @@ export interface OpsInstance {
    * password, so they survive — `account revoke-credentials` is the command
    * that ends those. `'no-such-account'` is the usage answer for a mistyped
    * name.
+   *
+   * ADR 0069: the dashboard's password section lets the operator choose the
+   * password instead of taking a generated one. A provided password is
+   * hashed exactly like a generated one; the route refuses short ones
+   * (`weak-password`, fewer than 12 characters) before this is called, so
+   * the CLI's generate-only reset keeps calling with no second argument.
    */
-  accountSetPassword(username: string): Promise<OpsAccountSetPasswordResult>;
+  accountSetPassword(username: string, password?: string): Promise<OpsAccountSetPasswordResult>;
+  /**
+   * Reveals one non-owner account's password from its sealed copy (ADR
+   * 0070, spec A4). Synchronous: unlike `accountSetPassword` this never
+   * hashes anything, only opens an AES-GCM ciphertext already held.
+   *
+   * Instance-level like every other account member. `'no-such-account'` is
+   * the usage answer for a mistyped name; `'not-revealable'` covers every
+   * reason the plaintext cannot come back (no sealed copy, the vault
+   * unavailable, or it does not open under the current key) — the route
+   * layer has already refused an owner target before this is ever called.
+   */
+  accountRevealPassword(username: string): OpsAccountRevealResult;
 }
 
 export interface OpsBackupOutcome {

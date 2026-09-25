@@ -12,6 +12,7 @@ import {
   NATIVE_AUTOMOD_OBSERVABILITY_PERMISSIONS,
   RELEASE_1_PERMISSIONS,
   REQUIRED_PERMISSIONS,
+  type DoctorPasswordVault,
 } from './doctor.js';
 
 /**
@@ -526,6 +527,32 @@ describe('dashboard access (S13-D5)', () => {
 
     expect(report.dashboardAccess).toBeUndefined();
     expect(report.ok).toBe(true);
+  });
+});
+
+describe('account password vault (ADR 0070)', () => {
+  const vaultText = (passwordVault: DoctorPasswordVault): string =>
+    formatDoctorReport(buildDoctorReport(client, config(), Date.now(), undefined, passwordVault));
+
+  it('names the key file when the secret resolved from it', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    expect(vaultText({ available: true, source: 'file', revealableAccounts: 2 })).toContain(
+      'Account password vault: key file present, mode 0600, 2 accounts revealable',
+    );
+  });
+
+  it('names the env var when the secret resolved from the environment', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    expect(vaultText({ available: true, source: 'env', revealableAccounts: 1 })).toContain(
+      'Account password vault: key from ACCOUNT_PASSWORD_SECRET_KEY, 1 accounts revealable',
+    );
+  });
+
+  it('reports not set up when no secret resolved', () => {
+    addGuild(GUILD, String(REQUIRED_PERMISSIONS));
+    expect(vaultText({ available: false, source: 'missing', revealableAccounts: 0 })).toContain(
+      'Account password vault: not set up (reveal unavailable)',
+    );
   });
 });
 
