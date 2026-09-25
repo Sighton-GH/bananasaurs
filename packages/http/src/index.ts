@@ -30,6 +30,7 @@ export { csrfTokenFor, generateToken, hashPassword, hashToken, verifyPassword } 
 export { registerReadRoutes } from './routes/read.js';
 export { registerAssistantRoutes } from './routes/assistant.js';
 export { registerAssistantTraceRoutes } from './routes/assistant-traces.js';
+export { registerAssistantResourceCacheRoutes } from './routes/assistant-resources-cache.js';
 export { registerOpsReadRoutes } from './routes/ops-read.js';
 export { registerOpsWriteRoutes } from './routes/ops-write.js';
 export { registerAutomodRoutes } from './routes/automod.js';

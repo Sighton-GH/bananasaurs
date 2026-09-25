@@ -2,11 +2,19 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import {
   CLUB_ASSISTANT_SKILLS,
+  JOB_KINDS,
   ProviderError,
+  resourceRefreshDedupeKey,
   STARTER_SKILL_IDS,
   validateResourceUrl,
 } from '@bananasaurs/core';
-import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  assistantRepo,
+  eligibilityRepo,
+  jobRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
@@ -60,6 +68,21 @@ const memory = z.object({
   subjectId: snowflake.optional(),
 });
 const serverCard = z.object({ content: z.string().min(1).max(4000) });
+/**
+ * ADR 0073: adding or editing a resource enqueues a cache refresh — the
+ * request path no longer fetches live, so without this a newly added
+ * resource would sit with no cached chunks until the next hourly sweep. A
+ * small injected function rather than a call straight to `jobRepo` inline,
+ * so the route body stays about validation and audit, not job plumbing.
+ */
+const enqueueResourceRefresh = (scope: GuildScope, resourceId: string, now: number): void => {
+  jobRepo.enqueue(scope, {
+    kind: JOB_KINDS.resourceRefresh,
+    payload: JSON.stringify({ resourceId, reason: 'added' }),
+    dedupeKey: resourceRefreshDedupeKey({ reason: 'added', resourceId }),
+    now,
+  });
+};
 const resource = z.object({
   id: z.string().min(1).max(64),
   title: z.string().min(1).max(200),
@@ -568,6 +591,7 @@ export const registerAssistantRoutes = (
       },
     });
     assistantRepo.putResource(session.scope, { ...parsed.data, guildId: session.guildId });
+    enqueueResourceRefresh(session.scope, parsed.data.id, deps.now());
     return reply.status(200).send({ ok: true });
   });
 };

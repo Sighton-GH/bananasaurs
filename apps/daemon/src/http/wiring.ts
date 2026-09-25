@@ -15,6 +15,7 @@ import {
   createServer,
   issueBootstrapTokenIfNeeded,
   registerAssistantRoutes,
+  registerAssistantResourceCacheRoutes,
   registerAssistantTraceRoutes,
   registerAutomodRoutes,
   registerCaseRoutes,
@@ -208,6 +209,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     registerRoutes: (instance, guard, routeDeps) => {
       registerReadRoutes(instance, guard, routeDeps);
       registerAssistantRoutes(instance, guard, routeDeps);
+      registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
       registerAssistantTraceRoutes(instance, guard, routeDeps);
       registerOpsReadRoutes(instance, guard, routeDeps);
       registerOpsWriteRoutes(instance, guard, routeDeps);
