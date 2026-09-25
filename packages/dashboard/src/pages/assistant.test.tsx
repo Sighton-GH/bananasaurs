@@ -157,7 +157,7 @@ function renderPage(body: unknown = FULL) {
 describe('AssistantPage', () => {
   it('states its purpose sentence (Task 9)', async () => {
     renderPage();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
     expect(
       screen.getByText('Behaviours decide who answers, how they sound, and who may ask.'),
     ).toBeTruthy();
@@ -165,7 +165,7 @@ describe('AssistantPage', () => {
 
   it('renders behaviours with their tag mapping, prompt editor and records', async () => {
     renderPage();
-    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
     const club = screen.getByRole('button', { name: /Club assistant/ });
     expect(club.getAttribute('aria-pressed')).toBe('true');
     expect(within(club).getByText('Members mention @Club Assistant')).toBeTruthy();
@@ -199,7 +199,7 @@ describe('AssistantPage', () => {
 
   it('shows no AI status card and no answering claim outside the setup tracker', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
     expect(screen.queryByText('AI status')).toBeNull();
     expect(screen.queryByText('Off - the assistant will not answer')).toBeNull();
     expect(screen.queryByText('Enabled')).toBeNull();
@@ -207,7 +207,7 @@ describe('AssistantPage', () => {
 
   it('keeps skills, schedules and resources off this page (ADR 0060 declutter)', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
     expect(screen.queryByText('Things the assistant can do')).toBeNull();
     expect(screen.queryByText('Skill grants')).toBeNull();
     expect(screen.queryByText('Schedules and reminders')).toBeNull();
@@ -443,7 +443,7 @@ describe('AssistantPage', () => {
       ticket: { reviewerRoleIds: [] },
     };
     renderPage({ ...FULL, behaviours: [direct, BEHAVIOURS[1]!] });
-    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
     expect(screen.queryByRole('region', { name: 'Ticket routing' })).toBeNull();
     expect(screen.queryByText(/Ticket routing is not exposed/)).toBeNull();
     fireEvent.click(screen.getByRole('button', { name: /IT services/ }));
@@ -538,7 +538,7 @@ describe('AssistantPage', () => {
 
   it('offers no control without a backing endpoint', async () => {
     renderPage();
-    await screen.findByRole('heading', { level: 1, name: 'Assistant' });
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
     for (const label of [/Edit behaviour/, /Run test scenario/, /New reminder/]) {
       expect(screen.queryByRole('button', { name: label })).toBeNull();
     }
@@ -707,5 +707,56 @@ describe('AssistantPage: shared resources (ADR 0067)', () => {
         'Every enabled resource is available to every behaviour. Tick the ones this behaviour should prefer.',
       ),
     ).toBeTruthy();
+  });
+});
+
+describe('AssistantPage: prompt wizard and full-prompt preview (Task 18)', () => {
+  const PREVIEW = {
+    sections: [
+      { name: 'surface', chars: 12, estTokens: 3, text: 'surface text' },
+      { name: 'behaviour-prompt', chars: 20, estTokens: 5, text: 'prompt text' },
+      { name: 'safety-suffix', chars: 30, estTokens: 8, text: 'suffix text' },
+      { name: 'evidence-rule', chars: 13, estTokens: 4, text: 'evidence text' },
+      { name: 'server-card', chars: 11, estTokens: 3, text: 'server text' },
+      { name: 'resources', chars: 15, estTokens: 4, text: 'resources text' },
+      { name: 'skills', chars: 11, estTokens: 3, text: 'skills text' },
+    ],
+    totalChars: 122,
+    totalEstTokens: 31,
+  };
+
+  it('is titled Behaviours and links each behaviour card to its wizard', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Behaviours' })).toBeTruthy();
+    expect(screen.queryByRole('heading', { level: 1, name: 'Assistant' })).toBeNull();
+    const links = screen.getAllByRole('link', { name: 'Build with the wizard' });
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(
+      expect.arrayContaining([
+        '/assistant/behaviours/club/wizard',
+        '/assistant/behaviours/it/wizard',
+      ]),
+    );
+    expect(links).toHaveLength(2);
+  });
+
+  it('previews the full prompt with plain-words labels, sizes and expandable text', async () => {
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { url: '/api/assistant/behaviours/club/preview', body: PREVIEW },
+    ]);
+    renderWithSession(<AssistantPage />);
+    await screen.findByRole('heading', { level: 1, name: 'Behaviours' });
+    fireEvent.click(screen.getAllByRole('button', { name: 'Preview the full prompt' })[0]!);
+    expect(await screen.findByText('How members reach it')).toBeTruthy();
+    expect(screen.getByText('Your prompt')).toBeTruthy();
+    expect(screen.getByText('Bananasaurs safety rules (locked)')).toBeTruthy();
+    expect(screen.getByText('Evidence rule')).toBeTruthy();
+    expect(screen.getByText('Server card')).toBeTruthy();
+    expect(screen.getByText('Club resources')).toBeTruthy();
+    expect(screen.getByText('Allowed skills')).toBeTruthy();
+    expect(screen.getByText(/20 characters · ~5 tokens/)).toBeTruthy();
+    expect(screen.getByText(/Total: 122 characters · ~31 tokens/)).toBeTruthy();
+    expect(screen.getByText('prompt text')).toBeTruthy();
+    expect(screen.getByText('Your prompt').closest('details')).toBeTruthy();
   });
 });
