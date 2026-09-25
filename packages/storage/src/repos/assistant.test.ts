@@ -418,6 +418,96 @@ describe('assistant settings (ADR 0065)', () => {
   });
 });
 
+describe('github-repo / github-org kinds with parentId + meta (Task 17)', () => {
+  const org = {
+    id: 'gh-acme',
+    guildId: G,
+    title: 'acme',
+    url: 'https://github.com/acme',
+    kind: 'github-org' as const,
+    enabled: true,
+    reviewedAt: new Date(10).toISOString(),
+    meta: { owner: 'acme', includeForks: false, includeArchived: false },
+  };
+  const child = {
+    id: 'gh-acme-widget',
+    guildId: G,
+    title: 'acme/widget',
+    url: 'https://github.com/acme/widget',
+    kind: 'github-repo' as const,
+    enabled: true,
+    reviewedAt: new Date(11).toISOString(),
+    parentId: 'gh-acme',
+    meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+  };
+
+  it('round-trips the org and its auto-discovered child', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, org);
+    putResource(s, child);
+    const rows = listResources(s);
+    expect(rows.find((r) => r.id === 'gh-acme')).toMatchObject({
+      kind: 'github-org',
+      meta: { owner: 'acme', includeForks: false, includeArchived: false },
+    });
+    expect(rows.find((r) => r.id === 'gh-acme')?.parentId).toBeUndefined();
+    expect(rows.find((r) => r.id === 'gh-acme-widget')).toMatchObject({
+      kind: 'github-repo',
+      parentId: 'gh-acme',
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+    });
+  });
+
+  it('reads resources without meta or parent as absent fields', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, {
+      id: 'web',
+      guildId: G,
+      title: 'Site',
+      url: 'https://sfuracerbot.ca',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(10).toISOString(),
+    });
+    const row = listResources(s).find((r) => r.id === 'web');
+    expect(row?.parentId).toBeUndefined();
+    expect(row?.meta).toBeUndefined();
+  });
+
+  it('reads corrupt meta_json as undefined instead of throwing', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, org);
+    t.raw
+      .prepare(
+        'UPDATE assistant_resources SET meta_json = ? WHERE guild_id = ? AND resource_id = ?',
+      )
+      .run('not-json{', G, 'gh-acme');
+    expect(listResources(s).find((r) => r.id === 'gh-acme')?.meta).toBeUndefined();
+    t.raw
+      .prepare(
+        'UPDATE assistant_resources SET meta_json = ? WHERE guild_id = ? AND resource_id = ?',
+      )
+      .run(JSON.stringify({ repo: 'widget' }), G, 'gh-acme');
+    expect(listResources(s).find((r) => r.id === 'gh-acme')?.meta).toBeUndefined();
+  });
+
+  it('clearing meta and parent on re-put stores NULL', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, child);
+    putResource(s, { ...child, parentId: undefined, meta: undefined });
+    const row = listResources(s).find((r) => r.id === 'gh-acme-widget');
+    expect(row?.parentId).toBeUndefined();
+    expect(row?.meta).toBeUndefined();
+    expect(
+      t.raw
+        .prepare(
+          'SELECT parent_id AS p, meta_json AS m FROM assistant_resources WHERE guild_id = ? AND resource_id = ?',
+        )
+        .get(G, 'gh-acme-widget'),
+    ).toEqual({ p: null, m: null });
+  });
+});
+
 describe('behaviour promptWizard answers (Task 18)', () => {
   const behaviour = (id: string): AssistantBehaviour => ({
     id,

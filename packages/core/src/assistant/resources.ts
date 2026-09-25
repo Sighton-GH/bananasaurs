@@ -1,17 +1,57 @@
 import { isIP } from 'node:net';
+import { z } from 'zod';
+
+export type ResourceKind =
+  'website' | 'document' | 'discord-channel' | 'repository' | 'note' | 'github-repo' | 'github-org';
 
 export interface ClubResource {
   readonly id: string;
   readonly guildId: string;
   readonly title: string;
   readonly url: string;
-  readonly kind: 'website' | 'document' | 'discord-channel' | 'repository' | 'note';
+  readonly kind: ResourceKind;
   readonly enabled: boolean;
   readonly reviewedAt: string;
   readonly lastFetchedAt?: number;
   readonly fetchStatus?: 'pending' | 'ok' | 'failed' | 'blocked';
   readonly fetchDetail?: string;
+  /** The org resource's id, for a `github-repo` discovered from a `github-org`. Absent otherwise. */
+  readonly parentId?: string;
+  /** GitHub import details, for `github-repo` / `github-org` kinds only. Absent otherwise. */
+  readonly meta?: ResourceMeta;
 }
+
+/**
+ * The `meta_json` payload for `github-repo` / `github-org` resources
+ * (Task 17, ADR 0073): which owner/repo/branch a resource imports, the glob
+ * `include` filter for a repo (absent means the default file selection), and
+ * the org import toggles. Stored as JSON text; parsed on read with
+ * `parseResourceMeta` — anything corrupt or schema-invalid reads as
+ * `undefined`, never throws.
+ */
+export const resourceMetaSchema = z
+  .object({
+    owner: z.string().min(1).max(100),
+    repo: z.string().min(1).max(200).optional(),
+    branch: z.string().min(1).max(200).optional(),
+    include: z.array(z.string().min(1).max(300)).max(40).optional(),
+    autoDiscovered: z.boolean().optional(),
+    includeForks: z.boolean().optional(),
+    includeArchived: z.boolean().optional(),
+  })
+  .strict();
+
+export type ResourceMeta = z.infer<typeof resourceMetaSchema>;
+
+export const parseResourceMeta = (raw: string | null | undefined): ResourceMeta | undefined => {
+  if (raw === null || raw === undefined) return undefined;
+  try {
+    const parsed = resourceMetaSchema.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+};
 
 const privateV4 = (a: number, b: number): boolean =>
   a === 127 ||

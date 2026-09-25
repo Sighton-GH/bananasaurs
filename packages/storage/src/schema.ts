@@ -1979,13 +1979,21 @@ export const assistantResources = sqliteTable(
     lastFetchedAt: integer('last_fetched_at'),
     fetchStatus: text('fetch_status').notNull().default('pending'),
     content: text('content'),
+    // Task 17 (ADR 0073): an auto-discovered repo's org resource id, and the
+    // GitHub import details as JSON. Both nullable: every pre-existing row
+    // reads back with neither, and clearing either on re-put stores NULL.
+    // Deliberately no foreign key on `parentId`: deleting a disabled org must
+    // never cascade into the children the owner may have edited, and an
+    // edited child keeps its (now dangling) parent id as provenance.
+    parentId: text('parent_id'),
+    metaJson: text('meta_json'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.resourceId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check(
       'assistant_resources_kind',
-      sql`${t.kind} IN ('website','document','discord-channel','repository','note')`,
+      sql`${t.kind} IN ('website','document','discord-channel','repository','note','github-repo','github-org')`,
     ),
     check('assistant_resources_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_resources_enabled_bool', boolCheck(t.enabled)),

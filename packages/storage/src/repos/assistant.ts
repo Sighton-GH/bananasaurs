@@ -6,7 +6,7 @@ import type {
   Reminder,
   ReminderStatus,
 } from '@bananasaurs/core';
-import { promptWizardAnswers } from '@bananasaurs/core';
+import { parseResourceMeta, promptWizardAnswers } from '@bananasaurs/core';
 import {
   assistantBehaviours,
   assistantReminders,
@@ -178,18 +178,26 @@ export const setLogChannel = (scope: GuildScope, channelId: string | null, now: 
       })
       .run();
   });
-const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => ({
-  id: r.resourceId,
-  guildId: r.guildId,
-  title: r.title,
-  url: r.url,
-  kind: r.kind as ClubResource['kind'],
-  enabled: r.enabled === 1,
-  reviewedAt: new Date(r.reviewedAt).toISOString(),
-  ...(r.lastFetchedAt === null ? {} : { lastFetchedAt: r.lastFetchedAt }),
-  fetchStatus: r.fetchStatus as 'pending' | 'ok' | 'failed' | 'blocked',
-  ...(r.content === null ? {} : { fetchDetail: r.content }),
-});
+const toResource = (r: typeof assistantResources.$inferSelect): ClubResource => {
+  // `meta_json` this process wrote is still untrusted on the way back in
+  // (CLAUDE.md rule 3, the same reason `jobs.payload` has a validator): a
+  // hand-edited or corrupt value reads as absent, never throws.
+  const meta = parseResourceMeta(r.metaJson);
+  return {
+    id: r.resourceId,
+    guildId: r.guildId,
+    title: r.title,
+    url: r.url,
+    kind: r.kind as ClubResource['kind'],
+    enabled: r.enabled === 1,
+    reviewedAt: new Date(r.reviewedAt).toISOString(),
+    ...(r.lastFetchedAt === null ? {} : { lastFetchedAt: r.lastFetchedAt }),
+    fetchStatus: r.fetchStatus as 'pending' | 'ok' | 'failed' | 'blocked',
+    ...(r.content === null ? {} : { fetchDetail: r.content }),
+    ...(r.parentId === null ? {} : { parentId: r.parentId }),
+    ...(meta === undefined ? {} : { meta }),
+  };
+};
 export const listResources = (scope: GuildScope): readonly ClubResource[] =>
   read(scope, (db) =>
     db
@@ -211,6 +219,11 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
         kind: input.kind,
         enabled: input.enabled ? 1 : 0,
         reviewedAt: Date.parse(input.reviewedAt),
+        // Absent means cleared (the same normalise-to-NULL discipline
+        // `putBehaviour` follows): a re-save without meta/parent must not
+        // keep the stale import details.
+        parentId: input.parentId ?? null,
+        metaJson: input.meta === undefined ? null : JSON.stringify(input.meta),
       })
       .onConflictDoUpdate({
         target: [assistantResources.guildId, assistantResources.resourceId],
@@ -223,6 +236,8 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
           lastFetchedAt: null,
           fetchStatus: 'pending',
           content: null,
+          parentId: input.parentId ?? null,
+          metaJson: input.meta === undefined ? null : JSON.stringify(input.meta),
         },
       })
       .run();
