@@ -211,6 +211,54 @@ export interface ModelInfo {
 }
 export const providerTermsUrl = (provider: string) =>
   `/api/providers/${encodeURIComponent(provider)}/terms`;
+/** Task 8: several labelled keys across several providers, one ordered model chain. */
+export const ASSISTANT_PROVIDERS_URL = '/api/assistant/providers';
+export const ASSISTANT_KEYS_URL = '/api/assistant/keys';
+export const assistantKeyUrl = (keyId: string) =>
+  `/api/assistant/keys/${encodeURIComponent(keyId)}`;
+export const MODEL_CHAIN_URL = '/api/assistant/model-chain';
+export const MODEL_CHAIN_TEST_URL = '/api/assistant/model-chain/test';
+export const GITHUB_TOKEN_URL = '/api/assistant/github-token';
+export type SetupEligibility = 'eligible' | 'may-train' | 'ineligible' | 'unverified';
+export type ChainStatus =
+  | 'ready'
+  | 'no-key'
+  | 'key-unreadable'
+  | 'disabled'
+  | 'ineligible'
+  | 'unverified'
+  | 'allowance-used';
+export interface SetupProviderRow {
+  readonly provider: string;
+  readonly eligibility: SetupEligibility;
+  readonly supportsTools: boolean;
+  readonly keyCount: number;
+}
+export interface SetupKeyRow {
+  readonly keyId: string;
+  readonly provider: string;
+  readonly label: string;
+  readonly costClass: 'free' | 'paid' | 'unknown';
+  readonly enabled: boolean;
+  readonly readable: boolean;
+  readonly allowanceResetsAt?: number;
+}
+export interface SetupChainRow {
+  readonly position: number;
+  readonly keyId: string;
+  readonly keyLabel: string;
+  readonly provider: string;
+  readonly model: string;
+  readonly status: ChainStatus;
+  readonly allowanceResetsAt?: number;
+}
+export interface AssistantSetupData {
+  readonly providers: readonly SetupProviderRow[];
+  readonly keys: readonly SetupKeyRow[];
+  readonly chain: readonly SetupChainRow[];
+  readonly webSearch: { readonly keyConfigured: boolean; readonly enabled: boolean };
+  readonly github: { readonly tokenConfigured: boolean };
+}
 /** ADR 0063: which behaviour answers a tag of the bot user itself. */
 export const BOT_TAG_URL = '/api/assistant/bot-tag';
 /** ADR 0065: the AI log channel. */

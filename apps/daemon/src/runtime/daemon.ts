@@ -45,6 +45,7 @@ import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { createProviderConfigStore } from '../assistant/provider-config.js';
+import { QuotaLedger } from '../assistant/quota-ledger.js';
 import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
@@ -109,6 +110,11 @@ export interface Daemon {
   /** The dashboard API's seam into process-level facts (`HttpDeps.instance`). */
   readonly instance: OpsInstance;
   readonly providerStore?: ReturnType<typeof createProviderConfigStore> | undefined;
+  /**
+   * Task 8: the one process-wide QuotaLedger, shared by every guild's
+   * assistant loop and read by the dashboard's allowance pill.
+   */
+  readonly quotaLedger: QuotaLedger;
   /** Why no provider store exists, for the dashboard's setup step; absent when one does. */
   readonly providerSecretProblem?:
     'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
@@ -186,6 +192,11 @@ export function createDaemon(deps: DaemonDeps): Daemon {
             eligibilityRepo.findEligibility(scopes.instance(), providerId),
           makeProvider,
         });
+  // Task 8: one process-wide ledger for every guild's assistant loop and the
+  // dashboard's allowance pill — a spent `:free` allowance stays spent until
+  // its reset no matter which guild spent it. Returned below so `index.ts`
+  // can hand the same instance to the dashboard wiring; never copied.
+  const quotaLedger = new QuotaLedger();
 
   // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
   // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
@@ -220,6 +231,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         interactionTokenSealer,
         assistantConfig,
         assistantChain,
+        quotaLedger,
       }),
     });
   }
@@ -552,6 +564,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ops,
     portsFor,
     instance,
+    quotaLedger,
     // Returned, not only closed over: `index.ts` hands it to the dashboard, and
     // before 2026-09-23 it was never returned, so the dashboard had no store.
     ...(providerStore === undefined ? {} : { providerStore }),

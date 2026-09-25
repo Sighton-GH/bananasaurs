@@ -101,6 +101,10 @@ export interface ProviderConfigStore {
   /** Replaces the whole chain; empty clears it. */
   saveChain(rows: readonly { keyId: string; model: string }[], now: number): void;
   saveGithubToken(token: string | null): void;
+  /** Whether the stored key opens under this daemon's secret; false when unknown. */
+  isKeyReadable(keyId: string): boolean;
+  /** Whether a GitHub token is saved; the token itself is never returned. */
+  githubTokenConfigured(): boolean;
 }
 /**
  * The provider as `.env` configures it: what runs when nothing is saved in
@@ -382,6 +386,15 @@ export const createProviderConfigStore = (
     },
     saveGithubToken(token) {
       assistantProvidersRepo.setGithubTokenEnc(instance, token === null ? null : seal(key, token));
+    },
+    isKeyReadable(keyId) {
+      const stored = assistantProvidersRepo.listKeys(instance).find((k) => k.keyId === keyId);
+      if (stored === undefined) return false;
+      // Opened and dropped: the plaintext never leaves this expression.
+      return open(key, stored.apiKeyEnc) !== undefined;
+    },
+    githubTokenConfigured() {
+      return assistantProvidersRepo.getGithubTokenEnc(instance) !== null;
     },
   };
 };

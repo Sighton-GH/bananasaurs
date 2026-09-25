@@ -29,6 +29,7 @@ export { POLICY, passwordSchema, usernameSchema } from './policy.js';
 export { csrfTokenFor, generateToken, hashPassword, hashToken, verifyPassword } from './secrets.js';
 export { registerReadRoutes } from './routes/read.js';
 export { registerAssistantRoutes } from './routes/assistant.js';
+export { registerAssistantProviderRoutes } from './routes/assistant-providers.js';
 export { registerAssistantTraceRoutes } from './routes/assistant-traces.js';
 export { registerAssistantResourceCacheRoutes } from './routes/assistant-resources-cache.js';
 export { registerAssistantConversationRoutes } from './routes/assistant-conversations.js';

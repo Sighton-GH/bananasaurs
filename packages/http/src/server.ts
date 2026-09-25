@@ -115,6 +115,57 @@ export interface HttpDeps extends AuthDeps {
           provider: string,
           apiKey?: string,
         ): Promise<readonly { id: string; name: string; description?: string }[]>;
+        /** Task 8: several labelled keys; the sealed values are never opened here. */
+        keys?(): readonly {
+          readonly keyId: string;
+          readonly provider: string;
+          readonly label: string;
+          readonly costClass: 'free' | 'paid' | 'unknown';
+          readonly enabled: boolean;
+        }[];
+        addKey?(
+          input: {
+            provider: 'gemini' | 'openrouter' | 'nvidia-nim';
+            label: string;
+            apiKey: string;
+            costClass?: 'free' | 'paid' | 'unknown' | undefined;
+            enabled?: boolean | undefined;
+          },
+          now: number,
+        ): string;
+        updateKey?(
+          keyId: string,
+          input: {
+            label?: string | undefined;
+            apiKey?: string | undefined;
+            costClass?: 'free' | 'paid' | 'unknown' | undefined;
+            enabled?: boolean | undefined;
+          },
+          now: number,
+        ): void;
+        removeKey?(keyId: string): void;
+        chain?(): readonly {
+          readonly providerId: string;
+          readonly model: string;
+          readonly keyId: string;
+          readonly keyLabel: string;
+          readonly provider:
+            | {
+                readonly id: string;
+                readonly capabilities: ReadonlySet<string>;
+                generateText(request: {
+                  readonly model: string;
+                  readonly messages: readonly { readonly role: string; readonly text: string }[];
+                }): Promise<{ readonly text: string; readonly model: string }>;
+              }
+            | undefined;
+          readonly skip?: string | undefined;
+          readonly mayTrain: boolean;
+        }[];
+        saveChain?(rows: readonly { keyId: string; model: string }[], now: number): void;
+        saveGithubToken?(token: string | null): void;
+        isKeyReadable?(keyId: string): boolean;
+        githubTokenConfigured?(): boolean;
       }
     | undefined;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
@@ -135,6 +186,13 @@ export interface HttpDeps extends AuthDeps {
    */
   readonly enqueueResourceRefresh?:
     ((scope: GuildScope, resourceId: string, reason: 'added') => void) | undefined;
+  /**
+   * Task 8: the shared QuotaLedger's reset for one key, wired in
+   * `apps/daemon/src/http/wiring.ts` from the single process-wide ledger
+   * (`apps/daemon/src/runtime/daemon.ts`). Absent in isolated route tests,
+   * and then no allowance reset is shown.
+   */
+  readonly assistantAllowanceResetsAt?: ((keyId: string) => number | undefined) | undefined;
 }
 
 /**
