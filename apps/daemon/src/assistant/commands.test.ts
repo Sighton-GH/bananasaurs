@@ -5,6 +5,7 @@ import type {
   AssistantInvokePayload,
   DomainEvent,
   KnownMessage,
+  ReactionEvent,
 } from '@bananasaurs/core';
 import { ProviderError, RetryAfterError } from '@bananasaurs/core';
 import {
@@ -781,9 +782,10 @@ describe('assistant answer feedback reactions (Task 20)', () => {
     });
     return { setFeedback, addTraceFlag, subscriber };
   };
-  const reaction = (
-    over: Partial<Extract<DomainEvent, { kind: 'reactionAdd' }>> = {},
-  ): DomainEvent => ({
+  // Overrides are the real reaction event shape, partial: a single-kind
+  // `Extract` would narrow to `never` (the event's kind is a union), so the
+  // helper takes `Partial<ReactionEvent>` and returns the full event.
+  const reaction = (over: Partial<ReactionEvent> = {}): ReactionEvent => ({
     kind: 'reactionAdd',
     guildId,
     receivedAtMs: 1,

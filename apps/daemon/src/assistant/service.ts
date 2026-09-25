@@ -40,6 +40,7 @@ import type {
   InvocationTrace,
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
+import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
 import { QuotaLedger } from './quota-ledger.js';
@@ -154,22 +155,6 @@ export interface AssistantTryItResult {
   readonly traceId: string;
   readonly conversationId: string;
 }
-
-/**
- * Task 20: the same member-facing texts the invoke job answers — mirrored
- * here (not imported: the job owns its copies) so Try-it fails friendly
- * instead of throwing.
- */
-const TRY_BUSY_REPLY =
-  'The AI service is busy right now. Try again in a minute. No action was taken.';
-const tryNextUtcMidnight = (nowMs: number): number => {
-  const d = new Date(nowMs);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
-};
-const tryDailyQuotaReply = (resetAt: number | undefined, nowMs: number): string => {
-  const unix = Math.floor((resetAt ?? tryNextUtcMidnight(nowMs)) / 1000);
-  return `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`;
-};
 
 /** What the tools need from live Discord (ADR 0067). */
 export interface AssistantDiscordPorts {
@@ -1089,9 +1074,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       } catch (err) {
         outcome = 'failed';
         if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
-          result = { ok: false, content: tryDailyQuotaReply(err.resetAt, now()) };
+          result = { ok: false, content: dailyQuotaReply(err.resetAt, now()) };
         } else if (err instanceof ProviderError && err.retryable) {
-          result = { ok: false, content: TRY_BUSY_REPLY };
+          result = { ok: false, content: BUSY_REPLY };
         } else {
           logger.warn(
             safeLogFields({ component: 'assistant', guildId: scope.guildId, err }),
