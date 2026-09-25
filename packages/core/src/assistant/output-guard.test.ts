@@ -79,4 +79,28 @@ describe('guardAnswer', () => {
         .ok,
     ).toBe(false);
   });
+  it('does not rewrite gemini-2.5-flash inside gemini-2.5-flash-lite', () => {
+    const r = guardAnswer({
+      text: 'using gemini-2.5-flash-lite today',
+      protectedText: P,
+      modelIds: ['gemini-2.5-flash'],
+    });
+    expect(r).toEqual({
+      ok: true,
+      text: 'using gemini-2.5-flash-lite today',
+      removed: [],
+    });
+  });
+  it('replaces each configured id once, whole, longest first', () => {
+    const r = guardAnswer({
+      text: 'gemini-2.5-flash and gemini-2.5-flash-lite',
+      protectedText: P,
+      modelIds: ['gemini-2.5-flash', 'gemini-2.5-flash-lite'],
+    });
+    expect(r).toEqual({
+      ok: true,
+      text: "the club's AI service and the club's AI service",
+      removed: ['model-id'],
+    });
+  });
 });

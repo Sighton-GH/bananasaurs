@@ -141,7 +141,14 @@ export function AssistantHistoryDetailPage() {
                     {
                       key: 'model',
                       header: 'Model',
-                      cell: (r) => <span className="font-mono text-xs">{r.model}</span>,
+                      cell: (r) => (
+                        <span className="font-mono text-xs">
+                          {r.model}
+                          {r.keyLabel !== undefined && (
+                            <span className="text-ink-muted"> via {r.keyLabel}</span>
+                          )}
+                        </span>
+                      ),
                     },
                     {
                       key: 'outcome',

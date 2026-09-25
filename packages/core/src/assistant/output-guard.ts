@@ -70,11 +70,19 @@ const replaceModelIds = (
 ): { text: string; replaced: boolean } => {
   let replaced = false;
   let out = text;
-  for (const id of modelIds) {
+  // Longest first so `gemini-2.5-flash` never rewrites the prefix of
+  // `gemini-2.5-flash-lite`. The boundary includes `_` and `-` because
+  // model ids contain them; `\w` alone would match inside a longer id. A
+  // `.` only counts as an id continuation when it joins two id characters
+  // (`flash.5`), so a sentence-final period (`...flash.`) still matches.
+  for (const id of [...modelIds].sort((a, b) => b.length - a.length)) {
     // Short ids would match ordinary words; only real model ids are replaced,
     // as whole occurrences (never inside longer words), case-insensitively.
     if (id.length < 4) continue;
-    const pattern = new RegExp(`(?<!\\w)${escapeRegExp(id)}(?!\\w)`, 'gi');
+    const pattern = new RegExp(
+      `(?<![A-Za-z0-9_-])(?<![A-Za-z0-9]\\.)${escapeRegExp(id)}(?![A-Za-z0-9_-])(?!\\.[A-Za-z0-9])`,
+      'gi',
+    );
     const next = out.replace(pattern, MODEL_ID_REPLACEMENT);
     if (next !== out) {
       replaced = true;

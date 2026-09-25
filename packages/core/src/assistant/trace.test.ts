@@ -72,6 +72,22 @@ describe('assistantTraceSchema', () => {
       ),
     ).toThrow();
   });
+
+  it('round-trips an attempt key label and rejects an over-long one', () => {
+    const trace = fixtureTrace({
+      attempts: [{ provider: 'gemini', model: 'm', keyLabel: 'Main key', outcome: 'ok', ms: 1 }],
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)))).toEqual(trace);
+    expect(() =>
+      assistantTraceSchema.parse(
+        fixtureTrace({
+          attempts: [
+            { provider: 'gemini', model: 'm', keyLabel: 'x'.repeat(61), outcome: 'ok', ms: 1 },
+          ],
+        }),
+      ),
+    ).toThrow();
+  });
 });
 
 describe('estimateTokens', () => {

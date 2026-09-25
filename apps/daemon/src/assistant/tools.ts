@@ -59,6 +59,11 @@ export interface AssistantToolResult {
   readonly sources: readonly ToolSource[];
   /** True when the result came from Brave (the answer must say so). */
   readonly web?: boolean;
+  /**
+   * IDs follow-up rounds may open (ADR 0071): `open_resource` returns its
+   * resource id here; every other tool returns none.
+   */
+  readonly handles?: readonly string[];
 }
 
 const query = z.object({ query: z.string().trim().min(1).max(200) }).strict();
@@ -146,11 +151,14 @@ export const runAssistantTool = async (
         if (found === undefined) return refused(name, 'No enabled resource has that id.');
         const source = { title: found.title, url: found.url };
         if (!['website', 'document', 'repository'].includes(found.kind))
-          return evidence(name, `${found.title}: ${found.url}`, [source]);
+          return { ...evidence(name, `${found.title}: ${found.url}`, [source]), handles: [found.id] };
         const fetched = await ports.fetchResource(found.url);
         if (!fetched.ok)
           return refused(name, `The resource could not be opened (${fetched.code}).`);
-        return evidence(name, `${found.title}\n${fetched.evidence.text}`, [source]);
+        return {
+          ...evidence(name, `${found.title}\n${fetched.evidence.text}`, [source]),
+          handles: [found.id],
+        };
       }
       case 'web_search': {
         const { query: q } = parsed.data as z.infer<typeof query>;
