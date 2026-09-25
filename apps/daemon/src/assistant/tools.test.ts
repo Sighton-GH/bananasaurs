@@ -216,3 +216,216 @@ describe('runAssistantTool', () => {
     }
   });
 });
+
+const cachePorts = (over: Record<string, unknown> = {}) => {
+  const resources = () => [
+    resource(),
+    resource({ id: 'rules', title: 'Club rules', kind: 'website' as const }),
+  ];
+  return ports({
+    resources,
+    cacheSearch: () => [],
+    cacheChunk: () => undefined,
+    cacheNeighbours: () => [],
+    cacheOutline: () => [],
+    cacheDocument: () => undefined,
+    cacheResourceDocs: () => [],
+    cacheResourceChunks: () => [],
+    cacheFreshness: () => [],
+    enqueueRefresh: () => true,
+    ...over,
+  } as Partial<AssistantToolPorts>);
+};
+
+describe('cache tools (Task 16)', () => {
+  it('list_sources lists enabled resources with relative updated times, at most 30 lines', async () => {
+    const many = Array.from({ length: 40 }, (_, i) => ({
+      id: `r${String(i)}`,
+      guildId: '234567890123456789',
+      title: `Resource ${String(i)} with a very long title to push line counts`,
+      url: `https://example.com/${String(i)}`,
+      kind: 'website' as const,
+      enabled: true,
+      reviewedAt: '2026-09-01T00:00:00.000Z',
+    }));
+    const p = cachePorts({
+      resources: () => many,
+      cacheFreshness: () => many.map((r) => ({ resourceId: r.id, fetchedAt: NOW - 3_600_000 })),
+    });
+    const result = await runAssistantTool({ name: 'list_sources', args: {} }, p);
+    expect(result.ok).toBe(true);
+    const lines = result.text.split('\n').filter(Boolean);
+    expect(lines.length).toBeLessThanOrEqual(30);
+    expect(result.text).toContain('r0 · Resource 0');
+    expect(result.handles).toHaveLength(lines.length);
+  });
+
+  it('list_sources honours a filter and refuses an overlong one', async () => {
+    const p = cachePorts({
+      cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
+    });
+    const filtered = await runAssistantTool(
+      { name: 'list_sources', args: { filter: 'hand' } },
+      p,
+    );
+    expect(filtered.ok).toBe(true);
+    expect(filtered.text).toContain('handbook');
+    expect(filtered.text).not.toContain('rules');
+    await expect(
+      runAssistantTool({ name: 'list_sources', args: { filter: 'x'.repeat(81) } }, p),
+    ).resolves.toMatchObject({ ok: false });
+  });
+
+  it('search_sources caps hits at 6 and total text at 2000 chars', async () => {
+    const hits = Array.from({ length: 10 }, (_, i) => ({
+      chunkId: `c_doc_${String(i)}`,
+      docId: 'd_abc',
+      resourceId: 'handbook',
+      headingPath: `Guide › Part ${String(i)}`,
+      snippet: 'x'.repeat(400),
+    }));
+    const p = cachePorts({ cacheSearch: () => hits });
+    const result = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(2_000);
+    expect(result.text.split('\n').filter(Boolean).length).toBeLessThanOrEqual(6);
+    for (const line of result.text.split('\n').filter(Boolean)) {
+      const snippet = line.split(': ').slice(1).join(': ');
+      expect(snippet.length).toBeLessThanOrEqual(300);
+    }
+    expect(result.handles).toContain('c_doc_0');
+    expect(result.handles).toContain('d_abc');
+  });
+
+  it('search_sources answers no hits with the ruled sentence and refuses short queries', async () => {
+    const p = cachePorts({ cacheSearch: () => [] });
+    const empty = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care' } },
+      p,
+    );
+    expect(empty.ok).toBe(true);
+    expect(empty.text).toBe('No matching passages. Try different words, or list_sources.');
+    await expect(
+      runAssistantTool({ name: 'search_sources', args: { query: 'x' } }, p),
+    ).resolves.toMatchObject({ ok: false });
+    await expect(
+      runAssistantTool(
+        { name: 'search_sources', args: { query: 'battery', sourceIds: Array(11).fill('handbook') } },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false });
+  });
+
+  it('read_chunk returns the chunk with neighbours inside 4000 chars and unknown ids stay unknown', async () => {
+    const big = 'y'.repeat(5_000);
+    const p = cachePorts({
+      cacheChunk: () => ({
+        chunkId: 'c_d_0',
+        docId: 'd_abc',
+        resourceId: 'handbook',
+        headingPath: 'Guide › Intro',
+        text: big,
+      }),
+      cacheNeighbours: () => [
+        {
+          chunkId: 'c_d_0',
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          headingPath: 'Guide › Intro',
+          text: big,
+        },
+      ],
+    });
+    const result = await runAssistantTool(
+      { name: 'read_chunk', args: { chunkId: 'c_d_0' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(4_000);
+    expect(result.text).toContain('Guide › Intro');
+    expect(result.text).toContain('https://example.com/handbook');
+    expect(result.handles).toContain('c_d_0');
+    expect(result.handles).toContain('d_abc');
+    expect(result.sources).toEqual([
+      { title: 'Club handbook', url: 'https://example.com/handbook' },
+    ]);
+    const unknown = await runAssistantTool(
+      { name: 'read_chunk', args: { chunkId: 'c_other_guild_9' } },
+      cachePorts(),
+    );
+    expect(unknown.ok).toBe(false);
+    expect(unknown.text).toContain('unknown id');
+  });
+
+  it('outline lists headings with chunk ids inside 1500 chars', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({
+      chunkId: `c_d_${String(i)}`,
+      headingPath: `Guide › Section ${String(i)} with a long heading ${'z'.repeat(60)}`,
+    }));
+    const p = cachePorts({
+      cacheOutline: () => rows,
+      cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
+    });
+    const result = await runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(1_500);
+    expect(result.text).toContain('c_d_0');
+    expect(result.handles).toContain('c_d_0');
+    const unknown = await runAssistantTool({ name: 'outline', args: { docId: 'd_nope' } }, cachePorts());
+    expect(unknown.text).toContain('unknown id');
+  });
+
+  it('open_resource returns the first cached chunks inside 4000 chars', async () => {
+    const p = cachePorts({
+      cacheResourceDocs: () => [
+        { docId: 'd_abc', resourceId: 'handbook', title: 'Club handbook', url: 'https://example.com/handbook' },
+      ],
+      cacheResourceChunks: () => [
+        { chunkId: 'c_d_abc_0', docId: 'd_abc', resourceId: 'handbook', headingPath: 'H', text: 'w'.repeat(5_000) },
+      ],
+    });
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { resourceId: 'handbook' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text.length).toBeLessThanOrEqual(4_000);
+    expect(result.handles).toContain('c_d_abc_0');
+    expect(result.handles).toContain('d_abc');
+  });
+
+  it('open_resource on an unfetched resource asks for a refresh and enqueues once', async () => {
+    const enqueueRefresh = vi.fn(() => true);
+    const p = cachePorts({ cacheResourceDocs: () => [], enqueueRefresh });
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { resourceId: 'handbook' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe("This source hasn't been fetched yet; an update has been requested.");
+    expect(enqueueRefresh).toHaveBeenCalledWith('handbook');
+  });
+
+  it('refresh_source enqueues once per 10 minutes', async () => {
+    const enqueueRefresh = vi.fn(() => true);
+    const p = cachePorts({ enqueueRefresh });
+    const first = await runAssistantTool(
+      { name: 'refresh_source', args: { resourceId: 'handbook' } },
+      p,
+    );
+    expect(first.text).toBe('Refresh started; updated content will be available in about a minute.');
+    const deduped = await runAssistantTool(
+      { name: 'refresh_source', args: { resourceId: 'handbook' } },
+      cachePorts({ enqueueRefresh: () => false }),
+    );
+    expect(deduped.text).toBe('Already refreshed in the last 10 minutes.');
+    const unknown = await runAssistantTool(
+      { name: 'refresh_source', args: { resourceId: 'nope' } },
+      cachePorts(),
+    );
+    expect(unknown.text).toContain('unknown id');
+  });
+});
