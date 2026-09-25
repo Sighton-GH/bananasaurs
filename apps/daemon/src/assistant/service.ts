@@ -103,6 +103,8 @@ export const createAssistantService = (
       {
         providerId: raw.id as ProviderId,
         model: current.AI_MODEL ?? 'test-model',
+        keyId: 'key_test',
+        keyLabel: 'Test provider',
         provider: wrapped,
         skip: undefined,
         mayTrain: false,
@@ -322,40 +324,56 @@ export const createAssistantService = (
       // on the request path. A missing terms record, or one that does not
       // allow production use, fails closed before any member content crosses
       // the provider boundary (finding 1). A provider that may train on input
-      // is allowed by owner decision and raises a warning instead. Re-checked
-      // here regardless of where `provider` came from — the chain resolver
-      // for a stored entry, or the test port for an injected one, which the
-      // resolver never sees.
-      const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
-      try {
-        if (eligibilityRow === undefined)
-          throw new Error(`no provider_eligibility row for ${provider.id}`);
-        assertProviderEligible(
-          {
-            trainsOnInput: eligibilityRow.trainsOnInput,
-            productionUseAllowed: eligibilityRow.productionUseAllowed,
-            evidenceUrl: eligibilityRow.evidenceUrl,
-            reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
-          },
-          'club',
-        );
-      } catch {
-        assistantRepo.recordSkillActivity(scope, {
-          id: randomUUID(),
-          at: now(),
-          behaviourId: input.behaviour.id,
-          skillId: skill,
-          actorId: input.userId,
-          outcome: 'denied',
-          detail: 'Provider terms are not recorded or do not allow this use.',
-        });
-        return {
-          ok: false,
-          content:
-            "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
-        };
-      }
-      if (providerMayTrain(eligibilityRow))
+      // is allowed by owner decision and raises a warning instead.
+      //
+      // Task 6b (carried from Task 6's review): a `chosen` entry that came
+      // from `resolveModelChain` already ran this exact check while building
+      // the chain — re-running it here just re-reads the same
+      // `provider_eligibility` row a second time and uses `chosen.mayTrain`
+      // for the warning instead. Only a raw `testPorts.provider` never went
+      // through the resolver, so it is the one path that still needs its own
+      // check, run here for the first and only time.
+      const usingTestProvider = testPorts.provider !== undefined;
+      if (usingTestProvider) {
+        const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
+        try {
+          if (eligibilityRow === undefined)
+            throw new Error(`no provider_eligibility row for ${provider.id}`);
+          assertProviderEligible(
+            {
+              trainsOnInput: eligibilityRow.trainsOnInput,
+              productionUseAllowed: eligibilityRow.productionUseAllowed,
+              evidenceUrl: eligibilityRow.evidenceUrl,
+              reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
+            },
+            'club',
+          );
+        } catch {
+          assistantRepo.recordSkillActivity(scope, {
+            id: randomUUID(),
+            at: now(),
+            behaviourId: input.behaviour.id,
+            skillId: skill,
+            actorId: input.userId,
+            outcome: 'denied',
+            detail: 'Provider terms are not recorded or do not allow this use.',
+          });
+          return {
+            ok: false,
+            content:
+              "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+          };
+        }
+        if (providerMayTrain(eligibilityRow))
+          logger.warn(
+            safeLogFields({
+              component: 'assistant',
+              guildId: input.guildId,
+              reason: 'provider-may-train',
+            }),
+            'assistant provider may train on server content',
+          );
+      } else if (chosen.mayTrain) {
         logger.warn(
           safeLogFields({
             component: 'assistant',
@@ -364,6 +382,7 @@ export const createAssistantService = (
           }),
           'assistant provider may train on server content',
         );
+      }
       // ADR 0067: every enabled resource is available to every behaviour. The
       // behaviour's own list is fetched up front as preferred evidence; with
       // tools the model opens the others itself, without them all are fetched.

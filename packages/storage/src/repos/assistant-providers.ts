@@ -1,111 +1,161 @@
+import { randomBytes } from 'node:crypto';
 import { asc, eq } from 'drizzle-orm';
-import { assistantModelChain, assistantProviderConfig, assistantProviders } from '../schema.js';
+import { assistantModelChain, assistantProviderConfig, assistantProviderKeys } from '../schema.js';
 import type { InstanceScope } from '../scope.js';
 import { readInstance, writeInstance } from '../write.js';
 
 /**
- * Several providers and one ordered model chain (ADR 0075).
+ * Several sealed keys per provider, and one ordered model chain of key +
+ * model (Task 6b, ADR 0075 follow-up, owner request 2026-09-24).
  *
- * Instance-level throughout: providers are a fact about the daemon, not a
- * guild. The old single-provider row (`assistant-provider.ts`) is no longer
- * read for provider/model/key after the 0037 data copy, but its web-search
- * columns stay in use there — and the GitHub token lives on that same row,
- * reached through this module.
+ * Instance-level throughout: keys are a fact about the daemon, not a guild.
+ * Terms eligibility stays per *provider*, not per key (hard rule 5) — see
+ * `eligibility-repo.ts`. The old single-provider row (`assistant-provider.ts`)
+ * is no longer read for provider/model/key after the 0037/0038/0039 data
+ * copies, but its web-search columns stay in use there — and the GitHub token
+ * lives on that same row, reached through this module.
  */
 
 export type ProviderId = 'gemini' | 'openrouter' | 'nvidia-nim';
 export type ProviderCostClass = 'free' | 'paid' | 'unknown';
 
-export interface StoredProvider {
+export interface StoredKey {
+  readonly keyId: string;
   readonly provider: ProviderId;
-  readonly apiKeyEnc: string | null;
+  readonly label: string;
+  readonly apiKeyEnc: string;
   readonly costClass: ProviderCostClass;
   readonly enabled: boolean;
+  readonly createdAt: number;
   readonly updatedAt: number;
 }
 
 export interface ChainRow {
   readonly position: number;
+  readonly keyId: string;
   readonly provider: ProviderId;
   readonly model: string;
 }
 
-const toProvider = (row: {
-  provider: string;
-  apiKeyEnc: string | null;
-  costClass: string;
-  enabled: number;
-  updatedAt: number;
-}): StoredProvider => {
-  if (row.provider !== 'gemini' && row.provider !== 'openrouter' && row.provider !== 'nvidia-nim')
-    throw new Error(
-      `assistant_providers holds unexpected provider ${JSON.stringify(row.provider)}`,
-    );
-  if (row.costClass !== 'free' && row.costClass !== 'paid' && row.costClass !== 'unknown')
-    throw new Error(
-      `assistant_providers ${row.provider}: unexpected cost class ${JSON.stringify(row.costClass)}`,
-    );
-  return {
-    provider: row.provider,
-    apiKeyEnc: row.apiKeyEnc,
-    costClass: row.costClass,
-    enabled: row.enabled === 1,
-    updatedAt: row.updatedAt,
-  };
+const asProviderId = (value: string): ProviderId => {
+  if (value !== 'gemini' && value !== 'openrouter' && value !== 'nvidia-nim')
+    throw new Error(`unexpected provider ${JSON.stringify(value)}`);
+  return value;
 };
 
-export const listProviders = (scope: InstanceScope): StoredProvider[] =>
+const asCostClass = (value: string): ProviderCostClass => {
+  if (value !== 'free' && value !== 'paid' && value !== 'unknown')
+    throw new Error(`unexpected cost class ${JSON.stringify(value)}`);
+  return value;
+};
+
+const toKey = (row: {
+  keyId: string;
+  provider: string;
+  label: string;
+  apiKeyEnc: string;
+  costClass: string;
+  enabled: number;
+  createdAt: number;
+  updatedAt: number;
+}): StoredKey => ({
+  keyId: row.keyId,
+  provider: asProviderId(row.provider),
+  label: row.label,
+  apiKeyEnc: row.apiKeyEnc,
+  costClass: asCostClass(row.costClass),
+  enabled: row.enabled === 1,
+  createdAt: row.createdAt,
+  updatedAt: row.updatedAt,
+});
+
+export const listKeys = (scope: InstanceScope): StoredKey[] =>
   readInstance(scope, (db) =>
     db
       .select({
-        provider: assistantProviders.provider,
-        apiKeyEnc: assistantProviders.apiKeyEnc,
-        costClass: assistantProviders.costClass,
-        enabled: assistantProviders.enabled,
-        updatedAt: assistantProviders.updatedAt,
+        keyId: assistantProviderKeys.keyId,
+        provider: assistantProviderKeys.provider,
+        label: assistantProviderKeys.label,
+        apiKeyEnc: assistantProviderKeys.apiKeyEnc,
+        costClass: assistantProviderKeys.costClass,
+        enabled: assistantProviderKeys.enabled,
+        createdAt: assistantProviderKeys.createdAt,
+        updatedAt: assistantProviderKeys.updatedAt,
       })
-      .from(assistantProviders)
-      .orderBy(asc(assistantProviders.provider))
+      .from(assistantProviderKeys)
+      .orderBy(asc(assistantProviderKeys.keyId))
       .all()
-      .map(toProvider),
+      .map(toKey),
   );
 
-export const upsertProvider = (
+/** `key_` + 16 hex characters, matching the design's key id shape. */
+const newKeyId = (): string => `key_${randomBytes(8).toString('hex')}`;
+
+/**
+ * Adds a new key and returns its id. `keyId` is normally omitted, and one is
+ * generated (`key_` + 16 hex); the legacy single-provider save route
+ * (Task 6b fix round 1) passes an explicit `key_<provider>` id so it can find
+ * the same key again on the next save, matching the id the 0039 migration
+ * gave a provider's key.
+ */
+export const addKey = (
   scope: InstanceScope,
-  p: {
+  input: {
     provider: ProviderId;
-    apiKeyEnc?: string | null;
+    label: string;
+    apiKeyEnc: string;
+    costClass?: ProviderCostClass;
+    enabled?: boolean;
+    now: number;
+    keyId?: string;
+  },
+): string => {
+  const keyId = input.keyId ?? newKeyId();
+  writeInstance(scope, ({ db }) => {
+    db.insert(assistantProviderKeys)
+      .values({
+        keyId,
+        provider: input.provider,
+        label: input.label,
+        apiKeyEnc: input.apiKeyEnc,
+        costClass: input.costClass ?? 'unknown',
+        enabled: (input.enabled ?? true) ? 1 : 0,
+        createdAt: input.now,
+        updatedAt: input.now,
+      })
+      .run();
+  });
+  return keyId;
+};
+
+export const updateKey = (
+  scope: InstanceScope,
+  keyId: string,
+  input: {
+    label?: string;
+    apiKeyEnc?: string;
     costClass?: ProviderCostClass;
     enabled?: boolean;
     now: number;
   },
 ): void =>
   writeInstance(scope, ({ db }) => {
-    const values = {
-      provider: p.provider,
-      apiKeyEnc: p.apiKeyEnc ?? null,
-      costClass: p.costClass ?? 'unknown',
-      enabled: p.enabled === true ? 1 : 0,
-      updatedAt: p.now,
-    };
-    db.insert(assistantProviders)
-      .values(values)
-      .onConflictDoUpdate({
-        target: assistantProviders.provider,
-        set: {
-          apiKeyEnc: values.apiKeyEnc,
-          costClass: values.costClass,
-          enabled: values.enabled,
-          updatedAt: values.updatedAt,
-        },
+    db.update(assistantProviderKeys)
+      .set({
+        ...(input.label === undefined ? {} : { label: input.label }),
+        ...(input.apiKeyEnc === undefined ? {} : { apiKeyEnc: input.apiKeyEnc }),
+        ...(input.costClass === undefined ? {} : { costClass: input.costClass }),
+        ...(input.enabled === undefined ? {} : { enabled: input.enabled ? 1 : 0 }),
+        updatedAt: input.now,
       })
+      .where(eq(assistantProviderKeys.keyId, keyId))
       .run();
   });
 
-/** Removing a provider drops its chain rows through the foreign-key cascade. */
-export const removeProvider = (scope: InstanceScope, provider: ProviderId): void =>
+/** Removing a key drops its chain rows through the foreign-key cascade. */
+export const removeKey = (scope: InstanceScope, keyId: string): void =>
   writeInstance(scope, ({ db }) => {
-    db.delete(assistantProviders).where(eq(assistantProviders.provider, provider)).run();
+    db.delete(assistantProviderKeys).where(eq(assistantProviderKeys.keyId, keyId)).run();
   });
 
 export const getModelChain = (scope: InstanceScope): ChainRow[] =>
@@ -113,39 +163,50 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
     db
       .select({
         position: assistantModelChain.position,
-        provider: assistantModelChain.provider,
+        keyId: assistantModelChain.keyId,
         model: assistantModelChain.model,
+        provider: assistantProviderKeys.provider,
       })
       .from(assistantModelChain)
+      .innerJoin(assistantProviderKeys, eq(assistantModelChain.keyId, assistantProviderKeys.keyId))
       .orderBy(asc(assistantModelChain.position))
       .all()
-      .map((row) => {
-        if (
-          row.provider !== 'gemini' &&
-          row.provider !== 'openrouter' &&
-          row.provider !== 'nvidia-nim'
-        )
-          throw new Error(
-            `assistant_model_chain holds unexpected provider ${JSON.stringify(row.provider)}`,
-          );
-        return { position: row.position, provider: row.provider, model: row.model };
-      }),
+      .map((row) => ({
+        position: row.position,
+        keyId: row.keyId,
+        provider: asProviderId(row.provider),
+        model: row.model,
+      })),
   );
 
-/** Replaces the whole chain; positions are dense from 0 in the given order. */
+/**
+ * Replaces the whole chain; positions are dense from 0 in the given order.
+ * At most six entries; a repeated (keyId, model) pair in the same call is
+ * refused up front rather than left to the unique constraint, so the error
+ * names the actual problem.
+ */
 export const setModelChain = (
   scope: InstanceScope,
-  rows: readonly { provider: ProviderId; model: string }[],
+  rows: readonly { keyId: string; model: string }[],
   now: number,
 ): void => {
   if (rows.length > 6) throw new Error('the model chain holds at most six entries');
+  const seen = new Set<string>();
+  for (const row of rows) {
+    const pairKey = `${row.keyId}\u0000${row.model}`;
+    if (seen.has(pairKey))
+      throw new Error(
+        `duplicate (keyId, model) pair in the model chain: ${row.keyId}, ${row.model}`,
+      );
+    seen.add(pairKey);
+  }
   writeInstance(scope, ({ db }) => {
     db.delete(assistantModelChain).run();
     for (const [position, row] of rows.entries()) {
-      // A chain entry naming a provider with no key row fails here on the
-      // foreign key, not later at request time.
+      // An entry naming a key with no row fails here on the foreign key, not
+      // later at request time.
       db.insert(assistantModelChain)
-        .values({ position, provider: row.provider, model: row.model, updatedAt: now })
+        .values({ position, keyId: row.keyId, model: row.model, updatedAt: now })
         .run();
     }
   });
