@@ -1,0 +1,78 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { pino } from 'pino';
+import {
+  conversationPruneDedupeKey,
+  JOB_KINDS,
+  parseGuildId,
+} from '@bananasaurs/core';
+import {
+  guildRepo,
+  jobRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
+import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import {
+  CONVERSATION_PRUNE_INTERVAL_MS,
+  createConversationPruneTimer,
+  type ConversationPruneTimerDeps,
+} from './conversation-prune-timer.js';
+
+const GUILD_A = parseGuildId('111111111111111111');
+const GUILD_B = parseGuildId('222222222222222222');
+
+const logger = pino({ level: 'silent' });
+
+let t: ReturnType<typeof openMigratedTestDatabase>;
+let a: GuildScope;
+let b: GuildScope;
+let nowMs: number;
+
+const depsFor = (over: Partial<ConversationPruneTimerDeps> = {}): ConversationPruneTimerDeps => ({
+  guilds: () => [{ scope: a }, { scope: b }],
+  enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+  now: () => nowMs,
+  logger,
+  ...over,
+});
+
+const jobsFor = (scope: GuildScope) => jobRepo.listJobs(scope, {});
+
+beforeEach(() => {
+  t = openMigratedTestDatabase();
+  a = t.scopes.forGuild(GUILD_A);
+  b = t.scopes.forGuild(GUILD_B);
+  guildRepo.upsertGuild(a, { name: 'guild-a', now: 0 });
+  guildRepo.upsertGuild(b, { name: 'guild-b', now: 0 });
+  nowMs = Date.parse('2026-09-25T12:00:00.000Z');
+});
+afterEach(() => t.close());
+
+describe('conversation prune timer', () => {
+  it('runOnce enqueues one job per guild carrying the UTC day', () => {
+    createConversationPruneTimer(depsFor()).runOnce();
+
+    for (const scope of [a, b]) {
+      const jobs = jobsFor(scope);
+      expect(jobs).toHaveLength(1);
+      expect(jobs[0]?.kind).toBe(JOB_KINDS.conversationPrune);
+      expect(jobs[0]?.payload).toBe(JSON.stringify({ day: '2026-09-25' }));
+      expect(jobs[0]?.dedupeKey).toBe(conversationPruneDedupeKey('2026-09-25'));
+    }
+  });
+
+  it('a second runOnce on the same day enqueues nothing; the next day enqueues again', () => {
+    const timer = createConversationPruneTimer(depsFor());
+    timer.runOnce();
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+
+    nowMs = Date.parse('2026-09-26T01:00:00.000Z');
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(2);
+    expect(jobsFor(a)[1]?.dedupeKey).toBe(conversationPruneDedupeKey('2026-09-26'));
+  });
+
+  it('ticks once a day', () => {
+    expect(CONVERSATION_PRUNE_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+});

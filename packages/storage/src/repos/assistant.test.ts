@@ -35,7 +35,15 @@ import {
   setBotTagBehaviour,
   getAssistantSettings,
   setLogChannel,
+  getConversationRetention,
+  setConversationRetention,
 } from './assistant.js';
+import {
+  appendTurn,
+  createConversation,
+  getConversation,
+  recentTurns,
+} from './conversations.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
 beforeEach(() => {
@@ -467,5 +475,100 @@ describe('behaviour promptWizard answers (Task 18)', () => {
     expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
     corrupt(JSON.stringify(null));
     expect(listBehaviours(s)[0]?.promptWizard).toBeUndefined();
+  });
+});
+
+describe('conversation retention (Task 19)', () => {
+  const OTHER_GUILD = parseGuildId('999999999999999999');
+
+  it('defaults to 6 months, round-trips the four choices, and keeps each guild its own', () => {
+    const s = t.scopes.forGuild(G);
+    expect(getConversationRetention(s)).toBe(182);
+    for (const days of [61, 365, null, 182] as const) {
+      setConversationRetention(s, days, 10);
+      expect(getConversationRetention(s)).toBe(days);
+    }
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    expect(getConversationRetention(other)).toBe(182);
+    setConversationRetention(other, 61, 11);
+    expect(getConversationRetention(s)).toBe(182);
+    expect(getConversationRetention(other)).toBe(61);
+  });
+
+  it('keeps the log channel when the retention changes, and vice versa', () => {
+    const s = t.scopes.forGuild(G);
+    setLogChannel(s, '444444444444444444', 10);
+    setConversationRetention(s, 61, 11);
+    expect(getAssistantSettings(s)).toEqual({ logChannelId: '444444444444444444' });
+    expect(getConversationRetention(s)).toBe(61);
+    setLogChannel(s, null, 12);
+    expect(getConversationRetention(s)).toBe(61);
+  });
+
+  it('refuses a retention outside 61, 182 and 365 days', () => {
+    const s = t.scopes.forGuild(G);
+    expect(() => setConversationRetention(s, 30 as 61, 10)).toThrow();
+    expect(getConversationRetention(s)).toBe(182);
+  });
+});
+
+describe('forgetMember removes conversation turns (Task 19)', () => {
+  const MEMBER = '444444444444444444';
+  const OTHER = '555555555555555555';
+
+  it("deletes the member's turns and drops conversations left with no user turn", () => {
+    const s = t.scopes.forGuild(G);
+    createConversation(s, {
+      conversationId: 'conv-mine',
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: MEMBER,
+      title: 'my question',
+      source: 'discord',
+      at: 1_000,
+    });
+    appendTurn(s, {
+      conversationId: 'conv-mine',
+      turnId: 'turn-user',
+      at: 1_000,
+      role: 'user',
+      authorId: MEMBER,
+      authorName: 'Bryan',
+      text: 'where is the handbook?',
+    });
+    appendTurn(s, {
+      conversationId: 'conv-mine',
+      turnId: 'turn-assistant',
+      at: 1_001,
+      role: 'assistant',
+      authorName: 'Bananasaurs',
+      text: 'in the resources.',
+    });
+    createConversation(s, {
+      conversationId: 'conv-theirs',
+      channelId: '333333333333333333',
+      behaviourId: 'club',
+      startedBy: OTHER,
+      title: 'their question',
+      source: 'discord',
+      at: 2_000,
+    });
+    appendTurn(s, {
+      conversationId: 'conv-theirs',
+      turnId: 'turn-other',
+      at: 2_000,
+      role: 'user',
+      authorId: OTHER,
+      authorName: 'Sasha',
+      text: 'when is the meeting?',
+    });
+
+    forgetMember(s, MEMBER, 3_000);
+
+    expect(getConversation(s, 'conv-mine')).toBeUndefined();
+    expect(recentTurns(s, 'conv-mine', { maxTurns: 12, maxChars: 6_000 })).toEqual([]);
+    expect(getConversation(s, 'conv-theirs')).toBeDefined();
+    expect(recentTurns(s, 'conv-theirs', { maxTurns: 12, maxChars: 6_000 })).toHaveLength(1);
   });
 });
