@@ -69,5 +69,7 @@ export * as loggingRepo from './repos/logging.js';
 export * as mcpSendRepo from './repos/mcp-send.js';
 export * as panelRepo from './repos/panels.js';
 export * as pipelineRepo from './repos/pipeline.js';
+export * as resourceCacheRepo from './repos/resource-cache.js';
+export { computeDocId } from './repos/resource-cache.js';
 export * as roleRepo from './repos/roles.js';
 export * as schema from './schema.js';

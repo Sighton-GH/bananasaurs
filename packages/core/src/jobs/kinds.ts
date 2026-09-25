@@ -35,6 +35,13 @@ export const JOB_KINDS = {
    * run them here so /ask cannot stall reaction roles, automod or /mod.
    */
   assistantInvoke: 'assistant_invoke',
+  /**
+   * One resource-cache refresh pass (ADR 0073): fetches (or, for a note,
+   * re-reads) a resource, re-chunks it only when its content changed, and
+   * writes the persistent cache the assistant reads from — the request path
+   * never fetches live.
+   */
+  resourceRefresh: 'resource_refresh',
 } as const;
 
 export type JobKind = (typeof JOB_KINDS)[keyof typeof JOB_KINDS];
@@ -390,3 +397,48 @@ export type AssistantInvokeCursor = z.infer<typeof assistantInvokeCursor>;
  */
 export const assistantInvokeDedupeKey = (invocationId: string): string =>
   `${JOB_KINDS.assistantInvoke}:${invocationId}`;
+
+/**
+ * The resource-cache refresh job (ADR 0073). `resourceId` absent means "every
+ * resource in the guild" — the hourly sweep and "Update all" both use
+ * this shape; `reason` is carried through to the trace/log line, not used to
+ * branch behaviour inside the handler.
+ */
+export const resourceRefreshPayload = z.object({
+  resourceId: z.string().min(1).max(64).optional(),
+  reason: z.enum(['hourly', 'manual', 'added', 'assistant']),
+});
+export type ResourceRefreshPayload = z.infer<typeof resourceRefreshPayload>;
+
+/**
+ * `resource_refresh:<resourceId|all>:<bucket>` — one pending refresh per
+ * resource (or per guild, for "all") per bucket, so a flapping timer or a
+ * double-tapped "Update now" collapses into the one already queued rather
+ * than piling up (ADR 0016). `added` carries no time bucket: a resource is
+ * added or edited rarely, and collapsing every edit within the pending job's
+ * lifetime into one refresh is exactly the point — the job re-reads the
+ * resource row at run time, so it always picks up the latest save.
+ */
+export const resourceRefreshDedupeKey = (
+  input:
+    | { readonly reason: 'hourly'; readonly resourceId?: string; readonly hourBucket: number }
+    | { readonly reason: 'manual'; readonly resourceId?: string; readonly minuteBucket: number }
+    | {
+        readonly reason: 'assistant';
+        readonly resourceId?: string;
+        readonly tenMinuteBucket: number;
+      }
+    | { readonly reason: 'added'; readonly resourceId: string },
+): string => {
+  const target = input.resourceId ?? 'all';
+  switch (input.reason) {
+    case 'hourly':
+      return `${JOB_KINDS.resourceRefresh}:${target}:${String(input.hourBucket)}`;
+    case 'manual':
+      return `${JOB_KINDS.resourceRefresh}:${target}:manual:${String(input.minuteBucket)}`;
+    case 'assistant':
+      return `${JOB_KINDS.resourceRefresh}:${target}:assistant:${String(input.tenMinuteBucket)}`;
+    case 'added':
+      return `${JOB_KINDS.resourceRefresh}:${target}:added`;
+  }
+};

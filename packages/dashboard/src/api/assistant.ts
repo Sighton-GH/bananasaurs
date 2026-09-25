@@ -246,6 +246,18 @@ export const decisionReviewUrl = (id: string) =>
 export const decisionSaveUrl = (id: string) =>
   `/api/assistant/decisions/${encodeURIComponent(id)}/save`;
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
+/** ADR 0073: cached-document freshness per resource — fetchedAt/chunks/bytes/lastError, one row per resource that has ever been cached. */
+export interface ResourceFreshnessRow {
+  readonly resourceId: string;
+  readonly fetchedAt?: number;
+  readonly chunks: number;
+  readonly bytes: number;
+  readonly lastError?: string;
+}
+export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
+export const resourceRefreshUrl = (id: string) =>
+  `/api/assistant/resources/${encodeURIComponent(id)}/refresh`;
+export const RESOURCE_REFRESH_ALL_URL = '/api/assistant/resources/refresh';
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;
 export const STARTER_URL = '/api/assistant/skill-grants/starter';

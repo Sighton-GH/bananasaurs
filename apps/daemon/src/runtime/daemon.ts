@@ -40,6 +40,7 @@ import {
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
+import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { createProviderConfigStore } from '../assistant/provider-config.js';
@@ -238,6 +239,15 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // agree on what counts as deliverable.
     hasDueWork: (scope) =>
       assistantRepo.hasDeliverableReminders(scope, now(), REMINDER_DELIVERY_STALE_MS),
+    now,
+    logger,
+  });
+
+  // ADR 0073: the hourly resource-cache refresh producer. One
+  // `resource_refresh` job per guild per hour, beside the other timers.
+  const resourceRefreshTimer = createResourceRefreshTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     now,
     logger,
   });
@@ -551,6 +561,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       backupTimer.start();
       archiveExpiryTimer.start();
       reminderDeliveryTimer.start();
+      resourceRefreshTimer.start();
     },
 
     async stop() {
@@ -559,6 +570,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       backupTimer.stop();
       archiveExpiryTimer.stop();
       reminderDeliveryTimer.stop();
+      resourceRefreshTimer.stop();
       await settle();
     },
 

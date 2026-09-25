@@ -2143,6 +2143,68 @@ export const assistantTraces = sqliteTable(
   ],
 );
 
+// ADR 0073: the persistent resource cache. One row per fetched document
+// (a reviewed resource's URL, or a note's own text); `resource_chunks` holds
+// the chunker's output for search and `resource_chunks_fts`
+// (drizzle/hand-written, ADR 0049 pattern) indexes `resource_chunks.text`.
+export const resourceDocuments = sqliteTable(
+  'resource_documents',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    docId: text('doc_id').notNull(),
+    resourceId: text('resource_id').notNull(),
+    url: text('url').notNull(),
+    path: text('path').notNull(),
+    title: text('title').notNull(),
+    etag: text('etag'),
+    lastModified: text('last_modified'),
+    // Empty until the first successful fetch or note chunk; never NULL, so a
+    // change-comparison never has to special-case "no prior hash".
+    contentHash: text('content_hash').notNull().default(''),
+    fetchedAt: integer('fetched_at').notNull(),
+    bytes: integer('bytes').notNull().default(0),
+    status: text('status').notNull().default('ok'),
+    error: text('error'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.docId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.resourceId],
+      foreignColumns: [assistantResources.guildId, assistantResources.resourceId],
+    }).onDelete('cascade'),
+    check('resource_documents_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('resource_documents_status', sql`${t.status} IN ('ok','error')`),
+    index('resource_documents_resource').on(t.guildId, t.resourceId),
+  ],
+);
+
+export const resourceChunks = sqliteTable(
+  'resource_chunks',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    chunkId: text('chunk_id').notNull(),
+    docId: text('doc_id').notNull(),
+    resourceId: text('resource_id').notNull(),
+    ordinal: integer('ordinal').notNull(),
+    headingPath: text('heading_path').notNull(),
+    lineStart: integer('line_start').notNull(),
+    lineEnd: integer('line_end').notNull(),
+    text: text('text').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.chunkId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    foreignKey({
+      columns: [t.guildId, t.docId],
+      foreignColumns: [resourceDocuments.guildId, resourceDocuments.docId],
+    }).onDelete('cascade'),
+    check('resource_chunks_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    index('resource_chunks_doc').on(t.guildId, t.docId, t.ordinal),
+    index('resource_chunks_resource').on(t.guildId, t.resourceId),
+  ],
+);
+
 /**
  * A conversation thread (ADR 0072). `conversationId` is app-generated, not a
  * snowflake. `status` starts `open`; `latestForAuthor` (repos/conversations.ts)

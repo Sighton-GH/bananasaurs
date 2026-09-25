@@ -705,6 +705,10 @@ export const registerAssistantRoutes = (
       },
     });
     assistantRepo.putResource(session.scope, { ...parsed.data, guildId: session.guildId });
+    // ADR 0073: the request path no longer fetches live, so a newly added
+    // or edited resource is refreshed through the injected enqueue — absent
+    // in isolated route tests, in which case nothing is enqueued.
+    deps.enqueueResourceRefresh?.(session.scope, parsed.data.id, 'added');
     return reply.status(200).send({ ok: true });
   });
   // Task 9: one skill in full - the exact instruction the model receives,

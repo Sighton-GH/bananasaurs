@@ -3,8 +3,10 @@ import type { FastifyInstance } from 'fastify';
 import {
   CLUB_ASSISTANT_SKILLS,
   DEFAULT_WIZARD_ANSWERS,
+  JOB_KINDS,
   parseGuildId,
   ProviderError,
+  resourceRefreshDedupeKey,
   SAFETY_SUFFIX,
   SAFETY_SUFFIX_VERSION,
   skillInstructionLine,
@@ -12,7 +14,14 @@ import {
   TOOL_CATALOGUE,
   type Capability,
 } from '@bananasaurs/core';
-import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
+import {
+  accountRepo,
+  assistantRepo,
+  authzRepo,
+  effectRepo,
+  guildRepo,
+  jobRepo,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -875,6 +884,148 @@ describe('POST /api/assistant/provider/models (ADR 0068)', () => {
     await restart(async () => listed);
     const { cookie, csrf } = await signIn();
     expect((await post(cookie, csrf, { provider: 'gemini' })).statusCode).toBe(403);
+  });
+});
+
+describe('PUT /api/assistant/resources/:id (ADR 0073 enqueue on add)', () => {
+  const putResource = (
+    cookie: string,
+    csrf: string,
+    over: Record<string, unknown> & { id?: string } = {},
+  ) =>
+    app.inject({
+      method: 'PUT',
+      url: `/api/assistant/resources/${over.id ?? 'res-1'}`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: {
+        id: 'res-1',
+        title: 'A resource',
+        url: 'https://example.com/guide',
+        kind: 'website',
+        enabled: true,
+        reviewedAt: new Date(0).toISOString(),
+        ...over,
+      },
+    });
+
+  /**
+   * The production-shaped enqueue behind the route (mirrors
+   * `apps/daemon/src/http/wiring.ts`): these two tests prove the dedupe
+   * behaviour the wiring gets, while the spy test below proves the route
+   * calls whatever it is given.
+   */
+  const withJobEnqueue = async (): Promise<void> => {
+    deps = {
+      ...deps,
+      enqueueResourceRefresh: (scope, resourceId, reason) => {
+        jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.resourceRefresh,
+          payload: JSON.stringify({ resourceId, reason }),
+          dedupeKey: resourceRefreshDedupeKey({ reason, resourceId }),
+          now: clock,
+        });
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+  };
+
+  it('enqueues one resource_refresh job with reason added on create', async () => {
+    grant('config.write');
+    await withJobEnqueue();
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect((await putResource(cookie, csrf)).statusCode).toBe(200);
+
+    const jobs = jobRepo.listJobs(scope, {});
+    expect(jobs).toHaveLength(1);
+    expect(jobs[0]?.kind).toBe('resource_refresh');
+    expect(jobs[0]?.payload).toBe(JSON.stringify({ resourceId: 'res-1', reason: 'added' }));
+  });
+
+  it('enqueues again on an edit, and a second save in the same instant collapses to one pending job', async () => {
+    grant('config.write');
+    await withJobEnqueue();
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    await putResource(cookie, csrf);
+    await putResource(cookie, csrf, { title: 'Edited title' });
+
+    // Both saves land inside the same still-queued job (no time bucket for
+    // 'added' — see resourceRefreshDedupeKey), so there is still exactly one.
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(1);
+  });
+
+  it('refuses an unsafe URL and enqueues nothing', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    const res = await putResource(cookie, csrf, { url: 'https://127.0.0.1/' });
+    expect(res.statusCode).toBe(400);
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
+  });
+
+  it('calls the injected enqueue with reason added on create and on edit, and enqueues nothing without it', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const calls: { resourceId: string; reason: string }[] = [];
+    deps = {
+      ...deps,
+      enqueueResourceRefresh: (scope, resourceId, reason) => {
+        expect(scope.guildId).toBe(GUILD);
+        calls.push({ resourceId, reason });
+      },
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const headers = { cookie, [CSRF_HEADER]: csrf };
+    const payload = {
+      id: 'res-1',
+      title: 'A resource',
+      url: 'https://example.com/guide',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(0).toISOString(),
+    };
+    expect(
+      (await app.inject({ method: 'PUT', url: '/api/assistant/resources/res-1', headers, payload }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await app.inject({
+          method: 'PUT',
+          url: '/api/assistant/resources/res-1',
+          headers,
+          payload: { ...payload, title: 'Edited title' },
+        })
+      ).statusCode,
+    ).toBe(200);
+    expect(calls).toEqual([
+      { resourceId: 'res-1', reason: 'added' },
+      { resourceId: 'res-1', reason: 'added' },
+    ]);
+  });
+
+  it('enqueues nothing when no enqueue function is injected', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/resources/res-1',
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: {
+        id: 'res-1',
+        title: 'A resource',
+        url: 'https://example.com/guide',
+        kind: 'website',
+        enabled: true,
+        reviewedAt: new Date(0).toISOString(),
+      },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
   });
 });
 
