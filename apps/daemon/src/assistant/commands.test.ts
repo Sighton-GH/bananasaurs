@@ -754,10 +754,13 @@ describe('assistant answer feedback reactions (Task 20)', () => {
     lookupMessage: (messageId: string) => KnownMessage | undefined = assistantLink,
   ) => {
     const setFeedback = vi.fn(
-      (_messageId: string, _feedback: 'up' | 'down' | null): ({
+      (
+        _messageId: string,
+        _feedback: 'up' | 'down' | null,
+      ): {
         updated: boolean;
         traceId: string | undefined;
-      }) => ({ updated: true, traceId: TRACE }),
+      } => ({ updated: true, traceId: TRACE }),
     );
     const addTraceFlag = vi.fn((_traceId: string, _flag: string): boolean => true);
     const subscriber = createAssistantCommandSubscriber({

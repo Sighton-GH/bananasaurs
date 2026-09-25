@@ -856,7 +856,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
 
     expect(result).toMatchObject({
       ok: true,
-      content: 'The order ships Friday.',
+      content: 'The order ships Friday.\n\n-# Sources: Handbook › Guide › Part 0',
       trace: {
         model: 'fixture-model',
         tools: [{ name: 'search_archive', ok: true }],
@@ -920,7 +920,10 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
       { memberChannels },
     );
     const result = await svc.invoke(invocation('ask', { question: 'when does the battery ship?' }));
-    expect(result).toMatchObject({ ok: true, content: 'The order ships Friday.' });
+    expect(result).toMatchObject({
+      ok: true,
+      content: 'The order ships Friday.\n\n-# Sources: Handbook',
+    });
     expect(webSearch).not.toHaveBeenCalled();
     expect(result.trace?.tools).toMatchObject([
       { name: 'open_resource', ok: true },

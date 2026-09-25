@@ -600,7 +600,13 @@ describe('AssistantPage: Try it (Task 20)', () => {
   });
 
   it('reads the rate limit as a friendly sentence', async () => {
-    renderTry({ status: 429, body: { error: 'rate-limited' } });
+    renderTry({
+      status: 429,
+      body: {
+        error: 'rate-limited',
+        message: 'You have used your 20 tries for this hour. Try again later.',
+      },
+    });
     fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
       target: { value: 'one too many' },
     });

@@ -220,7 +220,10 @@ describe('AssistantPromptWizardPage', () => {
 
   it('tries the behaviour from the Review step and links to history', async () => {
     const mock = stubFetch([
-      { url: '/api/assistant', body: { behaviours: [CLUB, IT], resources: [], skills: [], activity: [] } },
+      {
+        url: '/api/assistant',
+        body: { behaviours: [CLUB, IT], resources: [], skills: [], activity: [] },
+      },
       { url: '/api/assistant/safety-suffix', body: SUFFIX },
       {
         method: 'POST',
@@ -241,9 +244,9 @@ describe('AssistantPromptWizardPage', () => {
     });
     fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
     expect(await screen.findByText('Wizard tried.')).toBeTruthy();
-    expect(
-      (screen.getByRole('link', { name: 'View details' }) as HTMLAnchorElement).pathname,
-    ).toBe('/assistant/history/try_9');
+    expect((screen.getByRole('link', { name: 'View details' }) as HTMLAnchorElement).pathname).toBe(
+      '/assistant/history/try_9',
+    );
     const call = mock.mock.calls.find((c) => c[0] === '/api/assistant/behaviours/club/try');
     expect(bodyOf(call!)).toEqual({ question: 'does it work?' });
   });

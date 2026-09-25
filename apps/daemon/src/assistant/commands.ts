@@ -154,6 +154,21 @@ export interface AssistantCommandDeps {
    * omitting it just means untagged replies are never routed.
    */
   readonly lookupMessage?: (messageId: string) => KnownMessage | undefined;
+  /**
+   * Task 20: member 👍/👎 reactions on bot answers. Guild-scoped closures
+   * over `conversationRepo.setFeedback` and `traceRepo.addTraceFlag` (wired
+   * in `runtime/guild.ts`), so this subscriber stays storage-free like the
+   * rest of the file. Absent in tests that do not exercise reactions.
+   */
+  readonly feedback?:
+    | {
+        readonly setFeedback: (
+          messageId: string,
+          feedback: 'up' | 'down' | null,
+        ) => { updated: boolean; traceId: string | undefined };
+        readonly addTraceFlag: (traceId: string, flag: string) => boolean;
+      }
+    | undefined;
 }
 
 const COMMANDS = new Set<AssistantCommand>([
@@ -239,8 +254,42 @@ export const createAssistantCommandSubscriber = (deps: AssistantCommandDeps): Su
     if (event.guildId !== deps.guildId) return;
     if (event.kind === 'slashCommand') await handleSlash(deps, event);
     if (event.kind === 'messageCreate') await handleMention(deps, event);
+    if (event.kind === 'reactionAdd' || event.kind === 'reactionRemove')
+      handleFeedback(deps, event);
   },
 });
+
+/**
+ * Task 20: 👍/👎 feedback on bot answers. Only reactions on messages linked
+ * as an `assistant` turn count; the bot's own reactions are ignored (its
+ * seeded/own reactions must never read as member feedback). Removing the
+ * reaction clears the feedback; trace flags are append-only, so clearing
+ * writes no flag.
+ */
+function handleFeedback(
+  deps: AssistantCommandDeps,
+  event: Extract<DomainEvent, { kind: 'reactionAdd' | 'reactionRemove' }>,
+): void {
+  const feedback = deps.feedback;
+  if (feedback === undefined) return;
+  if (event.userId === deps.botUserId) return;
+  const vote =
+    event.emoji === 'u:1f44d'
+      ? ('up' as const)
+      : event.emoji === 'u:1f44e'
+        ? ('down' as const)
+        : undefined;
+  if (vote === undefined) return;
+  const known = deps.lookupMessage?.(event.messageId);
+  if (known === undefined || known.role !== 'assistant') return;
+  if (event.kind === 'reactionRemove') {
+    feedback.setFeedback(event.messageId, null);
+    return;
+  }
+  const stored = feedback.setFeedback(event.messageId, vote);
+  if (stored.updated && stored.traceId !== undefined)
+    feedback.addTraceFlag(stored.traceId, `feedback:${vote}`);
+}
 
 async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent): Promise<void> {
   if (!COMMANDS.has(event.commandName as AssistantCommand)) return;

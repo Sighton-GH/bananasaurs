@@ -666,6 +666,9 @@ export const assistantInvokeHandler = (deps: {
             role: 'assistant',
             authorName: conv.botDisplayName,
             text: result.content,
+            // Task 20: the turn carries its trace id so a later 👍/👎
+            // reaction on a linked message can flag the matching trace.
+            traceId: `trace_${key}`,
           });
         }
         if (payload.messageId !== undefined) {

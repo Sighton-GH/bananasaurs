@@ -270,6 +270,19 @@ export const behaviourPreviewUrl = (id: string) =>
 /** `GET /api/assistant/safety-suffix` (Task 18): the locked suffix the wizard shows read-only. */
 export const SAFETY_SUFFIX_URL = '/api/assistant/safety-suffix';
 
+/** `POST /api/assistant/behaviours/:id/try` (Task 20): run a behaviour from the dashboard. */
+export const behaviourTryUrl = (id: string) =>
+  `/api/assistant/behaviours/${encodeURIComponent(id)}/try`;
+export interface TryItRequest {
+  readonly question: string;
+  readonly conversationId?: string;
+}
+export interface TryItResponse {
+  readonly answer: string;
+  readonly traceId: string;
+  readonly conversationId: string;
+}
+
 export interface PreviewSection {
   readonly name: string;
   readonly chars: number;

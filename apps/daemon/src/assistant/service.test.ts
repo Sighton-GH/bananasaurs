@@ -24,6 +24,7 @@ import {
 import { resolveModelChain, type ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { createAssistantService, sanitizeMentionsForProvider } from './service.js';
+import type { AssistantServiceTestPorts } from './service.js';
 
 describe('sanitizeMentionsForProvider', () => {
   it('flattens role, user and channel mentions to readable tokens', () => {
@@ -968,7 +969,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
   });
   afterEach(() => t.close());
 
-  const serviceWith = (provider: TextProvider, ports: Record<string, never> = {}) =>
+  const serviceWith = (provider: TextProvider, ports: AssistantServiceTestPorts = {}) =>
     createAssistantService(
       t.scopes.forGuild(GUILD),
       t.scopes.instance(),
@@ -1056,9 +1057,9 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     });
     expect(second.conversationId).toBe(first.conversationId);
     expect(second.traceId).not.toBe(first.traceId);
-    expect(
-      conversationRepo.listTurns(t.scopes.forGuild(GUILD), first.conversationId),
-    ).toHaveLength(4);
+    expect(conversationRepo.listTurns(t.scopes.forGuild(GUILD), first.conversationId)).toHaveLength(
+      4,
+    );
   });
 
   it('rejects an unknown or disabled behaviour', async () => {
@@ -1136,6 +1137,29 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(result.answer).toBe(
       'The free AI provider is not configured, so no content was sent outside the server.',
     );
+  });
+
+  it('answers an escalation as text without opening a ticket', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putBehaviour(
+      scope,
+      {
+        ...direct,
+        id: 'it',
+        surface: 'it-services',
+        ticketChannelId: '987654321098765432',
+        reviewerRoleIds: ['876543210987654321'],
+      },
+      NOW,
+    );
+    const service = serviceWith(answering('ESCALATE: reset the lab password'));
+    const result = await service.tryIt({
+      behaviourId: 'it',
+      question: 'reset it',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe('reset the lab password');
+    expect(assistantRepo.listTickets(scope)).toEqual([]);
   });
 
   it('flags an unreadable resource cache and still answers from the model', async () => {

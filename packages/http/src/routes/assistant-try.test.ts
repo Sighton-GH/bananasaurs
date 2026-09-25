@@ -1,13 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, type Capability, type GuildScope } from '@bananasaurs/core';
-import {
-  accountRepo,
-  assistantRepo,
-  authzRepo,
-  effectRepo,
-  guildRepo,
-} from '@bananasaurs/storage';
+import { parseGuildId, type Capability } from '@bananasaurs/core';
+import { accountRepo, assistantRepo, authzRepo, effectRepo, guildRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -34,7 +28,10 @@ let tried: { question: string; conversationId: string | undefined }[];
 
 const cookieFrom = (header: string | string[] | undefined): string =>
   (Array.isArray(header) ? (header[0] ?? '') : (header ?? '')).split(';')[0] ?? '';
-const signIn = async (username = 'owner', password = PASSWORD): Promise<{ cookie: string; csrf: string }> => {
+const signIn = async (
+  username = 'owner',
+  password = PASSWORD,
+): Promise<{ cookie: string; csrf: string }> => {
   const response = await app.inject({
     method: 'POST',
     url: '/api/login',
@@ -65,10 +62,7 @@ beforeEach(async () => {
   clock = 1_700_000_000_000;
   tried = [];
   resetTryRateLimits();
-  const tryAssistant: TryAssistantDeps['tryAssistant'] = async (
-    _scope: GuildScope,
-    input: { behaviourId: string; question: string; conversationId?: string },
-  ) => {
+  const tryAssistant: TryAssistantDeps['tryAssistant'] = async (_scope, input) => {
     tried.push({ question: input.question, conversationId: input.conversationId });
     return {
       answer: `Answer to ${input.question}.`,
@@ -172,6 +166,9 @@ describe('POST /api/assistant/behaviours/:id/try', () => {
     }
     const limited = await post(cookie, csrf, 'club', { question: 'one too many' });
     expect(limited.statusCode).toBe(429);
-    expect(limited.json()).toEqual({ error: 'rate-limited' });
+    expect(limited.json()).toEqual({
+      error: 'rate-limited',
+      message: 'You have used your 20 tries for this hour. Try again later.',
+    });
   });
 });

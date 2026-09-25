@@ -25,6 +25,7 @@ import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 import { behaviourBody, toggleIn } from './assistant-shared.js';
+import { TryItBox } from './assistant.js';
 
 /**
  * `/assistant/behaviours/:id/wizard`: the beginner-friendly way to write a
@@ -683,6 +684,16 @@ function Wizard({
               <pre className="mt-2 overflow-x-auto font-mono text-xs whitespace-pre-wrap text-ink-muted">
                 {suffix.text}
               </pre>
+            </section>
+            <section aria-label="Try it">
+              <h3 className="text-sm font-medium">Try it</h3>
+              <p className="mt-1 text-xs text-ink-muted">
+                Ask a question with this behaviour&apos;s saved instructions and read the answer
+                here. Only you see it — nothing is posted to Discord.
+              </p>
+              <div className="mt-2">
+                <TryItBox key={`try-${behaviour.id}`} behaviourId={behaviour.id} />
+              </div>
             </section>
           </div>
         )}
