@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseConfig } from '@bananasaurs/core';
 import { assistantProviderRepo, assistantProvidersRepo } from '@bananasaurs/storage';
 import {
@@ -352,4 +352,89 @@ it('keeps the Brave key write-only and applies it only while web search is on (A
   expect(
     store.effective({ ...base, BRAVE_SEARCH_API_KEY: 'env-key' }).BRAVE_SEARCH_API_KEY,
   ).toBeUndefined();
+});
+
+/**
+ * Task 6b fix round 1 (controller finding): `save()` is the only dashboard
+ * write path that exists until Task 8 replaces it with the multi-key UI, and
+ * it used to write only the legacy `assistant_provider_config` row — which
+ * `status()`/`effective()`/`chain()` stopped reading in Task 6b. So every
+ * dashboard save silently did nothing. `save()` now also maps its AI fields
+ * onto a `key_<provider>` key and a one-key chain.
+ */
+describe('save() also writes the keys + chain tables it now reads (Task 6b fix round 1)', () => {
+  it('save with a key makes status() report the provider, model, key and cost class', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32), 'file');
+    store.save(
+      {
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        apiKey: 'raw-key',
+        enabled: true,
+        costClass: 'free',
+      },
+      10,
+    );
+    expect(store.status()).toMatchObject({
+      provider: 'gemini',
+      model: 'gemini-2.5-flash',
+      enabled: true,
+      keyConfigured: true,
+      keyReadable: true,
+      costClass: 'free',
+    });
+    const [key] = assistantProvidersRepo.listKeys(t.scopes.instance());
+    expect(key).toMatchObject({ keyId: 'key_gemini', provider: 'gemini', label: 'Gemini' });
+    expect(key?.apiKeyEnc).not.toContain('raw-key');
+  });
+
+  it('save without an apiKey keeps the existing sealed key', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save({ provider: 'gemini', model: 'm', apiKey: 'raw-key', enabled: true }, 10);
+    const before = assistantProvidersRepo.listKeys(t.scopes.instance())[0]!.apiKeyEnc;
+    store.save({ provider: 'gemini', model: 'm2', enabled: true }, 11);
+    const after = assistantProvidersRepo.listKeys(t.scopes.instance());
+    expect(after).toHaveLength(1);
+    expect(after[0]?.apiKeyEnc).toBe(before);
+    expect(store.status()).toMatchObject({ model: 'm2', keyReadable: true });
+  });
+
+  it('switching provider moves chain entry 0 to the other provider key, without losing the first key', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save({ provider: 'gemini', model: 'g-model', apiKey: 'gemini-raw', enabled: true }, 10);
+    store.save({ provider: 'openrouter', model: 'or-model', apiKey: 'or-raw', enabled: true }, 11);
+    expect(store.status()).toMatchObject({ provider: 'openrouter', model: 'or-model' });
+    expect(store.effective(base)).toMatchObject({
+      AI_PROVIDER: 'openrouter',
+      OPENROUTER_API_KEY: 'or-raw',
+    });
+    // The gemini key row survives the switch (it just left the chain).
+    expect(
+      assistantProvidersRepo
+        .listKeys(t.scopes.instance())
+        .map((k) => k.provider)
+        .sort(),
+    ).toEqual(['gemini', 'openrouter']);
+  });
+
+  it("provider 'off' empties the chain", () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save({ provider: 'gemini', model: 'm', apiKey: 'raw', enabled: true }, 10);
+    expect(assistantProvidersRepo.getModelChain(t.scopes.instance())).toHaveLength(1);
+    store.save({ provider: 'off', enabled: false }, 11);
+    expect(assistantProvidersRepo.getModelChain(t.scopes.instance())).toEqual([]);
+    expect(store.status().provider).toBe('off');
+  });
+
+  it('a key is never present in status(), effective() or the raw stored row', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save(
+      { provider: 'gemini', model: 'gemini-2.5-flash', apiKey: 'must-never-leak', enabled: true },
+      10,
+    );
+    expect(JSON.stringify(store.status())).not.toContain('must-never-leak');
+    expect(JSON.stringify(store.effective(base))).toContain('must-never-leak'); // effective() opens it, by design, for the provider client
+    const [key] = assistantProvidersRepo.listKeys(t.scopes.instance());
+    expect(key?.apiKeyEnc).not.toContain('must-never-leak');
+  });
 });

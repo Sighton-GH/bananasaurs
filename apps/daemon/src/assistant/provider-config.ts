@@ -13,6 +13,13 @@ import {
   type ProviderId,
 } from './model-chain.js';
 
+/** Same display labels the 0039 migration gave a provider's copied key. */
+const PROVIDER_LABEL: Record<ProviderId, string> = {
+  gemini: 'Gemini',
+  openrouter: 'OpenRouter',
+  'nvidia-nim': 'NVIDIA NIM',
+};
+
 const keyFrom = (secret: string): Buffer =>
   createHash('sha256').update(`bananasaurs:assistant-provider:${secret}`, 'utf8').digest();
 const seal = (key: Buffer, value: string): string => {
@@ -286,6 +293,56 @@ export const createProviderConfigStore = (
         searchEnabled: input.searchEnabled ?? current?.searchEnabled ?? false,
         updatedAt: now,
       });
+      // Task 6b fix round 1: `status()`/`effective()`/`chain()` read the keys
+      // and chain tables, not the row above — so this legacy single-provider
+      // route has to write there too, or every dashboard save silently does
+      // nothing (the controller-caught regression). This replaces the whole
+      // chain with (at most) this one provider's models, which is correct
+      // for this route's single-provider view; it stops being the only save
+      // path once Task 8 ships the multi-key dashboard.
+      if (input.provider === 'off') {
+        assistantProvidersRepo.setModelChain(instance, [], now);
+        return;
+      }
+      const keyId = `key_${input.provider}`;
+      const existingKey = assistantProvidersRepo.listKeys(instance).find((k) => k.keyId === keyId);
+      if (existingKey === undefined && input.apiKey === undefined) {
+        // Nothing to seal into a key row (api_key_enc is NOT NULL) and none
+        // saved yet: leave the chain empty so status() reports this provider
+        // as configured with no key, the closest match to today's
+        // keyConfigured: false under the new schema.
+        assistantProvidersRepo.setModelChain(instance, [], now);
+        return;
+      }
+      if (existingKey === undefined) {
+        assistantProvidersRepo.addKey(instance, {
+          keyId,
+          provider: input.provider,
+          label: PROVIDER_LABEL[input.provider],
+          apiKeyEnc: seal(key, input.apiKey as string),
+          costClass,
+          now,
+        });
+      } else {
+        assistantProvidersRepo.updateKey(instance, keyId, {
+          ...(input.apiKey === undefined ? {} : { apiKeyEnc: seal(key, input.apiKey) }),
+          costClass,
+          enabled: input.enabled,
+          now,
+        });
+      }
+      if (model === undefined) {
+        // No model named yet, by this save or an earlier one on this
+        // provider: nothing to chain, even though the key now exists.
+        assistantProvidersRepo.setModelChain(instance, [], now);
+        return;
+      }
+      const models = [...new Set([model, ...fallbackModels])].slice(0, 6);
+      assistantProvidersRepo.setModelChain(
+        instance,
+        models.map((m) => ({ keyId, model: m })),
+        now,
+      );
     },
     async listModels(provider, apiKey) {
       if (provider !== 'gemini') throw new Error('unsupported');

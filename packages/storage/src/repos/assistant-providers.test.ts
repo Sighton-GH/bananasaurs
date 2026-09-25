@@ -186,6 +186,19 @@ describe('assistant provider keys', () => {
     ]);
   });
 
+  it('accepts an explicit keyId (Task 6b fix round 1: the legacy save route reuses `key_<provider>`)', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, {
+      provider: 'gemini',
+      label: 'Gemini',
+      apiKeyEnc: 'sealed',
+      now: 10,
+      keyId: 'key_gemini',
+    });
+    expect(keyId).toBe('key_gemini');
+    expect(listKeys(scope)).toMatchObject([{ keyId: 'key_gemini', provider: 'gemini' }]);
+  });
+
   it('several keys for the same provider coexist, each with its own label', () => {
     const scope = t.scopes.instance();
     const a = addKey(scope, { provider: 'gemini', label: 'Key A', apiKeyEnc: 'sealed-a', now: 10 });

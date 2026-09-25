@@ -91,7 +91,13 @@ export const listKeys = (scope: InstanceScope): StoredKey[] =>
 /** `key_` + 16 hex characters, matching the design's key id shape. */
 const newKeyId = (): string => `key_${randomBytes(8).toString('hex')}`;
 
-/** Adds a new key and returns its id. */
+/**
+ * Adds a new key and returns its id. `keyId` is normally omitted, and one is
+ * generated (`key_` + 16 hex); the legacy single-provider save route
+ * (Task 6b fix round 1) passes an explicit `key_<provider>` id so it can find
+ * the same key again on the next save, matching the id the 0039 migration
+ * gave a provider's key.
+ */
 export const addKey = (
   scope: InstanceScope,
   input: {
@@ -100,9 +106,10 @@ export const addKey = (
     apiKeyEnc: string;
     costClass?: ProviderCostClass;
     now: number;
+    keyId?: string;
   },
 ): string => {
-  const keyId = newKeyId();
+  const keyId = input.keyId ?? newKeyId();
   writeInstance(scope, ({ db }) => {
     db.insert(assistantProviderKeys)
       .values({
