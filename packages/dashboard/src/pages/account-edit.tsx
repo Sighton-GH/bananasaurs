@@ -6,9 +6,8 @@ import {
   type AccountRoleId,
   type Capability,
 } from '@bananasaurs/core';
-import { ApiError } from '../api.js';
 import {
-  accountErrorText,
+  accountWriteErrorText,
   type Account,
   type AccountDeleteResult,
   type AccountDisableResult,
@@ -38,15 +37,13 @@ const roleLabel = (caps: readonly Capability[]): string => {
   return ACCOUNT_ROLES.find((r) => r.id === role)?.label ?? role;
 };
 
-const refusalText = (err: unknown): string => {
-  if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-    const code = (err.body as { error?: string }).error ?? '';
-    return accountErrorText(code) ?? 'The server refused this change.';
-  }
-  return err instanceof Error ? err.message : String(err);
-};
-
-function SummaryCard({ account, caps }: { readonly account: Account; readonly caps: readonly Capability[] }) {
+function SummaryCard({
+  account,
+  caps,
+}: {
+  readonly account: Account;
+  readonly caps: readonly Capability[];
+}) {
   return (
     <Card title="Summary">
       <dl className="grid max-w-lg gap-x-4 gap-y-1 text-sm sm:grid-cols-[auto_1fr]">
@@ -129,7 +126,7 @@ function PermissionsSection({
       });
       onSaved();
     } catch (err) {
-      setError(refusalText(err));
+      setError(accountWriteErrorText(err, 'The server refused this change.'));
     } finally {
       setBusy(false);
     }
@@ -196,7 +193,7 @@ function SetPasswordForm({
         setReset(result);
       }
     } catch (err) {
-      setError(refusalText(err));
+      setError(accountWriteErrorText(err, 'The server refused this change.'));
     } finally {
       setBusy(false);
     }
@@ -293,7 +290,7 @@ function PasswordSection({
       );
       if (result !== undefined) setRevealed(result);
     } catch (err) {
-      setRevealError(refusalText(err));
+      setRevealError(accountWriteErrorText(err, 'The server refused this change.'));
     } finally {
       setRevealBusy(false);
     }
@@ -381,11 +378,14 @@ function SessionsSection({
 function DangerSection({
   session,
   account,
+  isOwnAccount,
   onChanged,
   onDeleted,
 }: {
   readonly session: Session;
   readonly account: Account;
+  /** True when the viewer is looking at their own row: revoking guild access locks them out. */
+  readonly isOwnAccount: boolean;
   readonly onChanged: () => void;
   readonly onDeleted: () => void;
 }) {
@@ -402,10 +402,9 @@ function DangerSection({
     const name = encodeURIComponent(account.username);
     try {
       if (kind === 'disable') {
-        const result = await session.write<AccountDisableResult>(
-          `/api/accounts/${name}/disabled`,
-          { disabled: !account.disabled },
-        );
+        const result = await session.write<AccountDisableResult>(`/api/accounts/${name}/disabled`, {
+          disabled: !account.disabled,
+        });
         if (result !== undefined) {
           toast({
             tone: 'ok',
@@ -446,15 +445,26 @@ function DangerSection({
         ? `${account.username} can sign in again.`
         : `Every dashboard session for ${account.username} stops verifying while the account stays disabled — a pause, not a rotation.`
       : pending === 'revoke-guild'
-        ? `Removes ${account.username} from this server; its permissions here go with it.`
+        ? `Removes ${account.username} from this server; its permissions here go with it.${
+            isOwnAccount
+              ? ' This is your own account — revoking signs you out with no way back in. Recovery is delete plus re-bootstrap.'
+              : ''
+          }`
         : pending === 'delete'
           ? `Deletes ${account.username} and revokes its connected apps. Not reversible.`
           : '';
 
+  // Re-enabling is a benign, reversible step back to normal — not a danger
+  // action — so it gets the default button and a non-danger confirmation.
+  const enabling = pending === 'disable' && account.disabled;
+
   return (
     <Card title="Danger zone">
       <div className="flex flex-wrap gap-2">
-        <Button variant="danger" onClick={() => setPending('disable')}>
+        <Button
+          variant={account.disabled ? 'default' : 'danger'}
+          onClick={() => setPending('disable')}
+        >
           {account.disabled ? 'Enable' : 'Disable'}
         </Button>
         <Button variant="danger" onClick={() => setPending('revoke-guild')}>
@@ -483,7 +493,7 @@ function DangerSection({
               ? 'Remove from this server'
               : 'Delete account'
         }
-        danger
+        danger={!enabling}
         busy={busy}
         onConfirm={() => void run()}
         onCancel={() => setPending(undefined)}
@@ -582,6 +592,7 @@ export function AccountEditPage() {
               <DangerSection
                 session={session}
                 account={account}
+                isOwnAccount={isOwnAccount}
                 onChanged={accounts.reload}
                 onDeleted={() => navigate('/accounts')}
               />
@@ -592,4 +603,3 @@ export function AccountEditPage() {
     </>
   );
 }
-

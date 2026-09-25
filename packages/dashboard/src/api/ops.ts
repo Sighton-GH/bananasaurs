@@ -10,6 +10,8 @@
  * server shape, update the mirror here and the page that reads it.
  */
 
+import { ApiError } from '../api.js';
+
 // --- shared -----------------------------------------------------------------
 
 /** `GET /api/jobs` and `GET /api/jobs/:id` — mirrors `OpsJobRow`. */
@@ -198,21 +200,31 @@ export interface AccountRevealResult {
 /**
  * Dashboard sentences for the account error codes (Canadian English, plain
  * words). Applied to every account write's refusal body, so a raw code never
- * reaches the operator.
+ * reaches the operator. The session layer's generic toast reads this same map
+ * (a real 403 `owner-protected` never reaches a page inline — `writeOrThrow`
+ * only re-throws 400/409 — so the toast is the only place it can surface).
  */
-export const accountErrorText = (error: string): string | undefined => {
-  switch (error) {
-    case 'owner-protected':
-      return "The owner account can't be changed here.";
-    case 'weak-password':
-      return 'Use at least 12 characters.';
-    case 'username-taken':
-      return 'That username is already in use.';
-    case 'not-revealable':
-      return "This password can't be shown. Set a new one instead.";
-    default:
-      return undefined;
+export const REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
+  'owner-protected': "The owner account can't be changed.",
+  'owner-only': 'Only the owner can do that.',
+  'weak-password': 'Use at least 12 characters.',
+  'username-taken': 'That username is already in use.',
+  'not-revealable': "This password can't be shown. Set a new one instead.",
+};
+
+export const accountErrorText = (error: string): string | undefined => REFUSAL_SENTENCES[error];
+
+/**
+ * The `catch` arm every account write shares: a 400/409 refusal body becomes
+ * its plain sentence, anything else falls back to `fallback` for a refused
+ * body without a known code, or the thrown message when the write never got
+ * an answer shape at all.
+ */
+export const accountWriteErrorText = (err: unknown, fallback: string): string => {
+  if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
+    return accountErrorText(err.body.error) ?? fallback;
   }
+  return err instanceof Error ? err.message : String(err);
 };
 
 // --- mcp --------------------------------------------------------------------

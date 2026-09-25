@@ -43,9 +43,7 @@ describe('AccountNewPage', () => {
         'Lowercase letters, digits, dot, dash, underscore; 3-64 characters, never a leading dash.',
       ),
     ).toBeTruthy();
-    expect(inputOf(screen.getByRole('radio', { name: 'Generate one for me' })).checked).toBe(
-      true,
-    );
+    expect(inputOf(screen.getByRole('radio', { name: 'Generate one for me' })).checked).toBe(true);
     expect(inputOf(screen.getByRole('radio', { name: "I'll choose one" })).checked).toBe(false);
     // Choosing a password reveals the input with the length hint.
     fireEvent.click(screen.getByRole('radio', { name: "I'll choose one" }));
@@ -76,7 +74,9 @@ describe('AccountNewPage', () => {
     stubFetch([{ url: '/api/accounts', body: NO_ACCOUNTS }]);
     renderNew();
     await screen.findByRole('radio', { name: 'Custom Pick individual permissions below.' });
-    fireEvent.click(screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }));
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }),
+    );
     // Plain labels, not raw ids, with the one-line descriptions.
     expect(screen.getByText('View settings')).toBeTruthy();
     expect(screen.getByText("See this server's settings, rules and assistant setup.")).toBeTruthy();
@@ -117,7 +117,8 @@ describe('AccountNewPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
     });
     const post = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
+      (c) =>
+        (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
     )!;
     expect(bodyOf(post)).toEqual({
       username: 'sam',
@@ -129,6 +130,44 @@ describe('AccountNewPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'I have saved it' }));
     });
     expect(screen.getByTestId('location').textContent).toBe('/accounts/sam');
+  });
+
+  it('sends a chosen password in the POST body and shows it back once', async () => {
+    const mock = stubFetch([
+      { url: '/api/accounts', body: NO_ACCOUNTS },
+      {
+        method: 'POST',
+        url: '/api/accounts',
+        body: {
+          accountId: 'acct-9',
+          username: 'sam',
+          password: 'my-chosen-secret-password',
+          guildAccess: true,
+          capabilities: ['config.read', 'audit.read'],
+        },
+      },
+    ]);
+    renderNew();
+    fireEvent.change(await screen.findByLabelText('Username'), { target: { value: 'sam' } });
+    fireEvent.click(screen.getByRole('radio', { name: "I'll choose one" }));
+    fireEvent.change(screen.getByLabelText('New password'), {
+      target: { value: 'my-chosen-secret-password' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create account' }));
+    });
+    const post = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/accounts' && (c[1] as { method?: string }).method === 'POST',
+    )!;
+    expect(bodyOf(post)).toEqual({
+      username: 'sam',
+      capabilities: ['config.read', 'audit.read'],
+      password: 'my-chosen-secret-password',
+    });
+    // No generated secret here: the once-only dialog echoes the chosen password.
+    const printOnce = await screen.findByRole('dialog', { name: 'Account created' });
+    expect(printOnce.textContent).toContain('my-chosen-secret-password');
   });
 
   it('maps username-taken to a plain sentence and never offers guild-access opt-out', async () => {

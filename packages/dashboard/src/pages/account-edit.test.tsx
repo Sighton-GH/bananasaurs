@@ -3,7 +3,7 @@ import { act, cleanup, fireEvent, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router, Route, useLocation } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
-import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
 import { accountErrorText } from '../api/ops.js';
 import { AccountEditPage } from './account-edit.js';
 
@@ -39,7 +39,11 @@ const LIST = {
   },
 };
 
-function renderEdit(path: string, routes: readonly { method?: string; url: string; status?: number; body: unknown }[]) {
+function renderEdit(
+  path: string,
+  routes: readonly { method?: string; url: string; status?: number; body: unknown }[],
+  session: typeof TEST_SESSION = TEST_SESSION,
+) {
   const mock = stubFetch(routes);
   const { hook } = memoryLocation({ path });
   renderWithSession(
@@ -47,6 +51,7 @@ function renderEdit(path: string, routes: readonly { method?: string; url: strin
       <Route path="/accounts/:username" component={AccountEditPage} />
       <LocationProbe />
     </Router>,
+    { session },
   );
   return mock;
 }
@@ -71,8 +76,16 @@ describe('AccountEditPage', () => {
     const mock = renderEdit('/accounts/sam', [
       { url: '/api/accounts', body: LIST },
       { method: 'POST', url: '/api/accounts/sam/capabilities', body: { outcome: 'granted' } },
-      { method: 'DELETE', url: '/api/accounts/sam/capabilities/config.read', body: { outcome: 'revoked' } },
-      { method: 'DELETE', url: '/api/accounts/sam/capabilities/audit.read', body: { outcome: 'revoked' } },
+      {
+        method: 'DELETE',
+        url: '/api/accounts/sam/capabilities/config.read',
+        body: { outcome: 'revoked' },
+      },
+      {
+        method: 'DELETE',
+        url: '/api/accounts/sam/capabilities/audit.read',
+        body: { outcome: 'revoked' },
+      },
     ]);
     expect(await screen.findByText('sam')).toBeTruthy();
     // Viewer preselected from the two held capabilities.
@@ -122,9 +135,7 @@ describe('AccountEditPage', () => {
   it('explains a missing sealed copy instead of offering reveal', async () => {
     const unrevealable = {
       ...LIST,
-      accounts: LIST.accounts.map((a) =>
-        a.username === 'sam' ? { ...a, revealable: false } : a,
-      ),
+      accounts: LIST.accounts.map((a) => (a.username === 'sam' ? { ...a, revealable: false } : a)),
     };
     renderEdit('/accounts/sam', [{ url: '/api/accounts', body: unrevealable }]);
     await screen.findByText('sam');
@@ -193,8 +204,73 @@ describe('AccountEditPage', () => {
     expect(screen.getByTestId('location').textContent).toBe('/accounts');
   });
 
+  it('disables behind a confirmation naming the account', async () => {
+    const mock = renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      {
+        method: 'POST',
+        url: '/api/accounts/sam/disabled',
+        body: {
+          changed: true,
+          username: 'sam',
+          isOwner: false,
+          disabled: true,
+          lockedUntil: null,
+          enabledOwnersRemaining: 1,
+        },
+      },
+    ]);
+    await screen.findByText('sam');
+    fireEvent.click(screen.getByRole('button', { name: 'Disable' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('sam');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Disable account' }));
+    });
+    const calls = mock.mock.calls.filter((c) => (c[0] as string) === '/api/accounts/sam/disabled');
+    expect(calls).toHaveLength(1);
+    expect(bodyOf(calls[0]!)).toEqual({ disabled: true });
+  });
+
+  it('removes from this server behind a confirmation naming the account', async () => {
+    const mock = renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      { method: 'POST', url: '/api/accounts/sam/revoke-guild', body: { outcome: 'revoked' } },
+    ]);
+    await screen.findByText('sam');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from this server' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('sam');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Remove from this server' }));
+    });
+    expect(mock.mock.calls.some((c) => (c[0] as string) === '/api/accounts/sam/revoke-guild')).toBe(
+      true,
+    );
+  });
+
+  it('warns about self-lockout when removing your own account from this server', async () => {
+    renderEdit('/accounts/sam', [{ url: '/api/accounts', body: LIST }], {
+      ...TEST_SESSION,
+      accountId: 'acct-2',
+    });
+    await screen.findByText('sam');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from this server' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('your own account');
+  });
+
+  it('does not warn about self-lockout when removing someone else', async () => {
+    renderEdit('/accounts/sam', [{ url: '/api/accounts', body: LIST }]);
+    await screen.findByText('sam');
+    fireEvent.click(screen.getByRole('button', { name: 'Remove from this server' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).not.toContain('your own account');
+  });
+
   it('maps account error codes to plain sentences', () => {
-    expect(accountErrorText('owner-protected')).toBe("The owner account can't be changed here.");
+    expect(accountErrorText('owner-protected')).toBe("The owner account can't be changed.");
+    expect(accountErrorText('owner-only')).toBe('Only the owner can do that.');
     expect(accountErrorText('weak-password')).toBe('Use at least 12 characters.');
     expect(accountErrorText('username-taken')).toBe('That username is already in use.');
     expect(accountErrorText('not-revealable')).toBe(
@@ -228,9 +304,7 @@ describe('AccountEditPage', () => {
     fireEvent.click(screen.getByRole('radio', { name: "I'll choose one" }));
     fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'short' } });
     expect(await screen.findByText('Use at least 12 characters.')).toBeTruthy();
-    expect(
-      mock.mock.calls.some((c) => (c[0] as string).endsWith('/password')),
-    ).toBe(false);
+    expect(mock.mock.calls.some((c) => (c[0] as string).endsWith('/password'))).toBe(false);
   });
 
   it('shows only the summary and the password change for the owner account itself', async () => {
@@ -263,9 +337,9 @@ describe('AccountEditPage', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Set new password' }));
     });
-    expect(
-      mock.mock.calls.some((c) => (c[0] as string) === '/api/accounts/bryan/password'),
-    ).toBe(true);
+    expect(mock.mock.calls.some((c) => (c[0] as string) === '/api/accounts/bryan/password')).toBe(
+      true,
+    );
     const printOnce = await screen.findByRole('dialog', { name: 'New password' });
     expect(printOnce.textContent).toContain('owner-new-secret');
   });

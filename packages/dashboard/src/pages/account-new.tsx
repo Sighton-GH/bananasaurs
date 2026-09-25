@@ -6,8 +6,7 @@ import {
   type AccountRoleId,
   type Capability,
 } from '@bananasaurs/core';
-import { ApiError } from '../api.js';
-import { accountErrorText, type AccountCreateResult } from '../api/ops.js';
+import { accountWriteErrorText, type AccountCreateResult } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
@@ -47,8 +46,7 @@ export function AccountNewPage() {
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<AccountCreateResult | undefined>(undefined);
 
-  const selected: readonly Capability[] =
-    role === 'custom' ? customCaps : presetCapabilities(role);
+  const selected: readonly Capability[] = role === 'custom' ? customCaps : presetCapabilities(role);
   const usernameOk = USERNAME_PATTERN.test(username);
   const usernameError =
     username === '' || usernameOk
@@ -82,12 +80,7 @@ export function AccountNewPage() {
         setCreated(result);
       }
     } catch (err) {
-      if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-        const code = (err.body as { error?: string }).error ?? '';
-        setError(accountErrorText(code) ?? 'The server could not create this account.');
-      } else {
-        setError(err instanceof Error ? err.message : String(err));
-      }
+      setError(accountWriteErrorText(err, 'The server could not create this account.'));
     } finally {
       setBusy(false);
     }
@@ -184,7 +177,12 @@ export function AccountNewPage() {
             </p>
           )}
           <div className="mt-3">
-            <Button variant="primary" busy={busy} disabled={!canCreate} onClick={() => void create()}>
+            <Button
+              variant="primary"
+              busy={busy}
+              disabled={!canCreate}
+              onClick={() => void create()}
+            >
               Create account
             </Button>
           </div>
