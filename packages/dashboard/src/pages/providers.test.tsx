@@ -88,6 +88,17 @@ afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
 
 describe('ProvidersPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    stubPage(assistantBody());
+    renderWithSession(<ProvidersPage />);
+    expect(await screen.findByRole('heading', { level: 1, name: 'AI setup' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Choose which AI models answer, in what order, and connect the services they need.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('lists the eligibility warnings with reasons and training flags', async () => {
     stubPage(assistantBody(), WARNINGS);
     renderWithSession(<ProvidersPage />);

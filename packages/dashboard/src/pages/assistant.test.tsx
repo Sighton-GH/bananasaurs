@@ -155,6 +155,14 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();
+    expect(
+      screen.getByText('Behaviours decide who answers, how they sound, and who may ask.'),
+    ).toBeTruthy();
+  });
+
   it('renders behaviours with their tag mapping, prompt editor and records', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Assistant' })).toBeTruthy();

@@ -167,7 +167,8 @@ describe('Shell', () => {
 
   // ADR 0051 D7 supersedes S10-D3: Archive, Search and Providers are real pages now;
   // only the Release 3 four remain stubs. ADR 0060: /resources is the new
-  // Resources page; /ai and /proposals stay aliases of Assistant.
+  // Resources page; /ai and /proposals stay aliases of Assistant. Task 9:
+  // /providers and /assistant/activity are aliases of AI setup and History.
   it.each([
     ['/resources', 'Resources'],
     ['/assistant/skills', 'Skills'],
@@ -176,15 +177,53 @@ describe('Shell', () => {
     ['/memory', 'Memory'],
     ['/ai', 'Assistant'],
     ['/proposals', 'Assistant'],
+    ['/providers', 'AI setup'],
+    ['/assistant/setup', 'AI setup'],
+    ['/assistant/activity', 'History'],
+    ['/assistant/history', 'History'],
   ])('renders the built %s surface titled %s', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
     expect(screen.queryByText(NOT_BUILT)).toBeNull();
   });
 
-  it('marks no Assistant entry as future', async () => {
+  // Task 9: setup-first order, with History moved in and Conversations added
+  // as a stub pointing at Task 19.
+  it('orders the Assistant group setup-first, with Conversations a stub until Task 19', () => {
+    const assistantNav = NAV.filter((entry) => entry.group === 'Assistant');
+    expect(assistantNav.map((entry) => [entry.path, entry.label, entry.status])).toEqual([
+      ['/assistant/setup', 'AI setup', 'built'],
+      ['/assistant', 'Behaviours', 'built'],
+      ['/assistant/conversations', 'Conversations', 'stub'],
+      ['/assistant/history', 'History', 'built'],
+      ['/assistant/skills', 'Skills', 'built'],
+      ['/assistant/resources', 'Resources', 'built'],
+      ['/assistant/schedules', 'Schedules', 'built'],
+      ['/memory', 'Memory', 'built'],
+    ]);
+    expect(NAV.some((entry) => entry.path === '/providers')).toBe(false);
+    expect(
+      NAV.some(
+        (entry) => entry.path === '/assistant/history' && entry.group === 'Advanced / System',
+      ),
+    ).toBe(false);
+  });
+
+  it('renders the Conversations stub with its own purpose sentence', async () => {
+    renderAt('/assistant/conversations');
+    expect(await screen.findByRole('heading', { level: 1, name: 'Conversations' })).toBeTruthy();
+    expect(
+      screen.getByText('Every conversation members have had with the assistant, newest first.'),
+    ).toBeTruthy();
+    expect(screen.getByText(NOT_BUILT)).toBeTruthy();
+  });
+
+  it('marks only Conversations as future, until Task 19 builds it', async () => {
     renderAt('/');
-    expect(screen.queryByText('Future')).toBeNull();
+    const nav = screen.getByRole('navigation', { name: 'Areas' });
+    expect(screen.getAllByText('Future')).toHaveLength(1);
+    const conversations = within(nav).getByRole('link', { name: /Conversations/ });
+    expect(within(conversations).getByText('Future')).toBeTruthy();
   });
 
   it('opens and closes the mobile jump navigation without changing the page', async () => {

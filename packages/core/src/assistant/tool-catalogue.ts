@@ -1,0 +1,127 @@
+/**
+ * The static description of every read-only tool the assistant can call
+ * (ADR 0067). This lives in core, not in the daemon, because the HTTP
+ * package's skill detail route (`GET /api/assistant/skills/:skillId`) needs
+ * it too and cannot import from `apps/daemon`. `apps/daemon/src/assistant/tools.ts`
+ * derives its `toolDeclarations` from this catalogue so a declaration can
+ * never drift from the description shown on the dashboard.
+ */
+
+/** One property of a tool's JSON Schema parameters object. */
+export interface JSONSchemaProperty {
+  readonly type: 'string' | 'number' | 'integer' | 'boolean' | 'object' | 'array';
+  readonly description?: string;
+  readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly enum?: readonly (string | number)[];
+}
+
+/**
+ * A tool's parameters, in JSON Schema shape. Carries its own index signature
+ * so it is directly assignable to `ToolDeclaration.parameters`
+ * (`Readonly<Record<string, unknown>>`) without a cast.
+ */
+export interface JSONSchema {
+  readonly type: 'object';
+  readonly properties: Readonly<Record<string, JSONSchemaProperty>>;
+  readonly required?: readonly string[];
+  readonly [key: string]: unknown;
+}
+
+export interface ToolCatalogueEntry {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: JSONSchema;
+  /** Round 1 may call any allowed read-only tool; rounds 2-4 are narrower (hard rule 3, ADR 0071). */
+  readonly rounds: 'first' | 'all';
+  /** Plain words for the cap the daemon enforces on this tool's result text. */
+  readonly outputLimit: string;
+  /** Ids of every skill (`CLUB_ASSISTANT_SKILLS`) whose use involves this tool. */
+  readonly skills: readonly string[];
+}
+
+const QUERY_PARAMETERS: JSONSchema = {
+  type: 'object',
+  properties: {
+    query: {
+      type: 'string',
+      description: 'What to search for.',
+      minLength: 1,
+      maxLength: 200,
+    },
+  },
+  required: ['query'],
+};
+
+const NO_PARAMETERS: JSONSchema = { type: 'object', properties: {} };
+
+const RESULT_LIMIT = 'Up to 6,000 characters of results.';
+
+// The search/question-answering skill ('search-club') can reach for any of
+// these on its own, so it is listed on every entry; the rest of the `skills`
+// lists are the other catalogue skills whose description names this tool.
+export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
+  {
+    name: 'search_archive',
+    description:
+      "Search past messages in this Discord server's archived channels that the asking member can see.",
+    parameters: QUERY_PARAMETERS,
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club'],
+  },
+  {
+    name: 'open_resource',
+    description: 'Open one of the club resources listed in the instructions, by its id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        resourceId: {
+          type: 'string',
+          description: 'The resource id.',
+          minLength: 1,
+          maxLength: 64,
+        },
+      },
+      required: ['resourceId'],
+    },
+    rounds: 'all',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club', 'open-resource', 'review-plan'],
+  },
+  {
+    name: 'web_search',
+    description:
+      'Search the public web. Never put names, contact details or private club information in the query.',
+    parameters: QUERY_PARAMETERS,
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club'],
+  },
+  {
+    name: 'server_info',
+    description: "The server's description and the channels the asking member can see.",
+    parameters: NO_PARAMETERS,
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club', 'onboarding-guide'],
+  },
+  {
+    name: 'current_time',
+    description: "Today's date and the current time in the club's time zone.",
+    parameters: NO_PARAMETERS,
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club', 'create-reminder', 'send-reminder'],
+  },
+  {
+    name: 'my_reminders',
+    description: "The asking member's own upcoming reminders.",
+    parameters: NO_PARAMETERS,
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['search-club', 'create-reminder'],
+  },
+] as const;

@@ -6,6 +6,7 @@ import { AssistantHistoryPage } from '../pages/assistant-history.js';
 import { AssistantPage } from '../pages/assistant.js';
 import { AssistantResourcesPage } from '../pages/assistant-resources.js';
 import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
+import { AssistantSkillPage } from '../pages/assistant-skill.js';
 import { AssistantSkillsPage } from '../pages/assistant-skills.js';
 import { AssistantMemoryPage } from '../pages/assistant-memory.js';
 import { ArchivePage } from '../pages/archive.js';
@@ -31,6 +32,7 @@ import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { PermissionsPage } from '../pages/permissions.js';
+import { StubPage } from '../pages/stub.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
@@ -167,9 +169,19 @@ function Pages() {
       <Route path="/config" component={ConfigPage} />
       <Route path="/accounts" component={AccountsPage} />
       <Route path="/mcp" component={McpPage} />
+      {/* /providers is an alias of the AI setup page; /assistant/setup is the NAV entry (Task 9). */}
       <Route path="/providers" component={ProvidersPage} />
+      <Route path="/assistant/setup" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
+      {/* Stub until Task 19 wires a real Conversations page. */}
+      <Route path="/assistant/conversations">
+        <StubPage
+          title="Conversations"
+          purpose="Every conversation members have had with the assistant, newest first."
+        />
+      </Route>
       <Route path="/assistant/skills" component={AssistantSkillsPage} />
+      <Route path="/assistant/skills/:skillId" component={AssistantSkillPage} />
       <Route path="/assistant/schedules" component={AssistantSchedulesPage} />
       <Route path="/assistant/resources" component={AssistantResourcesPage} />
       <Route path="/assistant/history/:traceId" component={AssistantHistoryDetailPage} />

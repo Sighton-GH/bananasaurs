@@ -27,6 +27,15 @@ export interface CompiledAssistantContext {
 
 const clean = (text: string, max: number): string => text.replaceAll('\u0000', '').slice(0, max);
 
+/**
+ * The exact line the compiler emits for one allowed skill, factored out so
+ * the skill detail route (`GET /api/assistant/skills/:skillId`) can show a
+ * member "what the AI is told" without duplicating the wording and risking
+ * drift from `compileAssistantContext`'s own `ALLOWED SKILLS` block.
+ */
+export const skillInstructionLine = (skill: AssistantSkill): string =>
+  `${skill.id}: ${skill.description} Effect=${skill.effect}. Confirmation=${skill.requiresConfirmation ? 'required' : 'not required'}.`;
+
 export const compileAssistantContext = (input: {
   readonly behaviour: AssistantBehaviour;
   readonly serverCard: string;
@@ -65,7 +74,7 @@ export const compileAssistantContext = (input: {
   const skillsBlock =
     input.skills.length === 0
       ? 'ALLOWED SKILLS\nNone. Answer only; do not claim an action.'
-      : `ALLOWED SKILLS\n${input.skills.map((skill) => `${skill.id}: ${skill.description} Effect=${skill.effect}. Confirmation=${skill.requiresConfirmation ? 'required' : 'not required'}.`).join('\n')}`;
+      : `ALLOWED SKILLS\n${input.skills.map(skillInstructionLine).join('\n')}`;
   // ADR 0074: the locked safety suffix sits right after the behaviour prompt,
   // before the evidence rule, so model output guards and reviewers see it in
   // a fixed position.

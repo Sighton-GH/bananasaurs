@@ -1787,6 +1787,8 @@ export const assistantProviderConfig = sqliteTable(
     /** ADR 0066: the Brave Search API key, sealed like `api_key_enc`. */
     searchApiKeyEnc: text('search_api_key_enc'),
     searchEnabled: integer('search_enabled').notNull().default(0),
+    /** ADR 0075: the GitHub token, sealed like `api_key_enc`. */
+    githubTokenEnc: text('github_token_enc'),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
@@ -1797,6 +1799,55 @@ export const assistantProviderConfig = sqliteTable(
       sql`${t.provider} IN ('off','gemini','openrouter','nvidia-nim')`,
     ),
     check('assistant_provider_config_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+// ADR 0075: one row per AI provider (Gemini, OpenRouter, NVIDIA NIM), each
+// with its own sealed API key, cost class and enabled flag. Instance-level
+// like the single-provider config it replaces; the old row's provider, model
+// and fallback models are copied here and into `assistant_model_chain` by
+// the migration, and the old columns stay but are no longer read.
+export const assistantProviders = sqliteTable(
+  'assistant_providers',
+  {
+    provider: text('provider').primaryKey(),
+    apiKeyEnc: text('api_key_enc'),
+    /** The owner's statement of the model's cost (ADR 0061 §2). */
+    costClass: text('cost_class').notNull().default('unknown'),
+    enabled: integer('enabled').notNull().default(0),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    check(
+      'assistant_providers_provider',
+      sql`${t.provider} IN ('gemini','openrouter','nvidia-nim')`,
+    ),
+    check('assistant_providers_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check('assistant_providers_enabled_bool', boolCheck(t.enabled)),
+  ],
+);
+
+// ADR 0075: the one ordered model chain, at most 6 entries. Each entry names
+// its provider plus model; positions are dense from 0. The foreign key keeps
+// a chain entry from naming a provider with no key row, and removing a
+// provider drops its chain rows.
+export const assistantModelChain = sqliteTable(
+  'assistant_model_chain',
+  {
+    position: integer('position').primaryKey(),
+    provider: text('provider').notNull(),
+    model: text('model').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.provider], foreignColumns: [assistantProviders.provider] }).onDelete(
+      'cascade',
+    ),
+    check('assistant_model_chain_position', sql`${t.position} BETWEEN 0 AND 5`),
+    check(
+      'assistant_model_chain_provider',
+      sql`${t.provider} IN ('gemini','openrouter','nvidia-nim')`,
+    ),
   ],
 );
 
