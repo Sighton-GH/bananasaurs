@@ -10,9 +10,12 @@ import {
   assistantProvidersRepo,
   assistantRepo,
   computeDocId,
+  conversationRepo,
   eligibilityRepo,
   guildRepo,
+  jobRepo,
   resourceCacheRepo,
+  traceRepo,
 } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
@@ -897,5 +900,382 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(result.ok).toBe(true);
     const sections = result.detail?.sections.map((section) => section.name) ?? [];
     expect(sections).not.toContain('history');
+  });
+});
+
+/**
+ * Task 20: dashboard Try-it runs the same pipeline with `source:
+ * 'dashboard-test'` and no Discord posts, and answers end with a short
+ * sources line.
+ */
+describe('Task 20: tryIt, sources line and friendly failures', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const BOT = '123456789012345678';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: BOT,
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const usable = (provider: TextProvider): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'model-a',
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+  });
+
+  const answering = (text: string): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools']),
+    generateText: async () => ({ text, model: 'model-a' }),
+  });
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+    assistantRepo.putSkillGrant(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const serviceWith = (provider: TextProvider, ports: Record<string, never> = {}) =>
+    createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      ports,
+      undefined,
+      undefined,
+      { memberChannels: vi.fn(async () => []) },
+      () => [usable(provider)],
+    );
+
+  const seedResource = (id: string, title: string, texts: readonly string[]) => {
+    const scope = t.scopes.forGuild(GUILD);
+    const url = `https://example.com/${id}`;
+    assistantRepo.putResource(scope, {
+      id,
+      guildId: GUILD,
+      title,
+      url,
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(NOW).toISOString(),
+    });
+    const docId = computeDocId(url);
+    resourceCacheRepo.upsertDocument(scope, {
+      resourceId: id,
+      docId,
+      url,
+      path: '/guide',
+      title: id,
+      contentHash: `hash-${id}`,
+      fetchedAt: NOW - 3_600_000,
+      bytes: 100,
+      status: 'ok',
+    });
+    resourceCacheRepo.replaceChunks(
+      scope,
+      docId,
+      id,
+      texts.map((text, i) => ({
+        ordinal: i,
+        headingPath: `Guide › Part ${String(i)}`,
+        lineStart: i + 1,
+        lineEnd: i + 1,
+        text,
+      })),
+    );
+    return docId;
+  };
+
+  it('answers without the caller-role gate and writes dashboard-test rows', async () => {
+    const service = serviceWith(answering('Try-it answer.'));
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'when is the meeting?',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe('Try-it answer.');
+    expect(result.conversationId).toMatch(/^try_/);
+    expect(result.traceId).toMatch(/^try_/);
+    const scope = t.scopes.forGuild(GUILD);
+    expect(conversationRepo.getConversation(scope, result.conversationId)).toMatchObject({
+      source: 'dashboard-test',
+      startedBy: BOT,
+    });
+    const trace = traceRepo.getTrace(scope, result.traceId);
+    expect(trace).toMatchObject({ source: 'dashboard-test', answer: 'Try-it answer.' });
+    expect(trace?.flags).toContain('dashboard-account:owner-name');
+    expect(jobRepo.listJobs(scope, { limit: 10 })).toEqual([]);
+  });
+
+  it('continues the same conversation when the id is passed back', async () => {
+    const service = serviceWith(answering('Another answer.'));
+    const first = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'first question',
+      accountUsername: 'owner-name',
+    });
+    const second = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'second question',
+      conversationId: first.conversationId,
+      accountUsername: 'owner-name',
+    });
+    expect(second.conversationId).toBe(first.conversationId);
+    expect(second.traceId).not.toBe(first.traceId);
+    expect(
+      conversationRepo.listTurns(t.scopes.forGuild(GUILD), first.conversationId),
+    ).toHaveLength(4);
+  });
+
+  it('rejects an unknown or disabled behaviour', async () => {
+    const service = serviceWith(answering('unused'));
+    await expect(
+      service.tryIt({ behaviourId: 'missing', question: 'hi', accountUsername: 'owner-name' }),
+    ).rejects.toThrow('unknown-behaviour');
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), { ...direct, enabled: false }, NOW);
+    await expect(
+      service.tryIt({ behaviourId: 'direct', question: 'hi', accountUsername: 'owner-name' }),
+    ).rejects.toThrow('behaviour-disabled');
+  });
+
+  it('never reads member memories on the try-it path', async () => {
+    assistantRepo.putMemory(
+      t.scopes.forGuild(GUILD),
+      { id: 'mem-1', section: 'club', content: 'the secret club handshake' },
+      NOW,
+    );
+    let systemInstruction = '';
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        systemInstruction = req.systemInstruction ?? '';
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = serviceWith(provider);
+    await service.tryIt({
+      behaviourId: 'direct',
+      question: 'what is the handshake?',
+      accountUsername: 'owner-name',
+    });
+    expect(systemInstruction).not.toContain('the secret club handshake');
+  });
+
+  it('answers the busy text when every provider is busy', async () => {
+    const service = serviceWith({
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        throw new ProviderError('outage', 'all models busy', true);
+      },
+    });
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'hi',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe(
+      'The AI service is busy right now. Try again in a minute. No action was taken.',
+    );
+    const trace = traceRepo.getTrace(t.scopes.forGuild(GUILD), result.traceId);
+    expect(trace?.outcome).toBe('failed');
+  });
+
+  it('answers the configured-refusal text when no provider is usable', async () => {
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [],
+    );
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'hi',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe(
+      'The free AI provider is not configured, so no content was sent outside the server.',
+    );
+  });
+
+  it('flags an unreadable resource cache and still answers from the model', async () => {
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        cacheSearch: () => {
+          throw new Error('cache down');
+        },
+      },
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [usable(answering('Answered without sources.'))],
+    );
+    const result = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'battery care',
+      accountUsername: 'owner-name',
+    });
+    expect(result.answer).toBe('Answered without sources.');
+    expect(traceRepo.getTrace(t.scopes.forGuild(GUILD), result.traceId)?.flags).toContain(
+      'resources-unavailable',
+    );
+  });
+
+  it('adds no sources line when nothing was opened', async () => {
+    const service = serviceWith(answering('Plain answer.'));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'hi' },
+      source: 'slash-command',
+      invocationId: 'int-no-sources',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.content).toBe('Plain answer.');
+  });
+
+  it('adds a sources line for a chunk the model opened, deduped', async () => {
+    const docId = seedResource('handbook', 'Handbook', ['battery care guide for the club']);
+    const chunk0 = `c_${docId}_0`;
+    let round = 0;
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        if (round === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: [
+              { name: 'read_chunk', args: { chunkId: chunk0 } },
+              { name: 'read_chunk', args: { chunkId: chunk0 } },
+            ],
+          };
+        return { text: 'Here is the care guide.', model: 'model-a' };
+      },
+    };
+    const service = serviceWith(provider);
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'unrelated words here' },
+      source: 'slash-command',
+      invocationId: 'int-opened-chunk',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain('\n\n-# Sources: Handbook');
+    expect(content).not.toContain(' · ');
+  });
+
+  it('adds a sources line with headings for pre-retrieved evidence', async () => {
+    seedResource('handbook', 'Handbook', ['battery care guide for the club']);
+    const service = serviceWith(answering('Here is the care guide.'));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-preretrieved',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    expect(content).toContain('-# Sources: Handbook › Guide › Part 0');
+  });
+
+  it('dedupes sources by URL and never lists more than three', async () => {
+    const ids = ['alpha', 'beta', 'gamma', 'delta'] as const;
+    const docIds = ids.map((id, i) =>
+      seedResource(id, id[0]!.toUpperCase() + id.slice(1), [`unique care text ${String(i)}`]),
+    );
+    const chunks = docIds.map((docId) => `c_${docId}_0`);
+    let round = 0;
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        if (round === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: chunks.map((chunkId) => ({ name: 'read_chunk', args: { chunkId } })),
+          };
+        return { text: 'Done.', model: 'model-a' };
+      },
+    };
+    const service = serviceWith(provider);
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'zzzz no cache match' },
+      source: 'slash-command',
+      invocationId: 'int-dedupe-cap',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
+    expect((line.match(/ · /g) ?? []).length).toBe(2);
   });
 });
