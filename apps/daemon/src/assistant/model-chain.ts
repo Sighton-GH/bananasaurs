@@ -141,6 +141,7 @@ export const resolveModelChain = (deps: {
       const costClass = key?.costClass ?? 'unknown';
       const enabled = key?.enabled ?? false;
       const keyLabel = key?.label ?? row.keyId;
+      // Defensive: unreachable through the repo because `getModelChain` joins keys and key deletion cascades.
       if (key === undefined)
         return {
           provider: row.provider,

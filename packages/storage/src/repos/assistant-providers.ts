@@ -105,6 +105,7 @@ export const addKey = (
     label: string;
     apiKeyEnc: string;
     costClass?: ProviderCostClass;
+    enabled?: boolean;
     now: number;
     keyId?: string;
   },
@@ -118,7 +119,7 @@ export const addKey = (
         label: input.label,
         apiKeyEnc: input.apiKeyEnc,
         costClass: input.costClass ?? 'unknown',
-        enabled: 1,
+        enabled: (input.enabled ?? true) ? 1 : 0,
         createdAt: input.now,
         updatedAt: input.now,
       })

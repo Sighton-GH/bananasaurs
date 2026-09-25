@@ -211,6 +211,18 @@ describe('assistant provider keys', () => {
     ).toEqual(['Key A', 'Key B']);
   });
 
+  it('addKey honours enabled: false (Task 6b fix round 2)', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, {
+      provider: 'gemini',
+      label: 'Disabled key',
+      apiKeyEnc: 'sealed',
+      enabled: false,
+      now: 10,
+    });
+    expect(listKeys(scope)).toMatchObject([{ keyId, enabled: false }]);
+  });
+
   it('updateKey changes only the given fields and keeps the rest', () => {
     const scope = t.scopes.instance();
     const keyId = addKey(scope, {

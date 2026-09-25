@@ -91,6 +91,7 @@ export interface ProviderConfigStore {
       label: string;
       apiKey: string;
       costClass?: ProviderCostClass | undefined;
+      enabled?: boolean | undefined;
     },
     now: number,
   ): string;
@@ -321,6 +322,7 @@ export const createProviderConfigStore = (
           label: PROVIDER_LABEL[input.provider],
           apiKeyEnc: seal(key, input.apiKey as string),
           costClass,
+          enabled: input.enabled,
           now,
         });
       } else {
@@ -348,6 +350,7 @@ export const createProviderConfigStore = (
       if (provider !== 'gemini') throw new Error('unsupported');
       let listKey = apiKey;
       if (listKey === undefined) {
+        // With several Gemini keys and no pasted key, this uses the first stored Gemini key (by key id).
         const storedKey = assistantProvidersRepo
           .listKeys(instance)
           .find((k) => k.provider === 'gemini');
@@ -365,6 +368,7 @@ export const createProviderConfigStore = (
         label: input.label,
         apiKeyEnc: seal(key, input.apiKey),
         costClass: input.costClass ?? 'unknown',
+        enabled: input.enabled ?? true,
         now,
       });
     },

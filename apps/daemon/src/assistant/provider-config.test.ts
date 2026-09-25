@@ -426,6 +426,14 @@ describe('save() also writes the keys + chain tables it now reads (Task 6b fix r
     expect(store.status().provider).toBe('off');
   });
 
+  it('a fresh save with enabled: false stores a disabled key (Task 6b fix round 2)', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.save({ provider: 'gemini', model: 'm', apiKey: 'raw-key', enabled: false }, 10);
+    const [key] = assistantProvidersRepo.listKeys(t.scopes.instance());
+    expect(key).toMatchObject({ keyId: 'key_gemini', enabled: false });
+    expect(store.status()).toMatchObject({ enabled: false });
+  });
+
   it('a key is never present in status(), effective() or the raw stored row', () => {
     const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
     store.save(
