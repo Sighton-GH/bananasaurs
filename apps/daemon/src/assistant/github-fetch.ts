@@ -48,7 +48,9 @@ const headersOf = (init?: RequestInit): Record<string, string> => {
   }
   if (Array.isArray(raw)) {
     const out: Record<string, string> = {};
-    for (const [key, value] of raw) out[key] = value;
+    for (const [key, value] of raw) {
+      if (key !== undefined && value !== undefined) out[key] = value;
+    }
     return out;
   }
   return { ...(raw as Record<string, string>) };

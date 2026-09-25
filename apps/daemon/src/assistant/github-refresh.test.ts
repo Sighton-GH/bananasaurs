@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId, type ClubResource } from '@bananasaurs/core';
 import { computeDocId, type GuildScope } from '@bananasaurs/storage';
 import {
@@ -111,7 +111,7 @@ const okFile = (url: string, text: string) => ({
 
 class FakeFetcher {
   readonly calls: { url: string; conditional: unknown }[] = [];
-  constructor(private readonly respond: (url: string) => Promise<never> | unknown) {}
+  constructor(private readonly respond: (url: string) => unknown) {}
   async fetch(url: string, conditional?: unknown) {
     this.calls.push({ url, conditional });
     return (await this.respond(url)) as never;
@@ -186,8 +186,8 @@ const deps = (
   now = () => 1_000,
 ): { deps: GithubRefreshDeps; store: FakeStore; cache: FakeCache; client: FakeClient } => ({
   deps: {
-    client: client as unknown as GithubRefreshDeps['client'],
-    fetcher: fetcher as unknown as GithubRefreshDeps['fetcher'],
+    client,
+    fetcher,
     store,
     cache,
     now,
@@ -348,12 +348,22 @@ describe('refreshGithubOrg', () => {
       throw new Error('no raw fetch');
     });
     const { deps: d, store } = deps(client, fetcher);
-    store.rows.set('gh-acme', org({ meta: undefined }));
+    const base = org();
+    const orgWithoutMeta: ClubResource = {
+      id: base.id,
+      guildId: base.guildId,
+      title: base.title,
+      url: base.url,
+      kind: base.kind,
+      enabled: base.enabled,
+      reviewedAt: base.reviewedAt,
+    };
+    store.rows.set('gh-acme', orgWithoutMeta);
 
-    expect(await refreshGithubOrg(SCOPE, org({ meta: undefined }), d)).toBe('ok');
+    expect(await refreshGithubOrg(SCOPE, orgWithoutMeta, d)).toBe('ok');
     expect(client.calls.listOrgRepos).toBe(1);
 
-    const bad = org({ id: 'bad', url: 'https://example.com/not-github', meta: undefined });
+    const bad = { ...orgWithoutMeta, id: 'bad', url: 'https://example.com/not-github' };
     expect(await refreshGithubOrg(SCOPE, bad, d)).toBe('error');
     expect(store.fetchRecords.find((r) => r.id === 'bad')).toMatchObject({ status: 'failed' });
   });
@@ -391,7 +401,9 @@ describe('refreshGithubRepo (authenticated)', () => {
     const client = new FakeClient();
     client.tree = { entries: treeEntries, truncated: false };
     const fetcher = new FakeFetcher(async (url: string) => okFile(url, `# text for ${url}`));
-    return { client, fetcher, ...deps(client, fetcher) };
+    // The spread already carries this same `client` reference; naming it twice
+    // let the second silently win, so only the spread names it.
+    return { fetcher, ...deps(client, fetcher) };
   };
 
   it('caches the default file selection, one document per file with the path as title', async () => {
@@ -610,11 +622,5 @@ describe('refreshGithubResource', () => {
         d,
       ),
     ).rejects.toThrow();
-  });
-});
-
-describe('githubToken plumbing', () => {
-  it('uses vi to keep the suite honest about unused imports', () => {
-    expect(vi.fn().mock.calls).toEqual([]);
   });
 });

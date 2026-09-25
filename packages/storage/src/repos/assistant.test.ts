@@ -494,7 +494,15 @@ describe('github-repo / github-org kinds with parentId + meta (Task 17)', () => 
   it('clearing meta and parent on re-put stores NULL', () => {
     const s = t.scopes.forGuild(G);
     putResource(s, child);
-    putResource(s, { ...child, parentId: undefined, meta: undefined });
+    putResource(s, {
+      id: child.id,
+      guildId: child.guildId,
+      title: child.title,
+      url: child.url,
+      kind: child.kind,
+      enabled: child.enabled,
+      reviewedAt: child.reviewedAt,
+    });
     const row = listResources(s).find((r) => r.id === 'gh-acme-widget');
     expect(row?.parentId).toBeUndefined();
     expect(row?.meta).toBeUndefined();
