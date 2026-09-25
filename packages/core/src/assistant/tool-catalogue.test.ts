@@ -87,4 +87,13 @@ describe('TOOL_CATALOGUE', () => {
     expect(refresh.parameters.required).toEqual(['resourceId']);
     expect(refresh.rounds).toBe('first');
   });
+
+  it('gives search_sources.sourceIds array items with a bound of 10', () => {
+    const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_sources')!;
+    expect(search.parameters.properties.sourceIds).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+      maxItems: 10,
+    });
+  });
 });

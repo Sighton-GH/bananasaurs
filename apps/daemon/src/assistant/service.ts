@@ -3,7 +3,6 @@ import {
   assertProviderEligible,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
-  humaniseDuration,
   JOB_KINDS,
   providerMayTrain,
   ProviderError,
@@ -38,6 +37,7 @@ import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
   runAssistantTool,
+  relativeUpdated,
   toolDeclarations,
   type ArchiveHit,
   type AssistantToolPorts,
@@ -368,11 +368,7 @@ export const createAssistantService = (
       );
       const catalogueLines = ordered.slice(0, 60).map((r) => {
         const fetchedAt = freshnessById.get(r.id);
-        const updated =
-          fetchedAt === undefined
-            ? 'not fetched yet'
-            : `${humaniseDuration(Math.max(0, now() - fetchedAt))} ago`;
-        return `${r.id} · ${r.title} (${r.kind}) · updated ${updated}`;
+        return `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(fetchedAt, now())}`;
       });
       const memberQuestion = textOf(input.input).slice(0, 200);
       const preRetrieved =
@@ -449,7 +445,7 @@ export const createAssistantService = (
         cacheSearch: (q) =>
           resourceCacheRepo.searchChunks(scope, {
             query: q.query,
-            resourceIds: q.resourceIds,
+            ...(q.resourceIds === undefined ? {} : { resourceIds: q.resourceIds }),
             limit: q.limit,
           }),
         cacheChunk: (chunkId) => {
@@ -512,9 +508,13 @@ export const createAssistantService = (
         cacheFreshness: () => {
           const latest = new Map<string, number>();
           for (const row of resourceCacheRepo.resourceFreshness(scope)) {
-            const prev = latest.get(row.resourceId);
-            if (prev === undefined || row.fetchedAt > prev)
-              latest.set(row.resourceId, row.fetchedAt);
+            const { resourceId, fetchedAt } = row;
+            // A never-fetched document carries no timestamp; it must not
+            // break the freshness map — the catalogue then shows
+            // "not fetched yet".
+            if (fetchedAt === undefined) continue;
+            const prev = latest.get(resourceId);
+            if (prev === undefined || fetchedAt > prev) latest.set(resourceId, fetchedAt);
           }
           return [...latest].map(([resourceId, fetchedAt]) => ({ resourceId, fetchedAt }));
         },

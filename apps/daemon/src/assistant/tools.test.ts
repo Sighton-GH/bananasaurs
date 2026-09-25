@@ -306,6 +306,42 @@ describe('cache tools (Task 16)', () => {
     ).resolves.toMatchObject({ ok: false });
   });
 
+  it('search_sources refuses an unknown or disabled sourceId with unknown id', async () => {
+    const cacheSearch = vi.fn(() => []);
+    const unknown = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care', sourceIds: ['nope'] } },
+      cachePorts({ cacheSearch }),
+    );
+    expect(unknown).toMatchObject({ ok: false, text: 'unknown id' });
+    expect(cacheSearch).not.toHaveBeenCalled();
+    const disabled = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care', sourceIds: ['off'] } },
+      cachePorts({ cacheSearch }),
+    );
+    expect(disabled).toMatchObject({ ok: false, text: 'unknown id' });
+    expect(cacheSearch).not.toHaveBeenCalled();
+  });
+
+  it('list_sources answers no match with the ruled sentence', async () => {
+    const p = cachePorts({
+      cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
+    });
+    const result = await runAssistantTool(
+      { name: 'list_sources', args: { filter: 'zzz-no-such-source' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('No sources match that filter.');
+    expect(result.handles).toBeUndefined();
+  });
+
+  it('list_sources shows never-fetched sources as not fetched yet', async () => {
+    const p = cachePorts({ cacheFreshness: () => [] });
+    const result = await runAssistantTool({ name: 'list_sources', args: {} }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('not fetched yet');
+  });
+
   it('search_sources caps hits at 6 and total text at 2000 chars', async () => {
     const hits = Array.from({ length: 10 }, (_, i) => ({
       chunkId: `c_doc_${String(i)}`,
@@ -409,6 +445,21 @@ describe('cache tools (Task 16)', () => {
       cachePorts(),
     );
     expect(unknown.text).toContain('unknown id');
+  });
+
+  it('outline on a known doc with no chunks answers No headings cached.', async () => {
+    const p = cachePorts({
+      cacheOutline: () => [],
+      cacheDocument: () => ({
+        docId: 'd_abc',
+        resourceId: 'handbook',
+        title: 'Club handbook',
+        url: 'https://example.com/handbook',
+      }),
+    });
+    const result = await runAssistantTool({ name: 'outline', args: { docId: 'd_abc' } }, p);
+    expect(result.ok).toBe(true);
+    expect(result.text).toBe('No headings cached.');
   });
 
   it('open_resource returns the first cached chunks inside 4000 chars', async () => {

@@ -16,6 +16,8 @@ export interface JSONSchemaProperty {
   readonly minimum?: number;
   readonly maximum?: number;
   readonly enum?: readonly (string | number)[];
+  readonly items?: { readonly type: 'string' };
+  readonly maxItems?: number;
 }
 
 /**
@@ -159,6 +161,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
         sourceIds: {
           type: 'array',
           description: 'Only these source ids (at most 10).',
+          items: { type: 'string' },
+          maxItems: 10,
         },
       },
       required: ['query'],

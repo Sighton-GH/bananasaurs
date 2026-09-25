@@ -184,10 +184,15 @@ const clock = (ports: AssistantToolPorts, at: number): string =>
     hourCycle: 'h23',
   }).format(at);
 
-const relativeUpdated = (ports: AssistantToolPorts, fetchedAt: number | undefined): string =>
+/**
+ * "3 hours ago" / "not fetched yet" for catalogue and list_sources lines.
+ * One shared helper (Task 16 fix round 1): service.ts's catalogue uses this
+ * too instead of its own copy.
+ */
+export const relativeUpdated = (fetchedAt: number | undefined, now: number): string =>
   fetchedAt === undefined
     ? 'not fetched yet'
-    : `${humaniseDuration(Math.max(0, ports.now() - fetchedAt))} ago`;
+    : `${humaniseDuration(Math.max(0, now - fetchedAt))} ago`;
 
 const enabledById = (ports: AssistantToolPorts, resourceId: string): ClubResource | undefined =>
   ports.resources().find((r) => r.id === resourceId && r.enabled);
@@ -331,7 +336,7 @@ export const runAssistantTool = async (
           .slice(0, 30)
           .map(
             (r) =>
-              `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(ports, freshness.get(r.id))}`,
+              `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(freshness.get(r.id), ports.now())}`,
           );
         if (lines.length === 0) return evidence(name, 'No sources match that filter.');
         return {
@@ -355,7 +360,11 @@ export const runAssistantTool = async (
             if (!known.has(id)) return refused(name, 'unknown id');
           }
         }
-        const hits = ports.cacheSearch({ query: q, resourceIds: sourceIds, limit: 6 });
+        const hits = ports.cacheSearch({
+          query: q,
+          ...(sourceIds === undefined ? {} : { resourceIds: sourceIds }),
+          limit: 6,
+        });
         if (hits.length === 0)
           return evidence(name, 'No matching passages. Try different words, or list_sources.');
         const byId = new Map(ports.resources().map((r) => [r.id, r]));
