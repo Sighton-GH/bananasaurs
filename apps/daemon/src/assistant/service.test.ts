@@ -279,10 +279,7 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     };
   };
 
-  const usable = (
-    provider: TextProvider,
-    over: Partial<ChainEntry> = {},
-  ): ChainEntry => ({
+  const usable = (provider: TextProvider, over: Partial<ChainEntry> = {}): ChainEntry => ({
     providerId: 'gemini',
     model: 'model-a',
     keyId: 'key_a',
@@ -316,7 +313,9 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
   });
   afterEach(() => t.close());
 
-  const serviceWith = (chain: () => readonly ChainEntry[]): ReturnType<typeof createAssistantService> =>
+  const serviceWith = (
+    chain: () => readonly ChainEntry[],
+  ): ReturnType<typeof createAssistantService> =>
     createAssistantService(
       t.scopes.forGuild(GUILD),
       t.scopes.instance(),
@@ -339,6 +338,18 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     expect(calls()).toBe(1);
   });
 
+  it('a non-daily quota error keeps its kind instead of becoming invalid-request', async () => {
+    const { provider, calls } = fakeProvider([
+      new ProviderError('quota', 'credit exhausted', false),
+    ]);
+    const service = serviceWith(() => [usable(provider)]);
+    await expect(service.invoke(ask)).rejects.toMatchObject({
+      kind: 'quota',
+      retryable: false,
+    });
+    expect(calls()).toBe(1);
+  });
+
   it('every entry skipped for terms is the terms refusal with a denied row', async () => {
     const service = serviceWith(() => [skipped('ineligible'), skipped('unverified')]);
     const result = await service.invoke(ask);
@@ -357,14 +368,16 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     const result = await service.invoke(ask);
     expect(result).toMatchObject({
       ok: false,
-      content:
-        'The free AI provider is not configured, so no content was sent outside the server.',
+      content: 'The free AI provider is not configured, so no content was sent outside the server.',
     });
   });
 
   it('a guard failure answers the fixed text', async () => {
     const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
-    const shaped = fakeProvider([{ text: toolShaped, model: 'm' }, { text: toolShaped, model: 'm' }]);
+    const shaped = fakeProvider([
+      { text: toolShaped, model: 'm' },
+      { text: toolShaped, model: 'm' },
+    ]);
     const service = serviceWith(() => [usable(shaped.provider)]);
     const result = await service.invoke(ask);
     expect(result).toMatchObject({

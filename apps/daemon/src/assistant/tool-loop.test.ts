@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   ProviderError,
+  TOOL_CATALOGUE,
   type GenerateTextRequest,
   type GenerateTextResponse,
   type GenerationMessage,
@@ -58,9 +59,7 @@ const toolAnswer = (
   over: Partial<GenerateTextResponse> = {},
 ): GenerateTextResponse => ({ text: '', model: 'model-a', toolCalls, ...over });
 
-const loopTools = (
-  run: (call: ToolCall) => Promise<AssistantToolResult>,
-): LoopTools => ({
+const loopTools = (run: (call: ToolCall) => Promise<AssistantToolResult>): LoopTools => ({
   firstRound: [decl('search_sources'), decl('open_resource')],
   idRound: [decl('read_chunk'), decl('outline'), decl('open_resource')],
   run,
@@ -90,10 +89,23 @@ const baseInput = (
 describe('ID_TOOL_ARGS', () => {
   it('names the id argument of every follow-up tool', () => {
     expect(ID_TOOL_ARGS).toEqual({
-      read_chunk: 'chunk_id',
-      outline: 'doc_id',
-      open_resource: 'resource_id',
+      read_chunk: 'chunkId',
+      outline: 'docId',
+      open_resource: 'resourceId',
     });
+  });
+
+  it('every ID_TOOL_ARGS name in the catalogue maps to a required parameter', () => {
+    const matched = Object.entries(ID_TOOL_ARGS).filter(([name]) =>
+      TOOL_CATALOGUE.some((tool) => tool.name === name),
+    );
+    // read_chunk/outline land in Task 16; open_resource pins the test today.
+    expect(matched.map(([name]) => name)).toContain('open_resource');
+    for (const [name, arg] of matched) {
+      const found = TOOL_CATALOGUE.find((tool) => tool.name === name)!;
+      expect(Object.keys(found.parameters.properties)).toContain(arg);
+      expect(found.parameters.required ?? []).toContain(arg);
+    }
   });
 });
 
@@ -110,7 +122,7 @@ describe('runToolLoop direct answers', () => {
   });
 
   it('offers no tools to a provider without the tools capability', async () => {
-    const { provider, calls } = scripted([textAnswer('plain') ], ['text']);
+    const { provider, calls } = scripted([textAnswer('plain')], ['text']);
     const run = vi.fn(async (call: ToolCall) => okResult(call.name));
     const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
     expect(result.text).toBe('plain');
@@ -161,7 +173,7 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
   it('round 1 calls search_sources, round 2 calls read_chunk with a returned handle', async () => {
     const { provider, calls } = scripted([
       toolAnswer([{ name: 'search_sources', args: { query: 'handbook' } }]),
-      toolAnswer([{ name: 'read_chunk', args: { chunk_id: 'chunk-1' } }]),
+      toolAnswer([{ name: 'read_chunk', args: { chunkId: 'chunk-1' } }]),
       textAnswer('Found it.'),
     ]);
     const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> => {
@@ -169,9 +181,7 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
         return { ...okResult(call.name, 'see chunk-1'), handles: ['chunk-1'] };
       return okResult(call.name, 'chunk text');
     });
-    const result = await runToolLoop(
-      baseInput([entry({ provider })], { tools: loopTools(run) }),
-    );
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
     expect(result.outcome).toBe('answered');
     expect(result.text).toBe('Found it.');
     expect(run).toHaveBeenCalledTimes(2);
@@ -193,9 +203,7 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
       textAnswer('Answered anyway.'),
     ]);
     const run = vi.fn(async (call: ToolCall) => okResult(call.name));
-    const result = await runToolLoop(
-      baseInput([entry({ provider })], { tools: loopTools(run) }),
-    );
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
     expect(run).toHaveBeenCalledTimes(1);
     expect(result.outcome).toBe('answered');
     expect(result.toolCalls).toMatchObject([
@@ -213,13 +221,11 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
   it('round 2 calling read_chunk with an id not in handles is refused as unknown id', async () => {
     const { provider } = scripted([
       toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
-      toolAnswer([{ name: 'read_chunk', args: { chunk_id: 'nope' } }]),
+      toolAnswer([{ name: 'read_chunk', args: { chunkId: 'nope' } }]),
       textAnswer('Answered anyway.'),
     ]);
     const run = vi.fn(async (call: ToolCall) => okResult(call.name));
-    const result = await runToolLoop(
-      baseInput([entry({ provider })], { tools: loopTools(run) }),
-    );
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
     expect(run).toHaveBeenCalledTimes(1);
     expect(result.toolCalls).toHaveLength(2);
     expect(result.toolCalls[1]).toMatchObject({
@@ -230,13 +236,39 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
     });
   });
 
+  it('round 2 open_resource with a returned resourceId runs and its result reaches the model', async () => {
+    const { provider, calls } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'handbook' } }]),
+      toolAnswer([{ name: 'open_resource', args: { resourceId: 'handbook' } }]),
+      textAnswer('The handbook says Friday.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> => {
+      if (call.name === 'search_sources')
+        return { ...okResult(call.name, 'see handbook'), handles: ['handbook'] };
+      return okResult(call.name, 'Handbook text: the order ships Friday.');
+    });
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
+    expect(result.outcome).toBe('answered');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.toolCalls).toMatchObject([
+      { round: 1, name: 'search_sources', ok: true },
+      { round: 2, name: 'open_resource', ok: true },
+    ]);
+    // The round-2 result reaches the model in the round-3 request.
+    const round3ToolTexts = (calls[2]?.messages ?? [])
+      .filter((m) => m.role === 'tool')
+      .map((m) => m.text);
+    expect(round3ToolTexts.some((text) => text.includes('the order ships Friday'))).toBe(true);
+  });
+
   it('8 parallel calls in round 1: 6 run, 2 refused', async () => {
-    const calls8 = Array.from({ length: 8 }, () => ({ name: 'search_sources', args: { query: 'x' } }));
+    const calls8 = Array.from({ length: 8 }, () => ({
+      name: 'search_sources',
+      args: { query: 'x' },
+    }));
     const { provider } = scripted([toolAnswer(calls8), textAnswer('done')]);
     const run = vi.fn(async (call: ToolCall) => okResult(call.name));
-    const result = await runToolLoop(
-      baseInput([entry({ provider })], { tools: loopTools(run) }),
-    );
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
     expect(run).toHaveBeenCalledTimes(6);
     expect(result.toolCalls.filter((c) => c.ok)).toHaveLength(6);
     expect(result.toolCalls.filter((c) => !c.ok)).toHaveLength(2);
@@ -287,6 +319,83 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
   });
 });
 
+describe('runToolLoop per-request budgets', () => {
+  it('12 calls bind the whole request: entry A uses 10 then fails busy, entry B runs only 2 more', async () => {
+    const sixSearches = Array.from({ length: 6 }, () => ({
+      name: 'search_sources',
+      args: { query: 'x' },
+    }));
+    const entryA = scripted([
+      toolAnswer(sixSearches),
+      toolAnswer(
+        Array.from({ length: 4 }, () => ({ name: 'read_chunk', args: { chunkId: 'chunk-1' } })),
+      ),
+      new ProviderError('outage', 'HTTP 503', true),
+    ]);
+    const entryB = scripted([
+      toolAnswer(
+        Array.from({ length: 4 }, () => ({ name: 'search_sources', args: { query: 'y' } })),
+      ),
+      textAnswer('Done.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> => ({
+      ...okResult(call.name),
+      handles: ['chunk-1'],
+    }));
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: entryA.provider, model: 'model-a' }),
+          entry({ provider: entryB.provider, model: 'model-b' }),
+        ],
+        { tools: loopTools(run) },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(run).toHaveBeenCalledTimes(12);
+    expect(result.toolCalls.filter((c) => c.ok)).toHaveLength(12);
+    expect(result.toolCalls.slice(-2)).toMatchObject([
+      { name: 'search_sources', ok: false, refused: 'tool call budget used' },
+      { name: 'search_sources', ok: false, refused: 'tool call budget used' },
+    ]);
+  });
+
+  it('24,000 result characters bind the whole request across failover', async () => {
+    const entryA = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      new ProviderError('outage', 'HTTP 503', true),
+    ]);
+    const entryB = scripted([
+      toolAnswer([
+        { name: 'search_sources', args: { query: 'y' } },
+        { name: 'search_sources', args: { query: 'z' } },
+      ]),
+      textAnswer('Done.'),
+    ]);
+    let n = 0;
+    const run = vi.fn(async (call: ToolCall): Promise<AssistantToolResult> => {
+      n += 1;
+      return okResult(call.name, 'x'.repeat(n === 1 ? 20_000 : 5_000));
+    });
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: entryA.provider, model: 'model-a' }),
+          entry({ provider: entryB.provider, model: 'model-b' }),
+        ],
+        { tools: loopTools(run) },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(run).toHaveBeenCalledTimes(2);
+    expect(result.toolCalls).toMatchObject([
+      { name: 'search_sources', ok: true },
+      { name: 'search_sources', ok: true },
+      { name: 'search_sources', ok: false, refused: 'result budget used' },
+    ]);
+  });
+});
+
 describe('runToolLoop output guard', () => {
   it('a final text that is only a tool call retries once, then fails with the fixed text', async () => {
     const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
@@ -307,6 +416,17 @@ describe('runToolLoop output guard', () => {
     expect(result.outcome).toBe('answered');
     expect(result.text).toBe("I can't share that.");
     expect(result.guard).toMatchObject({ blocked: 'prompt-leak' });
+  });
+
+  it('the guard-retry response usage is recorded in the trace usage', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider } = scripted([
+      { text: toolShaped, model: 'model-a', usage: { promptTokens: 10, completionTokens: 5 } },
+      { text: toolShaped, model: 'model-a', usage: { promptTokens: 7, completionTokens: 3 } },
+    ]);
+    const result = await runToolLoop(baseInput([entry({ provider })]));
+    expect(result.outcome).toBe('failed');
+    expect(result.usage).toMatchObject({ promptTokens: 17, completionTokens: 8 });
   });
 });
 
@@ -481,9 +601,7 @@ describe('runToolLoop daily quota (Task Q)', () => {
     );
     expect(second.outcome).toBe('failed');
     expect(nextProvider.calls).toHaveLength(0);
-    expect(second.attempts).toMatchObject([
-      { outcome: 'skipped', reason: 'daily-allowance-used' },
-    ]);
+    expect(second.attempts).toMatchObject([{ outcome: 'skipped', reason: 'daily-allowance-used' }]);
   });
 
   it('an expired ledger entry no longer skips', async () => {

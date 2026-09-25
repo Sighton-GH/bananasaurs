@@ -351,8 +351,8 @@ export const createAssistantService = (
       // tools the model opens the others itself, without them all are fetched.
       const resources = assistantRepo.listResources(scope).filter((r) => r.enabled);
       const emphasised = resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
-      const toolsAvailable = chainEntries.some((entry) =>
-        entry.provider?.capabilities.has('tools') === true,
+      const toolsAvailable = chainEntries.some(
+        (entry) => entry.provider?.capabilities.has('tools') === true,
       );
       const prefetch = toolsAvailable
         ? emphasised
@@ -518,17 +518,22 @@ export const createAssistantService = (
           };
         }
         if (lastTried?.outcome === 'error') {
+          // A non-guard failure keeps the last attempt's original error —
+          // same kind, same retryable flag — so e.g. a non-daily `quota`
+          // error is not normalised into `invalid-request`.
+          if (failed.lastError instanceof ProviderError) throw failed.lastError;
           throw new ProviderError(
             'invalid-request',
             lastTried.reason ?? 'The assistant request failed.',
             false,
           );
         }
-        // Mixed skips and failures that match none of today's texts fail closed.
-        return {
-          ok: false,
-          content: 'I could not complete that request. No action was taken.',
-        };
+        // The old "I could not complete that request" fallback was
+        // unreachable: every failed loop either threw or returned above. The
+        // annotation makes that exhaustiveness a compile error if a new
+        // attempt outcome ever appears.
+        const unreachableOutcome: 'ok' | 'skipped' | undefined = lastTried?.outcome;
+        throw new Error(`unreachable assistant loop failure: ${String(unreachableOutcome)}`);
       };
       const loop = await runToolLoop({
         chain: chainEntries,
@@ -561,7 +566,11 @@ export const createAssistantService = (
       // each attempt lines up with the entry that produced it.
       let warnedMayTrain = false;
       loop.attempts.forEach((attempt, index) => {
-        if (attempt.outcome !== 'skipped' && chainEntries[index]?.mayTrain === true && !warnedMayTrain) {
+        if (
+          attempt.outcome !== 'skipped' &&
+          chainEntries[index]?.mayTrain === true &&
+          !warnedMayTrain
+        ) {
           warnedMayTrain = true;
           logger.warn(
             safeLogFields({

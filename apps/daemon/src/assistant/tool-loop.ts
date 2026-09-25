@@ -21,9 +21,9 @@ import type { AssistantToolResult, ToolSource } from './tools.js';
  * them are offered; the enforcement below still names them.
  */
 export const ID_TOOL_ARGS: Readonly<Record<string, string>> = {
-  read_chunk: 'chunk_id',
-  outline: 'doc_id',
-  open_resource: 'resource_id',
+  read_chunk: 'chunkId',
+  outline: 'docId',
+  open_resource: 'resourceId',
 };
 
 export interface LoopTools {
@@ -53,6 +53,12 @@ export interface LoopResult {
    * answers the daily-cap reply instead of busy (Task Q).
    */
   readonly dailyQuota?: { readonly resetAt: number | undefined };
+  /**
+   * The last attempt's original provider error, when any entry failed with
+   * one. The service re-throws it so a non-guard failure keeps its kind
+   * (e.g. a non-daily `quota` error) instead of becoming `invalid-request`.
+   */
+  readonly lastError?: ProviderError;
 }
 
 export interface LoopLimits {
@@ -105,7 +111,9 @@ type TraceToolCall = AssistantTrace['toolCalls'][number];
  * 3. A response with no tool calls is the final text.
  * 4. Round 1 runs the first `perRound` calls while `totalCalls` remains;
  *    round 2+ refuses non-ID tools and unknown ids; every call gets a tool
- *    message; result text stops once `resultChars` is reached.
+ *    message; result text stops once `resultChars` is reached. `totalCalls`
+ *    and `resultChars` bind the whole request: failover restarts rounds,
+ *    messages and handles, never these budgets.
  * 5. Still calling tools at the end: one final call with no declarations.
  * 6. Every final text runs through the output guard, with one retry.
  * 7. Every entry skipped or failed means `outcome: 'failed'`.
@@ -138,6 +146,11 @@ export const runToolLoop = async (input: {
   const cappedKeys = new Map<string, number | undefined>();
   const dailyResets: (number | undefined)[] = [];
   let sawDailyCap = false;
+  // 12 calls and 24,000 result characters bind the whole request, not one
+  // chain entry: failover restarts rounds, messages and handles, never these.
+  const budgets = { callsUsed: 0, resultChars: 0 };
+  // The last attempt's original provider error, for the caller to re-throw.
+  let lastError: ProviderError | undefined;
 
   const recordUsage = (usage: GenerateTextResponse['usage']): void => {
     if (usage?.promptTokens !== undefined) {
@@ -223,7 +236,11 @@ export const runToolLoop = async (input: {
       attempts,
       toolCalls,
       sources,
+      budgets,
       recordUsage,
+      noteError: (err) => {
+        lastError = err;
+      },
       recordWeb: () => {
         web = true;
       },
@@ -244,10 +261,9 @@ export const runToolLoop = async (input: {
         usage: usageOf(),
         sources,
         web,
+        ...(lastError === undefined ? {} : { lastError }),
         // A guard failure after an earlier daily cap still carries the cap.
-        ...(answered.outcome === 'failed' && sawDailyCap
-          ? { dailyQuota: earliestQuota() }
-          : {}),
+        ...(answered.outcome === 'failed' && sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
       };
     }
   }
@@ -261,6 +277,7 @@ export const runToolLoop = async (input: {
     guard: { removed: [] },
     sources,
     web,
+    ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
   };
 };
@@ -307,7 +324,10 @@ const runEntry = async (deps: {
   readonly attempts: Attempt[];
   readonly toolCalls: TraceToolCall[];
   readonly sources: ToolSource[];
+  /** Per-request budgets, shared across entries so failover never resets them. */
+  readonly budgets: { callsUsed: number; resultChars: number };
   readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
+  readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: () => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
   readonly now: () => number;
@@ -316,18 +336,14 @@ const runEntry = async (deps: {
   const { entry, limits } = deps;
   const provider = entry.provider as TextProvider;
   const handles = new Set<string>(deps.initialHandles);
-  const messages: GenerationMessage[] = [
-    ...deps.history,
-    { role: 'user', text: deps.userText },
-  ];
+  const messages: GenerationMessage[] = [...deps.history, { role: 'user', text: deps.userText }];
   // Tools run only when they were offered: a provider without the `tools`
   // capability answers text-only, and any tool calls it returns anyway are
   // refused rather than executed.
   const toolsRunnable = deps.tools !== undefined && provider.capabilities.has('tools');
-  let callsUsed = 0;
-  let resultChars = 0;
 
   const failAttempt = (err: unknown): void => {
+    if (err instanceof ProviderError) deps.noteError(err);
     if (isDailyCap(err)) {
       deps.onDailyCap(err.resetAt);
       deps.attempts.push({
@@ -395,24 +411,48 @@ const runEntry = async (deps: {
       const callMs = (): number => Math.max(0, deps.now() - startedCall);
       const run = toolsRunnable ? deps.tools?.run : undefined;
       if (run === undefined) {
-        deps.toolCalls.push({ ...traceBase, ok: false, refused: 'tools not offered', ms: callMs(), preview: '' });
+        deps.toolCalls.push({
+          ...traceBase,
+          ok: false,
+          refused: 'tools not offered',
+          ms: callMs(),
+          preview: '',
+        });
         toolMessages.push(refusedMessage(call, 'tools not offered'));
         continue;
       }
-      if (callsUsed >= limits.totalCalls) {
-        deps.toolCalls.push({ ...traceBase, ok: false, refused: 'tool call budget used', ms: callMs(), preview: '' });
+      if (deps.budgets.callsUsed >= limits.totalCalls) {
+        deps.toolCalls.push({
+          ...traceBase,
+          ok: false,
+          refused: 'tool call budget used',
+          ms: callMs(),
+          preview: '',
+        });
         toolMessages.push(refusedMessage(call, 'tool call budget used'));
         continue;
       }
       if (index >= limits.perRound) {
-        deps.toolCalls.push({ ...traceBase, ok: false, refused: 'too many calls in this round', ms: callMs(), preview: '' });
+        deps.toolCalls.push({
+          ...traceBase,
+          ok: false,
+          refused: 'too many calls in this round',
+          ms: callMs(),
+          preview: '',
+        });
         toolMessages.push(refusedMessage(call, 'too many calls in this round'));
         continue;
       }
       if (round >= 2) {
         const idArg = ID_TOOL_ARGS[call.name];
         if (idArg === undefined) {
-          deps.toolCalls.push({ ...traceBase, ok: false, refused: 'not allowed after reading results', ms: callMs(), preview: '' });
+          deps.toolCalls.push({
+            ...traceBase,
+            ok: false,
+            refused: 'not allowed after reading results',
+            ms: callMs(),
+            preview: '',
+          });
           toolMessages.push(refusedMessage(call, 'not allowed after reading results'));
           continue;
         }
@@ -421,19 +461,31 @@ const runEntry = async (deps: {
             ? (call.args as Record<string, unknown>)[idArg]
             : undefined;
         if (typeof idValue !== 'string' || !handles.has(idValue)) {
-          deps.toolCalls.push({ ...traceBase, ok: false, refused: 'unknown id', ms: callMs(), preview: '' });
+          deps.toolCalls.push({
+            ...traceBase,
+            ok: false,
+            refused: 'unknown id',
+            ms: callMs(),
+            preview: '',
+          });
           toolMessages.push(refusedMessage(call, 'unknown id'));
           continue;
         }
       }
-      if (resultChars >= limits.resultChars) {
-        deps.toolCalls.push({ ...traceBase, ok: false, refused: 'result budget used', ms: callMs(), preview: '' });
+      if (deps.budgets.resultChars >= limits.resultChars) {
+        deps.toolCalls.push({
+          ...traceBase,
+          ok: false,
+          refused: 'result budget used',
+          ms: callMs(),
+          preview: '',
+        });
         toolMessages.push(refusedMessage(call, 'result budget used'));
         continue;
       }
-      callsUsed += 1;
+      deps.budgets.callsUsed += 1;
       const result = await run(call);
-      resultChars += result.text.length;
+      deps.budgets.resultChars += result.text.length;
       for (const handle of result.handles ?? []) handles.add(handle);
       if (result.ok) {
         for (const source of result.sources) deps.sources.push(source);
@@ -494,6 +546,7 @@ const finishEntry = async (deps: {
     readonly modelIds: readonly string[];
     readonly attempts: Attempt[];
     readonly entryMs: () => number;
+    readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
@@ -547,6 +600,7 @@ const finishEntry = async (deps: {
       maxOutputTokens: outer.limits.maxOutputTokens,
       thinkingBudget: outer.limits.answerThinking,
     });
+    outer.recordUsage(retry.usage);
     const second = guardAnswer({
       text: retry.text,
       protectedText: outer.protectedText,
