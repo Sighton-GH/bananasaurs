@@ -349,29 +349,33 @@ export const runAssistantTool = async (
           query: string;
           sourceIds?: string[];
         };
+        // A search with no sourceIds stays inside the guild's enabled
+        // resources: a disabled resource (e.g. a repo that went private) is
+        // never searchable, even though its chunks are still cached.
+        const enabledIds = ports
+          .resources()
+          .filter((r) => r.enabled)
+          .map((r) => r.id);
         if (sourceIds !== undefined) {
-          const known = new Set(
-            ports
-              .resources()
-              .filter((r) => r.enabled)
-              .map((r) => r.id),
-          );
+          const known = new Set(enabledIds);
           for (const id of sourceIds) {
             if (!known.has(id)) return refused(name, 'unknown id');
           }
         }
         const hits = ports.cacheSearch({
           query: q,
-          ...(sourceIds === undefined ? {} : { resourceIds: sourceIds }),
+          resourceIds: sourceIds ?? enabledIds,
           limit: 6,
         });
         if (hits.length === 0)
           return evidence(name, 'No matching passages. Try different words, or list_sources.');
         const byId = new Map(ports.resources().map((r) => [r.id, r]));
+        const enabled = new Set(enabledIds);
         const lines: string[] = [];
         const handles: string[] = [];
         let used = 0;
         for (const hit of hits.slice(0, 6)) {
+          if (!enabled.has(hit.resourceId)) continue;
           const title = byId.get(hit.resourceId)?.title ?? hit.resourceId;
           const snippet = hit.snippet.length > 300 ? `${hit.snippet.slice(0, 299)}…` : hit.snippet;
           const line = `[${hit.chunkId}] ${title} › ${hit.headingPath}: ${snippet}`;
@@ -391,6 +395,7 @@ export const runAssistantTool = async (
         };
         const center = ports.cacheChunk(chunkId);
         if (center === undefined) return refused(name, 'unknown id');
+        if (enabledById(ports, center.resourceId) === undefined) return refused(name, 'unknown id');
         const rows = ports.cacheNeighbours(chunkId, neighbours ?? 1);
         const shown = rows.length > 0 ? rows : [center];
         const found = enabledById(ports, center.resourceId);
@@ -426,9 +431,15 @@ export const runAssistantTool = async (
       case 'outline': {
         const { docId } = parsed.data as { docId: string };
         const rows = ports.cacheOutline(docId);
+        // The outline rows carry no resource id, so the doc (or the first
+        // row's chunk) names the resource whose enabled flag decides: a
+        // disabled resource's outline is unknown, like its chunks.
+        const outlineResourceId =
+          ports.cacheDocument(docId)?.resourceId ??
+          (rows[0] === undefined ? undefined : ports.cacheChunk(rows[0].chunkId)?.resourceId);
+        if (outlineResourceId === undefined || enabledById(ports, outlineResourceId) === undefined)
+          return refused(name, 'unknown id');
         if (rows.length === 0) {
-          const doc = ports.cacheDocument(docId);
-          if (doc === undefined) return refused(name, 'unknown id');
           return { ...evidence(name, 'No headings cached.'), handles: [] };
         }
         const lines: string[] = [];

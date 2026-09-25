@@ -667,6 +667,67 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     expect(userText).toContain('chunk=');
   });
 
+  it('keeps a disabled resource out of the catalogue and the pre-retrieved snippets', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, {
+      id: 'handbook',
+      guildId: GUILD,
+      title: 'Handbook',
+      url: 'https://example.com/handbook',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(NOW).toISOString(),
+    });
+    assistantRepo.putResource(scope, {
+      id: 'off',
+      guildId: GUILD,
+      title: 'Old',
+      url: 'https://example.com/old',
+      kind: 'website',
+      enabled: false,
+      reviewedAt: new Date(NOW).toISOString(),
+    });
+    seedCache('https://example.com/handbook', 'handbook', ['battery care guide for the club']);
+    seedCache('https://example.com/old', 'off', ['battery care archived minutes']);
+    let systemInstruction = '';
+    let userText = '';
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async (req) => {
+        systemInstruction = req.systemInstruction ?? '';
+        userText = req.messages.map((m) => m.text ?? '').join('\n');
+        return { text: 'ok', model: 'model-a' };
+      },
+    };
+    const service = createAssistantService(
+      scope,
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [usable(provider)],
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-cache-off',
+    });
+    expect(result.ok).toBe(true);
+    expect(systemInstruction).toContain('handbook · Handbook');
+    expect(systemInstruction).not.toContain('off · Old');
+    expect(userText).not.toContain('archived minutes');
+  });
+
   it('pre-retrieves at most four snippets and opens them in round 2 from initial handles', async () => {
     const scope = t.scopes.forGuild(GUILD);
     assistantRepo.putResource(scope, {

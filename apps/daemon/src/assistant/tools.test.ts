@@ -322,6 +322,72 @@ describe('cache tools (Task 16)', () => {
     expect(cacheSearch).not.toHaveBeenCalled();
   });
 
+  it('search_sources without sourceIds searches only enabled resources and hides disabled hits', async () => {
+    const cacheSearch = vi.fn(() => [
+      {
+        chunkId: 'c_on',
+        docId: 'd_on',
+        resourceId: 'handbook',
+        headingPath: 'Guide',
+        snippet: 'meetings are Mondays',
+      },
+      {
+        chunkId: 'c_off',
+        docId: 'd_off',
+        resourceId: 'off',
+        headingPath: 'Old',
+        snippet: 'archived minutes',
+      },
+    ]);
+    // ports() lists the disabled 'off' resource alongside 'handbook'.
+    const result = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care' } },
+      ports({ cacheSearch }),
+    );
+    expect(cacheSearch).toHaveBeenCalledWith({
+      query: 'battery care',
+      resourceIds: ['handbook'],
+      limit: 6,
+    });
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('c_on');
+    expect(result.text).not.toContain('c_off');
+    expect(result.text).not.toContain('archived minutes');
+    expect(result.handles).not.toContain('c_off');
+    expect(result.handles).not.toContain('d_off');
+  });
+
+  it('read_chunk on a disabled resource answers unknown id', async () => {
+    const p = ports({
+      cacheChunk: () => ({
+        chunkId: 'c_off_0',
+        docId: 'd_off',
+        resourceId: 'off',
+        headingPath: 'Old',
+        text: 'archived minutes',
+      }),
+      cacheNeighbours: () => [],
+    });
+    await expect(
+      runAssistantTool({ name: 'read_chunk', args: { chunkId: 'c_off_0' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
+  });
+
+  it('outline on a disabled resource answers unknown id', async () => {
+    const p = ports({
+      cacheOutline: () => [{ chunkId: 'c_off_0', headingPath: 'Old › Notes' }],
+      cacheDocument: () => ({
+        docId: 'd_off',
+        resourceId: 'off',
+        title: 'Old',
+        url: 'https://example.com/old',
+      }),
+    });
+    await expect(
+      runAssistantTool({ name: 'outline', args: { docId: 'd_off' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
+  });
+
   it('list_sources answers no match with the ruled sentence', async () => {
     const p = cachePorts({
       cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
