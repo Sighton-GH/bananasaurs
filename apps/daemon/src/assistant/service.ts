@@ -103,6 +103,8 @@ export const createAssistantService = (
       {
         providerId: raw.id as ProviderId,
         model: current.AI_MODEL ?? 'test-model',
+        keyId: 'key_test',
+        keyLabel: 'Test provider',
         provider: wrapped,
         skip: undefined,
         mayTrain: false,

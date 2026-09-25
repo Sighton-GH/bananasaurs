@@ -86,11 +86,35 @@ describe('resolveModelChain', () => {
       eligibility: () => eligible(),
     });
     expect(
-      entries.map((e) => ({ providerId: e.providerId, model: e.model, keyId: e.keyId, keyLabel: e.keyLabel, skip: e.skip })),
+      entries.map((e) => ({
+        providerId: e.providerId,
+        model: e.model,
+        keyId: e.keyId,
+        keyLabel: e.keyLabel,
+        skip: e.skip,
+      })),
     ).toEqual([
-      { providerId: 'gemini', model: 'env-model', keyId: 'key_env', keyLabel: 'From .env', skip: undefined },
-      { providerId: 'gemini', model: 'env-lite', keyId: 'key_env', keyLabel: 'From .env', skip: undefined },
-      { providerId: 'gemini', model: 'env-third', keyId: 'key_env', keyLabel: 'From .env', skip: undefined },
+      {
+        providerId: 'gemini',
+        model: 'env-model',
+        keyId: 'key_env',
+        keyLabel: 'From .env',
+        skip: undefined,
+      },
+      {
+        providerId: 'gemini',
+        model: 'env-lite',
+        keyId: 'key_env',
+        keyLabel: 'From .env',
+        skip: undefined,
+      },
+      {
+        providerId: 'gemini',
+        model: 'env-third',
+        keyId: 'key_env',
+        keyLabel: 'From .env',
+        skip: undefined,
+      },
     ]);
     expect(entries.every((e) => e.provider?.id === 'gemini')).toBe(true);
     // All three share the synthetic env key, so they share one built instance.
@@ -153,7 +177,11 @@ describe('resolveModelChain', () => {
 
   it('marks an entry whose key does not open as key-unreadable', () => {
     const scope = t.scopes.instance();
-    const keyId = addKey(scope, { provider: 'gemini', apiKeyEnc: 'sealed-with-another-secret', now: 10 });
+    const keyId = addKey(scope, {
+      provider: 'gemini',
+      apiKeyEnc: 'sealed-with-another-secret',
+      now: 10,
+    });
     assistantProvidersRepo.setModelChain(scope, [{ keyId, model: 'm' }], 10);
     const { entries } = resolve(scope, { openKey: () => undefined, eligibility: () => eligible() });
     expect(entries).toMatchObject([{ skip: 'key-unreadable', provider: undefined }]);
@@ -164,12 +192,14 @@ describe('resolveModelChain', () => {
     const keyId = addKey(scope, { provider: 'gemini', apiKeyEnc: 'sealed', now: 10 });
     assistantProvidersRepo.setModelChain(scope, [{ keyId, model: 'm' }], 10);
     const openKey = (): string | undefined => 'raw-key';
+    expect(resolve(scope, { openKey, eligibility: () => undefined }).entries).toMatchObject([
+      { skip: 'unverified', provider: undefined },
+    ]);
     expect(
-      resolve(scope, { openKey, eligibility: () => undefined }).entries,
-    ).toMatchObject([{ skip: 'unverified', provider: undefined }]);
-    expect(
-      resolve(scope, { openKey, eligibility: () => ({ ...eligible(), productionUseAllowed: false }) })
-        .entries,
+      resolve(scope, {
+        openKey,
+        eligibility: () => ({ ...eligible(), productionUseAllowed: false }),
+      }).entries,
     ).toMatchObject([{ skip: 'ineligible', provider: undefined }]);
   });
 
@@ -208,10 +238,18 @@ describe('resolveModelChain', () => {
       ],
       10,
     );
-    const { entries } = resolve(scope, { openKey: () => 'raw-secret-value', eligibility: () => eligible() });
+    const { entries } = resolve(scope, {
+      openKey: () => 'raw-secret-value',
+      eligibility: () => eligible(),
+    });
     expect(entries).toHaveLength(2);
     const withoutProviders = JSON.stringify(
-      entries.map((e) => ({ providerId: e.providerId, model: e.model, skip: e.skip, mayTrain: e.mayTrain })),
+      entries.map((e) => ({
+        providerId: e.providerId,
+        model: e.model,
+        skip: e.skip,
+        mayTrain: e.mayTrain,
+      })),
     );
     expect(withoutProviders).not.toContain('raw-secret-value');
     expect(withoutProviders).not.toContain('sealed');
@@ -233,7 +271,9 @@ describe('resolveModelChain', () => {
       openKey: (sealed) => (sealed === 'sealed-a' ? 'raw-a' : 'raw-b'),
       eligibility: () => eligible(),
     });
-    expect(entries.map((e) => ({ keyId: e.keyId, keyLabel: e.keyLabel, model: e.model, skip: e.skip }))).toEqual([
+    expect(
+      entries.map((e) => ({ keyId: e.keyId, keyLabel: e.keyLabel, model: e.model, skip: e.skip })),
+    ).toEqual([
       { keyId: a, keyLabel: 'Key A', model: 'gemini-2.5-flash', skip: undefined },
       { keyId: b, keyLabel: 'Key B', model: 'gemini-2.5-flash', skip: undefined },
     ]);
@@ -261,7 +301,12 @@ describe('resolveModelChain', () => {
       });
       expect(entries).toHaveLength(2);
       expect(entries[0]).toMatchObject({ keyId, skip: 'key-unreadable', provider: undefined });
-      expect(entries[1]).toMatchObject({ keyId: 'key_env', keyLabel: 'From .env', model: 'env-model', skip: undefined });
+      expect(entries[1]).toMatchObject({
+        keyId: 'key_env',
+        keyLabel: 'From .env',
+        model: 'env-model',
+        skip: undefined,
+      });
       const firstUsable = entries.find((e) => e.skip === undefined);
       expect(firstUsable?.model).toBe('env-model');
     });
@@ -270,8 +315,21 @@ describe('resolveModelChain', () => {
       const scope = t.scopes.instance();
       const keyId = addKey(scope, { provider: 'gemini', apiKeyEnc: 'sealed', now: 10 });
       assistantProvidersRepo.setModelChain(scope, [{ keyId, model: 'stored-model' }], 10);
-      const { entries } = resolve(scope, { openKey: () => undefined, eligibility: () => eligible() });
-      expect(entries).toEqual([{ providerId: 'gemini', model: 'stored-model', keyId, keyLabel: 'Test key', provider: undefined, skip: 'key-unreadable', mayTrain: false }]);
+      const { entries } = resolve(scope, {
+        openKey: () => undefined,
+        eligibility: () => eligible(),
+      });
+      expect(entries).toEqual([
+        {
+          providerId: 'gemini',
+          model: 'stored-model',
+          keyId,
+          keyLabel: 'Test key',
+          provider: undefined,
+          skip: 'key-unreadable',
+          mayTrain: false,
+        },
+      ]);
     });
 
     it('does not append when at least one stored entry is usable', () => {

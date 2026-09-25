@@ -88,7 +88,9 @@ describe('migration 0039 copies single-key-per-provider data into keyed tables',
       },
     ]);
     expect(
-      raw.prepare('SELECT position, key_id, model FROM assistant_model_chain ORDER BY position').all(),
+      raw
+        .prepare('SELECT position, key_id, model FROM assistant_model_chain ORDER BY position')
+        .all(),
     ).toEqual([
       { position: 0, key_id: 'key_gemini', model: 'gemini-2.5-flash' },
       { position: 1, key_id: 'key_gemini', model: 'gemini-2.5-flash-lite' },
@@ -96,9 +98,7 @@ describe('migration 0039 copies single-key-per-provider data into keyed tables',
     // The old provider-level table is gone; nothing left to read from it.
     expect(
       raw
-        .prepare(
-          "SELECT name FROM sqlite_master WHERE type='table' AND name='assistant_providers'",
-        )
+        .prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='assistant_providers'")
         .get(),
     ).toBeUndefined();
     raw.close();
@@ -124,7 +124,9 @@ describe('migration 0039 copies single-key-per-provider data into keyed tables',
 
     runMigrations(raw, db, MIGRATIONS_FOLDER);
 
-    expect(raw.prepare('SELECT count(*) AS n FROM assistant_provider_keys').get()).toEqual({ n: 0 });
+    expect(raw.prepare('SELECT count(*) AS n FROM assistant_provider_keys').get()).toEqual({
+      n: 0,
+    });
     expect(raw.prepare('SELECT count(*) AS n FROM assistant_model_chain').get()).toEqual({ n: 0 });
     raw.close();
   });
@@ -149,9 +151,7 @@ describe('migration 0039 copies single-key-per-provider data into keyed tables',
     runMigrations(raw, db, MIGRATIONS_FOLDER);
 
     expect(
-      raw
-        .prepare('SELECT key_id, label FROM assistant_provider_keys ORDER BY key_id')
-        .all(),
+      raw.prepare('SELECT key_id, label FROM assistant_provider_keys ORDER BY key_id').all(),
     ).toEqual([
       { key_id: 'key_gemini', label: 'Gemini' },
       { key_id: 'key_nvidia-nim', label: 'NVIDIA NIM' },
@@ -191,7 +191,11 @@ describe('assistant provider keys', () => {
     const a = addKey(scope, { provider: 'gemini', label: 'Key A', apiKeyEnc: 'sealed-a', now: 10 });
     const b = addKey(scope, { provider: 'gemini', label: 'Key B', apiKeyEnc: 'sealed-b', now: 10 });
     expect(a).not.toBe(b);
-    expect(listKeys(scope).map((k) => k.label).sort()).toEqual(['Key A', 'Key B']);
+    expect(
+      listKeys(scope)
+        .map((k) => k.label)
+        .sort(),
+    ).toEqual(['Key A', 'Key B']);
   });
 
   it('updateKey changes only the given fields and keeps the rest', () => {

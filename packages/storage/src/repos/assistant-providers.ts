@@ -187,7 +187,9 @@ export const setModelChain = (
   for (const row of rows) {
     const pairKey = `${row.keyId}\u0000${row.model}`;
     if (seen.has(pairKey))
-      throw new Error(`duplicate (keyId, model) pair in the model chain: ${row.keyId}, ${row.model}`);
+      throw new Error(
+        `duplicate (keyId, model) pair in the model chain: ${row.keyId}, ${row.model}`,
+      );
     seen.add(pairKey);
   }
   writeInstance(scope, ({ db }) => {

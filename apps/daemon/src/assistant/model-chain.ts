@@ -17,7 +17,8 @@ import {
 
 export type ProviderId = 'gemini' | 'openrouter' | 'nvidia-nim';
 
-export type ChainSkipReason = 'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
+export type ChainSkipReason =
+  'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
 
 /**
  * Only the fields the env seed reads. A full `Config` satisfies this
@@ -91,18 +92,16 @@ const envCandidates = (config: ModelChainConfig): readonly Candidate[] => {
   const provider: ProviderId = config.AI_PROVIDER;
   const key = envKeyOf(config, provider);
   const costClass = config.AI_PROFILE_COST_CLASS;
-  return [config.AI_MODEL, ...(config.AI_FALLBACK_MODELS ?? [])].map(
-    (model): Candidate => ({
-      provider,
-      model,
-      keyId: 'key_env',
-      keyLabel: 'From .env',
-      apiKey: key,
-      keySkip: key === undefined ? 'no-key' : undefined,
-      costClass,
-      enabled: true,
-    }),
-  );
+  return [config.AI_MODEL, ...(config.AI_FALLBACK_MODELS ?? [])].map((model): Candidate => ({
+    provider,
+    model,
+    keyId: 'key_env',
+    keyLabel: 'From .env',
+    apiKey: key,
+    keySkip: key === undefined ? 'no-key' : undefined,
+    costClass,
+    enabled: true,
+  }));
 };
 
 /**
@@ -126,7 +125,11 @@ export const resolveModelChain = (deps: {
   config: ModelChainConfig;
   openKey: (sealed: string) => string | undefined;
   eligibility: (provider: ProviderId) => eligibilityRepo.EligibilityRow | undefined;
-  makeProvider: (provider: ProviderId, apiKey: string, costClass: ProviderCostClass) => TextProvider;
+  makeProvider: (
+    provider: ProviderId,
+    apiKey: string,
+    costClass: ProviderCostClass,
+  ) => TextProvider;
 }): readonly ChainEntry[] => {
   const storedKeys = assistantProvidersRepo.listKeys(deps.instance);
   const keysById = new Map(storedKeys.map((k) => [k.keyId, k] as const));
@@ -174,7 +177,9 @@ export const resolveModelChain = (deps: {
     });
 
   const candidates: readonly Candidate[] =
-    storedChain.length > 0 || storedKeys.length > 0 ? storedCandidates() : envCandidates(deps.config);
+    storedChain.length > 0 || storedKeys.length > 0
+      ? storedCandidates()
+      : envCandidates(deps.config);
 
   // Entries sharing a key share one constructed provider instance.
   const providerCache = new Map<string, TextProvider>();

@@ -1,7 +1,17 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
 import { listGeminiModels, type Config, type GeminiModelInfo } from '@bananasaurs/core';
-import { assistantProviderRepo, assistantProvidersRepo, eligibilityRepo, type InstanceScope } from '@bananasaurs/storage';
-import { makeProvider, resolveModelChain, type ChainEntry, type ProviderId } from './model-chain.js';
+import {
+  assistantProviderRepo,
+  assistantProvidersRepo,
+  eligibilityRepo,
+  type InstanceScope,
+} from '@bananasaurs/storage';
+import {
+  makeProvider,
+  resolveModelChain,
+  type ChainEntry,
+  type ProviderId,
+} from './model-chain.js';
 
 const keyFrom = (secret: string): Buffer =>
   createHash('sha256').update(`bananasaurs:assistant-provider:${secret}`, 'utf8').digest();
@@ -281,7 +291,9 @@ export const createProviderConfigStore = (
       if (provider !== 'gemini') throw new Error('unsupported');
       let listKey = apiKey;
       if (listKey === undefined) {
-        const storedKey = assistantProvidersRepo.listKeys(instance).find((k) => k.provider === 'gemini');
+        const storedKey = assistantProvidersRepo
+          .listKeys(instance)
+          .find((k) => k.provider === 'gemini');
         listKey = storedKey !== undefined ? open(key, storedKey.apiKeyEnc) : undefined;
       }
       if (listKey === undefined) throw new Error('no-key');

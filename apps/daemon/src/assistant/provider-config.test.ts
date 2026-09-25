@@ -32,7 +32,10 @@ const base = parseConfig({
 
 it('encrypts a write-only key and recovers it only into the resolved chain and effective config', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'raw-secret-value' }, 10);
+  const keyId = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'raw-secret-value' },
+    10,
+  );
   store.saveChain([{ keyId, model: 'gemini-test' }], 10);
   expect(store.status()).toEqual({
     provider: 'gemini',
@@ -76,7 +79,10 @@ it('reports the saved model, cost class, secret source and whether the key decry
     costClass: 'unknown',
     secretSource: 'file',
   });
-  const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' }, 10);
+  const keyId = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' },
+    10,
+  );
   store.saveChain([{ keyId, model: 'gemini-2.5-flash' }], 10);
   expect(store.status()).toEqual({
     provider: 'gemini',
@@ -94,14 +100,20 @@ it('reports the saved model, cost class, secret source and whether the key decry
 });
 it('keeps the saved model and cost class when a key update omits them', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' }, 10);
+  const keyId = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' },
+    10,
+  );
   store.saveChain([{ keyId, model: 'm1' }], 10);
   store.updateKey(keyId, { enabled: true }, 11);
   expect(store.status()).toMatchObject({ model: 'm1', costClass: 'free' });
 });
 it('applies the stored cost class to the effective config', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' }, 10);
+  const keyId = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' },
+    10,
+  );
   store.saveChain([{ keyId, model: 'm' }], 10);
   expect(store.effective(base).AI_PROFILE_COST_CLASS).toBe('free');
   store.updateKey(keyId, { costClass: 'paid' }, 11);
@@ -146,9 +158,15 @@ it('never carries one key over to another when the chain switches keys', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
   const gemini = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'gemini-key' }, 10);
   store.saveChain([{ keyId: gemini, model: 'm' }], 10);
-  expect(store.effective(base)).toMatchObject({ AI_PROVIDER: 'gemini', GEMINI_API_KEY: 'gemini-key' });
+  expect(store.effective(base)).toMatchObject({
+    AI_PROVIDER: 'gemini',
+    GEMINI_API_KEY: 'gemini-key',
+  });
   // Pointing the chain at a different key's model must not leak the old key.
-  const openrouter = store.addKey({ provider: 'openrouter', label: 'OpenRouter', apiKey: 'or-key' }, 12);
+  const openrouter = store.addKey(
+    { provider: 'openrouter', label: 'OpenRouter', apiKey: 'or-key' },
+    12,
+  );
   store.saveChain([{ keyId: openrouter, model: 'x' }], 12);
   const effective = store.effective(base);
   expect(effective).toMatchObject({ AI_PROVIDER: 'openrouter', OPENROUTER_API_KEY: 'or-key' });
@@ -156,12 +174,18 @@ it('never carries one key over to another when the chain switches keys', () => {
 });
 it('does not carry a free statement over to a different key', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  const gemini = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' }, 10);
+  const gemini = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' },
+    10,
+  );
   store.saveChain([{ keyId: gemini, model: 'm' }], 10);
   // A new key with no cost class stated defaults to unknown — the gemini
   // key's "free" statement is about that key, not about whichever key the
   // chain points at.
-  const openrouter = store.addKey({ provider: 'openrouter', label: 'OpenRouter', apiKey: 'k2' }, 11);
+  const openrouter = store.addKey(
+    { provider: 'openrouter', label: 'OpenRouter', apiKey: 'k2' },
+    11,
+  );
   store.saveChain([{ keyId: openrouter, model: 'x' }], 11);
   expect(store.status()).toMatchObject({
     provider: 'openrouter',
@@ -171,7 +195,10 @@ it('does not carry a free statement over to a different key', () => {
 });
 it('the cost statement belongs to the key, not to a particular chain model (Task 6b)', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' }, 10);
+  const keyId = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' },
+    10,
+  );
   store.saveChain([{ keyId, model: 'm1' }], 10);
   // Changing which model the chain points at does not touch the key's cost
   // statement: the chain is decoupled from the key row, so there is nothing
@@ -182,7 +209,10 @@ it('the cost statement belongs to the key, not to a particular chain model (Task
 
 it('saves up to six ordered chain entries; later same-provider entries are fallback models in status()', () => {
   const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
-  const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' }, 10);
+  const keyId = store.addKey(
+    { provider: 'gemini', label: 'Gemini', apiKey: 'k', costClass: 'free' },
+    10,
+  );
   store.saveChain(
     [
       { keyId, model: 'gemini-2.5-flash' },
@@ -234,7 +264,12 @@ it('keys() lists the stored keys without opening them', () => {
   expect(store.keys()).toEqual([]);
   store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'raw-key', costClass: 'free' }, 10);
   const [row] = store.keys();
-  expect(row).toMatchObject({ provider: 'gemini', label: 'Gemini', costClass: 'free', enabled: true });
+  expect(row).toMatchObject({
+    provider: 'gemini',
+    label: 'Gemini',
+    costClass: 'free',
+    enabled: true,
+  });
   expect(row?.apiKeyEnc).not.toContain('raw-key');
 });
 
@@ -243,7 +278,12 @@ it('several keys for the same provider are all listed and independently editable
   const a = store.addKey({ provider: 'gemini', label: 'Key A', apiKey: 'raw-a' }, 10);
   const b = store.addKey({ provider: 'gemini', label: 'Key B', apiKey: 'raw-b' }, 10);
   expect(a).not.toBe(b);
-  expect(store.keys().map((k) => k.label).sort()).toEqual(['Key A', 'Key B']);
+  expect(
+    store
+      .keys()
+      .map((k) => k.label)
+      .sort(),
+  ).toEqual(['Key A', 'Key B']);
   store.updateKey(a, { label: 'Key A renamed' }, 11);
   expect(store.keys().find((k) => k.keyId === a)?.label).toBe('Key A renamed');
   expect(store.keys().find((k) => k.keyId === b)?.label).toBe('Key B');
