@@ -265,9 +265,10 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     };
     const sent: Posted[] = [];
     let idSeq = 0;
+    // Linked message ids must satisfy the storage snowflake CHECK.
     const nextRef = (channelId: string): DiscordMessageRef => {
       idSeq += 1;
-      return { channelId, messageId: `posted-${String(idSeq).padStart(3, '0')}` };
+      return { channelId, messageId: `8290000000000000${String(idSeq).padStart(2, '0')}` };
     };
     const send = vi.fn(async (channelId: string, message: OutgoingMessage) => {
       sent.push({ channelId, message: message });
@@ -276,9 +277,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     const respond = vi.fn(async () => nextRef(CHANNEL_ID));
     const sendTyping = vi.fn(async () => undefined);
     const fetchMessageContent = vi.fn(
-      async (): Promise<
-        { authorId: string; authorName: string; content: string } | undefined
-      > => undefined,
+      async (): Promise<{ authorId: string; authorName: string; content: string } | undefined> =>
+        undefined,
     );
     const handler = assistantInvokeHandler({
       guildId: GUILD_ID,
@@ -324,18 +324,18 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     input: { question: 'first question' },
     source: 'mention',
     invocationId: 'inv-1',
-    messageId: 'msg-1',
+    messageId: '810000000000000001',
     authorName: 'Ama',
     ...over,
   });
 
   it('posts a mention answer as a reply; a 4,500-character answer posts 3 parts, only the first with replyTo', async () => {
     const h = harness(() => ({ ok: true, content: 'x'.repeat(4_500) }));
-    await h.run(mention({ invocationId: 'inv-parts', messageId: 'msg-parts' }));
+    await h.run(mention({ invocationId: 'inv-parts', messageId: '810000000000000011' }));
 
     expect(h.sent).toHaveLength(3);
     expect(h.sent[0]?.message).toMatchObject({
-      replyTo: 'msg-parts',
+      replyTo: '810000000000000011',
       allowedMentions: { parse: [] },
     });
     expect(h.sent[0]?.message.content).toHaveLength(2_000);
@@ -356,12 +356,12 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     let sends = 0;
     h.send.mockImplementation(async (channelId: string, message: OutgoingMessage) => {
       sends += 1;
-      const id = `posted-${String(sends).padStart(3, '0')}`;
+      const id = `8290000000000001${String(sends).padStart(2, '0')}`;
       if (sends === 2) throw new Error('discord 500');
       successful.push(String(message.content));
       return { channelId, messageId: id };
     });
-    const payload = mention({ invocationId: 'inv-crash', messageId: 'msg-crash' });
+    const payload = mention({ invocationId: 'inv-crash', messageId: '810000000000000012' });
 
     const attempt1 = await h.run(payload);
     expect(attempt1.error).toBeInstanceOf(Error);
@@ -372,8 +372,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(providerCalls).toBe(1);
     // Part 1 posted once, parts 2-3 posted on the retry: three contents, each once.
     expect(successful).toHaveLength(3);
-    expect(successful[0]).toHaveLength(2_000);
-    expect(new Set(successful).size).toBe(3);
+    expect(successful.map((part) => part.length)).toEqual([2_000, 2_000, 500]);
     const trace = traceRepo.getTrace(scope(), 'trace_inv-crash');
     expect(trace?.discordMessageIds).toHaveLength(3);
     expect(new Set(trace?.discordMessageIds).size).toBe(3);
@@ -385,11 +384,19 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       content: `answer to ${String((input.input as Record<string, string>).question)}`,
     }));
     await h.run(
-      mention({ invocationId: 'inv-f1', messageId: 'msg-f1', input: { question: 'first question' } }),
+      mention({
+        invocationId: 'inv-f1',
+        messageId: '810000000000000013',
+        input: { question: 'first question' },
+      }),
     );
     nowMs += 5 * 60_000;
     await h.run(
-      mention({ invocationId: 'inv-f2', messageId: 'msg-f2', input: { question: 'second question' } }),
+      mention({
+        invocationId: 'inv-f2',
+        messageId: '810000000000000014',
+        input: { question: 'second question' },
+      }),
     );
 
     expect(h.inputs).toHaveLength(2);
@@ -404,13 +411,17 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       content: `answer to ${String((input.input as Record<string, string>).question)}`,
     }));
     await h.run(
-      mention({ invocationId: 'inv-r1', messageId: 'msg-r1', input: { question: 'first question' } }),
+      mention({
+        invocationId: 'inv-r1',
+        messageId: '810000000000000015',
+        input: { question: 'first question' },
+      }),
     );
     const postedId = (await h.send.mock.results[0]?.value) as DiscordMessageRef;
     await h.run(
       mention({
         invocationId: 'inv-r2',
-        messageId: 'msg-r2',
+        messageId: '810000000000000016',
         userId: BO,
         authorName: 'Bo',
         referencedMessageId: postedId.messageId,
@@ -419,8 +430,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       }),
     );
 
-    const first = conversationRepo.lookupMessage(scope(), 'msg-r1');
-    const second = conversationRepo.lookupMessage(scope(), 'msg-r2');
+    const first = conversationRepo.lookupMessage(scope(), '810000000000000015');
+    const second = conversationRepo.lookupMessage(scope(), '810000000000000016');
     expect(second?.conversationId).toBe(first?.conversationId);
     const history = h.inputs[1]?.history ?? [];
     expect(history[0]?.text).toBe('Ama: first question');
@@ -437,14 +448,14 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     await h.run(
       mention({
         invocationId: 'inv-q',
-        messageId: 'msg-q',
-        referencedMessageId: 'unknown-777',
+        messageId: '810000000000000017',
+        referencedMessageId: '840000000000000001',
         referencedAuthorId: OTHER_ID,
         input: { question: 'is that right?' },
       }),
     );
 
-    expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, 'unknown-777');
+    expect(h.fetchMessageContent).toHaveBeenCalledWith(CHANNEL_ID, '840000000000000001');
     expect(h.inputs[0]?.quoteEnvelope).toBe(
       '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
     );
@@ -456,8 +467,8 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     await h.run(
       mention({
         invocationId: 'inv-qf',
-        messageId: 'msg-qf',
-        referencedMessageId: 'unknown-778',
+        messageId: '810000000000000018',
+        referencedMessageId: '840000000000000002',
         referencedAuthorId: OTHER_ID,
       }),
     );
@@ -480,7 +491,10 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
         behavioursForGuild: async () => [behaviour],
         invoke: async (input) => {
           h.inputs.push(input);
-          return { ok: true, content: `answer to ${String((input.input as Record<string, string>).question)}` };
+          return {
+            ok: true,
+            content: `answer to ${String((input.input as Record<string, string>).question)}`,
+          };
         },
       },
       openToken,
@@ -516,7 +530,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     await h.run(
       mention({
         invocationId: 'inv-q7',
-        messageId: 'msg-q7',
+        messageId: '810000000000000019',
         userId: BO,
         authorName: 'Bo',
         referencedMessageId: ref.messageId,
@@ -526,7 +540,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     );
     const history = h.inputs.at(-1)?.history ?? [];
     expect(history[0]?.text).toContain('slash question');
-    expect(conversationRepo.lookupMessage(scope(), 'msg-q7')?.conversationId).toBe(
+    expect(conversationRepo.lookupMessage(scope(), '810000000000000019')?.conversationId).toBe(
       conversationRepo.lookupMessage(scope(), ref.messageId)?.conversationId,
     );
   });
@@ -547,7 +561,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
         history: [],
       },
     }));
-    await h.run(mention({ invocationId: 'inv-t', messageId: 'msg-t' }));
+    await h.run(mention({ invocationId: 'inv-t', messageId: '810000000000000020' }));
 
     const trace = traceRepo.getTrace(scope(), 'trace_inv-t');
     expect(trace).toMatchObject({ outcome: 'answered' });
@@ -556,13 +570,17 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       expect.arrayContaining(['behaviour-prompt', 'history']),
     );
     expect(trace?.discordMessageIds).toHaveLength(1);
-    expect(trace?.conversationId).toBe(conversationRepo.lookupMessage(scope(), 'msg-t')?.conversationId);
+    expect(trace?.conversationId).toBe(
+      conversationRepo.lookupMessage(scope(), '810000000000000020')?.conversationId,
+    );
   });
 
   it('a typing failure never fails the job', async () => {
     const h = harness(() => ({ ok: true, content: 'hello' }));
     h.sendTyping.mockRejectedValue(new Error('typing failed'));
-    await expect(h.run(mention({ invocationId: 'inv-ty', messageId: 'msg-ty' }))).resolves.toBeDefined();
+    await expect(
+      h.run(mention({ invocationId: 'inv-ty', messageId: '810000000000000021' })),
+    ).resolves.toBeDefined();
     expect(h.sent).toHaveLength(1);
   });
 });

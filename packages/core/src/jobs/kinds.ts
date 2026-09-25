@@ -370,6 +370,33 @@ export const assistantInvokePayload = z.object({
    * anchored on it — 50820ad).
    */
   invocationId: z.string().min(1),
+  /**
+   * Task 14: the member's Discord message id, when the source is a message.
+   * The first answer part is posted as a Discord Reply to it, and it is
+   * linked to the conversation as the member's turn. Absent for slash
+   * invocations, which have no message yet (the respond call's returned id
+   * is linked instead).
+   */
+  messageId: z.string().min(1).optional(),
+  /**
+   * Task 14: the message this one replies to (`message_reference`), for the
+   * conversation resolver — which conversation a reply continues — and, for
+   * an unknown message, the quote fetched as untrusted context. Absent when
+   * this invocation is not a reply.
+   */
+  referencedMessageId: z.string().min(1).optional(),
+  /**
+   * Task 14: the author of the replied-to message, from
+   * `referenced_message.author` — never guessed. Tells a reply to our own
+   * message apart from a quoted reply to someone else's.
+   */
+  referencedAuthorId: z.string().min(1).optional(),
+  /**
+   * Task 14: the member's display name for history labels, when the producer
+   * knew one. The gateway events carry no name, so this is usually absent
+   * and the user id is stored instead — always best-effort, never fetched.
+   */
+  authorName: z.string().min(1).max(200).optional(),
 });
 export type AssistantInvokePayload = z.infer<typeof assistantInvokePayload>;
 
@@ -405,6 +432,49 @@ export const assistantInvokeCursor = z.object({
     }),
     z.object({ ok: z.literal(false), content: z.string(), trace: invocationTrace.optional() }),
   ]),
+  /**
+   * Task 14: the conversation this invocation joined, created or continued in
+   * the invoke step and carried so a retry resumes it instead of re-resolving
+   * (and re-creating) it. Absent on pre-Task-14 rows and on invocations with
+   * no channel, which skip conversation work entirely.
+   */
+  conversationId: z.string().min(1).optional(),
+  /**
+   * Task 14: how the conversation was resolved
+   * (`packages/core/src/assistant/conversation.ts`). The schema lives here,
+   * next to the cursor, because the cursor is validated at the jobs boundary
+   * like every payload — `core`'s resolver type itself stays Zod-free.
+   */
+  resolution: z
+    .discriminatedUnion('kind', [
+      z.object({
+        kind: z.literal('continue'),
+        conversationId: z.string().min(1),
+        rule: z.enum(['reply-to-bot', 'reply-to-turn', 'follow-up']),
+      }),
+      z.object({
+        kind: z.literal('new'),
+        rule: z.enum(['quoted-reply', 'reply-to-unknown-bot-message', 'new-topic', 'fresh']),
+        quotedMessageId: z.string().min(1).optional(),
+      }),
+    ])
+    .optional(),
+  /**
+   * Task 14: durable posting progress — parts `[0, partsPosted)` already
+   * landed, so a retry posts from `partsPosted` and never re-posts a part
+   * (hard rule 6). Defaults keep pre-Task-14 rows valid: an old
+   * `invoke-done` row re-posts from part 0, an old later-stage row skips
+   * posting by stage rank as before.
+   */
+  partsPosted: z.number().int().nonnegative().default(0),
+  /** Task 14: every posted part's message id, in order, for links and the trace. */
+  postedMessageIds: z.array(z.string().min(1)).default([]),
+  /**
+   * Task 14: trace flags gathered before the invoke (currently only
+   * `quote-unavailable`), carried so a retry that skips the invoke still
+   * writes them into the trace.
+   */
+  flags: z.array(z.string().min(1)).default([]),
 });
 export type AssistantInvokeCursor = z.infer<typeof assistantInvokeCursor>;
 

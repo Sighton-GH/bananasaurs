@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseGuildId, type ConversationResolution } from '@bananasaurs/core';
 import { conversationRepo, guildRepo } from '@bananasaurs/storage';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import { buildConversationContext } from './conversation-context.js';
 
 const GUILD = parseGuildId('111111111111111111');
@@ -19,7 +22,15 @@ beforeEach(() => {
 
 afterEach(() => t.close());
 
-const seedConversation = (conversationId: string, turns: readonly { role: 'user' | 'assistant' | 'quote'; authorId?: string; authorName: string; text: string }[]): void => {
+const seedConversation = (
+  conversationId: string,
+  turns: readonly {
+    role: 'user' | 'assistant' | 'quote';
+    authorId?: string;
+    authorName: string;
+    text: string;
+  }[],
+): void => {
   const scope = t.scopes.forGuild(GUILD);
   conversationRepo.createConversation(scope, {
     conversationId,
@@ -100,7 +111,9 @@ describe('buildConversationContext', () => {
     expect(ctx.quoteEnvelope).toBe(
       '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
     );
-    expect(ctx.history.every((message) => message.role === 'user' || message.role === 'assistant')).toBe(true);
+    expect(
+      ctx.history.every((message) => message.role === 'user' || message.role === 'assistant'),
+    ).toBe(true);
   });
 
   it('renders a stored quote turn as an enveloped user message', () => {
@@ -117,7 +130,9 @@ describe('buildConversationContext', () => {
       role: 'user',
       text: '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
     });
-    expect(ctx.history.every((message) => message.role === 'user' || message.role === 'assistant')).toBe(true);
+    expect(
+      ctx.history.every((message) => message.role === 'user' || message.role === 'assistant'),
+    ).toBe(true);
   });
 
   it('does not count the bot display name as a participant', () => {

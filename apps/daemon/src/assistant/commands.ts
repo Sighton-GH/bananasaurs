@@ -5,7 +5,9 @@ import {
   safeLogFields,
   type AssistantBehaviour,
   type AssistantInvokePayload,
+  type AssistantTrace,
   type DomainEvent,
+  type GenerationMessage,
   type KnownMessage,
   type Logger,
   type MessageEvent,
@@ -40,6 +42,18 @@ export interface AssistantInvocation {
   readonly source: 'slash-command' | 'mention';
   /** Discord interaction or message id that produced this invocation; the dedupe anchor. */
   readonly invocationId?: string | undefined;
+  /**
+   * Task 14: the conversation so far, built by the invoke job from stored
+   * turns (the current question is its last turn). The service forwards it
+   * to the tool loop ahead of the current user text. Absent means a fresh,
+   * history-free request.
+   */
+  readonly history?: readonly GenerationMessage[] | undefined;
+  /**
+   * Task 14: a quoted message as untrusted evidence, appended to the user
+   * text by the service — never to the system instruction.
+   */
+  readonly quoteEnvelope?: string | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */
@@ -62,8 +76,32 @@ export type AssistantInvocationResult =
         readonly ticketId: string;
       };
       readonly trace?: InvocationTrace;
+      readonly detail?: AssistantTraceDetail | undefined;
     }
-  | { readonly ok: false; readonly content: string; readonly trace?: InvocationTrace };
+  | {
+      readonly ok: false;
+      readonly content: string;
+      readonly trace?: InvocationTrace;
+      readonly detail?: AssistantTraceDetail | undefined;
+    };
+
+/**
+ * Task 14: the full run detail the invoke job persists as an `AssistantTrace`.
+ * The small `InvocationTrace` above stays the AI log channel's shape; this
+ * carries everything the History pages need — the compiled sections plus the
+ * history section, the loop attempts and tool calls.
+ */
+export interface AssistantTraceDetail {
+  readonly sections: AssistantTrace['sections'];
+  readonly history: readonly GenerationMessage[];
+  readonly attempts: AssistantTrace['attempts'];
+  readonly toolCalls: AssistantTrace['toolCalls'];
+  readonly usage: AssistantTrace['usage'];
+  readonly guard: AssistantTrace['guard'];
+  readonly model?: string | undefined;
+  readonly finishReason?: string | undefined;
+  readonly web?: boolean | undefined;
+}
 
 /**
  * The live assistant service sits behind this port. Its implementation owns
@@ -269,7 +307,9 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
 
   // Same split as handleSlash: routing is cheap and inline, the invoke is a
   // job (B2). The escalation delivery lives in the job handler with the
-  // invoke that produces it.
+  // invoke that produces it. Task 14: the payload also carries the message
+  // identity the job needs — the message id for the reply and the link, and
+  // the reply reference for the conversation resolver.
   try {
     deps.enqueue({
       kind: JOB_KINDS.assistantInvoke,
@@ -282,6 +322,13 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         input: { question: route.prompt },
         source: 'mention',
         invocationId: event.messageId,
+        messageId: event.messageId,
+        ...(event.referencedMessageId === undefined
+          ? {}
+          : { referencedMessageId: event.referencedMessageId }),
+        ...(event.referencedAuthorId === undefined
+          ? {}
+          : { referencedAuthorId: event.referencedAuthorId }),
       },
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
       now: deps.now(),
