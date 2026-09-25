@@ -66,6 +66,14 @@ export interface AssistantProviderStatus {
   readonly webSearch?: { readonly keyConfigured: boolean; readonly enabled: boolean };
 }
 
+/**
+ * Why a model-chain entry has no usable provider (Task 8). Restated here
+ * rather than imported: the store type lives in `apps/daemon`, which
+ * `packages/http` must not import (ADR 0014) — and `core` does not export it.
+ */
+export type AssistantChainSkipReason =
+  'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
+
 export interface HttpDeps extends AuthDeps {
   readonly logger: Logger;
   /** `BANANASAURS_READONLY`. Decides whether `/bootstrap` is even armed. */
@@ -160,7 +168,7 @@ export interface HttpDeps extends AuthDeps {
                 }): Promise<{ readonly text: string; readonly model: string }>;
               }
             | undefined;
-          readonly skip?: string | undefined;
+          readonly skip?: AssistantChainSkipReason | undefined;
           readonly mayTrain: boolean;
         }[];
         saveChain?(rows: readonly { keyId: string; model: string }[], now: number): void;

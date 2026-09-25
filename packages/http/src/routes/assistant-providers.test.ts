@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId } from '@bananasaurs/core';
-import { accountRepo, effectRepo, eligibilityRepo, guildRepo } from '@bananasaurs/storage';
+import { parseGuildId, ProviderError } from '@bananasaurs/core';
+import {
+  accountRepo,
+  authzRepo,
+  effectRepo,
+  eligibilityRepo,
+  guildRepo,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
@@ -591,5 +597,200 @@ describe('chain test and github token', () => {
       keys: [],
       chain: [],
     });
+  });
+});
+
+describe('chain-test edge cases', () => {
+  const TERMS =
+    "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.";
+
+  it('answers 404 not-found for an out-of-range position', async () => {
+    const owner = await signInAs('owner');
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position: 5 },
+    });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not-found' });
+  });
+
+  it('refuses a store-skipped ineligible entry with the terms sentence', async () => {
+    deps = {
+      ...deps,
+      assistantProviderConfig: fakeStore({
+        eligibility: { gemini: { trainsOnInput: 'no', productionUseAllowed: false } },
+      }) as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+    const owner = await signInAs('owner');
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position: 0 },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ ok: boolean; latencyMs: number; error?: string }>();
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe(TERMS);
+  });
+
+  it('refuses a repo-unverified entry without calling the provider', async () => {
+    const base = fakeStore({
+      keys: [
+        {
+          keyId: 'key_or',
+          provider: 'openrouter',
+          label: 'OR',
+          costClass: 'free',
+          enabled: true,
+        },
+      ],
+      chain: [{ keyId: 'key_or', model: 'some-model' }],
+      eligibility: { openrouter: { trainsOnInput: 'no', productionUseAllowed: true } },
+    });
+    let calls = 0;
+    const store = {
+      ...base,
+      chain: () =>
+        base.chain().map((entry) =>
+          entry.provider === undefined
+            ? entry
+            : {
+                ...entry,
+                provider: {
+                  ...entry.provider,
+                  generateText: async () => {
+                    calls += 1;
+                    return entry.provider.generateText();
+                  },
+                },
+              },
+        ),
+    };
+    deps = {
+      ...deps,
+      assistantProviderConfig: store as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+    const owner = await signInAs('owner');
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position: 0 },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ ok: boolean; latencyMs: number; error?: string }>();
+    expect(body.ok).toBe(false);
+    expect(body.error).toBe(TERMS);
+    expect(calls).toBe(0);
+  });
+});
+
+describe('PATCH validation and owner-only with capabilities', () => {
+  it('rejects an empty PATCH body with 400', async () => {
+    const owner = await signInAs('owner');
+    const response = await app.inject({
+      method: 'PATCH',
+      url: '/api/assistant/keys/key_a',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: {},
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'bad-request' });
+  });
+
+  it('refuses a config.write non-owner with owner-only on GET and on a write route', async () => {
+    authzRepo.grantAccountCapability(t.scopes.forGuild(GUILD), {
+      accountId: OPERATOR,
+      capability: 'config.write',
+      grantedBy: 'test',
+      now: clock,
+    });
+    const operator = await signInAs('operator');
+    const fetched = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/providers',
+      headers: { cookie: operator.cookie },
+    });
+    expect(fetched.statusCode).toBe(403);
+    expect(fetched.json()).toEqual({ error: 'owner-only' });
+    const written = await app.inject({
+      method: 'POST',
+      url: '/api/assistant/keys',
+      headers: { cookie: operator.cookie, [CSRF_HEADER]: operator.csrf },
+      payload: { provider: 'gemini', label: 'Sneaky', apiKey: SECRET },
+    });
+    expect(written.statusCode).toBe(403);
+    expect(written.json()).toEqual({ error: 'owner-only' });
+  });
+});
+
+describe('chain-test provider failures are fixed sentences', () => {
+  const rebuildWithThrower = async (thrown: unknown): Promise<void> => {
+    const base = fakeStore();
+    const store = {
+      ...base,
+      chain: () =>
+        base.chain().map((entry) =>
+          entry.provider === undefined
+            ? entry
+            : {
+                ...entry,
+                provider: {
+                  ...entry.provider,
+                  generateText: async (): Promise<{ text: string; model: string }> => {
+                    throw thrown;
+                  },
+                },
+              },
+        ),
+    };
+    deps = {
+      ...deps,
+      assistantProviderConfig: store as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+  };
+
+  const testAt = async (position = 0) => {
+    const owner = await signInAs('owner');
+    return app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position },
+    });
+  };
+
+  it('never echoes a key-bearing provider error', async () => {
+    await rebuildWithThrower(new Error(`provider says no: ${SECRET}`));
+    const response = await testAt();
+    expect(response.statusCode).toBe(200);
+    const text = JSON.stringify(response.json());
+    expect(text).not.toContain(SECRET);
+    expect(response.json()).toMatchObject({ ok: false, error: 'The test request failed.' });
+  });
+
+  it.each([
+    ['authentication', `HTTP 401 for key ${SECRET}`, 'The provider refused the key.'],
+    ['timeout', 'timed out after 30s', 'The provider did not answer in time.'],
+    ['invalid-request', 'no such model', 'The model is not available on this key.'],
+    ['capability-mismatch', 'no text support', 'The model is not available on this key.'],
+    ['outage', 'HTTP 503', 'The test request failed.'],
+  ])('maps %s to its fixed sentence', async (kind, message, sentence) => {
+    await rebuildWithThrower(
+      new ProviderError(kind as 'authentication', `${message} ${SECRET}`, false),
+    );
+    const response = await testAt();
+    const text = JSON.stringify(response.json());
+    expect(text).not.toContain(SECRET);
+    expect(response.json()).toMatchObject({ ok: false, error: sentence });
   });
 });

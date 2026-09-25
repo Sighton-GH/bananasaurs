@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
+import { ProviderError } from '@bananasaurs/core';
 import { eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import type { SessionContext } from '../auth.js';
@@ -58,6 +59,31 @@ const eligibilityOf = (
 const TERMS_REFUSAL =
   "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.";
 
+const statusOf = (err: unknown): number | undefined => {
+  if (typeof err !== 'object' || err === null) return undefined;
+  const status = (err as { status?: unknown }).status;
+  return typeof status === 'number' ? status : undefined;
+};
+
+/**
+ * What a chain test answers when the provider call fails (hard rule 4).
+ *
+ * The provider's error text is never repeated — it can echo request
+ * details, so every failure becomes one of four fixed sentences chosen
+ * from the error's kind or status only.
+ */
+const chainTestFailure = (err: unknown): string => {
+  const kind = err instanceof ProviderError ? err.kind : undefined;
+  const status = statusOf(err);
+  if (kind === 'authentication' || status === 401 || status === 403)
+    return 'The provider refused the key.';
+  if (kind === 'timeout' || status === 408 || status === 504)
+    return 'The provider did not answer in time.';
+  if (kind === 'invalid-request' || kind === 'capability-mismatch' || status === 404)
+    return 'The model is not available on this key.';
+  return 'The test request failed.';
+};
+
 /**
  * Task 8: several labelled keys across several providers, ordered into one
  * model chain with fallbacks. Instance owner only; every change is audited
@@ -93,15 +119,18 @@ export const registerAssistantProviderRoutes = (
     ) {
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     }
-    const keys = configured.keys().map((key) => ({
-      keyId: key.keyId,
-      provider: key.provider,
-      label: key.label,
-      costClass: key.costClass,
-      enabled: key.enabled,
-      readable: configured.isKeyReadable?.(key.keyId) ?? false,
-      ...(resetsAt(key.keyId) === undefined ? {} : { allowanceResetsAt: resetsAt(key.keyId) }),
-    }));
+    const keys = configured.keys().map((key) => {
+      const allowanceResetsAt = resetsAt(key.keyId);
+      return {
+        keyId: key.keyId,
+        provider: key.provider,
+        label: key.label,
+        costClass: key.costClass,
+        enabled: key.enabled,
+        readable: configured.isKeyReadable?.(key.keyId) ?? false,
+        ...(allowanceResetsAt === undefined ? {} : { allowanceResetsAt }),
+      };
+    });
     const chainEntries = configured.chain();
     const chain = chainEntries.map((entry, position) => {
       const reset = resetsAt(entry.keyId);
@@ -318,9 +347,9 @@ export const registerAssistantProviderRoutes = (
       });
       return reply.status(200).send({ ok: true, latencyMs: latencyOf(), reply: result.text });
     } catch (err) {
-      const message =
-        err instanceof Error && err.message !== '' ? err.message : 'The test request failed.';
-      return reply.status(200).send({ ok: false, latencyMs: latencyOf(), error: message });
+      return reply
+        .status(200)
+        .send({ ok: false, latencyMs: latencyOf(), error: chainTestFailure(err) });
     }
   });
 

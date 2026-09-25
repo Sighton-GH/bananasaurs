@@ -340,6 +340,45 @@ describe('ProvidersPage API keys', () => {
     expect(bodyOf(patch!)).toEqual({ enabled: false });
   });
 
+  it('a PATCH that hits reauth-required opens the re-auth dialog and retries like a PUT', async () => {
+    let patchAttempts = 0;
+    const calls: string[] = [];
+    const mock = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      const method = (init?.method ?? 'GET').toUpperCase();
+      calls.push(`${method} ${url}`);
+      if (method === 'GET' && url === ASSISTANT_PROVIDERS_URL)
+        return new Response(JSON.stringify(setupBody()), { status: 200 });
+      if (method === 'GET' && url === '/api/assistant')
+        return new Response(JSON.stringify(assistantBody()), { status: 200 });
+      if (method === 'GET' && url === '/api/providers/eligibility')
+        return new Response(JSON.stringify({ warnings: [] }), { status: 200 });
+      if (method === 'PATCH' && url === assistantKeyUrl('key_a')) {
+        patchAttempts += 1;
+        return patchAttempts === 1
+          ? new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === '/api/reauth') return new Response('{}', { status: 200 });
+      return new Response(JSON.stringify({ error: 'unstubbed' }), { status: 404 });
+    });
+    vi.stubGlobal('fetch', mock);
+    renderWithSession(<ProvidersPage />);
+    fireEvent.click(await screen.findByRole('button', { name: 'Disable Main key' }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Disable key' }));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm your password' });
+    fireEvent.change(dialog.querySelector('input[type=password]')!, {
+      target: { value: 'hunter22hunter22' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    });
+    expect(patchAttempts).toBe(2);
+    expect(calls).toContain('POST /api/reauth');
+  });
+
   it('warns that deleting a key removes its model order rows, then deletes', async () => {
     const mock = stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },

@@ -112,6 +112,53 @@ describe('SessionProvider', () => {
     ]);
   });
 
+  it('a PATCH that hits reauth-required retries through the same dialog as a PUT', async () => {
+    let attempts = 0;
+    const mock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+      if (url === '/api/assistant/keys/key_a') {
+        attempts += 1;
+        return attempts === 1
+          ? new Response(JSON.stringify({ error: 'reauth-required' }), { status: 401 })
+          : new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url === '/api/reauth') {
+        return new Response('{}', { status: 200 });
+      }
+      return new Response('{}', { status: 404 });
+    });
+    vi.stubGlobal('fetch', mock);
+    function PatchProbe() {
+      const session = useSession();
+      return (
+        <button
+          onClick={() =>
+            void session.write('/api/assistant/keys/key_a', { enabled: false }, 'PATCH')
+          }
+        >
+          write-patch
+        </button>
+      );
+    }
+    renderWithSession(<PatchProbe />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-patch'));
+    });
+    const dialog = await screen.findByRole('dialog', { name: 'Confirm your password' });
+    fireEvent.change(dialog.querySelector('input[type=password]')!, {
+      target: { value: 'hunter22hunter22' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Confirm' }));
+    });
+    expect(attempts).toBe(2);
+    expect(mock.mock.calls.map((c) => c[0] as string)).toEqual([
+      '/api/assistant/keys/key_a',
+      '/api/reauth',
+      '/api/assistant/keys/key_a',
+    ]);
+  });
+
   it('cancelling re-auth abandons the write with no retry and no reauth call', async () => {
     const mock = stubFetch([
       { method: 'POST', url: '/api/killswitch', status: 401, body: { error: 'reauth-required' } },
