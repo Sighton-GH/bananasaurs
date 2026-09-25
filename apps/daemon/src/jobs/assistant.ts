@@ -9,6 +9,7 @@ import {
   splitForDiscord,
   stripNewTopic,
   type AssistantInvokePayload,
+  type AssistantInvokeCursor,
   type ConversationResolution,
   type DiscordMessageRef,
   type GenerationMessage,
@@ -20,6 +21,7 @@ import { conversationRepo, traceRepo, type GuildScope } from '@bananasaurs/stora
 import type {
   AssistantCommandService,
   AssistantInvocationResult,
+  AssistantTraceDetail,
   InvocationTrace,
 } from '../assistant/commands.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
@@ -75,11 +77,110 @@ const STAGES: readonly CursorStage[] = ['invoke-done', 'answered', 'escalation-s
 /** Total order over stages: a retry resumes AFTER the furthest stage reached. */
 const stageRank = (stage: CursorStage): number => STAGES.indexOf(stage);
 
-/** Zod's optional fields come back as `undefined`; the result type wants them absent. */
-const stripUndefined = (value: object): InvocationTrace =>
-  Object.fromEntries(
-    Object.entries(value).filter(([, v]) => v !== undefined),
-  ) as unknown as InvocationTrace;
+/** A cursor result's validated run detail, minus the absent-marker. */
+type CursorDetail = Exclude<AssistantInvokeCursor['result']['detail'], undefined>;
+/** A cursor result's validated log-channel trace, minus the absent-marker. */
+type CursorTrace = Exclude<AssistantInvokeCursor['result']['trace'], undefined>;
+/** The cursor's validated conversation resolution, minus the absent-marker. */
+type CursorResolution = Exclude<AssistantInvokeCursor['resolution'], undefined>;
+
+/**
+ * Zod's optional fields come back as `undefined`; the result type wants them
+ * absent, so each optional is spread only when defined — the compiler, not a
+ * cast, proves the rebuilt shape.
+ */
+const rebuildTrace = (trace: CursorTrace): InvocationTrace => ({
+  latencyMs: trace.latencyMs,
+  ...(trace.model === undefined ? {} : { model: trace.model }),
+  ...(trace.tools === undefined
+    ? {}
+    : { tools: trace.tools.map((tool) => ({ name: tool.name, ok: tool.ok })) }),
+  ...(trace.sources === undefined
+    ? {}
+    : { sources: trace.sources.map((source) => ({ title: source.title, url: source.url })) }),
+  ...(trace.web === undefined ? {} : { web: trace.web }),
+  ...(trace.usedFallback === undefined ? {} : { usedFallback: trace.usedFallback }),
+});
+
+/** Rebuilds the run detail the trace write reads, omitting every absent optional. */
+const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
+  sections: detail.sections.map((section) => ({
+    name: section.name,
+    chars: section.chars,
+    estTokens: section.estTokens,
+    text: section.text,
+  })),
+  history: detail.history.map((message) => ({
+    role: message.role,
+    text: message.text,
+    ...(message.toolCalls === undefined
+      ? {}
+      : {
+          toolCalls: message.toolCalls.map((call) => ({
+            ...(call.id === undefined ? {} : { id: call.id }),
+            name: call.name,
+            args: call.args,
+          })),
+        }),
+    ...(message.toolName === undefined ? {} : { toolName: message.toolName }),
+    ...(message.toolCallId === undefined ? {} : { toolCallId: message.toolCallId }),
+    ...(message.providerParts === undefined ? {} : { providerParts: message.providerParts }),
+  })),
+  attempts: detail.attempts.map((attempt) => ({
+    provider: attempt.provider,
+    model: attempt.model,
+    ...(attempt.keyLabel === undefined ? {} : { keyLabel: attempt.keyLabel }),
+    outcome: attempt.outcome,
+    ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+    ms: attempt.ms,
+  })),
+  toolCalls: detail.toolCalls.map((call) => ({
+    round: call.round,
+    name: call.name,
+    args: call.args,
+    ok: call.ok,
+    ...(call.refused === undefined ? {} : { refused: call.refused }),
+    ms: call.ms,
+    preview: call.preview,
+  })),
+  usage: {
+    ...(detail.usage.promptTokens === undefined ? {} : { promptTokens: detail.usage.promptTokens }),
+    ...(detail.usage.completionTokens === undefined
+      ? {}
+      : { completionTokens: detail.usage.completionTokens }),
+    ...(detail.usage.thinkingTokens === undefined
+      ? {}
+      : { thinkingTokens: detail.usage.thinkingTokens }),
+  },
+  guard: {
+    removed: [...detail.guard.removed],
+    ...(detail.guard.blocked === undefined ? {} : { blocked: detail.guard.blocked }),
+  },
+  ...(detail.model === undefined ? {} : { model: detail.model }),
+  ...(detail.finishReason === undefined ? {} : { finishReason: detail.finishReason }),
+  ...(detail.web === undefined ? {} : { web: detail.web }),
+});
+
+/**
+ * Rebuilds the resolution so its shape matches exactly: the `new` variant's
+ * `quotedMessageId` is omitted when undefined rather than assigned as such.
+ */
+const rebuildResolution = (resolution: CursorResolution): ConversationResolution => {
+  if (resolution.kind === 'continue') {
+    return {
+      kind: 'continue',
+      conversationId: resolution.conversationId,
+      rule: resolution.rule,
+    };
+  }
+  return {
+    kind: 'new',
+    rule: resolution.rule,
+    ...(resolution.quotedMessageId === undefined
+      ? {}
+      : { quotedMessageId: resolution.quotedMessageId }),
+  };
+};
 
 const parseCursor = (cursor: string | null): StagedCursor | undefined => {
   if (cursor === null) return undefined;
@@ -90,22 +191,33 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
     if (!parsed.success) return undefined;
     const { stage, result, conversationId, resolution, partsPosted, postedMessageIds, flags } =
       parsed.data;
-    const trace = result.trace === undefined ? {} : { trace: stripUndefined(result.trace) };
+    const trace = result.trace === undefined ? {} : { trace: rebuildTrace(result.trace) };
+    const detail = result.detail === undefined ? {} : { detail: rebuildDetail(result.detail) };
     const rest = {
       ...(conversationId === undefined ? {} : { conversationId }),
-      ...(resolution === undefined ? {} : { resolution }),
+      ...(resolution === undefined ? {} : { resolution: rebuildResolution(resolution) }),
       partsPosted,
       postedMessageIds,
       flags,
     };
     if (!result.ok)
-      return { stage, result: { ok: false, content: result.content, ...trace }, ...rest };
+      return {
+        stage,
+        result: { ok: false, content: result.content, ...trace, ...detail },
+        ...rest,
+      };
     return {
       stage,
       result:
         result.escalation === undefined
-          ? { ok: true, content: result.content, ...trace }
-          : { ok: true, content: result.content, escalation: result.escalation, ...trace },
+          ? { ok: true, content: result.content, ...trace, ...detail }
+          : {
+              ok: true,
+              content: result.content,
+              escalation: result.escalation,
+              ...trace,
+              ...detail,
+            },
       ...rest,
     };
   } catch {
@@ -599,7 +711,7 @@ export const assistantInvokeHandler = (deps: {
               { label: 'answered', atMs: Math.max(0, deps.now() - startedAt) },
             ],
             discordMessageIds: [...postedMessageIds],
-            sources: result.trace?.sources ?? [],
+            sources: [...(result.trace?.sources ?? [])],
             flags: [...flags],
           });
         }

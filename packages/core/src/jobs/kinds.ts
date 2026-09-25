@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { snowflakeIdSchema } from '../ids.js';
+import { assistantTraceSchema } from '../assistant/trace.js';
 
 /**
  * Job kinds and their payload schemas.
@@ -415,6 +416,39 @@ const invocationTrace = z.object({
   usedFallback: z.boolean().optional(),
 });
 
+/**
+ * Task 14: the full run detail the invoke job persists as an `AssistantTrace`.
+ * Carried in the cursor so a retry that resumes after `invoke-done` still
+ * writes the trace with the original sections, attempts, tool calls, usage
+ * and guard. The trace-read fields reuse `assistantTraceSchema`'s own shapes
+ * so the cursor can never drift from what the trace table accepts; the
+ * conversation history is validated the same way (the tool-call `args` and
+ * `providerParts` stay opaque JSON, as in the trace schema — the trace write
+ * never reads into them).
+ */
+const assistantInvokeDetail = z.object({
+  sections: assistantTraceSchema.shape.sections,
+  history: z.array(
+    z.object({
+      role: z.enum(['user', 'assistant', 'tool']),
+      text: z.string(),
+      toolCalls: z
+        .array(z.object({ id: z.string().optional(), name: z.string(), args: z.unknown() }))
+        .optional(),
+      toolName: z.string().optional(),
+      toolCallId: z.string().optional(),
+      providerParts: z.unknown().optional(),
+    }),
+  ),
+  attempts: assistantTraceSchema.shape.attempts,
+  toolCalls: assistantTraceSchema.shape.toolCalls,
+  usage: assistantTraceSchema.shape.usage,
+  guard: assistantTraceSchema.shape.guard,
+  model: z.string().optional(),
+  finishReason: assistantTraceSchema.shape.finishReason,
+  web: z.boolean().optional(),
+});
+
 export const assistantInvokeCursor = z.object({
   stage: z.enum(['invoke-done', 'answered', 'escalation-sent', 'logged']),
   result: z.discriminatedUnion('ok', [
@@ -429,8 +463,14 @@ export const assistantInvokeCursor = z.object({
         })
         .optional(),
       trace: invocationTrace.optional(),
+      detail: assistantInvokeDetail.optional(),
     }),
-    z.object({ ok: z.literal(false), content: z.string(), trace: invocationTrace.optional() }),
+    z.object({
+      ok: z.literal(false),
+      content: z.string(),
+      trace: invocationTrace.optional(),
+      detail: assistantInvokeDetail.optional(),
+    }),
   ]),
   /**
    * Task 14: the conversation this invocation joined, created or continued in

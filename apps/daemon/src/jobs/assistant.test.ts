@@ -575,6 +575,47 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     );
   });
 
+  it('a retry from an invoke-done cursor writes the trace with the saved detail and never re-invokes', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'hello',
+      detail: {
+        sections: [
+          { name: 'behaviour-prompt', chars: 3, estTokens: 1, text: 'sys' },
+          { name: 'history', chars: 8, estTokens: 2, text: 'user: hi' },
+        ],
+        history: [],
+        attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 5 }],
+        toolCalls: [{ round: 1, name: 'search_sources', args: {}, ok: true, ms: 2, preview: 'p' }],
+        usage: { promptTokens: 10, completionTokens: 5 },
+        guard: { removed: ['phone'] },
+      },
+    }));
+    const input = mention({ invocationId: 'inv-retry-detail', messageId: '810000000000000022' });
+
+    // The first attempt invokes, saves invoke-done, then fails posting the answer.
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    const attempt1 = await h.run(input);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(h.inputs).toHaveLength(1);
+    expect(attempt1.cursor).not.toBeNull();
+
+    // The retry resumes from that cursor: no second invoke, full trace.
+    const attempt2 = await h.run(input, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(h.inputs).toHaveLength(1);
+
+    const trace = traceRepo.getTrace(scope(), 'trace_inv-retry-detail');
+    expect(trace?.outcome).toBe('answered');
+    expect(trace?.sections.map((section) => section.name)).toEqual(['behaviour-prompt', 'history']);
+    expect(trace?.attempts).toHaveLength(1);
+    expect(trace?.attempts[0]).toMatchObject({ provider: 'gemini', model: 'm' });
+    expect(trace?.toolCalls).toHaveLength(1);
+    expect(trace?.toolCalls[0]).toMatchObject({ name: 'search_sources' });
+    expect(trace?.usage).toEqual({ promptTokens: 10, completionTokens: 5 });
+    expect(trace?.guard).toEqual({ removed: ['phone'] });
+  });
+
   it('a typing failure never fails the job', async () => {
     const h = harness(() => ({ ok: true, content: 'hello' }));
     h.sendTyping.mockRejectedValue(new Error('typing failed'));
