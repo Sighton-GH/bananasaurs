@@ -23,6 +23,7 @@ import {
 } from './policy.js';
 import { dashboardAuditBase } from './routes/audit-base.js';
 import { secretsMatch } from './secrets.js';
+import type { GithubRouteClient } from './routes/assistant-github.js';
 
 /**
  * The dashboard API.
@@ -115,6 +116,11 @@ export interface HttpDeps extends AuthDeps {
           provider: string,
           apiKey?: string,
         ): Promise<readonly { id: string; name: string; description?: string }[]>;
+        /**
+         * Task 17: the sealed GitHub token, opened for the client's
+         * `Authorization` header only. Absent in older wiring.
+         */
+        githubToken?(): string | undefined;
       }
     | undefined;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */
@@ -135,6 +141,14 @@ export interface HttpDeps extends AuthDeps {
    */
   readonly enqueueResourceRefresh?:
     ((scope: GuildScope, resourceId: string, reason: 'added') => void) | undefined;
+  /**
+   * Task 17: the GitHub REST client factory for the "Add from GitHub"
+   * routes. Built by the daemon's HTTP wiring around the pinned fetch and
+   * the sealed token (which never crosses this boundary — it stays inside
+   * the client's `Authorization` header). Absent in isolated route tests,
+   * in which case the GitHub routes answer 503.
+   */
+  readonly githubClient?: (() => GithubRouteClient) | undefined;
 }
 
 /**
