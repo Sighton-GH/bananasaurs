@@ -45,6 +45,7 @@ import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { createProviderConfigStore } from '../assistant/provider-config.js';
+import { QuotaLedger } from '../assistant/quota-ledger.js';
 import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
@@ -186,6 +187,13 @@ export function createDaemon(deps: DaemonDeps): Daemon {
             eligibilityRepo.findEligibility(scopes.instance(), providerId),
           makeProvider,
         });
+  // Task 8: one process-wide ledger for every guild's assistant loop and the
+  // dashboard's allowance pill — a spent `:free` allowance stays spent until
+  // its reset no matter which guild spent it.
+  const quotaLedger = new QuotaLedger();
+  if (providerStore !== undefined) {
+    providerStore.allowanceResetsAt = (keyId) => quotaLedger.exhaustedUntil(keyId, now());
+  }
 
   // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
   // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
@@ -220,6 +228,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         interactionTokenSealer,
         assistantConfig,
         assistantChain,
+        quotaLedger,
       }),
     });
   }

@@ -90,6 +90,13 @@ export const createAssistantService = (
    * live on the next request. Empty when no store exists.
    */
   chain: () => readonly ChainEntry[] = () => [],
+  /**
+   * Task 8: the process-wide QuotaLedger, constructed once in
+   * `runtime/daemon.ts` and shared by every guild so a spent `:free`
+   * allowance stays spent across guilds until its reset. Defaults to a fresh
+   * ledger (one per service) for tests that do not pass one.
+   */
+  quotaLedger: QuotaLedger = new QuotaLedger(),
 ): AssistantCommandService => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
@@ -128,8 +135,11 @@ export const createAssistantService = (
    * One ledger per service instance (per daemon, not per request): a spent
    * `:free` daily allowance stays spent for later requests until its reset.
    * Keys are instance-level, so the ledger is keyed by key id, not guild.
+   * Task 8: the ledger arrives from the composition root so every guild
+   * shares one process-wide instance; the default keeps isolated tests
+   * independent.
    */
-  const quotaLedger = new QuotaLedger();
+  const ledger = quotaLedger;
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
   const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
     if (query.trim() === '') return [];
@@ -638,7 +648,7 @@ export const createAssistantService = (
           idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
           run: (call) => runAssistantTool(call, toolPorts),
         },
-        quotaLedger,
+        quotaLedger: ledger,
         now,
       });
       // The loop records exactly one attempt per entry, in chain order, so

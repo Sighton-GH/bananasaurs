@@ -19,6 +19,7 @@ import {
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import { resolveModelChain, type ChainEntry } from './model-chain.js';
+import { QuotaLedger } from './quota-ledger.js';
 import { createAssistantService, sanitizeMentionsForProvider } from './service.js';
 
 describe('sanitizeMentionsForProvider', () => {
@@ -427,6 +428,51 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       quotaScope: 'daily-free',
     });
     expect(later.calls()).toBe(0);
+  });
+
+  it('a ledger passed as an option is shared: one service spending it skips the other', async () => {
+    const resetAt = NOW + 3_600_000;
+    const shared = new QuotaLedger();
+    const entry = (provider: TextProvider): ChainEntry => usable(provider, { model: 'm:free' });
+    const first = fakeProvider([
+      new ProviderError('quota', 'free-models-per-day limit reached', false, {
+        quotaScope: 'daily-free',
+        resetAt,
+      }),
+    ]);
+    const second = fakeProvider([{ text: 'must not run', model: 'm:free' }]);
+    const serviceA = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [entry(first.provider)],
+      shared,
+    );
+    const serviceB = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [entry(second.provider)],
+      shared,
+    );
+    await expect(serviceA.invoke({ ...ask, invocationId: 'int-shared-1' })).rejects.toMatchObject({
+      quotaScope: 'daily-free',
+    });
+    await expect(serviceB.invoke({ ...ask, invocationId: 'int-shared-2' })).rejects.toMatchObject({
+      quotaScope: 'daily-free',
+    });
+    expect(second.calls()).toBe(0);
+    expect(shared.exhaustedUntil('key_a', NOW)).toBe(resetAt);
   });
 
   it('appends the Brave attribution when web results reached the model', async () => {

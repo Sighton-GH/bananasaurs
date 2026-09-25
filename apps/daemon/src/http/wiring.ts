@@ -16,6 +16,7 @@ import { jobRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storag
 import {
   createServer,
   issueBootstrapTokenIfNeeded,
+  registerAssistantProviderRoutes,
   registerAssistantRoutes,
   registerAssistantResourceCacheRoutes,
   registerAssistantTraceRoutes,
@@ -212,6 +213,12 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       ? {}
       : { assistantProviderConfig: deps.assistantProviderConfig }),
     ...(deps.assistantAiStatus === undefined ? {} : { assistantAiStatus: deps.assistantAiStatus }),
+    // Task 8: the allowance pill reads the single process-wide ledger through
+    // the store the composition root attached it to — carried through, never
+    // rebuilt, so the loop and the pill cannot disagree.
+    ...(deps.assistantProviderConfig?.allowanceResetsAt === undefined
+      ? {}
+      : { assistantAllowanceResetsAt: deps.assistantProviderConfig.allowanceResetsAt }),
   };
   const app = createServer({
     deps: httpDeps,
@@ -224,6 +231,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     registerRoutes: (instance, guard, routeDeps) => {
       registerReadRoutes(instance, guard, routeDeps);
       registerAssistantRoutes(instance, guard, routeDeps);
+      registerAssistantProviderRoutes(instance, guard, routeDeps);
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
       registerAssistantTraceRoutes(instance, guard, routeDeps);
       registerAssistantConversationRoutes(instance, guard, routeDeps);
