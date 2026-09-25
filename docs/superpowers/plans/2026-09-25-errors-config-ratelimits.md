@@ -1,4 +1,4 @@
-# DRAFT — Explained errors, AI tuning, per-entry RPM/RPD — Implementation Plan
+# Explained errors, AI tuning, per-entry RPM/RPD — Implementation Plan
 
 > **For agentic workers:** executed with `opencode-delegate:opencode-driven-development`
 > (owner's choice). Each task below is pasted whole into one implementer brief. Steps use
