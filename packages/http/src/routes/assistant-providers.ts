@@ -119,15 +119,18 @@ export const registerAssistantProviderRoutes = (
     ) {
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     }
-    const keys = configured.keys().map((key) => ({
-      keyId: key.keyId,
-      provider: key.provider,
-      label: key.label,
-      costClass: key.costClass,
-      enabled: key.enabled,
-      readable: configured.isKeyReadable?.(key.keyId) ?? false,
-      ...(resetsAt(key.keyId) === undefined ? {} : { allowanceResetsAt: resetsAt(key.keyId) }),
-    }));
+    const keys = configured.keys().map((key) => {
+      const allowanceResetsAt = resetsAt(key.keyId);
+      return {
+        keyId: key.keyId,
+        provider: key.provider,
+        label: key.label,
+        costClass: key.costClass,
+        enabled: key.enabled,
+        readable: configured.isKeyReadable?.(key.keyId) ?? false,
+        ...(allowanceResetsAt === undefined ? {} : { allowanceResetsAt }),
+      };
+    });
     const chainEntries = configured.chain();
     const chain = chainEntries.map((entry, position) => {
       const reset = resetsAt(entry.keyId);

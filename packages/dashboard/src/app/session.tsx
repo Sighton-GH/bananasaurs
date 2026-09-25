@@ -22,7 +22,11 @@ export interface Session {
    * read-only (`ReadonlyError`) or the request failed (`ApiError`), so callers
    * refresh only on success. The re-auth round trip is `apiFetch`'s.
    */
-  write<T>(url: string, body: unknown, method?: 'POST' | 'PUT' | 'DELETE'): Promise<T | undefined>;
+  write<T>(
+    url: string,
+    body: unknown,
+    method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+  ): Promise<T | undefined>;
   /**
    * The same write, but status 400 and 409 propagate to the caller instead
    * of becoming a toast. Forms that render the server's answer inline (the
@@ -34,7 +38,7 @@ export interface Session {
   writeOrThrow<T>(
     url: string,
     body: unknown,
-    method?: 'POST' | 'PUT' | 'DELETE',
+    method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
   ): Promise<T | undefined>;
   /**
    * Moves this session to another reachable guild without logging out
@@ -135,7 +139,7 @@ function SessionInner({
     const writeOrThrow = async <T,>(
       url: string,
       body: unknown,
-      method: 'POST' | 'PUT' | 'DELETE' = 'POST',
+      method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
     ): Promise<T | undefined> => {
       try {
         return await apiFetch<T>(url, session.csrfToken, requireReauth, {
@@ -154,7 +158,7 @@ function SessionInner({
     const write = async <T,>(
       url: string,
       body: unknown,
-      method: 'POST' | 'PUT' | 'DELETE' = 'POST',
+      method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
     ): Promise<T | undefined> => {
       try {
         return await writeOrThrow<T>(url, body, method);

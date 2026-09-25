@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, apiFetch } from '../api.js';
+import { ApiError } from '../api.js';
 import {
   ASSISTANT_PROVIDERS_URL,
   ASSISTANT_URL,
@@ -22,7 +22,6 @@ import {
   type SetupKeyRow,
 } from '../api/assistant.js';
 import type { EligibilityWarning, ProviderReviewResult } from '../api/ops.js';
-import { accountErrorText } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -71,39 +70,6 @@ const CHAIN_REASON: Record<Exclude<SetupChainRow['status'], 'ready' | 'allowance
 
 const costWords = (costClass: string): string =>
   costClass === 'free' ? 'Free' : costClass === 'paid' ? 'Paid' : 'Not sure';
-
-/**
- * `session.write` only offers POST, PUT and DELETE, and this page is not
- * allowed its own session — so the one PATCH the key routes need goes
- * through the shared fetch wrapper directly, with the same toast-on-failure
- * shape `session.write` has.
- */
-function usePatch() {
-  const session = useSession();
-  const toast = useToast();
-  return useCallback(
-    async (url: string, body: unknown): Promise<boolean> => {
-      try {
-        await apiFetch<unknown>(url, session.info.csrfToken, () => Promise.resolve(undefined), {
-          method: 'PATCH',
-          body: JSON.stringify(body),
-        });
-        return true;
-      } catch (err) {
-        if (err instanceof ApiError) {
-          toast({
-            tone: 'danger',
-            title: 'The request failed',
-            message: accountErrorText(err.body.error) ?? err.message,
-          });
-          return false;
-        }
-        throw err;
-      }
-    },
-    [session, toast],
-  );
-}
 
 /** The six setup steps, in the order the owner meets them. */
 function ChecklistSection({
@@ -412,7 +378,6 @@ function KeysSection({
 }) {
   const session = useSession();
   const toast = useToast();
-  const patch = usePatch();
   const [provider, setProvider] = useState<'gemini' | 'openrouter' | 'nvidia-nim'>('gemini');
   const [label, setLabel] = useState('');
   const [apiKey, setApiKey] = useState('');
@@ -469,7 +434,11 @@ function KeysSection({
     }
     setBusy(true);
     try {
-      if (!(await patch(assistantKeyUrl(key.keyId), body))) return;
+      if (
+        (await session.write<{ ok: boolean }>(assistantKeyUrl(key.keyId), body, 'PATCH')) ===
+        undefined
+      )
+        return;
       setEditKey('');
       setEditing(undefined);
       toast({ tone: 'ok', title: 'Key saved' });
@@ -482,7 +451,11 @@ function KeysSection({
   const setEnabled = async (key: SetupKeyRow, enabled: boolean): Promise<void> => {
     setBusy(true);
     try {
-      if (!(await patch(assistantKeyUrl(key.keyId), { enabled }))) return;
+      if (
+        (await session.write<{ ok: boolean }>(assistantKeyUrl(key.keyId), { enabled }, 'PATCH')) ===
+        undefined
+      )
+        return;
       setConfirmingDisable(undefined);
       toast({ tone: 'ok', title: enabled ? 'Key enabled' : 'Key disabled' });
       onChanged();
