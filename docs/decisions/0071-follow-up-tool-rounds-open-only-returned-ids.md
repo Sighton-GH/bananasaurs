@@ -17,8 +17,9 @@ Implements spec Part D section D2, and amends hard rule 3 and ADR 0067.
   `list_sources`, `read_chunk`, `outline`, `open_resource`, `search_archive`,
   `web_search`, `server_info`, `current_time`, `my_reminders`,
   `refresh_source`. The model may make several calls in parallel (cap 6).
-- Rounds 2–4 offer only ID tools: `read_chunk(chunk_id)`,
-  `outline(doc_id)`, `open_resource(resource_id)`. Every ID argument must
+- Rounds 2–4 offer only ID tools: `read_chunk(chunkId)`,
+  `outline(docId)`, `open_resource(resourceId)` (parameter names follow the
+  tool catalogue's camelCase; a drift test pins them). Every ID argument must
   appear in the handle set: the IDs returned by earlier results in this same
   request, or in the resource catalogue the harness itself put in the prompt.
   Anything else is refused with the result text "unknown id" and a trace
