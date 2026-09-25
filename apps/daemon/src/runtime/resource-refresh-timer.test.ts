@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
 import { JOB_KINDS, parseGuildId, resourceRefreshDedupeKey } from '@bananasaurs/core';
-import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
+import { assistantRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   createResourceRefreshTimer,
@@ -37,6 +37,17 @@ const depsFor = (over: Partial<ResourceRefreshTimerDeps> = {}): ResourceRefreshT
 
 const jobsFor = (scope: GuildScope) => jobRepo.listJobs(scope, {});
 
+const seedResource = (scope: GuildScope): void =>
+  assistantRepo.putResource(scope, {
+    id: 'res-1',
+    guildId: scope.guildId,
+    title: 'A resource',
+    url: 'https://example.com/guide',
+    kind: 'website',
+    enabled: true,
+    reviewedAt: new Date(0).toISOString(),
+  });
+
 beforeEach(() => {
   t = openMigratedTestDatabase();
   a = t.scopes.forGuild(GUILD_A);
@@ -53,6 +64,8 @@ afterEach(() => {
 
 describe('resource refresh timer', () => {
   it('runOnce enqueues one resource_refresh job per guild, resourceId absent, reason hourly', () => {
+    seedResource(a);
+    seedResource(b);
     createResourceRefreshTimer(depsFor()).runOnce();
 
     for (const scope of [a, b]) {
@@ -63,7 +76,19 @@ describe('resource refresh timer', () => {
     }
   });
 
+  it('a guild with no resources gets no job', () => {
+    // Only `a` has a resource; the timer reads the real repo through its
+    // default `hasResources`, the same path production uses.
+    seedResource(a);
+    createResourceRefreshTimer(depsFor()).runOnce();
+
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(jobsFor(b)).toHaveLength(0);
+  });
+
   it('starting twice within the hour enqueues once; the next hour enqueues again', () => {
+    seedResource(a);
+    seedResource(b);
     const timer = createResourceRefreshTimer(depsFor());
 
     timer.runOnce();
@@ -85,6 +110,7 @@ describe('resource refresh timer', () => {
   });
 
   it('the dedupe key is the hourly bucket, matching resourceRefreshDedupeKey', () => {
+    seedResource(a);
     createResourceRefreshTimer(depsFor()).runOnce();
     const bucket = Math.floor(nowMs / RESOURCE_REFRESH_INTERVAL_MS);
     expect(jobsFor(a)[0]?.dedupeKey).toBe(
@@ -94,6 +120,7 @@ describe('resource refresh timer', () => {
 
   it('start() runs once immediately then every hour; stop() cancels the interval', () => {
     vi.useFakeTimers();
+    seedResource(a);
     const timer = createResourceRefreshTimer(depsFor());
 
     timer.start();

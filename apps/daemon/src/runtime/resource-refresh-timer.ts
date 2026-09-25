@@ -1,17 +1,17 @@
 import { JOB_KINDS, resourceRefreshDedupeKey, safeLogFields, type Logger } from '@bananasaurs/core';
-import type { GuildScope, jobRepo } from '@bananasaurs/storage';
+import { assistantRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage';
 
 /**
  * The hourly resource-cache refresh timer (ADR 0073).
  *
  * The job table has no scheduler, so this is the producer: at startup and
- * every hour it enqueues one `resource_refresh` job per guild, with no
- * `resourceId` (every resource in the guild). The dedupe key is the current
- * UTC hour bucket, so a tick that lands while the previous hour's job is
- * still `queued`/`running` enqueues nothing — the `(guild_id, dedupe_key)`
- * partial unique index refuses it (ADR 0016) — which is also what makes
- * starting the timer twice inside the same hour a no-op rather than a
- * doubled sweep.
+ * every hour it enqueues one `resource_refresh` job — with no `resourceId`,
+ * meaning every resource in the guild — for each guild that actually has a
+ * resource. The dedupe key is the current UTC hour bucket, so a tick that
+ * lands while the previous hour's job is still `queued`/`running` enqueues
+ * nothing — the `(guild_id, dedupe_key)` partial unique index refuses it
+ * (ADR 0016) — which is also what makes starting the timer twice inside the
+ * same hour a no-op rather than a doubled sweep.
  *
  * Mirrors `reminder-timer.ts`/`archive-expiry-timer.ts` in its start/stop
  * contract (run once at start, then `setInterval(...).unref()`; `stop`
@@ -32,6 +32,15 @@ export interface ResourceRefreshTimer {
 export interface ResourceRefreshTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
   readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
+  /**
+   * Cheap peek before enqueueing: without it every guild gets one empty
+   * `resource_refresh` job an hour forever, which only noise up `/status`'s
+   * queued count (the same reasoning `archive-expiry-timer.ts`'s
+   * `hasArchiveChannels` documents). Optional, defaulting to the real
+   * `assistantRepo.listResources(scope).length > 0` — production gets this
+   * for free; tests can inject a stub.
+   */
+  readonly hasResources?: (scope: GuildScope) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
 }
@@ -40,12 +49,15 @@ const hourBucket = (nowMs: number): number => Math.floor(nowMs / RESOURCE_REFRES
 
 export function createResourceRefreshTimer(deps: ResourceRefreshTimerDeps): ResourceRefreshTimer {
   let timer: NodeJS.Timeout | undefined;
+  const hasResources =
+    deps.hasResources ?? ((scope) => assistantRepo.listResources(scope).length > 0);
 
   const runOnce = (): void => {
     const now = deps.now();
     const bucket = hourBucket(now);
     let enqueued = 0;
     for (const { scope } of deps.guilds()) {
+      if (!hasResources(scope)) continue;
       deps.enqueue(scope, {
         kind: JOB_KINDS.resourceRefresh,
         payload: JSON.stringify({ reason: 'hourly' }),
