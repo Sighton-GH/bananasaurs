@@ -45,6 +45,15 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   ]),
   serverCard: () => 'SFU Racerbot builds autonomous cars.',
   visibleChannels: vi.fn(async () => [{ id: '111111111111111111', name: 'general' }]),
+  cacheSearch: () => [],
+  cacheChunk: () => undefined,
+  cacheNeighbours: () => [],
+  cacheOutline: () => [],
+  cacheDocument: () => undefined,
+  cacheResourceDocs: () => [],
+  cacheResourceChunks: () => [],
+  cacheFreshness: () => [],
+  enqueueRefresh: () => true,
   reminders: () => [
     {
       id: 'r1',
@@ -82,6 +91,11 @@ describe('toolDeclarations', () => {
       'server_info',
       'current_time',
       'my_reminders',
+      'list_sources',
+      'search_sources',
+      'read_chunk',
+      'outline',
+      'refresh_source',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
   });
@@ -130,8 +144,26 @@ describe('runAssistantTool', () => {
     expect(result.text).toContain('<#111111111111111111>');
   });
 
-  it('opens only an enabled resource, redacted like other evidence', async () => {
-    const p = ports();
+  it('opens only an enabled resource from the cache, redacted like other evidence', async () => {
+    const p = ports({
+      cacheResourceDocs: () => [
+        {
+          docId: 'd_handbook',
+          resourceId: 'handbook',
+          title: 'Club handbook',
+          url: 'https://example.com/handbook',
+        },
+      ],
+      cacheResourceChunks: () => [
+        {
+          chunkId: 'c_d_handbook_0',
+          docId: 'd_handbook',
+          resourceId: 'handbook',
+          headingPath: 'Guide',
+          text: 'Meetings are Mondays. Contact lead@example.com.',
+        },
+      ],
+    });
     const opened = await runAssistantTool(
       { name: 'open_resource', args: { resourceId: 'handbook' } },
       p,
@@ -139,13 +171,14 @@ describe('runAssistantTool', () => {
     expect(opened).toMatchObject({
       ok: true,
       sources: [{ title: 'Club handbook', url: 'https://example.com/handbook' }],
-      handles: ['handbook'],
     });
+    expect(opened.handles).toContain('c_d_handbook_0');
+    expect(opened.handles).toContain('d_handbook');
     expect(opened.text).toContain('Meetings are Mondays.');
     expect(opened.text).not.toContain('lead@example.com');
     await expect(
       runAssistantTool({ name: 'open_resource', args: { resourceId: 'off' } }, p),
-    ).resolves.toMatchObject({ ok: false, text: 'No enabled resource has that id.' });
+    ).resolves.toMatchObject({ ok: false, text: 'unknown id' });
   });
 
   it('returns web results with their links as sources and marks them as Brave results', async () => {
