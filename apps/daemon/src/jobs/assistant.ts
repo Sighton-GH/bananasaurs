@@ -200,21 +200,26 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
       postedMessageIds,
       flags,
     };
+    // Task 20: the service-attached result flags (e.g.
+    // `resources-unavailable`) travel in the cursor alongside the job's own
+    // `quote-unavailable` flags so a retry keeps both.
+    const resultFlags = result.flags === undefined ? {} : { flags: [...result.flags] };
     if (!result.ok)
       return {
         stage,
-        result: { ok: false, content: result.content, ...trace, ...detail },
+        result: { ok: false, content: result.content, ...resultFlags, ...trace, ...detail },
         ...rest,
       };
     return {
       stage,
       result:
         result.escalation === undefined
-          ? { ok: true, content: result.content, ...trace, ...detail }
+          ? { ok: true, content: result.content, ...resultFlags, ...trace, ...detail }
           : {
               ok: true,
               content: result.content,
               escalation: result.escalation,
+              ...resultFlags,
               ...trace,
               ...detail,
             },
@@ -527,6 +532,13 @@ export const assistantInvokeHandler = (deps: {
           ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
         });
         invokeDoneAt = deps.now();
+        // Task 20: flags the service attached to the result (currently only
+        // `resources-unavailable`) join the job's own flags before the trace
+        // write — the same way `quote-unavailable` above does — and persist
+        // in the cursor via `saveStaged`, so a retry keeps them.
+        for (const flag of result.flags ?? []) {
+          if (!flags.includes(flag)) flags.push(flag);
+        }
       } catch (err) {
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of

@@ -617,6 +617,28 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(trace?.guard).toEqual({ removed: ['phone'] });
   });
 
+  it('a result flag reaches the stored trace and survives a retry from the cursor', async () => {
+    const h = harness(() => ({
+      ok: true,
+      content: 'answered without resources',
+      flags: ['resources-unavailable'],
+    }));
+    const input = mention({ invocationId: 'inv-rf', messageId: '810000000000000023' });
+
+    // The first attempt invokes, saves invoke-done, then fails posting the answer.
+    h.send.mockRejectedValueOnce(new Error('discord 500'));
+    const attempt1 = await h.run(input);
+    expect(attempt1.error).toBeInstanceOf(Error);
+    expect(h.inputs).toHaveLength(1);
+    expect(attempt1.cursor).not.toBeNull();
+
+    // The retry resumes from that cursor: no second invoke, flag kept.
+    const attempt2 = await h.run(input, attempt1.cursor);
+    expect(attempt2.error).toBeUndefined();
+    expect(h.inputs).toHaveLength(1);
+    expect(traceRepo.getTrace(scope(), 'trace_inv-rf')?.flags).toContain('resources-unavailable');
+  });
+
   it('a typing failure never fails the job', async () => {
     const h = harness(() => ({ ok: true, content: 'hello' }));
     h.sendTyping.mockRejectedValue(new Error('typing failed'));

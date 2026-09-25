@@ -75,12 +75,21 @@ export type AssistantInvocationResult =
         readonly reviewerRoleIds: readonly string[];
         readonly ticketId: string;
       };
+      /**
+       * Task 20: trace flags the run gathered that the stored trace — not
+       * the member-facing answer — must carry (currently only
+       * `resources-unavailable`, set when the resource cache could not be
+       * read). The invoke job merges these into its own flags before the
+       * trace write; the cursor schema carries them so a retry keeps them.
+       */
+      readonly flags?: readonly string[];
       readonly trace?: InvocationTrace;
       readonly detail?: AssistantTraceDetail | undefined;
     }
   | {
       readonly ok: false;
       readonly content: string;
+      readonly flags?: readonly string[];
       readonly trace?: InvocationTrace;
       readonly detail?: AssistantTraceDetail | undefined;
     };

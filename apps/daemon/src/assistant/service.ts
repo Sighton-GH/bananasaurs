@@ -847,8 +847,12 @@ export const createAssistantService = (
       // opened a known enabled resource. A web-only answer keeps just the
       // Brave attribution and grows no line.
       const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
+      // The escalation summary is built from the loop text below — before
+      // the sources line is appended — so a ticket never carries it. Only a
+      // normal answer grows the line.
+      const baseAnswer = loop.web ? `${loop.text}${BRAVE_ATTRIBUTION}` : loop.text;
       const answerText =
-        (loop.web ? `${loop.text}${BRAVE_ATTRIBUTION}` : loop.text) +
+        baseAnswer +
         sourcesLine([
           ...preRetrieved.map((hit) => ({
             title: byResourceId.get(hit.resourceId)?.title ?? hit.resourceId,
@@ -928,7 +932,7 @@ Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and
 Draft ID: ${id}. This is analysis, not club policy. An owner must review and save it from the dashboard.`,
         };
       }
-      if (isIt && answerText.startsWith('ESCALATE:')) {
+      if (isIt && baseAnswer.startsWith('ESCALATE:')) {
         if (
           input.behaviour.ticketChannelId === undefined ||
           input.behaviour.reviewerRoleIds.length === 0
@@ -938,7 +942,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             content:
               'This needs human action, but IT ticket routing is not fully configured. No ticket was created.',
           };
-        const summary = answerText.slice('ESCALATE:'.length).trim().slice(0, 1_500);
+        const summary = baseAnswer.slice('ESCALATE:'.length).trim().slice(0, 1_500);
         // Task 20: Try-it answers the escalation as text — opening a real
         // ticket from a dashboard test would page reviewers for nothing.
         if (opts.skipTicketWrite === true) return { ok: true, content: summary };
@@ -979,11 +983,18 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
       const started = now();
-      const sink: { trace?: Omit<InvocationTrace, 'latencyMs'>; detail?: AssistantTraceDetail } =
-        {};
+      const sink: {
+        trace?: Omit<InvocationTrace, 'latencyMs'>;
+        detail?: AssistantTraceDetail;
+        resourcesUnavailable?: boolean;
+      } = {};
       const result = await invokeOnce(input, sink);
+      // Task 20: the Discord path's stored trace is the job's to write, so
+      // the flag travels on the result (see `AssistantInvocationResult.flags`).
+      const flags = sink.resourcesUnavailable === true ? ['resources-unavailable'] : [];
       return {
         ...result,
+        ...(flags.length === 0 ? {} : { flags: [...(result.flags ?? []), ...flags] }),
         trace: { ...sink.trace, latencyMs: now() - started },
         ...(sink.detail === undefined ? {} : { detail: sink.detail }),
       };

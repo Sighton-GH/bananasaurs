@@ -1162,6 +1162,40 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(assistantRepo.listTickets(scope)).toEqual([]);
   });
 
+  it('an escalation summary never carries the sources line', async () => {
+    seedResource('handbook', 'Handbook', ['battery care guide for the club']);
+    const scope = t.scopes.forGuild(GUILD);
+    const itBehaviour = {
+      ...direct,
+      id: 'it',
+      surface: 'it-services' as const,
+      ticketChannelId: '987654321098765432',
+      reviewerRoleIds: ['876543210987654321'],
+    };
+    assistantRepo.putBehaviour(scope, itBehaviour, NOW);
+    const service = serviceWith(answering('ESCALATE: reset the lab password'));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: itBehaviour,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-escalate-sources',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    // The pre-retrieved evidence would append a sources line to a normal
+    // answer; the escalation summary must not carry it.
+    expect(content).toBe('reset the lab password');
+    expect(content).not.toContain('Sources');
+    const tickets = assistantRepo.listTickets(scope);
+    expect(tickets).toHaveLength(1);
+    expect(tickets[0]?.summary).not.toContain('Sources');
+  });
+
   it('flags an unreadable resource cache and still answers from the model', async () => {
     const service = createAssistantService(
       t.scopes.forGuild(GUILD),
@@ -1187,6 +1221,38 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(traceRepo.getTrace(t.scopes.forGuild(GUILD), result.traceId)?.flags).toContain(
       'resources-unavailable',
     );
+  });
+
+  it('carries resources-unavailable on the Discord-path result', async () => {
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {
+        cacheSearch: () => {
+          throw new Error('cache down');
+        },
+      },
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [usable(answering('Answered without sources.'))],
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-resources-unavailable-flag',
+    });
+    expect(result.ok).toBe(true);
+    expect(result.ok === true && result.content).toBe('Answered without sources.');
+    expect(result.flags ?? []).toContain('resources-unavailable');
   });
 
   it('adds no sources line when nothing was opened', async () => {
