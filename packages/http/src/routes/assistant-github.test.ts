@@ -59,14 +59,15 @@ const summary = (name: string, over: Partial<Summary> = {}): Summary => ({
 class FakeClient implements GithubRouteClient {
   authenticated = true;
   orgRepos: Summary[] | Error = [];
+  orgTruncated = false;
   repoDetail: unknown = { defaultBranch: 'main', description: null, private: false };
   tree: unknown = { entries: [], truncated: false };
   readonly calls = { listOrgRepos: 0, getRepo: 0, listTree: 0 };
 
-  async listOrgRepos(_owner: string): Promise<readonly Summary[]> {
+  async listOrgRepos(_owner: string): Promise<{ repos: readonly Summary[]; truncated: boolean }> {
     this.calls.listOrgRepos += 1;
     if (this.orgRepos instanceof Error) throw this.orgRepos;
-    return this.orgRepos;
+    return { repos: this.orgRepos, truncated: this.orgTruncated };
   }
   async getRepo(_owner: string, _repo: string) {
     this.calls.getRepo += 1;
@@ -253,6 +254,7 @@ describe('POST /api/assistant/github/preview', () => {
   it('marks a truncated org list', async () => {
     const { cookie, csrf } = await signIn();
     client.orgRepos = Array.from({ length: 501 }, (_, i) => summary(`repo-${String(i)}`));
+    client.orgTruncated = true;
     const response = await post(cookie, csrf, '/api/assistant/github/preview', {
       url: 'https://github.com/acme',
     });
@@ -260,6 +262,17 @@ describe('POST /api/assistant/github/preview', () => {
     const body = response.json<{ repos: unknown[]; truncated: boolean }>();
     expect(body.repos).toHaveLength(500);
     expect(body.truncated).toBe(true);
+  });
+
+  it('surfaces a non-truncated client list as truncated false', async () => {
+    const { cookie, csrf } = await signIn();
+    client.orgRepos = [summary('widget')];
+    client.orgTruncated = false;
+    const response = await post(cookie, csrf, '/api/assistant/github/preview', {
+      url: 'https://github.com/acme',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ truncated: false });
   });
 
   it('answers 400 not-github for unparseable URLs', async () => {

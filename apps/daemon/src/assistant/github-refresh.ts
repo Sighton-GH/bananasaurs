@@ -161,7 +161,7 @@ export async function refreshGithubOrg(
     readonly defaultBranch: string;
   }[];
   try {
-    summaries = await deps.client.listOrgRepos(owner);
+    summaries = (await deps.client.listOrgRepos(owner)).repos;
   } catch (error) {
     return fail(scope, resource, deps, failDetail(error));
   }

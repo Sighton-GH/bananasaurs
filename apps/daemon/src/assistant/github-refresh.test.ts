@@ -82,7 +82,7 @@ class FakeClient {
   async listOrgRepos(_owner: string) {
     this.calls.listOrgRepos += 1;
     if (this.orgRepos instanceof Error) throw this.orgRepos;
-    return this.orgRepos as never;
+    return { repos: this.orgRepos, truncated: false } as never;
   }
   async getRepo(_owner: string, _repo: string) {
     this.calls.getRepo += 1;

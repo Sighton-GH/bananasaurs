@@ -56,8 +56,18 @@ export interface GitHubTreeResult {
   readonly truncated: boolean;
 }
 
+export interface GitHubOrgRepos {
+  readonly repos: readonly GitHubRepoSummary[];
+  /**
+   * True when the last permitted page came back full (100 items) — more
+   * repositories may exist beyond the 5-page cap, so the org preview says
+   * "Showing the first 500 repositories."
+   */
+  readonly truncated: boolean;
+}
+
 export interface GitHubClient {
-  listOrgRepos(owner: string): Promise<readonly GitHubRepoSummary[]>;
+  listOrgRepos(owner: string): Promise<GitHubOrgRepos>;
   getRepo(owner: string, repo: string): Promise<GitHubRepoDetail>;
   listTree(owner: string, repo: string, ref: string): Promise<GitHubTreeResult>;
   readonly authenticated: boolean;
@@ -152,8 +162,9 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     }
   };
 
-  const listOrgRepos = async (owner: string): Promise<readonly GitHubRepoSummary[]> => {
+  const listOrgRepos = async (owner: string): Promise<GitHubOrgRepos> => {
     const repos: GitHubRepoSummary[] = [];
+    let truncated = false;
     for (let page = 1; page <= MAX_PAGES; page++) {
       const url = new URL(`${API_ROOT}/users/${encodeURIComponent(owner)}/repos`);
       url.searchParams.set('per_page', String(PER_PAGE));
@@ -175,8 +186,10 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
         });
       }
       if (parsed.data.length < PER_PAGE) break;
+      // A full page on the last permitted page means more may exist.
+      if (page === MAX_PAGES) truncated = true;
     }
-    return repos;
+    return { repos, truncated };
   };
 
   const getRepo = async (owner: string, repo: string): Promise<GitHubRepoDetail> => {

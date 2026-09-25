@@ -29,9 +29,15 @@ export interface GithubRouteRepoSummary {
   readonly private: boolean;
 }
 
+export interface GithubRouteOrgRepos {
+  readonly repos: readonly GithubRouteRepoSummary[];
+  /** True when the client hit its page cap — more repositories may exist. */
+  readonly truncated: boolean;
+}
+
 export interface GithubRouteClient {
   readonly authenticated: boolean;
-  listOrgRepos(owner: string): Promise<readonly GithubRouteRepoSummary[]>;
+  listOrgRepos(owner: string): Promise<GithubRouteOrgRepos>;
   getRepo(
     owner: string,
     repo: string,
@@ -99,8 +105,8 @@ export const registerAssistantGithubRoutes = (
 
     try {
       if (target.kind === 'org') {
-        const summaries = await client.listOrgRepos(target.owner);
-        const publicRepos = summaries.filter((s) => !s.private);
+        const listed = await client.listOrgRepos(target.owner);
+        const publicRepos = listed.repos.filter((s) => !s.private);
         const repos = publicRepos.slice(0, PREVIEW_LIMIT).map((s) => ({
           name: s.name,
           description: s.description,
@@ -111,7 +117,7 @@ export const registerAssistantGithubRoutes = (
           target: { kind: 'org', owner: target.owner },
           authenticated: client.authenticated,
           repos,
-          truncated: publicRepos.length > PREVIEW_LIMIT,
+          truncated: listed.truncated,
         });
       }
       if (!client.authenticated) {
@@ -166,7 +172,7 @@ export const registerAssistantGithubRoutes = (
 
     try {
       if (target.kind === 'org') {
-        const summaries = await client.listOrgRepos(target.owner);
+        const summaries = (await client.listOrgRepos(target.owner)).repos;
         const eligible = summaries.filter(
           (s) => !s.private && (includeForks || !s.fork) && (includeArchived || !s.archived),
         );
