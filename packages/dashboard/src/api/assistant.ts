@@ -258,6 +258,33 @@ export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
 export const resourceRefreshUrl = (id: string) =>
   `/api/assistant/resources/${encodeURIComponent(id)}/refresh`;
 export const RESOURCE_REFRESH_ALL_URL = '/api/assistant/resources/refresh';
+/** Task 17: "Add from GitHub" — preview a repo/org URL, then import it as cached resources. */
+export const GITHUB_PREVIEW_URL = '/api/assistant/github/preview';
+export const GITHUB_IMPORT_URL = '/api/assistant/github/import';
+export type GithubPreviewTarget =
+  | { readonly kind: 'org'; readonly owner: string }
+  | {
+      readonly kind: 'repo';
+      readonly owner: string;
+      readonly repo: string;
+      readonly branch?: string;
+    };
+export interface GithubPreviewRepo {
+  readonly name: string;
+  readonly description: string | null;
+  readonly fork: boolean;
+  readonly archived: boolean;
+}
+export interface GithubPreview {
+  readonly target: GithubPreviewTarget;
+  readonly authenticated: boolean;
+  readonly repos?: readonly GithubPreviewRepo[];
+  readonly truncated?: boolean;
+  readonly files?: readonly string[];
+}
+export interface GithubImportResult {
+  readonly created: number;
+}
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;
 export const STARTER_URL = '/api/assistant/skill-grants/starter';
