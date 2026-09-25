@@ -573,6 +573,46 @@ describe('messages', () => {
   });
 
   /**
+   * ADR 0072's conversation resolver needs both the id of the message being
+   * replied to and, when Discord sent it, that message's author — so a reply
+   * to the bot can be told apart from a reply to anyone else without a
+   * second fetch.
+   */
+  it('carries the reference and replied-to author on a reply', () => {
+    const h = harness();
+    const repliedTo = '555555555555555559';
+    h.packet(
+      'MessageCreate',
+      messageCreatePacket({
+        content: 'and what about parking?',
+        message_reference: { message_id: repliedTo, channel_id: CHANNEL, guild_id: GUILD },
+        referenced_message: {
+          id: repliedTo,
+          channel_id: CHANNEL,
+          guild_id: GUILD,
+          author: { id: BOT, username: 'bananasaurs', discriminator: '0', bot: true },
+          content: 'the handbook is pinned in #welcome',
+          timestamp: '2026-08-30T00:00:00.000Z',
+          type: 0,
+        },
+      }),
+    );
+    expect(h.events[0]).toMatchObject({
+      referencedMessageId: repliedTo,
+      referencedAuthorId: BOT,
+    });
+  });
+
+  it('leaves the reference and replied-to author absent on an ordinary message', () => {
+    const h = harness();
+    h.packet('MessageCreate', messageCreatePacket());
+    expect(h.events[0]).toMatchObject({
+      referencedMessageId: undefined,
+      referencedAuthorId: undefined,
+    });
+  });
+
+  /**
    * A `MESSAGE_DELETE` for an id the client never cached arrives partial — the
    * dispatch carries only ids (`Action.getMessage`). Empty arrays and `false`
    * say "nothing is known", which is what every predicate downstream must

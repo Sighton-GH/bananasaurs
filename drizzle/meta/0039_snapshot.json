@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "6b623351-fb5c-44b7-9185-242fe045d3cc",
+  "id": "c9d88357-62e9-468f-8209-1874495ac3b9",
   "prevId": "c981e3d7-7578-4c56-abd7-6bae43c9daf6",
   "tables": {
     "account_capabilities": {
@@ -1102,8 +1102,8 @@
           "notNull": true,
           "autoincrement": false
         },
-        "provider": {
-          "name": "provider",
+        "key_id": {
+          "name": "key_id",
           "type": "text",
           "primaryKey": false,
           "notNull": true,
@@ -1124,17 +1124,26 @@
           "autoincrement": false
         }
       },
-      "indexes": {},
+      "indexes": {
+        "assistant_model_chain_key_model": {
+          "name": "assistant_model_chain_key_model",
+          "columns": [
+            "key_id",
+            "model"
+          ],
+          "isUnique": true
+        }
+      },
       "foreignKeys": {
-        "assistant_model_chain_provider_assistant_providers_provider_fk": {
-          "name": "assistant_model_chain_provider_assistant_providers_provider_fk",
+        "assistant_model_chain_key_id_assistant_provider_keys_key_id_fk": {
+          "name": "assistant_model_chain_key_id_assistant_provider_keys_key_id_fk",
           "tableFrom": "assistant_model_chain",
-          "tableTo": "assistant_providers",
+          "tableTo": "assistant_provider_keys",
           "columnsFrom": [
-            "provider"
+            "key_id"
           ],
           "columnsTo": [
-            "provider"
+            "key_id"
           ],
           "onDelete": "cascade",
           "onUpdate": "no action"
@@ -1146,10 +1155,6 @@
         "assistant_model_chain_position": {
           "name": "assistant_model_chain_position",
           "value": "\"assistant_model_chain\".\"position\" BETWEEN 0 AND 5"
-        },
-        "assistant_model_chain_provider": {
-          "name": "assistant_model_chain_provider",
-          "value": "\"assistant_model_chain\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
         }
       }
     },
@@ -1263,13 +1268,27 @@
         }
       }
     },
-    "assistant_providers": {
-      "name": "assistant_providers",
+    "assistant_provider_keys": {
+      "name": "assistant_provider_keys",
       "columns": {
+        "key_id": {
+          "name": "key_id",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
         "provider": {
           "name": "provider",
           "type": "text",
-          "primaryKey": true,
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "label": {
+          "name": "label",
+          "type": "text",
+          "primaryKey": false,
           "notNull": true,
           "autoincrement": false
         },
@@ -1277,7 +1296,7 @@
           "name": "api_key_enc",
           "type": "text",
           "primaryKey": false,
-          "notNull": false,
+          "notNull": true,
           "autoincrement": false
         },
         "cost_class": {
@@ -1294,7 +1313,14 @@
           "primaryKey": false,
           "notNull": true,
           "autoincrement": false,
-          "default": 0
+          "default": 1
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
         },
         "updated_at": {
           "name": "updated_at",
@@ -1309,17 +1335,21 @@
       "compositePrimaryKeys": {},
       "uniqueConstraints": {},
       "checkConstraints": {
-        "assistant_providers_provider": {
-          "name": "assistant_providers_provider",
-          "value": "\"assistant_providers\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
+        "assistant_provider_keys_provider": {
+          "name": "assistant_provider_keys_provider",
+          "value": "\"assistant_provider_keys\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
         },
-        "assistant_providers_cost_class": {
-          "name": "assistant_providers_cost_class",
-          "value": "\"assistant_providers\".\"cost_class\" IN ('free','paid','unknown')"
+        "assistant_provider_keys_cost_class": {
+          "name": "assistant_provider_keys_cost_class",
+          "value": "\"assistant_provider_keys\".\"cost_class\" IN ('free','paid','unknown')"
         },
-        "assistant_providers_enabled_bool": {
-          "name": "assistant_providers_enabled_bool",
-          "value": "\"assistant_providers\".\"enabled\" IN (0,1)"
+        "assistant_provider_keys_enabled_bool": {
+          "name": "assistant_provider_keys_enabled_bool",
+          "value": "\"assistant_provider_keys\".\"enabled\" IN (0,1)"
+        },
+        "assistant_provider_keys_label_length": {
+          "name": "assistant_provider_keys_label_length",
+          "value": "length(\"assistant_provider_keys\".\"label\") BETWEEN 1 AND 60"
         }
       }
     },
@@ -5753,298 +5783,6 @@
         "provider_eligibility_production_use_allowed_bool": {
           "name": "provider_eligibility_production_use_allowed_bool",
           "value": "\"provider_eligibility\".\"production_use_allowed\" IN (0,1)"
-        }
-      }
-    },
-    "resource_chunks": {
-      "name": "resource_chunks",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "chunk_id": {
-          "name": "chunk_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "doc_id": {
-          "name": "doc_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "resource_id": {
-          "name": "resource_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "ordinal": {
-          "name": "ordinal",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "heading_path": {
-          "name": "heading_path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "line_start": {
-          "name": "line_start",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "line_end": {
-          "name": "line_end",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "text": {
-          "name": "text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "resource_chunks_doc": {
-          "name": "resource_chunks_doc",
-          "columns": [
-            "guild_id",
-            "doc_id",
-            "ordinal"
-          ],
-          "isUnique": false
-        },
-        "resource_chunks_resource": {
-          "name": "resource_chunks_resource",
-          "columns": [
-            "guild_id",
-            "resource_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "resource_chunks_guild_id_guilds_guild_id_fk": {
-          "name": "resource_chunks_guild_id_guilds_guild_id_fk",
-          "tableFrom": "resource_chunks",
-          "tableTo": "guilds",
-          "columnsFrom": [
-            "guild_id"
-          ],
-          "columnsTo": [
-            "guild_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "resource_chunks_guild_id_doc_id_resource_documents_guild_id_doc_id_fk": {
-          "name": "resource_chunks_guild_id_doc_id_resource_documents_guild_id_doc_id_fk",
-          "tableFrom": "resource_chunks",
-          "tableTo": "resource_documents",
-          "columnsFrom": [
-            "guild_id",
-            "doc_id"
-          ],
-          "columnsTo": [
-            "guild_id",
-            "doc_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "resource_chunks_guild_id_chunk_id_pk": {
-          "columns": [
-            "guild_id",
-            "chunk_id"
-          ],
-          "name": "resource_chunks_guild_id_chunk_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "resource_chunks_guild_id_snowflake": {
-          "name": "resource_chunks_guild_id_snowflake",
-          "value": "(\"resource_chunks\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"resource_chunks\".\"guild_id\") BETWEEN 17 AND 20)"
-        }
-      }
-    },
-    "resource_documents": {
-      "name": "resource_documents",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "doc_id": {
-          "name": "doc_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "resource_id": {
-          "name": "resource_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "url": {
-          "name": "url",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "path": {
-          "name": "path",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "etag": {
-          "name": "etag",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "last_modified": {
-          "name": "last_modified",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "content_hash": {
-          "name": "content_hash",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "''"
-        },
-        "fetched_at": {
-          "name": "fetched_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "bytes": {
-          "name": "bytes",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'ok'"
-        },
-        "error": {
-          "name": "error",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "resource_documents_resource": {
-          "name": "resource_documents_resource",
-          "columns": [
-            "guild_id",
-            "resource_id"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "resource_documents_guild_id_guilds_guild_id_fk": {
-          "name": "resource_documents_guild_id_guilds_guild_id_fk",
-          "tableFrom": "resource_documents",
-          "tableTo": "guilds",
-          "columnsFrom": [
-            "guild_id"
-          ],
-          "columnsTo": [
-            "guild_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        },
-        "resource_documents_guild_id_resource_id_assistant_resources_guild_id_resource_id_fk": {
-          "name": "resource_documents_guild_id_resource_id_assistant_resources_guild_id_resource_id_fk",
-          "tableFrom": "resource_documents",
-          "tableTo": "assistant_resources",
-          "columnsFrom": [
-            "guild_id",
-            "resource_id"
-          ],
-          "columnsTo": [
-            "guild_id",
-            "resource_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "resource_documents_guild_id_doc_id_pk": {
-          "columns": [
-            "guild_id",
-            "doc_id"
-          ],
-          "name": "resource_documents_guild_id_doc_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "resource_documents_guild_id_snowflake": {
-          "name": "resource_documents_guild_id_snowflake",
-          "value": "(\"resource_documents\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"resource_documents\".\"guild_id\") BETWEEN 17 AND 20)"
-        },
-        "resource_documents_status": {
-          "name": "resource_documents_status",
-          "value": "\"resource_documents\".\"status\" IN ('ok','error')"
         }
       }
     },

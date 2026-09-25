@@ -278,15 +278,29 @@
     {
       "idx": 39,
       "version": "6",
-      "when": 1790289202283,
-      "tag": "0039_giant_ronan",
+      "when": 1790289004961,
+      "tag": "0039_public_jack_flag",
       "breakpoints": true
     },
     {
       "idx": 40,
       "version": "6",
-      "when": 1790289203283,
-      "tag": "0040_resource_chunks_fts",
+      "when": 1790309353526,
+      "tag": "0040_married_psylocke",
+      "breakpoints": true
+    },
+    {
+      "idx": 41,
+      "version": "6",
+      "when": 1790309562834,
+      "tag": "0041_pale_guardian",
+      "breakpoints": true
+    },
+    {
+      "idx": 42,
+      "version": "6",
+      "when": 1790309563834,
+      "tag": "0042_resource_chunks_fts",
       "breakpoints": true
     }
   ]

@@ -1795,52 +1795,56 @@ export const assistantProviderConfig = sqliteTable(
   ],
 );
 
-// ADR 0075: one row per AI provider (Gemini, OpenRouter, NVIDIA NIM), each
-// with its own sealed API key, cost class and enabled flag. Instance-level
-// like the single-provider config it replaces; the old row's provider, model
-// and fallback models are copied here and into `assistant_model_chain` by
-// the migration, and the old columns stay but are no longer read.
-export const assistantProviders = sqliteTable(
-  'assistant_providers',
+// Task 6b (ADR 0075 follow-up, owner request 2026-09-24): several sealed keys
+// per provider, each with its own owner-chosen label, so the same provider
+// account can appear more than once (e.g. two Gemini keys as a fallback pair)
+// and keys from the same account can be told apart in the dashboard.
+// Instance-level like the table it replaces (`assistant_providers`); terms
+// eligibility stays per *provider*, not per key (hard rule 5).
+export const assistantProviderKeys = sqliteTable(
+  'assistant_provider_keys',
   {
-    provider: text('provider').primaryKey(),
-    apiKeyEnc: text('api_key_enc'),
-    /** The owner's statement of the model's cost (ADR 0061 §2). */
+    keyId: text('key_id').primaryKey(),
+    provider: text('provider').notNull(),
+    /** Owner-chosen, e.g. "Personal Gemini key". Never a secret itself. */
+    label: text('label').notNull(),
+    apiKeyEnc: text('api_key_enc').notNull(),
+    /** The owner's statement of the key's cost (ADR 0061 §2). */
     costClass: text('cost_class').notNull().default('unknown'),
-    enabled: integer('enabled').notNull().default(0),
+    enabled: integer('enabled').notNull().default(1),
+    createdAt: integer('created_at').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     check(
-      'assistant_providers_provider',
+      'assistant_provider_keys_provider',
       sql`${t.provider} IN ('gemini','openrouter','nvidia-nim')`,
     ),
-    check('assistant_providers_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
-    check('assistant_providers_enabled_bool', boolCheck(t.enabled)),
+    check('assistant_provider_keys_cost_class', sql`${t.costClass} IN ('free','paid','unknown')`),
+    check('assistant_provider_keys_enabled_bool', boolCheck(t.enabled)),
+    check('assistant_provider_keys_label_length', sql`length(${t.label}) BETWEEN 1 AND 60`),
   ],
 );
 
-// ADR 0075: the one ordered model chain, at most 6 entries. Each entry names
-// its provider plus model; positions are dense from 0. The foreign key keeps
-// a chain entry from naming a provider with no key row, and removing a
-// provider drops its chain rows.
+// Task 6b: the one ordered model chain, at most 6 entries. Each entry names a
+// key plus a model — not a provider directly, so the same model can be
+// listed twice under two different keys as a fallback pair. Positions are
+// dense from 0. The foreign key keeps a chain entry from naming a key that
+// does not exist, and removing a key drops its chain rows with it.
 export const assistantModelChain = sqliteTable(
   'assistant_model_chain',
   {
     position: integer('position').primaryKey(),
-    provider: text('provider').notNull(),
+    keyId: text('key_id').notNull(),
     model: text('model').notNull(),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
-    foreignKey({ columns: [t.provider], foreignColumns: [assistantProviders.provider] }).onDelete(
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantProviderKeys.keyId] }).onDelete(
       'cascade',
     ),
+    unique('assistant_model_chain_key_model').on(t.keyId, t.model),
     check('assistant_model_chain_position', sql`${t.position} BETWEEN 0 AND 5`),
-    check(
-      'assistant_model_chain_provider',
-      sql`${t.provider} IN ('gemini','openrouter','nvidia-nim')`,
-    ),
   ],
 );
 
@@ -2188,5 +2192,108 @@ export const resourceChunks = sqliteTable(
     check('resource_chunks_guild_id_snowflake', snowflakeCheck(t.guildId)),
     index('resource_chunks_doc').on(t.guildId, t.docId, t.ordinal),
     index('resource_chunks_resource').on(t.guildId, t.resourceId),
+  ],
+);
+
+/**
+ * A conversation thread (ADR 0072). `conversationId` is app-generated, not a
+ * snowflake. `status` starts `open`; `latestForAuthor` (repos/conversations.ts)
+ * only ever considers `open` conversations for the follow-up window.
+ */
+export const assistantConversations = sqliteTable(
+  'assistant_conversations',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    startedBy: snowflake('started_by').notNull(),
+    title: text('title').notNull(),
+    source: text('source').notNull(),
+    status: text('status').notNull().default('open'),
+    createdAt: integer('created_at').notNull(),
+    lastActivityAt: integer('last_activity_at').notNull(),
+    turnCount: integer('turn_count').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.conversationId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_conversations_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversations_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('assistant_conversations_started_by_snowflake', snowflakeCheck(t.startedBy)),
+    check('assistant_conversations_source', sql`${t.source} IN ('discord','dashboard-test')`),
+    check('assistant_conversations_status', sql`${t.status} IN ('open','ended')`),
+    index('assistant_conversations_activity').on(t.guildId, t.lastActivityAt),
+    index('assistant_conversations_author').on(
+      t.guildId,
+      t.channelId,
+      t.startedBy,
+      t.lastActivityAt,
+    ),
+  ],
+);
+
+/**
+ * One turn of a conversation. `authorId` is null for an `assistant` turn, and
+ * holds the *quoted* message's author for a `quote` turn — which may or may
+ * not be the member who started the conversation. `feedback` is set from a
+ * dashboard reaction on the linked message (`setFeedback`), never inferred.
+ */
+export const assistantConversationTurns = sqliteTable(
+  'assistant_conversation_turns',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    at: integer('at').notNull(),
+    role: text('role').notNull(),
+    authorId: snowflake('author_id'),
+    authorName: text('author_name').notNull(),
+    text: text('text').notNull(),
+    traceId: text('trace_id'),
+    feedback: text('feedback'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.turnId] }),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_turns_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversation_turns_author_id_snowflake', nullableSnowflakeCheck(t.authorId)),
+    check('assistant_conversation_turns_role', sql`${t.role} IN ('user','assistant','quote')`),
+    check(
+      'assistant_conversation_turns_feedback',
+      sql`(${t.feedback} IS NULL OR ${t.feedback} IN ('up','down'))`,
+    ),
+    index('assistant_conversation_turns_conversation').on(t.guildId, t.conversationId, t.at),
+  ],
+);
+
+/**
+ * Which conversation turn a real Discord message belongs to — how
+ * `lookupMessage` answers "is this message known". Only `user` and
+ * `assistant` turns are linked here; a `quote` turn's source message is
+ * someone else's and is never registered as ours to continue (see
+ * `KnownMessage` in `@bananasaurs/core`).
+ */
+export const assistantConversationMessages = sqliteTable(
+  'assistant_conversation_messages',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    role: text('role').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId] }),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversation_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('assistant_conversation_messages_role', sql`${t.role} IN ('user','assistant')`),
   ],
 );

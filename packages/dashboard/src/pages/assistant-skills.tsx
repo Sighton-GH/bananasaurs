@@ -172,96 +172,23 @@ function ToolsCard({ data }: { readonly data: AssistantData }) {
   );
 }
 
-/** One skill in full: what it does, where it is allowed, who can use it, recent runs. */
-function SkillDetails({
-  skill,
-  data,
-  onClose,
-}: {
-  readonly skill: AssistantData['skills'][number];
-  readonly data: AssistantData;
-  readonly onClose: () => void;
-}) {
-  const allowedOn = data.behaviours.filter((b) => b.allowedSkillIds.includes(skill.id));
-  const roleName = (id: string) => data.roles?.find((r) => r.id === id)?.name;
-  const roleIds = [...new Set(allowedOn.flatMap((b) => b.callerRoleIds ?? []))];
-  const roles = roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`);
-  const who =
-    skill.ownerOnly === true
-      ? 'Only the server owner.'
-      : roles.length === 0
-        ? 'Only the server owner, until a behaviour that allows it has Who can ask roles.'
-        : `${roles.join(', ')}, and the server owner`;
-  const runs = data.activity
-    .filter((row) => row.skillId === skill.id)
-    .sort((a, b) => b.at - a.at)
-    .slice(0, 20);
-  const behaviourName = (id: string) => data.behaviours.find((b) => b.id === id)?.name ?? id;
-  return (
-    <section
-      aria-label={`${skill.name} details`}
-      className="mt-3 rounded-md border border-ink bg-panel p-3"
-    >
-      <div className="flex items-start justify-between gap-3">
-        <h3 className="text-sm font-medium">{skill.name}</h3>
-        <Button onClick={onClose}>Close</Button>
-      </div>
-      <p className="mt-1 text-sm">{skill.description}</p>
-      <dl className="mt-3 grid gap-2 text-sm sm:grid-cols-[10rem_1fr]">
-        <dt className="text-ink-muted">What it does</dt>
-        <dd>{skillEffectLabel(skill)}</dd>
-        <dt className="text-ink-muted">Allowed on</dt>
-        <dd>
-          {allowedOn.length === 0 ? (
-            'No behaviour allows it yet.'
-          ) : (
-            <ul>
-              {allowedOn.map((b) => (
-                <li key={b.id}>{b.name}</li>
-              ))}
-            </ul>
-          )}
-        </dd>
-        <dt className="text-ink-muted">Who can use it</dt>
-        <dd>{who}</dd>
-        <dt className="text-ink-muted">Recent runs</dt>
-        <dd>
-          {runs.length === 0 ? (
-            'No runs yet.'
-          ) : (
-            <ul className="grid gap-1">
-              {runs.map((row) => (
-                <li key={row.id}>
-                  {new Date(row.at).toLocaleString('en-CA')} · {behaviourName(row.behaviourId)} ·{' '}
-                  {row.outcome}
-                  {row.detail === undefined ? '' : ` (${row.detail})`}
-                </li>
-              ))}
-            </ul>
-          )}
-        </dd>
-      </dl>
-    </section>
-  );
-}
-
 /**
- * `/assistant/skills`: the skill catalogue (each skill opens its details),
- * the look-up tools, the per-behaviour allowlists and the one rule for who
- * can use them (ADR 0060, 0064, 0067).
+ * `/assistant/skills`: the skill catalogue (each skill links to its own
+ * detail page, `/assistant/skills/:skillId`), the look-up tools, the
+ * per-behaviour allowlists and the one rule for who can use them (ADR 0060,
+ * 0064, 0067).
  */
 export function AssistantSkillsPage() {
   const session = useSession();
   const load = useCallback(() => session.read<AssistantData>(ASSISTANT_URL), [session]);
   const assistant = useResource('assistant skills', load);
-  const [open, setOpen] = useState<string | undefined>(undefined);
   return (
     <>
       <PageHeader
         title="Skills"
-        purpose="Everything the assistant can do in this server, the tools it can look things up with, and which behaviours may use each skill."
+        purpose="What the assistant can do, where each skill is on, and who can use it."
         actions={
-          <Link href="/assistant/activity">
+          <Link href="/assistant/history">
             <Button>Assistant history</Button>
           </Link>
         }
@@ -277,23 +204,20 @@ export function AssistantSkillsPage() {
         }
       >
         {(data) => {
-          const openSkill = data.skills.find((skill) => skill.id === open);
           return (
             <div className="space-y-5">
               <Card title="Skill catalogue">
                 <p className="mb-3 text-sm text-ink-muted">
-                  Every skill the assistant could use in this server. Select one to see where it is
+                  Every skill the assistant could use in this server. Open one to see where it is
                   allowed, who can use it and its recent runs.
                 </p>
                 <ul className="grid gap-3 md:grid-cols-2">
                   {data.skills.map((skill) => (
                     <li key={skill.id}>
-                      <button
-                        type="button"
+                      <Link
+                        href={`/assistant/skills/${encodeURIComponent(skill.id)}`}
                         aria-label={skill.name}
-                        aria-expanded={open === skill.id}
-                        onClick={() => setOpen((id) => (id === skill.id ? undefined : skill.id))}
-                        className={`w-full rounded-md border bg-canvas p-3 text-left ${open === skill.id ? 'border-ink' : 'border-line'}`}
+                        className="block w-full rounded-md border border-line bg-canvas p-3 text-left"
                       >
                         <span className="flex items-start justify-between gap-3">
                           <span className="text-sm font-medium">{skill.name}</span>
@@ -309,13 +233,10 @@ export function AssistantSkillsPage() {
                         <span className="mt-1 block text-xs text-ink-muted">
                           {skill.description}
                         </span>
-                      </button>
+                      </Link>
                     </li>
                   ))}
                 </ul>
-                {openSkill !== undefined && (
-                  <SkillDetails skill={openSkill} data={data} onClose={() => setOpen(undefined)} />
-                )}
               </Card>
               <ToolsCard data={data} />
               <Card title="Allowlists per behaviour">
@@ -351,7 +272,7 @@ export function AssistantSkillsPage() {
               </Card>
               <p className="text-sm text-ink-muted">
                 Recent runs, with what the assistant did and how each turn ended, are on{' '}
-                <Link className="underline" href="/assistant/activity">
+                <Link className="underline" href="/assistant/history">
                   Assistant history
                 </Link>
                 .

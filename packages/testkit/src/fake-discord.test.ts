@@ -332,6 +332,65 @@ describe('interaction deadlines, which Discord enforces strictly', () => {
   });
 });
 
+describe('respondToInteraction returns a ref (ADR 0072)', () => {
+  it('reports the channel it knows about from emitInteraction, and a fresh message id', async () => {
+    const id = await d.emitInteraction({ ...ref, userId: USER, customId: 'x' });
+    await d.deferInteraction(GUILD, { interactionId: id, token: `tok-${id}` }, { ephemeral: true });
+    const posted = await d.respondToInteraction(
+      GUILD,
+      { interactionId: id, token: `tok-${id}` },
+      { content: 'ok' },
+    );
+    expect(posted?.channelId).toBe(CHANNEL);
+    expect(posted?.messageId).toBeDefined();
+  });
+
+  it('reports undefined when the interaction was registered with no channel', async () => {
+    d.registerInteraction({ interactionId: '666666666666666666', token: 'tok' });
+    await d.deferInteraction(
+      GUILD,
+      { interactionId: '666666666666666666', token: 'tok' },
+      { ephemeral: true },
+    );
+    const posted = await d.respondToInteraction(
+      GUILD,
+      { interactionId: '666666666666666666', token: 'tok' },
+      { content: 'ok' },
+    );
+    expect(posted).toBeUndefined();
+  });
+});
+
+describe('fetchMessageContent and sendTyping (ADR 0072)', () => {
+  it("returns a known message's author and content", async () => {
+    d.defineMessage({
+      channelId: CHANNEL,
+      messageId: '777777777777777777',
+      authorId: USER,
+      authorName: 'someone',
+      content: 'the handbook is pinned in #welcome',
+    });
+    await expect(d.fetchMessageContent(GUILD, CHANNEL, '777777777777777777')).resolves.toEqual({
+      authorId: USER,
+      authorName: 'someone',
+      content: 'the handbook is pinned in #welcome',
+    });
+  });
+
+  it('reports undefined for a message it was never told about, or one with no known content', async () => {
+    await expect(
+      d.fetchMessageContent(GUILD, CHANNEL, '888888888888888888'),
+    ).resolves.toBeUndefined();
+    // `MESSAGE` was defined in beforeEach with no content.
+    await expect(d.fetchMessageContent(GUILD, CHANNEL, MESSAGE)).resolves.toBeUndefined();
+  });
+
+  it('records a typing call', async () => {
+    await d.sendTyping(GUILD, CHANNEL);
+    expect(d.restCalls('sendTyping')).toHaveLength(1);
+  });
+});
+
 describe('message emitters (PR-66, PR-68, PR-71)', () => {
   it('emitMessageCreate carries attachment ids and shows up in fetchRecentMessages', async () => {
     const attachmentMessageId = '333333333333333335';

@@ -57,8 +57,9 @@ const INSTANCE_LEVEL = new Set<string>([
   'provider_eligibility',
   // Release 3: one encrypted provider configuration for the daemon.
   'assistant_provider_config',
-  // ADR 0075: instance-level provider configuration (one row per provider, one ordered model chain).
-  'assistant_providers',
+  // ADR 0075 / Task 6b: instance-level provider configuration — several
+  // labelled keys per provider and one ordered model chain of key + model.
+  'assistant_provider_keys',
   'assistant_model_chain',
 ]);
 
@@ -99,6 +100,8 @@ const SNOWFLAKE_COLUMNS = new Set<string>([
   'attachment_id',
   'required_role_id',
   'principal_id',
+  // ADR 0072: assistant_conversations.started_by.
+  'started_by',
 ]);
 
 interface ColumnInfo {
@@ -1161,7 +1164,7 @@ describe('the OAuth tables are instance-level on purpose (ADR 0045 D3)', () => {
     expect([...INSTANCE_LEVEL].sort()).toEqual(
       [
         'assistant_provider_config',
-        'assistant_providers',
+        'assistant_provider_keys',
         'assistant_model_chain',
         'bootstrap_tokens',
         'dashboard_accounts',

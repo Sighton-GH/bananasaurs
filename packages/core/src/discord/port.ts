@@ -101,6 +101,14 @@ export interface OutgoingMessage {
    */
   allowedMentions?:
     { readonly parse: readonly []; readonly roles?: readonly string[] | undefined } | undefined;
+  /**
+   * The message this one replies to (ADR 0072). When set, the REST adapter
+   * emits `message_reference` and forces `allowed_mentions.replied_user:
+   * true` so the replied-to member is pinged even though `allowedMentions`
+   * itself is otherwise `{ parse: [] }` everywhere. Absent, the wire output
+   * is byte-identical to a message with no reply at all.
+   */
+  replyTo?: string | undefined;
 }
 
 /** One message as `fetchRecentMessages` reports it. */
@@ -179,6 +187,21 @@ export interface DiscordPort {
     message: OutgoingMessage,
   ): Promise<DiscordMessageRef>;
   editMessage(guildId: Snowflake, ref: DiscordMessageRef, message: OutgoingMessage): Promise<void>;
+  /**
+   * One message's author and content, for the assistant's conversation
+   * resolver to quote a message a member replied to that it does not
+   * already know (ADR 0072). `undefined` on 404 (gone) or 403 (no access) —
+   * both are routine here, a normal member reading a normal channel, and are
+   * reported the same way rather than thrown, so the resolver can fall back
+   * to "no quote available" instead of the whole turn failing.
+   */
+  fetchMessageContent(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    messageId: Snowflake,
+  ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined>;
+  /** The "is typing…" indicator, shown for about ten seconds or until the next message. */
+  sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void>;
 
   /** Not hierarchy-gated — works against any member's message, any role. */
   deleteMessage(guildId: Snowflake, ref: DiscordMessageRef, reason: string): Promise<void>;
@@ -251,12 +274,19 @@ export interface DiscordPort {
     options: { ephemeral: boolean },
   ): Promise<void>;
 
-  /** The follow-up, after a defer. Fifteen minutes from the interaction. */
+  /**
+   * The follow-up, after a defer. Fifteen minutes from the interaction.
+   *
+   * Returns the posted message's ref when Discord reports one (a real
+   * interaction follow-up always does), so a caller can link the answer into
+   * a conversation the same way `sendMessage` does. `undefined` only when
+   * the adapter genuinely was not told one — never fabricated.
+   */
   respondToInteraction(
     guildId: Snowflake,
     ref: InteractionRef,
     message: OutgoingMessage,
-  ): Promise<void>;
+  ): Promise<DiscordMessageRef | undefined>;
 
   // --- audit log ---------------------------------------------------------
   /** Attribution for MESSAGE_DELETE, which carries no actor of its own. */

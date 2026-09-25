@@ -53,6 +53,16 @@ function renderPage(
 }
 
 describe('AssistantResourcesPage', () => {
+  it('states its purpose sentence', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Resources' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Reviewed sources the assistant may read, how fresh the cache is, and whether fetching them is working.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('renders a resource with its title, URL, kind and reviewed date', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Resources' })).toBeTruthy();

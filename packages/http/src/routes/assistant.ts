@@ -5,7 +5,9 @@ import {
   JOB_KINDS,
   ProviderError,
   resourceRefreshDedupeKey,
+  skillInstructionLine,
   STARTER_SKILL_IDS,
+  TOOL_CATALOGUE,
   validateResourceUrl,
 } from '@bananasaurs/core';
 import {
@@ -20,6 +22,90 @@ import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 import type { SessionContext } from '../auth.js';
 import { computeAssistantSetup } from './assistant-setup.js';
+
+/**
+ * A slash command shown on a skill's detail page, hand-kept in sync with
+ * `RELEASE_3_COMMANDS` (`packages/discord/src/rest/commands.ts`) rather than
+ * imported from `@bananasaurs/discord`: that package depends on `discord.js`,
+ * and this HTTP package deliberately does not (`packages/http/package.json`
+ * lists only `core`, `storage`, `fastify`, `zod` and `@node-rs/argon2`).
+ * `assistant.test.ts` cross-checks every entry here against the live command
+ * definitions so a renamed or removed command cannot go stale silently.
+ */
+const SKILL_COMMANDS: Readonly<
+  Record<
+    string,
+    {
+      readonly name: string;
+      readonly options: readonly {
+        readonly name: string;
+        readonly required: boolean;
+        readonly description: string;
+      }[];
+    }
+  >
+> = {
+  'search-club': {
+    name: 'find',
+    options: [{ name: 'query', required: true, description: 'What to find' }],
+  },
+  'create-reminder': {
+    name: 'remind',
+    options: [
+      {
+        name: 'when',
+        required: true,
+        description: 'When to send it, including date or time zone',
+      },
+      { name: 'text', required: true, description: 'Reminder text' },
+    ],
+  },
+  'propose-memory': {
+    name: 'remember',
+    options: [
+      {
+        name: 'request',
+        required: true,
+        description: 'What the assistant should consider remembering',
+      },
+    ],
+  },
+  'record-decision': {
+    name: 'decision',
+    options: [
+      { name: 'topic', required: true, description: 'Decision topic' },
+      { name: 'context', required: false, description: 'Optional context or constraints' },
+    ],
+  },
+  'review-plan': {
+    name: 'review-plan',
+    options: [{ name: 'plan', required: true, description: 'Plan to review' }],
+  },
+  'onboarding-guide': {
+    name: 'onboard',
+    options: [{ name: 'request', required: true, description: 'What you need' }],
+  },
+  'draft-agenda': {
+    name: 'agenda',
+    options: [{ name: 'request', required: true, description: 'What you need' }],
+  },
+  'summarise-meeting': {
+    name: 'summarise',
+    options: [{ name: 'request', required: true, description: 'What you need' }],
+  },
+  'draft-announcement': {
+    name: 'announce',
+    options: [{ name: 'request', required: true, description: 'What you need' }],
+  },
+  'event-checklist': {
+    name: 'checklist',
+    options: [{ name: 'request', required: true, description: 'What you need' }],
+  },
+  'draft-handoff': {
+    name: 'handoff',
+    options: [{ name: 'request', required: true, description: 'What you need' }],
+  },
+};
 
 /**
  * Instance owner, read from the account row rather than any capability: the
@@ -593,5 +679,48 @@ export const registerAssistantRoutes = (
     assistantRepo.putResource(session.scope, { ...parsed.data, guildId: session.guildId });
     enqueueResourceRefresh(session.scope, parsed.data.id, deps.now());
     return reply.status(200).send({ ok: true });
+  });
+  // Task 9: one skill in full - the exact instruction the model receives,
+  // its tools, who can use it, its slash command and its recent runs.
+  app.get('/api/assistant/skills/:skillId', async (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.read', reply)) return reply;
+    const skillId = (request.params as { skillId: string }).skillId;
+    const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === skillId);
+    if (skill === undefined) return reply.status(404).send({ error: 'not-found' });
+    const behaviours = assistantRepo.listBehaviours(session.scope);
+    const directories =
+      deps.assistantDirectories === undefined
+        ? undefined
+        : await deps.assistantDirectories(session.guildId).catch(() => undefined);
+    const roleName = (id: string) => directories?.roles.find((r) => r.id === id)?.name;
+    const allowedOn = behaviours.filter((b) => b.allowedSkillIds.includes(skill.id));
+    const roleIds = [...new Set(allowedOn.flatMap((b) => b.callerRoleIds ?? []))];
+    const roleLabels = roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`);
+    const whoCanUse =
+      skill.ownerOnly === true
+        ? 'Only the server owner.'
+        : roleLabels.length === 0
+          ? 'Only the server owner, until a behaviour that allows it has Who can ask roles.'
+          : `${roleLabels.join(', ')}, and the server owner`;
+    const recentRuns = assistantRepo
+      .listSkillActivity(session.scope, 500)
+      .filter((row) => row.skillId === skill.id)
+      .slice(0, 50);
+    const command = SKILL_COMMANDS[skill.id];
+    return reply.status(200).send({
+      skill,
+      instructionLine: skillInstructionLine(skill),
+      behaviours: behaviours.map((b) => ({
+        id: b.id,
+        name: b.name,
+        allowed: b.allowedSkillIds.includes(skill.id),
+      })),
+      whoCanUse,
+      tools: TOOL_CATALOGUE.filter((tool) => tool.skills.includes(skill.id)),
+      ...(command === undefined ? {} : { command }),
+      recentRuns,
+    });
   });
 };

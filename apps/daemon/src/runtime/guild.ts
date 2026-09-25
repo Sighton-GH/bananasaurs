@@ -51,6 +51,7 @@ import {
   authzStoreFor,
   archiveRepo,
   assistantRepo,
+  conversationRepo,
   effectRepo,
   guildRepo,
   isTargetProtected,
@@ -277,7 +278,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     ...reconcilePorts,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
     },
   };
 
@@ -566,7 +569,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       }),
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
     },
     now,
     logger,
@@ -679,14 +684,18 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       },
       responder: {
         defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+        respond: async (ref, message) => {
+          await discord.respondToInteraction(guildId, ref, message);
+        },
       },
       now,
       logger,
     } satisfies HistoryDeps,
     responder: {
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
     },
     now,
     logger,
@@ -758,13 +767,16 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       botUserId,
       service: assistantService,
       defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(guildId, ref, message);
+      },
       enqueue: (input) => {
         jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
       },
       sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
       logger,
+      lookupMessage: (messageId) => conversationRepo.lookupMessage(scope, messageId),
     }),
   ];
 
@@ -775,7 +787,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         guildId,
         service: assistantService,
         openToken: (token) => interactionTokenSealer.open(token),
-        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+        respond: async (ref, message) => {
+          await discord.respondToInteraction(guildId, ref, message);
+        },
         send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
         logger,
         logChannelId: () => assistantRepo.getAssistantSettings(scope).logChannelId,

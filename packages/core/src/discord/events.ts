@@ -173,6 +173,19 @@ export interface MessageEvent extends Base {
   /** Author roles known on message create/update. Empty for partials or unavailable members. */
   authorRoleIds?: readonly Snowflake[];
   mentionsEveryone: boolean;
+  /**
+   * The message this one replies to, from Discord's `message_reference`.
+   * Absent when this message is not a reply. Used by the assistant's
+   * conversation resolver (ADR 0072) to find which conversation a reply
+   * continues.
+   */
+  referencedMessageId?: Snowflake | undefined;
+  /**
+   * The author of the replied-to message, from `referenced_message.author`.
+   * Absent when this message is not a reply, or when the replied-to
+   * message's author was not included on the wire — never guessed.
+   */
+  referencedAuthorId?: Snowflake | undefined;
   /** For Slice 5's `attachment_type`. Metadata only; no bytes are fetched. */
   attachments: readonly MessageAttachment[];
 }

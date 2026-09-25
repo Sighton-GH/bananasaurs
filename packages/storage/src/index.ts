@@ -62,6 +62,7 @@ export * as assistantRepo from './repos/assistant.js';
 export * as assistantProviderRepo from './repos/assistant-provider.js';
 export * as assistantProvidersRepo from './repos/assistant-providers.js';
 export * as traceRepo from './repos/traces.js';
+export * as conversationRepo from './repos/conversations.js';
 export * as jobRepo from './repos/jobs.js';
 export { jobStoreFor } from './repos/job-store.js';
 export * as loggingRepo from './repos/logging.js';

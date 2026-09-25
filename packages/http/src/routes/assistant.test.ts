@@ -1,6 +1,14 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import { parseGuildId, ProviderError, STARTER_SKILL_IDS, type Capability } from '@bananasaurs/core';
+import {
+  CLUB_ASSISTANT_SKILLS,
+  parseGuildId,
+  ProviderError,
+  skillInstructionLine,
+  STARTER_SKILL_IDS,
+  TOOL_CATALOGUE,
+  type Capability,
+} from '@bananasaurs/core';
 import {
   accountRepo,
   assistantRepo,
@@ -926,5 +934,251 @@ describe('PUT /api/assistant/resources/:id (ADR 0073 enqueue on add)', () => {
     const res = await putResource(cookie, csrf, { url: 'https://127.0.0.1/' });
     expect(res.statusCode).toBe(400);
     expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
+  });
+});
+
+describe('GET /api/assistant/skills/:skillId', () => {
+  const get = (cookie: string, skillId: string) =>
+    app.inject({
+      method: 'GET',
+      url: `/api/assistant/skills/${encodeURIComponent(skillId)}`,
+      headers: { cookie },
+    });
+
+  it('requires config.read', async () => {
+    const { cookie } = await signIn();
+    expect((await get(cookie, 'search-club')).statusCode).toBe(403);
+  });
+
+  it('404s an unknown skill id', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'no-such-skill');
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toEqual({ error: 'not-found' });
+  });
+
+  it('returns the skill, its exact instruction line, its tools and every behaviour with allowed', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    expect(
+      (await put(cookie, csrf, body({ id: 'club', allowedSkillIds: ['search-club'] }))).statusCode,
+    ).toBe(200);
+    expect(
+      (
+        await put(
+          cookie,
+          csrf,
+          body({
+            id: 'help',
+            surface: 'help',
+            mentionRoleId: ROLE_B,
+            name: 'Help',
+            allowedSkillIds: [],
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    const response = await get(cookie, 'search-club');
+    expect(response.statusCode).toBe(200);
+    const skill = CLUB_ASSISTANT_SKILLS.find((s) => s.id === 'search-club')!;
+    const parsed: {
+      skill: { id: string };
+      instructionLine: string;
+      behaviours: { id: string; name: string; allowed: boolean }[];
+      whoCanUse: string;
+      tools: { name: string }[];
+      command?: { name: string; options: unknown[] };
+      recentRuns: unknown[];
+    } = response.json();
+    expect(parsed.skill.id).toBe('search-club');
+    expect(parsed.instructionLine).toBe(skillInstructionLine(skill));
+    expect(parsed.behaviours).toEqual(
+      expect.arrayContaining([
+        { id: 'club', name: 'Club', allowed: true },
+        { id: 'help', name: 'Help', allowed: false },
+      ]),
+    );
+    expect(parsed.tools.map((t) => t.name)).toEqual(
+      TOOL_CATALOGUE.filter((t) => t.skills.includes('search-club')).map((t) => t.name),
+    );
+    // Every read tool lists the question-answering skill.
+    expect(parsed.tools.length).toBe(TOOL_CATALOGUE.length);
+    expect(parsed.recentRuns).toEqual([]);
+  });
+
+  it('names the caller roles from the directory, falls back without one, and states owner-only skills plainly', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    // No caller roles configured on the one allowed behaviour yet.
+    expect((await put(cookie, csrf, body({ allowedSkillIds: ['search-club'] }))).statusCode).toBe(
+      200,
+    );
+    const unconfigured = await get(cookie, 'search-club');
+    expect(unconfigured.json<{ whoCanUse: string }>().whoCanUse).toBe(
+      'Only the server owner, until a behaviour that allows it has Who can ask roles.',
+    );
+    expect(
+      (
+        await put(
+          cookie,
+          csrf,
+          body({
+            promptVersion: 1,
+            callerRoleIds: [ROLE_A, ROLE_B],
+            allowedSkillIds: ['search-club'],
+          }),
+        )
+      ).statusCode,
+    ).toBe(200);
+    const withoutDirectory = await get(cookie, 'search-club');
+    expect(withoutDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
+      '@a role that left the server, @a role that left the server, and the server owner',
+    );
+    deps = {
+      ...deps,
+      assistantDirectories: () =>
+        Promise.resolve({
+          roles: [
+            { id: ROLE_A, name: 'Member', position: 10 },
+            { id: ROLE_B, name: 'Helper', position: 5 },
+          ],
+          members: [],
+          channels: [],
+        }),
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantRoutes });
+    const withDirectory = await get(cookie, 'search-club');
+    expect(withDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
+      '@Member, @Helper, and the server owner',
+    );
+    const ownerOnly = await get(cookie, 'send-reminder');
+    expect(ownerOnly.json<{ whoCanUse: string }>().whoCanUse).toBe('Only the server owner.');
+  });
+
+  it("lists up to 50 of this skill's own activity rows, newest first, never another skill's", async () => {
+    grant('config.read');
+    const scope = t.scopes.forGuild(GUILD);
+    for (let i = 0; i < 55; i += 1) {
+      assistantRepo.recordSkillActivity(scope, {
+        id: `a${i}`,
+        at: clock + i,
+        behaviourId: 'club',
+        skillId: 'search-club',
+        actorId: ROLE_A,
+        outcome: 'completed',
+      });
+    }
+    assistantRepo.recordSkillActivity(scope, {
+      id: 'other',
+      at: clock + 1000,
+      behaviourId: 'club',
+      skillId: 'create-reminder',
+      actorId: ROLE_A,
+      outcome: 'completed',
+    });
+    const { cookie } = await signIn();
+    const response = await get(cookie, 'search-club');
+    const parsed: { recentRuns: { id: string; skillId: string; at: number }[] } = response.json();
+    expect(parsed.recentRuns).toHaveLength(50);
+    expect(parsed.recentRuns.every((row) => row.skillId === 'search-club')).toBe(true);
+    expect(parsed.recentRuns[0]?.id).toBe('a54');
+  });
+
+  // The command shapes below are copied by hand from `RELEASE_3_COMMANDS`
+  // (`packages/discord/src/rest/commands.ts`), not imported: `packages/http`
+  // may not depend on `@bananasaurs/discord` (`no-restricted-imports`,
+  // ADR 0014 - that package is discord.js-only, reachable from the effect
+  // gateway and the daemon composition root). This test is the drift check
+  // a human re-reads when either file changes.
+  const LIVE_COMMANDS: Readonly<Record<string, { name: string; options: unknown[] }>> = {
+    'search-club': {
+      name: 'find',
+      options: [{ name: 'query', required: true, description: 'What to find' }],
+    },
+    'create-reminder': {
+      name: 'remind',
+      options: [
+        {
+          name: 'when',
+          required: true,
+          description: 'When to send it, including date or time zone',
+        },
+        { name: 'text', required: true, description: 'Reminder text' },
+      ],
+    },
+    'propose-memory': {
+      name: 'remember',
+      options: [
+        {
+          name: 'request',
+          required: true,
+          description: 'What the assistant should consider remembering',
+        },
+      ],
+    },
+    'record-decision': {
+      name: 'decision',
+      options: [
+        { name: 'topic', required: true, description: 'Decision topic' },
+        { name: 'context', required: false, description: 'Optional context or constraints' },
+      ],
+    },
+    'review-plan': {
+      name: 'review-plan',
+      options: [{ name: 'plan', required: true, description: 'Plan to review' }],
+    },
+    'onboarding-guide': {
+      name: 'onboard',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'draft-agenda': {
+      name: 'agenda',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'summarise-meeting': {
+      name: 'summarise',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'draft-announcement': {
+      name: 'announce',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'event-checklist': {
+      name: 'checklist',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+    'draft-handoff': {
+      name: 'handoff',
+      options: [{ name: 'request', required: true, description: 'What you need' }],
+    },
+  };
+
+  it('gives every skill named in RELEASE_3_COMMANDS its exact slash command and options', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    for (const skill of CLUB_ASSISTANT_SKILLS) {
+      const response = await get(cookie, skill.id);
+      const parsed: { command?: { name: string; options: unknown[] } } = response.json();
+      expect(parsed.command, skill.id).toEqual(LIVE_COMMANDS[skill.id]);
+    }
+    // Every skill this route maps to a command is one the test above checked byte-for-byte.
+    expect(Object.keys(LIVE_COMMANDS).sort()).toEqual(
+      CLUB_ASSISTANT_SKILLS.filter((s) => LIVE_COMMANDS[s.id] !== undefined)
+        .map((s) => s.id)
+        .sort(),
+    );
+  });
+
+  it('leaves owner-only send-reminder and tool-only open-resource without a slash command', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const sendReminder = await get(cookie, 'send-reminder');
+    expect(sendReminder.json<{ command?: unknown }>().command).toBeUndefined();
+    const openResource = await get(cookie, 'open-resource');
+    expect(openResource.json<{ command?: unknown }>().command).toBeUndefined();
   });
 });

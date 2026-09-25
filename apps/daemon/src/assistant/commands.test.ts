@@ -1,6 +1,11 @@
 import { describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import type { AssistantBehaviour, AssistantInvokePayload, DomainEvent } from '@bananasaurs/core';
+import type {
+  AssistantBehaviour,
+  AssistantInvokePayload,
+  DomainEvent,
+  KnownMessage,
+} from '@bananasaurs/core';
 import { ProviderError, RetryAfterError } from '@bananasaurs/core';
 import {
   createAssistantCommandSubscriber,
@@ -47,7 +52,10 @@ const club: AssistantBehaviour = {
  * the captured queue through the real handler, so these tests exercise the
  * whole path a production event travels.
  */
-const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => {
+const harness = (
+  behaviours: readonly AssistantBehaviour[] = [direct, club],
+  lookupMessage?: (messageId: string) => KnownMessage | undefined,
+) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
       ok: true,
@@ -102,6 +110,7 @@ const harness = (behaviours: readonly AssistantBehaviour[] = [direct, club]) => 
       sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
+      ...(lookupMessage === undefined ? {} : { lookupMessage }),
     }),
   };
 };
@@ -227,6 +236,44 @@ describe('assistant command subscriber', () => {
         behaviourId: 'club',
         command: 'ask',
         input: { question: 'when is the meeting?' },
+        source: 'mention',
+      }),
+    ]);
+  });
+
+  it('routes an untagged Discord Reply to a known bot answer, via lookupMessage (ADR 0072)', async () => {
+    const repliedTo = '890123456789012399';
+    const lookupMessage = (id: string): KnownMessage | undefined =>
+      id === repliedTo
+        ? { conversationId: 'conv-1', role: 'assistant', channelId, behaviourId: 'club' }
+        : undefined;
+    const h = harness([direct, club], lookupMessage);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012347',
+      authorId: userId,
+      authorIsBot: false,
+      content: 'and what about parking?',
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+      referencedMessageId: repliedTo,
+      referencedAuthorId: '901234567890123456',
+    });
+    expect(h.queued).toEqual([
+      expect.objectContaining({
+        behaviourId: 'club',
+        command: 'ask',
+        input: { question: 'and what about parking?' },
         source: 'mention',
       }),
     ]);

@@ -304,7 +304,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         instance,
         responder: {
           defer: (ref, options) => discord.deferInteraction(guildId, ref, options),
-          respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
+          respond: async (ref, message) => {
+            await discord.respondToInteraction(guildId, ref, message);
+          },
         },
         now,
         logger,

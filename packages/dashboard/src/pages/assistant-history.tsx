@@ -204,7 +204,7 @@ export function AssistantHistoryPage() {
     <>
       <PageHeader
         title="History"
-        purpose="Every assistant run in this server: what was asked, which model answered, what it called, and what happened."
+        purpose="Every assistant run, with the details you need to see why it answered the way it did."
       />
       <UsageStrip />
       <form onSubmit={apply} className="mb-4 flex max-w-3xl flex-wrap items-end gap-3">

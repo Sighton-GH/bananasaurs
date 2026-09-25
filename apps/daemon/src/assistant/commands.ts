@@ -6,6 +6,7 @@ import {
   type AssistantBehaviour,
   type AssistantInvokePayload,
   type DomainEvent,
+  type KnownMessage,
   type Logger,
   type MessageEvent,
   type OutgoingMessage,
@@ -106,6 +107,15 @@ export interface AssistantCommandDeps {
   }) => void;
   readonly now: () => number;
   readonly logger: Logger;
+  /**
+   * Storage's `conversationRepo.lookupMessage`, scoped to this guild —
+   * whether a message id is a known conversation turn (ADR 0072). Lets an
+   * untagged Discord Reply to a known bot answer route to that
+   * conversation's behaviour. Optional so every existing caller (and every
+   * test-only `AssistantCommandDeps` fixture) keeps compiling unchanged;
+   * omitting it just means untagged replies are never routed.
+   */
+  readonly lookupMessage?: (messageId: string) => KnownMessage | undefined;
 }
 
 const COMMANDS = new Set<AssistantCommand>([
@@ -239,7 +249,7 @@ async function handleSlash(deps: AssistantCommandDeps, event: SlashCommandEvent)
 
 async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): Promise<void> {
   const behaviours = await deps.service.behavioursForGuild(event.guildId);
-  const route = routeAssistantMention(event, behaviours, deps.botUserId);
+  const route = routeAssistantMention(event, behaviours, deps.botUserId, deps.lookupMessage);
   if (route.kind === 'not-addressed') return;
   if (route.kind === 'ambiguous') {
     // Hard rule 6: this subscriber holds no idempotency key of its own, and

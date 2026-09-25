@@ -47,6 +47,14 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantSchedulesPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Schedules' })).toBeTruthy();
+    expect(
+      screen.getByText('Reminders the assistant will post, and what already went out.'),
+    ).toBeTruthy();
+  });
+
   it('renders reminders with destination, run time, status and a failure summary', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Schedules' })).toBeTruthy();

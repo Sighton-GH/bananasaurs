@@ -50,6 +50,8 @@ interface FakeMessage {
   channelId: Snowflake;
   messageId: Snowflake;
   authorId: Snowflake;
+  /** Display name for `fetchMessageContent` (ADR 0072). Defaults from the id. */
+  authorName: string;
   /** emojiKey -> ordered user ids, mirroring Discord's insertion order. */
   reactions: Map<EmojiKey, Snowflake[]>;
   cached: boolean;
@@ -99,6 +101,15 @@ interface FakeInteraction {
   deferred: boolean;
   ephemeral: boolean;
   replies: OutgoingMessage[];
+  /**
+   * The channel the interaction was raised in, when the caller told us
+   * (`emitInteraction` always does; `registerInteraction` on its own does
+   * not, since some callers replay only the interaction id and token). Used
+   * to mint `respondToInteraction`'s returned ref — real Discord always
+   * knows the channel a follow-up landed in; this fake can only report it
+   * when it was told.
+   */
+  channelId: Snowflake | undefined;
 }
 
 interface FakeMember {
@@ -234,6 +245,7 @@ export class FakeDiscord implements DiscordPort {
     channelId: Snowflake;
     messageId: Snowflake;
     authorId?: Snowflake;
+    authorName?: string;
     cached?: boolean;
     content?: string | undefined;
     editedTimestampMs?: number | undefined;
@@ -244,10 +256,12 @@ export class FakeDiscord implements DiscordPort {
       sizeBytes: number;
     }>;
   }): void {
+    const authorId = msg.authorId ?? '111111111111111111';
     this.messages.set(key(msg.channelId, msg.messageId), {
       channelId: msg.channelId,
       messageId: msg.messageId,
-      authorId: msg.authorId ?? '111111111111111111',
+      authorId,
+      authorName: msg.authorName ?? `user-${authorId}`,
       reactions: new Map(),
       cached: msg.cached ?? true,
       deleted: false,
@@ -614,7 +628,7 @@ export class FakeDiscord implements DiscordPort {
    * Idempotent, so re-registering a replayed interaction does not reset its
    * clock or discard the replies already recorded against it.
    */
-  registerInteraction(p: { interactionId: Snowflake; token: string }): void {
+  registerInteraction(p: { interactionId: Snowflake; token: string; channelId?: Snowflake }): void {
     if (this.interactions.has(p.interactionId)) return;
     this.interactions.set(p.interactionId, {
       token: p.token,
@@ -622,6 +636,7 @@ export class FakeDiscord implements DiscordPort {
       deferred: false,
       ephemeral: false,
       replies: [],
+      channelId: p.channelId,
     });
   }
 
@@ -636,7 +651,7 @@ export class FakeDiscord implements DiscordPort {
     const interactionId = p.interactionId ?? this.nextId();
     const token = `tok-${interactionId}`;
     // Recorded before the emit, because the handler responds during it.
-    this.registerInteraction({ interactionId, token });
+    this.registerInteraction({ interactionId, token, channelId: p.channelId });
     await this.emit({
       kind: 'interaction',
       guildId: this.guildId,
@@ -1217,7 +1232,7 @@ export class FakeDiscord implements DiscordPort {
     guildId: Snowflake,
     ref: InteractionRef,
     message: OutgoingMessage,
-  ): Promise<void> {
+  ): Promise<DiscordMessageRef | undefined> {
     this.record('respondToInteraction', [guildId, { interactionId: ref.interactionId }, message]);
     this.check('respondToInteraction', guildId);
     const state = this.mustInteraction(ref);
@@ -1227,6 +1242,43 @@ export class FakeDiscord implements DiscordPort {
     if (!state.deferred && age > ACK_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
     if (age > FOLLOWUP_DEADLINE_MS) throw FakeDiscord.unknownInteraction();
     state.replies.push(message);
+    // Mirrors the REST adapter: a real follow-up always reports the posted
+    // message's ref. This fake can only do the same when it was told the
+    // interaction's channel (`emitInteraction` always says; a bare
+    // `registerInteraction` may not).
+    //
+    // Deliberately not registered via `defineMessage`: an ephemeral
+    // follow-up (the common case for a confirmation) is not a real channel
+    // message at all — it never appears in `fetchRecentMessages` — and even
+    // a public one is a distinct concern from every other test in this file
+    // that seeds and scans messages by hand. Minting an id here is enough
+    // for a caller to link the answer into a conversation (ADR 0072);
+    // nothing today also needs it to be independently fetchable.
+    if (state.channelId === undefined) return undefined;
+    return { channelId: state.channelId, messageId: this.nextId() };
+  }
+
+  /**
+   * One message's author and content (ADR 0072). `undefined` for a message
+   * this fake was never told about or that was deleted — mirroring the REST
+   * adapter's 404/403 fold, not a thrown error, so a caller under test sees
+   * the same "no quote available" outcome it would against real Discord.
+   */
+  async fetchMessageContent(
+    guildId: Snowflake,
+    channelId: Snowflake,
+    messageId: Snowflake,
+  ): Promise<{ authorId: Snowflake; authorName: string; content: string } | undefined> {
+    this.record('fetchMessageContent', [guildId, channelId, messageId]);
+    this.check('fetchMessageContent', guildId);
+    const m = this.messages.get(key(channelId, messageId));
+    if (!m || m.deleted || m.content === undefined) return undefined;
+    return { authorId: m.authorId, authorName: m.authorName, content: m.content };
+  }
+
+  async sendTyping(guildId: Snowflake, channelId: Snowflake): Promise<void> {
+    this.record('sendTyping', [guildId, channelId]);
+    this.check('sendTyping', guildId);
   }
 
   async fetchAuditLog(

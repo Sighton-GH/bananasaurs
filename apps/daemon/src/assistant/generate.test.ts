@@ -210,6 +210,54 @@ describe('generateAnswer (ADR 0067)', () => {
     expect(p.calls).toHaveLength(1);
   });
 
+  it('does not fall back to a second :free model on a daily quota cap (ADR 0077)', async () => {
+    const p = provider(
+      new ProviderError('quota', 'daily cap', false, { quotaScope: 'daily-free' }),
+      { text: 'unused', model: 'second' },
+    );
+    await expect(
+      generateAnswer({
+        provider: p,
+        model: 'first:free',
+        fallbackModels: ['second:free'],
+        systemInstruction: 's',
+        userText: 'q',
+      }),
+    ).rejects.toMatchObject({ kind: 'quota', quotaScope: 'daily-free' });
+    expect(p.calls).toHaveLength(1);
+  });
+
+  it('falls back to a paid model on a daily quota cap (ADR 0077)', async () => {
+    const p = provider(
+      new ProviderError('quota', 'daily cap', false, { quotaScope: 'daily-free' }),
+      { text: 'From the paid model.', model: 'paid-model' },
+    );
+    const result = await generateAnswer({
+      provider: p,
+      model: 'first:free',
+      fallbackModels: ['paid-model'],
+      systemInstruction: 's',
+      userText: 'q',
+    });
+    expect(result.text).toBe('From the paid model.');
+    expect(p.calls.map((c) => c.model)).toEqual(['first:free', 'paid-model']);
+  });
+
+  it('rethrows a daily quota cap immediately when there is no fallback model', async () => {
+    const p = provider(
+      new ProviderError('quota', 'daily cap', false, { quotaScope: 'daily-free' }),
+    );
+    await expect(
+      generateAnswer({
+        provider: p,
+        model: 'only:free',
+        systemInstruction: 's',
+        userText: 'q',
+      }),
+    ).rejects.toMatchObject({ kind: 'quota', quotaScope: 'daily-free' });
+    expect(p.calls).toHaveLength(1);
+  });
+
   it('offers no tools to a provider without the tools capability', async () => {
     const p = {
       ...provider({ text: 'plain', model: 'm' }),
