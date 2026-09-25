@@ -63,7 +63,7 @@ Every non-2xx JSON response keeps `error` and gains fields:
 {
   "error": "invalid-body",               // unchanged, stable
   "title": "The request was not valid",
-  "message": "Retry delays must be between 1 second and 10 minutes.",  // specific when the route knows more, else the catalog explanation
+  "message": "Retry delays must add up to 3 minutes or less.",  // specific when the route knows more, else the catalog explanation
   "hint": "Fix the highlighted field and save again.",
   "fields": [{ "path": "assistantRetryDelaysMs.2", "problem": "too_big" }],  // Zod issue paths + codes only, never values
   "requestId": "req-3f9c"                 // Fastify request id; the same id is on every log line for this request
@@ -200,7 +200,7 @@ not "AI settings", so it cannot be confused with the existing "AI setup" page.
 
 | Group | Setting | Default | Bounds |
 |---|---|---|---|
-| Assistant retries | Retry delays after a busy/timeout failure | 10 s, 30 s, 90 s | 0–4 delays, each 1 s–10 min |
+| Assistant retries | Retry delays after a busy/timeout failure | 10 s, 30 s, 90 s | 0–4 delays, each 1 s–3 min, **total ≤ 3 min** (owner, 2026-09-25) |
 | Assistant retries | Provider request timeout | 30 s | 5–120 s |
 | Assistant tool loop | Max tool rounds | 4 | 1–8 |
 | Assistant tool loop | Max tool calls per question | 12 | 1–30 |
@@ -214,8 +214,10 @@ not "AI settings", so it cannot be confused with the existing "AI setup" page.
 
 Notes:
 
-- **Retry-delay invariant.** The assistant job's `maxAttempts` becomes `delays.length + 1`, set
-  when the job is enqueued. That removes today's hidden coupling to the job store's default of 5.
+- **Retry-delay invariant.** At most 4 delays, so the retry ceiling (`delays.length + 1`) never
+  exceeds the job store's default `maxAttempts` of 5, and the enqueue sites stay unchanged. The
+  total cap of 3 minutes keeps a member's wait short and well inside Discord's 15-minute
+  interaction window.
 - **Connect wait** applies via `net.setDefaultAutoSelectFamilyAttemptTimeout()` at startup and on
   every change. Before relying on it, the implementation must show in a test against the
   installed Node that `fetch` honours a value set at runtime, not only the CLI flag. The
