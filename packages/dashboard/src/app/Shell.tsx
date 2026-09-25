@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
 import { AccountsPage } from '../pages/accounts.js';
+import { AssistantConversationPage } from '../pages/assistant-conversation.js';
+import { AssistantConversationsPage } from '../pages/assistant-conversations.js';
 import { AssistantHistoryDetailPage } from '../pages/assistant-history-detail.js';
 import { AssistantHistoryPage } from '../pages/assistant-history.js';
 import { AssistantPage } from '../pages/assistant.js';
@@ -33,7 +35,6 @@ import { PanelsPage } from '../pages/panels.js';
 import { ReviewPage } from '../pages/review.js';
 import { SafetyPage } from '../pages/safety.js';
 import { PermissionsPage } from '../pages/permissions.js';
-import { StubPage } from '../pages/stub.js';
 import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
@@ -175,13 +176,9 @@ function Pages() {
       <Route path="/assistant/setup" component={ProvidersPage} />
       <Route path="/assistant" component={AssistantPage} />
       <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
-      {/* Stub until Task 19 wires a real Conversations page. */}
-      <Route path="/assistant/conversations">
-        <StubPage
-          title="Conversations"
-          purpose="Every conversation members have had with the assistant, newest first."
-        />
-      </Route>
+      {/* Task 19: the Conversations list, with the transcript right after it. */}
+      <Route path="/assistant/conversations" component={AssistantConversationsPage} />
+      <Route path="/assistant/conversations/:id" component={AssistantConversationPage} />
       <Route path="/assistant/skills" component={AssistantSkillsPage} />
       <Route path="/assistant/skills/:skillId" component={AssistantSkillPage} />
       <Route path="/assistant/schedules" component={AssistantSchedulesPage} />

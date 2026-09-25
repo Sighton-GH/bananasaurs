@@ -46,8 +46,8 @@ export const NAV: readonly NavEntry[] = [
   // in from Advanced / System (ADR 0051 D6, revisited).
   { path: '/assistant/setup', label: 'AI setup', status: 'built', group: 'Assistant' },
   { path: '/assistant', label: 'Behaviours', status: 'built', group: 'Assistant' },
-  // Stub until Task 19; the existing stub UI already renders a "not built yet" state.
-  { path: '/assistant/conversations', label: 'Conversations', status: 'stub', group: 'Assistant' },
+  // Task 19: the Conversations list and transcript are built.
+  { path: '/assistant/conversations', label: 'Conversations', status: 'built', group: 'Assistant' },
   { path: '/assistant/history', label: 'History', status: 'built', group: 'Assistant' },
   { path: '/assistant/skills', label: 'Skills', status: 'built', group: 'Assistant' },
   { path: '/assistant/resources', label: 'Resources', status: 'built', group: 'Assistant' },
