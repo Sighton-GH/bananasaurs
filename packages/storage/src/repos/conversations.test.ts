@@ -9,6 +9,7 @@ import {
   endConversation,
   forgetAuthor,
   getConversation,
+  hasConversations,
   latestForAuthor,
   linkMessages,
   listConversations,
@@ -585,5 +586,28 @@ describe('listTurns', () => {
     expect(turns).toHaveLength(LIST_TURNS_LIMIT);
     expect(turns[0]?.turnId).toBe('turn-0');
     expect(turns.at(-1)?.turnId).toBe(`turn-${String(LIST_TURNS_LIMIT - 1)}`);
+  });
+});
+
+describe('hasConversations', () => {
+  it('is false when the guild has no conversations', () => {
+    expect(hasConversations(t.scopes.forGuild(GUILD_A))).toBe(false);
+  });
+
+  it('is true once the guild has a conversation, and stays guild-isolated', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    createConversation(a, conversation());
+
+    expect(hasConversations(a)).toBe(true);
+    expect(hasConversations(b)).toBe(false);
+  });
+
+  it('is false again after the last conversation is deleted', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    expect(hasConversations(scope)).toBe(true);
+    deleteConversation(scope, 'conv-1');
+    expect(hasConversations(scope)).toBe(false);
   });
 });

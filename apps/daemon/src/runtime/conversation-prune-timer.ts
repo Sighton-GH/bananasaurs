@@ -4,17 +4,18 @@ import {
   safeLogFields,
   type Logger,
 } from '@bananasaurs/core';
-import { type GuildScope, type jobRepo } from '@bananasaurs/storage';
+import { conversationRepo, type GuildScope, type jobRepo } from '@bananasaurs/storage';
 
 /**
  * The daily conversation-prune timer (Task 19).
  *
  * The job table has no scheduler, so this is the producer: at startup and
- * every 24 hours it enqueues one `conversation_prune` job per guild for the
- * current UTC day. The dedupe key is the day, so a second `runOnce` on the
- * same day enqueues nothing — the `(guild_id, dedupe_key)` partial unique
- * index refuses it per guild (ADR 0016). The handler itself reads the guild's
- * retention and prunes nothing for keep-forever, so every guild gets a job.
+ * every 24 hours it enqueues one `conversation_prune` job per guild that
+ * actually has a conversation for the current UTC day. The dedupe key is the
+ * day, so a second `runOnce` on the same day enqueues nothing — the
+ * `(guild_id, dedupe_key)` partial unique index refuses it per guild
+ * (ADR 0016). The handler itself reads the guild's retention and prunes
+ * nothing for keep-forever, so every guild *with conversations* gets a job.
  *
  * Mirrors `archive-expiry-timer.ts` in its start/stop contract (run once at
  * start, then `setInterval(...).unref()`; `stop` clears) and nothing else.
@@ -33,6 +34,15 @@ export interface ConversationPruneTimer {
 export interface ConversationPruneTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
   readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
+  /**
+   * Cheap peek before enqueueing: without it every guild gets one empty
+   * `conversation_prune` job a day forever, which only noises up `/status`'s
+   * queued count (the same reasoning `resource-refresh-timer.ts`'s
+   * `hasResources` documents). Optional, defaulting to the real
+   * `conversationRepo.hasConversations(scope)` — production gets this for
+   * free; tests can inject a stub.
+   */
+  readonly hasConversations?: (scope: GuildScope) => boolean;
   readonly now: () => number;
   readonly logger: Logger;
 }
@@ -43,22 +53,29 @@ export function createConversationPruneTimer(
   deps: ConversationPruneTimerDeps,
 ): ConversationPruneTimer {
   let timer: NodeJS.Timeout | undefined;
+  const hasConversations =
+    deps.hasConversations ?? ((scope) => conversationRepo.hasConversations(scope));
 
   const runOnce = (): void => {
     const now = deps.now();
     const day = utcDay(now);
+    let enqueued = 0;
     for (const { scope } of deps.guilds()) {
+      if (!hasConversations(scope)) continue;
       deps.enqueue(scope, {
         kind: JOB_KINDS.conversationPrune,
         payload: JSON.stringify({ day }),
         dedupeKey: conversationPruneDedupeKey(day),
         now,
       });
+      enqueued += 1;
     }
-    deps.logger.info(
-      safeLogFields({ component: 'conversations', jobKind: JOB_KINDS.conversationPrune }),
-      'conversations: prune enqueued for the day',
-    );
+    if (enqueued > 0) {
+      deps.logger.info(
+        safeLogFields({ component: 'conversations', jobKind: JOB_KINDS.conversationPrune }),
+        'conversations: prune enqueued for the day',
+      );
+    }
   };
 
   return {

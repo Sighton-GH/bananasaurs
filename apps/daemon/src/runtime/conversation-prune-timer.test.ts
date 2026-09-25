@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
 import { conversationPruneDedupeKey, JOB_KINDS, parseGuildId } from '@bananasaurs/core';
-import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
+import { conversationRepo, guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   CONVERSATION_PRUNE_INTERVAL_MS,
@@ -29,6 +29,17 @@ const depsFor = (over: Partial<ConversationPruneTimerDeps> = {}): ConversationPr
 
 const jobsFor = (scope: GuildScope) => jobRepo.listJobs(scope, {});
 
+const seedConversation = (scope: GuildScope): void =>
+  conversationRepo.createConversation(scope, {
+    conversationId: `conv-${scope.guildId}`,
+    channelId: '333333333333333333',
+    behaviourId: 'club',
+    startedBy: '444444444444444444',
+    title: 'where is the handbook',
+    source: 'discord',
+    at: 0,
+  });
+
 beforeEach(() => {
   t = openMigratedTestDatabase();
   a = t.scopes.forGuild(GUILD_A);
@@ -41,6 +52,8 @@ afterEach(() => t.close());
 
 describe('conversation prune timer', () => {
   it('runOnce enqueues one job per guild carrying the UTC day', () => {
+    seedConversation(a);
+    seedConversation(b);
     createConversationPruneTimer(depsFor()).runOnce();
 
     for (const scope of [a, b]) {
@@ -53,6 +66,8 @@ describe('conversation prune timer', () => {
   });
 
   it('a second runOnce on the same day enqueues nothing; the next day enqueues again', () => {
+    seedConversation(a);
+    seedConversation(b);
     const timer = createConversationPruneTimer(depsFor());
     timer.runOnce();
     timer.runOnce();
@@ -67,5 +82,32 @@ describe('conversation prune timer', () => {
 
   it('ticks once a day', () => {
     expect(CONVERSATION_PRUNE_INTERVAL_MS).toBe(24 * 60 * 60 * 1000);
+  });
+
+  it('skips a guild with no conversations, enqueues for one with conversations', () => {
+    // Only `a` has a conversation; the timer reads the real repo through its
+    // default `hasConversations`, the same path production uses.
+    seedConversation(a);
+    createConversationPruneTimer(depsFor()).runOnce();
+
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(jobsFor(b)).toHaveLength(0);
+  });
+
+  it('enqueues nothing when no guild has conversations', () => {
+    createConversationPruneTimer(depsFor()).runOnce();
+
+    expect(jobsFor(a)).toHaveLength(0);
+    expect(jobsFor(b)).toHaveLength(0);
+  });
+
+  it('accepts an injected hasConversations gate', () => {
+    createConversationPruneTimer(depsFor({ hasConversations: () => false })).runOnce();
+    expect(jobsFor(a)).toHaveLength(0);
+    expect(jobsFor(b)).toHaveLength(0);
+
+    createConversationPruneTimer(depsFor({ hasConversations: () => true })).runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+    expect(jobsFor(b)).toHaveLength(1);
   });
 });
