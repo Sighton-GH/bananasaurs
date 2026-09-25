@@ -15,6 +15,7 @@ import {
 } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import type { GuildOperations } from '../runtime/guild.js';
+import type { PasswordVault } from './password-vault.js';
 import { accountOpsFor, fetchInHundredIdChunks, opsInstanceFor, opsPortsFor } from './wiring.js';
 // By relative path rather than the `@bananasaurs/http/test-support` subpath:
 // vitest aliases `@bananasaurs/http` to the package index, so the subpath
@@ -920,6 +921,136 @@ describe('accountSetPassword (S13-D3/D4)', () => {
   });
 });
 
+describe('password vault sealing (ADR 0070)', () => {
+  const instance = () => t.scopes.instance();
+
+  /** A trivial reversible fake — the real AES-GCM contract is covered by password-vault.test.ts. */
+  const fakeVault = (available = true): PasswordVault => ({
+    available,
+    seal: (password) => `sealed:${password}`,
+    open: (sealed) => (sealed.startsWith('sealed:') ? sealed.slice('sealed:'.length) : undefined),
+  });
+
+  it('accountCreate seals the password for the new (non-owner) account when the vault is available', async () => {
+    const created = await accountOpsFor(instance(), [], () => NOW, fakeVault()).accountCreate(
+      'mod-sealed',
+    );
+    expect(created).not.toBe('username-taken');
+    if (created === 'username-taken') return;
+    expect(accountRepo.getPasswordSealed(instance(), created.accountId)).toBe(
+      `sealed:${created.password}`,
+    );
+  });
+
+  it('accountCreate stores null when the vault is unavailable', async () => {
+    const created = await accountOpsFor(instance(), [], () => NOW, fakeVault(false)).accountCreate(
+      'mod-unsealed',
+    );
+    expect(created).not.toBe('username-taken');
+    if (created === 'username-taken') return;
+    expect(accountRepo.getPasswordSealed(instance(), created.accountId)).toBeNull();
+  });
+
+  it('accountCreate stores null when no vault is given at all', async () => {
+    const created = await accountOpsFor(instance(), [], () => NOW).accountCreate('mod-novault');
+    expect(created).not.toBe('username-taken');
+    if (created === 'username-taken') return;
+    expect(accountRepo.getPasswordSealed(instance(), created.accountId)).toBeNull();
+  });
+
+  it('accountSetPassword reseals to match the new password', async () => {
+    const ops = accountOpsFor(instance(), [], () => NOW, fakeVault());
+    const created = await ops.accountCreate('mod-reset');
+    if (created === 'username-taken') throw new Error('unreachable');
+    const result = await ops.accountSetPassword('mod-reset', 'a brand new password');
+    if (result === 'no-such-account') throw new Error('unreachable');
+    expect(accountRepo.getPasswordSealed(instance(), created.accountId)).toBe(
+      'sealed:a brand new password',
+    );
+  });
+
+  it('never seals an owner account, on create or on password reset', async () => {
+    accountRepo.createAccount(instance(), {
+      accountId: 'acct_owner00000000000000000000000099',
+      username: 'the-owner',
+      passwordHash: '$argon2id$fake',
+      isOwner: true,
+      now: NOW,
+    });
+    const ops = accountOpsFor(instance(), [], () => NOW, fakeVault());
+    await ops.accountSetPassword('the-owner', 'owner new password');
+    expect(
+      accountRepo.getPasswordSealed(instance(), 'acct_owner00000000000000000000000099'),
+    ).toBeNull();
+  });
+});
+
+describe('accountRevealPassword (ADR 0070)', () => {
+  const instance = () => t.scopes.instance();
+  const fakeVault = (available = true): PasswordVault => ({
+    available,
+    seal: (password) => `sealed:${password}`,
+    open: (sealed) => (sealed.startsWith('sealed:') ? sealed.slice('sealed:'.length) : undefined),
+  });
+
+  it('opens the sealed password for a revealable account', async () => {
+    const ops = accountOpsFor(instance(), [], () => NOW, fakeVault());
+    const created = await ops.accountCreate('mod-reveal');
+    if (created === 'username-taken') throw new Error('unreachable');
+    expect(ops.accountRevealPassword('mod-reveal')).toEqual({
+      username: 'mod-reveal',
+      password: created.password,
+    });
+  });
+
+  it('answers no-such-account for an unknown username', () => {
+    expect(
+      accountOpsFor(instance(), [], () => NOW, fakeVault()).accountRevealPassword('nobody'),
+    ).toBe('no-such-account');
+  });
+
+  it('answers not-revealable when no vault was given', async () => {
+    const ops = accountOpsFor(instance(), [], () => NOW);
+    accountRepo.createAccount(instance(), {
+      accountId: 'acct_norevl0000000000000000000000001',
+      username: 'no-vault-account',
+      passwordHash: '$argon2id$fake',
+      isOwner: false,
+      now: NOW,
+    });
+    expect(ops.accountRevealPassword('no-vault-account')).toBe('not-revealable');
+  });
+
+  it('answers not-revealable when the account has no sealed copy', () => {
+    accountRepo.createAccount(instance(), {
+      accountId: 'acct_nosealed000000000000000000001',
+      username: 'no-sealed-copy',
+      passwordHash: '$argon2id$fake',
+      isOwner: false,
+      now: NOW,
+    });
+    expect(
+      accountOpsFor(instance(), [], () => NOW, fakeVault()).accountRevealPassword('no-sealed-copy'),
+    ).toBe('not-revealable');
+  });
+
+  it('answers not-revealable when the sealed value does not open under the current vault', async () => {
+    const created = await accountOpsFor(instance(), [], () => NOW, fakeVault()).accountCreate(
+      'mod-wrongkey',
+    );
+    if (created === 'username-taken') throw new Error('unreachable');
+    // A different vault instance (a rotated or mismatched secret) cannot open it.
+    const otherVault: PasswordVault = {
+      available: true,
+      seal: (p) => `other:${p}`,
+      open: () => undefined,
+    };
+    expect(
+      accountOpsFor(instance(), [], () => NOW, otherVault).accountRevealPassword('mod-wrongkey'),
+    ).toBe('not-revealable');
+  });
+});
+
 describe('doctor dashboard access end to end (S13-D5)', () => {
   // The one `buildDoctorReport` call site with a database handle: seed
   // accounts and access rows in the migrated test database, then read the
@@ -973,7 +1104,11 @@ describe('doctor dashboard access end to end (S13-D5)', () => {
     return ready;
   };
 
-  const doctorFor = (allowlist: string, guildIds: readonly string[]) =>
+  const doctorFor = (
+    allowlist: string,
+    guildIds: readonly string[],
+    passwordVault?: PasswordVault,
+  ) =>
     opsInstanceFor({
       config: testConfig(allowlist),
       client: readyClient(guildIds),
@@ -986,6 +1121,7 @@ describe('doctor dashboard access end to end (S13-D5)', () => {
         start: () => {},
         stop: () => {},
       },
+      ...(passwordVault === undefined ? {} : { passwordVault }),
     }).doctor();
 
   const seedOwner = (accountId: string, username: string): void => {
@@ -1059,6 +1195,50 @@ describe('doctor dashboard access end to end (S13-D5)', () => {
 
     expect(report.ok).toBe(true);
     expect(data.dashboardAccess).toMatchObject({ enabledAccounts: 0, liveBootstrapTokens: 1 });
+  });
+
+  it('reports the password vault line, and never leaks a key or a password (ADR 0070)', () => {
+    const vault: PasswordVault = {
+      available: true,
+      seal: (p) => `sealed:${p}`,
+      open: (s) => (s.startsWith('sealed:') ? s.slice('sealed:'.length) : undefined),
+    };
+    accountRepo.createAccount(t.scopes.instance(), {
+      accountId: 'acct_vaultdoc0000000000000000000001',
+      username: 'revealable-one',
+      passwordHash: '$argon2id$fake',
+      isOwner: false,
+      now: NOW,
+    });
+    accountRepo.setPasswordSealed(
+      t.scopes.instance(),
+      'acct_vaultdoc0000000000000000000001',
+      'sealed:top-secret-password',
+    );
+
+    const report = doctorFor(GUILD, [GUILD], vault);
+    const data = report.data as { passwordVault?: unknown };
+
+    expect(data.passwordVault).toEqual({ available: true, revealableAccounts: 1 });
+    expect(report.text).toContain(
+      'Account password vault: key file present, mode 0600, 1 accounts revealable',
+    );
+    expect(report.text).not.toContain('top-secret-password');
+    expect(report.text).not.toContain('sealed:');
+  });
+
+  it('reports the vault as not set up when unavailable', () => {
+    const vault: PasswordVault = {
+      available: false,
+      seal: () => {
+        throw new Error('unavailable');
+      },
+      open: () => undefined,
+    };
+    const report = doctorFor(GUILD, [GUILD], vault);
+    const data = report.data as { passwordVault?: unknown };
+    expect(data.passwordVault).toEqual({ available: false, revealableAccounts: 0 });
+    expect(report.text).toContain('Account password vault: not set up (reveal unavailable)');
   });
 });
 

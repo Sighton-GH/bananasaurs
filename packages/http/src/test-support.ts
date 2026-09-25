@@ -891,6 +891,11 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       disabled: row.disabled,
       lockedUntil: row.lockedUntil,
       createdAt: row.createdAt,
+      // ADR 0070: this test instance has no vault, so nothing this seals
+      // ever has a sealed copy — the same real logic, just always false
+      // here because `accountCreate`/`accountSetPassword` below never call
+      // `setPasswordSealed`.
+      revealable: row.passwordSealed !== null && !row.isOwner,
     })),
   accountSetDisabled: (username, disabled) => {
     const row = accountRepo.findAccountByUsername(instanceScope, username);
@@ -960,6 +965,13 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
   // half-implementing the sweep, and the dashboard password routes stub it
   // (see `accounts-owner.test.ts`).
   accountSetPassword: () => {
+    throw new Error('not used by the dashboard routes under test');
+  },
+  // ADR 0070: this test instance seals nothing (see `accountList` above), so
+  // the real logic would always answer `not-revealable` — a route test that
+  // wants a revealable account overrides this with its own stub, the same
+  // pattern `accountSetPassword` above documents.
+  accountRevealPassword: () => {
     throw new Error('not used by the dashboard routes under test');
   },
 });

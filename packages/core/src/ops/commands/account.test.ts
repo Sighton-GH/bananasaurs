@@ -386,6 +386,7 @@ describe('account list (tests 3-5)', () => {
           disabled: true,
           lockedUntil: future,
           createdAt: NOW - 100_000,
+          revealable: false,
         },
         {
           accountId: 'id-bob',
@@ -394,6 +395,7 @@ describe('account list (tests 3-5)', () => {
           disabled: false,
           lockedUntil: past,
           createdAt: NOW - 50_000,
+          revealable: false,
         },
       ],
     });
@@ -427,6 +429,7 @@ describe('account list (tests 3-5)', () => {
           disabled: false,
           lockedUntil: past,
           createdAt: NOW - 50_000,
+          revealable: false,
         },
       ],
     });
@@ -1109,6 +1112,7 @@ describe('account lifecycle outputs carry no secret (test 13)', () => {
         disabled: false,
         lockedUntil: null,
         createdAt: NOW,
+        revealable: false,
       },
     ];
     const texts: string[] = [];

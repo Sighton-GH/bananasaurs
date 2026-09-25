@@ -44,10 +44,12 @@ import { generateToken, hashPassword, hashToken, POLICY } from '@bananasaurs/htt
 import { toAutomodRule } from '../automod/wiring.js';
 import { countUndoable } from '../jobs/undo.js';
 import type { BackupTimer } from '../runtime/backup-timer.js';
+import type { PasswordVault } from './password-vault.js';
 import {
   buildDoctorReport,
   formatDoctorReport,
   type DoctorDashboardAccess,
+  type DoctorPasswordVault,
 } from '../runtime/doctor.js';
 import {
   formatPublicSurface,
@@ -1278,6 +1280,13 @@ export interface OpsInstanceDeps {
    * 'off', else env `AI_PROVIDER` (ADR 0061). Absent in tests: env only.
    */
   readonly chosenAiProvider?: (() => string) | undefined;
+  /**
+   * The account password vault (ADR 0070), resolved by `index.ts` next to
+   * the assistant provider secret. Absent in tests, matching every other
+   * secret-file resolution in this tree — no test writes a key file into a
+   * real data directory.
+   */
+  readonly passwordVault?: PasswordVault | undefined;
 }
 
 /**
@@ -1294,6 +1303,15 @@ export const accountOpsFor = (
   instanceScope: InstanceScope,
   guildScopes: readonly GuildScope[],
   now: () => number,
+  /**
+   * The password vault (ADR 0070), absent in tests that never seal anything
+   * (`accountOpsFor(instance(), [], () => NOW)` stays valid — the existing
+   * two- and three-argument call sites). `undefined` behaves exactly like an
+   * unavailable vault: `accountCreate`/`accountSetPassword` store `null`
+   * instead of sealing, and `accountRevealPassword` answers
+   * `'not-revealable'`.
+   */
+  passwordVault?: PasswordVault,
 ): Pick<
   OpsInstance,
   | 'accountList'
@@ -1302,192 +1320,232 @@ export const accountOpsFor = (
   | 'accountDelete'
   | 'accountRevokeCredentials'
   | 'accountSetPassword'
-> => ({
-  // Field by field, never a spread: the row carries a `passwordHash` that
-  // must not cross this boundary (`ports.ts` may not import
-  // `@bananasaurs/storage`, ADR 0014, so the shape names what crosses).
-  accountList: () =>
-    accountRepo.listAccounts(instanceScope).map((row) => ({
-      accountId: row.accountId,
-      username: row.username,
-      isOwner: row.isOwner,
-      disabled: row.disabled,
-      lockedUntil: row.lockedUntil,
-      createdAt: row.createdAt,
-    })),
-  accountCreate: async (username, password) => {
-    if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
-      return 'username-taken';
-    }
-    // ADR 0069: a provided password is the dashboard's "I'll choose one" —
-    // hashed exactly like a generated one below. Generated, never chosen,
-    // stays the CLI default (S13-D3's rule applied to creation): the secret
-    // lands in no shell history and no form field. The account
-    // starts non-owner with no guild access and no capabilities - least
-    // privilege by construction, with every later grant an explicit,
-    // audited step.
-    const chosen = password ?? generateToken();
-    const passwordHash = await hashPassword(chosen);
-    const accountId = `acct_${randomBytes(16).toString('hex')}`;
-    const at = now();
-    accountRepo.createAccount(instanceScope, {
-      accountId,
-      username,
-      passwordHash,
-      isOwner: false,
-      now: at,
-    });
-    return { accountId, username, password: chosen, createdAt: at };
-  },
-  accountSetDisabled: (username, disabled) => {
-    const row = accountRepo.findAccountByUsername(instanceScope, username);
-    if (row === undefined) return 'no-such-account';
-    // Unreachable under the current synchronous single-writer model: nothing
-    // is awaited between the lookup above and this write, and better-sqlite3
-    // runs the whole handler on one writer, so the row cannot disappear in
-    // between. Kept because the port must answer something for the
-    // found-then-gone case, and a successful lookup followed by no matched
-    // row is a race, not a usage mistake — the same answer the delete branch
-    // below gives, deliberately.
-    if (!accountRepo.setAccountDisabled(instanceScope, { accountId: row.accountId, disabled })) {
-      return 'no-such-account';
-    }
-    return {
-      changed: row.disabled !== disabled,
-      username: row.username,
-      isOwner: row.isOwner,
-      disabled,
-      lockedUntil: row.lockedUntil,
-      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
-    };
-  },
-  accountDelete: (username) => {
-    const row = accountRepo.findAccountByUsername(instanceScope, username);
-    if (row === undefined) return 'no-such-account';
-    const result = accountRepo.deleteAccount(instanceScope, {
-      accountId: row.accountId,
-      now: now(),
-    });
-    // Unreachable under the current synchronous single-writer model: nothing
-    // is awaited between the lookup above and this delete, and better-sqlite3
-    // runs the whole handler on one writer, so the row cannot disappear in
-    // between. Kept because the port must answer something for the
-    // found-then-gone case, and a successful lookup followed by
-    // `deleted: false` is a race, not a usage mistake.
-    if (!result.deleted) return 'no-such-account';
-    return {
-      username: row.username,
-      accountId: row.accountId,
-      wasOwner: row.isOwner,
-      tokensRevoked: result.tokensRevoked,
-      codesDeleted: result.codesDeleted,
-      enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
-      accountsRemaining: accountRepo.countAccounts(instanceScope),
-    };
-  },
-  /**
-   * The session half of the sweep covers the guild allowlist and nothing else:
-   * `guildScopes` comes from `BANANASAURS_GUILD_ALLOWLIST`, so a dashboard
-   * session in a guild since dropped from the allowlist is never swept and
-   * still authenticates. The token and code halves are instance-level and have
-   * no such boundary.
-   */
-  accountRevokeCredentials: (username) => {
-    const row = accountRepo.findAccountByUsername(instanceScope, username);
-    if (row === undefined) return 'no-such-account';
-    // One timestamp for every write in this call: the sessions and the tokens
-    // die at the same instant, so the audit row names one moment, not a span.
-    const at = now();
-    // Separate transactions, not one (M3c-R4): the session revoke is a
-    // guild-scoped write per guild and the token revoke and code delete are
-    // instance-level, and `writeInstance` does not nest — so a crash between
-    // them is a state a retry fixes, not a state one transaction prevents.
-    let sessionsRevoked = 0;
-    for (const guildScope of guildScopes) {
-      sessionsRevoked += sessionRepo.revokeAllForAccount(guildScope, {
+  | 'accountRevealPassword'
+> => {
+  // ADR 0070: seals `password` for a non-owner account when the vault is
+  // available, else clears any sealed copy — never leaves a stale one
+  // behind a password change the vault could not seal.
+  const sealPassword = (accountId: string, isOwner: boolean, password: string): void => {
+    const sealed =
+      !isOwner && passwordVault?.available === true ? passwordVault.seal(password) : null;
+    accountRepo.setPasswordSealed(instanceScope, accountId, sealed);
+  };
+
+  return {
+    // Field by field, never a spread: the row carries a `passwordHash` (and
+    // a `passwordSealed` ciphertext) that must not cross this boundary
+    // (`ports.ts` may not import `@bananasaurs/storage`, ADR 0014, so the
+    // shape names what crosses) — only the derived `revealable` boolean does.
+    accountList: () =>
+      accountRepo.listAccounts(instanceScope).map((row) => ({
+        accountId: row.accountId,
+        username: row.username,
+        isOwner: row.isOwner,
+        disabled: row.disabled,
+        lockedUntil: row.lockedUntil,
+        createdAt: row.createdAt,
+        revealable: row.passwordSealed !== null && !row.isOwner,
+      })),
+    accountCreate: async (username, password) => {
+      if (accountRepo.findAccountByUsername(instanceScope, username) !== undefined) {
+        return 'username-taken';
+      }
+      // ADR 0069: a provided password is the dashboard's "I'll choose one" —
+      // hashed exactly like a generated one below. Generated, never chosen,
+      // stays the CLI default (S13-D3's rule applied to creation): the secret
+      // lands in no shell history and no form field. The account
+      // starts non-owner with no guild access and no capabilities - least
+      // privilege by construction, with every later grant an explicit,
+      // audited step.
+      const chosen = password ?? generateToken();
+      const passwordHash = await hashPassword(chosen);
+      const accountId = `acct_${randomBytes(16).toString('hex')}`;
+      const at = now();
+      accountRepo.createAccount(instanceScope, {
+        accountId,
+        username,
+        passwordHash,
+        isOwner: false,
+        now: at,
+      });
+      // ADR 0070: every account created here is non-owner (see above), so
+      // this always attempts a seal — `sealPassword` itself is what checks
+      // vault availability and stores `null` when there is none.
+      sealPassword(accountId, false, chosen);
+      return { accountId, username, password: chosen, createdAt: at };
+    },
+    accountSetDisabled: (username, disabled) => {
+      const row = accountRepo.findAccountByUsername(instanceScope, username);
+      if (row === undefined) return 'no-such-account';
+      // Unreachable under the current synchronous single-writer model: nothing
+      // is awaited between the lookup above and this write, and better-sqlite3
+      // runs the whole handler on one writer, so the row cannot disappear in
+      // between. Kept because the port must answer something for the
+      // found-then-gone case, and a successful lookup followed by no matched
+      // row is a race, not a usage mistake — the same answer the delete branch
+      // below gives, deliberately.
+      if (!accountRepo.setAccountDisabled(instanceScope, { accountId: row.accountId, disabled })) {
+        return 'no-such-account';
+      }
+      return {
+        changed: row.disabled !== disabled,
+        username: row.username,
+        isOwner: row.isOwner,
+        disabled,
+        lockedUntil: row.lockedUntil,
+        enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+      };
+    },
+    accountDelete: (username) => {
+      const row = accountRepo.findAccountByUsername(instanceScope, username);
+      if (row === undefined) return 'no-such-account';
+      const result = accountRepo.deleteAccount(instanceScope, {
+        accountId: row.accountId,
+        now: now(),
+      });
+      // Unreachable under the current synchronous single-writer model: nothing
+      // is awaited between the lookup above and this delete, and better-sqlite3
+      // runs the whole handler on one writer, so the row cannot disappear in
+      // between. Kept because the port must answer something for the
+      // found-then-gone case, and a successful lookup followed by
+      // `deleted: false` is a race, not a usage mistake.
+      if (!result.deleted) return 'no-such-account';
+      return {
+        username: row.username,
+        accountId: row.accountId,
+        wasOwner: row.isOwner,
+        tokensRevoked: result.tokensRevoked,
+        codesDeleted: result.codesDeleted,
+        enabledOwnersRemaining: accountRepo.countEnabledOwners(instanceScope),
+        accountsRemaining: accountRepo.countAccounts(instanceScope),
+      };
+    },
+    /**
+     * The session half of the sweep covers the guild allowlist and nothing else:
+     * `guildScopes` comes from `BANANASAURS_GUILD_ALLOWLIST`, so a dashboard
+     * session in a guild since dropped from the allowlist is never swept and
+     * still authenticates. The token and code halves are instance-level and have
+     * no such boundary.
+     */
+    accountRevokeCredentials: (username) => {
+      const row = accountRepo.findAccountByUsername(instanceScope, username);
+      if (row === undefined) return 'no-such-account';
+      // One timestamp for every write in this call: the sessions and the tokens
+      // die at the same instant, so the audit row names one moment, not a span.
+      const at = now();
+      // Separate transactions, not one (M3c-R4): the session revoke is a
+      // guild-scoped write per guild and the token revoke and code delete are
+      // instance-level, and `writeInstance` does not nest — so a crash between
+      // them is a state a retry fixes, not a state one transaction prevents.
+      let sessionsRevoked = 0;
+      for (const guildScope of guildScopes) {
+        sessionsRevoked += sessionRepo.revokeAllForAccount(guildScope, {
+          accountId: row.accountId,
+          now: at,
+        });
+      }
+      const tokensRevoked = oauthRepo.revokeAllTokensForAccount(instanceScope, {
         accountId: row.accountId,
         now: at,
       });
-    }
-    const tokensRevoked = oauthRepo.revokeAllTokensForAccount(instanceScope, {
-      accountId: row.accountId,
-      now: at,
-    });
-    // ADR 0045 Amendment 4 A3-6: an unexchanged code is a token that has not
-    // been minted yet, and `exchangeCode` cannot see a token revocation — so
-    // the sweep deletes the account's codes too, the way `accountDelete` does.
-    const codesDeleted = oauthRepo.deleteAuthorizationCodesForAccount(instanceScope, row.accountId);
-    // Re-read AFTER the writes, never the pre-write row: the row above is
-    // stale by construction once anything has been written, and `disabled` is
-    // exactly what this command must not touch — the read proves it did not.
-    const reread = accountRepo.findAccountById(instanceScope, row.accountId);
-    // Unreachable under the current synchronous single-writer model, the same
-    // found-then-gone race the two branches above answer with
-    // 'no-such-account' — and the same answer here, deliberately.
-    if (reread === undefined) return 'no-such-account';
-    return {
-      username: row.username,
-      accountId: row.accountId,
-      sessionsRevoked,
-      tokensRevoked,
-      codesDeleted,
-      guildsTouched: guildScopes.length,
-      stillEnabled: !reread.disabled,
-    };
-  },
-  /**
-   * Slice 13 (S13-D3/D4): the password reset ADR 0045 Amendment 4 named as a
-   * gap — `setPasswordHash` finally has a production caller.
-   *
-   * Generate, hash outside, write the finished hash inside: Argon2id is async
-   * and `writeInstance` makes an async transaction uncompilable, so the hash
-   * is computed before the write, the same split the repository's own comment
-   * demands (`passwordHash`, never `password`). `generateToken` is the same
-   * 32-random-bytes primitive the bootstrap path uses — S13-D3 generates
-   * rather than accepts, so the secret never lands in shell history or `ps`
-   * output.
-   *
-   * ADR 0069: a provided password is the dashboard's "type a new password" —
-   * hashed exactly like a generated one below. The route refuses short ones
-   * before this is called; the CLI keeps generating.
-   *
-   * The session sweep is exactly `accountRevokeCredentials`' guild half, and
-   * deliberately ONLY that half: a session is trust derived from the
-   * password, so it dies with it, while an OAuth token is bound to the
-   * account and survives — the operator who wants both runs `account
-   * revoke-credentials` for the other half, and the command says so. The
-   * plaintext is returned and never stored: the command prints it into `text`
-   * once, and it appears in neither `data` nor the audit row (rule 4).
-   */
-  accountSetPassword: async (username, password) => {
-    const row = accountRepo.findAccountByUsername(instanceScope, username);
-    if (row === undefined) return 'no-such-account';
-    const chosen = password ?? generateToken();
-    const passwordHash = await hashPassword(chosen);
-    accountRepo.setPasswordHash(instanceScope, {
-      accountId: row.accountId,
-      passwordHash,
-    });
-    // The session half of the sweep covers the guild allowlist and nothing
-    // else, the same boundary `accountRevokeCredentials` above documents: a
-    // session in a guild since dropped from the allowlist is never swept.
-    const at = now();
-    let sessionsRevoked = 0;
-    for (const guildScope of guildScopes) {
-      sessionsRevoked += sessionRepo.revokeAllForAccount(guildScope, {
+      // ADR 0045 Amendment 4 A3-6: an unexchanged code is a token that has not
+      // been minted yet, and `exchangeCode` cannot see a token revocation — so
+      // the sweep deletes the account's codes too, the way `accountDelete` does.
+      const codesDeleted = oauthRepo.deleteAuthorizationCodesForAccount(
+        instanceScope,
+        row.accountId,
+      );
+      // Re-read AFTER the writes, never the pre-write row: the row above is
+      // stale by construction once anything has been written, and `disabled` is
+      // exactly what this command must not touch — the read proves it did not.
+      const reread = accountRepo.findAccountById(instanceScope, row.accountId);
+      // Unreachable under the current synchronous single-writer model, the same
+      // found-then-gone race the two branches above answer with
+      // 'no-such-account' — and the same answer here, deliberately.
+      if (reread === undefined) return 'no-such-account';
+      return {
+        username: row.username,
         accountId: row.accountId,
-        now: at,
+        sessionsRevoked,
+        tokensRevoked,
+        codesDeleted,
+        guildsTouched: guildScopes.length,
+        stillEnabled: !reread.disabled,
+      };
+    },
+    /**
+     * Slice 13 (S13-D3/D4): the password reset ADR 0045 Amendment 4 named as a
+     * gap — `setPasswordHash` finally has a production caller.
+     *
+     * Generate, hash outside, write the finished hash inside: Argon2id is async
+     * and `writeInstance` makes an async transaction uncompilable, so the hash
+     * is computed before the write, the same split the repository's own comment
+     * demands (`passwordHash`, never `password`). `generateToken` is the same
+     * 32-random-bytes primitive the bootstrap path uses — S13-D3 generates
+     * rather than accepts, so the secret never lands in shell history or `ps`
+     * output.
+     *
+     * ADR 0069: a provided password is the dashboard's "type a new password" —
+     * hashed exactly like a generated one below. The route refuses short ones
+     * before this is called; the CLI keeps generating.
+     *
+     * The session sweep is exactly `accountRevokeCredentials`' guild half, and
+     * deliberately ONLY that half: a session is trust derived from the
+     * password, so it dies with it, while an OAuth token is bound to the
+     * account and survives — the operator who wants both runs `account
+     * revoke-credentials` for the other half, and the command says so. The
+     * plaintext is returned and never stored: the command prints it into `text`
+     * once, and it appears in neither `data` nor the audit row (rule 4).
+     */
+    accountSetPassword: async (username, password) => {
+      const row = accountRepo.findAccountByUsername(instanceScope, username);
+      if (row === undefined) return 'no-such-account';
+      const chosen = password ?? generateToken();
+      const passwordHash = await hashPassword(chosen);
+      accountRepo.setPasswordHash(instanceScope, {
+        accountId: row.accountId,
+        passwordHash,
       });
-    }
-    return {
-      username: row.username,
-      accountId: row.accountId,
-      password: chosen,
-      sessionsRevoked,
-      guildsTouched: guildScopes.length,
-    };
-  },
-});
+      // ADR 0070: the sealed copy follows the hash — a stale sealed value
+      // behind a rotated password would let the owner "reveal" a password
+      // that no longer authenticates.
+      sealPassword(row.accountId, row.isOwner, chosen);
+      // The session half of the sweep covers the guild allowlist and nothing
+      // else, the same boundary `accountRevokeCredentials` above documents: a
+      // session in a guild since dropped from the allowlist is never swept.
+      const at = now();
+      let sessionsRevoked = 0;
+      for (const guildScope of guildScopes) {
+        sessionsRevoked += sessionRepo.revokeAllForAccount(guildScope, {
+          accountId: row.accountId,
+          now: at,
+        });
+      }
+      return {
+        username: row.username,
+        accountId: row.accountId,
+        password: chosen,
+        sessionsRevoked,
+        guildsTouched: guildScopes.length,
+      };
+    },
+    /**
+     * Opens the sealed copy of a non-owner account's password (ADR 0070, spec
+     * A4). The owner-target refusal (`403 owner-protected`) and the caller's
+     * own-capability check (`403 owner-only`) already happened at the route
+     * layer before this is called — this only answers what the vault itself
+     * can: is there a sealed value, and does it open.
+     */
+    accountRevealPassword: (username) => {
+      const row = accountRepo.findAccountByUsername(instanceScope, username);
+      if (row === undefined) return 'no-such-account';
+      if (passwordVault === undefined || row.passwordSealed === null) return 'not-revealable';
+      const password = passwordVault.open(row.passwordSealed);
+      if (password === undefined) return 'not-revealable';
+      return { username: row.username, password };
+    },
+  };
+};
 
 /**
  * Process-level facts for `status` and `doctor`.
@@ -1517,7 +1575,22 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
         deps.config.BANANASAURS_GUILD_ALLOWLIST,
         deps.now(),
       );
-      const report = buildDoctorReport(deps.client, deps.config, deps.now(), dashboardAccess);
+      // ADR 0070: the same shape `dashboardAccess` above is — computed here,
+      // the one call site with a database handle, and never the sealed
+      // values themselves, only a count.
+      const passwordVault: DoctorPasswordVault = {
+        available: deps.passwordVault?.available === true,
+        revealableAccounts: accountRepo
+          .listAccounts(deps.instanceScope)
+          .filter((row) => !row.isOwner && row.passwordSealed !== null).length,
+      };
+      const report = buildDoctorReport(
+        deps.client,
+        deps.config,
+        deps.now(),
+        dashboardAccess,
+        passwordVault,
+      );
       return {
         ok: report.ok,
         text: formatDoctorReport(report),
@@ -1754,5 +1827,5 @@ export const opsInstanceFor = (deps: OpsInstanceDeps): OpsInstance => ({
       previouslyReviewedAt: row.reviewedAt,
     };
   },
-  ...accountOpsFor(deps.instanceScope, deps.guildScopes, deps.now),
+  ...accountOpsFor(deps.instanceScope, deps.guildScopes, deps.now, deps.passwordVault),
 });

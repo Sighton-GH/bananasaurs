@@ -108,6 +108,8 @@ export interface Account {
   readonly disabled: boolean;
   readonly lockedUntil: number | null;
   readonly createdAt: number;
+  /** ADR 0070: whether the owner can reveal this account's password. Never the owner's own accounts. */
+  readonly revealable: boolean;
 }
 
 /** `GET /api/accounts` — the accounts plus, for each, the capabilities it holds in THIS guild. */
