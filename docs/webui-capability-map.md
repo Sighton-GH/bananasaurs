@@ -88,6 +88,30 @@ links this runbook rather than offering a restore control.
   CLI's `--guild` flag; the web scopes every action to the signed-in guild,
   which is the dashboard's existing guild-scope model (ADR 0028).
 
+## Assistant harness v2 — web-first, no CLI equivalent
+
+Assistant harness v2 (ADRs 0069–0077) has no CLI equivalent: every row below
+is a dashboard page verified against `packages/dashboard/src/app/Shell.tsx`
+and `packages/http/src/routes/assistant-*.ts`. The Try-it row reads from the
+unmerged Task 20 worktree (`assistant-try.ts`), not from this branch.
+
+| Web surface | HTTP route | Capability it needs |
+| --- | --- | --- |
+| AI setup page (`/assistant/setup`, `/providers` alias): model order, provider keys, Brave web search, GitHub token, setup checklist | `GET /api/assistant/providers`, `POST /api/assistant/keys`, `PATCH`/`DELETE /api/assistant/keys/:keyId`, `PUT /api/assistant/model-chain`, `POST /api/assistant/model-chain/test`, `PUT /api/assistant/github-token`, `POST /api/providers/:provider/review` | Owner only (`403 owner-only` for anyone else) |
+| Behaviours page (`/assistant`): behaviours, resources, safety suffix, prompt preview, Try it | `GET /api/assistant`, `PUT /api/assistant/behaviours/:id`, `GET /api/assistant/behaviours/:id/preview`, `GET /api/assistant/safety-suffix`, `PUT /api/assistant/resources/:id` | Reads `config.read`; writes `config.write` |
+| Try it (on the Behaviours page; Task 20, unmerged) | `POST /api/assistant/behaviours/:id/try` | `config.write`; 20 tries per account per hour, in memory |
+| Prompt wizard (`/assistant/behaviours/:id/wizard`) | `PUT /api/assistant/behaviours/:id` (wizard answers), `GET /api/assistant/behaviours/:id/preview` | Writes `config.write`; reads `config.read` |
+| Skill detail (`/assistant/skills/:skillId`): instruction, tools, behaviour allowlist, recent runs | `GET /api/assistant/skills/:skillId` | `config.read` |
+| History (`/assistant/history`, `/assistant/history/:traceId`, `/assistant/activity` alias): trace list, detail, 14-day usage strip | `GET /api/assistant/traces`, `GET /api/assistant/traces/:traceId`, `GET /api/assistant/usage` | `audit.read`; prompt text additionally needs `config.read` (withheld, never 403, without it) |
+| Conversations list and transcript (`/assistant/conversations`, `/assistant/conversations/:id`): filters, title search, End and Delete, retention setting | `GET /api/assistant/conversations`, `GET /api/assistant/conversations/:id`, `GET /api/assistant/conversation-retention` | `audit.read` |
+| Conversation End and Delete, retention save | `POST /api/assistant/conversations/:id/end`, `DELETE /api/assistant/conversations/:id`, `PUT /api/assistant/conversation-retention` | `config.write` |
+| Resources "Add from GitHub" (on the Resources page): org/repo preview and import | `POST /api/assistant/github/preview`, `POST /api/assistant/github/import` | `config.write` |
+| Resources freshness, "Update now", "Update all" (on the Resources page) | `GET /api/assistant/resources/freshness`, `POST /api/assistant/resources/:id/refresh`, `POST /api/assistant/resources/refresh` | Freshness `config.read`; both refresh routes `config.write` |
+| Accounts list (`/accounts`) with role badges | `GET /api/accounts` | `accounts.manage` |
+| Accounts add (`/accounts/new`) with role presets and chosen-or-generated password | `POST /api/accounts` | `accounts.manage` |
+| Accounts edit (`/accounts/:username`): Summary, Permissions, Password, Sessions, Danger zone | Per-field routes (`…/disabled`, `…/password`, `…/revoke-credentials`, `…/grant-guild`, `…/revoke-guild`, `…/capabilities[/:capability]`) | `accounts.manage`; every route refuses an owner row with `403 owner-protected` |
+| Password reveal (on the Accounts edit page) | `POST /api/accounts/:username/reveal-password` | Owner only plus `accounts.manage`, re-authentication required; owner passwords are never sealed |
+
 ## Web-first, no CLI equivalent
 
 Automod rule creation and configuration, exemptions, per-rule review

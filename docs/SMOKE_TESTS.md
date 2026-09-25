@@ -223,6 +223,35 @@ Preconditions: the daemon is up on a build that includes Slice 11;
 
 - [ ] Steps 1–11 recorded with timestamps in the sign-off document.
 
+## Section F — assistant harness v2 on the test guild (not yet run)
+
+**Test guild only. Nothing here deletes anything.** Run signed in as the owner, with the daemon up on a build that includes ADRs 0069–0077 (migrations 0037–0046 applied) and a reviewed, enabled behaviour on the test guild. The Try-it step needs the Task 20 code, which is not merged into this branch yet. Record the run with timestamps.
+
+Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model chain with at least one Ready entry; the test guild has an enabled behaviour whose tag (for example `@bananasaurs`) members may use.
+
+1. **Tag the bot.** Post a question in a visible channel tagging the bot (for example `@bananasaurs when is the next meeting?`).
+   What you should see: the bot posts its answer as a Discord reply to your message, and the answer ends with a short `-# Sources:` line naming what it read.
+2. **Reply to its answer.** Use Discord's Reply on the bot's answer message and ask a follow-up (for example `and where?`).
+   What you should see: the bot answers as a reply again, and the answer shows it continued the same conversation (it uses your first question's context without being told).
+3. **Quoted context from another member.** Have a second member post an ordinary message (for example `the lake meet moved to Sunday`). Reply to *that* message, tag the bot in the reply, and ask about it (for example `@bananasaurs what moved?`).
+   What you should see: the bot's answer draws on the replied-to member message as quoted context.
+4. **Import a GitHub organisation.** On the Resources page, open "Add from GitHub", paste a small public organisation URL, and confirm the preview lists its repositories.
+   What you should see: the preview shows repo names with fork/archived toggles and per-repo checkboxes; adding creates one parent resource plus one child resource per selected repo.
+5. **"Update now".** On the Resources page, press "Update now" on one imported resource.
+   What you should see: the resource refreshes (freshness timestamp advances, or a fetch error is recorded against that resource only) while the other resources are untouched.
+6. **Ask what the cache answers.** Back in Discord, tag the bot with a question the imported repository answers.
+   What you should see: the answer arrives as a reply and its `-# Sources:` line names the imported repository.
+7. **"Try it" on the behaviour.** On the Behaviours page, open the behaviour, type a question into "Try it" and submit; then submit a follow-up with the conversation continued.
+   What you should see: the answer appears on the page with its trace id, and nothing is posted to Discord.
+8. **Conversations page and History trace.** Open the Conversations page and find the Discord conversation from steps 1–3; open its transcript, then follow the link to one of its traces on History.
+   What you should see: the transcript shows each turn with links to Discord and to the History trace; the trace shows the model attempts, the tool calls with their results, and the prompt sections.
+9. **Feedback reaction.** In Discord, add a 👍 reaction to one of the bot's answers, then remove it.
+   What you should see: the reaction is accepted as feedback on that answer (visible on its History trace); removing the reaction clears the feedback.
+10. **Prune retention setting.** On the Conversations page, read the auto-delete retention control and confirm it shows the current setting (2 / 6 / 12 months or Keep forever). Change nothing.
+    What you should see: the setting is displayed with its current value; no conversation is deleted, ended, or otherwise touched.
+
+- [ ] Steps 1–10 recorded with timestamps (no destructive step taken).
+
 ## Sign-off
 
 **Release 1 is done — 2026-08-30.** Every box above is checked, run against
