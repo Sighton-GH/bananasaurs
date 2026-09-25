@@ -20,6 +20,8 @@ import {
   assistantMemoryPreferences,
   assistantSettings,
 } from '../schema.js';
+import { forgetAuthor } from './conversations.js';
+import { deleteTracesForUser } from './traces.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -175,6 +177,38 @@ export const setLogChannel = (scope: GuildScope, channelId: string | null, now: 
       .onConflictDoUpdate({
         target: assistantSettings.guildId,
         set: { logChannelId: channelId, updatedAt: now },
+      })
+      .run();
+  });
+
+/**
+ * Task 19: how long a conversation lives past its last activity, in days —
+ * 61 (2 months), 182 (6 months) or 365 (12 months). `null` keeps forever. A
+ * guild with no settings row reads the default 182; anything else is refused
+ * by the table CHECK, the same way `setLogChannel` leans on its snowflake
+ * CHECK rather than re-validating.
+ */
+export type ConversationRetentionDays = 61 | 182 | 365;
+export const CONVERSATION_RETENTION_DEFAULT: ConversationRetentionDays = 182;
+export const getConversationRetention = (scope: GuildScope): ConversationRetentionDays | null =>
+  read(scope, (db) => {
+    const row = db.select().from(assistantSettings).where(scope.only(assistantSettings)).get();
+    if (row === undefined) return CONVERSATION_RETENTION_DEFAULT;
+    if (row.conversationRetentionDays === null) return null;
+    return row.conversationRetentionDays as ConversationRetentionDays;
+  });
+/** Upserts only the retention (plus `updatedAt`), so a log channel survives it and vice versa. */
+export const setConversationRetention = (
+  scope: GuildScope,
+  days: ConversationRetentionDays | null,
+  now: number,
+): void =>
+  write(scope, ({ db }) => {
+    db.insert(assistantSettings)
+      .values({ guildId: scope.guildId, conversationRetentionDays: days, updatedAt: now })
+      .onConflictDoUpdate({
+        target: assistantSettings.guildId,
+        set: { conversationRetentionDays: days, updatedAt: now },
       })
       .run();
   });
@@ -907,9 +941,16 @@ export const setMemoryOptOut = (
       })
       .run();
   });
-export const forgetMember = (scope: GuildScope, userId: string, now: number): number =>
-  write(scope, ({ db }) => {
-    const removed = db
+/**
+ * Forgets a member: drops their curated memories, opts them out, removes
+ * their conversation turns (Task 19) and deletes their assistant traces, which
+ * hold their question and answer. Each delete runs as its own write right
+ * after, in the same function — `write()` forbids nesting one transaction
+ * inside another, so they cannot share one.
+ */
+export const forgetMember = (scope: GuildScope, userId: string, now: number): number => {
+  const removed = write(scope, ({ db }) => {
+    const deleted = db
       .delete(assistantMemories)
       .where(scope.only(assistantMemories, eq(assistantMemories.subjectId, userId)))
       .run().changes;
@@ -920,5 +961,9 @@ export const forgetMember = (scope: GuildScope, userId: string, now: number): nu
         set: { optedOut: 1, updatedAt: now },
       })
       .run();
-    return removed;
+    return deleted;
   });
+  forgetAuthor(scope, userId);
+  deleteTracesForUser(scope, userId);
+  return removed;
+};

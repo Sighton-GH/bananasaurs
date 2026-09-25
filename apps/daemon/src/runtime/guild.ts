@@ -78,6 +78,7 @@ import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
 import { ReviewedResourceFetcher } from '../assistant/resource-fetcher.js';
+import { conversationPruneHandler } from '../jobs/conversation-prune.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
@@ -818,6 +819,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         },
         logger,
       }),
+      conversationPruneHandler(scope, { now, logger }),
       // Registered although nothing enqueues one yet: a handler missing when a
       // job arrives fails the job, and the sweep's producer is a scheduler this
       // slice does not build (ADR 0020).

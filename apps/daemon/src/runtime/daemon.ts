@@ -39,6 +39,7 @@ import {
 } from '../ops/password-vault.js';
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
+import { createConversationPruneTimer } from './conversation-prune-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
@@ -258,6 +259,16 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // Item 7: the OAuth purge is instance-level, not per-guild, so it rides
     // the timer's once-a-day `runOnce` rather than the per-guild expiry jobs.
     purgeOAuth: (nowMs) => oauthRepo.purgeExpired(instanceScope, nowMs),
+    now,
+    logger,
+  });
+
+  // Task 19: the daily conversation-prune producer. One prune job per guild
+  // per UTC day, beside the archive-expiry timer — the job table has no
+  // scheduler, so this `setInterval` is what says when.
+  const conversationPruneTimer = createConversationPruneTimer({
+    guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
+    enqueue: (scope, input) => jobRepo.enqueue(scope, input),
     now,
     logger,
   });
@@ -560,6 +571,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer.unref();
       backupTimer.start();
       archiveExpiryTimer.start();
+      conversationPruneTimer.start();
       reminderDeliveryTimer.start();
       resourceRefreshTimer.start();
     },
@@ -569,6 +581,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
       timer = undefined;
       backupTimer.stop();
       archiveExpiryTimer.stop();
+      conversationPruneTimer.stop();
       reminderDeliveryTimer.stop();
       resourceRefreshTimer.stop();
       await settle();

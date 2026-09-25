@@ -73,11 +73,8 @@ describe('JumpNav', () => {
     expect(current.getAttribute('href')).toBe('/audit');
     expect(current.textContent).toContain('Audit');
     expect(current.textContent).toContain('Current');
-    // Task 9: Conversations is the one stub entry, pointing at Task 19.
-    expect(within(nav).getAllByText('Future')).toHaveLength(1);
-    expect(within(nav).getByRole('link', { name: /Conversations/ }).textContent).toContain(
-      'Future',
-    );
+    // Task 19: Conversations is built, so no entry is still future.
+    expect(within(nav).queryByText('Future')).toBeNull();
   });
 
   it('carries the server identity, sign-out and credit so mobile keeps the rail footer', async () => {

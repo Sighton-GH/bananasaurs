@@ -7,7 +7,9 @@ import {
   addTraceFlag,
   dailyUsage,
   deleteTracesForConversations,
+  deleteTracesForUser,
   getTrace,
+  getTracesByIds,
   insertTrace,
   listTraces,
 } from './traces.js';
@@ -226,5 +228,46 @@ describe('dailyUsage', () => {
       fallbacks: 0,
       tokens: 260,
     });
+  });
+});
+
+describe('getTracesByIds', () => {
+  it('returns the requested traces in request order and skips the missing', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    insertTrace(scope, trace({ traceId: 'a', question: 'first question' }));
+    insertTrace(scope, trace({ traceId: 'b', question: 'second question' }));
+
+    const traces = getTracesByIds(scope, ['b', 'missing', 'a']);
+    expect(traces.map((r) => r.traceId)).toEqual(['b', 'a']);
+    expect(traces[0]?.question).toBe('second question');
+  });
+
+  it('never returns another guild’s traces', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    insertTrace(a, trace({ traceId: 'shared', question: 'guild a question' }));
+    insertTrace(b, trace({ traceId: 'shared', question: 'guild b question' }));
+
+    expect(getTracesByIds(a, ['shared']).map((r) => r.question)).toEqual(['guild a question']);
+    expect(getTracesByIds(b, ['shared']).map((r) => r.question)).toEqual(['guild b question']);
+  });
+
+  it('returns an empty array for no ids', () => {
+    expect(getTracesByIds(t.scopes.forGuild(GUILD_A), [])).toEqual([]);
+  });
+});
+
+describe('deleteTracesForUser', () => {
+  it('deletes only that member’s traces in this guild', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    insertTrace(a, trace({ traceId: 'mine', userId: USER }));
+    insertTrace(a, trace({ traceId: 'theirs', userId: OTHER_USER }));
+    insertTrace(b, trace({ traceId: 'mine', userId: USER }));
+
+    expect(deleteTracesForUser(a, USER)).toBe(1);
+    expect(getTrace(a, 'mine')).toBeUndefined();
+    expect(getTrace(a, 'theirs')).toBeDefined();
+    expect(getTrace(b, 'mine')).toBeDefined();
   });
 });

@@ -29,6 +29,8 @@ export const JOB_KINDS = {
   archiveExpiry: 'archive_expiry',
   /** One due-reminder delivery pass (Release 3, docs/RELEASE3_ASSISTANT_SCOPE.md). */
   deliverReminders: 'deliver_reminders',
+  /** The daily conversation auto-delete past the guild's retention (Task 19). */
+  conversationPrune: 'conversation_prune',
   /**
    * One assistant invocation (Release 3, B2): resource fetches and the
    * provider call are far too slow for the serial per-guild dispatch chain —
@@ -304,6 +306,22 @@ export type DeliverRemindersPayload = z.infer<typeof deliverRemindersPayload>;
  * returned to `scheduled` for retry.
  */
 export const deliverRemindersDedupeKey = (): string => JOB_KINDS.deliverReminders;
+
+export const conversationPrunePayload = z.object({
+  day: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+});
+export type ConversationPrunePayload = z.infer<typeof conversationPrunePayload>;
+
+/**
+ * One pending prune per UTC day, across the process.
+ *
+ * Deliberately guild-free like `archiveExpiryDedupeKey`: the timer enqueues
+ * one job per guild per day under the same key, and the `(guild_id,
+ * dedupe_key)` index collapses per guild — a second `runOnce` on the same
+ * day enqueues nothing anywhere.
+ */
+export const conversationPruneDedupeKey = (day: string): string =>
+  `${JOB_KINDS.conversationPrune}:${day}`;
 
 /**
  * One assistant invocation, enqueued by the slash/mention subscriber the

@@ -29,6 +29,11 @@ function renderAt(path: string) {
       url: '/api/automod/review?limit=50',
       body: { matches: [], nativeHits: [], nativeBlocked: 0, verdicts: {} },
     },
+    { url: '/api/assistant/conversation-retention', body: { days: 182 } },
+    {
+      url: '/api/assistant/conversations?sort=last-activity&order=desc&limit=50',
+      body: { conversations: [] },
+    },
     { method: 'POST', url: '/api/logout', body: {} },
   ]);
   const { hook } = memoryLocation({ path });
@@ -181,20 +186,20 @@ describe('Shell', () => {
     ['/assistant/setup', 'AI setup'],
     ['/assistant/activity', 'History'],
     ['/assistant/history', 'History'],
+    ['/assistant/conversations', 'Conversations'],
   ])('renders the built %s surface titled %s', async (path, title) => {
     renderAt(path);
     expect(await screen.findByRole('heading', { level: 1, name: title })).toBeTruthy();
     expect(screen.queryByText(NOT_BUILT)).toBeNull();
   });
 
-  // Task 9: setup-first order, with History moved in and Conversations added
-  // as a stub pointing at Task 19.
-  it('orders the Assistant group setup-first, with Conversations a stub until Task 19', () => {
+  // Task 19: Conversations is built — setup-first order, History moved in.
+  it('orders the Assistant group setup-first, with Conversations built', () => {
     const assistantNav = NAV.filter((entry) => entry.group === 'Assistant');
     expect(assistantNav.map((entry) => [entry.path, entry.label, entry.status])).toEqual([
       ['/assistant/setup', 'AI setup', 'built'],
       ['/assistant', 'Behaviours', 'built'],
-      ['/assistant/conversations', 'Conversations', 'stub'],
+      ['/assistant/conversations', 'Conversations', 'built'],
       ['/assistant/history', 'History', 'built'],
       ['/assistant/skills', 'Skills', 'built'],
       ['/assistant/resources', 'Resources', 'built'],
@@ -209,21 +214,19 @@ describe('Shell', () => {
     ).toBe(false);
   });
 
-  it('renders the Conversations stub with its own purpose sentence', async () => {
+  it('renders the built Conversations page with its purpose sentence', async () => {
     renderAt('/assistant/conversations');
     expect(await screen.findByRole('heading', { level: 1, name: 'Conversations' })).toBeTruthy();
     expect(
       screen.getByText('Every conversation members have had with the assistant, newest first.'),
     ).toBeTruthy();
-    expect(screen.getByText(NOT_BUILT)).toBeTruthy();
+    expect(screen.queryByText(NOT_BUILT)).toBeNull();
   });
 
-  it('marks only Conversations as future, until Task 19 builds it', async () => {
+  it('marks nothing as future, now that Task 19 built Conversations', async () => {
     renderAt('/');
-    const nav = screen.getByRole('navigation', { name: 'Areas' });
-    expect(screen.getAllByText('Future')).toHaveLength(1);
-    const conversations = within(nav).getByRole('link', { name: /Conversations/ });
-    expect(within(conversations).getByText('Future')).toBeTruthy();
+    await screen.findByRole('heading', { level: 1, name: 'Overview' });
+    expect(screen.queryByText('Future')).toBeNull();
   });
 
   it('opens and closes the mobile jump navigation without changing the page', async () => {

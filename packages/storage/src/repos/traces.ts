@@ -92,6 +92,45 @@ export const getTrace = (scope: GuildScope, traceId: string): AssistantTrace | u
     return row === undefined ? undefined : parseBody(row.bodyJson);
   });
 
+/** The full stored runs for `traceIds`, in request order; missing ids are skipped. */
+export const getTracesByIds = (scope: GuildScope, traceIds: readonly string[]): AssistantTrace[] =>
+  read(scope, (db) => {
+    if (traceIds.length === 0) return [];
+    const rows = db
+      .select()
+      .from(assistantTraces)
+      .where(scope.only(assistantTraces, inArray(assistantTraces.traceId, [...new Set(traceIds)])))
+      .all();
+    const byId = new Map<string, AssistantTrace>();
+    for (const row of rows) {
+      const parsed = parseBody(row.bodyJson);
+      if (parsed !== undefined && !byId.has(row.traceId)) byId.set(row.traceId, parsed);
+    }
+    const out: AssistantTrace[] = [];
+    const seen = new Set<string>();
+    for (const id of traceIds) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const trace = byId.get(id);
+      if (trace !== undefined) out.push(trace);
+    }
+    return out;
+  });
+
+/**
+ * Removes every trace of one member's runs in this guild (forgetMember calls
+ * this alongside the turn delete). Returns the row count.
+ */
+export const deleteTracesForUser = (scope: GuildScope, userId: string): number =>
+  write(
+    scope,
+    ({ db }) =>
+      db
+        .delete(assistantTraces)
+        .where(scope.only(assistantTraces, eq(assistantTraces.userId, userId)))
+        .run().changes,
+  );
+
 /**
  * Removes every trace of the named conversations in this guild (the prune
  * job calls this alongside the conversation delete). Returns the row count.
