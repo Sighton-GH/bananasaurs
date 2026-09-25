@@ -108,6 +108,26 @@ describe('AssistantHistoryDetailPage', () => {
     );
   });
 
+  it('shows which key each attempt ran on when the label is present', async () => {
+    stubFetch([
+      {
+        url: '/api/assistant/traces/trace-1',
+        body: {
+          ...DETAIL,
+          trace: {
+            ...DETAIL.trace,
+            attempts: [
+              { provider: 'gemini', model: 'first-model', outcome: 'ok', ms: 900, keyLabel: 'Main key' },
+              { provider: 'openrouter', model: 'second-model', outcome: 'ok', ms: 100 },
+            ],
+          },
+        },
+      },
+    ]);
+    renderDetail();
+    expect(await screen.findByText(/via Main key/)).toBeTruthy();
+  });
+
   it('says the prompt text is withheld when it arrives empty', async () => {
     stubFetch([
       {

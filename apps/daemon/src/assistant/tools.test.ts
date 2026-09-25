@@ -139,6 +139,7 @@ describe('runAssistantTool', () => {
     expect(opened).toMatchObject({
       ok: true,
       sources: [{ title: 'Club handbook', url: 'https://example.com/handbook' }],
+      handles: ['handbook'],
     });
     expect(opened.text).toContain('Meetings are Mondays.');
     expect(opened.text).not.toContain('lead@example.com');
@@ -198,5 +199,20 @@ describe('runAssistantTool', () => {
     const result = await runAssistantTool({ name: 'server_info', args: {} }, ports());
     expect(result.text).toContain('SFU Racerbot builds autonomous cars.');
     expect(result.text).toContain('#general');
+  });
+
+  it('returns no handles except from open_resource', async () => {
+    const p = ports();
+    for (const call of [
+      { name: 'search_archive', args: { query: 'battery' } },
+      { name: 'server_info', args: {} },
+      { name: 'current_time', args: {} },
+      { name: 'my_reminders', args: {} },
+      { name: 'web_search', args: { query: 'lipo storage' } },
+    ] as const) {
+      const result = await runAssistantTool(call, p);
+      expect(result.ok).toBe(true);
+      expect(result.handles).toBeUndefined();
+    }
   });
 });

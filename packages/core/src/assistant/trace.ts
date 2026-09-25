@@ -28,6 +28,8 @@ export const assistantTraceSchema = z.object({
     z.object({
       provider: z.string(),
       model: z.string(),
+      /** The label of the API key the attempt ran on; never the key itself (hard rule 4). */
+      keyLabel: z.string().max(60).optional(),
       outcome: z.enum(['ok', 'busy', 'rate-limit', 'timeout', 'skipped', 'error']),
       reason: z.string().optional(),
       ms: z.number().int().nonnegative(),
