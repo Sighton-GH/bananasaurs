@@ -1,0 +1,217 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { Router, useLocation } from 'wouter';
+import { memoryLocation } from 'wouter/memory-location';
+import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
+import { AccountEditPage } from './account-edit.js';
+
+function LocationProbe() {
+  const [location] = useLocation();
+  return <p data-testid="location">{location}</p>;
+}
+
+const LIST = {
+  accounts: [
+    {
+      accountId: 'acct-1',
+      username: 'bryan',
+      isOwner: true,
+      disabled: false,
+      lockedUntil: null,
+      createdAt: 0,
+      revealable: false,
+    },
+    {
+      accountId: 'acct-2',
+      username: 'sam',
+      isOwner: false,
+      disabled: false,
+      lockedUntil: null,
+      createdAt: 0,
+      revealable: true,
+    },
+  ],
+  capabilities: {
+    'acct-1': [],
+    'acct-2': ['config.read', 'audit.read'],
+  },
+};
+
+function renderEdit(path: string, routes: readonly { method?: string; url: string; status?: number; body: unknown }[]) {
+  const mock = stubFetch(routes);
+  const { hook } = memoryLocation({ path });
+  renderWithSession(
+    <Router hook={hook}>
+      <AccountEditPage />
+      <LocationProbe />
+    </Router>,
+  );
+  return mock;
+}
+
+afterEach(cleanup);
+afterEach(() => vi.unstubAllGlobals());
+
+describe('AccountEditPage', () => {
+  it('renders its sections in order: Summary, Permissions, Password, Sessions and apps, Danger zone', async () => {
+    renderEdit('/accounts/sam', [{ url: '/api/accounts', body: LIST }]);
+    const headings = await screen.findAllByRole('heading', { level: 2 });
+    expect(headings.map((h) => h.textContent)).toEqual([
+      'Summary',
+      'Permissions on this server',
+      'Password',
+      'Sessions and apps',
+      'Danger zone',
+    ]);
+  });
+
+  it('preselects the role from the held capabilities and saves only the difference', async () => {
+    const mock = renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      { method: 'POST', url: '/api/accounts/sam/capabilities', body: { outcome: 'granted' } },
+      { method: 'DELETE', url: '/api/accounts/sam/capabilities/config.read', body: { outcome: 'revoked' } },
+      { method: 'DELETE', url: '/api/accounts/sam/capabilities/audit.read', body: { outcome: 'revoked' } },
+    ]);
+    expect(await screen.findByText('sam')).toBeTruthy();
+    // Viewer preselected from the two held capabilities.
+    expect(screen.getByRole('radio', { name: /Viewer/ })).toHaveAttribute('aria-checked', 'true');
+    // Move to Server manager: nine grants minus the two already held is seven new ones,
+    // and nothing held is dropped. Pick Custom-ish small diff instead: grant one, keep the rest.
+    fireEvent.click(screen.getByRole('radio', { name: /Custom/ }));
+    fireEvent.click(screen.getByLabelText('Moderate members'));
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
+    });
+    const grants = mock.mock.calls.filter(
+      (c) => (c[0] as string) === '/api/accounts/sam/capabilities',
+    );
+    expect(grants).toHaveLength(1);
+    expect(bodyOf(grants[0]!)).toEqual({ capability: 'moderation.act' });
+    const revokes = mock.mock.calls.filter((c) =>
+      (c[0] as string).startsWith('/api/accounts/sam/capabilities/'),
+    );
+    expect(revokes).toHaveLength(0);
+  });
+
+  it('reveals the current password for the owner when revealable, once', async () => {
+    renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      {
+        method: 'POST',
+        url: '/api/accounts/sam/reveal-password',
+        body: { username: 'sam', password: 'recovered-secret' },
+      },
+    ]);
+    await screen.findByText('sam');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal current password' }));
+    });
+    const printOnce = await screen.findByRole('dialog', { name: 'Current password' });
+    expect(printOnce.textContent).toContain('recovered-secret');
+  });
+
+  it('explains a missing sealed copy instead of offering reveal', async () => {
+    const unrevealable = {
+      ...LIST,
+      accounts: LIST.accounts.map((a) =>
+        a.username === 'sam' ? { ...a, revealable: false } : a,
+      ),
+    };
+    renderEdit('/accounts/sam', [{ url: '/api/accounts', body: unrevealable }]);
+    await screen.findByText('sam');
+    expect(screen.queryByRole('button', { name: 'Reveal current password' })).toBeNull();
+    expect(screen.getByText('Set a new password to be able to reveal it later.')).toBeTruthy();
+  });
+
+  it('signs out everywhere and disconnects apps with one button', async () => {
+    const mock = renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      {
+        method: 'POST',
+        url: '/api/accounts/sam/revoke-credentials',
+        body: {
+          username: 'sam',
+          accountId: 'acct-2',
+          sessionsRevoked: 2,
+          tokensRevoked: 1,
+          codesDeleted: 0,
+          guildsTouched: 1,
+          stillEnabled: true,
+        },
+      },
+    ]);
+    await screen.findByText('sam');
+    expect(screen.queryByRole('button', { name: 'Revoke connected apps' })).toBeNull();
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Sign out everywhere and disconnect apps' }),
+      );
+    });
+    expect(
+      mock.mock.calls.some((c) => (c[0] as string) === '/api/accounts/sam/revoke-credentials'),
+    ).toBe(true);
+  });
+
+  it('confirms the danger zone by name and returns to the list after delete', async () => {
+    const mock = renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      {
+        method: 'DELETE',
+        url: '/api/accounts/sam',
+        body: {
+          username: 'sam',
+          accountId: 'acct-2',
+          wasOwner: false,
+          tokensRevoked: 0,
+          codesDeleted: 0,
+          enabledOwnersRemaining: 1,
+          accountsRemaining: 1,
+        },
+      },
+    ]);
+    await screen.findByText('sam');
+    fireEvent.click(screen.getByRole('button', { name: 'Delete' }));
+    const dialog = await screen.findByRole('dialog');
+    expect(dialog.textContent).toContain('sam');
+    await act(async () => {
+      fireEvent.click(within(dialog).getByRole('button', { name: 'Delete account' }));
+    });
+    expect(
+      mock.mock.calls.some(
+        (c) => (c[0] as string) === '/api/accounts/sam' && c[1]?.method === 'DELETE',
+      ),
+    ).toBe(true);
+    expect(screen.getByTestId('location').textContent).toBe('/accounts');
+  });
+
+  it('maps owner-protected to a plain sentence', async () => {
+    renderEdit('/accounts/sam', [
+      { url: '/api/accounts', body: LIST },
+      {
+        method: 'POST',
+        url: '/api/accounts/sam/revoke-credentials',
+        status: 403,
+        body: { error: 'owner-protected' },
+      },
+    ]);
+    await screen.findByText('sam');
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole('button', { name: 'Sign out everywhere and disconnect apps' }),
+      );
+    });
+    expect(await screen.findByText("The owner account can't be changed here.")).toBeTruthy();
+  });
+
+  it('shows only the summary and the password change for the owner account itself', async () => {
+    renderEdit('/accounts/bryan', [{ url: '/api/accounts', body: LIST }]);
+    await screen.findByText('bryan');
+    expect(screen.getByText('Summary')).toBeTruthy();
+    expect(screen.getByText('Change your password')).toBeTruthy();
+    expect(screen.queryByText('Permissions on this server')).toBeNull();
+    expect(screen.queryByText('Sessions and apps')).toBeNull();
+    expect(screen.queryByText('Danger zone')).toBeNull();
+    expect(screen.queryByText('config.read')).toBeNull();
+  });
+});
