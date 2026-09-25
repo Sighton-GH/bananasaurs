@@ -15,6 +15,7 @@ import {
 } from './commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { createInteractionTokenSealer } from './interaction-token.js';
+import { PROVIDER_FAILURE_LOG_REASON } from './provider-failure.js';
 
 const guildId = '234567890123456789';
 const channelId = '345678901234567890';
@@ -1095,8 +1096,10 @@ describe('assistant invoke job: the AI log channel (ADR 0065)', () => {
     await expect(d.run(4, null)).resolves.toBeUndefined();
     const logged = embed(logPosts(d.send)[0]!);
     expect(logged.title).toBe('Mention · failed');
+    // Hard rule 4: the log channel gets the fixed sentence, never the
+    // provider's text.
     expect(logged.fields).toEqual(
-      expect.arrayContaining([{ name: 'Reason', value: 'Gemini request failed with HTTP 503' }]),
+      expect.arrayContaining([{ name: 'Reason', value: PROVIDER_FAILURE_LOG_REASON }]),
     );
   });
 });

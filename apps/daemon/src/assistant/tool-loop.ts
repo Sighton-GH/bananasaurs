@@ -12,6 +12,7 @@ import {
 import type { ChainEntry } from './model-chain.js';
 import type { QuotaLedger } from './quota-ledger.js';
 import type { AssistantToolResult, ToolSource } from './tools.js';
+import { attemptReasonFor } from './provider-failure.js';
 import { escapeUntrustedClose } from './untrusted.js';
 
 /**
@@ -370,7 +371,10 @@ const runEntry = async (deps: {
       model: entry.model,
       keyLabel: entry.keyLabel,
       outcome,
-      ...(err instanceof Error ? { reason: err.message.slice(0, 200) } : {}),
+      // Hard rule 4: the attempt keeps a fixed reason from the error's
+      // kind/status. The provider's own text stays in the Pino line only —
+      // it can echo request details, so it never reaches the trace.
+      ...(err instanceof Error ? { reason: attemptReasonFor(err) } : {}),
       ms: deps.entryMs(),
     });
   };

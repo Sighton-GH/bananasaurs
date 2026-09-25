@@ -26,6 +26,7 @@ import type {
 } from '../assistant/commands.js';
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
+import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 
 /**
@@ -562,7 +563,7 @@ export const assistantInvokeHandler = (deps: {
             'assistant invocation hit a daily free-model quota cap; answering at once',
           );
           await answerSingle(text);
-          await logFailure(text, err.message);
+          await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
           return;
         }
         if (
@@ -595,7 +596,7 @@ export const assistantInvokeHandler = (deps: {
             ? BUSY_REPLY
             : 'I could not complete that request. No action was taken.';
         await answerSingle(text);
-        await logFailure(text, err instanceof Error ? err.message : 'unknown error');
+        await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
         return;
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here

@@ -137,6 +137,35 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     expect(err?.message).toContain('Rate limit exceeded');
   });
 
+  it('a provider failure keeps provider text out of the reply and the log channel, but in Pino', async () => {
+    const { logger, lines } = capturedLogger();
+    const svc = service(async () => {
+      throw new ProviderError(
+        'outage',
+        'openrouter request failed with HTTP 503 (sk-or-v1-SECRETKEY-billed-detail)',
+        false,
+      );
+    });
+    const { deps, sent } = baseDeps(svc, logger);
+    const handler = assistantInvokeHandler({ ...deps, logChannelId: () => '444444444444444444' });
+
+    await handler.run(payload, context({ attempts: 1 }));
+
+    // The member reply and the log-channel entry carry none of the
+    // provider's text; the fixed failure copy stands in for it.
+    expect(sent.length).toBeGreaterThan(0);
+    expect(JSON.stringify(sent)).not.toContain('SECRETKEY');
+    expect(sent[0]?.message.content).toBe(
+      'I could not complete that request. No action was taken.',
+    );
+    // The Pino error line still carries the provider's truncated reason.
+    const errLine = lines().find(
+      (line) => line['msg'] === 'assistant invocation failed before a response was produced',
+    );
+    expect(errLine).toBeDefined();
+    expect(JSON.stringify(errLine)).toContain('SECRETKEY');
+  });
+
   it('answers a daily quota cap at once, using resetAt for the unix time, with no retry', async () => {
     const resetAt = NOW + 3_600_000;
     const calls: AssistantInvocation[] = [];
@@ -532,9 +561,9 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       role: 'user',
       text: '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
     });
-    expect(history.every((message) => message.role === 'user' || message.role === 'assistant')).toBe(
-      true,
-    );
+    expect(
+      history.every((message) => message.role === 'user' || message.role === 'assistant'),
+    ).toBe(true);
     const conversationId = conversationRepo.lookupMessage(
       scope(),
       '810000000000000029',

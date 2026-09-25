@@ -506,6 +506,20 @@ describe('runToolLoop chain walking', () => {
     expect(result.attempts).toMatchObject([{ outcome: 'error' }, { outcome: 'ok' }]);
   });
 
+  it('a provider error never leaks its message into the trace attempts', async () => {
+    const failing = scripted([
+      new ProviderError(
+        'outage',
+        'openrouter request failed with HTTP 503 (sk-or-v1-SECRETKEY-billed-detail)',
+        true,
+      ),
+    ]);
+    const result = await runToolLoop(baseInput([entry({ provider: failing.provider })]));
+    expect(result.outcome).toBe('failed');
+    expect(result.attempts).toMatchObject([{ outcome: 'busy', reason: 'outage' }]);
+    expect(JSON.stringify(result.attempts)).not.toContain('SECRETKEY');
+  });
+
   it('mid-loop failure restarts the next entry from round 1 with no tool messages', async () => {
     const history: readonly GenerationMessage[] = [{ role: 'user', text: 'earlier' }];
     const failing = scripted([
