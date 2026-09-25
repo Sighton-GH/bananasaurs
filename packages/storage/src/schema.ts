@@ -2132,3 +2132,106 @@ export const assistantTraces = sqliteTable(
     index('assistant_traces_conversation').on(t.guildId, t.conversationId),
   ],
 );
+
+/**
+ * A conversation thread (ADR 0072). `conversationId` is app-generated, not a
+ * snowflake. `status` starts `open`; `latestForAuthor` (repos/conversations.ts)
+ * only ever considers `open` conversations for the follow-up window.
+ */
+export const assistantConversations = sqliteTable(
+  'assistant_conversations',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    channelId: snowflake('channel_id').notNull(),
+    behaviourId: text('behaviour_id').notNull(),
+    startedBy: snowflake('started_by').notNull(),
+    title: text('title').notNull(),
+    source: text('source').notNull(),
+    status: text('status').notNull().default('open'),
+    createdAt: integer('created_at').notNull(),
+    lastActivityAt: integer('last_activity_at').notNull(),
+    turnCount: integer('turn_count').notNull().default(0),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.conversationId] }),
+    foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
+    check('assistant_conversations_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversations_channel_id_snowflake', snowflakeCheck(t.channelId)),
+    check('assistant_conversations_started_by_snowflake', snowflakeCheck(t.startedBy)),
+    check('assistant_conversations_source', sql`${t.source} IN ('discord','dashboard-test')`),
+    check('assistant_conversations_status', sql`${t.status} IN ('open','ended')`),
+    index('assistant_conversations_activity').on(t.guildId, t.lastActivityAt),
+    index('assistant_conversations_author').on(
+      t.guildId,
+      t.channelId,
+      t.startedBy,
+      t.lastActivityAt,
+    ),
+  ],
+);
+
+/**
+ * One turn of a conversation. `authorId` is null for an `assistant` turn, and
+ * holds the *quoted* message's author for a `quote` turn — which may or may
+ * not be the member who started the conversation. `feedback` is set from a
+ * dashboard reaction on the linked message (`setFeedback`), never inferred.
+ */
+export const assistantConversationTurns = sqliteTable(
+  'assistant_conversation_turns',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    at: integer('at').notNull(),
+    role: text('role').notNull(),
+    authorId: snowflake('author_id'),
+    authorName: text('author_name').notNull(),
+    text: text('text').notNull(),
+    traceId: text('trace_id'),
+    feedback: text('feedback'),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.turnId] }),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_turns_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversation_turns_author_id_snowflake', nullableSnowflakeCheck(t.authorId)),
+    check('assistant_conversation_turns_role', sql`${t.role} IN ('user','assistant','quote')`),
+    check(
+      'assistant_conversation_turns_feedback',
+      sql`(${t.feedback} IS NULL OR ${t.feedback} IN ('up','down'))`,
+    ),
+    index('assistant_conversation_turns_conversation').on(t.guildId, t.conversationId, t.at),
+  ],
+);
+
+/**
+ * Which conversation turn a real Discord message belongs to — how
+ * `lookupMessage` answers "is this message known". Only `user` and
+ * `assistant` turns are linked here; a `quote` turn's source message is
+ * someone else's and is never registered as ours to continue (see
+ * `KnownMessage` in `@bananasaurs/core`).
+ */
+export const assistantConversationMessages = sqliteTable(
+  'assistant_conversation_messages',
+  {
+    guildId: snowflake('guild_id').notNull(),
+    messageId: snowflake('message_id').notNull(),
+    conversationId: text('conversation_id').notNull(),
+    turnId: text('turn_id').notNull(),
+    role: text('role').notNull(),
+  },
+  (t) => [
+    primaryKey({ columns: [t.guildId, t.messageId] }),
+    foreignKey({
+      columns: [t.guildId, t.conversationId],
+      foreignColumns: [assistantConversations.guildId, assistantConversations.conversationId],
+    }).onDelete('cascade'),
+    check('assistant_conversation_messages_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check('assistant_conversation_messages_message_id_snowflake', snowflakeCheck(t.messageId)),
+    check('assistant_conversation_messages_role', sql`${t.role} IN ('user','assistant')`),
+  ],
+);

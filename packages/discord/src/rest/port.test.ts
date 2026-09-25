@@ -440,6 +440,116 @@ describe('messages and reactions', () => {
     expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
     expect(last(requests).reason).toBe('automod: blocked keyword');
   });
+
+  /**
+   * ADR 0072: replying carries a `message_reference` and forces
+   * `replied_user: true` in on top of `parse: []`, so a reply actually pings
+   * the member being replied to.
+   */
+  it('emits message_reference and replied_user: true when replyTo is set', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'and what about parking?',
+      replyTo: '600000000000000001',
+    });
+    expect(last(requests).body).toMatchObject({
+      content: 'and what about parking?',
+      message_reference: { message_id: '600000000000000001', fail_if_not_exists: false },
+      allowed_mentions: { parse: [], replied_user: true },
+    });
+  });
+
+  it('keeps replyTo output byte-identical when it is absent (no regression)', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, { content: 'hello' });
+    expect(last(requests).body).toEqual({ content: 'hello' });
+  });
+
+  it("keeps replyTo's replied_user alongside an explicit allowedMentions.roles", async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'reply with a role ping',
+      allowedMentions: { parse: [], roles: ['555555555555555555'] },
+      replyTo: '600000000000000001',
+    });
+    expect(last(requests).body).toMatchObject({
+      allowed_mentions: { parse: [], roles: ['555555555555555555'], replied_user: true },
+      message_reference: { message_id: '600000000000000001', fail_if_not_exists: false },
+    });
+  });
+
+  it("fetches one message's content and author", async () => {
+    const { port, requests } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'member', global_name: 'Member Name' },
+          content: 'the handbook is pinned in #welcome',
+        },
+      },
+    ]);
+    await expect(port.fetchMessageContent(GUILD, CHANNEL, MESSAGE)).resolves.toEqual({
+      authorId: USER,
+      authorName: 'Member Name',
+      content: 'the handbook is pinned in #welcome',
+    });
+    expect(last(requests).method).toBe('GET');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/messages/${MESSAGE}`);
+  });
+
+  it('prefers the guild nickname over the global name for the quoted author', async () => {
+    const { port } = harness([
+      {
+        status: 200,
+        body: {
+          id: MESSAGE,
+          channel_id: CHANNEL,
+          author: { id: USER, username: 'member', global_name: 'Member Name' },
+          member: { nick: 'Clubhouse Nick' },
+          content: 'hi',
+        },
+      },
+    ]);
+    await expect(port.fetchMessageContent(GUILD, CHANNEL, MESSAGE)).resolves.toMatchObject({
+      authorName: 'Clubhouse Nick',
+    });
+  });
+
+  it('reports undefined rather than throwing on 404 or 403', async () => {
+    const gone = harness([
+      { status: 404, body: { code: DiscordErrorCode.UnknownMessage, message: 'Unknown Message' } },
+    ]);
+    await expect(gone.port.fetchMessageContent(GUILD, CHANNEL, MESSAGE)).resolves.toBeUndefined();
+
+    const forbidden = harness([
+      { status: 403, body: { code: DiscordErrorCode.MissingAccess, message: 'Missing Access' } },
+    ]);
+    await expect(
+      forbidden.port.fetchMessageContent(GUILD, CHANNEL, MESSAGE),
+    ).resolves.toBeUndefined();
+  });
+
+  it('still raises anything else (e.g. a rate limit)', async () => {
+    const { port } = harness([{ status: 500, body: { message: 'internal error' } }]);
+    await expect(port.fetchMessageContent(GUILD, CHANNEL, MESSAGE)).rejects.toBeInstanceOf(
+      DiscordApiError,
+    );
+  });
+
+  it('sends a typing indicator on the channel typing route', async () => {
+    const { port, requests } = harness();
+    await port.sendTyping(GUILD, CHANNEL);
+    expect(last(requests).method).toBe('POST');
+    expect(last(requests).path).toBe(`/api/v10/channels/${CHANNEL}/typing`);
+  });
 });
 
 describe('moderation', () => {
@@ -667,6 +777,26 @@ describe('interactions', () => {
       { content: 'ok' },
     );
     expect((last(requests).body as { flags?: number }).flags ?? 0).toBe(0);
+  });
+
+  /**
+   * The interaction follow-up route behaves as though `?wait=true` were
+   * always set, so Discord's response body is the created message — the ref
+   * `respondToInteraction` needs to link an assistant answer into a
+   * conversation (ADR 0072).
+   */
+  it('returns the ref from the posted follow-up message', async () => {
+    const { port } = harness([{ status: 200, body: { id: MESSAGE, channel_id: CHANNEL } }]);
+    await expect(
+      port.respondToInteraction(GUILD, { interactionId: MESSAGE, token: 'tok' }, { content: 'ok' }),
+    ).resolves.toEqual({ channelId: CHANNEL, messageId: MESSAGE });
+  });
+
+  it('returns undefined when Discord answers with no body', async () => {
+    const { port } = harness([{ status: 204 }]);
+    await expect(
+      port.respondToInteraction(GUILD, { interactionId: MESSAGE, token: 'tok' }, { content: 'ok' }),
+    ).resolves.toBeUndefined();
   });
 
   it('does not put the interaction token in the error it raises', async () => {
