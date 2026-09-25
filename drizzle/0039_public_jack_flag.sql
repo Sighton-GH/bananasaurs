@@ -45,7 +45,12 @@ CREATE TABLE `__new_assistant_model_chain` (
 INSERT INTO `__new_assistant_model_chain`("position", "key_id", "model", "updated_at")
   SELECT "position", 'key_' || "provider", "model", "updated_at"
   FROM `assistant_model_chain`
-  WHERE "provider" IN (SELECT `provider` FROM `assistant_providers` WHERE `api_key_enc` IS NOT NULL);
+  WHERE "provider" IN (SELECT `provider` FROM `assistant_providers` WHERE `api_key_enc` IS NOT NULL)
+  -- 0038 copied the primary plus every fallback with no dedupe, so a
+  -- fallback list that repeats the primary (or itself) leaves duplicate
+  -- (provider, model) rows that would abort the UNIQUE INDEX below. Keep
+  -- only the lowest position per (provider, model).
+  AND "position" = (SELECT MIN(m2."position") FROM assistant_model_chain m2 WHERE m2."provider" = assistant_model_chain."provider" AND m2."model" = assistant_model_chain."model");
 --> statement-breakpoint
 DROP TABLE `assistant_model_chain`;--> statement-breakpoint
 ALTER TABLE `__new_assistant_model_chain` RENAME TO `assistant_model_chain`;--> statement-breakpoint
