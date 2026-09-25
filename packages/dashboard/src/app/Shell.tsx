@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Link, Route, Switch, useLocation } from 'wouter';
+import { AccountEditPage } from '../pages/account-edit.js';
+import { AccountNewPage } from '../pages/account-new.js';
 import { AccountsPage } from '../pages/accounts.js';
 import { AssistantHistoryDetailPage } from '../pages/assistant-history-detail.js';
 import { AssistantHistoryPage } from '../pages/assistant-history.js';
@@ -168,6 +170,9 @@ function Pages() {
       <Route path="/backups" component={BackupsPage} />
       <Route path="/config" component={ConfigPage} />
       <Route path="/accounts" component={AccountsPage} />
+      {/* /accounts/new must come before /accounts/:username or "new" reads as a username. */}
+      <Route path="/accounts/new" component={AccountNewPage} />
+      <Route path="/accounts/:username" component={AccountEditPage} />
       <Route path="/mcp" component={McpPage} />
       {/* /providers is an alias of the AI setup page; /assistant/setup is the NAV entry (Task 9). */}
       <Route path="/providers" component={ProvidersPage} />

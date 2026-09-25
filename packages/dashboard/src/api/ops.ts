@@ -186,6 +186,35 @@ export interface AccountSetPasswordResult {
 /** `POST /api/accounts/:username/grant-guild` / `revoke-guild` outcomes. */
 export type AccountGuildOutcome = 'granted' | 'already-had-it' | 'revoked' | 'did-not-have-it';
 
+/**
+ * `POST /api/accounts/:username/reveal-password` (ADR 0070) — the sealed
+ * plaintext, shown once in a PrintOnceDialog. Never logged, never audited.
+ */
+export interface AccountRevealResult {
+  readonly username: string;
+  readonly password: string;
+}
+
+/**
+ * Dashboard sentences for the account error codes (Canadian English, plain
+ * words). Applied to every account write's refusal body, so a raw code never
+ * reaches the operator.
+ */
+export const accountErrorText = (error: string): string | undefined => {
+  switch (error) {
+    case 'owner-protected':
+      return "The owner account can't be changed here.";
+    case 'weak-password':
+      return 'Use at least 12 characters.';
+    case 'username-taken':
+      return 'That username is already in use.';
+    case 'not-revealable':
+      return "This password can't be shown. Set a new one instead.";
+    default:
+      return undefined;
+  }
+};
+
 // --- mcp --------------------------------------------------------------------
 
 /** One row of `GET /api/mcp/clients` — mirrors `OpsMcpClient`. Never a secret. */

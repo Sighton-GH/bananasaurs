@@ -11,6 +11,11 @@ function LocationProbe() {
   return <p data-testid="location">{location}</p>;
 }
 
+const inputOf = (element: HTMLElement): HTMLInputElement => {
+  if (!(element instanceof HTMLInputElement)) throw new Error('expected an <input>');
+  return element;
+};
+
 function renderNew(
   session: typeof TEST_SESSION = { ...TEST_SESSION, guildName: 'Bananasaurs dev' },
 ) {
@@ -38,24 +43,40 @@ describe('AccountNewPage', () => {
         'Lowercase letters, digits, dot, dash, underscore; 3-64 characters, never a leading dash.',
       ),
     ).toBeTruthy();
-    expect(screen.getByRole('radio', { name: 'Generate one for me' })).toBeChecked();
-    expect(screen.getByRole('radio', { name: "I'll choose one" })).not.toBeChecked();
+    expect(inputOf(screen.getByRole('radio', { name: 'Generate one for me' })).checked).toBe(
+      true,
+    );
+    expect(inputOf(screen.getByRole('radio', { name: "I'll choose one" })).checked).toBe(false);
     // Choosing a password reveals the input with the length hint.
     fireEvent.click(screen.getByRole('radio', { name: "I'll choose one" }));
     expect(screen.getByLabelText('New password')).toBeTruthy();
     expect(screen.getByText('At least 12 characters.')).toBeTruthy();
     // Role cards, one per server role plus Custom.
-    expect(screen.getByRole('radio', { name: /Viewer/ })).toBeTruthy();
-    expect(screen.getByRole('radio', { name: /Moderator/ })).toBeTruthy();
-    expect(screen.getByRole('radio', { name: /Server manager/ })).toBeTruthy();
-    expect(screen.getByRole('radio', { name: /Custom/ })).toBeTruthy();
+    expect(
+      screen.getByRole('radio', {
+        name: 'Viewer Sees settings, logs and history. Changes nothing.',
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('radio', {
+        name: 'Moderator Viewer, plus moderation actions, undo, and role changes.',
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('radio', {
+        name: 'Server manager Everything on this server except managing accounts and connecting apps.',
+      }),
+    ).toBeTruthy();
+    expect(
+      screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }),
+    ).toBeTruthy();
   });
 
   it('Custom reveals every permission with its plain label and description', async () => {
     stubFetch([{ url: '/api/accounts', body: NO_ACCOUNTS }]);
     renderNew();
-    await screen.findByRole('radio', { name: /Custom/ });
-    fireEvent.click(screen.getByRole('radio', { name: /Custom/ }));
+    await screen.findByRole('radio', { name: 'Custom Pick individual permissions below.' });
+    fireEvent.click(screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }));
     // Plain labels, not raw ids, with the one-line descriptions.
     expect(screen.getByText('View settings')).toBeTruthy();
     expect(screen.getByText("See this server's settings, rules and assistant setup.")).toBeTruthy();

@@ -5,12 +5,17 @@ import { RoleCards } from './RoleCards.js';
 
 afterEach(cleanup);
 
+const VIEWER = 'Viewer Sees settings, logs and history. Changes nothing.';
+const MODERATOR = 'Moderator Viewer, plus moderation actions, undo, and role changes.';
+
 describe('RoleCards', () => {
   it('renders one radio per role and reports the preset capabilities', () => {
     const onChange = vi.fn();
     render(<RoleCards value="viewer" capabilities={['config.read', 'audit.read']} onChange={onChange} />);
-    expect(screen.getByRole('radio', { name: /Viewer/ })).toHaveAttribute('aria-checked', 'true');
-    fireEvent.click(screen.getByRole('radio', { name: /Moderator/ }));
+    expect(screen.getByRole('radio', { name: VIEWER }).getAttribute('aria-checked')).toBe(
+      'true',
+    );
+    fireEvent.click(screen.getByRole('radio', { name: MODERATOR }));
     expect(onChange).toHaveBeenCalledWith('moderator', [
       'config.read',
       'audit.read',
@@ -49,7 +54,7 @@ describe('RoleCards', () => {
       <RoleCards value="viewer" capabilities={['config.read', 'audit.read']} onChange={onChange} disabled />,
     );
     for (const radio of screen.getAllByRole('radio')) {
-      expect(radio).toHaveAttribute('aria-disabled', 'true');
+      expect(radio.getAttribute('aria-disabled')).toBe('true');
     }
   });
 });

@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { Router, useLocation } from 'wouter';
+import { Router, Route, useLocation } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
-import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
+import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
+import { accountErrorText } from '../api/ops.js';
 import { AccountEditPage } from './account-edit.js';
 
 function LocationProbe() {
@@ -43,7 +44,7 @@ function renderEdit(path: string, routes: readonly { method?: string; url: strin
   const { hook } = memoryLocation({ path });
   renderWithSession(
     <Router hook={hook}>
-      <AccountEditPage />
+      <Route path="/accounts/:username" component={AccountEditPage} />
       <LocationProbe />
     </Router>,
   );
@@ -75,10 +76,17 @@ describe('AccountEditPage', () => {
     ]);
     expect(await screen.findByText('sam')).toBeTruthy();
     // Viewer preselected from the two held capabilities.
-    expect(screen.getByRole('radio', { name: /Viewer/ })).toHaveAttribute('aria-checked', 'true');
-    // Move to Server manager: nine grants minus the two already held is seven new ones,
-    // and nothing held is dropped. Pick Custom-ish small diff instead: grant one, keep the rest.
-    fireEvent.click(screen.getByRole('radio', { name: /Custom/ }));
+    expect(
+      screen
+        .getByRole('radio', {
+          name: 'Viewer Sees settings, logs and history. Changes nothing.',
+        })
+        .getAttribute('aria-checked'),
+    ).toBe('true');
+    // Move to Custom and add one permission: one grant, no revokes.
+    fireEvent.click(
+      screen.getByRole('radio', { name: 'Custom Pick individual permissions below.' }),
+    );
     fireEvent.click(screen.getByLabelText('Moderate members'));
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save changes' }));
@@ -185,23 +193,44 @@ describe('AccountEditPage', () => {
     expect(screen.getByTestId('location').textContent).toBe('/accounts');
   });
 
-  it('maps owner-protected to a plain sentence', async () => {
+  it('maps account error codes to plain sentences', () => {
+    expect(accountErrorText('owner-protected')).toBe("The owner account can't be changed here.");
+    expect(accountErrorText('weak-password')).toBe('Use at least 12 characters.');
+    expect(accountErrorText('username-taken')).toBe('That username is already in use.');
+    expect(accountErrorText('not-revealable')).toBe(
+      "This password can't be shown. Set a new one instead.",
+    );
+    expect(accountErrorText('something-else')).toBeUndefined();
+  });
+
+  it('maps a not-revealable answer to its sentence', async () => {
     renderEdit('/accounts/sam', [
       { url: '/api/accounts', body: LIST },
       {
         method: 'POST',
-        url: '/api/accounts/sam/revoke-credentials',
-        status: 403,
-        body: { error: 'owner-protected' },
+        url: '/api/accounts/sam/reveal-password',
+        status: 409,
+        body: { error: 'not-revealable' },
       },
     ]);
     await screen.findByText('sam');
     await act(async () => {
-      fireEvent.click(
-        screen.getByRole('button', { name: 'Sign out everywhere and disconnect apps' }),
-      );
+      fireEvent.click(screen.getByRole('button', { name: 'Reveal current password' }));
     });
-    expect(await screen.findByText("The owner account can't be changed here.")).toBeTruthy();
+    expect(
+      await screen.findByText("This password can't be shown. Set a new one instead."),
+    ).toBeTruthy();
+  });
+
+  it('refuses a short chosen password inline, before anything is written', async () => {
+    const mock = renderEdit('/accounts/sam', [{ url: '/api/accounts', body: LIST }]);
+    await screen.findByText('sam');
+    fireEvent.click(screen.getByRole('radio', { name: "I'll choose one" }));
+    fireEvent.change(screen.getByLabelText('New password'), { target: { value: 'short' } });
+    expect(await screen.findByText('Use at least 12 characters.')).toBeTruthy();
+    expect(
+      mock.mock.calls.some((c) => (c[0] as string).endsWith('/password')),
+    ).toBe(false);
   });
 
   it('shows only the summary and the password change for the owner account itself', async () => {
@@ -213,5 +242,31 @@ describe('AccountEditPage', () => {
     expect(screen.queryByText('Sessions and apps')).toBeNull();
     expect(screen.queryByText('Danger zone')).toBeNull();
     expect(screen.queryByText('config.read')).toBeNull();
+  });
+
+  it('lets the owner change their own password, shown once', async () => {
+    const mock = renderEdit('/accounts/bryan', [
+      { url: '/api/accounts', body: LIST },
+      {
+        method: 'PUT',
+        url: '/api/accounts/bryan/password',
+        body: {
+          username: 'bryan',
+          accountId: 'acct-1',
+          password: 'owner-new-secret',
+          sessionsRevoked: 1,
+          guildsTouched: 1,
+        },
+      },
+    ]);
+    await screen.findByText('bryan');
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Set new password' }));
+    });
+    expect(
+      mock.mock.calls.some((c) => (c[0] as string) === '/api/accounts/bryan/password'),
+    ).toBe(true);
+    const printOnce = await screen.findByRole('dialog', { name: 'New password' });
+    expect(printOnce.textContent).toContain('owner-new-secret');
   });
 });
