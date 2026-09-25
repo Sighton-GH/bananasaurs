@@ -61,6 +61,7 @@ import {
   modPendingRepo,
   panelRepo,
   pipelineRepo,
+  resourceCacheRepo,
   roleRepo,
   type GuildScope,
   type InstanceScope,
@@ -74,6 +75,8 @@ import { modPurgeHandler } from '../jobs/mod.js';
 import { reconcileGuildHandler } from '../jobs/reconcile.js';
 import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
+import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
+import { ReviewedResourceFetcher } from '../assistant/resource-fetcher.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
@@ -789,6 +792,16 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         store: reminderStoreFor(scope),
         delivery: createReminderDelivery(guildId, discord),
         now,
+        logger,
+      }),
+      resourceRefreshHandler({
+        scope,
+        listResources: assistantRepo.listResources,
+        refresh: {
+          fetcher: new ReviewedResourceFetcher({ now }),
+          repo: resourceCacheRepo,
+          now,
+        },
         logger,
       }),
       // Registered although nothing enqueues one yet: a handler missing when a
