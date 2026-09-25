@@ -1136,8 +1136,9 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
       DEFAULT_WIZARD_ANSWERS.club,
     );
     // Omitted keeps the stored answers; the version still moves on.
-    expect((await put(cookie, csrf, body({ promptVersion: 1, systemPrompt: 'Edited.' }))).statusCode)
-      .toBe(200);
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 1, systemPrompt: 'Edited.' }))).statusCode,
+    ).toBe(200);
     expect(assistantRepo.listBehaviours(scope)[0]?.promptWizard).toEqual(
       DEFAULT_WIZARD_ANSWERS.club,
     );
@@ -1163,7 +1164,8 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
       .tailAudit(t.scopes.forGuild(GUILD), {})
       .filter(
         (row) =>
-          row.action === 'assistant_behaviour.saved' || row.action === 'assistant_behaviour.created',
+          row.action === 'assistant_behaviour.saved' ||
+          row.action === 'assistant_behaviour.created',
       );
     expect(rows).toHaveLength(1);
     expect(JSON.parse(rows[0]?.after ?? 'null') as unknown).toEqual({ promptWizard: true });

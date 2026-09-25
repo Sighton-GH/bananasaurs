@@ -1,5 +1,12 @@
 import { and, asc, desc, eq, inArray, isNull, lte, or } from 'drizzle-orm';
-import type { AssistantBehaviour, ClubResource, Reminder, ReminderStatus } from '@bananasaurs/core';
+import type {
+  AssistantBehaviour,
+  ClubResource,
+  PromptWizardAnswers,
+  Reminder,
+  ReminderStatus,
+} from '@bananasaurs/core';
+import { promptWizardAnswers } from '@bananasaurs/core';
 import {
   assistantBehaviours,
   assistantReminders,
@@ -22,22 +29,37 @@ const array = (raw: string): readonly string[] => {
     throw new Error('assistant list column is invalid');
   return value;
 };
-const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehaviour => ({
-  id: r.behaviourId,
-  guildId: r.guildId,
-  surface: r.surface as AssistantBehaviour['surface'],
-  ...(r.mentionRoleId === null ? {} : { mentionRoleId: r.mentionRoleId }),
-  name: r.name,
-  systemPrompt: r.systemPrompt,
-  promptVersion: r.promptVersion,
-  allowedSkillIds: array(r.skillIdsJson),
-  callerRoleIds: array(r.callerRoleIdsJson),
-  ...(r.ticketChannelId === null ? {} : { ticketChannelId: r.ticketChannelId }),
-  reviewerRoleIds: array(r.reviewerRoleIdsJson),
-  resourceIds: array(r.resourceIdsJson),
-  enabled: r.enabled === 1,
-  answersBotTag: r.answersBotTag === 1,
-});
+const toPromptWizard = (raw: string | null): PromptWizardAnswers | undefined => {
+  if (raw === null) return undefined;
+  try {
+    const parsed = promptWizardAnswers.safeParse(JSON.parse(raw) as unknown);
+    return parsed.success ? parsed.data : undefined;
+  } catch {
+    return undefined;
+  }
+};
+const toBehaviour = (r: typeof assistantBehaviours.$inferSelect): AssistantBehaviour => {
+  const promptWizard = toPromptWizard(r.promptWizardJson);
+  return {
+    id: r.behaviourId,
+    guildId: r.guildId,
+    surface: r.surface as AssistantBehaviour['surface'],
+    ...(r.mentionRoleId === null ? {} : { mentionRoleId: r.mentionRoleId }),
+    name: r.name,
+    systemPrompt: r.systemPrompt,
+    promptVersion: r.promptVersion,
+    allowedSkillIds: array(r.skillIdsJson),
+    callerRoleIds: array(r.callerRoleIdsJson),
+    ...(r.ticketChannelId === null ? {} : { ticketChannelId: r.ticketChannelId }),
+    reviewerRoleIds: array(r.reviewerRoleIdsJson),
+    resourceIds: array(r.resourceIdsJson),
+    enabled: r.enabled === 1,
+    answersBotTag: r.answersBotTag === 1,
+    // Anything invalid reads as undefined and never throws: a hand-edited or
+    // older-database value must not break the behaviours list.
+    ...(promptWizard === undefined ? {} : { promptWizard }),
+  };
+};
 export const listBehaviours = (scope: GuildScope): readonly AssistantBehaviour[] =>
   read(scope, (db) =>
     db
@@ -72,6 +94,10 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
         // Only setBotTagBehaviour changes this flag (ADR 0063): a new
         // behaviour starts unflagged and a re-save leaves it as it was.
         answersBotTag: 0,
+        // Absent answers mean hand-written or cleared: stored as NULL, never
+        // as the string "undefined".
+        promptWizardJson:
+          input.promptWizard === undefined ? null : JSON.stringify(input.promptWizard),
         createdAt: now,
         updatedAt: now,
       })
@@ -89,6 +115,8 @@ export const putBehaviour = (scope: GuildScope, input: AssistantBehaviour, now: 
           ticketChannelId: input.ticketChannelId ?? null,
           reviewerRoleIdsJson: JSON.stringify(input.reviewerRoleIds),
           resourceIdsJson: JSON.stringify(input.resourceIds),
+          promptWizardJson:
+            input.promptWizard === undefined ? null : JSON.stringify(input.promptWizard),
           updatedAt: now,
         },
       })

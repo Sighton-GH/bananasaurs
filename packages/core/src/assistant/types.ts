@@ -1,5 +1,7 @@
 export type AssistantSurface = 'bananasaurs' | 'it-services' | 'help' | 'direct-command';
 
+import type { PromptWizardAnswers } from './prompt-wizard.js';
+
 export interface AssistantBehaviour {
   readonly id: string;
   readonly guildId: string;
@@ -22,6 +24,12 @@ export interface AssistantBehaviour {
   readonly allowedSkillIds: readonly string[];
   readonly resourceIds: readonly string[];
   readonly enabled: boolean;
+  /**
+   * The dashboard wizard's structured answers that produced `systemPrompt`
+   * (Task 18). Absent when the prompt was written by hand or the answers were
+   * cleared; the wizard falls back to the surface defaults then.
+   */
+  readonly promptWizard?: PromptWizardAnswers | undefined;
 }
 
 export type AssistantSkillEffect = 'read' | 'draft' | 'schedule' | 'send';
