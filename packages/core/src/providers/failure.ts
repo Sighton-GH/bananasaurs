@@ -318,7 +318,11 @@ export const classifyProviderFailure: (
   }
 
   // Rule 7: the request never reached the provider.
-  if (err instanceof ProviderError && err.kind === 'outage') {
+  if (
+    err instanceof ProviderError &&
+    err.kind === 'outage' &&
+    fields.httpStatus === undefined
+  ) {
     return { code: 'provider-network-error', ...base };
   }
 
