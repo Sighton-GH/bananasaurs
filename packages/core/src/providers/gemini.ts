@@ -7,6 +7,7 @@ import type {
   TextProvider,
 } from './contracts.js';
 import { ProviderError, type ProviderErrorKind } from './errors.js';
+import { netCodeOf } from './failure.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
 
 const DEFAULT_BASE_URL = 'https://generativelanguage.googleapis.com/v1beta';
@@ -113,6 +114,7 @@ export class GeminiProvider implements TextProvider {
 
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly host: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
 
@@ -120,6 +122,7 @@ export class GeminiProvider implements TextProvider {
     if (options.apiKey.trim() === '') throw new Error('Gemini API key must not be empty');
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+    this.host = new URL(this.baseUrl).host;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
   }
@@ -170,11 +173,12 @@ export class GeminiProvider implements TextProvider {
       );
     } catch (error) {
       const timeoutError = error instanceof DOMException && error.name === 'TimeoutError';
+      const netCode = netCodeOf(error);
       throw new ProviderError(
         timeoutError ? 'timeout' : 'outage',
         timeoutError ? 'Gemini request timed out' : 'Gemini request failed',
         true,
-        { cause: error },
+        { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
       );
     }
 
@@ -184,6 +188,7 @@ export class GeminiProvider implements TextProvider {
         kind,
         `Gemini request failed with HTTP ${response.status}`,
         kind === 'rate-limit' || kind === 'outage',
+        { status: response.status, host: this.host },
       );
     }
 
@@ -291,6 +296,7 @@ export const listGeminiModels = async (options: {
   readonly timeoutMs?: number;
 }): Promise<readonly GeminiModelInfo[]> => {
   const base = (options.baseUrl ?? DEFAULT_BASE_URL).replace(/\/$/, '');
+  const host = new URL(base).host;
   const fetchImpl = options.fetch ?? globalThis.fetch;
   const found: GeminiModelInfo[] = [];
   let pageToken: string | undefined;
@@ -303,8 +309,11 @@ export const listGeminiModels = async (options: {
         signal: AbortSignal.timeout(options.timeoutMs ?? 15_000),
       });
     } catch (error) {
+      const netCode = netCodeOf(error);
       throw new ProviderError('outage', 'Gemini model list request failed', true, {
         cause: error,
+        host,
+        ...(netCode === undefined ? {} : { netCode }),
       });
     }
     if (!response.ok) {
@@ -313,6 +322,7 @@ export const listGeminiModels = async (options: {
         kind,
         `Gemini model list failed with HTTP ${response.status}`,
         kind === 'rate-limit' || kind === 'outage',
+        { status: response.status, host },
       );
     }
     const parsed = modelListSchema.safeParse(await response.json());
