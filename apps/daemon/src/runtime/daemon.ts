@@ -32,7 +32,11 @@ import {
   type ScopeFactory,
 } from '@bananasaurs/storage';
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
-import { createPasswordVault, type PasswordVault } from '../ops/password-vault.js';
+import {
+  createPasswordVault,
+  unavailableVault,
+  type PasswordVault,
+} from '../ops/password-vault.js';
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
@@ -189,13 +193,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const passwordVault: PasswordVault =
     deps.passwordVault ??
     (config.ACCOUNT_PASSWORD_SECRET_KEY === undefined
-      ? {
-          available: false,
-          seal: () => {
-            throw new Error('password vault unavailable: no key configured');
-          },
-          open: () => undefined,
-        }
+      ? unavailableVault('no key configured')
       : createPasswordVault({
           envSecret: config.ACCOUNT_PASSWORD_SECRET_KEY,
           dataDir: config.BANANASAURS_DATA_DIR,

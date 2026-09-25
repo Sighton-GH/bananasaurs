@@ -891,9 +891,10 @@ export const testInstanceFor = (instanceScope: InstanceScope, now: () => number)
       disabled: row.disabled,
       lockedUntil: row.lockedUntil,
       createdAt: row.createdAt,
-      // ADR 0070: this test instance has no vault, so nothing this seals
-      // ever has a sealed copy — the same real logic, just always false
-      // here because `accountCreate`/`accountSetPassword` below never call
+      // ADR 0070: `revealable` follows the stored sealed copy (a non-owner
+      // row with one) — the same real logic as the canonical
+      // implementation, false in practice here only because
+      // `accountCreate`/`accountSetPassword` below never call
       // `setPasswordSealed`.
       revealable: row.passwordSealed !== null && !row.isOwner,
     })),

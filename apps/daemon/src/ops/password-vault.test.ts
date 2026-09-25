@@ -4,7 +4,11 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { afterEach, beforeEach, expect, it } from 'vitest';
 import { sealWithKey } from '../crypto/seal.js';
-import { ACCOUNT_PASSWORD_KEY_FILE, createPasswordVault } from './password-vault.js';
+import {
+  ACCOUNT_PASSWORD_KEY_FILE,
+  createPasswordVault,
+  unavailableVault,
+} from './password-vault.js';
 
 /**
  * Mirrors `apps/daemon/src/assistant/provider-secret.test.ts`: same key-file
@@ -75,6 +79,13 @@ it('unavailable vault: seal throws, open always returns undefined', () => {
   const vault = createPasswordVault({ envSecret: undefined, dataDir: dir, readonly: true });
   expect(vault.available).toBe(false);
   expect(() => vault.seal('pw')).toThrow();
+  expect(vault.open('anything')).toBeUndefined();
+});
+
+it('unavailableVault: seal throws, open always returns undefined', () => {
+  const vault = unavailableVault('readonly-no-key-file');
+  expect(vault.available).toBe(false);
+  expect(() => vault.seal('pw')).toThrow('password vault unavailable: readonly-no-key-file');
   expect(vault.open('anything')).toBeUndefined();
 });
 

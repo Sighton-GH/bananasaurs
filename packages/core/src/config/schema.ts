@@ -23,6 +23,8 @@ export const SECRET_CONFIG_KEYS = [
   'OPENROUTER_API_KEY',
   'NVIDIA_NIM_API_KEY',
   'BRAVE_SEARCH_API_KEY',
+  /** ADR 0061 §3: the master secret sealing dashboard-entered provider keys. Must never be printed (hard rule 4). */
+  'ASSISTANT_PROVIDER_SECRET_KEY',
   /** ADR 0070: the master secret sealing non-owner account passwords. Must never be printed (hard rule 4). */
   'ACCOUNT_PASSWORD_SECRET_KEY',
 ] as const;

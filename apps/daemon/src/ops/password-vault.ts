@@ -27,7 +27,32 @@ export interface PasswordVault {
   /** `undefined` when the key does not open it (wrong key, or not this vault's ciphertext). */
   open(sealed: string): string | undefined;
   readonly available: boolean;
+  /**
+   * Where the sealing key resolved from (`resolveSecretFile`'s answer), so
+   * `doctor` can name it without re-stating the file. Absent on hand-built
+   * test doubles, which predate the field and always mean "no opinion".
+   */
+  readonly source?: 'env' | 'file' | 'missing' | undefined;
 }
+
+/**
+ * The vault for "no usable key": `seal` throws defensively rather than
+ * silently discarding a password, `open` answers `undefined` rather than
+ * throwing, matching every other "does this open" answer in the tree.
+ * Shared by `createPasswordVault`'s `missing` branch and the daemon's
+ * env-only fallback, so the two cannot drift apart again.
+ */
+export const unavailableVault = (reason: string): PasswordVault => ({
+  available: false,
+  source: 'missing',
+  seal: () => {
+    // Callers check `available` first (`accountCreate`/`accountSetPassword`
+    // in `ops/wiring.ts` store `null` instead of calling this) — reaching
+    // this is a caller bug, not a runtime condition to answer quietly.
+    throw new Error(`password vault unavailable: ${reason}`);
+  },
+  open: () => undefined,
+});
 
 export const createPasswordVault = (input: {
   readonly envSecret: string | undefined;
@@ -41,20 +66,12 @@ export const createPasswordVault = (input: {
     readonly: input.readonly,
   });
   if (resolution.source === 'missing') {
-    return {
-      available: false,
-      seal: () => {
-        // Callers check `available` first (`accountCreate`/`accountSetPassword`
-        // in `ops/wiring.ts` store `null` instead of calling this) — reaching
-        // this is a caller bug, not a runtime condition to answer quietly.
-        throw new Error(`password vault unavailable: ${resolution.reason}`);
-      },
-      open: () => undefined,
-    };
+    return unavailableVault(resolution.reason);
   }
   const key = keyFrom(resolution.secret);
   return {
     available: true,
+    source: resolution.source,
     seal: (password) => sealWithKey(key, password),
     open: (sealed) => openWithKey(key, sealed),
   };

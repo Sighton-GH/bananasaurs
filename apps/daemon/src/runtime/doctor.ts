@@ -216,6 +216,12 @@ export const dashboardAccessOk = (access: DoctorDashboardAccess): boolean => {
  */
 export interface DoctorPasswordVault {
   readonly available: boolean;
+  /**
+   * Where the sealing key resolved from (`resolveSecretFile`'s answer, via
+   * the vault). Optional: callers that predate the field omit it and the
+   * report keeps today's file wording, so existing consumers stay green.
+   */
+  readonly source?: 'env' | 'file' | 'missing' | undefined;
   /** Non-owner accounts with a sealed copy the owner can reveal. Never the values. */
   readonly revealableAccounts: number;
 }
@@ -455,14 +461,25 @@ export function formatDoctorReport(report: DoctorReport): string {
     );
   }
 
-  // ADR 0070. Never the key itself — only whether one resolved, and a count.
+  // ADR 0070. Never the key itself — only where it resolved from, and a count.
+  // The mode is checked at resolution, not re-stat'ed here: `file` means the
+  // 0600 key file, `env` means `ACCOUNT_PASSWORD_SECRET_KEY` won, and
+  // `missing` (or an unavailable vault that predates the field) is not set up.
   if (report.passwordVault !== undefined) {
+    const vault = report.passwordVault;
+    const source = vault.source ?? (vault.available ? 'file' : 'missing');
     lines.push('');
-    lines.push(
-      report.passwordVault.available
-        ? `  Account password vault: key file present, mode 0600, ${String(report.passwordVault.revealableAccounts)} accounts revealable`
-        : '  Account password vault: not set up (reveal unavailable)',
-    );
+    if (!vault.available || source === 'missing') {
+      lines.push('  Account password vault: not set up (reveal unavailable)');
+    } else if (source === 'env') {
+      lines.push(
+        `  Account password vault: key from ACCOUNT_PASSWORD_SECRET_KEY, ${String(vault.revealableAccounts)} accounts revealable`,
+      );
+    } else {
+      lines.push(
+        `  Account password vault: key file present, mode 0600, ${String(vault.revealableAccounts)} accounts revealable`,
+      );
+    }
   }
 
   return lines.join('\n');
