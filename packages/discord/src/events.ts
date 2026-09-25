@@ -443,6 +443,8 @@ function toMessageEvent(
     mentionedRoleIds: mentions ? [...mentions.roles.keys()] : [],
     authorRoleIds: message.partial || message.member === null ? [] : roleIdsOf(message.member),
     mentionsEveryone: mentions?.everyone ?? false,
+    referencedMessageId: message.reference?.messageId ?? undefined,
+    referencedAuthorId: mentions?.repliedUser?.id ?? undefined,
     attachments: message.partial
       ? []
       : [...message.attachments.values()].map((a) => ({

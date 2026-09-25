@@ -1,6 +1,7 @@
 import {
   resolveAssistantBehaviour,
   type AssistantBehaviour,
+  type KnownMessage,
   type MessageEvent,
 } from '@bananasaurs/core';
 
@@ -28,11 +29,20 @@ const userMention = (userId: string): RegExp => new RegExp(`<@!?${userId}>`, 'g'
  * specialised desk. Neither path checks caller roles here: like `/ask`, the
  * service does, exempting the owner and answering a refusal through the keyed
  * job instead of dropping it silently (ADR 0064).
+ *
+ * An untagged message that is a Discord Reply to a known bot answer also
+ * routes, to that answer's own behaviour (ADR 0072): `lookupMessage`, when
+ * given, is asked about `event.referencedMessageId` before falling back to
+ * "not addressed". A reply to a bot message *unknown* to `lookupMessage`
+ * does not route here — that case is the resolver's `reply-to-unknown-bot-
+ * message` rule, which only ever applies to a tagged message (Task 13's
+ * conversation resolver, `packages/core/src/assistant/conversation.ts`).
  */
 export const routeAssistantMention = (
   event: MessageEvent,
   behaviours: readonly AssistantBehaviour[],
   botUserId: string,
+  lookupMessage?: (messageId: string) => KnownMessage | undefined,
 ): MentionRoute => {
   if (event.kind !== 'messageCreate' || event.authorIsBot || event.authorId === undefined)
     return { kind: 'not-addressed' };
@@ -49,7 +59,31 @@ export const routeAssistantMention = (
   );
   const mentioned = new Set(event.mentionedRoleIds.filter((id) => configuredRoleIds.has(id)));
   const botTagged = event.mentionedUserIds.includes(botUserId);
-  if (mentioned.size === 0 && !botTagged) return { kind: 'not-addressed' };
+  if (mentioned.size === 0 && !botTagged) {
+    if (
+      lookupMessage !== undefined &&
+      event.referencedMessageId !== undefined &&
+      event.referencedAuthorId === botUserId
+    ) {
+      const known = lookupMessage(event.referencedMessageId);
+      if (
+        known !== undefined &&
+        known.role === 'assistant' &&
+        known.channelId === event.channelId
+      ) {
+        const behaviour = behaviours.find(
+          (candidate) =>
+            candidate.id === known.behaviourId &&
+            candidate.enabled &&
+            candidate.guildId === event.guildId,
+        );
+        if (behaviour !== undefined) {
+          return { kind: 'routed', behaviour, prompt: (event.content ?? '').trim() };
+        }
+      }
+    }
+    return { kind: 'not-addressed' };
+  }
 
   let behaviour: AssistantBehaviour;
   if (mentioned.size === 0) {

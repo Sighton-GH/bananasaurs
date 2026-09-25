@@ -136,7 +136,9 @@ const buildSubscriberDeps = (): InteractionSubscriberDeps => {
     newPassId: () => `pass-${discord.now()}`,
     responder: {
       defer: (ref, options) => discord.deferInteraction(GUILD, ref, options),
-      respond: (ref, message) => discord.respondToInteraction(GUILD, ref, message),
+      respond: async (ref, message) => {
+        await discord.respondToInteraction(GUILD, ref, message);
+      },
     },
   };
 };

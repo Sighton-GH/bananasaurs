@@ -206,4 +206,102 @@ describe('routeAssistantMention', () => {
       ).toEqual({ kind: 'not-addressed' });
     });
   });
+
+  describe('an untagged Discord Reply to a known bot answer (ADR 0072)', () => {
+    const untaggedReply = (over: Partial<MessageEvent> = {}): MessageEvent =>
+      event({
+        content: 'and what about parking?',
+        mentionedRoleIds: [],
+        mentionedUserIds: [],
+        referencedMessageId: '567890123456789099',
+        referencedAuthorId: botUserId,
+        ...over,
+      });
+
+    it("routes to the conversation's own behaviour", () => {
+      const lookupMessage = (id: string) =>
+        id === '567890123456789099'
+          ? {
+              conversationId: 'conv-1',
+              role: 'assistant' as const,
+              channelId: event().channelId,
+              behaviourId: 'club',
+            }
+          : undefined;
+      expect(
+        routeAssistantMention(untaggedReply(), behaviours, botUserId, lookupMessage),
+      ).toMatchObject({
+        kind: 'routed',
+        behaviour: { id: 'club' },
+        prompt: 'and what about parking?',
+      });
+    });
+
+    it('is not addressed when the replied-to message is unknown', () => {
+      const lookupMessage = () => undefined;
+      expect(routeAssistantMention(untaggedReply(), behaviours, botUserId, lookupMessage)).toEqual({
+        kind: 'not-addressed',
+      });
+    });
+
+    it('is not addressed when no lookupMessage was given at all', () => {
+      expect(routeAssistantMention(untaggedReply(), behaviours, botUserId)).toEqual({
+        kind: 'not-addressed',
+      });
+    });
+
+    it('is not addressed when the conversation belongs to a disabled behaviour', () => {
+      const disabled = behaviours.map((b) => (b.id === 'club' ? { ...b, enabled: false } : b));
+      const lookupMessage = () => ({
+        conversationId: 'conv-1',
+        role: 'assistant' as const,
+        channelId: event().channelId,
+        behaviourId: 'club',
+      });
+      expect(routeAssistantMention(untaggedReply(), disabled, botUserId, lookupMessage)).toEqual({
+        kind: 'not-addressed',
+      });
+    });
+
+    it('is not addressed when the reply targets a different channel', () => {
+      const lookupMessage = () => ({
+        conversationId: 'conv-1',
+        role: 'assistant' as const,
+        channelId: '999999999999999999',
+        behaviourId: 'club',
+      });
+      expect(routeAssistantMention(untaggedReply(), behaviours, botUserId, lookupMessage)).toEqual({
+        kind: 'not-addressed',
+      });
+    });
+
+    it('is not addressed when the known message is a user turn, not an assistant one', () => {
+      const lookupMessage = () => ({
+        conversationId: 'conv-1',
+        role: 'user' as const,
+        channelId: event().channelId,
+        behaviourId: 'club',
+      });
+      expect(routeAssistantMention(untaggedReply(), behaviours, botUserId, lookupMessage)).toEqual({
+        kind: 'not-addressed',
+      });
+    });
+
+    it('still requires a tag when the reply is to someone other than the bot', () => {
+      const lookupMessage = () => ({
+        conversationId: 'conv-1',
+        role: 'assistant' as const,
+        channelId: event().channelId,
+        behaviourId: 'club',
+      });
+      expect(
+        routeAssistantMention(
+          untaggedReply({ referencedAuthorId: '890123456789012345' }),
+          behaviours,
+          botUserId,
+          lookupMessage,
+        ),
+      ).toEqual({ kind: 'not-addressed' });
+    });
+  });
 });

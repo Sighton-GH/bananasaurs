@@ -145,8 +145,14 @@ class MinimalSendDiscord implements DiscordPort {
   async deferInteraction(): Promise<void> {
     this.notUsed('deferInteraction');
   }
-  async respondToInteraction(): Promise<void> {
+  async respondToInteraction(): Promise<never> {
     this.notUsed('respondToInteraction');
+  }
+  async fetchMessageContent(): Promise<never> {
+    this.notUsed('fetchMessageContent');
+  }
+  async sendTyping(): Promise<void> {
+    this.notUsed('sendTyping');
   }
   async fetchAuditLog(): Promise<never> {
     this.notUsed('fetchAuditLog');

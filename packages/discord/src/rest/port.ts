@@ -15,7 +15,7 @@ import {
   type APIUser,
   type REST,
 } from 'discord.js';
-import { unicodeEmojiChars } from '@bananasaurs/core';
+import { DiscordApiError, unicodeEmojiChars } from '@bananasaurs/core';
 import type {
   AuditLogEntry,
   DiscordMember,
@@ -94,6 +94,16 @@ interface DeferredInteraction {
   ephemeral: boolean;
   atMs: number;
 }
+
+/**
+ * `GET /channels/{channelId}/messages/{messageId}` includes `member` — a
+ * partial guild member of the message's author — when the message was
+ * posted in a guild, which is what `fetchMessageContent` reads for a
+ * nickname. `discord-api-types`'s `APIMessage` does not declare it (its own
+ * comment marks the field gateway-only), so it is extended locally rather
+ * than widened in the library's own type.
+ */
+type APIMessageWithMember = APIMessage & { member?: { nick?: string | null } };
 
 export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
   const { rest, applicationId } = deps;
@@ -234,6 +244,31 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
           body: toRestMessage(message),
         }),
       );
+    },
+
+    async fetchMessageContent(_guildId, channelId, messageId) {
+      try {
+        const message = (await mapErrors(() =>
+          rest.get(Routes.channelMessage(channelId, messageId)),
+        )) as APIMessageWithMember;
+        return {
+          authorId: message.author.id,
+          authorName: message.member?.nick ?? message.author.global_name ?? message.author.username,
+          content: message.content,
+        };
+      } catch (err) {
+        // Gone or no access is routine here — a member quoting an old or
+        // now-hidden message — and is reported as "no quote available"
+        // rather than failing the whole turn.
+        if (err instanceof DiscordApiError && (err.status === 404 || err.status === 403)) {
+          return undefined;
+        }
+        throw err;
+      }
+    },
+
+    async sendTyping(_guildId, channelId) {
+      await mapErrors(() => rest.post(Routes.channelTyping(channelId)));
     },
 
     async deleteMessage(_guildId, ref, reason) {
@@ -398,7 +433,11 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
 
     async respondToInteraction(_guildId, ref, message) {
       const ephemeral = deferred.get(ref.interactionId)?.ephemeral ?? false;
-      await mapErrors(() =>
+      // The interaction follow-up route behaves as though `?wait=true` were
+      // always set — Discord returns the created message, unlike a plain
+      // webhook execute — so the ref comes straight from the response rather
+      // than a second request.
+      const posted = (await mapErrors(() =>
         rest.post(Routes.webhook(applicationId, ref.token), {
           body: {
             ...toRestMessage(message),
@@ -406,8 +445,14 @@ export function createDiscordRestPort(deps: RestPortDeps): DiscordPort {
           },
           auth: false,
         }),
-      );
+      )) as Partial<APIMessage> | undefined;
       deferred.delete(ref.interactionId);
+      // A 204 (no `wait`, or nothing to report) comes back as `undefined` or
+      // `{}` depending on the transport — either way there is no id to
+      // report, and fabricating one would be worse than reporting none.
+      return posted?.id === undefined || posted.channel_id === undefined
+        ? undefined
+        : { channelId: posted.channel_id, messageId: posted.id };
     },
 
     // --- audit log -------------------------------------------------------
@@ -498,6 +543,16 @@ function restEmoji(key: EmojiKey): string {
 
 /** `OutgoingMessage` is already the Discord shape, minus what we never send. */
 function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
+  const allowedMentions =
+    message.allowedMentions === undefined
+      ? undefined
+      : {
+          parse: [...message.allowedMentions.parse],
+          ...(message.allowedMentions.roles === undefined
+            ? {}
+            : { roles: [...message.allowedMentions.roles] }),
+        };
+
   return {
     ...(message.content === undefined ? {} : { content: message.content }),
     ...(message.embeds === undefined ? {} : { embeds: message.embeds }),
@@ -505,17 +560,22 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
     // camelCase on the port, snake_case on the wire: a spread of
     // `allowedMentions` would still be broken. Opt-in only — the MCP send path
     // is the sole caller that sets it, and a default here would change what
-    // panel posts and log messages send.
-    ...(message.allowedMentions === undefined
+    // panel posts and log messages send. `replyTo` (ADR 0072) forces
+    // `replied_user: true` in on top of whatever `allowedMentions` already
+    // says, without disturbing `parse`, so replying still pings the member
+    // being replied to even when nothing else set `allowedMentions` at all.
+    ...(allowedMentions === undefined && message.replyTo === undefined
       ? {}
       : {
           allowed_mentions: {
-            parse: [...message.allowedMentions.parse],
-            ...(message.allowedMentions.roles === undefined
-              ? {}
-              : { roles: [...message.allowedMentions.roles] }),
+            parse: allowedMentions?.parse ?? [],
+            ...(allowedMentions?.roles === undefined ? {} : { roles: allowedMentions.roles }),
+            ...(message.replyTo === undefined ? {} : { replied_user: true }),
           },
         }),
+    ...(message.replyTo === undefined
+      ? {}
+      : { message_reference: { message_id: message.replyTo, fail_if_not_exists: false } }),
   };
 }
 
