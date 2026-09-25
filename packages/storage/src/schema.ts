@@ -1957,12 +1957,19 @@ export const assistantSettings = sqliteTable(
   {
     guildId: snowflake('guild_id').primaryKey(),
     logChannelId: snowflake('log_channel_id'),
+    // Task 19: auto-delete window in days (61/182/365) or NULL for keep
+    // forever. The default (6 months) backfills existing rows on migrate.
+    conversationRetentionDays: integer('conversation_retention_days').default(182),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_settings_guild_id_snowflake', snowflakeCheck(t.guildId)),
     check('assistant_settings_log_channel_snowflake', nullableSnowflakeCheck(t.logChannelId)),
+    check(
+      'assistant_settings_conversation_retention_days',
+      sql`(${t.conversationRetentionDays} IS NULL OR ${t.conversationRetentionDays} IN (61,182,365))`,
+    ),
   ],
 );
 

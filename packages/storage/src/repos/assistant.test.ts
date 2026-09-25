@@ -38,12 +38,7 @@ import {
   getConversationRetention,
   setConversationRetention,
 } from './assistant.js';
-import {
-  appendTurn,
-  createConversation,
-  getConversation,
-  recentTurns,
-} from './conversations.js';
+import { appendTurn, createConversation, getConversation, recentTurns } from './conversations.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
 beforeEach(() => {

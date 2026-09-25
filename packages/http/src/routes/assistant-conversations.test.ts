@@ -1,10 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { FastifyInstance } from 'fastify';
-import {
-  parseGuildId,
-  type AssistantTrace,
-  type Capability,
-} from '@bananasaurs/core';
+import { parseGuildId, type AssistantTrace, type Capability } from '@bananasaurs/core';
 import {
   accountRepo,
   authzRepo,
@@ -164,9 +160,7 @@ describe('assistant conversation routes', () => {
       '/api/assistant/conversations/conv-1',
       '/api/assistant/conversation-retention',
     ]) {
-      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(
-        403,
-      );
+      expect((await app.inject({ method: 'GET', url, headers: { cookie } })).statusCode).toBe(403);
     }
   });
 
@@ -176,8 +170,13 @@ describe('assistant conversation routes', () => {
     const { cookie, csrf } = await signIn();
     const headers = { cookie, [CSRF_HEADER]: csrf };
     expect(
-      (await app.inject({ method: 'POST', url: '/api/assistant/conversations/conv-1/end', headers }))
-        .statusCode,
+      (
+        await app.inject({
+          method: 'POST',
+          url: '/api/assistant/conversations/conv-1/end',
+          headers,
+        })
+      ).statusCode,
     ).toBe(403);
     expect(
       (await app.inject({ method: 'DELETE', url: '/api/assistant/conversations/conv-1', headers }))

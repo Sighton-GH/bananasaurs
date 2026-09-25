@@ -144,7 +144,9 @@ describe('conversationPruneHandler', () => {
     );
 
     expect(
-      effectRepo.tailAudit(scope, { limit: 10 }).filter((r) => r.action === 'assistant_conversation.pruned'),
+      effectRepo
+        .tailAudit(scope, { limit: 10 })
+        .filter((r) => r.action === 'assistant_conversation.pruned'),
     ).toEqual([]);
   });
 
@@ -160,7 +162,9 @@ describe('conversationPruneHandler', () => {
 
     expect(conversationRepo.getConversation(scope, 'conv-ancient')).toBeDefined();
     expect(
-      effectRepo.tailAudit(scope, { limit: 10 }).filter((r) => r.action === 'assistant_conversation.pruned'),
+      effectRepo
+        .tailAudit(scope, { limit: 10 })
+        .filter((r) => r.action === 'assistant_conversation.pruned'),
     ).toEqual([]);
   });
 
@@ -193,7 +197,9 @@ describe('conversationPruneHandler', () => {
     expect(conversationRepo.getConversation(a, 'conv-old')).toBeUndefined();
     expect(conversationRepo.getConversation(b, 'conv-old')).toBeDefined();
     expect(
-      effectRepo.tailAudit(b, { limit: 10 }).filter((r) => r.action === 'assistant_conversation.pruned'),
+      effectRepo
+        .tailAudit(b, { limit: 10 })
+        .filter((r) => r.action === 'assistant_conversation.pruned'),
     ).toEqual([]);
   });
 

@@ -1,15 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { pino } from 'pino';
-import {
-  conversationPruneDedupeKey,
-  JOB_KINDS,
-  parseGuildId,
-} from '@bananasaurs/core';
-import {
-  guildRepo,
-  jobRepo,
-  type GuildScope,
-} from '@bananasaurs/storage';
+import { conversationPruneDedupeKey, JOB_KINDS, parseGuildId } from '@bananasaurs/core';
+import { guildRepo, jobRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import {
   CONVERSATION_PRUNE_INTERVAL_MS,
@@ -69,7 +61,8 @@ describe('conversation prune timer', () => {
     nowMs = Date.parse('2026-09-26T01:00:00.000Z');
     timer.runOnce();
     expect(jobsFor(a)).toHaveLength(2);
-    expect(jobsFor(a)[1]?.dedupeKey).toBe(conversationPruneDedupeKey('2026-09-26'));
+    // `listJobs` is newest-first: index 0 is the next day's job.
+    expect(jobsFor(a)[0]?.dedupeKey).toBe(conversationPruneDedupeKey('2026-09-26'));
   });
 
   it('ticks once a day', () => {
