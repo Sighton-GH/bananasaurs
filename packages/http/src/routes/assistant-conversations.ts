@@ -1,7 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assistantRepo, conversationRepo, traceRepo } from '@bananasaurs/storage';
-import type { GuildScope } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
@@ -29,25 +28,6 @@ const conversationListQuerySchema = z.object({
 const retentionBodySchema = z.object({
   days: z.union([z.literal(61), z.literal(182), z.literal(365), z.null()]),
 });
-
-/**
- * Who takes part in a conversation, as names in first-seen order. The list
- * repo carries no participant aggregate (and Task 19 must not extend it for
- * this), so this reads the turns through the existing `recentTurns` window —
- * wide enough for any realistic conversation — and keeps distinct names from
- * the human sides (`user` and `quote` turns; `assistant` turns are the bot).
- */
-const peopleOf = (scope: GuildScope, conversationId: string): string[] => {
-  const seen: string[] = [];
-  for (const turn of conversationRepo.recentTurns(scope, conversationId, {
-    maxTurns: 1000,
-    maxChars: 1_000_000,
-  })) {
-    if (turn.role === 'assistant') continue;
-    if (!seen.includes(turn.authorName)) seen.push(turn.authorName);
-  }
-  return seen;
-};
 
 export const registerAssistantConversationRoutes = (
   app: FastifyInstance,
@@ -86,12 +66,18 @@ export const registerAssistantConversationRoutes = (
     const oldest = conversations.at(-1);
     const cursorOf = (c: (typeof conversations)[number]): number =>
       sort === 'started' ? c.createdAt : sort === 'turns' ? c.turnCount : c.lastActivityAt;
+    // Who takes part, as names in first-seen order — one query for the whole
+    // page, never one per row.
+    const people = conversationRepo.peopleForConversations(
+      session.scope,
+      conversations.map((c) => c.conversationId),
+    );
     return reply.status(200).send({
       conversations: conversations.map((c) => {
         const member = directory.get(c.startedBy);
         return {
           ...c,
-          people: peopleOf(session.scope, c.conversationId),
+          people: people.get(c.conversationId) ?? [],
           member:
             member === undefined
               ? null
@@ -111,20 +97,26 @@ export const registerAssistantConversationRoutes = (
 
     const conversation = conversationRepo.getConversation(session.scope, request.params.id);
     if (conversation === undefined) return reply.status(404).send({ error: 'not-found' });
-    // The whole transcript, oldest first. The window is wide enough to be
-    // complete for any realistic conversation; a giant one degrades the same
-    // graceful way the model context window does (newest kept).
-    const turns = conversationRepo.recentTurns(session.scope, request.params.id, {
-      maxTurns: 5000,
-      maxChars: 50_000_000,
-    });
+    // The whole transcript, oldest first, in one read. The assistant turns'
+    // sources come from one batched trace fetch per transcript, never one per
+    // turn.
+    const turns = conversationRepo.listTurns(session.scope, request.params.id);
+    const traceIds = [
+      ...new Set(
+        turns.flatMap((turn) =>
+          turn.role === 'assistant' && turn.traceId !== undefined ? [turn.traceId] : [],
+        ),
+      ),
+    ];
+    const traces = traceIds.length === 0 ? [] : traceRepo.getTracesByIds(session.scope, traceIds);
+    const sourcesByTrace = new Map(traces.map((trace) => [trace.traceId, trace.sources]));
     return reply.status(200).send({
       conversation,
       turns: turns.map((turn) => {
         if (turn.role !== 'assistant' || turn.traceId === undefined) return turn;
         // The sources line only: title and URL, never the trace body — the
         // full run stays behind the History detail endpoint and its grants.
-        const sources = traceRepo.getTrace(session.scope, turn.traceId)?.sources ?? [];
+        const sources = sourcesByTrace.get(turn.traceId) ?? [];
         return {
           ...turn,
           sources: sources.map((s) => ({ title: s.title, url: s.url })),

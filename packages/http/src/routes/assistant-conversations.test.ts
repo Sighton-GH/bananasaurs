@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { parseGuildId, type AssistantTrace, type Capability } from '@bananasaurs/core';
 import {
@@ -17,6 +17,37 @@ import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
 import { registerAssistantConversationRoutes } from './assistant-conversations.js';
+
+/**
+ * Counts the batched repo calls the routes under test make. The wrappers
+ * delegate to the real repos, so seeding and every other behaviour is
+ * unchanged — only the call count is observable.
+ */
+const batchedCalls = vi.hoisted(() => ({ people: 0, tracesByIds: 0 }));
+vi.mock('@bananasaurs/storage', async (importOriginal) => {
+  const mod = await importOriginal<typeof import('@bananasaurs/storage')>();
+  const conversations = mod.conversationRepo as typeof mod.conversationRepo &
+    Record<string, (...args: never[]) => unknown>;
+  const traces = mod.traceRepo as typeof mod.traceRepo &
+    Record<string, (...args: never[]) => unknown>;
+  return {
+    ...mod,
+    conversationRepo: {
+      ...mod.conversationRepo,
+      peopleForConversations: (...args: never[]) => {
+        batchedCalls.people += 1;
+        return conversations.peopleForConversations(...args);
+      },
+    },
+    traceRepo: {
+      ...mod.traceRepo,
+      getTracesByIds: (...args: never[]) => {
+        batchedCalls.tracesByIds += 1;
+        return traces.getTracesByIds(...args);
+      },
+    },
+  };
+});
 
 const GUILD = parseGuildId('111111111111111111');
 const OTHER_GUILD = parseGuildId('222222222222222222');
@@ -125,6 +156,8 @@ const seedConversation = (
 
 beforeEach(async () => {
   t = openMigratedTestDatabase();
+  batchedCalls.people = 0;
+  batchedCalls.tracesByIds = 0;
   clock = 1_700_000_000_000;
   deps = {
     scopes: t.scopes,
@@ -399,5 +432,59 @@ describe('assistant conversation routes', () => {
     expect(assistant?.sources).toEqual([
       { title: 'Meetings page', url: 'https://example.com/meetings' },
     ]);
+  });
+
+  it('batches the people lookup into one call per list page', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_000);
+    seedConversation('conv-2', 2_000);
+    seedConversation('conv-3', 3_000);
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations?limit=3',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{ conversations: { people: string[] }[] }>();
+    expect(batchedCalls.people).toBe(1);
+    for (const conversation of body.conversations) {
+      expect(conversation.people).toEqual(['Bryan']);
+    }
+  });
+
+  it('batches the transcript trace lookup into one call', async () => {
+    grant('audit.read');
+    seedConversation('conv-1', 1_790_000_000_000);
+    const scope = t.scopes.forGuild(GUILD);
+    conversationRepo.appendTurn(scope, {
+      conversationId: 'conv-1',
+      turnId: 'conv-1-turn-assistant-2',
+      at: 1_790_000_000_002,
+      role: 'assistant',
+      authorName: 'Bananasaurs',
+      text: 'a second answer',
+      traceId: 'conv-1-trace-2',
+    });
+    traceRepo.insertTrace(
+      scope,
+      trace({ traceId: 'conv-1-trace-2', at: 1_790_000_000_002, conversationId: 'conv-1' }),
+    );
+    const { cookie } = await signIn();
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/conversations/conv-1',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(batchedCalls.tracesByIds).toBe(1);
+    const body = response.json<{ turns: { role: string; sources?: unknown[] }[] }>();
+    const assistants = body.turns.filter((turn) => turn.role === 'assistant');
+    expect(assistants).toHaveLength(2);
+    for (const assistant of assistants) {
+      expect(assistant.sources).toEqual([
+        { title: 'Meetings page', url: 'https://example.com/meetings' },
+      ]);
+    }
   });
 });

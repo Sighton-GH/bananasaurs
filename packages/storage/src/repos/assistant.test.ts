@@ -5,6 +5,7 @@ import {
   parseGuildId,
   STARTER_SKILL_IDS,
   type AssistantBehaviour,
+  type AssistantTrace,
 } from '@bananasaurs/core';
 import { openMigratedTestDatabase, type MigratedTestDatabase } from '../test-support.js';
 import { guildRepo } from '../index.js';
@@ -39,6 +40,7 @@ import {
   setConversationRetention,
 } from './assistant.js';
 import { appendTurn, createConversation, getConversation, recentTurns } from './conversations.js';
+import { getTrace, insertTrace } from './traces.js';
 let t: MigratedTestDatabase;
 const G = parseGuildId('111111111111111111');
 beforeEach(() => {
@@ -565,5 +567,49 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
     expect(recentTurns(s, 'conv-mine', { maxTurns: 12, maxChars: 6_000 })).toEqual([]);
     expect(getConversation(s, 'conv-theirs')).toBeDefined();
     expect(recentTurns(s, 'conv-theirs', { maxTurns: 12, maxChars: 6_000 })).toHaveLength(1);
+  });
+
+  /** Stored-data fixture: fixed ids and timestamps, no narrative. */
+  const traceFixture = (over: Partial<AssistantTrace> = {}): AssistantTrace => ({
+    traceId: 'trace-1',
+    at: 1_790_000_000_000,
+    userId: MEMBER,
+    channelId: '333333333333333333',
+    behaviourId: 'club',
+    command: 'ask',
+    source: 'mention',
+    conversationId: 'conv-mine',
+    turnId: 'turn-assistant',
+    question: 'where is the handbook?',
+    answer: 'in the resources.',
+    outcome: 'answered',
+    durationMs: 1200,
+    attempts: [{ provider: 'gemini', model: 'gemini-2.5-flash', outcome: 'ok', ms: 900 }],
+    finishReason: 'stop',
+    usage: { promptTokens: 100, completionTokens: 20, thinkingTokens: 10 },
+    sections: [{ name: 'system', chars: 12, estTokens: 3, text: 'Be helpful.' }],
+    toolCalls: [],
+    guard: { removed: [] },
+    timeline: [{ label: 'posted', atMs: 1200 }],
+    discordMessageIds: [],
+    sources: [],
+    flags: [],
+    ...over,
+  });
+
+  it("deletes the member's assistant traces and keeps everyone else's", () => {
+    const OTHER_GUILD = parseGuildId('999999999999999999');
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const s = t.scopes.forGuild(G);
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    insertTrace(s, traceFixture({ traceId: 'mine', userId: MEMBER }));
+    insertTrace(s, traceFixture({ traceId: 'theirs', userId: OTHER }));
+    insertTrace(other, traceFixture({ traceId: 'mine', userId: MEMBER }));
+
+    forgetMember(s, MEMBER, 3_000);
+
+    expect(getTrace(s, 'mine')).toBeUndefined();
+    expect(getTrace(s, 'theirs')).toBeDefined();
+    expect(getTrace(other, 'mine')).toBeDefined();
   });
 });

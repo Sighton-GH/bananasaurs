@@ -21,6 +21,7 @@ import {
   assistantSettings,
 } from '../schema.js';
 import { forgetAuthor } from './conversations.js';
+import { deleteTracesForUser } from './traces.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -941,10 +942,11 @@ export const setMemoryOptOut = (
       .run();
   });
 /**
- * Forgets a member: drops their curated memories, opts them out, and removes
- * their conversation turns (Task 19). The turn delete runs as its own write
- * right after, in the same function — `write()` forbids nesting one
- * transaction inside another, so the two cannot share one.
+ * Forgets a member: drops their curated memories, opts them out, removes
+ * their conversation turns (Task 19) and deletes their assistant traces, which
+ * hold their question and answer. Each delete runs as its own write right
+ * after, in the same function — `write()` forbids nesting one transaction
+ * inside another, so they cannot share one.
  */
 export const forgetMember = (scope: GuildScope, userId: string, now: number): number => {
   const removed = write(scope, ({ db }) => {
@@ -962,5 +964,6 @@ export const forgetMember = (scope: GuildScope, userId: string, now: number): nu
     return deleted;
   });
   forgetAuthor(scope, userId);
+  deleteTracesForUser(scope, userId);
   return removed;
 };

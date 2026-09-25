@@ -12,7 +12,10 @@ import {
   latestForAuthor,
   linkMessages,
   listConversations,
+  listTurns,
+  LIST_TURNS_LIMIT,
   lookupMessage,
+  peopleForConversations,
   pruneOlderThan,
   recentTurns,
   setFeedback,
@@ -461,5 +464,126 @@ describe('forgetAuthor', () => {
     // conv-2 still has OTHER_USER's turn, so it survives with only that turn.
     const remaining = recentTurns(scope, 'conv-2', { maxTurns: 12, maxChars: 6_000 });
     expect(remaining.map((r) => r.turnId)).toEqual(['t4']);
+  });
+});
+
+describe('peopleForConversations', () => {
+  it('returns distinct human names per conversation in first-seen order', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ conversationId: 'conv-1' }));
+    appendTurn(
+      scope,
+      turn({
+        conversationId: 'conv-1',
+        turnId: 't-quote',
+        at: 1_000,
+        role: 'quote',
+        authorId: OTHER_USER,
+        authorName: 'Quoted Alex',
+        text: 'the quoted message',
+      }),
+    );
+    appendTurn(
+      scope,
+      turn({ conversationId: 'conv-1', turnId: 't-user', at: 2_000, authorName: 'Bryan' }),
+    );
+    appendTurn(
+      scope,
+      turn({ conversationId: 'conv-1', turnId: 't-user-2', at: 3_000, authorName: 'Bryan' }),
+    );
+    appendTurn(
+      scope,
+      turn({
+        conversationId: 'conv-1',
+        turnId: 't-bot',
+        at: 4_000,
+        role: 'assistant',
+        authorId: undefined,
+        authorName: 'Bananasaurs',
+        text: 'the answer',
+      }),
+    );
+    // An assistant-only conversation has no people.
+    createConversation(scope, conversation({ conversationId: 'conv-2' }));
+    appendTurn(
+      scope,
+      turn({
+        conversationId: 'conv-2',
+        turnId: 't-bot-2',
+        role: 'assistant',
+        authorId: undefined,
+        authorName: 'Bananasaurs',
+        text: 'the answer',
+      }),
+    );
+
+    const people = peopleForConversations(scope, ['conv-1', 'conv-2', 'conv-missing']);
+    expect(people.get('conv-1')).toEqual(['Quoted Alex', 'Bryan']);
+    expect(people.get('conv-2')).toEqual([]);
+    expect(people.get('conv-missing')).toEqual([]);
+  });
+
+  it('never returns another guild’s names', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    createConversation(a, conversation({ conversationId: 'conv-1' }));
+    appendTurn(a, turn({ conversationId: 'conv-1', turnId: 't-a', authorName: 'Bryan' }));
+    createConversation(b, conversation({ conversationId: 'conv-1' }));
+    appendTurn(b, turn({ conversationId: 'conv-1', turnId: 't-b', authorName: 'Someone Else' }));
+
+    expect(peopleForConversations(a, ['conv-1']).get('conv-1')).toEqual(['Bryan']);
+    expect(peopleForConversations(b, ['conv-1']).get('conv-1')).toEqual(['Someone Else']);
+  });
+
+  it('returns an empty map for no ids', () => {
+    expect(peopleForConversations(t.scopes.forGuild(GUILD_A), [])).toEqual(new Map());
+  });
+});
+
+describe('listTurns', () => {
+  it('returns every turn oldest first, uncapped by the context window', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ at: 0 }));
+    appendTurn(scope, turn({ turnId: 'turn-3', at: 3_000, text: 'third' }));
+    appendTurn(scope, turn({ turnId: 'turn-1', at: 1_000, text: 'first' }));
+    appendTurn(scope, turn({ turnId: 'turn-2', at: 2_000, text: 'second' }));
+
+    const turns = listTurns(scope, 'conv-1');
+    expect(turns.map((r) => r.turnId)).toEqual(['turn-1', 'turn-2', 'turn-3']);
+    expect(turns.map((r) => r.text)).toEqual(['first', 'second', 'third']);
+  });
+
+  it('keeps one guild’s turns out of another', () => {
+    const a = t.scopes.forGuild(GUILD_A);
+    const b = t.scopes.forGuild(GUILD_B);
+    createConversation(a, conversation({ conversationId: 'conv-1' }));
+    appendTurn(a, turn({ conversationId: 'conv-1', turnId: 't-a', text: 'guild a turn' }));
+    createConversation(b, conversation({ conversationId: 'conv-1' }));
+    appendTurn(b, turn({ conversationId: 'conv-1', turnId: 't-b', text: 'guild b turn' }));
+
+    expect(listTurns(a, 'conv-1').map((r) => r.turnId)).toEqual(['t-a']);
+    expect(listTurns(b, 'conv-1').map((r) => r.turnId)).toEqual(['t-b']);
+    expect(listTurns(a, 'conv-missing')).toEqual([]);
+  });
+
+  it('caps at the hard safety limit of 2,000 turns', () => {
+    expect(LIST_TURNS_LIMIT).toBe(2_000);
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ at: 0 }));
+    for (let i = 0; i < LIST_TURNS_LIMIT + 1; i += 1) {
+      appendTurn(
+        scope,
+        turn({
+          conversationId: 'conv-1',
+          turnId: `turn-${String(i)}`,
+          at: i,
+          text: `m${String(i)}`,
+        }),
+      );
+    }
+    const turns = listTurns(scope, 'conv-1');
+    expect(turns).toHaveLength(LIST_TURNS_LIMIT);
+    expect(turns[0]?.turnId).toBe('turn-0');
+    expect(turns.at(-1)?.turnId).toBe(`turn-${String(LIST_TURNS_LIMIT - 1)}`);
   });
 });

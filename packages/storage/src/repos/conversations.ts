@@ -331,6 +331,71 @@ export const recentTurns = (
     return [toTurn(pinnedQuote), ...result];
   });
 
+/** Hard safety cap for `listTurns`: the transcript has no context window. */
+export const LIST_TURNS_LIMIT = 2_000;
+
+/**
+ * Every turn of one conversation, oldest first. Unlike `recentTurns` there is
+ * no context window — only the 2,000-turn safety cap — so the transcript route
+ * reads the whole conversation in one query.
+ */
+export const listTurns = (scope: GuildScope, conversationId: string): ConversationTurn[] =>
+  read(scope, (db) => {
+    const rows = db
+      .select()
+      .from(assistantConversationTurns)
+      .where(
+        scope.only(
+          assistantConversationTurns,
+          eq(assistantConversationTurns.conversationId, conversationId),
+        ),
+      )
+      .orderBy(asc(assistantConversationTurns.at), asc(assistantConversationTurns.turnId))
+      .limit(LIST_TURNS_LIMIT)
+      .all();
+    return rows.map(toTurn);
+  });
+
+/**
+ * Distinct human author names (`user` and `quote` turns; `assistant` turns are
+ * the bot) per conversation, in first-seen (oldest-first) order. One query for
+ * the whole page, so the list route never reads turns per row. Every requested
+ * id gets an entry — `[]` when the conversation has no human turns or is
+ * missing — so callers can look up blindly.
+ */
+export const peopleForConversations = (
+  scope: GuildScope,
+  conversationIds: readonly string[],
+): Map<string, string[]> => {
+  const people = new Map<string, string[]>();
+  for (const id of conversationIds) {
+    if (!people.has(id)) people.set(id, []);
+  }
+  if (conversationIds.length === 0) return people;
+  const rows = read(scope, (db) =>
+    db
+      .select({
+        conversationId: assistantConversationTurns.conversationId,
+        authorName: assistantConversationTurns.authorName,
+      })
+      .from(assistantConversationTurns)
+      .where(
+        scope.only(
+          assistantConversationTurns,
+          inArray(assistantConversationTurns.conversationId, [...new Set(conversationIds)]),
+          inArray(assistantConversationTurns.role, ['user', 'quote']),
+        ),
+      )
+      .orderBy(asc(assistantConversationTurns.at), asc(assistantConversationTurns.turnId))
+      .all(),
+  );
+  for (const row of rows) {
+    const names = people.get(row.conversationId);
+    if (names !== undefined && !names.includes(row.authorName)) names.push(row.authorName);
+  }
+  return people;
+};
+
 const SORT_COLUMN = {
   'last-activity': assistantConversations.lastActivityAt,
   started: assistantConversations.createdAt,
