@@ -9,6 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { apiFetch, ApiError, CSRF_HEADER, ReadonlyError, type SessionInfo } from '../api.js';
+import { accountErrorText } from '../api/ops.js';
 import { ReauthDialog } from '../ui/ReauthDialog.js';
 import { ToastProvider, useToast } from '../ui/Toast.js';
 
@@ -119,7 +120,14 @@ function SessionInner({
         return true;
       }
       if (err instanceof ApiError) {
-        toast({ tone: 'danger', title: 'The request failed', message: err.message });
+        // A refusal body carries `{ error: code }` with no `message`, so
+        // `err.message` would be the raw code — map known codes to their
+        // plain sentence first, keeping the raw code only as the fallback.
+        toast({
+          tone: 'danger',
+          title: 'The request failed',
+          message: accountErrorText(err.body.error) ?? err.message,
+        });
         return true;
       }
       return false;
@@ -152,7 +160,11 @@ function SessionInner({
         return await writeOrThrow<T>(url, body, method);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-          toast({ tone: 'danger', title: 'The request failed', message: err.message });
+          toast({
+            tone: 'danger',
+            title: 'The request failed',
+            message: accountErrorText(err.body.error) ?? err.message,
+          });
           return undefined;
         }
         throw err;

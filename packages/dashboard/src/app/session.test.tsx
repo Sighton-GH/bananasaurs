@@ -273,6 +273,18 @@ describe('SessionProvider', () => {
     expect(screen.getByRole('status').textContent).toContain('BANANASAURS_READONLY is set');
   });
 
+  it('a 403 owner-protected refusal shows a plain sentence, not the raw code', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 403, body: { error: 'owner-protected' } },
+    ]);
+    renderWithSession(<Probe />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write'));
+    });
+    expect(screen.getByRole('status').textContent).toContain("The owner account can't be changed.");
+    expect(screen.getByRole('status').textContent).not.toContain('owner-protected');
+  });
+
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {
     const mock = stubFetch([{ method: 'POST', url: '/api/logout', body: {} }]);
     const onLoggedOut = vi.fn();
