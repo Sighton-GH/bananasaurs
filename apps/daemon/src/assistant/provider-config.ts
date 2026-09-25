@@ -105,11 +105,6 @@ export interface ProviderConfigStore {
   isKeyReadable(keyId: string): boolean;
   /** Whether a GitHub token is saved; the token itself is never returned. */
   githubTokenConfigured(): boolean;
-  /**
-   * Task 8: the shared QuotaLedger's reset for one key, attached by the
-   * composition root (`runtime/daemon.ts`). Absent in isolated uses.
-   */
-  allowanceResetsAt?: ((keyId: string) => number | undefined) | undefined;
 }
 /**
  * The provider as `.env` configures it: what runs when nothing is saved in

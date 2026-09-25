@@ -32,6 +32,7 @@ import {
   type AssistantProviderStatus,
 } from '@bananasaurs/http';
 import { envProviderStatus } from '../assistant/provider-config.js';
+import type { QuotaLedger } from '../assistant/quota-ledger.js';
 import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
 
@@ -77,6 +78,12 @@ export interface DashboardApiDeps {
   readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
   /** Why there is no provider store, when there is none (ADR 0061 §3). */
   readonly assistantSecretProblem?: AssistantProviderStatus['secretProblem'];
+  /**
+   * Task 8: the one process-wide QuotaLedger (`runtime/daemon.ts`), read by
+   * the dashboard's allowance pill. Absent in isolated uses, and then no
+   * allowance reset is shown.
+   */
+  readonly assistantQuotaLedger?: QuotaLedger | undefined;
 }
 
 export interface DashboardApi {
@@ -110,6 +117,12 @@ export interface DashboardAppDeps {
   readonly distDir: string;
   readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
   readonly assistantAiStatus?: HttpDeps['assistantAiStatus'];
+  /**
+   * Task 8: the one process-wide QuotaLedger (`runtime/daemon.ts`), read by
+   * the dashboard's allowance pill. Absent in isolated uses, and then no
+   * allowance reset is shown.
+   */
+  readonly assistantQuotaLedger?: QuotaLedger | undefined;
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
   /**
@@ -184,6 +197,7 @@ const assistantDirectoriesFor = async (client: Client, guildId: string, now: () 
 };
 
 export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
+  const quotaLedger = deps.assistantQuotaLedger;
   const httpDeps: HttpDeps = {
     scopes: deps.scopes,
     now: deps.now,
@@ -213,12 +227,15 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       ? {}
       : { assistantProviderConfig: deps.assistantProviderConfig }),
     ...(deps.assistantAiStatus === undefined ? {} : { assistantAiStatus: deps.assistantAiStatus }),
-    // Task 8: the allowance pill reads the single process-wide ledger through
-    // the store the composition root attached it to — carried through, never
-    // rebuilt, so the loop and the pill cannot disagree.
-    ...(deps.assistantProviderConfig?.allowanceResetsAt === undefined
+    // Task 8: the allowance pill reads the single process-wide ledger the
+    // composition root handed in — an arrow over the captured instance, never
+    // a detached method, so the loop and the pill cannot disagree.
+    ...(quotaLedger === undefined
       ? {}
-      : { assistantAllowanceResetsAt: deps.assistantProviderConfig.allowanceResetsAt }),
+      : {
+          assistantAllowanceResetsAt: (keyId: string) =>
+            quotaLedger.exhaustedUntil(keyId, deps.now()),
+        }),
   };
   const app = createServer({
     deps: httpDeps,
@@ -325,11 +342,16 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
   // The eight config-derived fields are the `httpDeps` literal above — spread,
   // not rebuilt — so a ninth field added to one reaches the other: two
   // independent literals with the same values would diverge silently.
+  // Task 8: the single process-wide ledger rides along explicitly, so
+  // `buildDashboardApp` derives the allowance pill's reset from it.
   const app = buildDashboardApp({
     ...httpDeps,
     distDir: DASHBOARD_DIST,
     client: deps.client,
     discord: deps.discord,
+    ...(deps.assistantQuotaLedger === undefined
+      ? {}
+      : { assistantQuotaLedger: deps.assistantQuotaLedger }),
   });
 
   const host = deps.config.DASHBOARD_BIND;

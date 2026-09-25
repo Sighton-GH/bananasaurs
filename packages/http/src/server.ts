@@ -166,7 +166,6 @@ export interface HttpDeps extends AuthDeps {
         saveGithubToken?(token: string | null): void;
         isKeyReadable?(keyId: string): boolean;
         githubTokenConfigured?(): boolean;
-        allowanceResetsAt?(keyId: string): number | undefined;
       }
     | undefined;
   /** Live Discord directory, supplied by the daemon; absent in isolated route tests. */

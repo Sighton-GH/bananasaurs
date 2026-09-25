@@ -736,7 +736,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       },
     },
     deps.assistantChain ?? (() => []),
-    ...(deps.quotaLedger === undefined ? {} : { quotaLedger: deps.quotaLedger }),
+    // A defaulted parameter accepts `undefined`: absent in isolated uses,
+    // where the service falls back to its own ledger.
+    deps.quotaLedger,
   );
   const { interactionTokenSealer } = deps;
 

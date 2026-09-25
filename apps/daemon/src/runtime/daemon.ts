@@ -110,6 +110,11 @@ export interface Daemon {
   /** The dashboard API's seam into process-level facts (`HttpDeps.instance`). */
   readonly instance: OpsInstance;
   readonly providerStore?: ReturnType<typeof createProviderConfigStore> | undefined;
+  /**
+   * Task 8: the one process-wide QuotaLedger, shared by every guild's
+   * assistant loop and read by the dashboard's allowance pill.
+   */
+  readonly quotaLedger: QuotaLedger;
   /** Why no provider store exists, for the dashboard's setup step; absent when one does. */
   readonly providerSecretProblem?:
     'key-file-permissions' | 'key-file-invalid' | 'readonly-no-key-file';
@@ -189,11 +194,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         });
   // Task 8: one process-wide ledger for every guild's assistant loop and the
   // dashboard's allowance pill — a spent `:free` allowance stays spent until
-  // its reset no matter which guild spent it.
+  // its reset no matter which guild spent it. Returned below so `index.ts`
+  // can hand the same instance to the dashboard wiring; never copied.
   const quotaLedger = new QuotaLedger();
-  if (providerStore !== undefined) {
-    providerStore.allowanceResetsAt = (keyId) => quotaLedger.exhaustedUntil(keyId, now());
-  }
 
   // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
   // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
@@ -561,6 +564,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     ops,
     portsFor,
     instance,
+    quotaLedger,
     // Returned, not only closed over: `index.ts` hands it to the dashboard, and
     // before 2026-09-23 it was never returned, so the dashboard had no store.
     ...(providerStore === undefined ? {} : { providerStore }),
