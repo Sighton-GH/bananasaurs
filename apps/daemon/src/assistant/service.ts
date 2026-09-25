@@ -3,9 +3,6 @@ import {
   assertProviderEligible,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
-  createNvidiaNimProvider,
-  createOpenRouterProvider,
-  GeminiProvider,
   providerMayTrain,
   redactEvidenceText,
   SafeProvider,
@@ -30,6 +27,7 @@ import type {
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
 import { generateAnswer, type GenerationTrace } from './generate.js';
+import { type ChainEntry, type ProviderId } from './model-chain.js';
 import {
   runAssistantTool,
   toolDeclarations,
@@ -38,31 +36,6 @@ import {
   type WebResult,
 } from './tools.js';
 import { ReviewedResourceFetcher } from './resource-fetcher.js';
-
-export const providerFor = (config: Config): TextProvider | undefined => {
-  if (config.AI_PROVIDER === 'off' || config.AI_MODEL === undefined) return undefined;
-  if (config.AI_PROVIDER === 'gemini' && config.GEMINI_API_KEY !== undefined)
-    return new SafeProvider(
-      new GeminiProvider({ apiKey: config.GEMINI_API_KEY }),
-      config.AI_PROFILE_COST_CLASS,
-      {
-        monthlyCapUsdMicros: 0,
-      },
-    );
-  if (config.AI_PROVIDER === 'openrouter' && config.OPENROUTER_API_KEY !== undefined)
-    return new SafeProvider(
-      createOpenRouterProvider({ apiKey: config.OPENROUTER_API_KEY }),
-      config.AI_PROFILE_COST_CLASS,
-      { monthlyCapUsdMicros: 0 },
-    );
-  if (config.AI_PROVIDER === 'nvidia-nim' && config.NVIDIA_NIM_API_KEY !== undefined)
-    return new SafeProvider(
-      createNvidiaNimProvider({ apiKey: config.NVIDIA_NIM_API_KEY }),
-      config.AI_PROFILE_COST_CLASS,
-      { monthlyCapUsdMicros: 0 },
-    );
-  return undefined;
-};
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -102,15 +75,39 @@ export const createAssistantService = (
   liveConfig: () => Config = () => config,
   logger: Pick<Logger, 'warn'> = { warn: () => undefined },
   discord: AssistantDiscordPorts = { memberChannels: () => Promise.resolve([]) },
+  /**
+   * ADR 0075: the ordered, resolved model chain — built by
+   * `ProviderConfigStore.chain()` at the composition root and handed down
+   * through `guild.ts`, one call per invocation so a dashboard change is
+   * live on the next request. Empty when no store exists.
+   */
+  chain: () => readonly ChainEntry[] = () => [],
 ): AssistantCommandService => {
   // The safety/spend boundary wraps whatever provider is in play, including a
   // test-injected one: no caller may bypass the pre-API scan (finding 2).
-  const currentProvider = (): TextProvider | undefined => {
+  //
+  // ADR 0075: a test-injected provider becomes a one-entry chain so the rest
+  // of this function has one code path regardless of where the provider came
+  // from. It is never itself eligibility-checked here — that still happens
+  // below, exactly as it did before the chain existed (ruling: "the
+  // eligibility check still applies to it exactly as today").
+  const currentChain = (): readonly ChainEntry[] => {
+    const raw = testPorts.provider;
+    if (raw === undefined) return chain();
     const current = liveConfig();
-    const rawProvider = testPorts.provider ?? providerFor(current);
-    return rawProvider === undefined || rawProvider instanceof SafeProvider
-      ? rawProvider
-      : new SafeProvider(rawProvider, current.AI_PROFILE_COST_CLASS, { monthlyCapUsdMicros: 0 });
+    const wrapped =
+      raw instanceof SafeProvider
+        ? raw
+        : new SafeProvider(raw, current.AI_PROFILE_COST_CLASS, { monthlyCapUsdMicros: 0 });
+    return [
+      {
+        providerId: raw.id as ProviderId,
+        model: current.AI_MODEL ?? 'test-model',
+        provider: wrapped,
+        skip: undefined,
+        mayTrain: false,
+      },
+    ];
   };
   const resourceFetcher = new ReviewedResourceFetcher({ now });
   const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
@@ -143,7 +140,11 @@ export const createAssistantService = (
   ): Promise<AssistantInvocationResult> => {
     {
       const currentConfig = liveConfig();
-      const provider = currentProvider();
+      const chainEntries = currentChain();
+      const chosenIndex = chainEntries.findIndex(
+        (e) => e.skip === undefined && e.provider !== undefined,
+      );
+      const chosen = chosenIndex === -1 ? undefined : chainEntries[chosenIndex];
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -277,17 +278,54 @@ export const createAssistantService = (
                   .slice(0, 1_900),
         };
       }
-      if (provider === undefined || currentConfig.AI_MODEL === undefined)
+      if (chosen === undefined || chosen.provider === undefined) {
+        // ADR 0075: the chain resolver already ran the eligibility check
+        // while building each entry (hard rule 5), so this branch runs no
+        // check of its own — only picks which of today's two refusal texts
+        // applies. A chain with nothing usable because of keys, models or a
+        // disabled provider is "not configured"; a chain whose every entry
+        // failed only on terms is the terms refusal, with the same denied
+        // skill-activity row it always wrote.
+        const allTermsFailures =
+          chainEntries.length > 0 &&
+          chainEntries.every((e) => e.skip === 'ineligible' || e.skip === 'unverified');
+        if (allTermsFailures) {
+          assistantRepo.recordSkillActivity(scope, {
+            id: randomUUID(),
+            at: now(),
+            behaviourId: input.behaviour.id,
+            skillId: skill,
+            actorId: input.userId,
+            outcome: 'denied',
+            detail: 'Provider terms are not recorded or do not allow this use.',
+          });
+          return {
+            ok: false,
+            content:
+              "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+          };
+        }
         return {
           ok: false,
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
+      }
+      const provider = chosen.provider;
+      // The later chain entries that share this provider run as its
+      // ADR 0068 fallback models — cross-provider failover is Task 12.
+      const fallbackModels = chainEntries
+        .slice(chosenIndex + 1)
+        .filter((e) => e.providerId === chosen.providerId)
+        .map((e) => e.model);
       // Hard rule 5 (ADR 0062): the provider_eligibility table is consulted
       // on the request path. A missing terms record, or one that does not
       // allow production use, fails closed before any member content crosses
       // the provider boundary (finding 1). A provider that may train on input
-      // is allowed by owner decision and raises a warning instead.
+      // is allowed by owner decision and raises a warning instead. Re-checked
+      // here regardless of where `provider` came from — the chain resolver
+      // for a stored entry, or the test port for an injected one, which the
+      // resolver never sees.
       const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
       try {
         if (eligibilityRow === undefined)
@@ -424,8 +462,8 @@ export const createAssistantService = (
       };
       const response = await generateAnswer({
         provider,
-        model: currentConfig.AI_MODEL,
-        fallbackModels: currentConfig.AI_FALLBACK_MODELS,
+        model: chosen.model,
+        fallbackModels,
         tools: {
           declarations: toolDeclarations(toolPorts),
           run: (call) => runAssistantTool(call, toolPorts),

@@ -23,6 +23,7 @@ import { attachGatewayTranslation, emitConnectionEvents } from '@bananasaurs/dis
 import {
   assistantRepo,
   automodRuleRepo,
+  eligibilityRepo,
   guildRepo,
   jobRepo,
   oauthRepo,
@@ -37,6 +38,7 @@ import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { createProviderConfigStore } from '../assistant/provider-config.js';
+import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
 import { createInteractionTokenSealer } from '../assistant/interaction-token.js';
 
@@ -153,6 +155,21 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           config,
         );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
+  // ADR 0075: when no provider store exists (no encryption secret), nothing
+  // was ever saved through it either — the dashboard's save routes all go
+  // through the store — so the several-providers and model-chain tables are
+  // guaranteed empty, and the resolver's own env-seed path is exactly what
+  // should run.
+  const assistantChain = (): readonly ChainEntry[] =>
+    providerStore !== undefined
+      ? providerStore.chain()
+      : resolveModelChain({
+          instance: scopes.instance(),
+          config,
+          openKey: () => undefined,
+          eligibility: (providerId) => eligibilityRepo.findEligibility(scopes.instance(), providerId),
+          makeProvider,
+        });
 
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();
   for (const guildId of guildIds) {
@@ -171,6 +188,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         now,
         interactionTokenSealer,
         assistantConfig,
+        assistantChain,
       }),
     });
   }

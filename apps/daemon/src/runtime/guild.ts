@@ -80,6 +80,7 @@ import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
+import type { ChainEntry } from '../assistant/model-chain.js';
 import { memberChannels } from '../assistant/member-channels.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -131,6 +132,8 @@ export interface GuildRuntimeDeps {
    */
   readonly interactionTokenSealer: InteractionTokenSealer;
   readonly assistantConfig?: (() => Config) | undefined;
+  /** ADR 0075: the resolved, ordered model chain, from the composition root. */
+  readonly assistantChain?: (() => readonly ChainEntry[]) | undefined;
 }
 
 /**
@@ -722,6 +725,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         );
       },
     },
+    deps.assistantChain ?? (() => []),
   );
   const { interactionTokenSealer } = deps;
 

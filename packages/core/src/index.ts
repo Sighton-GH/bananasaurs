@@ -512,6 +512,14 @@ export {
   type OpsSettingChange,
   type OpsSettingSpec,
 } from './ops/settings.js';
+export {
+  ACCOUNT_ROLES,
+  CAPABILITY_INFO,
+  roleForCapabilities,
+  type AccountRole,
+  type AccountRoleId,
+  type CapabilityInfo,
+} from './account-roles.js';
 export { statusCommand, humaniseDuration } from './ops/commands/status.js';
 export {
   STATUS_COMMAND_NAME,

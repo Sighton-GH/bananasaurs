@@ -1,7 +1,7 @@
 {
   "version": "6",
   "dialect": "sqlite",
-  "id": "b6241de3-7252-4a20-a7d6-d5da9348c88c",
+  "id": "c981e3d7-7578-4c56-abd7-6bae43c9daf6",
   "prevId": "7b6ab4cb-cced-4325-9bc3-b68c8e2d63f5",
   "tables": {
     "account_capabilities": {
@@ -821,370 +821,6 @@
         }
       }
     },
-    "assistant_conversation_messages": {
-      "name": "assistant_conversation_messages",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "message_id": {
-          "name": "message_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "conversation_id": {
-          "name": "conversation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "turn_id": {
-          "name": "turn_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        }
-      },
-      "indexes": {},
-      "foreignKeys": {
-        "assistant_conversation_messages_guild_id_conversation_id_assistant_conversations_guild_id_conversation_id_fk": {
-          "name": "assistant_conversation_messages_guild_id_conversation_id_assistant_conversations_guild_id_conversation_id_fk",
-          "tableFrom": "assistant_conversation_messages",
-          "tableTo": "assistant_conversations",
-          "columnsFrom": [
-            "guild_id",
-            "conversation_id"
-          ],
-          "columnsTo": [
-            "guild_id",
-            "conversation_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "assistant_conversation_messages_guild_id_message_id_pk": {
-          "columns": [
-            "guild_id",
-            "message_id"
-          ],
-          "name": "assistant_conversation_messages_guild_id_message_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "assistant_conversation_messages_guild_id_snowflake": {
-          "name": "assistant_conversation_messages_guild_id_snowflake",
-          "value": "(\"assistant_conversation_messages\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversation_messages\".\"guild_id\") BETWEEN 17 AND 20)"
-        },
-        "assistant_conversation_messages_message_id_snowflake": {
-          "name": "assistant_conversation_messages_message_id_snowflake",
-          "value": "(\"assistant_conversation_messages\".\"message_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversation_messages\".\"message_id\") BETWEEN 17 AND 20)"
-        },
-        "assistant_conversation_messages_role": {
-          "name": "assistant_conversation_messages_role",
-          "value": "\"assistant_conversation_messages\".\"role\" IN ('user','assistant')"
-        }
-      }
-    },
-    "assistant_conversation_turns": {
-      "name": "assistant_conversation_turns",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "conversation_id": {
-          "name": "conversation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "turn_id": {
-          "name": "turn_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "at": {
-          "name": "at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "role": {
-          "name": "role",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "author_id": {
-          "name": "author_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "author_name": {
-          "name": "author_name",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "text": {
-          "name": "text",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "trace_id": {
-          "name": "trace_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        },
-        "feedback": {
-          "name": "feedback",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false,
-          "autoincrement": false
-        }
-      },
-      "indexes": {
-        "assistant_conversation_turns_conversation": {
-          "name": "assistant_conversation_turns_conversation",
-          "columns": [
-            "guild_id",
-            "conversation_id",
-            "at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "assistant_conversation_turns_guild_id_conversation_id_assistant_conversations_guild_id_conversation_id_fk": {
-          "name": "assistant_conversation_turns_guild_id_conversation_id_assistant_conversations_guild_id_conversation_id_fk",
-          "tableFrom": "assistant_conversation_turns",
-          "tableTo": "assistant_conversations",
-          "columnsFrom": [
-            "guild_id",
-            "conversation_id"
-          ],
-          "columnsTo": [
-            "guild_id",
-            "conversation_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "assistant_conversation_turns_guild_id_turn_id_pk": {
-          "columns": [
-            "guild_id",
-            "turn_id"
-          ],
-          "name": "assistant_conversation_turns_guild_id_turn_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "assistant_conversation_turns_guild_id_snowflake": {
-          "name": "assistant_conversation_turns_guild_id_snowflake",
-          "value": "(\"assistant_conversation_turns\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversation_turns\".\"guild_id\") BETWEEN 17 AND 20)"
-        },
-        "assistant_conversation_turns_author_id_snowflake": {
-          "name": "assistant_conversation_turns_author_id_snowflake",
-          "value": "(\"assistant_conversation_turns\".\"author_id\" IS NULL OR (\"assistant_conversation_turns\".\"author_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversation_turns\".\"author_id\") BETWEEN 17 AND 20))"
-        },
-        "assistant_conversation_turns_role": {
-          "name": "assistant_conversation_turns_role",
-          "value": "\"assistant_conversation_turns\".\"role\" IN ('user','assistant','quote')"
-        },
-        "assistant_conversation_turns_feedback": {
-          "name": "assistant_conversation_turns_feedback",
-          "value": "(\"assistant_conversation_turns\".\"feedback\" IS NULL OR \"assistant_conversation_turns\".\"feedback\" IN ('up','down'))"
-        }
-      }
-    },
-    "assistant_conversations": {
-      "name": "assistant_conversations",
-      "columns": {
-        "guild_id": {
-          "name": "guild_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "conversation_id": {
-          "name": "conversation_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "channel_id": {
-          "name": "channel_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "behaviour_id": {
-          "name": "behaviour_id",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "started_by": {
-          "name": "started_by",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "title": {
-          "name": "title",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "source": {
-          "name": "source",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "status": {
-          "name": "status",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": "'open'"
-        },
-        "created_at": {
-          "name": "created_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "last_activity_at": {
-          "name": "last_activity_at",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false
-        },
-        "turn_count": {
-          "name": "turn_count",
-          "type": "integer",
-          "primaryKey": false,
-          "notNull": true,
-          "autoincrement": false,
-          "default": 0
-        }
-      },
-      "indexes": {
-        "assistant_conversations_activity": {
-          "name": "assistant_conversations_activity",
-          "columns": [
-            "guild_id",
-            "last_activity_at"
-          ],
-          "isUnique": false
-        },
-        "assistant_conversations_author": {
-          "name": "assistant_conversations_author",
-          "columns": [
-            "guild_id",
-            "channel_id",
-            "started_by",
-            "last_activity_at"
-          ],
-          "isUnique": false
-        }
-      },
-      "foreignKeys": {
-        "assistant_conversations_guild_id_guilds_guild_id_fk": {
-          "name": "assistant_conversations_guild_id_guilds_guild_id_fk",
-          "tableFrom": "assistant_conversations",
-          "tableTo": "guilds",
-          "columnsFrom": [
-            "guild_id"
-          ],
-          "columnsTo": [
-            "guild_id"
-          ],
-          "onDelete": "cascade",
-          "onUpdate": "no action"
-        }
-      },
-      "compositePrimaryKeys": {
-        "assistant_conversations_guild_id_conversation_id_pk": {
-          "columns": [
-            "guild_id",
-            "conversation_id"
-          ],
-          "name": "assistant_conversations_guild_id_conversation_id_pk"
-        }
-      },
-      "uniqueConstraints": {},
-      "checkConstraints": {
-        "assistant_conversations_guild_id_snowflake": {
-          "name": "assistant_conversations_guild_id_snowflake",
-          "value": "(\"assistant_conversations\".\"guild_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversations\".\"guild_id\") BETWEEN 17 AND 20)"
-        },
-        "assistant_conversations_channel_id_snowflake": {
-          "name": "assistant_conversations_channel_id_snowflake",
-          "value": "(\"assistant_conversations\".\"channel_id\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversations\".\"channel_id\") BETWEEN 17 AND 20)"
-        },
-        "assistant_conversations_started_by_snowflake": {
-          "name": "assistant_conversations_started_by_snowflake",
-          "value": "(\"assistant_conversations\".\"started_by\" NOT GLOB '*[^0-9]*' AND length(\"assistant_conversations\".\"started_by\") BETWEEN 17 AND 20)"
-        },
-        "assistant_conversations_source": {
-          "name": "assistant_conversations_source",
-          "value": "\"assistant_conversations\".\"source\" IN ('discord','dashboard-test')"
-        },
-        "assistant_conversations_status": {
-          "name": "assistant_conversations_status",
-          "value": "\"assistant_conversations\".\"status\" IN ('open','ended')"
-        }
-      }
-    },
     "assistant_decisions": {
       "name": "assistant_decisions",
       "columns": {
@@ -1456,6 +1092,67 @@
         }
       }
     },
+    "assistant_model_chain": {
+      "name": "assistant_model_chain",
+      "columns": {
+        "position": {
+          "name": "position",
+          "type": "integer",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "model": {
+          "name": "model",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {
+        "assistant_model_chain_provider_assistant_providers_provider_fk": {
+          "name": "assistant_model_chain_provider_assistant_providers_provider_fk",
+          "tableFrom": "assistant_model_chain",
+          "tableTo": "assistant_providers",
+          "columnsFrom": [
+            "provider"
+          ],
+          "columnsTo": [
+            "provider"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_model_chain_position": {
+          "name": "assistant_model_chain_position",
+          "value": "\"assistant_model_chain\".\"position\" BETWEEN 0 AND 5"
+        },
+        "assistant_model_chain_provider": {
+          "name": "assistant_model_chain_provider",
+          "value": "\"assistant_model_chain\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
+        }
+      }
+    },
     "assistant_provider_config": {
       "name": "assistant_provider_config",
       "columns": {
@@ -1528,6 +1225,13 @@
           "autoincrement": false,
           "default": 0
         },
+        "github_token_enc": {
+          "name": "github_token_enc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
         "updated_at": {
           "name": "updated_at",
           "type": "integer",
@@ -1556,6 +1260,66 @@
         "assistant_provider_config_enabled_bool": {
           "name": "assistant_provider_config_enabled_bool",
           "value": "\"assistant_provider_config\".\"enabled\" IN (0,1)"
+        }
+      }
+    },
+    "assistant_providers": {
+      "name": "assistant_providers",
+      "columns": {
+        "provider": {
+          "name": "provider",
+          "type": "text",
+          "primaryKey": true,
+          "notNull": true,
+          "autoincrement": false
+        },
+        "api_key_enc": {
+          "name": "api_key_enc",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "autoincrement": false
+        },
+        "cost_class": {
+          "name": "cost_class",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": "'unknown'"
+        },
+        "enabled": {
+          "name": "enabled",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false,
+          "default": 0
+        },
+        "updated_at": {
+          "name": "updated_at",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "autoincrement": false
+        }
+      },
+      "indexes": {},
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {
+        "assistant_providers_provider": {
+          "name": "assistant_providers_provider",
+          "value": "\"assistant_providers\".\"provider\" IN ('gemini','openrouter','nvidia-nim')"
+        },
+        "assistant_providers_cost_class": {
+          "name": "assistant_providers_cost_class",
+          "value": "\"assistant_providers\".\"cost_class\" IN ('free','paid','unknown')"
+        },
+        "assistant_providers_enabled_bool": {
+          "name": "assistant_providers_enabled_bool",
+          "value": "\"assistant_providers\".\"enabled\" IN (0,1)"
         }
       }
     },
