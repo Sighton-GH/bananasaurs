@@ -9,7 +9,15 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { archiveRepo, assistantRepo, computeDocId, guildRepo, resourceCacheRepo, schema, writeInstance } from '@bananasaurs/storage';
+import {
+  archiveRepo,
+  assistantRepo,
+  computeDocId,
+  guildRepo,
+  resourceCacheRepo,
+  schema,
+  writeInstance,
+} from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
 
 const seedCacheText = (
@@ -156,7 +164,13 @@ describe('Release 3 assistant end-to-end sandbox flows', () => {
       NOW,
     );
     seedEligibility(t, 'fixture');
-    seedCacheText(t, 'https://sfuracerbot.ca', 'site', ['Monday tech meeting is 6:30 to 8:30 PM.'], NOW);
+    seedCacheText(
+      t,
+      'https://sfuracerbot.ca',
+      'site',
+      ['Monday tech meeting is 6:30 to 8:30 PM.'],
+      NOW,
+    );
     const fixture = provider();
     const fetchResource = vi.fn(async () => {
       throw new Error('live fetch must not happen');
@@ -814,7 +828,13 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
   });
 
   it('runs one tool round against the archive and traces it', async () => {
-    seedCacheText(t, 'https://example.com/handbook', 'handbook', ['battery ship handbook text for trace sources'], NOW);
+    seedCacheText(
+      t,
+      'https://example.com/handbook',
+      'handbook',
+      ['battery ship handbook text for trace sources'],
+      NOW,
+    );
     const requests: GenerateTextRequest[] = [];
     const generateText = vi.fn(async (request: GenerateTextRequest) => {
       requests.push(request);

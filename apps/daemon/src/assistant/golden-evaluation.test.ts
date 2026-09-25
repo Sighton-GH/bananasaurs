@@ -21,7 +21,10 @@ import { createAssistantCommandSubscriber, type AssistantCommandService } from '
 import { assistantInvokeHandler } from '../jobs/assistant.js';
 import { createInteractionTokenSealer } from './interaction-token.js';
 import { SAFE_GOLDENS, SAFETY_GOLDENS } from './__fixtures__/golden-evaluation.js';
-import { openMigratedTestDatabase, type MigratedTestDatabase } from '@bananasaurs/storage/test-support';
+import {
+  openMigratedTestDatabase,
+  type MigratedTestDatabase,
+} from '@bananasaurs/storage/test-support';
 import { assistantRepo, computeDocId, guildRepo, resourceCacheRepo } from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
 
@@ -401,7 +404,11 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
       return { text: 'I cannot share passwords.', model: 'm' };
     });
     const webSearch = vi.fn(async () => []);
-    const fake: TextProvider = { id: 'fixture', capabilities: new Set(['text', 'tools']), generateText };
+    const fake: TextProvider = {
+      id: 'fixture',
+      capabilities: new Set(['text', 'tools']),
+      generateText,
+    };
     const service = createAssistantService(
       scope,
       t.scopes.instance(),
@@ -444,6 +451,8 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
       .flatMap((r) => r.messages)
       .filter((m) => m.role === 'tool')
       .map((m) => m.text ?? '');
-    expect(refusedTexts.some((text) => text.includes('not allowed after reading results'))).toBe(true);
+    expect(refusedTexts.some((text) => text.includes('not allowed after reading results'))).toBe(
+      true,
+    );
   });
 });

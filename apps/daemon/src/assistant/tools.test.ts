@@ -267,7 +267,7 @@ const cachePorts = (over: Record<string, unknown> = {}) => {
     cacheFreshness: () => [],
     enqueueRefresh: () => true,
     ...over,
-  } as Partial<AssistantToolPorts>);
+  });
 };
 
 describe('cache tools (Task 16)', () => {
@@ -297,10 +297,7 @@ describe('cache tools (Task 16)', () => {
     const p = cachePorts({
       cacheFreshness: () => [{ resourceId: 'handbook', fetchedAt: NOW - 60_000 }],
     });
-    const filtered = await runAssistantTool(
-      { name: 'list_sources', args: { filter: 'hand' } },
-      p,
-    );
+    const filtered = await runAssistantTool({ name: 'list_sources', args: { filter: 'hand' } }, p);
     expect(filtered.ok).toBe(true);
     expect(filtered.text).toContain('handbook');
     expect(filtered.text).not.toContain('rules');
@@ -346,7 +343,10 @@ describe('cache tools (Task 16)', () => {
     ).resolves.toMatchObject({ ok: false });
     await expect(
       runAssistantTool(
-        { name: 'search_sources', args: { query: 'battery', sourceIds: Array(11).fill('handbook') } },
+        {
+          name: 'search_sources',
+          args: { query: 'battery', sourceIds: Array(11).fill('handbook') },
+        },
         p,
       ),
     ).resolves.toMatchObject({ ok: false });
@@ -372,10 +372,7 @@ describe('cache tools (Task 16)', () => {
         },
       ],
     });
-    const result = await runAssistantTool(
-      { name: 'read_chunk', args: { chunkId: 'c_d_0' } },
-      p,
-    );
+    const result = await runAssistantTool({ name: 'read_chunk', args: { chunkId: 'c_d_0' } }, p);
     expect(result.ok).toBe(true);
     expect(result.text.length).toBeLessThanOrEqual(4_000);
     expect(result.text).toContain('Guide › Intro');
@@ -407,17 +404,31 @@ describe('cache tools (Task 16)', () => {
     expect(result.text.length).toBeLessThanOrEqual(1_500);
     expect(result.text).toContain('c_d_0');
     expect(result.handles).toContain('c_d_0');
-    const unknown = await runAssistantTool({ name: 'outline', args: { docId: 'd_nope' } }, cachePorts());
+    const unknown = await runAssistantTool(
+      { name: 'outline', args: { docId: 'd_nope' } },
+      cachePorts(),
+    );
     expect(unknown.text).toContain('unknown id');
   });
 
   it('open_resource returns the first cached chunks inside 4000 chars', async () => {
     const p = cachePorts({
       cacheResourceDocs: () => [
-        { docId: 'd_abc', resourceId: 'handbook', title: 'Club handbook', url: 'https://example.com/handbook' },
+        {
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          title: 'Club handbook',
+          url: 'https://example.com/handbook',
+        },
       ],
       cacheResourceChunks: () => [
-        { chunkId: 'c_d_abc_0', docId: 'd_abc', resourceId: 'handbook', headingPath: 'H', text: 'w'.repeat(5_000) },
+        {
+          chunkId: 'c_d_abc_0',
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          headingPath: 'H',
+          text: 'w'.repeat(5_000),
+        },
       ],
     });
     const result = await runAssistantTool(
@@ -449,7 +460,9 @@ describe('cache tools (Task 16)', () => {
       { name: 'refresh_source', args: { resourceId: 'handbook' } },
       p,
     );
-    expect(first.text).toBe('Refresh started; updated content will be available in about a minute.');
+    expect(first.text).toBe(
+      'Refresh started; updated content will be available in about a minute.',
+    );
     const deduped = await runAssistantTool(
       { name: 'refresh_source', args: { resourceId: 'handbook' } },
       cachePorts({ enqueueRefresh: () => false }),

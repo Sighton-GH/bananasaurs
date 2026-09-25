@@ -282,7 +282,13 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
       resources: [],
       skills: [],
       evidence: [
-        { sourceId: 'handbook', title: 'Handbook', text: 'Meetings Mondays.', accessible: true, chunkId: 'c_d_0' },
+        {
+          sourceId: 'handbook',
+          title: 'Handbook',
+          text: 'Meetings Mondays.',
+          accessible: true,
+          chunkId: 'c_d_0',
+        },
       ],
     });
     expect(compiled.evidenceEnvelope).toContain('chunk=c_d_0');

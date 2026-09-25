@@ -123,9 +123,7 @@ export const createAssistantService = (
   // can assert it is never called; the refresh job owns all network I/O.
   const fetchResource =
     testPorts.fetchResource ??
-    (async () => {
-      throw new Error('live resource fetch is disabled; the cache owns reads');
-    });
+    (() => Promise.reject(new Error('live resource fetch is disabled; the cache owns reads')));
   /**
    * One ledger per service instance (per daemon, not per request): a spent
    * `:free` daily allowance stays spent for later requests until its reset.
@@ -467,15 +465,13 @@ export const createAssistantService = (
               };
         },
         cacheNeighbours: (chunkId, n) =>
-          resourceCacheRepo
-            .neighbours(scope, chunkId, n)
-            .map((c) => ({
-              chunkId: c.chunkId,
-              docId: c.docId,
-              resourceId: c.resourceId,
-              headingPath: c.headingPath,
-              text: c.text,
-            })),
+          resourceCacheRepo.neighbours(scope, chunkId, n).map((c) => ({
+            chunkId: c.chunkId,
+            docId: c.docId,
+            resourceId: c.resourceId,
+            headingPath: c.headingPath,
+            text: c.text,
+          })),
         cacheOutline: (docId) => resourceCacheRepo.outline(scope, docId),
         cacheDocument: (docId) => {
           const found = resourceCacheRepo.listDocuments(scope).find((d) => d.docId === docId);
@@ -489,14 +485,12 @@ export const createAssistantService = (
               };
         },
         cacheResourceDocs: (resourceId) =>
-          resourceCacheRepo
-            .listDocuments(scope, resourceId)
-            .map((d) => ({
-              docId: d.docId,
-              resourceId: d.resourceId,
-              title: d.title,
-              url: d.url,
-            })),
+          resourceCacheRepo.listDocuments(scope, resourceId).map((d) => ({
+            docId: d.docId,
+            resourceId: d.resourceId,
+            title: d.title,
+            url: d.url,
+          })),
         cacheResourceChunks: (docId, limit) =>
           resourceCacheRepo
             .outline(scope, docId)
@@ -519,7 +513,8 @@ export const createAssistantService = (
           const latest = new Map<string, number>();
           for (const row of resourceCacheRepo.resourceFreshness(scope)) {
             const prev = latest.get(row.resourceId);
-            if (prev === undefined || row.fetchedAt > prev) latest.set(row.resourceId, row.fetchedAt);
+            if (prev === undefined || row.fetchedAt > prev)
+              latest.set(row.resourceId, row.fetchedAt);
           }
           return [...latest].map(([resourceId, fetchedAt]) => ({ resourceId, fetchedAt }));
         },

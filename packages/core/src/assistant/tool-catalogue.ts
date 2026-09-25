@@ -212,7 +212,8 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'refresh_source',
-    description: 'Request a fresh fetch of one club source; updated content arrives in about a minute.',
+    description:
+      'Request a fresh fetch of one club source; updated content arrives in about a minute.',
     parameters: {
       type: 'object',
       properties: {

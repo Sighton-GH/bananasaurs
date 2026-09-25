@@ -82,18 +82,15 @@ export interface AssistantToolPorts {
     readonly limit: number;
   }) => readonly CacheSearchHit[];
   readonly cacheChunk: (chunkId: string) => CacheStoredChunk | undefined;
-  readonly cacheNeighbours: (
-    chunkId: string,
-    n: 0 | 1 | 2,
-  ) => readonly CacheStoredChunk[];
+  readonly cacheNeighbours: (chunkId: string, n: 0 | 1 | 2) => readonly CacheStoredChunk[];
   readonly cacheOutline: (docId: string) => readonly CacheOutlineEntry[];
   readonly cacheDocument: (docId: string) => CacheStoredDoc | undefined;
   readonly cacheResourceDocs: (resourceId: string) => readonly CacheStoredDoc[];
-  readonly cacheResourceChunks: (
-    docId: string,
-    limit: number,
-  ) => readonly CacheStoredChunk[];
-  readonly cacheFreshness: () => readonly { readonly resourceId: string; readonly fetchedAt?: number }[];
+  readonly cacheResourceChunks: (docId: string, limit: number) => readonly CacheStoredChunk[];
+  readonly cacheFreshness: () => readonly {
+    readonly resourceId: string;
+    readonly fetchedAt?: number;
+  }[];
   /** Enqueues a resource_refresh (reason assistant); false when the 10-minute dedupe already holds one. */
   readonly enqueueRefresh: (resourceId: string) => boolean;
 }
@@ -188,7 +185,9 @@ const clock = (ports: AssistantToolPorts, at: number): string =>
   }).format(at);
 
 const relativeUpdated = (ports: AssistantToolPorts, fetchedAt: number | undefined): string =>
-  fetchedAt === undefined ? 'not fetched yet' : `${humaniseDuration(Math.max(0, ports.now() - fetchedAt))} ago`;
+  fetchedAt === undefined
+    ? 'not fetched yet'
+    : `${humaniseDuration(Math.max(0, ports.now() - fetchedAt))} ago`;
 
 const enabledById = (ports: AssistantToolPorts, resourceId: string): ClubResource | undefined =>
   ports.resources().find((r) => r.id === resourceId && r.enabled);
@@ -233,7 +232,11 @@ export const runAssistantTool = async (
         if (doc === undefined) {
           ports.enqueueRefresh(found.id);
           return {
-            ...evidence(name, "This source hasn't been fetched yet; an update has been requested.", [source]),
+            ...evidence(
+              name,
+              "This source hasn't been fetched yet; an update has been requested.",
+              [source],
+            ),
             handles: [found.id],
           };
         }
@@ -241,7 +244,11 @@ export const runAssistantTool = async (
         if (chunks.length === 0) {
           ports.enqueueRefresh(found.id);
           return {
-            ...evidence(name, "This source hasn't been fetched yet; an update has been requested.", [source]),
+            ...evidence(
+              name,
+              "This source hasn't been fetched yet; an update has been requested.",
+              [source],
+            ),
             handles: [found.id],
           };
         }
@@ -258,7 +265,10 @@ export const runAssistantTool = async (
         }
         if (lines.length === 0) {
           const first = chunks[0]!;
-          const room = Math.max(0, 4_000 - head.length - `[${first.chunkId}] ${first.headingPath}: `.length - 1);
+          const room = Math.max(
+            0,
+            4_000 - head.length - `[${first.chunkId}] ${first.headingPath}: `.length - 1,
+          );
           lines.push(`[${first.chunkId}] ${first.headingPath}: ${first.text.slice(0, room)}`);
           shown.push(first.chunkId);
         }
@@ -314,12 +324,14 @@ export const runAssistantTool = async (
           needle === undefined
             ? all
             : all.filter(
-                (r) => r.id.toLowerCase().includes(needle) || r.title.toLowerCase().includes(needle),
+                (r) =>
+                  r.id.toLowerCase().includes(needle) || r.title.toLowerCase().includes(needle),
               );
         const lines = matching
           .slice(0, 30)
           .map(
-            (r) => `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(ports, freshness.get(r.id))}`,
+            (r) =>
+              `${r.id} · ${r.title} (${r.kind}) · updated ${relativeUpdated(ports, freshness.get(r.id))}`,
           );
         if (lines.length === 0) return evidence(name, 'No sources match that filter.');
         return {
@@ -333,7 +345,12 @@ export const runAssistantTool = async (
           sourceIds?: string[];
         };
         if (sourceIds !== undefined) {
-          const known = new Set(ports.resources().filter((r) => r.enabled).map((r) => r.id));
+          const known = new Set(
+            ports
+              .resources()
+              .filter((r) => r.enabled)
+              .map((r) => r.id),
+          );
           for (const id of sourceIds) {
             if (!known.has(id)) return refused(name, 'unknown id');
           }
@@ -347,8 +364,7 @@ export const runAssistantTool = async (
         let used = 0;
         for (const hit of hits.slice(0, 6)) {
           const title = byId.get(hit.resourceId)?.title ?? hit.resourceId;
-          const snippet =
-            hit.snippet.length > 300 ? `${hit.snippet.slice(0, 299)}…` : hit.snippet;
+          const snippet = hit.snippet.length > 300 ? `${hit.snippet.slice(0, 299)}…` : hit.snippet;
           const line = `[${hit.chunkId}] ${title} › ${hit.headingPath}: ${snippet}`;
           if (used + line.length + (lines.length > 0 ? 1 : 0) > 2_000) break;
           lines.push(line);
@@ -372,7 +388,10 @@ export const runAssistantTool = async (
         const title = found?.title ?? center.resourceId;
         const url = found?.url ?? '';
         const sourceList = found === undefined ? [] : [{ title: found.title, url: found.url }];
-        const head = url === '' ? `${title} › ${center.headingPath}\n` : `${title} › ${center.headingPath}\n${url}\n`;
+        const head =
+          url === ''
+            ? `${title} › ${center.headingPath}\n`
+            : `${title} › ${center.headingPath}\n${url}\n`;
         let used = head.length;
         const lines: string[] = [];
         const handles: string[] = [];
