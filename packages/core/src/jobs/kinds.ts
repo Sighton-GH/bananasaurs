@@ -462,12 +462,19 @@ export const assistantInvokeCursor = z.object({
           ticketId: z.string().min(1),
         })
         .optional(),
+      /**
+       * Task 20: trace flags the service attached to the result (currently
+       * only `resources-unavailable`). Carried so a retry that skips the
+       * invoke still writes them into the trace.
+       */
+      flags: z.array(z.string().min(1)).optional(),
       trace: invocationTrace.optional(),
       detail: assistantInvokeDetail.optional(),
     }),
     z.object({
       ok: z.literal(false),
       content: z.string(),
+      flags: z.array(z.string().min(1)).optional(),
       trace: invocationTrace.optional(),
       detail: assistantInvokeDetail.optional(),
     }),

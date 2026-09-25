@@ -6,6 +6,7 @@ import {
   BOT_TAG_URL,
   LOG_CHANNEL_URL,
   behaviourPreviewUrl,
+  behaviourTryUrl,
   behaviourUrl,
   decisionReviewUrl,
   decisionSaveUrl,
@@ -14,7 +15,9 @@ import {
   type BehaviourPreview,
   type DecisionRow,
   type TicketRow,
+  type TryItResponse,
 } from '../api/assistant.js';
+import { historyUrl } from '../api/traces.js';
 import { useSession, type Session } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -1063,6 +1066,142 @@ function BehaviourPreviewPanel({
   );
 }
 
+/**
+ * The answer as Discord-like text. There is no markdown renderer in the
+ * dashboard (and no new dependency may be added), so this renders plain
+ * text with its line breaks kept and fenced code blocks as `<pre>`.
+ */
+function AnswerText({ text }: { readonly text: string }) {
+  const parts = text.split('```');
+  if (parts.length === 1) return <p className="text-sm whitespace-pre-wrap">{text}</p>;
+  // Only a part whose fence closes is code: an odd part count means every
+  // opened fence closed; an even count leaves the last opened fence
+  // unclosed, so its tail stays plain text instead of a `<pre>`.
+  const closed = parts.length % 2 === 1;
+  return (
+    <>
+      {parts.map((part, index) =>
+        index % 2 === 1 && (closed || index < parts.length - 1) ? (
+          <pre
+            key={index}
+            className="mt-1 overflow-x-auto rounded-sm bg-panel p-2 font-mono text-xs whitespace-pre-wrap"
+          >
+            {part}
+          </pre>
+        ) : part === '' ? null : (
+          <p key={index} className="mt-1 text-sm whitespace-pre-wrap">
+            {part}
+          </p>
+        ),
+      )}
+    </>
+  );
+}
+
+/**
+ * Task 20: Try it — ask the selected behaviour a question from the
+ * dashboard and read its answer. Nothing is posted to Discord. "Continue
+ * this conversation" asks the follow-up in the same conversation; asking
+ * with "Try it" starts over. Rendered with `key={behaviourId}` so switching
+ * behaviours drops the previous answer and conversation.
+ */
+export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
+  const session = useSession();
+  const [question, setQuestion] = useState('');
+  const [answer, setAnswer] = useState<string | undefined>(undefined);
+  const [traceId, setTraceId] = useState<string | undefined>(undefined);
+  const [conversationId, setConversationId] = useState<string | undefined>(undefined);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>(undefined);
+
+  const run = async (continuing: boolean): Promise<void> => {
+    const cleaned = question.trim();
+    if (cleaned === '' || busy) return;
+    setBusy(true);
+    setError(undefined);
+    try {
+      // The 429 rethrows (rather than toasting and resolving `undefined`)
+      // so the rate limit lands in this call's inline error below.
+      const result = await session.writeOrThrow<TryItResponse>(
+        behaviourTryUrl(behaviourId),
+        {
+          question: cleaned,
+          ...(continuing && conversationId !== undefined ? { conversationId } : {}),
+        },
+        'POST',
+        [429],
+      );
+      // `undefined` means the session already toasted the reason.
+      if (result === undefined) return;
+      setAnswer(result.answer);
+      setTraceId(result.traceId);
+      setConversationId(result.conversationId);
+    } catch (err) {
+      setError(
+        err instanceof ApiError && err.body.error === 'rate-limited'
+          ? 'You have used your 20 tries for this hour. Try again later.'
+          : 'The assistant could not be tried right now. Try again.',
+      );
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <Card title="Try it">
+      <p className="mb-3 text-sm text-ink-muted">
+        Ask this behaviour a question and read its answer here. Only you see it — nothing is posted
+        to Discord.
+      </p>
+      <Field label="Try it question" hint="At most 2,000 characters. Twenty tries per hour.">
+        <textarea
+          value={question}
+          maxLength={2_000}
+          onChange={(e) => setQuestion(e.target.value)}
+          className="mt-1 min-h-20 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
+        />
+      </Field>
+      <div className="mt-3 flex flex-wrap gap-2">
+        <Button
+          variant="primary"
+          busy={busy}
+          disabled={question.trim() === '' || busy}
+          onClick={() => void run(false)}
+        >
+          Try it
+        </Button>
+        {conversationId !== undefined && (
+          <Button
+            busy={busy}
+            disabled={question.trim() === '' || busy}
+            onClick={() => void run(true)}
+          >
+            Continue this conversation
+          </Button>
+        )}
+      </div>
+      {error !== undefined && (
+        <p role="alert" className="mt-3 text-sm text-danger">
+          {error}
+        </p>
+      )}
+      {answer !== undefined && traceId !== undefined && (
+        <section
+          aria-label="Tried answer"
+          className="mt-3 rounded-sm border border-line bg-canvas p-2"
+        >
+          <AnswerText text={answer} />
+          <p className="mt-2">
+            <Link className="text-sm underline underline-offset-4" href={historyUrl(traceId)}>
+              View details
+            </Link>
+          </p>
+        </section>
+      )}
+    </Card>
+  );
+}
+
 function AssistantReady({
   data,
   session,
@@ -1192,6 +1331,12 @@ function AssistantReady({
         session={session}
         reload={reload}
         onToggle={() => void toggleEnabled()}
+      />
+      <TryItBox
+        // The answer and conversation belong to exactly one behaviour: a
+        // shared key would keep behaviour A's answer under behaviour B.
+        key={`try-${current.id}`}
+        behaviourId={current.id}
       />
       <BehaviourAccessEditor
         key={`access-${current.id}`}

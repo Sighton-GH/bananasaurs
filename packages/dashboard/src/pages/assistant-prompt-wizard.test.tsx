@@ -217,4 +217,37 @@ describe('AssistantPromptWizardPage', () => {
     expect(screen.getByText('0 / 4,000 characters')).toBeTruthy();
     expect(buttonOf(screen.getByRole('button', { name: 'Save instructions' })).disabled).toBe(true);
   });
+
+  it('tries the behaviour from the Review step and links to history', async () => {
+    const mock = stubFetch([
+      {
+        url: '/api/assistant',
+        body: { behaviours: [CLUB, IT], resources: [], skills: [], activity: [] },
+      },
+      { url: '/api/assistant/safety-suffix', body: SUFFIX },
+      {
+        method: 'POST',
+        url: '/api/assistant/behaviours/club/try',
+        body: { answer: 'Wizard tried.', traceId: 'try_9', conversationId: 'try_c9' },
+      },
+    ]);
+    const { hook } = memoryLocation({ path: '/assistant/behaviours/club/wizard' });
+    renderWithSession(
+      <Router hook={hook}>
+        <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
+      </Router>,
+    );
+    for (let i = 0; i < 6; i += 1) await next();
+    expect(await screen.findByRole('heading', { name: 'Review' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'does it work?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    expect(await screen.findByText('Wizard tried.')).toBeTruthy();
+    expect(screen.getByRole('link', { name: 'View details' }).getAttribute('href')).toBe(
+      '/assistant/history/try_9',
+    );
+    const call = mock.mock.calls.find((c) => c[0] === '/api/assistant/behaviours/club/try');
+    expect(bodyOf(call!)).toEqual({ question: 'does it work?' });
+  });
 });

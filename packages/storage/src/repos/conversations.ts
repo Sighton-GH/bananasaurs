@@ -477,8 +477,18 @@ export const deleteConversation = (scope: GuildScope, id: string): void =>
       .run();
   });
 
-/** Sets feedback on the turn a message belongs to. Returns false when the message is unknown. */
-export const setFeedback = (scope: GuildScope, messageId: string, feedback: Feedback): boolean =>
+/**
+ * Sets feedback on the turn a message belongs to. `null` clears it (the
+ * member removed their reaction). Reports whether the message is linked at
+ * all, plus the turn's trace id so the caller can flag the matching trace —
+ * the message link is the only turn-to-trace path the feedback subscriber
+ * has. The subscriber, not this function, decides which linked roles count.
+ */
+export const setFeedback = (
+  scope: GuildScope,
+  messageId: string,
+  feedback: Feedback | null,
+): { updated: boolean; traceId: string | undefined } =>
   write(scope, ({ db }) => {
     const link = db
       .select({ turnId: assistantConversationMessages.turnId })
@@ -490,14 +500,21 @@ export const setFeedback = (scope: GuildScope, messageId: string, feedback: Feed
         ),
       )
       .get();
-    if (link === undefined) return false;
+    if (link === undefined) return { updated: false, traceId: undefined };
     db.update(assistantConversationTurns)
       .set({ feedback })
       .where(
         scope.only(assistantConversationTurns, eq(assistantConversationTurns.turnId, link.turnId)),
       )
       .run();
-    return true;
+    const turn = db
+      .select({ traceId: assistantConversationTurns.traceId })
+      .from(assistantConversationTurns)
+      .where(
+        scope.only(assistantConversationTurns, eq(assistantConversationTurns.turnId, link.turnId)),
+      )
+      .get();
+    return { updated: true, traceId: turn?.traceId ?? undefined };
   });
 
 /** Deletes every conversation whose `last_activity_at` is older than `cutoff`. */

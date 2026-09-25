@@ -24,6 +24,7 @@ import type {
   AssistantTraceDetail,
   InvocationTrace,
 } from '../assistant/commands.js';
+import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 
@@ -200,21 +201,26 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
       postedMessageIds,
       flags,
     };
+    // Task 20: the service-attached result flags (e.g.
+    // `resources-unavailable`) travel in the cursor alongside the job's own
+    // `quote-unavailable` flags so a retry keeps both.
+    const resultFlags = result.flags === undefined ? {} : { flags: [...result.flags] };
     if (!result.ok)
       return {
         stage,
-        result: { ok: false, content: result.content, ...trace, ...detail },
+        result: { ok: false, content: result.content, ...resultFlags, ...trace, ...detail },
         ...rest,
       };
     return {
       stage,
       result:
         result.escalation === undefined
-          ? { ok: true, content: result.content, ...trace, ...detail }
+          ? { ok: true, content: result.content, ...resultFlags, ...trace, ...detail }
           : {
               ok: true,
               content: result.content,
               escalation: result.escalation,
+              ...resultFlags,
               ...trace,
               ...detail,
             },
@@ -236,23 +242,6 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
  */
 const PROVIDER_RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
 const PROVIDER_RETRY_CEILING = PROVIDER_RETRY_DELAYS_MS.length + 1;
-const BUSY_REPLY = 'The AI service is busy right now. Try again in a minute. No action was taken.';
-
-/**
- * ADR 0077: when a `:free` model's daily request allowance is exhausted, a
- * retry cannot help - it does not reset for up to 24 hours, and the whole
- * point is to stop spending the (already zero) remaining allowance. The
- * member is told exactly when it resets instead of being told to try again
- * in a minute.
- */
-const nextUtcMidnight = (nowMs: number): number => {
-  const d = new Date(nowMs);
-  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() + 1, 0, 0, 0, 0);
-};
-const dailyQuotaReply = (resetAt: number | undefined, nowMs: number): string => {
-  const unix = Math.floor((resetAt ?? nextUtcMidnight(nowMs)) / 1000);
-  return `The bot's free AI allowance for today is used up. It resets <t:${unix}:t>. No action was taken.`;
-};
 
 export const assistantInvokeHandler = (deps: {
   guildId: string;
@@ -527,6 +516,13 @@ export const assistantInvokeHandler = (deps: {
           ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
         });
         invokeDoneAt = deps.now();
+        // Task 20: flags the service attached to the result (currently only
+        // `resources-unavailable`) join the job's own flags before the trace
+        // write — the same way `quote-unavailable` above does — and persist
+        // in the cursor via `saveStaged`, so a retry keeps them.
+        for (const flag of result.flags ?? []) {
+          if (!flags.includes(flag)) flags.push(flag);
+        }
       } catch (err) {
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of
@@ -666,6 +662,9 @@ export const assistantInvokeHandler = (deps: {
             role: 'assistant',
             authorName: conv.botDisplayName,
             text: result.content,
+            // Task 20: the turn carries its trace id so a later 👍/👎
+            // reaction on a linked message can flag the matching trace.
+            traceId: `trace_${key}`,
           });
         }
         if (payload.messageId !== undefined) {

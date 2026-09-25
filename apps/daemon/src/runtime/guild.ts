@@ -64,6 +64,7 @@ import {
   pipelineRepo,
   resourceCacheRepo,
   roleRepo,
+  traceRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -795,6 +796,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       now,
       logger,
       lookupMessage: (messageId) => conversationRepo.lookupMessage(scope, messageId),
+      // Task 20: member 👍/👎 on a bot answer sets feedback and a trace
+      // flag; anything else (and the bot's own reactions) is ignored inside.
+      feedback: {
+        setFeedback: (messageId, vote) => conversationRepo.setFeedback(scope, messageId, vote),
+        addTraceFlag: (traceId, flag) => traceRepo.addTraceFlag(scope, traceId, flag),
+      },
     }),
   ];
 

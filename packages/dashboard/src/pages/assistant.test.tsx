@@ -556,6 +556,93 @@ describe('AssistantPage', () => {
   });
 });
 
+describe('AssistantPage: Try it (Task 20)', () => {
+  const TRY = { answer: 'Tried answer.', traceId: 'try_1', conversationId: 'try_c1' };
+  const renderTry = (tryRoute: { status?: number; body: unknown } = { body: TRY }) => {
+    const mock = stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { method: 'POST', url: '/api/assistant/behaviours/club/try', ...tryRoute },
+    ]);
+    renderWithSession(<AssistantPage />);
+    return mock;
+  };
+  const tryCalls = (mock: ReturnType<typeof stubFetch>) =>
+    mock.mock.calls.filter((c) => c[0] === '/api/assistant/behaviours/club/try');
+
+  it('tries the selected behaviour and links the answer to its history detail', async () => {
+    const mock = renderTry();
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'when is the meeting?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    expect(await screen.findByText('Tried answer.')).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'View details' });
+    expect((link as HTMLAnchorElement).pathname).toBe('/assistant/history/try_1');
+    expect(bodyOf(tryCalls(mock)[0]!)).toEqual({ question: 'when is the meeting?' });
+  });
+
+  it('continues the conversation when asked, keeping the conversation id', async () => {
+    const mock = renderTry();
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'first question' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    await screen.findByText('Tried answer.');
+    fireEvent.change(screen.getByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'and parking?' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Continue this conversation' }));
+    await screen.findByText('Tried answer.');
+    expect(bodyOf(tryCalls(mock)[1]!)).toEqual({
+      question: 'and parking?',
+      conversationId: 'try_c1',
+    });
+  });
+
+  it('reads the rate limit as an inline error, not only a toast', async () => {
+    renderTry({
+      status: 429,
+      body: {
+        error: 'rate-limited',
+        message: 'You have used your 20 tries for this hour. Try again later.',
+      },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'one too many' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    // The 429 must reach this call's inline alert — a toast alone is not enough.
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('You have used your 20 tries for this hour.');
+    expect(screen.queryByRole('link', { name: 'View details' })).toBeNull();
+  });
+
+  it('renders an unclosed code fence as text, not a code block', async () => {
+    renderTry({
+      body: { ...TRY, answer: 'Here is code:\n```js\nconst x = 1;\nno closing fence' },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'show code' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    const section = await screen.findByLabelText('Tried answer');
+    expect(section.querySelector('pre')).toBeNull();
+    expect(section.textContent).toContain('const x = 1;');
+  });
+
+  it('still renders a closed code fence as a code block', async () => {
+    renderTry({
+      body: { ...TRY, answer: 'Here is code:\n```js\nconst x = 1;\n```\ndone' },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'show code' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    const section = await screen.findByLabelText('Tried answer');
+    expect(section.querySelector('pre')?.textContent).toContain('const x = 1;');
+  });
+});
+
 describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
   const LABEL = 'When someone tags @Bananasaurs, answer with';
   const withFlag = (id: string | undefined) => ({

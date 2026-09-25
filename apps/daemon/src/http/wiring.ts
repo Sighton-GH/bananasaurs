@@ -6,6 +6,7 @@ import {
   JOB_KINDS,
   resourceRefreshDedupeKey,
   safeLogFields,
+  SafeProvider,
   type Config,
   type DiscordPort,
   type Logger,
@@ -19,6 +20,7 @@ import {
   registerAssistantProviderRoutes,
   registerAssistantGithubRoutes,
   registerAssistantRoutes,
+  registerAssistantTryRoutes,
   registerAssistantResourceCacheRoutes,
   registerAssistantTraceRoutes,
   registerAssistantConversationRoutes,
@@ -30,10 +32,14 @@ import {
   registerReadRoutes,
   registerWriteRoutes,
   type HttpDeps,
+  type TryAssistantDeps,
   type AssistantProviderStatus,
 } from '@bananasaurs/http';
 import { envProviderStatus } from '../assistant/provider-config.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
+import type { ChainEntry } from '../assistant/model-chain.js';
+import { createAssistantService } from '../assistant/service.js';
+import { memberChannels } from '../assistant/member-channels.js';
 import { createGitHubClient } from '../assistant/github-client.js';
 import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { registerMcpRoutes } from '../mcp/wiring.js';
@@ -129,6 +135,13 @@ export interface DashboardAppDeps {
   /** The gateway client, for the MCP guild tools (ruling M4-D12). */
   readonly client: Client;
   /**
+   * Task 20: dashboard Try-it, built by `startDashboardApi` around the same
+   * assistant service the guild runtime uses. Absent in isolated uses (and
+   * in env-only provider mode, which has no key store to run on), and then
+   * the try route answers 503.
+   */
+  readonly tryAssistant?: TryAssistantDeps['tryAssistant'] | undefined;
+  /**
    * The Discord REST port, for the MCP send tool (ruling M5-D11).
    *
    * Required for the same reason `client` is: the message gateway behind
@@ -201,7 +214,7 @@ const assistantDirectoriesFor = async (client: Client, guildId: string, now: () 
 
 export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
   const quotaLedger = deps.assistantQuotaLedger;
-  const httpDeps: HttpDeps = {
+  const httpDeps: HttpDeps & TryAssistantDeps = {
     scopes: deps.scopes,
     now: deps.now,
     guildIds: deps.guildIds,
@@ -211,6 +224,9 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
+    // Task 20: the Try-it runner rides along when the composition root
+    // built one; the route answers 503 without it.
+    ...(deps.tryAssistant === undefined ? {} : { tryAssistant: deps.tryAssistant }),
     // ADR 0073: the enqueue behind the resource save route — the one
     // production implementation of `HttpDeps.enqueueResourceRefresh`, so the
     // route's injected seam and the job's dedupe key cannot disagree.
@@ -265,6 +281,9 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     registerRoutes: (instance, guard, routeDeps) => {
       registerReadRoutes(instance, guard, routeDeps);
       registerAssistantRoutes(instance, guard, routeDeps);
+      // Task 20: `httpDeps`, not `routeDeps` — only the outer literal
+      // carries the Try-it runner, which `HttpDeps` itself never mentions.
+      registerAssistantTryRoutes(instance, guard, httpDeps);
       registerAssistantProviderRoutes(instance, guard, routeDeps);
       registerAssistantGithubRoutes(instance, guard, routeDeps);
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
@@ -362,6 +381,82 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
   // independent literals with the same values would diverge silently.
   // Task 8: the single process-wide ledger rides along explicitly, so
   // `buildDashboardApp` derives the allowance pill's reset from it.
+  // Task 20: dashboard Try-it runs the same assistant pipeline in-process,
+  // one service per request over the request's guild scope. The chain comes
+  // from the dashboard key store, whose HTTP-declared row type is lossier
+  // than what `chain()` really returns — so each row is re-checked here and
+  // only a spend-wrapped provider runs; anything else fails closed to a
+  // skipped entry. No key store (env-only mode) means no Try-it runner.
+  const tryAssistant: TryAssistantDeps['tryAssistant'] =
+    deps.assistantProviderConfig === undefined
+      ? undefined
+      : async (scope, input) => {
+          const chain: ChainEntry[] = [];
+          for (const row of deps.assistantProviderConfig?.chain?.() ?? []) {
+            const providerId = (['gemini', 'openrouter', 'nvidia-nim'] as const).find(
+              (id) => id === row.providerId,
+            );
+            if (providerId === undefined) continue;
+            if (row.provider === undefined) {
+              const skip = (
+                ['no-key', 'key-unreadable', 'disabled', 'ineligible', 'unverified'] as const
+              ).find((reason) => reason === row.skip);
+              chain.push({
+                providerId,
+                model: row.model,
+                keyId: row.keyId,
+                keyLabel: row.keyLabel,
+                provider: undefined,
+                ...(skip === undefined ? {} : { skip }),
+                mayTrain: row.mayTrain,
+              });
+              continue;
+            }
+            if (!(row.provider instanceof SafeProvider)) continue;
+            chain.push({
+              providerId,
+              model: row.model,
+              keyId: row.keyId,
+              keyLabel: row.keyLabel,
+              provider: row.provider,
+              mayTrain: row.mayTrain,
+            });
+          }
+          const service = createAssistantService(
+            scope,
+            deps.scopes.instance(),
+            deps.config,
+            deps.now,
+            {},
+            () => deps.config,
+            deps.logger,
+            {
+              memberChannels: (userId) => {
+                const guild = deps.client.guilds.cache.get(scope.guildId);
+                return memberChannels(
+                  guild === undefined
+                    ? undefined
+                    : {
+                        channels: guild.channels,
+                        members: {
+                          fetch: async (id: string) => {
+                            const member = await guild.members.fetch(id);
+                            return {
+                              permissionsIn: (channel: { readonly id: string }) =>
+                                member.permissionsIn(channel.id),
+                            };
+                          },
+                        },
+                      },
+                  userId,
+                );
+              },
+            },
+            () => chain,
+            deps.assistantQuotaLedger,
+          );
+          return service.tryIt(input);
+        };
   const app = buildDashboardApp({
     ...httpDeps,
     distDir: DASHBOARD_DIST,
@@ -370,6 +465,7 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     ...(deps.assistantQuotaLedger === undefined
       ? {}
       : { assistantQuotaLedger: deps.assistantQuotaLedger }),
+    ...(tryAssistant === undefined ? {} : { tryAssistant }),
   });
 
   const host = deps.config.DASHBOARD_BIND;

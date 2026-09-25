@@ -412,9 +412,42 @@ describe('setFeedback', () => {
     appendTurn(scope, turn({ turnId: 'turn-1', role: 'assistant', authorId: undefined }));
     linkMessages(scope, 'conv-1', 'turn-1', 'assistant', ['600000000000000001']);
 
-    expect(setFeedback(scope, '600000000000000099', 'up')).toBe(false);
-    expect(setFeedback(scope, '600000000000000001', 'up')).toBe(true);
+    expect(setFeedback(scope, '600000000000000099', 'up')).toEqual({
+      updated: false,
+      traceId: undefined,
+    });
+    expect(setFeedback(scope, '600000000000000001', 'up')).toEqual({
+      updated: true,
+      traceId: undefined,
+    });
     expect(recentTurns(scope, 'conv-1', { maxTurns: 12, maxChars: 6_000 })[0]?.feedback).toBe('up');
+  });
+});
+
+describe('setFeedback clears and reports the turn trace', () => {
+  it('clears feedback with null and reports the turn trace id', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation());
+    appendTurn(
+      scope,
+      turn({ turnId: 'turn-1', role: 'assistant', authorId: undefined, traceId: 'trace-1' }),
+    );
+    linkMessages(scope, 'conv-1', 'turn-1', 'assistant', ['600000000000000001']);
+
+    expect(setFeedback(scope, '600000000000000099', 'up')).toEqual({
+      updated: false,
+      traceId: undefined,
+    });
+    expect(setFeedback(scope, '600000000000000001', 'up')).toEqual({
+      updated: true,
+      traceId: 'trace-1',
+    });
+    expect(listTurns(scope, 'conv-1')[0]?.feedback).toBe('up');
+    expect(setFeedback(scope, '600000000000000001', null)).toEqual({
+      updated: true,
+      traceId: 'trace-1',
+    });
+    expect(listTurns(scope, 'conv-1')[0]?.feedback).toBeUndefined();
   });
 });
 

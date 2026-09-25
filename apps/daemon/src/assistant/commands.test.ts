@@ -5,6 +5,7 @@ import type {
   AssistantInvokePayload,
   DomainEvent,
   KnownMessage,
+  ReactionEvent,
 } from '@bananasaurs/core';
 import { ProviderError, RetryAfterError } from '@bananasaurs/core';
 import {
@@ -735,6 +736,122 @@ describe('assistant mention failure path', () => {
     await handler.run(payload, { ...context, attempts: 3, cursor: cursors.at(-1)! });
     expect(h.invoke).toHaveBeenCalledTimes(1);
     expect(h.send).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('assistant answer feedback reactions (Task 20)', () => {
+  const BOT = '901234567890123456';
+  const MESSAGE = '890123456789012345';
+  const TRACE = 'trace_feedback_1';
+  const assistantLink = (messageId: string): KnownMessage | undefined =>
+    messageId === MESSAGE
+      ? { conversationId: 'conv-1', role: 'assistant', channelId, behaviourId: 'club' }
+      : undefined;
+  const userLink = (messageId: string): KnownMessage | undefined =>
+    messageId === MESSAGE
+      ? { conversationId: 'conv-1', role: 'user', channelId, behaviourId: 'club' }
+      : undefined;
+  const feedbackHarness = (
+    lookupMessage: (messageId: string) => KnownMessage | undefined = assistantLink,
+  ) => {
+    const setFeedback = vi.fn(
+      (
+        _messageId: string,
+        _feedback: 'up' | 'down' | null,
+      ): {
+        updated: boolean;
+        traceId: string | undefined;
+      } => ({ updated: true, traceId: TRACE }),
+    );
+    const addTraceFlag = vi.fn((_traceId: string, _flag: string): boolean => true);
+    const subscriber = createAssistantCommandSubscriber({
+      botUserId: BOT,
+      guildId,
+      service: {
+        behavioursForGuild: vi.fn(async () => [direct, club]),
+        invoke: vi.fn(async () => ({ ok: true as const, content: 'unused' })),
+      },
+      defer: vi.fn(async () => undefined),
+      respond: vi.fn(async () => undefined),
+      enqueue: vi.fn(),
+      sealToken: (token) => token,
+      now: () => 1,
+      logger: pino({ level: 'silent' }),
+      lookupMessage,
+      feedback: { setFeedback, addTraceFlag },
+    });
+    return { setFeedback, addTraceFlag, subscriber };
+  };
+  // Overrides are the real reaction event shape, partial: a single-kind
+  // `Extract` would narrow to `never` (the event's kind is a union), so the
+  // helper takes `Partial<ReactionEvent>` and returns the full event.
+  const reaction = (over: Partial<ReactionEvent> = {}): ReactionEvent => ({
+    kind: 'reactionAdd',
+    guildId,
+    receivedAtMs: 1,
+    channelId,
+    messageId: MESSAGE,
+    userId,
+    emoji: 'u:1f44d',
+    wasPartial: false,
+    ...over,
+  });
+
+  it('records a thumbs-up and flags the trace', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, 'up');
+    expect(h.addTraceFlag).toHaveBeenCalledWith(TRACE, 'feedback:up');
+  });
+
+  it('records a thumbs-down and flags the trace', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ emoji: 'u:1f44e' }));
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, 'down');
+    expect(h.addTraceFlag).toHaveBeenCalledWith(TRACE, 'feedback:down');
+  });
+
+  it('clears feedback when the reaction is removed, without touching trace flags', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ kind: 'reactionRemove' }));
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, null);
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a reaction on an unlinked message', async () => {
+    const h = feedbackHarness(() => undefined);
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('does nothing for a reaction on a user-role message', async () => {
+    const h = feedbackHarness(userLink);
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('counts only thumbs-up and thumbs-down', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ emoji: 'u:2714' }));
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('ignores the bot’s own reactions', async () => {
+    const h = feedbackHarness();
+    await h.subscriber.handle(reaction({ userId: BOT }));
+    expect(h.setFeedback).not.toHaveBeenCalled();
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
+  });
+
+  it('adds no trace flag when the message link is gone', async () => {
+    const h = feedbackHarness();
+    h.setFeedback.mockReturnValueOnce({ updated: false, traceId: undefined });
+    await h.subscriber.handle(reaction());
+    expect(h.setFeedback).toHaveBeenCalledWith(MESSAGE, 'up');
+    expect(h.addTraceFlag).not.toHaveBeenCalled();
   });
 });
 
