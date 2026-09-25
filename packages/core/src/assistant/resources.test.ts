@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { parseResourceMeta } from './resources.js';
+import { githubChildId, githubOrgId, parseResourceMeta } from './resources.js';
 
 describe('parseResourceMeta (Task 17)', () => {
   it('parses a full github-repo meta', () => {
@@ -46,5 +46,24 @@ describe('parseResourceMeta (Task 17)', () => {
     expect(
       parseResourceMeta(JSON.stringify({ owner: 'acme', include: 'README.md' })),
     ).toBeUndefined();
+  });
+});
+
+describe('github resource ids (Task 17)', () => {
+  it('derives a short readable org id', () => {
+    expect(githubOrgId('acme')).toBe('gh-acme');
+  });
+
+  it('derives a short readable child id for usual names', () => {
+    const id = githubChildId('acme', 'widget');
+    expect(id).toBe('gh-acme-widget');
+    expect(id.length).toBeLessThanOrEqual(64);
+  });
+
+  it('is deterministic and stays within 64 characters for very long names', () => {
+    const id = githubChildId('a'.repeat(39), 'b'.repeat(100));
+    expect(id).toBe(githubChildId('a'.repeat(39), 'b'.repeat(100)));
+    expect(id.length).toBeLessThanOrEqual(64);
+    expect(githubChildId('acme', 'widget')).not.toBe(githubChildId('acme', 'widget2'));
   });
 });

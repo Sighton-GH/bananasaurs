@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 import { z } from 'zod';
 
@@ -51,6 +52,32 @@ export const parseResourceMeta = (raw: string | null | undefined): ResourceMeta 
   } catch {
     return undefined;
   }
+};
+
+/**
+ * The resource id for an imported GitHub organisation (Task 17): short and
+ * readable (`gh-acme`), derived from the owner handle alone so re-importing
+ * the same org lands on the same row.
+ */
+export const githubOrgId = (owner: string): string => `gh-${owner.toLowerCase()}`;
+
+const slugPart = (value: string): string =>
+  value
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+
+/**
+ * The resource id for a `github-repo` child of an org import (Task 17):
+ * readable while it fits (`gh-acme-widget`), otherwise truncated with a
+ * content hash suffix so it stays deterministic and within the 64-character
+ * resource id limit. Distinct repos always give distinct ids.
+ */
+export const githubChildId = (owner: string, repo: string): string => {
+  const plain = `gh-${slugPart(owner)}-${slugPart(repo)}`;
+  if (plain.length <= 64) return plain;
+  const hash = createHash('sha256').update(`${owner}/${repo}`, 'utf8').digest('hex').slice(0, 8);
+  return `gh-${`${slugPart(owner)}-${slugPart(repo)}`.slice(0, 48)}-${hash}`;
 };
 
 const privateV4 = (a: number, b: number): boolean =>

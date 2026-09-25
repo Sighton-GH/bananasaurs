@@ -219,6 +219,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         interactionTokenSealer,
         assistantConfig,
         assistantChain,
+        // Task 17: the GitHub client reads the sealed token per request, for
+        // the `Authorization` header only — it never reaches logs or audit.
+        githubToken: () => providerStore?.githubToken(),
       }),
     });
   }

@@ -338,6 +338,23 @@ export const deleteStaleDocuments = (
   });
 
 /**
+ * Deletes one cached document with its chunks (FTS rows go with them, via
+ * the sync triggers). Task 17: a `github-repo` caches one document per
+ * selected file, so a file the repo no longer selects is deleted on its own
+ * — `deleteStaleDocuments` (keep exactly one) and `deleteForResource` (drop
+ * them all) are both the wrong shape here. A no-op for an unknown doc id.
+ */
+export const deleteDocument = (scope: GuildScope, docId: string): void =>
+  write(scope, ({ db }) => {
+    db.delete(resourceChunks)
+      .where(scope.only(resourceChunks, eq(resourceChunks.docId, docId)))
+      .run();
+    db.delete(resourceDocuments)
+      .where(scope.only(resourceDocuments, eq(resourceDocuments.docId, docId)))
+      .run();
+  });
+
+/**
  * The raw better-sqlite3 handle behind a Drizzle `Db` (mirrors
  * `archive-search.ts`'s `rawOf`: `bm25()`/`snippet()` are not expressible
  * through the query builder).

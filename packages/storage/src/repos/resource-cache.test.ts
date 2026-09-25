@@ -6,6 +6,7 @@ import { upsertGuild } from './guilds.js';
 import { putResource } from './assistant.js';
 import {
   computeDocId,
+  deleteDocument,
   deleteForResource,
   deleteStaleDocuments,
   getChunk,
@@ -325,6 +326,62 @@ describe('deleteStaleDocuments', () => {
 
     expect(listDocuments(a, 'res-2').map((d) => d.docId)).toEqual([otherDoc]);
     expect(searchChunks(a, { query: 'otherneedle', limit: 10 })).toHaveLength(1);
+  });
+});
+
+describe('deleteDocument (Task 17: one removed GitHub file)', () => {
+  it('removes one document with its chunks and FTS rows, leaving siblings and other guilds alone', () => {
+    seedResource(a, 'res-1', 'https://example.com/repo');
+    const readme = computeDocId('https://raw.example/README.md');
+    const old = computeDocId('https://raw.example/OLD.md');
+    for (const [docId, url, needle] of [
+      [readme, 'https://raw.example/README.md', 'zzzgonekeptneedle'],
+      [old, 'https://raw.example/OLD.md', 'zzzremovedneedle'],
+    ] as const) {
+      upsertDocument(a, {
+        resourceId: 'res-1',
+        docId,
+        url,
+        path: url,
+        title: url,
+        contentHash: 'h',
+        fetchedAt: 1000,
+        bytes: 10,
+        status: 'ok',
+      });
+      replaceChunks(a, docId, 'res-1', [chunk({ text: needle })]);
+    }
+
+    deleteDocument(a, old);
+
+    expect(getDocumentByUrl(a, 'https://raw.example/OLD.md')).toBeUndefined();
+    expect(outline(a, old)).toHaveLength(0);
+    expect(searchChunks(a, { query: 'zzzremovedneedle', limit: 10 })).toHaveLength(0);
+    expect(listDocuments(a, 'res-1').map((d) => d.docId)).toEqual([readme]);
+    expect(searchChunks(a, { query: 'zzzgonekeptneedle', limit: 10 })).toHaveLength(1);
+  });
+
+  it('is a no-op for an unknown doc id, scoped to the calling guild', () => {
+    seedResource(a, 'res-1', 'https://example.com/repo');
+    seedResource(b, 'res-1', 'https://example.com/repo');
+    const docId = computeDocId('https://example.com/repo');
+    for (const scope of [a, b]) {
+      upsertDocument(scope, {
+        resourceId: 'res-1',
+        docId,
+        url: 'https://example.com/repo',
+        path: '/repo',
+        title: 'Repo',
+        contentHash: 'h',
+        fetchedAt: 1000,
+        bytes: 10,
+        status: 'ok',
+      });
+    }
+    deleteDocument(a, 'd_doesnotexist0000');
+    deleteDocument(a, docId);
+    expect(getDocumentByUrl(a, 'https://example.com/repo')).toBeUndefined();
+    expect(getDocumentByUrl(b, 'https://example.com/repo')).not.toBeUndefined();
   });
 });
 

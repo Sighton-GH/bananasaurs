@@ -76,6 +76,16 @@ const deps = (
 ): ResourceRefreshDeps => ({ fetcher, repo, now });
 
 describe('refreshResource', () => {
+  it('refuses GitHub kinds — they refresh through refreshGithubResource, never website-style', async () => {
+    const fetch = vi.fn<ResourceRefreshFetcher['fetch']>();
+    for (const kind of ['github-org', 'github-repo'] as const) {
+      await expect(refreshResource(SCOPE, resource({ kind }), deps({ fetch }))).rejects.toThrow(
+        'refreshGithubResource',
+      );
+      expect(fetch).not.toHaveBeenCalled();
+    }
+  });
+
   it('skips a discord-channel resource entirely — no fetch, no document, no chunks', async () => {
     const fetch = vi.fn<ResourceRefreshFetcher['fetch']>();
     const repo = new FakeRepo();

@@ -88,6 +88,11 @@ export async function refreshResource(
   resource: ClubResource,
   deps: ResourceRefreshDeps,
 ): Promise<ResourceRefreshOutcome> {
+  // Task 17: GitHub kinds refresh through `github-refresh.ts` (routed by the
+  // `resource_refresh` job) — never here, so a GitHub URL can never be
+  // fetched website-style by accident.
+  if (resource.kind === 'github-org' || resource.kind === 'github-repo')
+    throw new Error('GitHub resources refresh through refreshGithubResource, not refreshResource.');
   if (resource.kind === 'discord-channel') return 'skipped';
 
   const fetchedAt = deps.now();

@@ -1,0 +1,407 @@
+import { createHash } from 'node:crypto';
+import {
+  chunkDocument,
+  githubChildId,
+  parseGitHubUrl,
+  rawGitHubUrl,
+  selectRepoFiles,
+  type Chunk,
+  type ClubResource,
+} from '@bananasaurs/core';
+import { computeDocId, type GuildScope } from '@bananasaurs/storage';
+import { GitHubError, type GitHubClient } from './github-client.js';
+import type { ResourceConditional } from './resource-fetcher.js';
+import type {
+  ResourceRefreshFetcher,
+  ResourceRefreshOutcome,
+  UpsertDocumentInput,
+} from './resource-refresh.js';
+
+/**
+ * The GitHub refresh path (Task 17, ruling "refresh"), split out of
+ * `resource-refresh.ts`: `github-org` resources discover/disable child
+ * `github-repo` resources, and `github-repo` resources cache one document per
+ * selected file. The hourly `resource_refresh` job routes GitHub kinds here
+ * (`apps/daemon/src/jobs/resource-refresh.ts`); `refreshResource` refuses
+ * them, so a GitHub URL can never be fetched website-style by accident.
+ *
+ * Everything is injected (`GithubRefreshDeps`: client + fetcher + store +
+ * cache + clock) so unit tests never touch the network. The token travels
+ * only inside the GitHub client (the `Authorization` header); nothing here
+ * logs it, throws it, or writes it to an audit row — fetch details are
+ * counts and sentences, never credentials.
+ */
+
+/** The stored fields the refresh reads back: validators for conditional requests and hashes for change detection. */
+export interface StoredDoc {
+  readonly docId: string;
+  readonly url: string;
+  readonly path: string;
+  readonly etag?: string;
+  readonly lastModified?: string;
+  readonly contentHash: string;
+  readonly bytes: number;
+  readonly status: 'ok' | 'error';
+}
+
+export interface GithubResourceStore {
+  listResources(scope: GuildScope): readonly ClubResource[];
+  putResource(scope: GuildScope, input: ClubResource): void;
+  recordResourceFetch(
+    scope: GuildScope,
+    id: string,
+    input: {
+      readonly status: 'ok' | 'failed' | 'blocked';
+      readonly at: number;
+      readonly detail: string;
+    },
+  ): void;
+}
+
+export interface GithubCacheStore {
+  getDocumentByUrl(scope: GuildScope, url: string): StoredDoc | undefined;
+  listDocuments(scope: GuildScope, resourceId: string): readonly StoredDoc[];
+  upsertDocument(scope: GuildScope, d: UpsertDocumentInput): void;
+  replaceChunks(
+    scope: GuildScope,
+    docId: string,
+    resourceId: string,
+    chunks: readonly Chunk[],
+  ): void;
+  deleteDocument(scope: GuildScope, docId: string): void;
+}
+
+export interface GithubRefreshDeps {
+  readonly client: GitHubClient;
+  readonly fetcher: ResourceRefreshFetcher;
+  readonly store: GithubResourceStore;
+  readonly cache: GithubCacheStore;
+  readonly now: () => number;
+}
+
+export type GithubRefreshOutcome = ResourceRefreshOutcome;
+
+/** Unauthenticated orgs re-list at most once per 24 hours (the ruling). */
+const ORG_RELIST_MIN_MS = 24 * 3_600_000;
+
+const rateLimitDetail = (error: GitHubError): string =>
+  error.resetAt === undefined
+    ? 'GitHub rate limit reached; will retry later.'
+    : `GitHub rate limit reached; will retry after ${new Date(error.resetAt).toISOString()}.`;
+
+/** Sentences and counts only — a GitHub message never carries the token (hard rule 4). */
+const failDetail = (error: unknown): string => {
+  if (error instanceof GitHubError && error.kind === 'rate-limited') return rateLimitDetail(error);
+  if (error instanceof Error) return error.message;
+  return 'GitHub refresh failed.';
+};
+
+const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
+
+const fail = (
+  scope: GuildScope,
+  resource: ClubResource,
+  deps: GithubRefreshDeps,
+  detail: string,
+): GithubRefreshOutcome => {
+  deps.store.recordResourceFetch(scope, resource.id, {
+    status: 'failed',
+    at: deps.now(),
+    detail,
+  });
+  return 'error';
+};
+
+const orgOwnerOf = (resource: ClubResource): string | undefined => {
+  if (resource.meta?.owner !== undefined) return resource.meta.owner;
+  const target = parseGitHubUrl(resource.url);
+  return target === undefined ? undefined : target.owner;
+};
+
+const repoNameOf = (resource: ClubResource): string | undefined => {
+  if (resource.meta?.repo !== undefined) return resource.meta.repo;
+  const target = parseGitHubUrl(resource.url);
+  return target !== undefined && target.kind === 'repo' ? target.repo : undefined;
+};
+
+const repoOwnerOf = (resource: ClubResource): string | undefined => {
+  if (resource.meta?.owner !== undefined) return resource.meta.owner;
+  const target = parseGitHubUrl(resource.url);
+  return target !== undefined && target.kind === 'repo' ? target.owner : undefined;
+};
+
+/**
+ * An org refresh: re-lists the owner's public repositories and reconciles
+ * the child `github-repo` resources — missing ones are created (enabled,
+ * `autoDiscovered`), auto-discovered ones that are gone (or now private, or
+ * filtered out by the forks/archived toggles) are disabled, never deleted.
+ * The owner's own hand-picked children are left alone.
+ */
+export async function refreshGithubOrg(
+  scope: GuildScope,
+  resource: ClubResource,
+  deps: GithubRefreshDeps,
+): Promise<GithubRefreshOutcome> {
+  const owner = orgOwnerOf(resource);
+  if (owner === undefined)
+    return fail(scope, resource, deps, 'This is not a GitHub organisation URL.');
+
+  if (
+    !deps.client.authenticated &&
+    resource.lastFetchedAt !== undefined &&
+    deps.now() - resource.lastFetchedAt < ORG_RELIST_MIN_MS
+  )
+    return 'skipped';
+
+  let summaries: readonly {
+    readonly name: string;
+    readonly fork: boolean;
+    readonly archived: boolean;
+    readonly private: boolean;
+    readonly defaultBranch: string;
+  }[];
+  try {
+    summaries = await deps.client.listOrgRepos(owner);
+  } catch (error) {
+    return fail(scope, resource, deps, failDetail(error));
+  }
+
+  const includeForks = resource.meta?.includeForks ?? false;
+  const includeArchived = resource.meta?.includeArchived ?? false;
+  const eligible = summaries.filter(
+    (s) => !s.private && (includeForks || !s.fork) && (includeArchived || !s.archived),
+  );
+  const eligibleNames = new Set(eligible.map((s) => s.name.toLowerCase()));
+
+  const childKey = (child: ClubResource): string | undefined => {
+    const name = child.meta?.repo ?? repoNameOf(child);
+    if (name !== undefined) return name.toLowerCase();
+    const slash = child.title.lastIndexOf('/');
+    return slash < 0 ? child.title.toLowerCase() : child.title.slice(slash + 1).toLowerCase();
+  };
+  const children = deps.store.listResources(scope).filter((r) => r.parentId === resource.id);
+  const byName = new Map<string, ClubResource>();
+  for (const child of children) {
+    const key = childKey(child);
+    if (key !== undefined && !byName.has(key)) byName.set(key, child);
+  }
+
+  for (const summary of eligible) {
+    const existing = byName.get(summary.name.toLowerCase());
+    if (existing === undefined) {
+      deps.store.putResource(scope, {
+        id: githubChildId(owner, summary.name),
+        guildId: scope.guildId,
+        title: `${owner}/${summary.name}`,
+        url: `https://github.com/${owner}/${summary.name}`,
+        kind: 'github-repo',
+        enabled: true,
+        reviewedAt: new Date(deps.now()).toISOString(),
+        parentId: resource.id,
+        meta: {
+          owner,
+          repo: summary.name,
+          branch: summary.defaultBranch,
+          autoDiscovered: true,
+        },
+      });
+    } else if (!existing.enabled) {
+      // A repository that left and came back is usable again — but nothing
+      // else about an existing row is touched here; the owner may have
+      // edited its title, URL or branch by hand.
+      deps.store.putResource(scope, { ...existing, enabled: true });
+    }
+  }
+
+  for (const child of children) {
+    const key = childKey(child);
+    if (
+      child.meta?.autoDiscovered === true &&
+      child.enabled &&
+      (key === undefined || !eligibleNames.has(key))
+    )
+      deps.store.putResource(scope, { ...child, enabled: false });
+  }
+
+  deps.store.recordResourceFetch(scope, resource.id, {
+    status: 'ok',
+    at: deps.now(),
+    detail: `GitHub organisation refreshed: ${String(eligible.length)} public repositories.`,
+  });
+  return 'ok';
+}
+
+interface SelectedFile {
+  readonly path: string;
+  readonly url: string;
+}
+
+/**
+ * A repo refresh. Authenticated: `getRepo` + `listTree` + `selectRepoFiles`
+ * (with `meta.include` when set), one cached document per selected file with
+ * the file path as its title. Unauthenticated: README only, no `listTree`
+ * (and no `getRepo` when the branch is already known). Rate limits record
+ * the retry sentence and keep the old chunks; files the selection no longer
+ * names have their documents deleted.
+ */
+export async function refreshGithubRepo(
+  scope: GuildScope,
+  resource: ClubResource,
+  deps: GithubRefreshDeps,
+): Promise<GithubRefreshOutcome> {
+  const owner = repoOwnerOf(resource);
+  const repo = repoNameOf(resource);
+  if (owner === undefined || repo === undefined)
+    return fail(scope, resource, deps, 'This is not a GitHub repository URL.');
+
+  let ref = resource.meta?.branch;
+  let files: readonly SelectedFile[];
+  if (deps.client.authenticated) {
+    let defaultBranch: string;
+    try {
+      const detail = await deps.client.getRepo(owner, repo);
+      if (detail.private) {
+        if (resource.enabled) deps.store.putResource(scope, { ...resource, enabled: false });
+        return fail(
+          scope,
+          resource,
+          deps,
+          'This repository is private; only public repositories can be cached.',
+        );
+      }
+      defaultBranch = detail.defaultBranch;
+    } catch (error) {
+      return fail(scope, resource, deps, failDetail(error));
+    }
+    const branch = ref ?? defaultBranch;
+    ref = branch;
+    let entries: readonly {
+      readonly path: string;
+      readonly type: 'blob' | 'tree';
+      readonly size?: number;
+    }[];
+    try {
+      entries = (await deps.client.listTree(owner, repo, branch)).entries;
+    } catch (error) {
+      return fail(scope, resource, deps, failDetail(error));
+    }
+    const include = resource.meta?.include;
+    files = selectRepoFiles(
+      entries,
+      include === undefined ? undefined : { include: [...include] },
+    ).map((path) => ({ path, url: rawGitHubUrl(owner, repo, branch, path) }));
+  } else {
+    if (ref === undefined) {
+      try {
+        const detail = await deps.client.getRepo(owner, repo);
+        if (detail.private) {
+          if (resource.enabled) deps.store.putResource(scope, { ...resource, enabled: false });
+          return fail(
+            scope,
+            resource,
+            deps,
+            'This repository is private; only public repositories can be cached.',
+          );
+        }
+        ref = detail.defaultBranch;
+      } catch (error) {
+        return fail(scope, resource, deps, failDetail(error));
+      }
+    }
+    const branch = ref;
+    files = [{ path: 'README.md', url: rawGitHubUrl(owner, repo, branch, 'README.md') }];
+  }
+
+  const fetchedAt = deps.now();
+  let fresh = false;
+  let firstFileError: string | undefined;
+  const wanted = new Set(files.map((f) => f.url));
+  for (const file of files) {
+    const existing = deps.cache.getDocumentByUrl(scope, file.url);
+    const conditional: ResourceConditional = {
+      ...(existing?.etag !== undefined ? { etag: existing.etag } : {}),
+      ...(existing?.lastModified !== undefined ? { lastModified: existing.lastModified } : {}),
+    };
+    let result: Awaited<ReturnType<ResourceRefreshFetcher['fetch']>>;
+    try {
+      result = await deps.fetcher.fetch(file.url, conditional);
+    } catch (error) {
+      firstFileError ??= error instanceof Error ? error.message : 'GitHub file fetch failed.';
+      continue;
+    }
+    if (result.ok && result.notModified === true) {
+      if (existing !== undefined) {
+        deps.cache.upsertDocument(scope, {
+          resourceId: resource.id,
+          docId: existing.docId,
+          url: file.url,
+          path: existing.path,
+          title: existing.path,
+          ...(existing.etag !== undefined ? { etag: existing.etag } : {}),
+          ...(existing.lastModified !== undefined ? { lastModified: existing.lastModified } : {}),
+          contentHash: existing.contentHash,
+          fetchedAt,
+          bytes: existing.bytes,
+          status: 'ok',
+        });
+      }
+      continue;
+    }
+    if (!result.ok) {
+      firstFileError ??= result.message;
+      continue;
+    }
+    const text = result.evidence.text;
+    const contentHash = sha256Hex(text);
+    const bytes = Buffer.byteLength(text, 'utf8');
+    const docId = computeDocId(file.url);
+    deps.cache.upsertDocument(scope, {
+      resourceId: resource.id,
+      docId,
+      url: file.url,
+      path: file.path,
+      title: file.path,
+      ...(result.etag !== undefined ? { etag: result.etag } : {}),
+      ...(result.lastModified !== undefined ? { lastModified: result.lastModified } : {}),
+      contentHash,
+      fetchedAt,
+      bytes,
+      status: 'ok',
+    });
+    if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash)
+      continue;
+    fresh = true;
+    deps.cache.replaceChunks(
+      scope,
+      docId,
+      resource.id,
+      chunkDocument({ text, mediaType: result.evidence.mediaType, path: file.path }),
+    );
+  }
+
+  for (const doc of deps.cache.listDocuments(scope, resource.id)) {
+    if (!wanted.has(doc.url)) deps.cache.deleteDocument(scope, doc.docId);
+  }
+
+  if (firstFileError !== undefined) return fail(scope, resource, deps, firstFileError);
+  deps.store.recordResourceFetch(scope, resource.id, {
+    status: 'ok',
+    at: fetchedAt,
+    detail:
+      files.length === 1
+        ? 'GitHub repository refreshed: README cached.'
+        : `GitHub repository refreshed: ${String(files.length)} files cached.`,
+  });
+  return fresh ? 'ok' : 'not-modified';
+}
+
+/** Routes one resource to its GitHub refresh; anything else is a caller bug. */
+export async function refreshGithubResource(
+  scope: GuildScope,
+  resource: ClubResource,
+  deps: GithubRefreshDeps,
+): Promise<GithubRefreshOutcome> {
+  if (resource.kind === 'github-org') return refreshGithubOrg(scope, resource, deps);
+  if (resource.kind === 'github-repo') return refreshGithubRepo(scope, resource, deps);
+  throw new Error(`GitHub refresh does not handle resource kind ${resource.kind}.`);
+}
