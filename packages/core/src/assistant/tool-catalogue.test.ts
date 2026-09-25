@@ -12,6 +12,11 @@ describe('TOOL_CATALOGUE', () => {
       'server_info',
       'current_time',
       'my_reminders',
+      'list_sources',
+      'search_sources',
+      'read_chunk',
+      'outline',
+      'refresh_source',
     ]);
     expect(new Set(names).size).toBe(names.length);
     for (const tool of TOOL_CATALOGUE) {
@@ -21,9 +26,10 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  it('opens every round except open_resource, which stays reachable in a follow-up round (ADR 0071)', () => {
+  it('opens every round except read_chunk, outline and open_resource, which stay reachable in a follow-up round (ADR 0071)', () => {
     for (const tool of TOOL_CATALOGUE) {
-      if (tool.name === 'open_resource') expect(tool.rounds).toBe('all');
+      if (tool.name === 'read_chunk' || tool.name === 'outline' || tool.name === 'open_resource')
+        expect(tool.rounds).toBe('all');
       else expect(tool.rounds).toBe('first');
     }
   });
@@ -49,6 +55,45 @@ describe('TOOL_CATALOGUE', () => {
       type: 'string',
       minLength: 1,
       maxLength: 64,
+    });
+  });
+
+  it('gives the cache tools camelCase parameters with the ruled bounds', () => {
+    const list = TOOL_CATALOGUE.find((tool) => tool.name === 'list_sources')!;
+    expect(list.parameters.properties.filter).toMatchObject({
+      type: 'string',
+      maxLength: 80,
+    });
+    expect(list.parameters.required ?? []).not.toContain('filter');
+    expect(list.rounds).toBe('first');
+    const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_sources')!;
+    expect(search.parameters.properties.query).toMatchObject({
+      type: 'string',
+      minLength: 2,
+      maxLength: 200,
+    });
+    expect(search.parameters.required).toEqual(['query']);
+    expect(search.rounds).toBe('first');
+    const read = TOOL_CATALOGUE.find((tool) => tool.name === 'read_chunk')!;
+    expect(read.parameters.properties.chunkId).toMatchObject({ type: 'string' });
+    expect(read.parameters.required).toEqual(['chunkId']);
+    expect(read.rounds).toBe('all');
+    const outline = TOOL_CATALOGUE.find((tool) => tool.name === 'outline')!;
+    expect(outline.parameters.properties.docId).toMatchObject({ type: 'string' });
+    expect(outline.parameters.required).toEqual(['docId']);
+    expect(outline.rounds).toBe('all');
+    const refresh = TOOL_CATALOGUE.find((tool) => tool.name === 'refresh_source')!;
+    expect(refresh.parameters.properties.resourceId).toMatchObject({ type: 'string' });
+    expect(refresh.parameters.required).toEqual(['resourceId']);
+    expect(refresh.rounds).toBe('first');
+  });
+
+  it('gives search_sources.sourceIds array items with a bound of 10', () => {
+    const search = TOOL_CATALOGUE.find((tool) => tool.name === 'search_sources')!;
+    expect(search.parameters.properties.sourceIds).toMatchObject({
+      type: 'array',
+      items: { type: 'string' },
+      maxItems: 10,
     });
   });
 });

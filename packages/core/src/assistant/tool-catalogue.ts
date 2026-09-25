@@ -16,6 +16,8 @@ export interface JSONSchemaProperty {
   readonly minimum?: number;
   readonly maximum?: number;
   readonly enum?: readonly (string | number)[];
+  readonly items?: { readonly type: 'string' };
+  readonly maxItems?: number;
 }
 
 /**
@@ -88,7 +90,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
       required: ['resourceId'],
     },
     rounds: 'all',
-    outputLimit: RESULT_LIMIT,
+    outputLimit: 'Up to 4,000 characters of cached content.',
     skills: ['search-club', 'open-resource', 'review-plan'],
   },
   {
@@ -123,5 +125,113 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     rounds: 'first',
     outputLimit: RESULT_LIMIT,
     skills: ['search-club', 'create-reminder'],
+  },
+  {
+    name: 'list_sources',
+    description:
+      'List the club sources cached for this server, with their ids for search_sources, read_chunk, outline, open_resource and refresh_source.',
+    parameters: {
+      type: 'object',
+      properties: {
+        filter: {
+          type: 'string',
+          description: 'Only sources whose id or title contains this text.',
+          minLength: 1,
+          maxLength: 80,
+        },
+      },
+      required: [],
+    },
+    rounds: 'first',
+    outputLimit: 'Up to 30 lines, one per source.',
+    skills: ['search-club'],
+  },
+  {
+    name: 'search_sources',
+    description: 'Search the cached club sources for passages about the query.',
+    parameters: {
+      type: 'object',
+      properties: {
+        query: {
+          type: 'string',
+          description: 'What to search for.',
+          minLength: 2,
+          maxLength: 200,
+        },
+        sourceIds: {
+          type: 'array',
+          description: 'Only these source ids (at most 10).',
+          items: { type: 'string' },
+          maxItems: 10,
+        },
+      },
+      required: ['query'],
+    },
+    rounds: 'first',
+    outputLimit: 'Up to 6 hits, 2,000 characters total.',
+    skills: ['search-club'],
+  },
+  {
+    name: 'read_chunk',
+    description: 'Read one cached passage by its chunk id, with neighbouring passages.',
+    parameters: {
+      type: 'object',
+      properties: {
+        chunkId: {
+          type: 'string',
+          description: 'The chunk id from search_sources, read_chunk, outline or open_resource.',
+          minLength: 1,
+          maxLength: 128,
+        },
+        neighbours: {
+          type: 'integer',
+          description: 'How many neighbouring chunks on each side (0, 1 or 2).',
+          enum: [0, 1, 2],
+        },
+      },
+      required: ['chunkId'],
+    },
+    rounds: 'all',
+    outputLimit: 'Up to 4,000 characters including neighbours.',
+    skills: ['search-club'],
+  },
+  {
+    name: 'outline',
+    description: 'List the headings of one cached document by its doc id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        docId: {
+          type: 'string',
+          description: 'The doc id from search_sources, read_chunk, outline or open_resource.',
+          minLength: 1,
+          maxLength: 128,
+        },
+      },
+      required: ['docId'],
+    },
+    rounds: 'all',
+    outputLimit: 'Up to 1,500 characters.',
+    skills: ['search-club'],
+  },
+  {
+    name: 'refresh_source',
+    description:
+      'Request a fresh fetch of one club source; updated content arrives in about a minute.',
+    parameters: {
+      type: 'object',
+      properties: {
+        resourceId: {
+          type: 'string',
+          description: 'The resource id.',
+          minLength: 1,
+          maxLength: 64,
+        },
+      },
+      required: ['resourceId'],
+    },
+    rounds: 'first',
+    outputLimit: 'One line confirming the refresh.',
+    skills: ['search-club'],
   },
 ] as const;

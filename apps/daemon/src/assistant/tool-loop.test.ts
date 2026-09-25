@@ -218,6 +218,25 @@ describe('runToolLoop follow-up rounds (ADR 0071)', () => {
     expect(toolTexts[1]).toBe('Refused: not allowed after reading results');
   });
 
+  it('round 2 calling refresh_source or list_sources is refused as not allowed after reading results', async () => {
+    const { provider } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      toolAnswer([
+        { name: 'refresh_source', args: { resourceId: 'handbook' } },
+        { name: 'list_sources', args: {} },
+      ]),
+      textAnswer('Answered anyway.'),
+    ]);
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name));
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(result.toolCalls).toMatchObject([
+      { round: 1, name: 'search_sources', ok: true },
+      { round: 2, name: 'refresh_source', ok: false, refused: 'not allowed after reading results' },
+      { round: 2, name: 'list_sources', ok: false, refused: 'not allowed after reading results' },
+    ]);
+  });
+
   it('round 2 calling read_chunk with an id not in handles is refused as unknown id', async () => {
     const { provider } = scripted([
       toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),

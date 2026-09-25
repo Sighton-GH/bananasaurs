@@ -16,9 +16,9 @@ import type { AssistantToolResult, ToolSource } from './tools.js';
 /**
  * The id argument of every follow-up tool (ADR 0071). Round 2+ offers only
  * these tools, and only with an id an earlier result in the same request
- * returned (or in the catalogue the harness put in the prompt). `read_chunk`
- * and `outline` have no implementation until Task 16, so no declarations for
- * them are offered; the enforcement below still names them.
+ * returned (or in the catalogue the harness put in the prompt). All three —
+ * `read_chunk`, `outline` and `open_resource` — are implemented; the
+ * enforcement below still names them.
  */
 export const ID_TOOL_ARGS: Readonly<Record<string, string>> = {
   read_chunk: 'chunkId',
@@ -290,8 +290,8 @@ const declarationsFor = (
   if (tools === undefined) return [];
   if (!provider.capabilities.has('tools')) return [];
   const offered = round === 1 ? tools.firstRound : tools.idRound;
-  // Follow-up rounds offer only ID tools; `read_chunk` and `outline` have no
-  // declarations until Task 16, so in practice this is `open_resource` alone.
+  // Follow-up rounds offer only the ID tools (`read_chunk`, `outline`,
+  // `open_resource`), filtered against the round's declarations.
   return round === 1 ? [...offered] : offered.filter((d) => d.name in ID_TOOL_ARGS);
 };
 
