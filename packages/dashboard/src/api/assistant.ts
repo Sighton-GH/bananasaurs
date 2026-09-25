@@ -224,3 +224,51 @@ export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURI
 export const skillGrantUrl = (skillId: string) =>
   `/api/assistant/skill-grants/${encodeURIComponent(skillId)}`;
 export const STARTER_URL = '/api/assistant/skill-grants/starter';
+
+/** `GET /api/assistant/skills/:skillId` (Task 9): one skill in full. */
+export const skillUrl = (skillId: string) => `/api/assistant/skills/${encodeURIComponent(skillId)}`;
+
+export interface SkillBehaviourRow {
+  readonly id: string;
+  readonly name: string;
+  readonly allowed: boolean;
+}
+export interface SkillCommandOption {
+  readonly name: string;
+  readonly required: boolean;
+  readonly description: string;
+}
+export interface SkillCommand {
+  readonly name: string;
+  readonly options: readonly SkillCommandOption[];
+}
+/** One property of a tool's JSON Schema parameters object. */
+export interface SkillToolParameter {
+  readonly type: string;
+  readonly description?: string;
+  readonly minLength?: number;
+  readonly maxLength?: number;
+  readonly minimum?: number;
+  readonly maximum?: number;
+  readonly enum?: readonly (string | number)[];
+}
+export interface SkillTool {
+  readonly name: string;
+  readonly description: string;
+  readonly parameters: {
+    readonly type: 'object';
+    readonly properties: Readonly<Record<string, SkillToolParameter>>;
+    readonly required?: readonly string[];
+  };
+  readonly rounds: 'first' | 'all';
+  readonly outputLimit: string;
+}
+export interface SkillDetail {
+  readonly skill: AssistantSkill;
+  readonly instructionLine: string;
+  readonly behaviours: readonly SkillBehaviourRow[];
+  readonly whoCanUse: string;
+  readonly tools: readonly SkillTool[];
+  readonly command?: SkillCommand;
+  readonly recentRuns: readonly ActivityRow[];
+}

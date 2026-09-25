@@ -43,6 +43,16 @@ function renderPage(body: unknown = FULL) {
 }
 
 describe('AssistantResourcesPage', () => {
+  it('states its purpose sentence (Task 9)', async () => {
+    renderPage();
+    expect(await screen.findByRole('heading', { level: 1, name: 'Resources' })).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Resources are the websites, documents and GitHub repositories the assistant can read.',
+      ),
+    ).toBeTruthy();
+  });
+
   it('renders sources with scope, freshness and fetch health', async () => {
     renderPage();
     expect(await screen.findByRole('heading', { level: 1, name: 'Resources' })).toBeTruthy();

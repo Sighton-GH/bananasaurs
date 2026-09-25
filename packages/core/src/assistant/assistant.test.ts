@@ -9,6 +9,7 @@ import {
   resolveAssistantBehaviour,
   extractEvidenceText,
   SAFETY_SUFFIX,
+  skillInstructionLine,
   validateResourceUrl,
 } from './index.js';
 import { redactEvidenceText, scanOutboundRequest } from '../providers/outbound-safety.js';
@@ -304,6 +305,22 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
     expect(byName.get('server-card')).toContain('SFU Racerbot club');
     expect(byName.get('resources')).toContain('web: Website');
     expect(byName.get('skills')).toBe(skillsBlock);
+  });
+
+  it('skillInstructionLine is the exact per-skill line the compiler emits (factored, not duplicated)', () => {
+    const skill = CLUB_ASSISTANT_SKILLS[0]!;
+    const line = skillInstructionLine(skill);
+    expect(line).toBe(
+      `${skill.id}: ${skill.description} Effect=${skill.effect}. Confirmation=not required.`,
+    );
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [skill],
+      evidence: [],
+    });
+    expect(compiled.systemInstruction).toContain(`ALLOWED SKILLS\n${line}`);
   });
   it('omits the empty resources section like the instruction join does', () => {
     const compiled = compileAssistantContext({
