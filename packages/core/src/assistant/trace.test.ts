@@ -88,6 +88,39 @@ describe('assistantTraceSchema', () => {
       ),
     ).toThrow();
   });
+
+  it('round-trips an attempt with the classified failure fields', () => {
+    const trace = fixtureTrace({
+      attempts: [
+        {
+          provider: 'openrouter',
+          model: 'm',
+          outcome: 'error',
+          reason: 'openrouter request failed',
+          ms: 250,
+          code: 'provider-connect-timeout',
+          httpStatus: 503,
+          netCode: 'UND_ERR_CONNECT_TIMEOUT',
+          host: 'openrouter.ai',
+          availableAt: 1_790_000_100_000,
+        },
+      ],
+    });
+    expect(assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)))).toEqual(trace);
+  });
+
+  it('still parses an attempt without the classified failure fields', () => {
+    const trace = fixtureTrace({
+      attempts: [{ provider: 'gemini', model: 'm', outcome: 'ok', ms: 1 }],
+    });
+    const parsed = assistantTraceSchema.parse(JSON.parse(JSON.stringify(trace)));
+    expect(parsed.attempts[0]).toEqual({
+      provider: 'gemini',
+      model: 'm',
+      outcome: 'ok',
+      ms: 1,
+    });
+  });
 });
 
 describe('estimateTokens', () => {
