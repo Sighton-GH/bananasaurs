@@ -278,7 +278,7 @@ export const registerAssistantProviderRoutes = (
       return reply.status(400).send({ error: 'unknown-key' });
     const seen = new Set<string>();
     for (const entry of parsed.data.entries) {
-      const pair = `${entry.keyId} ${entry.model}`;
+      const pair = `${entry.keyId}\u0000${entry.model}`;
       if (seen.has(pair)) return reply.status(400).send({ error: 'duplicate-entry' });
       seen.add(pair);
     }

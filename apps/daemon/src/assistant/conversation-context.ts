@@ -1,5 +1,6 @@
 import type { ConversationResolution, GenerationMessage } from '@bananasaurs/core';
 import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
+import { escapeUntrustedClose } from './untrusted.js';
 
 /**
  * Builds the conversation half of a provider request (Task 14, ADR 0072).
@@ -12,10 +13,11 @@ import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
  * the user turn.
  *
  * The current user turn is already stored when this runs — the job creates
- * the conversation row and the user turn before invoking — so the history
- * always ends with the question being answered, and the participant count
- * naturally includes its author. That is what makes a reply by another
- * member label both speakers.
+ * the conversation row, the quote turn and the user turn before invoking —
+ * so the caller names it via `excludeTurnId` and it is left out of the
+ * history: the question travels as the request's user text, exactly once.
+ * Its author still counts toward `participants`, so a reply by another
+ * member keeps both speakers labelled.
  */
 
 /** The recent-turn window, verbatim from the spec (global constraints). */
@@ -32,6 +34,8 @@ export interface ConversationContextInput {
   readonly resolution: ConversationResolution;
   readonly quoted?: QuotedMessage | undefined;
   readonly botDisplayName: string;
+  /** The just-written current user turn: stored, but never history. */
+  readonly excludeTurnId?: string | undefined;
 }
 
 export interface ConversationContext {
@@ -43,23 +47,31 @@ export interface ConversationContext {
 
 /** A quoted message as untrusted evidence inside the user turn. */
 export const quoteEnvelopeFor = (quoted: QuotedMessage): string =>
-  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(quoted.authorName)}]\n${quoted.content}\n[/UNTRUSTED QUOTED MESSAGE]`;
+  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(escapeUntrustedClose(quoted.authorName))}]\n${escapeUntrustedClose(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
 
 export const buildConversationContext = (input: ConversationContextInput): ConversationContext => {
   const conversationId =
     input.resolution.kind === 'continue' ? input.resolution.conversationId : undefined;
-  const turns =
+  const stored =
     conversationId === undefined
       ? []
       : conversationRepo.recentTurns(input.scope, conversationId, {
           maxTurns: HISTORY_TURNS,
           maxChars: HISTORY_CHARS,
         });
+  // The just-written user turn is stored (hard rule 6) but excluded from the
+  // history the model sees — the question travels as the request's user text.
+  const turns =
+    input.excludeTurnId === undefined
+      ? stored
+      : stored.filter((turn) => turn.turnId !== input.excludeTurnId);
 
   // The bot is the assistant, never a participant: a turn mislabelled with
   // its name must not mint a phantom second speaker and switch prefixes on.
+  // Counted over every stored turn including the excluded current one, so a
+  // reply by another member still labels both speakers.
   const names = new Set<string>();
-  for (const turn of turns) {
+  for (const turn of stored) {
     if (
       (turn.role === 'user' || turn.role === 'quote') &&
       turn.authorName !== input.botDisplayName

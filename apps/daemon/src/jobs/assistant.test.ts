@@ -137,6 +137,35 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     expect(err?.message).toContain('Rate limit exceeded');
   });
 
+  it('a provider failure keeps provider text out of the reply and the log channel, but in Pino', async () => {
+    const { logger, lines } = capturedLogger();
+    const svc = service(async () => {
+      throw new ProviderError(
+        'outage',
+        'openrouter request failed with HTTP 503 (sk-or-v1-SECRETKEY-billed-detail)',
+        false,
+      );
+    });
+    const { deps, sent } = baseDeps(svc, logger);
+    const handler = assistantInvokeHandler({ ...deps, logChannelId: () => '444444444444444444' });
+
+    await handler.run(payload, context({ attempts: 1 }));
+
+    // The member reply and the log-channel entry carry none of the
+    // provider's text; the fixed failure copy stands in for it.
+    expect(sent.length).toBeGreaterThan(0);
+    expect(JSON.stringify(sent)).not.toContain('SECRETKEY');
+    expect(sent[0]?.message.content).toBe(
+      'I could not complete that request. No action was taken.',
+    );
+    // The Pino error line still carries the provider's truncated reason.
+    const errLine = lines().find(
+      (line) => line['msg'] === 'assistant invocation failed before a response was produced',
+    );
+    expect(errLine).toBeDefined();
+    expect(JSON.stringify(errLine)).toContain('SECRETKEY');
+  });
+
   it('answers a daily quota cap at once, using resetAt for the unix time, with no retry', async () => {
     const resetAt = NOW + 3_600_000;
     const calls: AssistantInvocation[] = [];
@@ -434,9 +463,14 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     const first = conversationRepo.lookupMessage(scope(), '810000000000000015');
     const second = conversationRepo.lookupMessage(scope(), '810000000000000016');
     expect(second?.conversationId).toBe(first?.conversationId);
-    const history = h.inputs[1]?.history ?? [];
+    const secondInput = h.inputs[1];
+    const history = secondInput?.history ?? [];
     expect(history[0]?.text).toBe('Ama: first question');
-    expect(history.at(-1)?.text).toBe('Bo: and parking?');
+    // The just-written user turn is not history: the model gets the current
+    // question exactly once, as the request's user text.
+    expect(history.at(-1)?.text).toBe('answer to first question');
+    expect(history.every((message) => !message.text.includes('and parking?'))).toBe(true);
+    expect(secondInput?.input).toEqual({ question: 'and parking?' });
   });
 
   it('a quoted reply carries the untrusted envelope with the author name', async () => {
@@ -460,6 +494,85 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.inputs[0]?.quoteEnvelope).toBe(
       '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
     );
+  });
+
+  it('a quoted reply stores the quote as a turn once, even on retry', async () => {
+    const h = harness(() => ({ ok: true, content: 'yes, that is right' }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the hall opens at seven',
+    });
+    const input = mention({
+      invocationId: 'inv-qs',
+      messageId: '810000000000000027',
+      referencedMessageId: '840000000000000011',
+      referencedAuthorId: OTHER_ID,
+      input: { question: 'is that right?' },
+    });
+    await h.run(input);
+    await h.run(input);
+
+    const conversationId = conversationRepo.lookupMessage(
+      scope(),
+      '810000000000000027',
+    )?.conversationId;
+    expect(conversationId).toBeDefined();
+    const turns = conversationRepo.listTurns(scope(), conversationId!);
+    expect(turns.filter((turn) => turn.role === 'quote')).toHaveLength(1);
+    expect(turns.find((turn) => turn.role === 'quote')).toMatchObject({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      text: 'the hall opens at seven',
+    });
+    expect(turns.filter((turn) => turn.role === 'user')).toHaveLength(1);
+  });
+
+  it('a follow-up in a quoted conversation carries the pinned quote as an untrusted envelope', async () => {
+    const h = harness((input) => ({
+      ok: true,
+      content: `answer to ${String((input.input as Record<string, string>).question)}`,
+    }));
+    h.fetchMessageContent.mockResolvedValue({
+      authorId: OTHER_ID,
+      authorName: 'Alex',
+      content: 'the hall opens at seven',
+    });
+    await h.run(
+      mention({
+        invocationId: 'inv-qq1',
+        messageId: '810000000000000028',
+        referencedMessageId: '840000000000000012',
+        referencedAuthorId: OTHER_ID,
+        input: { question: 'is that right?' },
+      }),
+    );
+    nowMs += 5 * 60_000;
+    await h.run(
+      mention({
+        invocationId: 'inv-qq2',
+        messageId: '810000000000000029',
+        input: { question: 'what about Friday?' },
+      }),
+    );
+
+    const history = h.inputs[1]?.history ?? [];
+    expect(history[0]).toEqual({
+      role: 'user',
+      text: '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]',
+    });
+    expect(
+      history.every((message) => message.role === 'user' || message.role === 'assistant'),
+    ).toBe(true);
+    const conversationId = conversationRepo.lookupMessage(
+      scope(),
+      '810000000000000029',
+    )?.conversationId;
+    expect(
+      conversationRepo
+        .listTurns(scope(), conversationId!)
+        .some((turn) => turn.role === 'quote' && turn.text === 'the hall opens at seven'),
+    ).toBe(true);
   });
 
   it('a quote fetch failure still posts the answer and flags the trace quote-unavailable', async () => {

@@ -26,6 +26,7 @@ import type {
 } from '../assistant/commands.js';
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
+import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
 
 /**
@@ -417,9 +418,9 @@ export const assistantInvokeHandler = (deps: {
           }
         }
         // The conversation join: resolve, fetch an unknown quote, create the
-        // row and the user turn, then build the history. The ids derive from
+        // row and the quote and user turns, then build the history. The ids derive from
         // the invocation anchor, so a retry reuses the same conversation and
-        // turn instead of duplicating them. Needs a channel; a slash
+        // turns instead of duplicating them. Needs a channel; a slash
         // invocation without one answers history-free.
         const rawQuestion = Object.values(payload.input).join('\n');
         const strippedQuestion = stripNewTopic(rawQuestion);
@@ -448,7 +449,7 @@ export const assistantInvokeHandler = (deps: {
           // Quoted rules name a message we do not know: fetch it in the same
           // channel as untrusted evidence. A fetch failure flags the trace
           // `quote-unavailable` and continues without the quote (ruling).
-          let quoted: { authorName: string; content: string } | undefined;
+          let quoted: { authorId: string; authorName: string; content: string } | undefined;
           if (resolved.kind === 'new' && resolved.quotedMessageId !== undefined) {
             if (deps.fetchMessageContent === undefined) {
               flags.push('quote-unavailable');
@@ -456,7 +457,12 @@ export const assistantInvokeHandler = (deps: {
               try {
                 const fetched = await deps.fetchMessageContent(channelId, resolved.quotedMessageId);
                 if (fetched === undefined) flags.push('quote-unavailable');
-                else quoted = { authorName: fetched.authorName, content: fetched.content };
+                else
+                  quoted = {
+                    authorId: fetched.authorId,
+                    authorName: fetched.authorName,
+                    content: fetched.content,
+                  };
               } catch (err) {
                 deps.logger.warn(
                   safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
@@ -481,6 +487,26 @@ export const assistantInvokeHandler = (deps: {
               at: deps.now(),
             });
           }
+          // A new conversation that starts from a quoted message stores the
+          // quote as the opening `quote` turn, before the user turn: the
+          // pinned-quote window and the transcript both read it from there.
+          // The id derives from the invocation anchor like the user turn, so
+          // a retry reuses it instead of duplicating it.
+          if (resolved.kind === 'new' && quoted !== undefined) {
+            const quoteTurnId = `turn_${key}_q`;
+            const beforeQuote = conversationRepo.listTurns(conv.scope, conversationId);
+            if (!beforeQuote.some((turn) => turn.turnId === quoteTurnId)) {
+              conversationRepo.appendTurn(conv.scope, {
+                conversationId,
+                turnId: quoteTurnId,
+                at: nextAt(beforeQuote),
+                role: 'quote',
+                authorId: quoted.authorId,
+                authorName: quoted.authorName,
+                text: quoted.content,
+              });
+            }
+          }
           const beforeUser = conversationRepo.listTurns(conv.scope, conversationId);
           if (!beforeUser.some((turn) => turn.turnId === userTurnId)) {
             conversationRepo.appendTurn(conv.scope, {
@@ -498,6 +524,9 @@ export const assistantInvokeHandler = (deps: {
             resolution: resolved,
             ...(quoted === undefined ? {} : { quoted }),
             botDisplayName: conv.botDisplayName,
+            // The turn just written above is stored, never history: the
+            // question reaches the model once, as the request's user text.
+            excludeTurnId: userTurnId,
           });
           history = built.history;
           quoteEnvelope = built.quoteEnvelope;
@@ -534,7 +563,7 @@ export const assistantInvokeHandler = (deps: {
             'assistant invocation hit a daily free-model quota cap; answering at once',
           );
           await answerSingle(text);
-          await logFailure(text, err.message);
+          await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
           return;
         }
         if (
@@ -567,7 +596,7 @@ export const assistantInvokeHandler = (deps: {
             ? BUSY_REPLY
             : 'I could not complete that request. No action was taken.';
         await answerSingle(text);
-        await logFailure(text, err instanceof Error ? err.message : 'unknown error');
+        await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
         return;
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here
