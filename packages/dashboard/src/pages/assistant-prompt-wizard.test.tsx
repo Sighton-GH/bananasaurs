@@ -111,21 +111,17 @@ describe('AssistantPromptWizardPage', () => {
     const nextButton = await screen.findByRole('button', { name: 'Next' });
     expect((nextButton as HTMLButtonElement).disabled).toBe(false);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Members' }));
-    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Next' }).disabled).toBe(true);
     fireEvent.click(screen.getByRole('checkbox', { name: 'Members' }));
-    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(screen.getByRole('button', { name: 'Next' }).disabled).toBe(false);
     await next();
     await next();
     expect(await screen.findByRole('heading', { name: 'Voice' })).toBeTruthy();
     const language = screen.getByRole('textbox', { name: 'Language' });
     fireEvent.change(language, { target: { value: '' } });
-    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByRole('button', { name: 'Next' }).disabled).toBe(true);
     fireEvent.change(language, { target: { value: 'French' } });
-    expect((screen.getByRole('button', { name: 'Next' }) as HTMLButtonElement).disabled).toBe(
-      false,
-    );
+    expect(screen.getByRole('button', { name: 'Next' }).disabled).toBe(false);
   });
 
   it('restores the stored answers instead of the defaults', async () => {
@@ -135,7 +131,7 @@ describe('AssistantPromptWizardPage', () => {
     await next();
     await next();
     expect(await screen.findByRole('heading', { name: 'Club facts' })).toBeTruthy();
-    expect((screen.getByRole('textbox', { name: 'Club facts' }) as HTMLTextAreaElement).value).toBe(
+    expect(screen.getByRole('textbox', { name: 'Club facts' }).value).toBe(
       'Meetings are Tuesdays at 6 pm.',
     );
   });
@@ -143,19 +139,16 @@ describe('AssistantPromptWizardPage', () => {
   it('starts an it-services behaviour without answers from the IT defaults', async () => {
     renderWizard([IT], { body: { ok: true } }, '/assistant/behaviours/it/wizard');
     expect(
-      (await screen.findByRole('checkbox', {
+      await screen.findByRole('checkbox', {
         name: 'People who need IT help',
-      })) as HTMLInputElement,
+      }),
     ).toBeTruthy();
-    expect(
-      (screen.getByRole('checkbox', { name: 'People who need IT help' }) as HTMLInputElement)
-        .checked,
-    ).toBe(true);
+    expect(screen.getByRole('checkbox', { name: 'People who need IT help' }).checked).toBe(true);
     for (let i = 0; i < 6; i += 1) await next();
     expect(await screen.findByRole('heading', { name: 'Review' })).toBeTruthy();
-    expect(
-      (screen.getByRole('textbox', { name: 'Instructions to save' }) as HTMLTextAreaElement).value,
-    ).toContain('that an access change was made');
+    expect(screen.getByRole('textbox', { name: 'Instructions to save' }).value).toContain(
+      'that an access change was made',
+    );
   });
 
   it('shows the generated prompt with a character counter and the locked suffix', async () => {
@@ -164,7 +157,7 @@ describe('AssistantPromptWizardPage', () => {
     expect(await screen.findByRole('heading', { name: 'Review' })).toBeTruthy();
     const prompt = screen.getByRole('textbox', {
       name: 'Instructions to save',
-    }) as HTMLTextAreaElement;
+    });
     expect(prompt.value).toContain('Meetings are Tuesdays at 6 pm.');
     expect(screen.getByText(/\/ 4,000 characters/)).toBeTruthy();
     expect(screen.getByText("Always added by Bananasaurs — can't be changed")).toBeTruthy();
@@ -204,13 +197,11 @@ describe('AssistantPromptWizardPage', () => {
   it('counts the trimmed prompt and disables Save for a whitespace-only draft', async () => {
     renderWizard();
     for (let i = 0; i < 6; i += 1) await next();
-    const prompt = (await screen.findByRole('textbox', {
+    const prompt = await screen.findByRole('textbox', {
       name: 'Instructions to save',
-    })) as HTMLTextAreaElement;
+    });
     fireEvent.change(prompt, { target: { value: '   ' } });
     expect(screen.getByText('0 / 4,000 characters')).toBeTruthy();
-    expect(
-      (screen.getByRole('button', { name: 'Save instructions' }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(screen.getByRole('button', { name: 'Save instructions' }).disabled).toBe(true);
   });
 });
