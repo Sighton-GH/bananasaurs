@@ -235,6 +235,7 @@ export class ReviewedResourceFetcher {
   readonly #request: PinnedRequest;
   readonly #limits: ResourceFetchLimits;
   readonly #now: () => number;
+  readonly #allowedHosts: readonly string[] | undefined;
 
   constructor(
     options: {
@@ -242,12 +243,21 @@ export class ReviewedResourceFetcher {
       readonly request?: PinnedRequest;
       readonly limits?: Partial<ResourceFetchLimits>;
       readonly now?: () => number;
+      /**
+       * Task 17 fix: when set, the initial URL and every redirect target must
+       * have a hostname exactly in this list (GitHub raw downloads pin to
+       * `raw.githubusercontent.com`, so a redirect can never carry a refresh
+       * to another host). Absent means today's behaviour: any allowed public
+       * HTTPS URL, including redirects.
+       */
+      readonly allowedHosts?: readonly string[];
     } = {},
   ) {
     this.#resolve = options.resolve ?? resolvePublicAddress;
     this.#request = options.request ?? pinnedHttpsRequest;
     this.#limits = { ...DEFAULT_RESOURCE_FETCH_LIMITS, ...options.limits };
     this.#now = options.now ?? Date.now;
+    this.#allowedHosts = options.allowedHosts;
   }
 
   /**
@@ -284,6 +294,11 @@ export class ReviewedResourceFetcher {
     } catch {
       return fail('invalid-url', 'The reviewed resource URL is not an allowed public HTTPS URL.');
     }
+    if (
+      this.#allowedHosts !== undefined &&
+      !this.#allowedHosts.some((host) => initial.hostname.toLowerCase() === host.toLowerCase())
+    )
+      return fail('redirect', 'The reviewed resource redirected outside the allowed hosts.');
     if (conditional === undefined) {
       const cached = this.#cache.get(initial.href);
       if (cached !== undefined && this.#now() - cached.fetchedAt < this.#limits.cacheTtlMs)
@@ -357,6 +372,11 @@ export class ReviewedResourceFetcher {
           'The reviewed resource redirected outside allowed public HTTPS URLs.',
         );
       }
+      if (
+        this.#allowedHosts !== undefined &&
+        !this.#allowedHosts.some((host) => redirected.hostname.toLowerCase() === host.toLowerCase())
+      )
+        return fail('redirect', 'The reviewed resource redirected outside the allowed hosts.');
       return this.#fetchFrom(redirected, visited, redirects + 1, extraHeaders);
     }
     if (response.status < 200 || response.status >= 300) {

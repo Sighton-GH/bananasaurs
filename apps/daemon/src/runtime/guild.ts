@@ -835,7 +835,12 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
             fetch: createGithubFetch(),
             guard: githubGuard,
           }),
-          fetcher: new ReviewedResourceFetcher({ now }),
+          // Pinned to raw.githubusercontent.com: a redirect in a GitHub raw
+          // download can never carry the refresh to another host (hard rule 8).
+          fetcher: new ReviewedResourceFetcher({
+            now,
+            allowedHosts: ['raw.githubusercontent.com'],
+          }),
           store: assistantRepo,
           cache: resourceCacheRepo,
           now,
