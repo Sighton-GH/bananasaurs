@@ -125,6 +125,16 @@ export interface HttpDeps extends AuthDeps {
         channels: readonly { id: string; name: string }[];
       }>)
     | undefined;
+  /**
+   * ADR 0073: adding or editing a resource enqueues a cache refresh with
+   * reason `added`, so a newly added resource has cached chunks before the
+   * next hourly sweep. Injected (wired in `apps/daemon/src/http/wiring.ts`)
+   * rather than a `jobRepo` call inside the route, so the route body stays
+   * about validation and audit — and so route tests can inject a spy.
+   * Absent in isolated route tests, and then nothing is enqueued.
+   */
+  readonly enqueueResourceRefresh?:
+    ((scope: GuildScope, resourceId: string, reason: 'added') => void) | undefined;
 }
 
 /**

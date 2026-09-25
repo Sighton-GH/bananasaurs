@@ -48,6 +48,9 @@ class FakeRepo implements ResourceRefreshRepo {
   replaceChunks(): void {
     /* not asserted here */
   }
+  deleteStaleDocuments(): void {
+    /* not asserted here */
+  }
 }
 
 const okResult = (url: string) => ({

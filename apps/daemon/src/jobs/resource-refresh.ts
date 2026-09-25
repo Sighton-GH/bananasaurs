@@ -21,7 +21,7 @@ import {
  * the resource list to it, mirroring `adoptPanelHandler`.
  *
  * `payload.resourceId` present means one resource (a manual "Update now", or
- * the `added` reason on save); absent means every enabled resource in the
+ * the `added` reason on save); absent means every resource in the
  * guild (the hourly sweep, or "Update all"). A resource id that no longer
  * exists (deleted between enqueue and run) is a no-op, not a failure — a job
  * enqueued for it is inherently racing a delete, and racing it correctly

@@ -3,6 +3,8 @@ import { fileURLToPath } from 'node:url';
 import type { FastifyInstance } from 'fastify';
 import type { Client } from 'discord.js';
 import {
+  JOB_KINDS,
+  resourceRefreshDedupeKey,
   safeLogFields,
   type Config,
   type DiscordPort,
@@ -10,7 +12,7 @@ import {
   type OpsInstance,
   type OpsPorts,
 } from '@bananasaurs/core';
-import type { GuildScope, ScopeFactory } from '@bananasaurs/storage';
+import { jobRepo, type GuildScope, type ScopeFactory } from '@bananasaurs/storage';
 import {
   createServer,
   issueBootstrapTokenIfNeeded,
@@ -190,6 +192,18 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
     instance: deps.instance,
     assistantDirectories: (guildId) => assistantDirectoriesFor(deps.client, guildId, deps.now),
     mcpPublicUrl: deps.mcpPublicUrl,
+    // ADR 0073: the enqueue behind the resource save route — the one
+    // production implementation of `HttpDeps.enqueueResourceRefresh`, so the
+    // route's injected seam and the job's dedupe key cannot disagree.
+    enqueueResourceRefresh: (scope, resourceId, reason) => {
+      const now = deps.now();
+      jobRepo.enqueue(scope, {
+        kind: JOB_KINDS.resourceRefresh,
+        payload: JSON.stringify({ resourceId, reason }),
+        dedupeKey: resourceRefreshDedupeKey({ reason, resourceId }),
+        now,
+      });
+    },
     // Carried through, never rebuilt: the 2026-09-23 audit found this literal
     // hard-coding an 'unknown' status and dropping the store, so every
     // dashboard provider save answered 503 (wiring.provider.test.ts).

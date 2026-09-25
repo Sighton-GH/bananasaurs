@@ -1,12 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { parseGuildId, type ClubResource } from '@bananasaurs/core';
-import type { GuildScope } from '@bananasaurs/storage';
+import {
+  assistantRepo,
+  computeDocId,
+  guildRepo,
+  resourceCacheRepo,
+  type GuildScope,
+} from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
 import {
-  computeDocId,
   refreshAll,
   refreshResource,
   type ResourceRefreshDeps,
@@ -48,6 +53,11 @@ class FakeRepo implements ResourceRefreshRepo {
   }
   upsertDocument(_scope: GuildScope, d: UpsertDocumentInput): void {
     this.docs.set(d.docId, d);
+  }
+  deleteStaleDocuments(_scope: GuildScope, resourceId: string, keepDocId: string): void {
+    for (const [docId, doc] of this.docs) {
+      if (doc.resourceId === resourceId && docId !== keepDocId) this.docs.delete(docId);
+    }
   }
   replaceChunks(
     _scope: GuildScope,
@@ -256,6 +266,53 @@ describe('refreshResource', () => {
     );
     expect(outcome).toBe('ok');
     expect(fetch).toHaveBeenCalledWith('https://example.com/repo', {});
+  });
+
+  it("changing a resource's URL leaves only the new document, chunks, search hits and one freshness row", async () => {
+    guildRepo.upsertGuild(SCOPE, { name: 'guild', now: 0 });
+    assistantRepo.putResource(SCOPE, {
+      ...resource({ url: 'https://example.com/old' }),
+      guildId: GUILD,
+    });
+    const evidenceFor = (url: string, text: string) =>
+      ({
+        ok: true as const,
+        evidence: {
+          url,
+          mediaType: 'text/plain',
+          text,
+          fetchedAt: 1,
+          trust: 'untrusted-reviewed-resource' as const,
+        },
+        cache: 'miss' as const,
+      }) as const;
+    const fetch = vi
+      .fn<ResourceRefreshFetcher['fetch']>()
+      .mockResolvedValueOnce(evidenceFor('https://example.com/old', 'oldneedle unique old words'))
+      .mockResolvedValueOnce(evidenceFor('https://example.com/new', 'newneedle unique new words'));
+    const realDeps = (now: number): ResourceRefreshDeps => ({
+      fetcher: { fetch },
+      repo: resourceCacheRepo,
+      now: () => now,
+    });
+
+    await refreshResource(SCOPE, resource({ url: 'https://example.com/old' }), realDeps(1_000));
+    assistantRepo.putResource(SCOPE, {
+      ...resource({ url: 'https://example.com/new' }),
+      guildId: GUILD,
+    });
+    await refreshResource(SCOPE, resource({ url: 'https://example.com/new' }), realDeps(2_000));
+
+    expect(resourceCacheRepo.listDocuments(SCOPE, 'res-1').map((d) => d.url)).toEqual([
+      'https://example.com/new',
+    ]);
+    expect(resourceCacheRepo.searchChunks(SCOPE, { query: 'oldneedle', limit: 10 })).toHaveLength(
+      0,
+    );
+    expect(resourceCacheRepo.searchChunks(SCOPE, { query: 'newneedle', limit: 10 })).toHaveLength(
+      1,
+    );
+    expect(resourceCacheRepo.resourceFreshness(SCOPE)).toHaveLength(1);
   });
 });
 

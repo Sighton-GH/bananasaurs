@@ -10,7 +10,7 @@ import { read, write } from '../write.js';
 /**
  * The persistent resource cache (ADR 0073): fetched documents, their
  * chunker output, and a hand-written FTS5 index over the chunk text
- * (`drizzle/0040_resource_chunks_fts.sql`, ADR 0049 pattern).
+ * (the hand-written resource_chunks_fts migration, ADR 0049 pattern).
  *
  * Guild isolation for the FTS table works differently than for an ordinary
  * table: `resource_chunks_fts` carries no `guild_id` column of its own (the
@@ -295,6 +295,49 @@ export const deleteForResource = (scope: GuildScope, resourceId: string): void =
   });
 
 /**
+ * Deletes every cached document for `resourceId` except `keepDocId`, with
+ * their chunks (FTS rows go with them, via the sync triggers).
+ *
+ * A resource's URL is editable, but its document id is a hash of the URL —
+ * so after an edit the refresh writes a new document row and the old one
+ * would stay searchable under the same resource id, leaving
+ * `resourceFreshness` with several unordered rows per resource. The refresh
+ * calls this after every upsert with the current URL's doc id, so exactly
+ * the current document survives.
+ */
+export const deleteStaleDocuments = (
+  scope: GuildScope,
+  resourceId: string,
+  keepDocId: string,
+): void =>
+  write(scope, ({ db }) => {
+    const staleIds = db
+      .select({ docId: resourceDocuments.docId })
+      .from(resourceDocuments)
+      .where(
+        and(
+          scope.only(resourceDocuments, eq(resourceDocuments.resourceId, resourceId)),
+          sql`${resourceDocuments.docId} != ${keepDocId}`,
+        ),
+      )
+      .all()
+      .map((r) => r.docId);
+    if (staleIds.length > 0) {
+      db.delete(resourceChunks)
+        .where(scope.only(resourceChunks, inArray(resourceChunks.docId, staleIds)))
+        .run();
+    }
+    db.delete(resourceDocuments)
+      .where(
+        and(
+          scope.only(resourceDocuments, eq(resourceDocuments.resourceId, resourceId)),
+          sql`${resourceDocuments.docId} != ${keepDocId}`,
+        ),
+      )
+      .run();
+  });
+
+/**
  * The raw better-sqlite3 handle behind a Drizzle `Db` (mirrors
  * `archive-search.ts`'s `rawOf`: `bm25()`/`snippet()` are not expressible
  * through the query builder).
@@ -380,7 +423,7 @@ export const searchChunks = (scope: GuildScope, q: SearchChunksInput): readonly 
       ...r,
       snippet:
         r.snippet.length > SNIPPET_MAX_CHARS
-          ? `${r.snippet.slice(0, SNIPPET_MAX_CHARS)}…`
+          ? `${r.snippet.slice(0, SNIPPET_MAX_CHARS - 1)}…`
           : r.snippet,
     }));
   });

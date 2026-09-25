@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { chunkDocument, type Chunk, type ClubResource } from '@bananasaurs/core';
-import type { GuildScope } from '@bananasaurs/storage';
+import { computeDocId, type GuildScope } from '@bananasaurs/storage';
 import type { ConditionalResourceFetchResult, ResourceConditional } from './resource-fetcher.js';
 
 /**
@@ -52,6 +52,7 @@ export interface ResourceRefreshRepo {
     resourceId: string,
     chunks: readonly Chunk[],
   ): void;
+  deleteStaleDocuments(scope: GuildScope, resourceId: string, keepDocId: string): void;
 }
 
 export interface ResourceRefreshDeps {
@@ -61,10 +62,6 @@ export interface ResourceRefreshDeps {
 }
 
 export type ResourceRefreshOutcome = 'ok' | 'not-modified' | 'error' | 'skipped';
-
-/** `d_<sha256(url) first 16 hex>` — must match `resourceCacheRepo.computeDocId` exactly, so `getDocumentByUrl`'s PK lookup and this module's writes agree on the same row. */
-export const computeDocId = (url: string): string =>
-  `d_${createHash('sha256').update(url, 'utf8').digest('hex').slice(0, 16)}`;
 
 const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 
@@ -116,6 +113,9 @@ export async function refreshResource(
         bytes: existing.bytes,
         status: 'ok',
       });
+      // The note's text is its URL, so an edit is a new doc id — drop the
+      // document row the previous text hashed to, if it is still cached.
+      deps.repo.deleteStaleDocuments(scope, resource.id, docId);
       return 'not-modified';
     }
     const path = `${resource.title || 'note'}.txt`;
@@ -131,6 +131,7 @@ export async function refreshResource(
       bytes: Buffer.byteLength(text, 'utf8'),
       status: 'ok',
     });
+    deps.repo.deleteStaleDocuments(scope, resource.id, docId);
     deps.repo.replaceChunks(scope, docId, resource.id, chunks);
     return 'ok';
   }
@@ -160,6 +161,7 @@ export async function refreshResource(
         bytes: existing.bytes,
         status: 'ok',
       });
+      deps.repo.deleteStaleDocuments(scope, resource.id, docId);
     }
     return 'not-modified';
   }
@@ -179,7 +181,9 @@ export async function refreshResource(
       status: 'error',
       error: result.message,
     });
-    // The old chunks are left exactly as they were — no replaceChunks call.
+    // The old chunks are left exactly as they were — no replaceChunks call —
+    // but documents cached under a previous URL for this resource still go.
+    deps.repo.deleteStaleDocuments(scope, resource.id, docId);
     return 'error';
   }
 
@@ -200,6 +204,12 @@ export async function refreshResource(
     status: 'ok',
   };
   deps.repo.upsertDocument(scope, docInput);
+  // The URL is editable and the doc id hashes it, so a resource saved with
+  // a new URL arrives here with no `existing` row — without this the
+  // previous URL's document and chunks would stay searchable under the same
+  // resource id, and `resourceFreshness` would return several unordered rows
+  // for one resource.
+  deps.repo.deleteStaleDocuments(scope, resource.id, docId);
   if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash) {
     // The server didn't say 304, but the content is byte-identical to what
     // is already chunked — no point re-chunking unchanged text.

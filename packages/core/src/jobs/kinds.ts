@@ -400,7 +400,7 @@ export const assistantInvokeDedupeKey = (invocationId: string): string =>
 
 /**
  * The resource-cache refresh job (ADR 0073). `resourceId` absent means "every
- * enabled resource in the guild" — the hourly sweep and "Update all" both use
+ * resource in the guild" — the hourly sweep and "Update all" both use
  * this shape; `reason` is carried through to the trace/log line, not used to
  * branch behaviour inside the handler.
  */

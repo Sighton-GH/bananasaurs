@@ -7,6 +7,7 @@ import { putResource } from './assistant.js';
 import {
   computeDocId,
   deleteForResource,
+  deleteStaleDocuments,
   getChunk,
   getDocumentByUrl,
   listDocuments,
@@ -253,6 +254,80 @@ describe('deleteForResource', () => {
   });
 });
 
+describe('deleteStaleDocuments', () => {
+  it('drops only the stale documents for a resource, with chunks, FTS rows and freshness', () => {
+    seedResource(a, 'res-1', 'https://example.com/new');
+    const oldDoc = computeDocId('https://example.com/old');
+    const newDoc = computeDocId('https://example.com/new');
+    upsertDocument(a, {
+      resourceId: 'res-1',
+      docId: oldDoc,
+      url: 'https://example.com/old',
+      path: '/old',
+      title: 'Old',
+      contentHash: 'h-old',
+      fetchedAt: 1000,
+      bytes: 10,
+      status: 'ok',
+    });
+    upsertDocument(a, {
+      resourceId: 'res-1',
+      docId: newDoc,
+      url: 'https://example.com/new',
+      path: '/new',
+      title: 'New',
+      contentHash: 'h-new',
+      fetchedAt: 2000,
+      bytes: 10,
+      status: 'ok',
+    });
+    replaceChunks(a, oldDoc, 'res-1', [chunk({ text: 'staleoldneedle unique old words here' })]);
+    replaceChunks(a, newDoc, 'res-1', [chunk({ text: 'freshnewneedle unique new words here' })]);
+
+    deleteStaleDocuments(a, 'res-1', newDoc);
+
+    expect(listDocuments(a, 'res-1').map((d) => d.docId)).toEqual([newDoc]);
+    expect(outline(a, oldDoc)).toHaveLength(0);
+    expect(outline(a, newDoc)).toHaveLength(1);
+    expect(searchChunks(a, { query: 'staleoldneedle', limit: 10 })).toHaveLength(0);
+    expect(searchChunks(a, { query: 'freshnewneedle', limit: 10 })).toHaveLength(1);
+    const freshness = resourceFreshness(a);
+    expect(freshness).toHaveLength(1);
+    expect(freshness[0]).toMatchObject({ resourceId: 'res-1' });
+  });
+
+  it('leaves other resources alone', () => {
+    seedResource(a, 'res-1', 'https://example.com/new');
+    seedResource(a, 'res-2', 'https://example.com/other');
+    const oldDoc = computeDocId('https://example.com/old');
+    const newDoc = computeDocId('https://example.com/new');
+    const otherDoc = computeDocId('https://example.com/other');
+    for (const [docId, resourceId, url] of [
+      [oldDoc, 'res-1', 'https://example.com/old'],
+      [newDoc, 'res-1', 'https://example.com/new'],
+      [otherDoc, 'res-2', 'https://example.com/other'],
+    ] as const) {
+      upsertDocument(a, {
+        resourceId,
+        docId,
+        url,
+        path: '/x',
+        title: 'X',
+        contentHash: 'h',
+        fetchedAt: 1,
+        bytes: 1,
+        status: 'ok',
+      });
+    }
+    replaceChunks(a, otherDoc, 'res-2', [chunk({ text: 'otherneedle stays here' })]);
+
+    deleteStaleDocuments(a, 'res-1', newDoc);
+
+    expect(listDocuments(a, 'res-2').map((d) => d.docId)).toEqual([otherDoc]);
+    expect(searchChunks(a, { query: 'otherneedle', limit: 10 })).toHaveLength(1);
+  });
+});
+
 describe('resourceFreshness', () => {
   it('reports fetchedAt, chunk count, bytes and the last error per resource', () => {
     seedResource(a, 'res-1', 'https://example.com/guide');
@@ -404,7 +479,7 @@ describe('searchChunks', () => {
     expect(searchChunks(a, { query: 'widget', resourceIds: [], limit: 10 })).toHaveLength(0);
   });
 
-  it('caps a snippet at 300 characters', () => {
+  it('caps a snippet at 300 characters including the ellipsis', () => {
     seedResource(a, 'res-1', 'https://example.com/guide');
     const docId = computeDocId('https://example.com/guide');
     upsertDocument(a, {
@@ -418,9 +493,11 @@ describe('searchChunks', () => {
       bytes: 1,
       status: 'ok',
     });
-    replaceChunks(a, docId, 'res-1', [chunk({ text: `needle ${'padding word '.repeat(60)}` })]);
+    replaceChunks(a, docId, 'res-1', [
+      chunk({ text: `needle ${'supercalifragilisticexpialidocious '.repeat(60)}` }),
+    ]);
     const [hit] = searchChunks(a, { query: 'needle', limit: 10 });
-    expect(hit?.snippet.length).toBeLessThanOrEqual(301);
+    expect(hit?.snippet.length).toBeLessThanOrEqual(300);
   });
 
   it('returns no results and raises no error for a query with no word characters', () => {
