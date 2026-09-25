@@ -1,6 +1,6 @@
-# DRAFT — Explained errors, bot-wide configuration, per-model rate limits
+# Explained errors, AI tuning page, per-model rate limits
 
-Date: 2026-09-25 · Status: **DRAFT, awaiting owner review** · Branch: `worktree-errors-config-ratelimits`
+Date: 2026-09-25 · Status: **approved by owner 2026-09-25** · Branch: `worktree-errors-config-ratelimits`
 
 ## Why
 
@@ -15,7 +15,7 @@ the site was actually answering with a Cloudflare managed challenge (`cf-mitigat
 What the owner asked for (2026-09-25):
 
 1. Much better logging, error codes, and explanations everywhere on the dashboard.
-2. A new configuration tab for retry cycles "and whatnot", holding related settings too.
+2. A new configuration page (in the Assistant group) for retry cycles "and whatnot", holding related settings too.
 3. An RPM and an RPD limit on each model, so Bananasaurs does not try a provider that is at its limit.
 4. The connect-wait fix: make the daemon wait longer before abandoning IPv4.
 
@@ -156,7 +156,7 @@ Where it shows up:
 
 - `resource-challenge`: 403/503 with `cf-mitigated: challenge`, or a Cloudflare challenge page.
   Explanation: "The site's Cloudflare bot protection challenged Bananasaurs". Hint: "Ask the site
-  owner to add a WAF Skip rule for the Bananasaurs fetch header (Configuration → Resources), or
+  owner to add a WAF Skip rule for the Bananasaurs fetch header (AI tuning → Resources), or
   import the content from GitHub instead."
 - Also `resource-http-<class>`, `resource-timeout`, `resource-dns`, `resource-connect`,
   `resource-too-large`, `resource-redirects`, `resource-unsafe-url`, `resource-not-text`.
@@ -173,17 +173,14 @@ The Resources page shows the explained error on each resource row.
 
 ---
 
-## 2. Bot-wide configuration tab
+## 2. The AI tuning page (bot-wide settings)
 
 ### 2a. Where
 
-The existing **Advanced → Configuration** page gets two tabs:
-
-- **This server**: today's per-guild settings, unchanged.
-- **Bot-wide**: new, **owner only**. Admins do not see the tab; its API returns `owner-only`.
-
-(Ruling: a second tab on the existing page rather than a new nav entry. Two nav items both
-called "Configuration" would confuse. Cheap to move later if wrong.)
+A new page **Assistant → AI tuning** (owner decision 2026-09-25: all AI settings stay in the
+Assistant group; the existing Advanced → Configuration page is untouched). **Owner only**: the
+nav entry is hidden from non-owners and its API returns `owner-only`. Name ruling: "AI tuning",
+not "AI settings", so it cannot be confused with the existing "AI setup" page.
 
 ### 2b. Storage
 
@@ -229,7 +226,7 @@ Notes:
 ### 2d. UI
 
 Each setting row has the label, help text, current value with unit, "default: X", a **Reset to
-default** action, and inline validation errors from §1. Save is per group. The tab header says
+default** action, and inline validation errors from §1. Save is per group. The page header says
 "These settings apply to every server this bot is in".
 
 ---
@@ -283,7 +280,7 @@ frees up 14:02`, read from a new `GET /api/assistant/model-chain/usage`.
 
 - **0078** — Explained error bodies and the error catalog (§1a–c, §1f).
 - **0079** — Provider failure classification and per-attempt traces (§1d–e).
-- **0080** — Bot-wide settings: the table, registry and Configuration tab (§2), including the
+- **0080** — Bot-wide settings: the table, registry and AI tuning page (§2), including the
   connect wait and the website fetch header.
 - **0081** — Per-chain-entry RPM/RPD limits (§3).
 
@@ -303,7 +300,7 @@ frees up 14:02`, read from a new `GET /api/assistant/model-chain/usage`.
   right time and makes no provider call; mixed failures still retry.
 - Connect wait: a runtime change reaches `fetch` (§2c); a startup log line appears.
 - Dashboard: `describeError` on each thrown shape; `<ErrorNotice>` renders code, request id and
-  hint; the Configuration tab hides Bot-wide from a non-owner.
+  hint; the AI tuning nav entry and page are hidden from a non-owner.
 - Live check after deploy (owner, optional): VPN on a far server, Test button shows
   `provider-connect-timeout` with the connect-wait hint; raise the wait; Test shows OK.
 
