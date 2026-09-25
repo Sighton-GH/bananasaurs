@@ -3,6 +3,7 @@ import {
   assertProviderEligible,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  estimateTokens,
   JOB_KINDS,
   providerMayTrain,
   ProviderError,
@@ -10,7 +11,11 @@ import {
   resourceRefreshDedupeKey,
   SafeProvider,
   safeLogFields,
+  stripNewTopic,
+  type AssistantTrace,
+  type CompiledAssistantContext,
   type Config,
+  type GenerationMessage,
   type Logger,
   type TextProvider,
   validateReminderDraft,
@@ -29,6 +34,7 @@ import type {
   AssistantCommandService,
   AssistantInvocation,
   AssistantInvocationResult,
+  AssistantTraceDetail,
   InvocationTrace,
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
@@ -56,6 +62,30 @@ export const sanitizeMentionsForProvider = (text: string): string =>
     .replace(/<@&\d{17,20}>/g, '@role')
     .replace(/<@!?\d{17,20}>/g, '@user')
     .replace(/<#\d{17,20}>/g, '#channel');
+
+/**
+ * Task 14: the trace's `sections` are the compiled context sections as
+ * `context.ts` names them, plus `history` when history was sent (ruling).
+ * The quoted envelope is user text, not a section — like the evidence
+ * envelope it travels in the messages, never the system instruction.
+ */
+const traceSections = (
+  context: CompiledAssistantContext,
+  history: readonly GenerationMessage[],
+): AssistantTrace['sections'] => {
+  const sections = context.sections.map((section) => ({
+    name: section.name,
+    chars: section.text.length,
+    estTokens: estimateTokens(section.text),
+    text: section.text,
+  }));
+  if (history.length === 0) return sections;
+  const text = history.map((message) => `${message.role}: ${message.text}`).join('\n\n');
+  return [
+    ...sections,
+    { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
+  ];
+};
 export interface AssistantServiceTestPorts {
   readonly provider?: TextProvider | undefined;
   readonly fetchResource?:
@@ -165,7 +195,7 @@ export const createAssistantService = (
   };
   const invokeOnce = async (
     input: AssistantInvocation,
-    sink: { trace?: Omit<InvocationTrace, 'latencyMs'> },
+    sink: { trace?: Omit<InvocationTrace, 'latencyMs'>; detail?: AssistantTraceDetail },
   ): Promise<AssistantInvocationResult> => {
     {
       const currentConfig = liveConfig();
@@ -537,8 +567,19 @@ export const createAssistantService = (
        * attempt throws retryable so the job's spaced retries still apply;
        * eligibility-only skips are the terms refusal; other skips are "not
        * configured"; a guard failure answers the fixed text.
+       *
+       * Every answered-or-refused mapping also carries the trace detail, so
+       * the job persists what the model saw even when it refused.
        */
       const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
+        const loopDetail = (): AssistantTraceDetail => ({
+          sections: traceSections(context, historyForLoop),
+          history: historyForLoop,
+          attempts: failed.attempts,
+          toolCalls: failed.toolCalls,
+          usage: failed.usage,
+          guard: failed.guard,
+        });
         if (failed.dailyQuota !== undefined) {
           throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
             quotaScope: 'daily-free',
@@ -588,6 +629,7 @@ export const createAssistantService = (
             ok: false,
             content:
               "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+            detail: loopDetail(),
           };
         }
         if (failed.attempts.length === 0 || allSkipped) {
@@ -595,12 +637,14 @@ export const createAssistantService = (
             ok: false,
             content:
               'The free AI provider is not configured, so no content was sent outside the server.',
+            detail: loopDetail(),
           };
         }
         if (lastTried?.outcome === 'error' && lastTried.reason === 'empty-answer') {
           return {
             ok: false,
             content: "I couldn't finish that answer — please try again.",
+            detail: loopDetail(),
           };
         }
         if (lastTried?.outcome === 'error') {
@@ -621,6 +665,9 @@ export const createAssistantService = (
         const unreachableOutcome: 'ok' | 'skipped' | undefined = lastTried?.outcome;
         throw new Error(`unreachable assistant loop failure: ${String(unreachableOutcome)}`);
       };
+      // Task 14: the job-built conversation history travels ahead of the
+      // current user text. Absent (or empty) means a history-free request.
+      const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
       const loop = await runToolLoop({
         chain: chainEntries,
         systemInstruction:
@@ -632,9 +679,12 @@ export const createAssistantService = (
             ? '\nReturn analysis as a DRAFT. State that it is not club policy and has not been saved. Do not claim persistence.'
             : ''),
         protectedText: context.protectedText,
-        // Task 14 adds conversations; until then every request stands alone.
-        history: [],
-        userText: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
+        history: historyForLoop,
+        userText: [
+          sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
+          context.evidenceEnvelope,
+          ...(input.quoteEnvelope === undefined ? [] : [input.quoteEnvelope]),
+        ]
           .filter(Boolean)
           .join('\n\n'),
         // Task 16: every catalogue id plus the pre-retrieved chunk and doc
@@ -674,6 +724,17 @@ export const createAssistantService = (
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
       const answerText = loop.web ? `${loop.text}${BRAVE_ATTRIBUTION}` : loop.text;
+      sink.detail = {
+        sections: traceSections(context, historyForLoop),
+        history: historyForLoop,
+        attempts: loop.attempts,
+        toolCalls: loop.toolCalls,
+        usage: loop.usage,
+        guard: loop.guard,
+        ...(loop.model === undefined ? {} : { model: loop.model }),
+        ...(loop.finishReason === undefined ? {} : { finishReason: loop.finishReason }),
+        ...(loop.web ? { web: true } : {}),
+      };
       sink.trace = {
         ...(loop.model === undefined ? {} : { model: loop.model }),
         tools: loop.toolCalls.map(({ name, ok }) => ({ name, ok })),
@@ -777,9 +838,14 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
       const started = now();
-      const sink: { trace?: Omit<InvocationTrace, 'latencyMs'> } = {};
+      const sink: { trace?: Omit<InvocationTrace, 'latencyMs'>; detail?: AssistantTraceDetail } =
+        {};
       const result = await invokeOnce(input, sink);
-      return { ...result, trace: { ...sink.trace, latencyMs: now() - started } };
+      return {
+        ...result,
+        trace: { ...sink.trace, latencyMs: now() - started },
+        ...(sink.detail === undefined ? {} : { detail: sink.detail }),
+      };
     },
   };
 };

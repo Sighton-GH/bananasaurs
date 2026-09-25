@@ -741,3 +741,161 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     ]);
   });
 });
+
+/**
+ * Task 14: the service sends the job-built conversation history to the
+ * provider, appends the quoted envelope to the user text (never the system
+ * instruction), and returns the trace detail the job persists.
+ */
+describe('Task 14: conversation history, quoted envelope and trace detail', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const usable = (provider: TextProvider): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'model-a',
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+  });
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+    assistantRepo.putSkillGrant(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const capturing = () => {
+    const requests: { systemInstruction: string; messages: { role: string; text: string }[] }[] =
+      [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        requests.push({
+          systemInstruction: req.systemInstruction ?? '',
+          messages: req.messages.map((message) => ({ role: message.role, text: message.text })),
+        });
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      undefined,
+      () => [usable(provider)],
+    );
+    return { requests, service };
+  };
+
+  const ask = (over: Record<string, unknown> = {}) => ({
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: MEMBER,
+    callerRoleIds: [CLUB_ROLE],
+    behaviour: direct,
+    command: 'ask' as const,
+    input: { question: 'second question' },
+    source: 'slash-command' as const,
+    invocationId: 'int-history-1',
+    ...over,
+  });
+
+  it('sends the conversation history before the current user text', async () => {
+    const { requests, service } = capturing();
+    const history = [
+      { role: 'user' as const, text: 'Ama: first question' },
+      { role: 'assistant' as const, text: 'first answer' },
+    ];
+    const result = await service.invoke(ask({ history }));
+    expect(result.ok).toBe(true);
+    expect(requests).toHaveLength(1);
+    const messages = requests[0]?.messages ?? [];
+    expect(messages[0]).toEqual({ role: 'user', text: 'Ama: first question' });
+    expect(messages[1]).toEqual({ role: 'assistant', text: 'first answer' });
+    expect(messages.at(-1)?.role).toBe('user');
+    expect(messages.at(-1)?.text).toContain('second question');
+  });
+
+  it('appends the quoted envelope to the user text, never the system instruction', async () => {
+    const { requests, service } = capturing();
+    const quoteEnvelope =
+      '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]';
+    const result = await service.invoke(ask({ quoteEnvelope }));
+    expect(result.ok).toBe(true);
+    const first = requests[0];
+    expect(first?.messages.at(-1)?.text).toContain(quoteEnvelope);
+    expect(first?.systemInstruction).not.toContain('UNTRUSTED QUOTED MESSAGE');
+    expect(first?.systemInstruction).not.toContain('the hall opens at seven');
+  });
+
+  it('returns trace detail with compiled sections plus a history section when history was sent', async () => {
+    const { service } = capturing();
+    const history = [{ role: 'user' as const, text: 'first question' }];
+    const result = await service.invoke(ask({ history }));
+    expect(result.ok).toBe(true);
+    const sections = result.detail?.sections.map((section) => section.name) ?? [];
+    expect(sections).toEqual(
+      expect.arrayContaining([
+        'behaviour-prompt',
+        'safety-suffix',
+        'server-card',
+        'resources',
+        'skills',
+        'history',
+      ]),
+    );
+    expect(result.detail?.history).toEqual(history);
+    expect(result.detail?.attempts.length).toBeGreaterThan(0);
+  });
+
+  it('omits the history section when no history was sent', async () => {
+    const { service } = capturing();
+    const result = await service.invoke(ask());
+    expect(result.ok).toBe(true);
+    const sections = result.detail?.sections.map((section) => section.name) ?? [];
+    expect(sections).not.toContain('history');
+  });
+});

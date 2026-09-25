@@ -805,13 +805,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         guildId,
         service: assistantService,
         openToken: (token) => interactionTokenSealer.open(token),
-        respond: async (ref, message) => {
-          await discord.respondToInteraction(guildId, ref, message);
-        },
+        respond: (ref, message) => discord.respondToInteraction(guildId, ref, message),
         send: (channelId, message) => discord.sendMessage(guildId, channelId, message),
         logger,
         logChannelId: () => assistantRepo.getAssistantSettings(scope).logChannelId,
         now,
+        // Task 14: every answer joins a conversation (ADR 0072), posts as
+        // Discord replies in staged parts, shows typing and writes a trace.
+        conversations: { scope, botUserId, botDisplayName: client.user?.username ?? 'bananasaurs' },
+        sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
+        fetchMessageContent: (channelId, messageId) =>
+          discord.fetchMessageContent(guildId, channelId, messageId),
       }),
       reconcileGuildHandler(scope, reconcilePorts, now),
       adoptPanelHandler(adoptionPorts),
