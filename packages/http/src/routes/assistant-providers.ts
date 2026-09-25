@@ -107,8 +107,7 @@ export const registerAssistantProviderRoutes = (
     const chainEntries = configured.chain();
     const chain = chainEntries.map((entry, position) => {
       const reset = resetsAt(entry.keyId);
-      const status =
-        reset !== undefined ? 'allowance-used' : (entry.skip ?? 'ready');
+      const status = reset !== undefined ? 'allowance-used' : (entry.skip ?? 'ready');
       return {
         position,
         keyId: entry.keyId,
