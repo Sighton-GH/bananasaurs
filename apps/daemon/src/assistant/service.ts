@@ -4,6 +4,7 @@ import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
   providerMayTrain,
+  ProviderError,
   redactEvidenceText,
   SafeProvider,
   safeLogFields,
@@ -24,10 +25,12 @@ import type {
   AssistantCommandService,
   AssistantInvocation,
   AssistantInvocationResult,
+  InvocationTrace,
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
-import { generateAnswer, type GenerationTrace } from './generate.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
+import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { QuotaLedger } from './quota-ledger.js';
 import {
   runAssistantTool,
   toolDeclarations,
@@ -113,6 +116,12 @@ export const createAssistantService = (
   };
   const resourceFetcher = new ReviewedResourceFetcher({ now });
   const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
+  /**
+   * One ledger per service instance (per daemon, not per request): a spent
+   * `:free` daily allowance stays spent for later requests until its reset.
+   * Keys are instance-level, so the ledger is keyed by key id, not guild.
+   */
+  const quotaLedger = new QuotaLedger();
   /** ADR 0067: archive hits from channels the member can view. Threads are left out. */
   const searchArchive = async (userId: string, query: string): Promise<readonly ArchiveHit[]> => {
     if (query.trim() === '') return [];
@@ -138,15 +147,11 @@ export const createAssistantService = (
   };
   const invokeOnce = async (
     input: AssistantInvocation,
-    sink: { trace?: GenerationTrace },
+    sink: { trace?: InvocationTrace },
   ): Promise<AssistantInvocationResult> => {
     {
       const currentConfig = liveConfig();
       const chainEntries = currentChain();
-      const chosenIndex = chainEntries.findIndex(
-        (e) => e.skip === undefined && e.provider !== undefined,
-      );
-      const chosen = chosenIndex === -1 ? undefined : chainEntries[chosenIndex];
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -280,115 +285,75 @@ export const createAssistantService = (
                   .slice(0, 1_900),
         };
       }
-      if (chosen === undefined || chosen.provider === undefined) {
-        // ADR 0075: the chain resolver already ran the eligibility check
-        // while building each entry (hard rule 5), so this branch runs no
-        // check of its own — only picks which of today's two refusal texts
-        // applies. A chain with nothing usable because of keys, models or a
-        // disabled provider is "not configured"; a chain whose every entry
-        // failed only on terms is the terms refusal, with the same denied
-        // skill-activity row it always wrote.
-        const allTermsFailures =
-          chainEntries.length > 0 &&
-          chainEntries.every((e) => e.skip === 'ineligible' || e.skip === 'unverified');
-        if (allTermsFailures) {
-          assistantRepo.recordSkillActivity(scope, {
-            id: randomUUID(),
-            at: now(),
-            behaviourId: input.behaviour.id,
-            skillId: skill,
-            actorId: input.userId,
-            outcome: 'denied',
-            detail: 'Provider terms are not recorded or do not allow this use.',
-          });
-          return {
-            ok: false,
-            content:
-              "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
-          };
-        }
+      if (chainEntries.length === 0) {
         return {
           ok: false,
           content:
             'The free AI provider is not configured, so no content was sent outside the server.',
         };
       }
-      const provider = chosen.provider;
-      // The later chain entries that share this provider run as its
-      // ADR 0068 fallback models — cross-provider failover is Task 12.
-      const fallbackModels = chainEntries
-        .slice(chosenIndex + 1)
-        .filter((e) => e.providerId === chosen.providerId)
-        .map((e) => e.model);
       // Hard rule 5 (ADR 0062): the provider_eligibility table is consulted
-      // on the request path. A missing terms record, or one that does not
-      // allow production use, fails closed before any member content crosses
-      // the provider boundary (finding 1). A provider that may train on input
-      // is allowed by owner decision and raises a warning instead.
+      // on the request path. A chain entry from `resolveModelChain` already
+      // ran this exact check while building the chain — re-running it here
+      // just re-reads the same row. Only a raw `testPorts.provider` never
+      // went through the resolver, so it is the one path that still needs
+      // its own check, run here for the first and only time.
       //
-      // Task 6b (carried from Task 6's review): a `chosen` entry that came
-      // from `resolveModelChain` already ran this exact check while building
-      // the chain — re-running it here just re-reads the same
-      // `provider_eligibility` row a second time and uses `chosen.mayTrain`
-      // for the warning instead. Only a raw `testPorts.provider` never went
-      // through the resolver, so it is the one path that still needs its own
-      // check, run here for the first and only time.
+      // Task 6b (carried from Task 6's review): chain entries use
+      // `ChainEntry.mayTrain` for the training warning instead; the warning
+      // fires below, once the loop shows which entries were actually tried.
       const usingTestProvider = testPorts.provider !== undefined;
       if (usingTestProvider) {
-        const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
-        try {
-          if (eligibilityRow === undefined)
-            throw new Error(`no provider_eligibility row for ${provider.id}`);
-          assertProviderEligible(
-            {
-              trainsOnInput: eligibilityRow.trainsOnInput,
-              productionUseAllowed: eligibilityRow.productionUseAllowed,
-              evidenceUrl: eligibilityRow.evidenceUrl,
-              reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
-            },
-            'club',
-          );
-        } catch {
-          assistantRepo.recordSkillActivity(scope, {
-            id: randomUUID(),
-            at: now(),
-            behaviourId: input.behaviour.id,
-            skillId: skill,
-            actorId: input.userId,
-            outcome: 'denied',
-            detail: 'Provider terms are not recorded or do not allow this use.',
-          });
-          return {
-            ok: false,
-            content:
-              "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
-          };
+        const provider = chainEntries[0]?.provider;
+        if (provider !== undefined) {
+          const eligibilityRow = eligibilityRepo.findEligibility(instance, provider.id);
+          try {
+            if (eligibilityRow === undefined)
+              throw new Error(`no provider_eligibility row for ${provider.id}`);
+            assertProviderEligible(
+              {
+                trainsOnInput: eligibilityRow.trainsOnInput,
+                productionUseAllowed: eligibilityRow.productionUseAllowed,
+                evidenceUrl: eligibilityRow.evidenceUrl,
+                reviewedAt: new Date(eligibilityRow.reviewedAt).toISOString(),
+              },
+              'club',
+            );
+          } catch {
+            assistantRepo.recordSkillActivity(scope, {
+              id: randomUUID(),
+              at: now(),
+              behaviourId: input.behaviour.id,
+              skillId: skill,
+              actorId: input.userId,
+              outcome: 'denied',
+              detail: 'Provider terms are not recorded or do not allow this use.',
+            });
+            return {
+              ok: false,
+              content:
+                "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+            };
+          }
+          if (providerMayTrain(eligibilityRow))
+            logger.warn(
+              safeLogFields({
+                component: 'assistant',
+                guildId: input.guildId,
+                reason: 'provider-may-train',
+              }),
+              'assistant provider may train on server content',
+            );
         }
-        if (providerMayTrain(eligibilityRow))
-          logger.warn(
-            safeLogFields({
-              component: 'assistant',
-              guildId: input.guildId,
-              reason: 'provider-may-train',
-            }),
-            'assistant provider may train on server content',
-          );
-      } else if (chosen.mayTrain) {
-        logger.warn(
-          safeLogFields({
-            component: 'assistant',
-            guildId: input.guildId,
-            reason: 'provider-may-train',
-          }),
-          'assistant provider may train on server content',
-        );
       }
       // ADR 0067: every enabled resource is available to every behaviour. The
       // behaviour's own list is fetched up front as preferred evidence; with
       // tools the model opens the others itself, without them all are fetched.
       const resources = assistantRepo.listResources(scope).filter((r) => r.enabled);
       const emphasised = resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
-      const toolsAvailable = provider.capabilities.has('tools');
+      const toolsAvailable = chainEntries.some((entry) =>
+        entry.provider?.capabilities.has('tools') === true,
+      );
       const prefetch = toolsAvailable
         ? emphasised
         : [...emphasised, ...resources.filter((r) => !emphasised.includes(r))];
@@ -479,14 +444,94 @@ export const createAssistantService = (
         visibleChannels: () => discord.memberChannels(input.userId),
         reminders: () => assistantRepo.listReminders(scope),
       };
-      const response = await generateAnswer({
-        provider,
-        model: chosen.model,
-        fallbackModels,
-        tools: {
-          declarations: toolDeclarations(toolPorts),
-          run: (call) => runAssistantTool(call, toolPorts),
-        },
+      const declarations = toolDeclarations(toolPorts);
+      /**
+       * A failed loop maps back to today's member-facing texts (ruling): a
+       * daily cap throws so the job answers its reset reply; a busy last
+       * attempt throws retryable so the job's spaced retries still apply;
+       * eligibility-only skips are the terms refusal; other skips are "not
+       * configured"; a guard failure answers the fixed text.
+       */
+      const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
+        if (failed.dailyQuota !== undefined) {
+          throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
+            quotaScope: 'daily-free',
+            ...(failed.dailyQuota.resetAt === undefined
+              ? {}
+              : { resetAt: failed.dailyQuota.resetAt }),
+          });
+        }
+        const tried = failed.attempts.filter((attempt) => attempt.outcome !== 'skipped');
+        const lastTried = tried.at(-1);
+        if (
+          lastTried?.outcome === 'busy' ||
+          lastTried?.outcome === 'rate-limit' ||
+          lastTried?.outcome === 'timeout'
+        ) {
+          const kind =
+            lastTried.outcome === 'rate-limit'
+              ? ('rate-limit' as const)
+              : lastTried.outcome === 'timeout'
+                ? ('timeout' as const)
+                : ('outage' as const);
+          throw new ProviderError(
+            kind,
+            `Every assistant model is busy (${lastTried.outcome})`,
+            true,
+          );
+        }
+        const allSkipped =
+          failed.attempts.length > 0 &&
+          failed.attempts.every((attempt) => attempt.outcome === 'skipped');
+        if (
+          allSkipped &&
+          failed.attempts.every(
+            (attempt) => attempt.reason === 'ineligible' || attempt.reason === 'unverified',
+          )
+        ) {
+          assistantRepo.recordSkillActivity(scope, {
+            id: randomUUID(),
+            at: now(),
+            behaviourId: input.behaviour.id,
+            skillId: skill,
+            actorId: input.userId,
+            outcome: 'denied',
+            detail: 'Provider terms are not recorded or do not allow this use.',
+          });
+          return {
+            ok: false,
+            content:
+              "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.",
+          };
+        }
+        if (failed.attempts.length === 0 || allSkipped) {
+          return {
+            ok: false,
+            content:
+              'The free AI provider is not configured, so no content was sent outside the server.',
+          };
+        }
+        if (lastTried?.outcome === 'error' && lastTried.reason === 'empty-answer') {
+          return {
+            ok: false,
+            content: "I couldn't finish that answer — please try again.",
+          };
+        }
+        if (lastTried?.outcome === 'error') {
+          throw new ProviderError(
+            'invalid-request',
+            lastTried.reason ?? 'The assistant request failed.',
+            false,
+          );
+        }
+        // Mixed skips and failures that match none of today's texts fail closed.
+        return {
+          ok: false,
+          content: 'I could not complete that request. No action was taken.',
+        };
+      };
+      const loop = await runToolLoop({
+        chain: chainEntries,
         systemInstruction:
           context.systemInstruction +
           (isIt
@@ -495,18 +540,51 @@ export const createAssistantService = (
           (input.command === 'decision' || input.command === 'review-plan'
             ? '\nReturn analysis as a DRAFT. State that it is not club policy and has not been saved. Do not claim persistence.'
             : ''),
+        protectedText: context.protectedText,
+        // Task 14 adds conversations; until then every request stands alone.
+        history: [],
         userText: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
           .filter(Boolean)
           .join('\n\n'),
-        maxOutputTokens: 800,
-        temperature: 0.2,
+        // Every enabled resource is openable in a follow-up round (Task 15
+        // adds chunk ids to this set).
+        initialHandles: resources.map((resource) => resource.id),
+        tools: {
+          firstRound: declarations,
+          idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
+          run: (call) => runAssistantTool(call, toolPorts),
+        },
+        quotaLedger,
+        now,
       });
+      // The loop records exactly one attempt per entry, in chain order, so
+      // each attempt lines up with the entry that produced it.
+      let warnedMayTrain = false;
+      loop.attempts.forEach((attempt, index) => {
+        if (attempt.outcome !== 'skipped' && chainEntries[index]?.mayTrain === true && !warnedMayTrain) {
+          warnedMayTrain = true;
+          logger.warn(
+            safeLogFields({
+              component: 'assistant',
+              guildId: input.guildId,
+              reason: 'provider-may-train',
+            }),
+            'assistant provider may train on server content',
+          );
+        }
+      });
+      if (loop.outcome === 'failed') return mapLoopFailure(loop);
+      const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
+      const answerText = loop.web ? `${loop.text}${BRAVE_ATTRIBUTION}` : loop.text;
       sink.trace = {
-        ...response.trace,
+        model: loop.model,
+        tools: loop.toolCalls.map(({ name, ok }) => ({ name, ok })),
         sources: [
           ...redactedEvidence.map(({ resource }) => ({ title: resource.title, url: resource.url })),
-          ...response.trace.sources,
+          ...loop.sources,
         ],
+        web: loop.web,
+        usedFallback: loop.attempts.length > 1,
       };
       assistantRepo.recordSkillActivity(scope, {
         id: randomUUID(),
@@ -521,14 +599,14 @@ export const createAssistantService = (
         assistantRepo.insertDecisionDraft(scope, {
           id,
           kind: 'memory',
-          summary: response.text.slice(0, 4_000),
+          summary: answerText.slice(0, 4_000),
           requesterId: input.userId,
           provenance: `Assistant memory proposal; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
           at: now(),
         });
         return {
           ok: true,
-          content: `${response.text}
+          content: `${answerText}
 
 Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and save it in the dashboard.`,
         };
@@ -538,19 +616,19 @@ Memory proposal ID: ${id}. Nothing was added to memory. An owner must review and
         assistantRepo.insertDecisionDraft(scope, {
           id,
           kind: input.command,
-          summary: response.text.slice(0, 4_000),
+          summary: answerText.slice(0, 4_000),
           requesterId: input.userId,
           provenance: `Discord ${input.source}; behaviour=${input.behaviour.id}; resources=${context.disclosurePlan.join(',') || 'none'}`,
           at: now(),
         });
         return {
           ok: true,
-          content: `${response.text}
+          content: `${answerText}
 
 Draft ID: ${id}. This is analysis, not club policy. An owner must review and save it from the dashboard.`,
         };
       }
-      if (isIt && response.text.startsWith('ESCALATE:')) {
+      if (isIt && answerText.startsWith('ESCALATE:')) {
         if (
           input.behaviour.ticketChannelId === undefined ||
           input.behaviour.reviewerRoleIds.length === 0
@@ -560,7 +638,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             content:
               'This needs human action, but IT ticket routing is not fully configured. No ticket was created.',
           };
-        const summary = response.text.slice('ESCALATE:'.length).trim().slice(0, 1_500);
+        const summary = answerText.slice('ESCALATE:'.length).trim().slice(0, 1_500);
         const ticketId = `it-${randomUUID()}`;
         const created = assistantRepo.insertTicket(scope, {
           id: ticketId,
@@ -591,14 +669,14 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
           },
         };
       }
-      return { ok: true, content: response.text };
+      return { ok: true, content: answerText };
     }
   };
   return {
     behavioursForGuild: () => Promise.resolve(assistantRepo.listBehaviours(scope)),
     async invoke(input: AssistantInvocation) {
       const started = now();
-      const sink: { trace?: GenerationTrace } = {};
+      const sink: { trace?: InvocationTrace } = {};
       const result = await invokeOnce(input, sink);
       return { ...result, trace: { ...sink.trace, latencyMs: now() - started } };
     },
