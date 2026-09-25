@@ -8,10 +8,14 @@
  * `packages/storage/src/repos/conversations.ts`.
  */
 
-/** A member typed "new topic:" or "new question:" to force a fresh conversation. */
+/** A follow-up within this window continues the author's latest open conversation. */
 export const FOLLOW_UP_WINDOW_MS = 30 * 60_000;
 
-/** Matches a leading "new topic"/"new question" prefix, one optional punctuation mark, then whitespace. */
+/**
+ * A member typed "new topic:" or "new question:" to force a fresh conversation.
+ *
+ * Matches a leading "new topic"/"new question" prefix, one optional punctuation mark, then whitespace.
+ */
 export const NEW_TOPIC = /^\s*new (topic|question)\b[:,.!-]?\s*/i;
 
 /**
@@ -49,8 +53,7 @@ export type ConversationResolution =
  *    even mid follow-up window.
  * 2. A reply to a message we know about, in the *same* channel, continues
  *    that conversation — `reply-to-bot` when the known message was ours,
- *    `reply-to-turn` otherwise (a reply to the member's own earlier message
- *    in the same conversation, or to a linked quote).
+ *    `reply-to-turn` otherwise.
  * 3. A reply to a message we know about in a *different* channel is not a
  *    valid continuation (Discord conversations do not span channels), so the
  *    reference is ignored entirely and resolution falls through to 6/7 as if

@@ -287,6 +287,23 @@ describe('routeAssistantMention', () => {
       });
     });
 
+    it('is not addressed when the untagged reply content is only whitespace', () => {
+      const lookupMessage = () => ({
+        conversationId: 'conv-1',
+        role: 'assistant' as const,
+        channelId: event().channelId,
+        behaviourId: 'club',
+      });
+      expect(
+        routeAssistantMention(
+          untaggedReply({ content: '   ' }),
+          behaviours,
+          botUserId,
+          lookupMessage,
+        ),
+      ).toEqual({ kind: 'not-addressed' });
+    });
+
     it('still requires a tag when the reply is to someone other than the bot', () => {
       const lookupMessage = () => ({
         conversationId: 'conv-1',

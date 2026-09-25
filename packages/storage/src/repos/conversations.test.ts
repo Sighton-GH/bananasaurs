@@ -266,6 +266,53 @@ describe('recentTurns', () => {
     expect(turns).toHaveLength(13);
   });
 
+  it('keeps quote + turns within maxChars by dropping the oldest non-quote turns', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ at: 0 }));
+    appendTurn(
+      scope,
+      turn({
+        turnId: 'turn-0',
+        at: 0,
+        role: 'quote',
+        authorId: OTHER_USER,
+        authorName: 'quoted member',
+        text: 'q'.repeat(2_000),
+      }),
+    );
+    appendTurn(scope, turn({ turnId: 'turn-1', at: 1_000, text: 'a'.repeat(2_000) }));
+    appendTurn(scope, turn({ turnId: 'turn-2', at: 2_000, text: 'b'.repeat(2_000) }));
+    appendTurn(scope, turn({ turnId: 'turn-3', at: 3_000, text: 'c'.repeat(2_000) }));
+    const turns = recentTurns(scope, 'conv-1', { maxTurns: 12, maxChars: 6_000 });
+    const total = turns.reduce((sum, r) => sum + r.text.length, 0);
+    expect(total).toBeLessThanOrEqual(6_000);
+    // The quote is kept and the newest non-quote turns win; the oldest is dropped to fit.
+    expect(turns.map((r) => r.turnId)).toEqual(['turn-0', 'turn-2', 'turn-3']);
+  });
+
+  it('truncates a quote longer than the cap and keeps no other turns', () => {
+    const scope = t.scopes.forGuild(GUILD_A);
+    createConversation(scope, conversation({ at: 0 }));
+    const bigQuote = 'q'.repeat(6_500) + 'TAIL';
+    appendTurn(
+      scope,
+      turn({
+        turnId: 'turn-0',
+        at: 0,
+        role: 'quote',
+        authorId: OTHER_USER,
+        authorName: 'quoted member',
+        text: bigQuote,
+      }),
+    );
+    appendTurn(scope, turn({ turnId: 'turn-1', at: 1_000, text: 'newest message' }));
+    const turns = recentTurns(scope, 'conv-1', { maxTurns: 12, maxChars: 6_000 });
+    expect(turns).toHaveLength(1);
+    expect(turns[0]?.role).toBe('quote');
+    expect(turns[0]?.text).toHaveLength(6_000);
+    expect(bigQuote.endsWith(turns[0]!.text)).toBe(true);
+  });
+
   it('never returns a quote turn that is not the first turn of the conversation', () => {
     const scope = t.scopes.forGuild(GUILD_A);
     createConversation(scope, conversation({ at: 0 }));

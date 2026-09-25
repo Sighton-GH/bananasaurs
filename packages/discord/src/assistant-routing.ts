@@ -78,7 +78,9 @@ export const routeAssistantMention = (
             candidate.guildId === event.guildId,
         );
         if (behaviour !== undefined) {
-          return { kind: 'routed', behaviour, prompt: (event.content ?? '').trim() };
+          const prompt = (event.content ?? '').trim();
+          if (prompt.length === 0) return { kind: 'not-addressed' };
+          return { kind: 'routed', behaviour, prompt };
         }
       }
     }

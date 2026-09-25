@@ -267,20 +267,6 @@ export const recentTurns = (
   opts: { maxTurns: number; maxChars: number },
 ): ConversationTurn[] =>
   read(scope, (db) => {
-    const windowRows = db
-      .select()
-      .from(assistantConversationTurns)
-      .where(
-        scope.only(
-          assistantConversationTurns,
-          eq(assistantConversationTurns.conversationId, conversationId),
-        ),
-      )
-      .orderBy(desc(assistantConversationTurns.at), desc(assistantConversationTurns.turnId))
-      .limit(opts.maxTurns)
-      .all();
-    const windowOldestFirst = [...windowRows].reverse();
-
     const firstRow = db
       .select()
       .from(assistantConversationTurns)
@@ -294,38 +280,55 @@ export const recentTurns = (
       .limit(1)
       .get();
 
-    const alreadyIncluded =
-      firstRow !== undefined && windowOldestFirst.some((r) => r.turnId === firstRow.turnId);
-    const candidates =
-      firstRow !== undefined && firstRow.role === 'quote' && !alreadyIncluded
-        ? [firstRow, ...windowOldestFirst]
-        : windowOldestFirst;
+    const pinnedQuote = firstRow !== undefined && firstRow.role === 'quote' ? firstRow : undefined;
+    if (pinnedQuote !== undefined && pinnedQuote.text.length > opts.maxChars) {
+      const text = pinnedQuote.text.slice(pinnedQuote.text.length - opts.maxChars);
+      return [toTurn({ ...pinnedQuote, text })];
+    }
+
+    const quoteLen = pinnedQuote?.text.length ?? 0;
+    const budget = opts.maxChars - quoteLen;
+    if (pinnedQuote !== undefined && budget <= 0) {
+      return [toTurn(pinnedQuote)];
+    }
+
+    const windowRows = db
+      .select()
+      .from(assistantConversationTurns)
+      .where(
+        scope.only(
+          assistantConversationTurns,
+          eq(assistantConversationTurns.conversationId, conversationId),
+        ),
+      )
+      .orderBy(desc(assistantConversationTurns.at), desc(assistantConversationTurns.turnId))
+      .limit(opts.maxTurns)
+      .all();
+    const nonQuoteNewestFirst =
+      pinnedQuote === undefined
+        ? windowRows
+        : windowRows.filter((r) => r.turnId !== pinnedQuote.turnId);
 
     const result: ConversationTurn[] = [];
     let total = 0;
     let budgetExhausted = false;
-    for (let i = candidates.length - 1; i >= 0; i -= 1) {
-      const row = candidates[i]!;
-      const isPinnedQuote = i === 0 && row.role === 'quote';
-      const isNewest = i === candidates.length - 1;
+    for (let i = 0; i < nonQuoteNewestFirst.length; i += 1) {
+      const row = nonQuoteNewestFirst[i]!;
+      const isNewest = i === 0;
       let text = row.text;
-      if (isNewest && text.length > opts.maxChars) {
-        text = text.slice(text.length - opts.maxChars);
-      }
-      if (isPinnedQuote) {
-        result.unshift(toTurn({ ...row, text }));
-        total += text.length;
-        continue;
+      if (isNewest && text.length > budget) {
+        text = text.slice(text.length - budget);
       }
       if (budgetExhausted) continue;
-      if (!isNewest && total + text.length > opts.maxChars) {
+      if (!isNewest && total + text.length > budget) {
         budgetExhausted = true;
         continue;
       }
       result.unshift(toTurn({ ...row, text }));
       total += text.length;
     }
-    return result;
+    if (pinnedQuote === undefined) return result;
+    return [toTurn(pinnedQuote), ...result];
   });
 
 const SORT_COLUMN = {
