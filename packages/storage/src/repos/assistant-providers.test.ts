@@ -66,12 +66,18 @@ describe('migration 0038 copies the single provider config into the new tables',
     runMigrations(raw, db, MIGRATIONS_FOLDER);
 
     expect(
-      raw.prepare('SELECT provider, api_key_enc, cost_class, enabled, updated_at FROM assistant_providers').all(),
+      raw
+        .prepare(
+          'SELECT provider, api_key_enc, cost_class, enabled, updated_at FROM assistant_providers',
+        )
+        .all(),
     ).toEqual([
       { provider: 'gemini', api_key_enc: 'sealed', cost_class: 'free', enabled: 1, updated_at: 7 },
     ]);
     expect(
-      raw.prepare('SELECT position, provider, model FROM assistant_model_chain ORDER BY position').all(),
+      raw
+        .prepare('SELECT position, provider, model FROM assistant_model_chain ORDER BY position')
+        .all(),
     ).toEqual([
       { position: 0, provider: 'gemini', model: 'gemini-2.5-flash' },
       { position: 1, provider: 'gemini', model: 'gemini-2.5-flash-lite' },
@@ -120,16 +126,31 @@ describe('assistant providers', () => {
       now: 11,
     });
     expect(listProviders(scope)).toEqual([
-      { provider: 'gemini', apiKeyEnc: 'sealed-key', costClass: 'free', enabled: true, updatedAt: 11 },
+      {
+        provider: 'gemini',
+        apiKeyEnc: 'sealed-key',
+        costClass: 'free',
+        enabled: true,
+        updatedAt: 11,
+      },
     ]);
     upsertProvider(scope, { provider: 'openrouter', apiKeyEnc: 'sealed-or', now: 12 });
-    expect(listProviders(scope).map((p) => p.provider).sort()).toEqual(['gemini', 'openrouter']);
+    expect(
+      listProviders(scope)
+        .map((p) => p.provider)
+        .sort(),
+    ).toEqual(['gemini', 'openrouter']);
   });
 
   it('removing a provider drops its chain rows with it', () => {
     const scope = t.scopes.instance();
     upsertProvider(scope, { provider: 'gemini', apiKeyEnc: 'sealed', enabled: true, now: 10 });
-    upsertProvider(scope, { provider: 'openrouter', apiKeyEnc: 'sealed-or', enabled: true, now: 10 });
+    upsertProvider(scope, {
+      provider: 'openrouter',
+      apiKeyEnc: 'sealed-or',
+      enabled: true,
+      now: 10,
+    });
     setModelChain(
       scope,
       [
@@ -141,7 +162,9 @@ describe('assistant providers', () => {
     removeProvider(scope, 'gemini');
     expect(listProviders(scope).map((p) => p.provider)).toEqual(['openrouter']);
     // The cascade drops gemini's row; the survivor keeps its position.
-    expect(getModelChain(scope)).toEqual([{ position: 1, provider: 'openrouter', model: 'or-model' }]);
+    expect(getModelChain(scope)).toEqual([
+      { position: 1, provider: 'openrouter', model: 'or-model' },
+    ]);
   });
 });
 
@@ -150,7 +173,12 @@ describe('model chain', () => {
     const scope = t.scopes.instance();
     expect(getModelChain(scope)).toEqual([]);
     upsertProvider(scope, { provider: 'gemini', apiKeyEnc: 'sealed', enabled: true, now: 10 });
-    upsertProvider(scope, { provider: 'openrouter', apiKeyEnc: 'sealed-or', enabled: true, now: 10 });
+    upsertProvider(scope, {
+      provider: 'openrouter',
+      apiKeyEnc: 'sealed-or',
+      enabled: true,
+      now: 10,
+    });
     setModelChain(
       scope,
       [

@@ -47,7 +47,8 @@ const resolve = (
       generateText: async () => ({ text: 'ok', model: 'm' }),
     }),
   );
-  const entries = resolveModelChain({    instance,
+  const entries = resolveModelChain({
+    instance,
     config: base,
     openKey: () => undefined,
     eligibility: () => undefined,
@@ -71,7 +72,9 @@ describe('resolveModelChain', () => {
       config,
       eligibility: () => eligible(),
     });
-    expect(entries.map((e) => ({ providerId: e.providerId, model: e.model, skip: e.skip }))).toEqual([
+    expect(
+      entries.map((e) => ({ providerId: e.providerId, model: e.model, skip: e.skip })),
+    ).toEqual([
       { providerId: 'gemini', model: 'env-model', skip: undefined },
       { providerId: 'gemini', model: 'env-lite', skip: undefined },
       { providerId: 'gemini', model: 'env-third', skip: undefined },
@@ -98,7 +101,11 @@ describe('resolveModelChain', () => {
       enabled: true,
       now: 10,
     });
-    assistantProvidersRepo.setModelChain(scope, [{ provider: 'gemini', model: 'stored-model' }], 10);
+    assistantProvidersRepo.setModelChain(
+      scope,
+      [{ provider: 'gemini', model: 'stored-model' }],
+      10,
+    );
     const config = {
       ...base,
       AI_PROVIDER: 'openrouter' as const,
@@ -119,7 +126,9 @@ describe('resolveModelChain', () => {
     assistantProvidersRepo.upsertProvider(scope, { provider: 'gemini', enabled: true, now: 10 });
     assistantProvidersRepo.setModelChain(scope, [{ provider: 'gemini', model: 'm' }], 10);
     const { entries, makeProvider } = resolve(scope, { eligibility: () => eligible() });
-    expect(entries).toMatchObject([{ providerId: 'gemini', model: 'm', skip: 'no-key', provider: undefined }]);
+    expect(entries).toMatchObject([
+      { providerId: 'gemini', model: 'm', skip: 'no-key', provider: undefined },
+    ]);
     expect(makeProvider).not.toHaveBeenCalled();
   });
 
@@ -146,12 +155,14 @@ describe('resolveModelChain', () => {
     });
     assistantProvidersRepo.setModelChain(scope, [{ provider: 'gemini', model: 'm' }], 10);
     const openKey = (): string | undefined => 'raw-key';
+    expect(resolve(scope, { openKey, eligibility: () => undefined }).entries).toMatchObject([
+      { skip: 'unverified', provider: undefined },
+    ]);
     expect(
-      resolve(scope, { openKey, eligibility: () => undefined }).entries,
-    ).toMatchObject([{ skip: 'unverified', provider: undefined }]);
-    expect(
-      resolve(scope, { openKey, eligibility: () => ({ ...eligible(), productionUseAllowed: false }) })
-        .entries,
+      resolve(scope, {
+        openKey,
+        eligibility: () => ({ ...eligible(), productionUseAllowed: false }),
+      }).entries,
     ).toMatchObject([{ skip: 'ineligible', provider: undefined }]);
   });
 
@@ -205,10 +216,18 @@ describe('resolveModelChain', () => {
       ],
       10,
     );
-    const { entries } = resolve(scope, { openKey: () => 'raw-secret-value', eligibility: () => eligible() });
+    const { entries } = resolve(scope, {
+      openKey: () => 'raw-secret-value',
+      eligibility: () => eligible(),
+    });
     expect(entries).toHaveLength(2);
     const withoutProviders = JSON.stringify(
-      entries.map((e) => ({ providerId: e.providerId, model: e.model, skip: e.skip, mayTrain: e.mayTrain })),
+      entries.map((e) => ({
+        providerId: e.providerId,
+        model: e.model,
+        skip: e.skip,
+        mayTrain: e.mayTrain,
+      })),
     );
     expect(withoutProviders).not.toContain('raw-secret-value');
     expect(withoutProviders).not.toContain('sealed');

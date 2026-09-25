@@ -38,9 +38,13 @@ const toProvider = (row: {
   updatedAt: number;
 }): StoredProvider => {
   if (row.provider !== 'gemini' && row.provider !== 'openrouter' && row.provider !== 'nvidia-nim')
-    throw new Error(`assistant_providers holds unexpected provider ${JSON.stringify(row.provider)}`);
+    throw new Error(
+      `assistant_providers holds unexpected provider ${JSON.stringify(row.provider)}`,
+    );
   if (row.costClass !== 'free' && row.costClass !== 'paid' && row.costClass !== 'unknown')
-    throw new Error(`assistant_providers ${row.provider}: unexpected cost class ${JSON.stringify(row.costClass)}`);
+    throw new Error(
+      `assistant_providers ${row.provider}: unexpected cost class ${JSON.stringify(row.costClass)}`,
+    );
   return {
     provider: row.provider,
     apiKeyEnc: row.apiKeyEnc,
@@ -88,7 +92,12 @@ export const upsertProvider = (
       .values(values)
       .onConflictDoUpdate({
         target: assistantProviders.provider,
-        set: { apiKeyEnc: values.apiKeyEnc, costClass: values.costClass, enabled: values.enabled, updatedAt: values.updatedAt },
+        set: {
+          apiKeyEnc: values.apiKeyEnc,
+          costClass: values.costClass,
+          enabled: values.enabled,
+          updatedAt: values.updatedAt,
+        },
       })
       .run();
   });
@@ -111,8 +120,14 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
       .orderBy(asc(assistantModelChain.position))
       .all()
       .map((row) => {
-        if (row.provider !== 'gemini' && row.provider !== 'openrouter' && row.provider !== 'nvidia-nim')
-          throw new Error(`assistant_model_chain holds unexpected provider ${JSON.stringify(row.provider)}`);
+        if (
+          row.provider !== 'gemini' &&
+          row.provider !== 'openrouter' &&
+          row.provider !== 'nvidia-nim'
+        )
+          throw new Error(
+            `assistant_model_chain holds unexpected provider ${JSON.stringify(row.provider)}`,
+          );
         return { position: row.position, provider: row.provider, model: row.model };
       }),
   );

@@ -17,7 +17,8 @@ import {
 
 export type ProviderId = 'gemini' | 'openrouter' | 'nvidia-nim';
 
-export type ChainSkipReason = 'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
+export type ChainSkipReason =
+  'no-key' | 'key-unreadable' | 'disabled' | 'ineligible' | 'unverified';
 
 /**
  * Only the fields the env seed reads. A full `Config` satisfies this
@@ -93,7 +94,11 @@ export const resolveModelChain = (deps: {
   config: ModelChainConfig;
   openKey: (sealed: string) => string | undefined;
   eligibility: (provider: ProviderId) => eligibilityRepo.EligibilityRow | undefined;
-  makeProvider: (provider: ProviderId, apiKey: string, costClass: ProviderCostClass) => TextProvider;
+  makeProvider: (
+    provider: ProviderId,
+    apiKey: string,
+    costClass: ProviderCostClass,
+  ) => TextProvider;
 }): readonly ChainEntry[] => {
   const storedById = new Map(
     assistantProvidersRepo.listProviders(deps.instance).map((p) => [p.provider, p] as const),
@@ -196,7 +201,11 @@ export const resolveModelChain = (deps: {
     return {
       providerId: candidate.provider,
       model: candidate.model,
-      provider: deps.makeProvider(candidate.provider, candidate.apiKey as string, candidate.costClass),
+      provider: deps.makeProvider(
+        candidate.provider,
+        candidate.apiKey as string,
+        candidate.costClass,
+      ),
       skip: undefined,
       mayTrain: providerMayTrain({ trainsOnInput: row.trainsOnInput }),
     };
