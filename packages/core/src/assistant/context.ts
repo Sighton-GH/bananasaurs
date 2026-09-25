@@ -8,6 +8,8 @@ export interface RetrievedEvidence {
   readonly title: string;
   readonly text: string;
   readonly accessible: boolean;
+  /** The cache chunk this evidence came from, when pre-retrieved or read by id. */
+  readonly chunkId?: string;
 }
 export interface CompiledAssistantContext {
   readonly systemInstruction: string;
@@ -45,6 +47,12 @@ export const compileAssistantContext = (input: {
   readonly maxEvidenceChars?: number;
   /** When the model can call tools (ADR 0067), other resources are reachable by id. */
   readonly toolsAvailable?: boolean;
+  /**
+   * Task 16: when present, the `resources` section becomes the short cache
+   * catalogue instead of today's id/title/url list (the preview route omits
+   * it and keeps today's behaviour).
+   */
+  readonly catalogueLines?: readonly string[];
 }): CompiledAssistantContext => {
   const max = input.maxEvidenceChars ?? 12_000;
   const evidence = input.evidence.filter((item) => item.accessible);
@@ -52,24 +60,36 @@ export const compileAssistantContext = (input: {
   const blocks: string[] = [];
   for (const item of evidence) {
     if (remaining <= 0) break;
-    const block = `[UNTRUSTED CLUB EVIDENCE source=${item.sourceId} title=${JSON.stringify(item.title)}]\n${clean(item.text, remaining)}\n[/UNTRUSTED CLUB EVIDENCE]`;
+    const header =
+      item.chunkId === undefined
+        ? `[UNTRUSTED CLUB EVIDENCE source=${item.sourceId} title=${JSON.stringify(item.title)}]`
+        : `[UNTRUSTED CLUB EVIDENCE source=${item.sourceId} title=${JSON.stringify(item.title)} chunk=${item.chunkId}]`;
+    const block = `${header}\n${clean(item.text, remaining)}\n[/UNTRUSTED CLUB EVIDENCE]`;
     blocks.push(block);
     remaining -= block.length;
   }
-  // ADR 0067: every resource is shared; the behaviour's own list is emphasis.
-  const line = (resource: ClubResource) => `${resource.id}: ${resource.title} - ${resource.url}`;
-  const emphasised = input.resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
-  const others = input.resources.filter((r) => !input.behaviour.resourceIds.includes(r.id));
-  const resources = [
-    emphasised.length === 0
-      ? ''
-      : `PREFERRED RESOURCES (use these first)\n${emphasised.map(line).join('\n')}`,
-    others.length === 0
-      ? ''
-      : `OTHER CLUB RESOURCES${input.toolsAvailable === true ? ' (open them with the open_resource tool when useful)' : ''}\n${others.map(line).join('\n')}`,
-  ]
-    .filter(Boolean)
-    .join('\n\n');
+  const resources =
+    input.catalogueLines !== undefined
+      ? `CLUB SOURCES (search them with search_sources; open one with read_chunk, outline or open_resource)${input.catalogueLines.length > 0 ? `\n${input.catalogueLines.join('\n')}` : ''}`
+      : (() => {
+          // ADR 0067: every resource is shared; the behaviour's own list is emphasis.
+          const line = (resource: ClubResource) =>
+            `${resource.id}: ${resource.title} - ${resource.url}`;
+          const emphasised = input.resources.filter((r) =>
+            input.behaviour.resourceIds.includes(r.id),
+          );
+          const others = input.resources.filter((r) => !input.behaviour.resourceIds.includes(r.id));
+          return [
+            emphasised.length === 0
+              ? ''
+              : `PREFERRED RESOURCES (use these first)\n${emphasised.map(line).join('\n')}`,
+            others.length === 0
+              ? ''
+              : `OTHER CLUB RESOURCES${input.toolsAvailable === true ? ' (open them with the open_resource tool when useful)' : ''}\n${others.map(line).join('\n')}`,
+          ]
+            .filter(Boolean)
+            .join('\n\n');
+        })();
   const behaviourPrompt = clean(input.behaviour.systemPrompt, 4_000);
   const skillsBlock =
     input.skills.length === 0

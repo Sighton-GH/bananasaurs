@@ -3,9 +3,12 @@ import {
   assertProviderEligible,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  humaniseDuration,
+  JOB_KINDS,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
+  resourceRefreshDedupeKey,
   SafeProvider,
   safeLogFields,
   type Config,
@@ -18,6 +21,8 @@ import {
   archiveSearchRepo,
   assistantRepo,
   eligibilityRepo,
+  jobRepo,
+  resourceCacheRepo,
   type GuildScope,
   type InstanceScope,
 } from '@bananasaurs/storage';
@@ -38,7 +43,7 @@ import {
   type AssistantToolPorts,
   type WebResult,
 } from './tools.js';
-import { ReviewedResourceFetcher } from './resource-fetcher.js';
+import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -114,8 +119,13 @@ export const createAssistantService = (
       },
     ];
   };
-  const resourceFetcher = new ReviewedResourceFetcher({ now });
-  const fetchResource = testPorts.fetchResource ?? ((url: string) => resourceFetcher.fetch(url));
+  // Task 16: no per-request live fetching. The fetcher port stays so tests
+  // can assert it is never called; the refresh job owns all network I/O.
+  const fetchResource =
+    testPorts.fetchResource ??
+    (async () => {
+      throw new Error('live resource fetch is disabled; the cache owns reads');
+    });
   /**
    * One ledger per service instance (per daemon, not per request): a spent
    * `:free` daily allowance stays spent for later requests until its reset.
@@ -346,67 +356,47 @@ export const createAssistantService = (
             );
         }
       }
-      // ADR 0067: every enabled resource is available to every behaviour. The
-      // behaviour's own list is fetched up front as preferred evidence; with
-      // tools the model opens the others itself, without them all are fetched.
+      // Task 16: no per-request live fetching. The prompt carries a short
+      // catalogue (preferred first, at most 60 lines) plus up to four
+      // pre-retrieved cache snippets; the model opens more via tools.
       const resources = assistantRepo.listResources(scope).filter((r) => r.enabled);
       const emphasised = resources.filter((r) => input.behaviour.resourceIds.includes(r.id));
+      const ordered = [...emphasised, ...resources.filter((r) => !emphasised.includes(r))];
       const toolsAvailable = chainEntries.some(
         (entry) => entry.provider?.capabilities.has('tools') === true,
       );
-      const prefetch = toolsAvailable
-        ? emphasised
-        : [...emphasised, ...resources.filter((r) => !emphasised.includes(r))];
-      const fetched = await Promise.all(
-        prefetch
-          .filter((resource) => ['website', 'document', 'repository'].includes(resource.kind))
-          .map(async (resource) => ({
-            resource,
-            result: await fetchResource(resource.url),
-          })),
+      const freshnessById = new Map(
+        resourceCacheRepo.resourceFreshness(scope).map((f) => [f.resourceId, f.fetchedAt]),
       );
-      // Evidence-appropriate safety policy (should-fix, round 2): fetched
-      // public evidence is redact-and-continue, never hard-refuse. A club
-      // page that prints a contact email used to fail the whole request at
-      // the provider preflight and leave no activity row.
-      const redactedEvidence = fetched.flatMap(({ resource, result }) => {
-        if (!result.ok) return [];
-        const redacted = redactEvidenceText(result.evidence.text);
-        return [
-          {
-            resource,
-            result,
-            text: redacted.text,
-            detectors: redacted.detectors,
-          },
-        ];
+      const catalogueLines = ordered.slice(0, 60).map((r) => {
+        const fetchedAt = freshnessById.get(r.id);
+        const updated =
+          fetchedAt === undefined
+            ? 'not fetched yet'
+            : `${humaniseDuration(Math.max(0, now() - fetchedAt))} ago`;
+        return `${r.id} · ${r.title} (${r.kind}) · updated ${updated}`;
       });
-      for (const { resource, result, detectors } of redactedEvidence) {
-        assistantRepo.recordResourceFetch(scope, resource.id, {
-          status: 'ok',
-          at: now(),
-          detail:
-            `${result.evidence.mediaType}; ${result.evidence.text.length.toLocaleString('en-CA')} characters; cache=${result.cache}` +
-            (detectors.length > 0 ? `; redacted: ${detectors.join(', ')}` : ''),
-        });
-      }
-      for (const { resource, result } of fetched) {
-        if (result.ok) continue;
-        assistantRepo.recordResourceFetch(scope, resource.id, {
-          status:
-            result.code === 'private-address' || result.code === 'invalid-url'
-              ? 'blocked'
-              : 'failed',
-          at: now(),
-          detail: `${result.code}: ${result.message}`,
-        });
-      }
-      const evidence = redactedEvidence.map(({ resource, text }) => ({
-        sourceId: resource.id,
-        title: resource.title,
-        text,
-        accessible: true,
-      }));
+      const memberQuestion = textOf(input.input).slice(0, 200);
+      const preRetrieved =
+        memberQuestion.trim() === ''
+          ? []
+          : resourceCacheRepo.searchChunks(scope, {
+              query: memberQuestion,
+              resourceIds: ordered.map((r) => r.id),
+              limit: 4,
+            });
+      const byResourceId = new Map(resources.map((r) => [r.id, r]));
+      const evidence = preRetrieved.map((hit) => {
+        const resource = byResourceId.get(hit.resourceId);
+        const text = redactEvidenceText(hit.snippet).text;
+        return {
+          sourceId: hit.resourceId,
+          title: resource?.title ?? hit.resourceId,
+          text,
+          accessible: true,
+          chunkId: hit.chunkId,
+        };
+      });
       const context = compileAssistantContext({
         behaviour: input.behaviour,
         serverCard:
@@ -425,8 +415,23 @@ export const createAssistantService = (
         evidence,
         skills: permittedSkills,
         toolsAvailable,
+        catalogueLines,
       });
       const isIt = input.behaviour.surface === 'it-services';
+      const enqueueAssistantRefresh = (resourceId: string): boolean => {
+        const tenMinuteBucket = Math.floor(now() / 600_000);
+        const result = jobRepo.enqueue(scope, {
+          kind: JOB_KINDS.resourceRefresh,
+          payload: JSON.stringify({ resourceId, reason: 'assistant' }),
+          dedupeKey: resourceRefreshDedupeKey({
+            reason: 'assistant',
+            resourceId,
+            tenMinuteBucket,
+          }),
+          now: now(),
+        });
+        return result.enqueued;
+      };
       const toolPorts: AssistantToolPorts = {
         userId: input.userId,
         now,
@@ -443,6 +448,82 @@ export const createAssistantService = (
         serverCard: () => assistantRepo.getServerCard(scope),
         visibleChannels: () => discord.memberChannels(input.userId),
         reminders: () => assistantRepo.listReminders(scope),
+        cacheSearch: (q) =>
+          resourceCacheRepo.searchChunks(scope, {
+            query: q.query,
+            resourceIds: q.resourceIds,
+            limit: q.limit,
+          }),
+        cacheChunk: (chunkId) => {
+          const c = resourceCacheRepo.getChunk(scope, chunkId);
+          return c === undefined
+            ? undefined
+            : {
+                chunkId: c.chunkId,
+                docId: c.docId,
+                resourceId: c.resourceId,
+                headingPath: c.headingPath,
+                text: c.text,
+              };
+        },
+        cacheNeighbours: (chunkId, n) =>
+          resourceCacheRepo
+            .neighbours(scope, chunkId, n)
+            .map((c) => ({
+              chunkId: c.chunkId,
+              docId: c.docId,
+              resourceId: c.resourceId,
+              headingPath: c.headingPath,
+              text: c.text,
+            })),
+        cacheOutline: (docId) => resourceCacheRepo.outline(scope, docId),
+        cacheDocument: (docId) => {
+          const found = resourceCacheRepo.listDocuments(scope).find((d) => d.docId === docId);
+          return found === undefined
+            ? undefined
+            : {
+                docId: found.docId,
+                resourceId: found.resourceId,
+                title: found.title,
+                url: found.url,
+              };
+        },
+        cacheResourceDocs: (resourceId) =>
+          resourceCacheRepo
+            .listDocuments(scope, resourceId)
+            .map((d) => ({
+              docId: d.docId,
+              resourceId: d.resourceId,
+              title: d.title,
+              url: d.url,
+            })),
+        cacheResourceChunks: (docId, limit) =>
+          resourceCacheRepo
+            .outline(scope, docId)
+            .slice(0, limit)
+            .flatMap((row) => {
+              const c = resourceCacheRepo.getChunk(scope, row.chunkId);
+              return c === undefined
+                ? []
+                : [
+                    {
+                      chunkId: c.chunkId,
+                      docId: c.docId,
+                      resourceId: c.resourceId,
+                      headingPath: c.headingPath,
+                      text: c.text,
+                    },
+                  ];
+            }),
+        cacheFreshness: () => {
+          const latest = new Map<string, number>();
+          for (const row of resourceCacheRepo.resourceFreshness(scope)) {
+            const prev = latest.get(row.resourceId);
+            if (prev === undefined || row.fetchedAt > prev) latest.set(row.resourceId, row.fetchedAt);
+          }
+          return [...latest].map(([resourceId, fetchedAt]) => ({ resourceId, fetchedAt }));
+        },
+        enqueueRefresh: enqueueAssistantRefresh,
       };
       const declarations = toolDeclarations(toolPorts);
       /**
@@ -551,9 +632,12 @@ export const createAssistantService = (
         userText: [sanitizeMentionsForProvider(textOf(input.input)), context.evidenceEnvelope]
           .filter(Boolean)
           .join('\n\n'),
-        // Every enabled resource is openable in a follow-up round (Task 15
-        // adds chunk ids to this set).
-        initialHandles: resources.map((resource) => resource.id),
+        // Task 16: every catalogue id plus the pre-retrieved chunk and doc
+        // ids may be opened in a follow-up round.
+        initialHandles: [
+          ...ordered.slice(0, 60).map((resource) => resource.id),
+          ...preRetrieved.flatMap((hit) => [hit.chunkId, hit.docId]),
+        ],
         tools: {
           firstRound: declarations,
           idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
@@ -589,7 +673,10 @@ export const createAssistantService = (
         ...(loop.model === undefined ? {} : { model: loop.model }),
         tools: loop.toolCalls.map(({ name, ok }) => ({ name, ok })),
         sources: [
-          ...redactedEvidence.map(({ resource }) => ({ title: resource.title, url: resource.url })),
+          ...preRetrieved.map((hit) => ({
+            title: byResourceId.get(hit.resourceId)?.title ?? hit.resourceId,
+            url: byResourceId.get(hit.resourceId)?.url ?? '',
+          })),
           ...loop.sources,
         ],
         web: loop.web,

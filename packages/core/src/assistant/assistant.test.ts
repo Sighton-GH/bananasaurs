@@ -253,6 +253,41 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
     );
     expect(compiled.systemInstruction).not.toContain('open_resource');
   });
+
+  it('uses catalogueLines for the CLUB SOURCES section when present (Task 16)', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [resource('rules', 'Rules')],
+      skills: [],
+      evidence: [],
+      toolsAvailable: true,
+      catalogueLines: [
+        'web · Website (website) · updated 2h ago',
+        'rules · Rules (website) · updated not fetched yet',
+      ],
+    });
+    expect(compiled.systemInstruction).toContain(
+      'CLUB SOURCES (search them with search_sources; open one with read_chunk, outline or open_resource)',
+    );
+    expect(compiled.systemInstruction).toContain('web · Website (website) · updated 2h ago');
+    expect(compiled.systemInstruction).not.toContain('PREFERRED RESOURCES');
+    expect(compiled.systemInstruction).not.toContain('OTHER CLUB RESOURCES');
+  });
+
+  it('adds chunk= to the evidence header when a chunk id is present', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [
+        { sourceId: 'handbook', title: 'Handbook', text: 'Meetings Mondays.', accessible: true, chunkId: 'c_d_0' },
+      ],
+    });
+    expect(compiled.evidenceEnvelope).toContain('chunk=c_d_0');
+    expect(compiled.evidenceEnvelope).toContain('[UNTRUSTED CLUB EVIDENCE');
+  });
 });
 
 describe('compileAssistantContext safety suffix (ADR 0074)', () => {
