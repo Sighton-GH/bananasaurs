@@ -569,6 +569,17 @@ export type {
 } from './providers/contracts.js';
 export { ProviderError, type ProviderErrorKind } from './providers/errors.js';
 export {
+  classifyProviderFailure,
+  netCodeOf,
+  NET_ERROR_CODES,
+  PROVIDER_FAILURE_CODES,
+  PROVIDER_FAILURE_TEXT,
+  type FailureText,
+  type NetErrorCode,
+  type ProviderFailure,
+  type ProviderFailureCode,
+} from './providers/failure.js';
+export {
   assertProviderEligible,
   providerMayTrain,
   type ProviderAudience,

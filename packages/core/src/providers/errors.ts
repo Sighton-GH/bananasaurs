@@ -22,16 +22,31 @@ export class ProviderError extends Error {
    * A retry never helps this kind of quota error before `resetAt`.
    */
   public readonly quotaScope?: 'daily-free';
+  /** HTTP status when a response arrived. */
+  public readonly status?: number;
+  /** Allowlisted network error code (see failure.ts). */
+  public readonly netCode?: string;
+  /** From our own base URL, e.g. 'openrouter.ai'. */
+  public readonly host?: string;
 
   public constructor(
     public readonly kind: ProviderErrorKind,
     message: string,
     public readonly retryable: boolean,
-    options?: ErrorOptions & { resetAt?: number; quotaScope?: 'daily-free' },
+    options?: ErrorOptions & {
+      resetAt?: number;
+      quotaScope?: 'daily-free';
+      status?: number;
+      netCode?: string;
+      host?: string;
+    },
   ) {
     super(message, options);
     this.name = 'ProviderError';
     if (options?.resetAt !== undefined) this.resetAt = options.resetAt;
     if (options?.quotaScope !== undefined) this.quotaScope = options.quotaScope;
+    if (options?.status !== undefined) this.status = options.status;
+    if (options?.netCode !== undefined) this.netCode = options.netCode;
+    if (options?.host !== undefined) this.host = options.host;
   }
 }
