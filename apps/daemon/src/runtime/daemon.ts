@@ -32,6 +32,11 @@ import {
   type ScopeFactory,
 } from '@bananasaurs/storage';
 import { opsInstanceFor, opsPortsFor } from '../ops/wiring.js';
+import {
+  createPasswordVault,
+  unavailableVault,
+  type PasswordVault,
+} from '../ops/password-vault.js';
 import { createArchiveExpiryTimer } from './archive-expiry-timer.js';
 import { createBackupTimer } from './backup-timer.js';
 import { createReminderDeliveryTimer } from './reminder-timer.js';
@@ -79,6 +84,14 @@ export interface DaemonDeps {
    * test ever writes a key file into a real data directory.
    */
   readonly providerSecret?: ProviderSecretResolution | undefined;
+  /**
+   * The account password vault (ADR 0070), resolved by `index.ts` next to
+   * the provider secret, from env or the data-dir key file. Absent in
+   * tests, which fall back to `ACCOUNT_PASSWORD_SECRET_KEY` alone so no
+   * test ever writes a key file into a real data directory — the same
+   * posture `providerSecret` above documents.
+   */
+  readonly passwordVault?: PasswordVault | undefined;
 }
 
 export interface Daemon {
@@ -172,6 +185,21 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           makeProvider,
         });
 
+  // ADR 0070, the same posture `providerSecret` above takes: `deps.passwordVault`
+  // wins (tests), else env `ACCOUNT_PASSWORD_SECRET_KEY` alone — never the
+  // data-dir key file here, so no test constructed without `deps.passwordVault`
+  // ever writes one into a real directory. `index.ts` is the one caller that
+  // resolves the file and passes the result in as `deps.passwordVault`.
+  const passwordVault: PasswordVault =
+    deps.passwordVault ??
+    (config.ACCOUNT_PASSWORD_SECRET_KEY === undefined
+      ? unavailableVault('no key configured')
+      : createPasswordVault({
+          envSecret: config.ACCOUNT_PASSWORD_SECRET_KEY,
+          dataDir: config.BANANASAURS_DATA_DIR,
+          readonly: config.BANANASAURS_READONLY,
+        }));
+
   const byGuild = new Map<string, { scope: GuildScope; runtime: GuildRuntime }>();
   for (const guildId of guildIds) {
     const scope = scopes.forGuild(guildId);
@@ -236,6 +264,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     now,
     backupTimer,
     chosenAiProvider: () => providerStore?.status().provider ?? config.AI_PROVIDER,
+    passwordVault,
   });
 
   /**

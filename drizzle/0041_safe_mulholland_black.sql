@@ -1,0 +1,1 @@
+ALTER TABLE `dashboard_accounts` ADD `password_sealed` text;

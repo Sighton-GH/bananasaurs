@@ -207,6 +207,25 @@ export const dashboardAccessOk = (access: DoctorDashboardAccess): boolean => {
   return access.unreachableGuilds.length === 0;
 };
 
+/**
+ * The account password vault's state (ADR 0070), for the one-line doctor
+ * finding. `revealableAccounts` needs the account table the same way
+ * `dashboardAccess` does, so it is computed by the caller and passed in —
+ * never a failure on its own (an unset `ACCOUNT_PASSWORD_SECRET_KEY` is an
+ * expected state, not a broken one), just a line an operator can act on.
+ */
+export interface DoctorPasswordVault {
+  readonly available: boolean;
+  /**
+   * Where the sealing key resolved from (`resolveSecretFile`'s answer, via
+   * the vault). Optional: callers that predate the field omit it and the
+   * report keeps today's file wording, so existing consumers stay green.
+   */
+  readonly source?: 'env' | 'file' | 'missing' | undefined;
+  /** Non-owner accounts with a sealed copy the owner can reveal. Never the values. */
+  readonly revealableAccounts: number;
+}
+
 export interface DoctorReport {
   /** False if anything here would stop the bot working, or widen layer 1. */
   readonly ok: boolean;
@@ -220,6 +239,8 @@ export interface DoctorReport {
    * assessed, never a failure: it contributes no line and no `ok` vote.
    */
   readonly dashboardAccess?: DoctorDashboardAccess | undefined;
+  /** The password vault finding (ADR 0070), when the caller assessed it. Same omission rule as `dashboardAccess`. */
+  readonly passwordVault?: DoctorPasswordVault | undefined;
   readonly partials: {
     readonly configured: readonly string[];
     readonly missing: readonly string[];
@@ -250,6 +271,8 @@ export function buildDoctorReport(
    * see `dashboardAccess` above for what omission means.
    */
   dashboardAccess?: DoctorDashboardAccess,
+  /** The password vault finding's input (ADR 0070), same omission rule as `dashboardAccess`. */
+  passwordVault?: DoctorPasswordVault,
 ): DoctorReport {
   const configured = (client.options.partials ?? []).map(partialName);
   const missing = REQUIRED_PARTIALS.map(partialName).filter((p) => !configured.includes(p));
@@ -305,6 +328,7 @@ export function buildDoctorReport(
     // `exactOptionalPropertyTypes` treats an explicit `undefined` as distinct
     // from the property being absent, and "not assessed" is absence.
     ...(dashboardAccess !== undefined && { dashboardAccess }),
+    ...(passwordVault !== undefined && { passwordVault }),
   };
 }
 
@@ -435,6 +459,27 @@ export function formatDoctorReport(report: DoctorReport): string {
       `  backups: ${String(b.backupCount)}, newest ${age} old` +
         (b.stale ? '  STALE — the backup timer appears to have stopped' : ''),
     );
+  }
+
+  // ADR 0070. Never the key itself — only where it resolved from, and a count.
+  // The mode is checked at resolution, not re-stat'ed here: `file` means the
+  // 0600 key file, `env` means `ACCOUNT_PASSWORD_SECRET_KEY` won, and
+  // `missing` (or an unavailable vault that predates the field) is not set up.
+  if (report.passwordVault !== undefined) {
+    const vault = report.passwordVault;
+    const source = vault.source ?? (vault.available ? 'file' : 'missing');
+    lines.push('');
+    if (!vault.available || source === 'missing') {
+      lines.push('  Account password vault: not set up (reveal unavailable)');
+    } else if (source === 'env') {
+      lines.push(
+        `  Account password vault: key from ACCOUNT_PASSWORD_SECRET_KEY, ${String(vault.revealableAccounts)} accounts revealable`,
+      );
+    } else {
+      lines.push(
+        `  Account password vault: key file present, mode 0600, ${String(vault.revealableAccounts)} accounts revealable`,
+      );
+    }
   }
 
   return lines.join('\n');

@@ -536,6 +536,13 @@ export interface OpsAccount {
   readonly disabled: boolean;
   readonly lockedUntil: number | null;
   readonly createdAt: number;
+  /**
+   * Whether the owner can reveal this account's password (ADR 0070): a
+   * sealed copy exists and the account is not itself an owner — owner
+   * accounts never get one, whoever asks. Never the sealed value itself,
+   * which stops at `ops/wiring.ts` the same way `passwordHash` does.
+   */
+  readonly revealable: boolean;
 }
 
 /**
@@ -623,6 +630,27 @@ export type OpsAccountSetPasswordResult =
       readonly password: string;
       readonly sessionsRevoked: number;
       readonly guildsTouched: number;
+    };
+
+/**
+ * What `POST /api/accounts/:username/reveal-password` did (ADR 0070).
+ *
+ * `'not-revealable'` covers every way the plaintext cannot be recovered —
+ * no sealed copy, the vault unavailable, or the sealed value not opening
+ * under the current key — deliberately one answer rather than three, so the
+ * route never has to explain the vault's internal state to the dashboard.
+ * The owner-target refusal (`403 owner-protected`) and the caller's
+ * own-capability check (`403 owner-only`) happen at the route layer, before
+ * this is called, the same split every other owner-protected account route
+ * uses.
+ */
+export type OpsAccountRevealResult =
+  | 'no-such-account'
+  | 'not-revealable'
+  | {
+      readonly username: string;
+      /** Shown once, in the response only. Never in the audit row, never logged. */
+      readonly password: string;
     };
 
 /** One guild channel as the pickers show it: display name plus the snowflake. */
@@ -1572,6 +1600,18 @@ export interface OpsInstance {
    * the CLI's generate-only reset keeps calling with no second argument.
    */
   accountSetPassword(username: string, password?: string): Promise<OpsAccountSetPasswordResult>;
+  /**
+   * Reveals one non-owner account's password from its sealed copy (ADR
+   * 0070, spec A4). Synchronous: unlike `accountSetPassword` this never
+   * hashes anything, only opens an AES-GCM ciphertext already held.
+   *
+   * Instance-level like every other account member. `'no-such-account'` is
+   * the usage answer for a mistyped name; `'not-revealable'` covers every
+   * reason the plaintext cannot come back (no sealed copy, the vault
+   * unavailable, or it does not open under the current key) — the route
+   * layer has already refused an owner target before this is ever called.
+   */
+  accountRevealPassword(username: string): OpsAccountRevealResult;
 }
 
 export interface OpsBackupOutcome {

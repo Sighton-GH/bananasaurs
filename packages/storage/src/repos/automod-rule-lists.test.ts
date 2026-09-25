@@ -265,6 +265,7 @@ const instance: OpsInstance = {
   accountRevokeCredentials: notNeeded('accountRevokeCredentials'),
   accountCreate: notNeeded('accountCreate'),
   accountSetPassword: notNeeded('accountSetPassword'),
+  accountRevealPassword: notNeeded('accountRevealPassword'),
 };
 
 const actor: Actor = { type: 'operator_cli', id: undefined, roleIds: [], unixUserClaimed: 'test' };

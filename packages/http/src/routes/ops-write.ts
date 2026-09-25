@@ -1376,6 +1376,45 @@ export const registerOpsWriteRoutes = (
     },
   );
 
+  // ADR 0070, spec A4: the owner reveals a non-owner account's sealed
+  // password after re-authenticating. Owner-only regardless of capability —
+  // `accounts.manage` alone is not enough, the same posture
+  // `/api/providers/:provider/terms` above takes — so this checks
+  // `isInstanceOwner` directly rather than `requireCapability`.
+  // `refuseIfOwner` still runs afterward: it answers `owner-protected` for
+  // an owner TARGET (owner accounts never have a sealed copy to reveal
+  // anyway, but the named refusal is clearer than falling through to
+  // `not-revealable`).
+  app.post<{ Params: { username: string } }>(
+    '/api/accounts/:username/reveal-password',
+    (request, reply) => {
+      const session = guard.requireFresh(request, reply);
+      if (session === undefined) return reply;
+      if (!isInstanceOwner(deps, session)) return reply.status(403).send({ error: 'owner-only' });
+      if (refuseIfOwner(deps, request.params.username, reply)) return reply;
+
+      const result = deps.instance.accountRevealPassword(request.params.username);
+      if (result === 'no-such-account') {
+        return reply.status(404).send({ error: 'no-such-account' });
+      }
+      if (result === 'not-revealable') {
+        return reply.status(409).send({ error: 'not-revealable' });
+      }
+      const ports = deps.portsFor(session.scope);
+      ports.recordAudit({
+        ...dashboardAuditBase(session, deps.now()),
+        action: 'account.password_revealed',
+        subjectType: 'account',
+        subjectId: result.username,
+        before: undefined,
+        // Empty, deliberately: the plaintext crosses only in the response
+        // body below, never in the audit row (hard rule 4).
+        after: {},
+      });
+      return reply.status(200).send(result);
+    },
+  );
+
   app.post<{ Params: { username: string } }>(
     '/api/accounts/:username/grant-guild',
     (request, reply) => {

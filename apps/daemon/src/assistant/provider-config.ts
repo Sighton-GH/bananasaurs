@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { listGeminiModels, type Config, type GeminiModelInfo } from '@bananasaurs/core';
 import {
   assistantProviderRepo,
@@ -12,6 +12,7 @@ import {
   type ChainEntry,
   type ProviderId,
 } from './model-chain.js';
+import { openWithKey as open, sealWithKey as seal } from '../crypto/seal.js';
 
 /** Same display labels the 0039 migration gave a provider's copied key. */
 const PROVIDER_LABEL: Record<ProviderId, string> = {
@@ -22,23 +23,6 @@ const PROVIDER_LABEL: Record<ProviderId, string> = {
 
 const keyFrom = (secret: string): Buffer =>
   createHash('sha256').update(`bananasaurs:assistant-provider:${secret}`, 'utf8').digest();
-const seal = (key: Buffer, value: string): string => {
-  const nonce = randomBytes(12);
-  const cipher = createCipheriv('aes-256-gcm', key, nonce);
-  const ciphertext = Buffer.concat([cipher.update(value, 'utf8'), cipher.final()]);
-  return Buffer.concat([nonce, cipher.getAuthTag(), ciphertext]).toString('base64');
-};
-const open = (key: Buffer, value: string): string | undefined => {
-  try {
-    const raw = Buffer.from(value, 'base64');
-    if (raw.length < 29) return undefined;
-    const decipher = createDecipheriv('aes-256-gcm', key, raw.subarray(0, 12));
-    decipher.setAuthTag(raw.subarray(12, 28));
-    return Buffer.concat([decipher.update(raw.subarray(28)), decipher.final()]).toString('utf8');
-  } catch {
-    return undefined;
-  }
-};
 export type ProviderSecretSource = 'env' | 'file' | 'missing';
 export type ProviderCostClass = 'free' | 'paid' | 'unknown';
 export interface ProviderConfigStatus {
