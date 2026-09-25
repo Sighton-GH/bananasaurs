@@ -444,6 +444,23 @@ export const getConversation = (scope: GuildScope, id: string): Conversation | u
     return row === undefined ? undefined : toConversation(row);
   });
 
+/**
+ * Whether the guild has any conversation at all — a cheap `LIMIT 1`
+ * existence check for the daily prune timer's enqueue gate, so a guild with
+ * nothing to prune gets no empty `conversation_prune` job (the same reason
+ * the resource-refresh timer's `hasResources` exists).
+ */
+export const hasConversations = (scope: GuildScope): boolean =>
+  read(scope, (db) => {
+    const row = db
+      .select({ conversationId: assistantConversations.conversationId })
+      .from(assistantConversations)
+      .where(scope.only(assistantConversations))
+      .limit(1)
+      .get();
+    return row !== undefined;
+  });
+
 export const endConversation = (scope: GuildScope, id: string): void =>
   write(scope, ({ db }) => {
     db.update(assistantConversations)

@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FastifyInstance } from 'fastify';
 import { parseGuildId, type AssistantTrace, type Capability } from '@bananasaurs/core';
+import type * as Storage from '@bananasaurs/storage';
 import {
   accountRepo,
   authzRepo,
@@ -25,25 +26,27 @@ import { registerAssistantConversationRoutes } from './assistant-conversations.j
  */
 const batchedCalls = vi.hoisted(() => ({ people: 0, tracesByIds: 0 }));
 vi.mock('@bananasaurs/storage', async (importOriginal) => {
-  const mod = await importOriginal<typeof import('@bananasaurs/storage')>();
-  const conversations = mod.conversationRepo as typeof mod.conversationRepo &
-    Record<string, (...args: never[]) => unknown>;
-  const traces = mod.traceRepo as typeof mod.traceRepo &
-    Record<string, (...args: never[]) => unknown>;
+  const mod = await importOriginal<typeof Storage>();
   return {
     ...mod,
     conversationRepo: {
       ...mod.conversationRepo,
-      peopleForConversations: (...args: never[]) => {
+      peopleForConversations: (
+        scope: Parameters<typeof mod.conversationRepo.peopleForConversations>[0],
+        ids: Parameters<typeof mod.conversationRepo.peopleForConversations>[1],
+      ) => {
         batchedCalls.people += 1;
-        return conversations.peopleForConversations(...args);
+        return mod.conversationRepo.peopleForConversations(scope, ids);
       },
     },
     traceRepo: {
       ...mod.traceRepo,
-      getTracesByIds: (...args: never[]) => {
+      getTracesByIds: (
+        scope: Parameters<typeof mod.traceRepo.getTracesByIds>[0],
+        ids: Parameters<typeof mod.traceRepo.getTracesByIds>[1],
+      ) => {
         batchedCalls.tracesByIds += 1;
-        return traces.getTracesByIds(...args);
+        return mod.traceRepo.getTracesByIds(scope, ids);
       },
     },
   };
