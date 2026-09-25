@@ -200,4 +200,17 @@ describe('AssistantPromptWizardPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Save instructions' }));
     expect(await screen.findByText('Prompt changed elsewhere')).toBeTruthy();
   });
+
+  it('counts the trimmed prompt and disables Save for a whitespace-only draft', async () => {
+    renderWizard();
+    for (let i = 0; i < 6; i += 1) await next();
+    const prompt = (await screen.findByRole('textbox', {
+      name: 'Instructions to save',
+    })) as HTMLTextAreaElement;
+    fireEvent.change(prompt, { target: { value: '   ' } });
+    expect(screen.getByText('0 / 4,000 characters')).toBeTruthy();
+    expect(
+      (screen.getByRole('button', { name: 'Save instructions' }) as HTMLButtonElement).disabled,
+    ).toBe(true);
+  });
 });

@@ -667,7 +667,7 @@ function Wizard({
               />
             </Field>
             <p className="text-xs text-ink-muted">
-              {prompt.length.toLocaleString('en-CA')} / 4,000 characters
+              {cleaned.length.toLocaleString('en-CA')} / 4,000 characters
             </p>
             <section
               aria-label="Locked safety rules"

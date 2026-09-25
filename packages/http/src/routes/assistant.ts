@@ -423,7 +423,19 @@ export const registerAssistantRoutes = (
         existing === undefined
           ? undefined
           : { promptVersion: existing.promptVersion, enabled: existing.enabled },
-      after: { promptWizard: promptWizard !== undefined },
+      after: {
+        name: parsed.data.name,
+        surface: parsed.data.surface,
+        enabled: parsed.data.enabled,
+        allowedSkillIds: parsed.data.allowedSkillIds,
+        callerRoleIds: parsed.data.callerRoleIds,
+        resourceIds: parsed.data.resourceIds,
+        mentionRoleId: parsed.data.mentionRoleId ?? null,
+        ticketChannelId: parsed.data.ticket?.channelId ?? null,
+        reviewerRoleIds: parsed.data.ticket?.reviewerRoleIds ?? [],
+        systemPrompt: parsed.data.systemPrompt,
+        promptWizard: promptWizard !== undefined,
+      },
     });
     assistantRepo.putBehaviour(
       session.scope,

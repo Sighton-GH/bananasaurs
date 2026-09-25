@@ -1154,12 +1154,14 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
     expect(assistantRepo.listBehaviours(scope)[0]?.promptVersion).toBe(3);
   });
 
-  it('audits only whether answers exist, never the answers text', async () => {
+  it('audits every saved field plus whether answers exist, never the answers text', async () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();
-    expect(
-      (await put(cookie, csrf, body({ promptWizard: DEFAULT_WIZARD_ANSWERS.club }))).statusCode,
-    ).toBe(200);
+    const answers = {
+      ...DEFAULT_WIZARD_ANSWERS.club,
+      clubFacts: 'The mascot is a backwards banana.',
+    };
+    expect((await put(cookie, csrf, body({ promptWizard: answers }))).statusCode).toBe(200);
     const rows = effectRepo
       .tailAudit(t.scopes.forGuild(GUILD), {})
       .filter(
@@ -1168,9 +1170,43 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
           row.action === 'assistant_behaviour.created',
       );
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0]?.after ?? 'null') as unknown).toEqual({ promptWizard: true });
+    expect(JSON.parse(rows[0]?.after ?? 'null') as unknown).toEqual({
+      name: 'Club',
+      surface: 'bananasaurs',
+      enabled: true,
+      allowedSkillIds: ['search-club'],
+      callerRoleIds: [],
+      resourceIds: [],
+      mentionRoleId: ROLE_A,
+      ticketChannelId: null,
+      reviewerRoleIds: [],
+      systemPrompt: 'Be helpful.',
+      promptWizard: true,
+    });
     // The distinctive free-text answer must appear nowhere in the audit row.
-    expect(JSON.stringify(rows[0])).not.toContain('asking in the club channel');
+    expect(JSON.stringify(rows[0])).not.toContain('The mascot is a backwards banana.');
+  });
+
+  it('round-trips promptWizard through PUT into GET /api/assistant, and null clears it', async () => {
+    grant('config.read');
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const readBehaviours = async (): Promise<{ promptWizard?: unknown }[]> =>
+      (await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } })).json<{
+        behaviours: { promptWizard?: unknown }[];
+      }>().behaviours;
+    expect(
+      (await put(cookie, csrf, body({ promptWizard: DEFAULT_WIZARD_ANSWERS.club }))).statusCode,
+    ).toBe(200);
+    expect(await readBehaviours()).toEqual([
+      expect.objectContaining({ id: 'club', promptWizard: DEFAULT_WIZARD_ANSWERS.club }),
+    ]);
+    expect(
+      (await put(cookie, csrf, body({ promptVersion: 1, promptWizard: null }))).statusCode,
+    ).toBe(200);
+    const cleared = await readBehaviours();
+    expect(cleared).toHaveLength(1);
+    expect(cleared[0]).not.toHaveProperty('promptWizard');
   });
 });
 
