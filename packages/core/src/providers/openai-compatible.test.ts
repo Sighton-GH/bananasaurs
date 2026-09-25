@@ -415,6 +415,26 @@ describe('OpenAI-compatible providers', () => {
         }),
       ).rejects.toMatchObject({ kind: 'rate-limit', retryable: true, quotaScope: undefined });
     });
+
+    it('does not read an empty X-RateLimit-Remaining as zero', async () => {
+      const body = JSON.stringify({
+        error: {
+          code: 429,
+          message: 'You have hit the per-day cap for this key.',
+          metadata: { headers: { 'X-RateLimit-Remaining': ' ' } },
+        },
+      });
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response(body, { status: 429 }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      await expect(
+        provider.generateText({
+          model: 'nvidia/nemotron:free',
+          messages: [{ role: 'user', text: 'q' }],
+        }),
+      ).rejects.toMatchObject({ kind: 'rate-limit', retryable: true, quotaScope: undefined });
+    });
   });
 
   it('ignores thinkingBudget instead of sending it', async () => {

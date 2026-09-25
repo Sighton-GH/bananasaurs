@@ -174,13 +174,14 @@ const resolveResetAt = (
  * limit reports zero remaining too.
  */
 const DAILY_FREE_QUOTA_MESSAGE = /free[\s\S]{0,40}per[- ]?day|per[- ]?day[\s\S]{0,40}free/i;
-const PER_DAY_PHRASE = /per[- ]day/i;
+const PER_DAY_PHRASE = /per[- ]?day/i;
 
 const remainingIsZero = (metadata: Record<string, unknown> | undefined): boolean => {
   const raw = metadataHeaderValue(metadata, 'X-RateLimit-Remaining');
   if (raw === undefined) return false;
-  const value = typeof raw === 'number' ? raw : Number(raw);
-  return value === 0;
+  if (typeof raw === 'number') return raw === 0;
+  // Number('') and Number(' ') are 0; a blank value is no evidence of anything.
+  return raw.trim() !== '' && Number(raw) === 0;
 };
 
 const isDailyFreeQuota = (
