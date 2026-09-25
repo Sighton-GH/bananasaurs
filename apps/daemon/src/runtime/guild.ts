@@ -79,6 +79,8 @@ import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
 import { ReviewedResourceFetcher } from '../assistant/resource-fetcher.js';
 import { conversationPruneHandler } from '../jobs/conversation-prune.js';
+import { createGitHubClient } from '../assistant/github-client.js';
+import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { createReminderDelivery, reminderStoreFor } from '../assistant/reminder-delivery.js';
 import { createAssistantCommandSubscriber } from '../assistant/commands.js';
 import { assistantInvokeHandler } from '../jobs/assistant.js';
@@ -144,6 +146,12 @@ export interface GuildRuntimeDeps {
    * in isolated uses, where the service falls back to its own ledger.
    */
   readonly quotaLedger?: QuotaLedger | undefined;
+  /**
+   * Task 17: the sealed GitHub token, opened for the GitHub client only.
+   * Supplied by the composition root (`daemon.ts` owns the provider store);
+   * absent in tests, in which case GitHub refreshes run unauthenticated.
+   */
+  readonly githubToken?: (() => string | undefined) | undefined;
 }
 
 /**
@@ -824,6 +832,27 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         refresh: {
           fetcher: new ReviewedResourceFetcher({ now }),
           repo: resourceCacheRepo,
+          now,
+        },
+        // Task 17: GitHub kinds refresh through `github-refresh.ts` — the
+        // REST client is pinned to api.github.com (never global `fetch`) and
+        // raw file downloads reuse the reviewed fetcher like any other
+        // resource. The token is read per request and travels only in the
+        // `Authorization` header.
+        github: {
+          client: createGitHubClient({
+            token: deps.githubToken ?? (() => undefined),
+            fetch: createGithubFetch(),
+            guard: githubGuard,
+          }),
+          // Pinned to raw.githubusercontent.com: a redirect in a GitHub raw
+          // download can never carry the refresh to another host (hard rule 8).
+          fetcher: new ReviewedResourceFetcher({
+            now,
+            allowedHosts: ['raw.githubusercontent.com'],
+          }),
+          store: assistantRepo,
+          cache: resourceCacheRepo,
           now,
         },
         logger,

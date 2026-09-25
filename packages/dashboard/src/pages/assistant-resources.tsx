@@ -1,12 +1,17 @@
 import { useCallback, useState } from 'react';
 import type { ClubResource } from '@bananasaurs/core';
+import { ApiError } from '../api.js';
 import {
   ASSISTANT_URL,
+  GITHUB_IMPORT_URL,
+  GITHUB_PREVIEW_URL,
   RESOURCE_FRESHNESS_URL,
   RESOURCE_REFRESH_ALL_URL,
   resourceRefreshUrl,
   resourceUrl,
   type AssistantData,
+  type GithubImportResult,
+  type GithubPreview,
   type ResourceFreshnessRow,
 } from '../api/assistant.js';
 import { useSession, type Session } from '../app/session.js';
@@ -65,6 +70,271 @@ function StatusPill({ status }: { readonly status: ResourceCacheStatus }) {
   return <Badge tone="danger">Needs attention</Badge>;
 }
 
+/** Maps a GitHub preview/import refusal code to its plain Canadian-English sentence. */
+function githubErrorText(code: string): string {
+  if (code === 'not-github') return 'That is not a GitHub repository or organisation URL.';
+  if (code === 'not-found') return 'GitHub could not find that repository or organisation.';
+  if (code === 'rate-limited')
+    return 'GitHub rate limit reached. Add a token on the AI setup page, or try again later.';
+  return 'GitHub could not complete that. Check the URL and try again.';
+}
+
+const githubErrorOf = (err: unknown): string | undefined =>
+  err instanceof ApiError ? err.body.error : undefined;
+
+/**
+ * "Add from GitHub" (Task 17): paste a repo or organisation URL, preview
+ * what would be imported, pick files or repositories, add. The preview comes
+ * from the server (which holds the token); this panel only ever sees names,
+ * file paths and counts — never the token.
+ */
+function GithubPanel({
+  session,
+  onSaved,
+  onClose,
+}: {
+  readonly session: Session;
+  readonly onSaved: () => void;
+  readonly onClose: () => void;
+}) {
+  const toast = useToast();
+  const [url, setUrl] = useState('');
+  const [preview, setPreview] = useState<GithubPreview | undefined>(undefined);
+  const [error, setError] = useState<string | undefined>(undefined);
+  const [previewBusy, setPreviewBusy] = useState(false);
+  const [importBusy, setImportBusy] = useState(false);
+  const [checkedFiles, setCheckedFiles] = useState<readonly string[] | undefined>(undefined);
+  const [fileFilter, setFileFilter] = useState('');
+  const [checkedRepos, setCheckedRepos] = useState<readonly string[] | undefined>(undefined);
+  const [includeForks, setIncludeForks] = useState(false);
+  const [includeArchived, setIncludeArchived] = useState(false);
+
+  const runPreview = async () => {
+    setPreviewBusy(true);
+    setError(undefined);
+    setPreview(undefined);
+    setCheckedFiles(undefined);
+    setCheckedRepos(undefined);
+    setFileFilter('');
+    try {
+      const result = await session.writeOrThrow<GithubPreview>(GITHUB_PREVIEW_URL, { url }, 'POST');
+      if (result === undefined) {
+        setError('Preview failed. Check the URL and try again.');
+        return;
+      }
+      setPreview(result);
+      if (result.files !== undefined) setCheckedFiles(result.files);
+      if (result.repos !== undefined) setCheckedRepos(result.repos.map((r) => r.name));
+    } catch (err) {
+      const code = githubErrorOf(err);
+      setError(
+        code === undefined ? 'Preview failed. Check the URL and try again.' : githubErrorText(code),
+      );
+    } finally {
+      setPreviewBusy(false);
+    }
+  };
+
+  const runImport = async (body: Record<string, unknown>) => {
+    setImportBusy(true);
+    setError(undefined);
+    try {
+      const result = await session.writeOrThrow<GithubImportResult>(
+        GITHUB_IMPORT_URL,
+        body,
+        'POST',
+      );
+      if (result === undefined) {
+        setError('Import failed. Check the URL and try again.');
+        return;
+      }
+      toast({
+        tone: 'ok',
+        title: 'GitHub import added',
+        message: `${String(result.created)} resource${result.created === 1 ? '' : 's'} queued to refresh into the cache now.`,
+      });
+      onSaved();
+      onClose();
+    } catch (err) {
+      const code = githubErrorOf(err);
+      setError(
+        code === undefined ? 'Import failed. Check the URL and try again.' : githubErrorText(code),
+      );
+    } finally {
+      setImportBusy(false);
+    }
+  };
+
+  const toggleIn = (list: readonly string[], name: string): readonly string[] =>
+    list.includes(name) ? list.filter((item) => item !== name) : [...list, name];
+
+  const isOrg = preview?.target.kind === 'org';
+  const files = preview?.files ?? [];
+  const visibleFiles =
+    fileFilter.trim() === ''
+      ? files
+      : files.filter((path) => path.toLowerCase().includes(fileFilter.trim().toLowerCase()));
+  const allFiles = preview?.files ?? [];
+  const filesSelection = checkedFiles ?? allFiles;
+  const shownRepos = (preview?.repos ?? []).filter(
+    (repo) => (includeForks || !repo.fork) && (includeArchived || !repo.archived),
+  );
+  const shownNames = new Set(shownRepos.map((repo) => repo.name));
+  const reposSelection = (checkedRepos ?? []).filter((name) => shownNames.has(name));
+
+  return (
+    <div className="mt-3 rounded-md border border-line bg-canvas p-3">
+      <div className="grid gap-3">
+        <Field
+          label="GitHub URL"
+          hint="A public repository or organisation, for example https://github.com/acme/widget."
+          {...(error !== undefined ? { error } : {})}
+        >
+          <Input
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            type="url"
+            required
+            placeholder="https://github.com/"
+          />
+        </Field>
+      </div>
+      <div className="mt-3 flex gap-2">
+        <Button variant="primary" busy={previewBusy} onClick={() => void runPreview()}>
+          Preview
+        </Button>
+        <Button onClick={onClose}>Cancel</Button>
+      </div>
+      {preview !== undefined && (
+        <div className="mt-3">
+          {!preview.authenticated && (
+            <p className="text-sm text-ink-muted">
+              <HelpTip label="GitHub token limits">
+                Without a GitHub token only README files are read and organisations refresh once a
+                day. Add a token on the AI setup page.
+              </HelpTip>
+            </p>
+          )}
+          {isOrg ? (
+            <>
+              <p className="text-sm">
+                {`${String(preview.repos?.length ?? 0)} public repositor${(preview.repos?.length ?? 0) === 1 ? 'y' : 'ies'}`}
+              </p>
+              {preview.truncated === true && (
+                <p className="text-sm text-ink-muted">Showing the first 500 repositories.</p>
+              )}
+              {(preview.repos?.length ?? 0) === 0 ? (
+                <p className="mt-2 text-sm">This organisation has no public repositories.</p>
+              ) : (
+                <>
+                  <div className="mt-2 flex flex-wrap gap-4 text-sm">
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={includeForks}
+                        onChange={(e) => setIncludeForks(e.target.checked)}
+                      />
+                      Include forks
+                    </label>
+                    <label className="flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={includeArchived}
+                        onChange={(e) => setIncludeArchived(e.target.checked)}
+                      />
+                      Include archived
+                    </label>
+                  </div>
+                  <ul className="mt-2 grid gap-1">
+                    {shownRepos.map((repo) => (
+                      <li key={repo.name}>
+                        <label className="flex items-center gap-2 text-sm">
+                          <input
+                            type="checkbox"
+                            checked={(checkedRepos ?? []).includes(repo.name)}
+                            onChange={() =>
+                              setCheckedRepos(toggleIn(checkedRepos ?? [], repo.name))
+                            }
+                          />
+                          <span>{repo.name}</span>
+                          {repo.description !== null && (
+                            <span className="text-ink-muted">{repo.description}</span>
+                          )}
+                          {repo.fork && <span className="text-ink-muted">fork</span>}
+                          {repo.archived && <span className="text-ink-muted">archived</span>}
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      variant="primary"
+                      busy={importBusy}
+                      disabled={reposSelection.length === 0}
+                      onClick={() =>
+                        void runImport({
+                          url,
+                          repos: reposSelection,
+                          includeForks,
+                          includeArchived,
+                        })
+                      }
+                    >
+                      Add
+                    </Button>
+                  </div>
+                </>
+              )}
+            </>
+          ) : (
+            <>
+              <div className="mt-2">
+                <Field label="Filter files">
+                  <Input
+                    value={fileFilter}
+                    onChange={(e) => setFileFilter(e.target.value)}
+                    placeholder="docs/"
+                  />
+                </Field>
+              </div>
+              <ul className="mt-2 grid gap-1">
+                {visibleFiles.map((path) => (
+                  <li key={path}>
+                    <label className="flex items-center gap-2 text-sm">
+                      <input
+                        type="checkbox"
+                        checked={filesSelection.includes(path)}
+                        onChange={() => setCheckedFiles(toggleIn(filesSelection, path))}
+                      />
+                      {path}
+                    </label>
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-3 flex gap-2">
+                <Button
+                  variant="primary"
+                  busy={importBusy}
+                  disabled={filesSelection.length === 0}
+                  onClick={() =>
+                    void runImport(
+                      filesSelection.length === allFiles.length
+                        ? { url }
+                        : { url, include: filesSelection },
+                    )
+                  }
+                >
+                  Add
+                </Button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** Reviewed resources: add, edit, enable, and the persistent cache's health per resource (ADR 0073). */
 function ResourcesCard({
   resources,
@@ -87,6 +357,7 @@ function ResourcesCard({
   const [busy, setBusy] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | undefined>(undefined);
   const [refreshingAll, setRefreshingAll] = useState(false);
+  const [githubOpen, setGithubOpen] = useState(false);
 
   const freshnessOf = (resourceId: string): ResourceFreshnessRow | undefined =>
     freshness.find((row) => row.resourceId === resourceId);
@@ -202,8 +473,12 @@ function ResourcesCard({
             </Button>
           )}
           <Button onClick={() => openForm('new')}>Add resource</Button>
+          <Button onClick={() => setGithubOpen(true)}>Add from GitHub</Button>
         </span>
       </div>
+      {githubOpen && (
+        <GithubPanel session={session} onSaved={onSaved} onClose={() => setGithubOpen(false)} />
+      )}
       {editing !== undefined && (
         <form
           className="mt-3 rounded-md border border-line bg-canvas p-3"
@@ -274,17 +549,31 @@ function ResourcesCard({
           {resources.map((resource) => {
             const row = freshnessOf(resource.id);
             const status = cacheStatusOf(resource, row);
+            const childCount =
+              resource.kind === 'github-org'
+                ? resources.filter((r) => r.parentId === resource.id).length
+                : undefined;
             return (
               <li key={resource.id} className="rounded-md border border-line bg-canvas p-3">
                 <div className="flex items-start justify-between gap-2">
                   <p className="min-w-0 font-medium">{resource.title}</p>
                   <StatusPill status={status} />
                 </div>
+                {resource.meta?.autoDiscovered === true && (
+                  <p className="mt-1">
+                    <Badge tone="neutral">New — found automatically</Badge>
+                  </p>
+                )}
                 <p className="mt-1 break-all text-xs text-ink-muted">{resource.url}</p>
                 <p className="mt-1 text-xs text-ink-muted">
                   {resource.kind} · reviewed{' '}
                   {new Date(resource.reviewedAt).toLocaleDateString('en-CA')}
                 </p>
+                {childCount !== undefined && (
+                  <p className="mt-1 text-xs text-ink-muted">
+                    {`${String(childCount)} repositor${childCount === 1 ? 'y' : 'ies'}`}
+                  </p>
+                )}
                 <p className="mt-1 text-xs text-ink-muted">
                   {row?.fetchedAt === undefined
                     ? 'Never updated'

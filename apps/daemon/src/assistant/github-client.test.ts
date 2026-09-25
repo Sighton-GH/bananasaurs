@@ -110,7 +110,8 @@ describe('createGitHubClient — listOrgRepos', () => {
       .fn<typeof globalThis.fetch>()
       .mockResolvedValueOnce(ok([repoItem('one'), repoItem('two', { fork: true })]));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
-    const repos = await client.listOrgRepos('acme');
+    const { repos, truncated } = await client.listOrgRepos('acme');
+    expect(truncated).toBe(false);
     expect(repos).toEqual([
       {
         name: 'one',
@@ -145,9 +146,10 @@ describe('createGitHubClient — listOrgRepos', () => {
       .fn<typeof globalThis.fetch>()
       .mockImplementation(() => Promise.resolve(ok(fullPage)));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
-    const repos = await client.listOrgRepos('acme');
+    const { repos, truncated } = await client.listOrgRepos('acme');
     expect(fetch).toHaveBeenCalledTimes(5);
     expect(repos).toHaveLength(500);
+    expect(truncated).toBe(true);
     const pages = fetch.mock.calls.map((call) =>
       new URL(call[0] as string).searchParams.get('page'),
     );
@@ -161,9 +163,10 @@ describe('createGitHubClient — listOrgRepos', () => {
       .mockResolvedValueOnce(ok(fullPage))
       .mockResolvedValueOnce(ok([repoItem('last')]));
     const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
-    const repos = await client.listOrgRepos('acme');
+    const { repos, truncated } = await client.listOrgRepos('acme');
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(repos).toHaveLength(101);
+    expect(truncated).toBe(false);
   });
 });
 

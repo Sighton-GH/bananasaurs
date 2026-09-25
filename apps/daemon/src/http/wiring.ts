@@ -17,6 +17,7 @@ import {
   createServer,
   issueBootstrapTokenIfNeeded,
   registerAssistantProviderRoutes,
+  registerAssistantGithubRoutes,
   registerAssistantRoutes,
   registerAssistantResourceCacheRoutes,
   registerAssistantTraceRoutes,
@@ -33,6 +34,8 @@ import {
 } from '@bananasaurs/http';
 import { envProviderStatus } from '../assistant/provider-config.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
+import { createGitHubClient } from '../assistant/github-client.js';
+import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
 import { registerMcpRoutes } from '../mcp/wiring.js';
 import { registerStaticAssets } from './static.js';
 
@@ -236,6 +239,20 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
           assistantAllowanceResetsAt: (keyId: string) =>
             quotaLedger.exhaustedUntil(keyId, deps.now()),
         }),
+    // Task 17: the "Add from GitHub" client — pinned to api.github.com (never
+    // global `fetch`), reading the sealed token per request for the
+    // `Authorization` header only. Absent when there is no provider store to
+    // read a token from, and then the GitHub routes answer 503.
+    ...(deps.assistantProviderConfig?.githubToken === undefined
+      ? {}
+      : {
+          githubClient: () =>
+            createGitHubClient({
+              token: () => deps.assistantProviderConfig?.githubToken?.(),
+              fetch: createGithubFetch(),
+              guard: githubGuard,
+            }),
+        }),
   };
   const app = createServer({
     deps: httpDeps,
@@ -249,6 +266,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       registerReadRoutes(instance, guard, routeDeps);
       registerAssistantRoutes(instance, guard, routeDeps);
       registerAssistantProviderRoutes(instance, guard, routeDeps);
+      registerAssistantGithubRoutes(instance, guard, routeDeps);
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
       registerAssistantTraceRoutes(instance, guard, routeDeps);
       registerAssistantConversationRoutes(instance, guard, routeDeps);

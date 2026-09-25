@@ -205,6 +205,75 @@ describe('reviewed resource fetcher', () => {
     expect(request).toHaveBeenCalledTimes(2);
   });
 
+  describe('allowedHosts (Task 17 fix: GitHub raw downloads stay on raw.githubusercontent.com)', () => {
+    it('refuses a redirect off the allowlist without requesting the target', async () => {
+      const request = vi.fn<PinnedRequest>(async (url) => {
+        if (url.hostname === 'raw.githubusercontent.com')
+          return response(302, '', { location: 'https://example.com/evil' });
+        return response(200, 'evil');
+      });
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        allowedHosts: ['raw.githubusercontent.com'],
+      });
+      await expect(
+        fetcher.fetch('https://raw.githubusercontent.com/acme/widget/main/README.md'),
+      ).resolves.toEqual({
+        ok: false,
+        code: 'redirect',
+        message: 'The reviewed resource redirected outside the allowed hosts.',
+      });
+      expect(request).toHaveBeenCalledTimes(1);
+    });
+
+    it('follows a redirect that stays on the allowlist', async () => {
+      const request = vi.fn<PinnedRequest>(async (url) =>
+        url.pathname === '/start'
+          ? response(302, '', { location: 'https://raw.githubusercontent.com/final' })
+          : response(200, 'final'),
+      );
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        allowedHosts: ['raw.githubusercontent.com'],
+      });
+      await expect(fetcher.fetch('https://raw.githubusercontent.com/start')).resolves.toMatchObject(
+        { ok: true, evidence: { text: 'final' } },
+      );
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+
+    it('refuses an initial URL off the allowlist without any request', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'evil'));
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        allowedHosts: ['raw.githubusercontent.com'],
+      });
+      await expect(fetcher.fetch('https://example.com/guide')).resolves.toEqual({
+        ok: false,
+        code: 'redirect',
+        message: 'The reviewed resource redirected outside the allowed hosts.',
+      });
+      expect(request).not.toHaveBeenCalled();
+    });
+
+    it('without allowedHosts still follows a public redirect as before', async () => {
+      const request = vi.fn<PinnedRequest>(async (url) =>
+        url.hostname === 'one.example'
+          ? response(302, '', { location: 'https://two.example/final' })
+          : response(200, 'final'),
+      );
+      const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request });
+      await expect(fetcher.fetch('https://one.example/start')).resolves.toMatchObject({
+        ok: true,
+        evidence: { text: 'final' },
+      });
+      expect(request).toHaveBeenCalledTimes(2);
+    });
+  });
+
   describe('conditional requests (ADR 0073)', () => {
     it('sends If-None-Match / If-Modified-Since and returns notModified on a 304, without reading a body', async () => {
       const request = vi.fn<PinnedRequest>(async () => response(304));
