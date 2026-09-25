@@ -393,7 +393,8 @@ const runEntry = async (deps: {
       const traceBase = { round, name: call.name, args: call.args ?? {} };
       const startedCall = deps.now();
       const callMs = (): number => Math.max(0, deps.now() - startedCall);
-      if (!toolsRunnable) {
+      const run = toolsRunnable ? deps.tools?.run : undefined;
+      if (run === undefined) {
         deps.toolCalls.push({ ...traceBase, ok: false, refused: 'tools not offered', ms: callMs(), preview: '' });
         toolMessages.push(refusedMessage(call, 'tools not offered'));
         continue;
@@ -431,8 +432,7 @@ const runEntry = async (deps: {
         continue;
       }
       callsUsed += 1;
-      // Round 1 only runs when tools were offered, so `run` exists here.
-      const result = await deps.tools!.run(call);
+      const result = await run(call);
       resultChars += result.text.length;
       for (const handle of result.handles ?? []) handles.add(handle);
       if (result.ok) {
