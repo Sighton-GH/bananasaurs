@@ -38,6 +38,22 @@ function ThrowProbe({ onSettled }: { readonly onSettled: (settled: Settled) => v
   );
 }
 
+function RethrowProbe({ onSettled }: { readonly onSettled: (settled: Settled) => void }) {
+  const session = useSession();
+  return (
+    <button
+      onClick={() =>
+        void session.writeOrThrow('/api/killswitch', { on: true }, 'POST', [429]).then(
+          (value) => onSettled({ value, error: undefined }),
+          (error: unknown) => onSettled({ value: undefined, error }),
+        )
+      }
+    >
+      write-or-rethrow-429
+    </button>
+  );
+}
+
 describe('SessionProvider', () => {
   afterEach(() => vi.unstubAllGlobals());
 
@@ -299,6 +315,37 @@ describe('SessionProvider', () => {
     expect(settled.error).toBeInstanceOf(ApiError);
     expect((settled.error as ApiError).status).toBe(409);
     expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('writeOrThrow rethrows a listed extra status without a toast', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 429, body: { error: 'rate-limited' } },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<RethrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-rethrow-429'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    const settled = onSettled.mock.calls[0]![0] as Settled;
+    expect(settled.value).toBeUndefined();
+    expect(settled.error).toBeInstanceOf(ApiError);
+    expect((settled.error as ApiError).status).toBe(429);
+    expect(screen.getByRole('status').textContent).toBe('');
+  });
+
+  it('writeOrThrow without the option still toasts a 429 and resolves undefined', async () => {
+    stubFetch([
+      { method: 'POST', url: '/api/killswitch', status: 429, body: { error: 'rate-limited' } },
+    ]);
+    const onSettled = vi.fn();
+    renderWithSession(<ThrowProbe onSettled={onSettled} />);
+    await act(async () => {
+      fireEvent.click(screen.getByText('write-or-throw'));
+    });
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    expect(onSettled.mock.calls[0]![0]).toEqual({ value: undefined, error: undefined });
+    expect(screen.getByRole('status').textContent).not.toBe('');
   });
 
   it('writeOrThrow on a read-only 503 shows the hold toast and resolves undefined', async () => {

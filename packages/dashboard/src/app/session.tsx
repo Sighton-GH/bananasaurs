@@ -34,11 +34,16 @@ export interface Session {
    * `not-eligible` refusal) use this; everything else uses `write`. Any
    * other failure is handled itself (toast shown; `onLoggedOut()` called
    * for an expired session) and resolves `undefined`.
+   *
+   * A caller that renders one more status inline (Try-it's 429
+   * `rate-limited`) lists it in `rethrowStatuses`; every other caller keeps
+   * the default and is unaffected.
    */
   writeOrThrow<T>(
     url: string,
     body: unknown,
     method?: 'POST' | 'PUT' | 'PATCH' | 'DELETE',
+    rethrowStatuses?: readonly number[],
   ): Promise<T | undefined>;
   /**
    * Moves this session to another reachable guild without logging out
@@ -140,6 +145,7 @@ function SessionInner({
       url: string,
       body: unknown,
       method: 'POST' | 'PUT' | 'PATCH' | 'DELETE' = 'POST',
+      rethrowStatuses: readonly number[] = [],
     ): Promise<T | undefined> => {
       try {
         return await apiFetch<T>(url, session.csrfToken, requireReauth, {
@@ -147,7 +153,11 @@ function SessionInner({
           body: JSON.stringify(body),
         });
       } catch (err) {
-        if (err instanceof ApiError && (err.status === 400 || err.status === 409)) throw err;
+        if (
+          err instanceof ApiError &&
+          (err.status === 400 || err.status === 409 || rethrowStatuses.includes(err.status))
+        )
+          throw err;
         if (err instanceof ApiError) {
           handleWriteError(err);
           return undefined;

@@ -1074,10 +1074,14 @@ function BehaviourPreviewPanel({
 function AnswerText({ text }: { readonly text: string }) {
   const parts = text.split('```');
   if (parts.length === 1) return <p className="text-sm whitespace-pre-wrap">{text}</p>;
+  // Only a part whose fence closes is code: an odd part count means every
+  // opened fence closed; an even count leaves the last opened fence
+  // unclosed, so its tail stays plain text instead of a `<pre>`.
+  const closed = parts.length % 2 === 1;
   return (
     <>
       {parts.map((part, index) =>
-        index % 2 === 1 ? (
+        index % 2 === 1 && (closed || index < parts.length - 1) ? (
           <pre
             key={index}
             className="mt-1 overflow-x-auto rounded-sm bg-panel p-2 font-mono text-xs whitespace-pre-wrap"
@@ -1116,6 +1120,8 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
     setBusy(true);
     setError(undefined);
     try {
+      // The 429 rethrows (rather than toasting and resolving `undefined`)
+      // so the rate limit lands in this call's inline error below.
       const result = await session.writeOrThrow<TryItResponse>(
         behaviourTryUrl(behaviourId),
         {
@@ -1123,9 +1129,9 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
           ...(continuing && conversationId !== undefined ? { conversationId } : {}),
         },
         'POST',
+        [429],
       );
-      // `undefined` means the session already toasted the reason — the rate
-      // limit's sentence rides in the response body for exactly this.
+      // `undefined` means the session already toasted the reason.
       if (result === undefined) return;
       setAnswer(result.answer);
       setTraceId(result.traceId);

@@ -599,7 +599,7 @@ describe('AssistantPage: Try it (Task 20)', () => {
     });
   });
 
-  it('reads the rate limit as a friendly sentence', async () => {
+  it('reads the rate limit as an inline error, not only a toast', async () => {
     renderTry({
       status: 429,
       body: {
@@ -611,9 +611,35 @@ describe('AssistantPage: Try it (Task 20)', () => {
       target: { value: 'one too many' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
-    expect(
-      await screen.findByText('You have used your 20 tries for this hour. Try again later.'),
-    ).toBeTruthy();
+    // The 429 must reach this call's inline alert — a toast alone is not enough.
+    const alert = await screen.findByRole('alert');
+    expect(alert.textContent).toContain('You have used your 20 tries for this hour.');
+    expect(screen.queryByRole('link', { name: 'View details' })).toBeNull();
+  });
+
+  it('renders an unclosed code fence as text, not a code block', async () => {
+    renderTry({
+      body: { ...TRY, answer: 'Here is code:\n```js\nconst x = 1;\nno closing fence' },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'show code' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    const section = await screen.findByLabelText('Tried answer');
+    expect(section.querySelector('pre')).toBeNull();
+    expect(section.textContent).toContain('const x = 1;');
+  });
+
+  it('still renders a closed code fence as a code block', async () => {
+    renderTry({
+      body: { ...TRY, answer: 'Here is code:\n```js\nconst x = 1;\n```\ndone' },
+    });
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Try it question' }), {
+      target: { value: 'show code' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Try it' }));
+    const section = await screen.findByLabelText('Tried answer');
+    expect(section.querySelector('pre')?.textContent).toContain('const x = 1;');
   });
 });
 
