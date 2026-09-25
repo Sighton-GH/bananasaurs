@@ -446,3 +446,22 @@ describe('save() also writes the keys + chain tables it now reads (Task 6b fix r
     expect(key?.apiKeyEnc).not.toContain('must-never-leak');
   });
 });
+
+describe('githubToken() (Task 17)', () => {
+  it('opens the sealed GitHub token, undefined once cleared or unreadable', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    expect(store.githubToken()).toBeUndefined();
+    store.saveGithubToken('ghp_open-me');
+    expect(store.githubToken()).toBe('ghp_open-me');
+    expect(JSON.stringify(store.status())).not.toContain('ghp_open-me');
+    store.saveGithubToken(null);
+    expect(store.githubToken()).toBeUndefined();
+  });
+
+  it('returns undefined under the wrong master secret instead of throwing', () => {
+    const store = createProviderConfigStore(t.scopes.instance(), 'a'.repeat(32));
+    store.saveGithubToken('ghp_open-me');
+    const wrongKey = createProviderConfigStore(t.scopes.instance(), 'b'.repeat(32));
+    expect(wrongKey.githubToken()).toBeUndefined();
+  });
+});

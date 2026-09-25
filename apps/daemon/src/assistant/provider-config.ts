@@ -101,6 +101,13 @@ export interface ProviderConfigStore {
   /** Replaces the whole chain; empty clears it. */
   saveChain(rows: readonly { keyId: string; model: string }[], now: number): void;
   saveGithubToken(token: string | null): void;
+  /**
+   * Task 17: the sealed GitHub token, opened for the GitHub client. The
+   * plaintext is returned to the caller for the `Authorization` header only —
+   * never logged, never in status()/audit/errors. `undefined` while none is
+   * saved or while it does not open under this daemon's secret.
+   */
+  githubToken(): string | undefined;
 }
 /**
  * The provider as `.env` configures it: what runs when nothing is saved in
@@ -382,6 +389,12 @@ export const createProviderConfigStore = (
     },
     saveGithubToken(token) {
       assistantProvidersRepo.setGithubTokenEnc(instance, token === null ? null : seal(key, token));
+    },
+    githubToken() {
+      const sealed = assistantProvidersRepo.getGithubTokenEnc(instance);
+      if (sealed === null) return undefined;
+      const opened = open(key, sealed);
+      return opened === undefined || opened === '' ? undefined : opened;
     },
   };
 };
