@@ -2,6 +2,8 @@ import type {
   AssistantBehaviour,
   AssistantSkill,
   ClubResource,
+  JSONSchema,
+  JSONSchemaProperty,
   ReminderStatus,
 } from '@bananasaurs/core';
 
@@ -242,24 +244,12 @@ export interface SkillCommand {
   readonly name: string;
   readonly options: readonly SkillCommandOption[];
 }
-/** One property of a tool's JSON Schema parameters object. */
-export interface SkillToolParameter {
-  readonly type: string;
-  readonly description?: string;
-  readonly minLength?: number;
-  readonly maxLength?: number;
-  readonly minimum?: number;
-  readonly maximum?: number;
-  readonly enum?: readonly (string | number)[];
-}
+/** One property of a tool's parameters, as the daemon declares it. */
+export type SkillToolParameter = JSONSchemaProperty;
 export interface SkillTool {
   readonly name: string;
   readonly description: string;
-  readonly parameters: {
-    readonly type: 'object';
-    readonly properties: Readonly<Record<string, SkillToolParameter>>;
-    readonly required?: readonly string[];
-  };
+  readonly parameters: JSONSchema;
   readonly rounds: 'first' | 'all';
   readonly outputLimit: string;
 }

@@ -680,7 +680,7 @@ export function AssistantPage() {
         purpose="Behaviours decide who answers, how they sound, and who may ask."
         actions={
           <>
-            <Link href="/assistant/activity">
+            <Link href="/assistant/history">
               <Button>Assistant history</Button>
             </Link>
             <Button variant="primary" onClick={() => setCreating(true)} disabled={creating}>
