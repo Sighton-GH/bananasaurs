@@ -142,6 +142,19 @@ describe('runToolLoop direct answers', () => {
     await runToolLoop(baseInput([entry({ provider })]));
     expect(calls[0]?.maxOutputTokens).toBe(2_048);
   });
+
+  it('refuses tool calls returned by a provider without the tools capability', async () => {
+    const { provider } = scripted(
+      [toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]), textAnswer('Answered.')],
+      ['text'],
+    );
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name));
+    const result = await runToolLoop(baseInput([entry({ provider })], { tools: loopTools(run) }));
+    expect(run).not.toHaveBeenCalled();
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Answered.');
+    expect(result.toolCalls).toMatchObject([{ ok: false, refused: 'tools not offered' }]);
+  });
 });
 
 describe('runToolLoop follow-up rounds (ADR 0071)', () => {

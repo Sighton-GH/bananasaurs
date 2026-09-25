@@ -160,6 +160,10 @@ export const runToolLoop = async (input: {
   });
 
   const modelIds = input.chain.map((entry) => entry.model);
+  const earliestQuota = (): { readonly resetAt: number | undefined } => {
+    const known = dailyResets.filter((r): r is number => r !== undefined);
+    return { resetAt: known.length > 0 ? Math.min(...known) : undefined };
+  };
 
   for (const entry of input.chain) {
     const started = input.now();
@@ -233,12 +237,21 @@ export const runToolLoop = async (input: {
       entryMs: ms,
     });
     if (answered !== undefined) {
-      const { outcome, ...rest } = answered;
-      return { ...rest, outcome, attempts, toolCalls, usage: usageOf(), sources, web };
+      return {
+        ...answered,
+        attempts,
+        toolCalls,
+        usage: usageOf(),
+        sources,
+        web,
+        // A guard failure after an earlier daily cap still carries the cap.
+        ...(answered.outcome === 'failed' && sawDailyCap
+          ? { dailyQuota: earliestQuota() }
+          : {}),
+      };
     }
   }
 
-  const knownResets = dailyResets.filter((r): r is number => r !== undefined);
   return {
     text: '',
     outcome: 'failed',
@@ -248,13 +261,7 @@ export const runToolLoop = async (input: {
     guard: { removed: [] },
     sources,
     web,
-    ...(sawDailyCap
-      ? {
-          dailyQuota: {
-            resetAt: knownResets.length > 0 ? Math.min(...knownResets) : undefined,
-          },
-        }
-      : {}),
+    ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
   };
 };
 
@@ -313,6 +320,10 @@ const runEntry = async (deps: {
     ...deps.history,
     { role: 'user', text: deps.userText },
   ];
+  // Tools run only when they were offered: a provider without the `tools`
+  // capability answers text-only, and any tool calls it returns anyway are
+  // refused rather than executed.
+  const toolsRunnable = deps.tools !== undefined && provider.capabilities.has('tools');
   let callsUsed = 0;
   let resultChars = 0;
 
@@ -382,6 +393,11 @@ const runEntry = async (deps: {
       const traceBase = { round, name: call.name, args: call.args ?? {} };
       const startedCall = deps.now();
       const callMs = (): number => Math.max(0, deps.now() - startedCall);
+      if (!toolsRunnable) {
+        deps.toolCalls.push({ ...traceBase, ok: false, refused: 'tools not offered', ms: callMs(), preview: '' });
+        toolMessages.push(refusedMessage(call, 'tools not offered'));
+        continue;
+      }
       if (callsUsed >= limits.totalCalls) {
         deps.toolCalls.push({ ...traceBase, ok: false, refused: 'tool call budget used', ms: callMs(), preview: '' });
         toolMessages.push(refusedMessage(call, 'tool call budget used'));
