@@ -39,6 +39,8 @@ export const resourceMetaSchema = z
     autoDiscovered: z.boolean().optional(),
     includeForks: z.boolean().optional(),
     includeArchived: z.boolean().optional(),
+    /** True when GitHub reported the repository as private (ADR 0083). Absent means public. */
+    private: z.boolean().optional(),
   })
   .strict();
 

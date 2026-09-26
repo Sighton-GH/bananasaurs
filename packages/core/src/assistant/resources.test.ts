@@ -30,6 +30,14 @@ describe('parseResourceMeta (Task 17)', () => {
     expect(parseResourceMeta(JSON.stringify({ owner: 'acme' }))).toEqual({ owner: 'acme' });
   });
 
+  it('keeps private: true for a private repository', () => {
+    expect(parseResourceMeta('{"owner":"acme","repo":"w","private":true}')).toEqual({
+      owner: 'acme',
+      repo: 'w',
+      private: true,
+    });
+  });
+
   it('reads null and undefined as undefined', () => {
     expect(parseResourceMeta(null)).toBeUndefined();
     expect(parseResourceMeta(undefined)).toBeUndefined();
