@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { RULE_KINDS, snowflakeIdSchema, validateRuleConfig } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
@@ -103,7 +104,7 @@ export const registerAutomodRoutes = (
 
   app.post('/api/automod/rules', (request, reply) => {
     const parsed = createRuleBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     // Creating a rule changes what the bot does to real messages, so it
     // needs a fresh password (PR-45) — the same treatment disabling the
@@ -152,7 +153,7 @@ export const registerAutomodRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = setConfigBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const before = ports.findAutomodRuleDetail(request.params.ruleId);
@@ -191,7 +192,7 @@ export const registerAutomodRoutes = (
       return reply.status(400).send({ error: 'bad-request' });
     }
     const parsed = setModeBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     // A mode change starts or stops what the bot does to real messages, so
     // it needs a fresh password (PR-45).
@@ -249,7 +250,7 @@ export const registerAutomodRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = exemptionBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.addAutomodExemption({
@@ -283,7 +284,7 @@ export const registerAutomodRoutes = (
         return reply.status(400).send({ error: 'bad-request' });
       }
       const parsedType = exemptTypeParamSchema.safeParse(request.params.exemptType);
-      if (!parsedType.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsedType.success) return badRequest(reply, parsedType.error);
       if (!snowflakeIdSchema.safeParse(request.params.exemptId).success) {
         return reply.status(400).send({ error: 'bad-request' });
       }
@@ -341,7 +342,7 @@ export const registerAutomodRoutes = (
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
     const parsed = reviewQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const limit = parsed.data.limit ?? 50;
 
     const ports = deps.portsFor(session.scope);
@@ -387,7 +388,7 @@ export const registerAutomodRoutes = (
         return reply.status(400).send({ error: 'bad-request' });
       }
       const parsed = verdictBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       // A verdict is evidence, and revisable — no fresh password (PR-54).
       const session = guard.require(request, reply);
@@ -427,7 +428,7 @@ export const registerAutomodRoutes = (
         return reply.status(400).send({ error: 'bad-request' });
       }
       const parsed = suppressBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       // A suppression strictly narrows the rule, so no fresh password (PR-54)
       // and no change to the sign-off columns — the route writes nothing to

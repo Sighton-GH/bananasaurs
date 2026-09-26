@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { snowflakeIdSchema, LOG_EVENT_KINDS } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
@@ -38,7 +39,7 @@ export const registerWriteRoutes = (
 ): void => {
   app.post('/api/killswitch', (request, reply) => {
     const parsed = killswitchBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     // The asymmetry is ADR 0029, not an oversight: the control that stops the
     // bot must never be harder to reach than the one that starts it, so only
@@ -70,7 +71,7 @@ export const registerWriteRoutes = (
     if (!requireCapability(session, 'logging.manage', reply)) return reply;
 
     const parsed = logRouteBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const before = ports.listRoutes().find((r) => r.eventKind === parsed.data.eventKind);

@@ -14,6 +14,7 @@ import {
 } from '@bananasaurs/core';
 import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 import type { SessionContext } from '../auth.js';
@@ -231,7 +232,7 @@ export const registerAssistantRoutes = (
     if (deps.assistantProviderConfig === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = providerConfig.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const before = deps.assistantProviderConfig.status();
     if (
       parsed.data.costClass !== undefined &&
@@ -295,7 +296,7 @@ export const registerAssistantRoutes = (
       })
       .strict()
       .safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     try {
       const models = await store.listModels(parsed.data.provider, parsed.data.apiKey);
       return reply.status(200).send({ models });
@@ -313,7 +314,7 @@ export const registerAssistantRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const parsed = serverCard.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     assistantRepo.putServerCard(session.scope, parsed.data.content, deps.now());
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
@@ -503,7 +504,7 @@ export const registerAssistantRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const parsed = z.object({ channelId: snowflake.nullable() }).strict().safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const previous = assistantRepo.getAssistantSettings(session.scope).logChannelId ?? null;
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
@@ -522,7 +523,7 @@ export const registerAssistantRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const parsed = botTag.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const { behaviourId } = parsed.data;
     const behaviours = assistantRepo.listBehaviours(session.scope);
     if (behaviourId !== null) {
@@ -549,7 +550,7 @@ export const registerAssistantRoutes = (
     const parsed = z
       .object({ roleIds: z.array(snowflake).min(1).max(100) })
       .safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const before: Record<string, readonly string[]> = {};
     for (const grant of assistantRepo.listSkillGrants(session.scope)) {
       if (STARTER_SKILL_IDS.includes(grant.skillId)) {
@@ -650,7 +651,7 @@ export const registerAssistantRoutes = (
           subjectId: snowflake.optional(),
         })
         .safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'memory-details-required' });
+      if (!parsed.success) return badRequest(reply, parsed.error, 'memory-details-required');
       if (!assistantRepo.saveMemoryProposal(session.scope, id, parsed.data, deps.now()))
         return reply.status(409).send({ error: 'invalid-transition' });
     } else if (!assistantRepo.transitionDecision(session.scope, id, 'reviewed', 'saved')) {

@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { ProviderError } from '@bananasaurs/core';
 import { eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import type { SessionContext } from '../auth.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { isInstanceOwner } from './assistant.js';
@@ -172,7 +173,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.addKey === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = keyBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const keyId = configured.addKey(
       {
         provider: parsed.data.provider,
@@ -208,7 +209,7 @@ export const registerAssistantProviderRoutes = (
     const before = configured.keys().find((key) => key.keyId === keyId);
     if (before === undefined) return reply.status(404).send({ error: 'not-found' });
     const parsed = keyPatch.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     if (
       parsed.data.label === undefined &&
       parsed.data.apiKey === undefined &&
@@ -271,7 +272,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.keys === undefined || configured.saveChain === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = chainBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     if (parsed.data.entries.length > 6) return reply.status(400).send({ error: 'too-many' });
     const known = new Set(configured.keys().map((key) => key.keyId));
     if (parsed.data.entries.some((entry) => !known.has(entry.keyId)))
@@ -316,7 +317,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.chain === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = testBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const entries = configured.chain();
     const entry = entries[parsed.data.position];
     if (entry === undefined) return reply.status(404).send({ error: 'not-found' });
@@ -361,7 +362,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.saveGithubToken === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = githubBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     configured.saveGithubToken(parsed.data.token);
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),

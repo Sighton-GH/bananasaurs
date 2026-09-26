@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { accountRepo, assistantRepo, type GuildScope } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
@@ -75,7 +76,7 @@ export const registerAssistantTryRoutes = (
       })
       .strict()
       .safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const behaviour = assistantRepo.listBehaviours(session.scope).find((item) => item.id === id);
     if (behaviour === undefined) return reply.status(404).send({ error: 'not-found' });
     if (deps.tryAssistant === undefined)

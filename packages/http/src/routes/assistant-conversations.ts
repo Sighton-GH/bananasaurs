@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { assistantRepo, conversationRepo, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
@@ -40,7 +41,7 @@ export const registerAssistantConversationRoutes = (
     if (!requireCapability(session, 'audit.read', reply)) return reply;
 
     const parsed = conversationListQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const sort = parsed.data.sort ?? 'last-activity';
     const order = parsed.data.order ?? 'desc';
     const limit = parsed.data.limit ?? 50;
@@ -178,7 +179,7 @@ export const registerAssistantConversationRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = retentionBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const before = assistantRepo.getConversationRetention(session.scope);
     assistantRepo.setConversationRetention(session.scope, parsed.data.days, deps.now());
     deps.portsFor(session.scope).recordAudit({
