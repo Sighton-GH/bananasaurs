@@ -365,69 +365,64 @@ describe('resolveModelChain', () => {
     // (probed 2026-09-25: advancing fake time never fires it), so this
     // uses a real wait against a fetch stub that never resolves: the only
     // timer in play is the provider's own AbortSignal.timeout.
-    it(
-      'makeProvider with timeoutMs 7000 aborts at 7000 ms, not 30000',
-      async () => {
-        const fetchImpl = vi.fn(
-          (
-            _url: string | URL | Request,
-            init?: { signal?: AbortSignal | null },
-          ): Promise<Response> =>
-            new Promise<Response>((_resolve, reject) => {
-              const signal = init?.signal;
-              if (signal === undefined || signal === null) return;
-              if (signal.aborted) {
-                reject(signal.reason);
-                return;
-              }
-              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
-            }),
+    it('makeProvider with timeoutMs 7000 aborts at 7000 ms, not 30000', async () => {
+      const fetchImpl = vi.fn(
+        (_url: string | URL | Request, init?: { signal?: AbortSignal | null }): Promise<Response> =>
+          new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal;
+            if (signal === undefined || signal === null) return;
+            if (signal.aborted) {
+              reject(signal.reason as Error);
+              return;
+            }
+            signal.addEventListener('abort', () => reject(signal.reason as Error), {
+              once: true,
+            });
+          }),
+      );
+      vi.stubGlobal('fetch', fetchImpl);
+      try {
+        const started = Date.now();
+        const custom = makeProvider('openrouter', 'k', 'free', { timeoutMs: 7000 });
+        const pendingDefault = makeProvider('openrouter', 'k', 'free').generateText({
+          model: 'm',
+          messages: [{ role: 'user', text: 'hi' }],
+        });
+        // Attached now so the 30 s abort later cannot surface as an
+        // unhandled rejection after this test has finished.
+        void pendingDefault.then(
+          () => undefined,
+          () => undefined,
         );
-        vi.stubGlobal('fetch', fetchImpl);
-        try {
-          const started = Date.now();
-          const custom = makeProvider('openrouter', 'k', 'free', { timeoutMs: 7000 });
-          const pendingDefault = makeProvider('openrouter', 'k', 'free').generateText({
-            model: 'm',
-            messages: [{ role: 'user', text: 'hi' }],
-          });
-          // Attached now so the 30 s abort later cannot surface as an
-          // unhandled rejection after this test has finished.
-          void pendingDefault.then(
+        const err = await custom
+          .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
+          .then(
             () => undefined,
-            () => undefined,
+            (e: unknown) => e,
           );
-          const err = await custom
-            .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
-            .then(
-              () => undefined,
-              (e: unknown) => e,
-            );
-          const elapsed = Date.now() - started;
-          expect(err).toBeInstanceOf(ProviderError);
-          expect((err as ProviderError).kind).toBe('timeout');
-          // 7000, not 30000 (and not something shorter): well under the
-          // default with a generous lower bound for slow CI.
-          expect(elapsed).toBeGreaterThanOrEqual(6500);
-          expect(elapsed).toBeLessThan(15000);
-          // The default-timeout provider is still waiting on the same stub.
-          let defaultSettled = false;
-          void pendingDefault.then(
-            () => {
-              defaultSettled = true;
-            },
-            () => {
-              defaultSettled = true;
-            },
-          );
-          await Promise.resolve();
-          expect(defaultSettled).toBe(false);
-          expect(fetchImpl).toHaveBeenCalled();
-        } finally {
-          vi.unstubAllGlobals();
-        }
-      },
-      20000,
-    );
+        const elapsed = Date.now() - started;
+        expect(err).toBeInstanceOf(ProviderError);
+        expect((err as ProviderError).kind).toBe('timeout');
+        // 7000, not 30000 (and not something shorter): well under the
+        // default with a generous lower bound for slow CI.
+        expect(elapsed).toBeGreaterThanOrEqual(6500);
+        expect(elapsed).toBeLessThan(15000);
+        // The default-timeout provider is still waiting on the same stub.
+        let defaultSettled = false;
+        void pendingDefault.then(
+          () => {
+            defaultSettled = true;
+          },
+          () => {
+            defaultSettled = true;
+          },
+        );
+        await Promise.resolve();
+        expect(defaultSettled).toBe(false);
+        expect(fetchImpl).toHaveBeenCalled();
+      } finally {
+        vi.unstubAllGlobals();
+      }
+    }, 20000);
   });
 });

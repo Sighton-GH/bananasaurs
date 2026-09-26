@@ -1477,7 +1477,7 @@ describe('Task 7: loop limits from the AI tuning settings', () => {
   afterEach(() => t.close());
 
   it('passes loopLimits through to the provider request', async () => {
-    const seen: { maxOutputTokens?: number }[] = [];
+    const seen: { readonly maxOutputTokens?: number | undefined }[] = [];
     const provider: TextProvider = {
       id: 'fake',
       capabilities: new Set(['text']),

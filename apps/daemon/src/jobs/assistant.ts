@@ -576,11 +576,7 @@ export const assistantInvokeHandler = (deps: {
           await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
           return;
         }
-        if (
-          err instanceof ProviderError &&
-          err.retryable &&
-          context.attempts < delays.length + 1
-        ) {
+        if (err instanceof ProviderError && err.retryable && context.attempts < delays.length + 1) {
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
@@ -590,10 +586,7 @@ export const assistantInvokeHandler = (deps: {
             }),
             'assistant invocation hit a retryable provider error; job will retry',
           );
-          throw new RetryAfterError(
-            err.message,
-            delays[context.attempts - 1] ?? delays.at(-1)!,
-          );
+          throw new RetryAfterError(err.message, delays[context.attempts - 1] ?? delays.at(-1)!);
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
