@@ -26,9 +26,7 @@ export class ChainFailedError extends ProviderError {
  * The code falls back to the fixed reason, then the outcome — never provider
  * text.
  */
-export const summarizeAttempts: (
-  attempts: AssistantTrace['attempts'],
-) => string = (attempts) =>
+export const summarizeAttempts: (attempts: AssistantTrace['attempts']) => string = (attempts) =>
   attempts
     .filter((attempt) => attempt.outcome !== 'ok')
     .map(

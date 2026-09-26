@@ -22,9 +22,7 @@ describe('summarizeAttempts', () => {
           ms: 7,
         },
       ]),
-    ).toBe(
-      'openrouter/m-a: provider-connect-timeout; gemini/m-b: provider-rate-limit',
-    );
+    ).toBe('openrouter/m-a: provider-connect-timeout; gemini/m-b: provider-rate-limit');
   });
 
   it('skips ok attempts and falls back to reason then outcome', () => {

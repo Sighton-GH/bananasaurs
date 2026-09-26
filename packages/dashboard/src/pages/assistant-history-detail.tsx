@@ -175,9 +175,7 @@ export function AssistantHistoryDetailPage() {
                           (r.code === 'local-rpm-limit' || r.code === 'local-rpd-limit') &&
                           r.availableAt !== undefined
                         ) {
-                          parts.push(
-                            `frees up ${new Date(r.availableAt).toLocaleString('en-CA')}`,
-                          );
+                          parts.push(`frees up ${new Date(r.availableAt).toLocaleString('en-CA')}`);
                         }
                         return (
                           <div className="grid gap-1 text-sm">

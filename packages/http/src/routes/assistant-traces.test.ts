@@ -245,7 +245,14 @@ describe('assistant trace routes', () => {
       t.scopes.forGuild(GUILD),
       trace({
         attempts: [
-          { provider: 'gemini', model: 'm', outcome: 'error', reason: 'auth', ms: 5, code: 'provider-auth' },
+          {
+            provider: 'gemini',
+            model: 'm',
+            outcome: 'error',
+            reason: 'auth',
+            ms: 5,
+            code: 'provider-auth',
+          },
         ],
       }),
     );

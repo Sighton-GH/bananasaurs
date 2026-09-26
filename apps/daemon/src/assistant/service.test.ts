@@ -1802,8 +1802,7 @@ describe('Task 10 (b): busy chain throws ChainFailedError', () => {
 
   it('two connect-timeout entries throw ChainFailedError naming both', async () => {
     const { ChainFailedError } = await import('./chain-failed-error.js');
-    let t: MigratedTestDatabase;
-    t = openMigratedTestDatabase();
+    const t: MigratedTestDatabase = openMigratedTestDatabase();
     try {
       guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
       assistantProvidersRepo.addKey(t.scopes.instance(), {

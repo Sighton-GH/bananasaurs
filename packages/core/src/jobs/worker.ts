@@ -170,7 +170,9 @@ export class JobWorker {
       await handler.run(payload, context);
     } catch (err) {
       const code =
-        typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string'
+        typeof err === 'object' &&
+        err !== null &&
+        typeof (err as { code?: unknown }).code === 'string'
           ? (err as { code: string }).code
           : undefined;
       return this.#fail(
