@@ -996,4 +996,31 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       mock.mock.calls.filter((c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT'),
     ).toHaveLength(0);
   });
+
+  // `abc` is not used here: the RPM input is type="number", so jsdom drops
+  // non-numeric text to an empty value (which means "no limit" and would send).
+  it.each(['1.5', '-3', '1e2'])('refuses a %s limit before sending', async (value) => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    fireEvent.change(inputOf(screen.getByLabelText('RPM limit for row 1')), {
+      target: { value },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    expect(
+      await screen.findByText(
+        'Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.',
+      ),
+    ).toBeTruthy();
+    expect(
+      mock.mock.calls.filter((c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT'),
+    ).toHaveLength(0);
+  });
 });
