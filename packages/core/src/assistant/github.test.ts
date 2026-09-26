@@ -1,5 +1,18 @@
 import { describe, expect, it } from 'vitest';
-import { parseGitHubUrl, rawGitHubUrl, selectRepoFiles } from './github.js';
+import { isGithubWebHost, parseGitHubUrl, rawGitHubUrl, selectRepoFiles } from './github.js';
+
+describe('isGithubWebHost', () => {
+  it('is true for github.com and case-insensitive www.github.com', () => {
+    expect(isGithubWebHost('github.com')).toBe(true);
+    expect(isGithubWebHost('WWW.GitHub.com')).toBe(true);
+  });
+
+  it('is false for raw hosts, gists and other sites', () => {
+    expect(isGithubWebHost('raw.githubusercontent.com')).toBe(false);
+    expect(isGithubWebHost('gist.github.com')).toBe(false);
+    expect(isGithubWebHost('example.com')).toBe(false);
+  });
+});
 
 describe('parseGitHubUrl', () => {
   it('parses a bare org/user URL as kind org', () => {
