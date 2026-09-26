@@ -723,6 +723,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  // Task 7: captured once for the closures below, so neither needs a
+  // non-null assertion after its explicit undefined check.
+  const settings = deps.instanceSettings;
   const assistantService = createAssistantService(
     scope,
     instance,
@@ -756,16 +759,13 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     deps.quotaLedger,
     // Task 7: the live tool-loop limits from the AI tuning settings. Absent
     // means the loop's own defaults, which equal today's constants.
-    deps.instanceSettings === undefined
+    settings === undefined
       ? undefined
-      : () => {
-          const s = deps.instanceSettings!;
-          return {
-            rounds: s.get('assistant.maxToolRounds'),
-            totalCalls: s.get('assistant.maxToolCalls'),
-            maxOutputTokens: s.get('assistant.maxOutputTokens'),
-          };
-        },
+      : () => ({
+          rounds: settings.get('assistant.maxToolRounds'),
+          totalCalls: settings.get('assistant.maxToolCalls'),
+          maxOutputTokens: settings.get('assistant.maxOutputTokens'),
+        }),
   );
   const { interactionTokenSealer } = deps;
 
@@ -837,9 +837,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         now,
         // Task 7: the live retry delays from the AI tuning settings. Absent
         // means today's 10 s / 30 s / 90 s defaults.
-        ...(deps.instanceSettings === undefined
+        ...(settings === undefined
           ? {}
-          : { retryDelaysMs: () => deps.instanceSettings!.get('assistant.retryDelaysMs') }),
+          : { retryDelaysMs: () => settings.get('assistant.retryDelaysMs') }),
         // Task 14: every answer joins a conversation (ADR 0072), posts as
         // Discord replies in staged parts, shows typing and writes a trace.
         conversations: { scope, botUserId, botDisplayName: client.user?.username ?? 'bananasaurs' },
