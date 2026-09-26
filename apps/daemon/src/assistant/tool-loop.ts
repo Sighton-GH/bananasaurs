@@ -56,6 +56,15 @@ export interface LoopResult {
    */
   readonly dailyQuota?: { readonly resetAt: number | undefined };
   /**
+   * Present when every attempt was skipped for a local per-entry limit: the
+   * earliest free-up time. The caller answers the local-limit reply at once
+   * with no retry (ADR 0081).
+   */
+  readonly localLimit?: {
+    readonly availableAt: number;
+    readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+  };
+  /**
    * The last attempt's original provider error, when any entry failed with
    * one. The service re-throws it so a non-guard failure keeps its kind
    * (e.g. a non-daily `quota` error) instead of becoming `invalid-request`.
@@ -104,6 +113,30 @@ const isBusy = (err: unknown): boolean =>
 type Attempt = AssistantTrace['attempts'][number];
 type TraceToolCall = AssistantTrace['toolCalls'][number];
 
+type LocalLimitCode = 'local-rpm-limit' | 'local-rpd-limit';
+
+type ReserveCall = (
+  entry: ChainEntry,
+) =>
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: LocalLimitCode; readonly availableAt: number };
+
+const skippedLocalLimitAttempt = (
+  entry: ChainEntry,
+  code: LocalLimitCode,
+  availableAt: number,
+  ms: number,
+): Attempt => ({
+  provider: entry.providerId,
+  model: entry.model,
+  keyLabel: entry.keyLabel,
+  outcome: 'skipped',
+  reason: code,
+  code,
+  availableAt,
+  ms,
+});
+
 /*
  * Bounded tool loop over the ordered model chain (ADRs 0071, 0075):
  * 1. For each chain entry in order: no provider means attempt `skipped`.
@@ -130,6 +163,7 @@ export const runToolLoop = async (input: {
   readonly tools?: LoopTools | undefined;
   readonly limits?: Partial<LoopLimits> | undefined;
   readonly quotaLedger?: QuotaLedger | undefined;
+  readonly reserveCall?: ReserveCall | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -178,6 +212,28 @@ export const runToolLoop = async (input: {
   const earliestQuota = (): { readonly resetAt: number | undefined } => {
     const known = dailyResets.filter((r): r is number => r !== undefined);
     return { resetAt: known.length > 0 ? Math.min(...known) : undefined };
+  };
+  /**
+   * ADR 0081: when every attempt was skipped for a local per-entry limit,
+   * the earliest free-up time and its code — so the caller answers at once
+   * instead of retrying.
+   */
+  const localLimitOf = (list: readonly Attempt[]): LoopResult['localLimit'] => {
+    if (list.length === 0) return undefined;
+    if (!list.every((attempt) => attempt.outcome === 'skipped')) return undefined;
+    const limited = list.filter(
+      (
+        attempt,
+      ): attempt is Attempt & {
+        code: 'local-rpm-limit' | 'local-rpd-limit';
+        availableAt: number;
+      } =>
+        (attempt.code === 'local-rpm-limit' || attempt.code === 'local-rpd-limit') &&
+        typeof attempt.availableAt === 'number',
+    );
+    if (limited.length === 0) return undefined;
+    const earliest = limited.reduce((a, b) => (a.availableAt <= b.availableAt ? a : b));
+    return { availableAt: earliest.availableAt, code: earliest.code };
   };
 
   for (const entry of input.chain) {
@@ -252,6 +308,7 @@ export const runToolLoop = async (input: {
         cappedKeys.set(entry.keyId, resetAt);
         input.quotaLedger?.markExhausted(entry.keyId, resetAt ?? nextUtcMidnight(input.now()));
       },
+      reserveCall: input.reserveCall,
       now: input.now,
       entryMs: ms,
     });
@@ -270,6 +327,7 @@ export const runToolLoop = async (input: {
     }
   }
 
+  const localLimit = localLimitOf(attempts);
   return {
     text: '',
     outcome: 'failed',
@@ -281,6 +339,7 @@ export const runToolLoop = async (input: {
     web,
     ...(lastError === undefined ? {} : { lastError }),
     ...(sawDailyCap ? { dailyQuota: earliestQuota() } : {}),
+    ...(localLimit === undefined ? {} : { localLimit }),
   };
 };
 
@@ -332,6 +391,7 @@ const runEntry = async (deps: {
   readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: () => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
+  readonly reserveCall?: ReserveCall | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
 }): Promise<EntrySuccess | undefined> => {
@@ -384,6 +444,13 @@ const runEntry = async (deps: {
     extra: readonly GenerationMessage[] = [],
     offerTools = true,
   ): Promise<GenerateTextResponse | undefined> => {
+    const reserved = deps.reserveCall?.(entry);
+    if (reserved !== undefined && !reserved.ok) {
+      deps.attempts.push(
+        skippedLocalLimitAttempt(entry, reserved.code, reserved.availableAt, deps.entryMs()),
+      );
+      return undefined;
+    }
     const declarations = offerTools ? declarationsFor(deps.tools, provider, round) : [];
     const request: GenerateTextRequest = {
       model: entry.model,
@@ -552,6 +619,7 @@ const finishEntry = async (deps: {
     readonly attempts: Attempt[];
     readonly entryMs: () => number;
     readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
+    readonly reserveCall?: ReserveCall | undefined;
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
@@ -597,44 +665,51 @@ const finishEntry = async (deps: {
   }
   // Empty after stripping tool-call text: one retry with no declarations and
   // the same answer-now instruction, then the fixed failure text.
-  try {
-    const retry = await deps.provider.generateText({
-      model: deps.entry.model,
-      systemInstruction: outer.systemInstruction,
-      messages: [...deps.messages, { role: 'user', text: ANSWER_INSTRUCTION }],
-      maxOutputTokens: outer.limits.maxOutputTokens,
-      thinkingBudget: outer.limits.answerThinking,
-    });
-    outer.recordUsage(retry.usage);
-    const second = guardAnswer({
-      text: retry.text,
-      protectedText: outer.protectedText,
-      modelIds: outer.modelIds,
-    });
-    if (second.ok) {
-      okAttempt();
-      return {
-        outcome: 'answered',
-        text: second.text,
-        model: retry.model,
-        provider: deps.entry.providerId,
-        ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
-        guard: { removed: [...guarded.removed, ...second.removed] },
-      };
+  const reserved = outer.reserveCall?.(deps.entry);
+  if (reserved !== undefined && !reserved.ok) {
+    outer.attempts.push(
+      skippedLocalLimitAttempt(deps.entry, reserved.code, reserved.availableAt, outer.entryMs()),
+    );
+  } else {
+    try {
+      const retry = await deps.provider.generateText({
+        model: deps.entry.model,
+        systemInstruction: outer.systemInstruction,
+        messages: [...deps.messages, { role: 'user', text: ANSWER_INSTRUCTION }],
+        maxOutputTokens: outer.limits.maxOutputTokens,
+        thinkingBudget: outer.limits.answerThinking,
+      });
+      outer.recordUsage(retry.usage);
+      const second = guardAnswer({
+        text: retry.text,
+        protectedText: outer.protectedText,
+        modelIds: outer.modelIds,
+      });
+      if (second.ok) {
+        okAttempt();
+        return {
+          outcome: 'answered',
+          text: second.text,
+          model: retry.model,
+          provider: deps.entry.providerId,
+          ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
+          guard: { removed: [...guarded.removed, ...second.removed] },
+        };
+      }
+      if (second.reason === 'prompt-leak') {
+        okAttempt();
+        return {
+          outcome: 'answered',
+          text: PROMPT_LEAK_TEXT,
+          model: retry.model,
+          provider: deps.entry.providerId,
+          ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
+          guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
+        };
+      }
+    } catch {
+      // A failed retry is still a failed answer, not a chain error.
     }
-    if (second.reason === 'prompt-leak') {
-      okAttempt();
-      return {
-        outcome: 'answered',
-        text: PROMPT_LEAK_TEXT,
-        model: retry.model,
-        provider: deps.entry.providerId,
-        ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
-        guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
-      };
-    }
-  } catch {
-    // A failed retry is still a failed answer, not a chain error.
   }
   outer.attempts.push({
     provider: deps.entry.providerId,

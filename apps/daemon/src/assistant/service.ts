@@ -5,6 +5,8 @@ import {
   compileAssistantContext,
   estimateTokens,
   JOB_KINDS,
+  nextProviderDayStart,
+  providerDayStart,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
@@ -27,6 +29,7 @@ import {
   conversationRepo,
   eligibilityRepo,
   jobRepo,
+  modelCallsRepo,
   resourceCacheRepo,
   traceRepo,
   type GuildScope,
@@ -41,7 +44,8 @@ import type {
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
 import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
-import { type ChainEntry, type ProviderId } from './model-chain.js';
+import { ENV_KEY_ID, type ChainEntry, type ProviderId } from './model-chain.js';
+import { LocalLimitError, localLimitReply } from './local-limit.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
@@ -228,6 +232,8 @@ export const createAssistantService = (
         provider: wrapped,
         skip: undefined,
         mayTrain: false,
+        rpmLimit: null,
+        rpdLimit: null,
       },
     ];
   };
@@ -695,6 +701,8 @@ export const createAssistantService = (
           usage: failed.usage,
           guard: failed.guard,
         });
+        if (failed.localLimit !== undefined)
+          throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code);
         if (failed.dailyQuota !== undefined) {
           throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
             quotaScope: 'daily-free',
@@ -783,6 +791,31 @@ export const createAssistantService = (
       // Task 14: the job-built conversation history travels ahead of the
       // current user text. Absent (or empty) means a history-free request.
       const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      // ADR 0081: every provider call is reserved against its chain entry's
+      // owner-set RPM/RPD limits first; a refused entry is skipped without
+      // being called. The `.env` seed has no stored key, so it is never
+      // limited and never recorded.
+      const reserveCall = (entry: ChainEntry) => {
+        if (entry.keyId === ENV_KEY_ID) return { ok: true } as const;
+        const t = now();
+        const r = modelCallsRepo.reserveModelCall(instance, {
+          keyId: entry.keyId,
+          model: entry.model,
+          guildId: scope.guildId,
+          now: t,
+          rpmLimit: entry.rpmLimit,
+          rpdLimit: entry.rpdLimit,
+          dayStart: providerDayStart(entry.providerId, t),
+          nextDayStart: nextProviderDayStart(entry.providerId, t),
+        });
+        return r.ok
+          ? r
+          : ({
+              ok: false,
+              code: r.limit === 'rpm' ? 'local-rpm-limit' : 'local-rpd-limit',
+              availableAt: r.availableAt,
+            } as const);
+      };
       const loop = await runToolLoop({
         chain: chainEntries,
         systemInstruction:
@@ -815,6 +848,7 @@ export const createAssistantService = (
         },
         limits: loopLimits(),
         quotaLedger: ledger,
+        reserveCall,
         now,
       });
       // The loop records exactly one attempt per entry, in chain order, so
@@ -1085,7 +1119,12 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         if (!result.ok) outcome = 'refused';
       } catch (err) {
         outcome = 'failed';
-        if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
+        if (err instanceof LocalLimitError) {
+          result = {
+            ok: false,
+            content: localLimitReply(err.availableAt, now(), config.BANANASAURS_TIME_ZONE),
+          };
+        } else if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
           result = { ok: false, content: dailyQuotaReply(err.resetAt, now()) };
         } else if (err instanceof ProviderError && err.retryable) {
           result = { ok: false, content: BUSY_REPLY };

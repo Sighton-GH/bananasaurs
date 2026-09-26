@@ -841,6 +841,8 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         ...(settings === undefined
           ? {}
           : { retryDelaysMs: () => settings.get('assistant.retryDelaysMs') }),
+        // ADR 0081: the member-facing clock zone for the local-limit reply.
+        timeZone: () => config.BANANASAURS_TIME_ZONE,
         // Task 14: every answer joins a conversation (ADR 0072), posts as
         // Discord replies in staged parts, shows typing and writes a trace.
         conversations: { scope, botUserId, botDisplayName: client.user?.username ?? 'bananasaurs' },

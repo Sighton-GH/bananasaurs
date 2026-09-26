@@ -50,6 +50,8 @@ const entry = (over: Partial<ChainEntry> & { provider: ChainEntry['provider'] })
   keyId: 'key_a',
   keyLabel: 'Key A',
   mayTrain: false,
+  rpmLimit: null,
+  rpdLimit: null,
   ...over,
 });
 
@@ -593,6 +595,169 @@ describe('runToolLoop chain walking', () => {
     expect(calls).toHaveLength(5);
     for (const request of calls.slice(0, 4)) expect(request.thinkingBudget).toBe(512);
     expect(calls[4]?.thinkingBudget).toBe(1_024);
+  });
+});
+
+describe('runToolLoop local per-entry limits (ADR 0081)', () => {
+  type Reserve = NonNullable<Parameters<typeof runToolLoop>[0]['reserveCall']>;
+  const refused = (
+    code: 'local-rpm-limit' | 'local-rpd-limit',
+    availableAt: number,
+  ): Extract<ReturnType<Reserve>, { ok: false }> => ({ ok: false, code, availableAt });
+  const allowed: Extract<ReturnType<Reserve>, { ok: true }> = { ok: true };
+
+  it('a refused entry is skipped without being called and the next entry answers', async () => {
+    const skipped = scripted([textAnswer('must not run')]);
+    const answering = scripted([textAnswer('From entry 2.', 'model-b')]);
+    const reserveCall: Reserve = (e) =>
+      e.model === 'model-a' ? refused('local-rpm-limit', 5000) : allowed;
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: skipped.provider, model: 'model-a' }),
+          entry({ provider: answering.provider, model: 'model-b' }),
+        ],
+        { reserveCall },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('From entry 2.');
+    expect(result.attempts).toMatchObject([
+      {
+        model: 'model-a',
+        outcome: 'skipped',
+        reason: 'local-rpm-limit',
+        code: 'local-rpm-limit',
+        availableAt: 5000,
+      },
+      { model: 'model-b', outcome: 'ok' },
+    ]);
+    expect(skipped.calls).toHaveLength(0);
+    expect(answering.calls).toHaveLength(1);
+    expect(result.localLimit).toBeUndefined();
+  });
+
+  it('every entry refused fails with the earliest free-up time and calls no provider', async () => {
+    const first = scripted([textAnswer('must not run')]);
+    const second = scripted([textAnswer('must not run')]);
+    const reserveCall: Reserve = (e) =>
+      e.model === 'model-a' ? refused('local-rpm-limit', 5000) : refused('local-rpd-limit', 3000);
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: first.provider, model: 'model-a' }),
+          entry({ provider: second.provider, model: 'model-b' }),
+        ],
+        { reserveCall },
+      ),
+    );
+    expect(result.outcome).toBe('failed');
+    expect(result.localLimit).toEqual({ availableAt: 3000, code: 'local-rpd-limit' });
+    expect(first.calls).toHaveLength(0);
+    expect(second.calls).toHaveLength(0);
+  });
+
+  it('a refusal plus a retryable outage carries no local limit', async () => {
+    const skipped = scripted([textAnswer('must not run')]);
+    const failing = scripted([new ProviderError('outage', 'HTTP 503', true)]);
+    const reserveCall: Reserve = (e) =>
+      e.model === 'model-a' ? refused('local-rpm-limit', 5000) : allowed;
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: skipped.provider, model: 'model-a' }),
+          entry({ provider: failing.provider, model: 'model-b' }),
+        ],
+        { reserveCall },
+      ),
+    );
+    expect(result.outcome).toBe('failed');
+    expect(result.attempts).toMatchObject([
+      { model: 'model-a', outcome: 'skipped', code: 'local-rpm-limit' },
+      { model: 'model-b', outcome: 'busy' },
+    ]);
+    expect(result.localLimit).toBeUndefined();
+  });
+
+  it('a refusal on round 2 ends the entry and the next entry restarts from round 1', async () => {
+    const first = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      textAnswer('must not run'),
+    ]);
+    const second = scripted([textAnswer('Fresh answer.')]);
+    let calls = 0;
+    const refusing: Reserve = (e) => {
+      if (e.model !== 'model-a') return allowed;
+      calls += 1;
+      return calls === 1 ? allowed : refused('local-rpm-limit', 5000);
+    };
+    const run = vi.fn(async (call: ToolCall) => okResult(call.name));
+    const result = await runToolLoop(
+      baseInput(
+        [
+          entry({ provider: first.provider, model: 'model-a' }),
+          entry({ provider: second.provider, model: 'model-b' }),
+        ],
+        { tools: loopTools(run), reserveCall: refusing },
+      ),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Fresh answer.');
+    expect(first.calls).toHaveLength(1);
+    expect(second.calls).toHaveLength(1);
+    expect(second.calls[0]?.messages).toEqual([{ role: 'user', text: 'When is the meeting?' }]);
+  });
+
+  it('reserveCall runs once per provider call, including tool rounds', async () => {
+    const { provider, calls } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      textAnswer('Done.'),
+    ]);
+    const reserveCall = vi.fn((_e: ChainEntry) => allowed);
+    const result = await runToolLoop(
+      baseInput([entry({ provider })], {
+        tools: loopTools(async (call) => okResult(call.name)),
+        reserveCall,
+      }),
+    );
+    expect(result.outcome).toBe('answered');
+    expect(calls).toHaveLength(2);
+    expect(reserveCall).toHaveBeenCalledTimes(2);
+  });
+
+  it('empty-answer retry is reserved: allowed twice calls the provider twice', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider, calls } = scripted([textAnswer(toolShaped), textAnswer('Recovered.')]);
+    const reserveCall = vi.fn((_e: ChainEntry) => allowed);
+    const result = await runToolLoop(baseInput([entry({ provider })], { reserveCall }));
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Recovered.');
+    expect(calls).toHaveLength(2);
+    expect(reserveCall).toHaveBeenCalledTimes(2);
+  });
+
+  it('empty-answer retry refused for a local limit calls the provider once and fails guarded', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider, calls } = scripted([textAnswer(toolShaped), textAnswer('must not run')]);
+    let n = 0;
+    const reserveCall = vi.fn((_e: ChainEntry): ReturnType<Reserve> => {
+      n += 1;
+      return n === 1 ? allowed : refused('local-rpm-limit', 5000);
+    });
+    const result = await runToolLoop(baseInput([entry({ provider })], { reserveCall }));
+    expect(result.outcome).toBe('failed');
+    expect(result.text).toBe("I couldn't finish that answer — please try again.");
+    expect(calls).toHaveLength(1);
+    expect(reserveCall).toHaveBeenCalledTimes(2);
+    expect(result.attempts).toMatchObject([
+      {
+        outcome: 'skipped',
+        reason: 'local-rpm-limit',
+        code: 'local-rpm-limit',
+        availableAt: 5000,
+      },
+      { outcome: 'error', reason: 'empty-answer' },
+    ]);
   });
 });
 

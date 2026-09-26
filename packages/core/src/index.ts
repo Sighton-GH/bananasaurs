@@ -616,6 +616,11 @@ export {
 } from './providers/openai-compatible.js';
 export { SafeProvider } from './providers/safe-provider.js';
 export {
+  nextProviderDayStart,
+  providerDayStart,
+  providerDayZone,
+} from './providers/provider-day.js';
+export {
   assertSpendAllowed,
   type ProviderCostClass,
   type SpendPolicy,

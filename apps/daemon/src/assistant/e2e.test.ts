@@ -11,6 +11,7 @@ import {
 } from '@bananasaurs/storage/test-support';
 import {
   archiveRepo,
+  assistantProvidersRepo,
   assistantRepo,
   computeDocId,
   guildRepo,
@@ -109,11 +110,25 @@ const provider = () => {
   return { value, generateText };
 };
 
+// ADR 0081: the service reserves every provider call in the ledger, whose
+// `key_id` references a stored key — so the injected test provider
+// (`key_test`) runs on a real stored key instead of a bare id.
+const seedTestProviderKey = (t: MigratedTestDatabase): void => {
+  assistantProvidersRepo.addKey(t.scopes.instance(), {
+    provider: 'gemini',
+    label: 'Test provider',
+    apiKeyEnc: 'sealed-key-test',
+    now: NOW,
+    keyId: 'key_test',
+  });
+};
+
 describe('Release 3 assistant end-to-end sandbox flows', () => {
   let t: MigratedTestDatabase;
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'SFU Racerbot fixture', now: NOW });
+    seedTestProviderKey(t);
   });
   afterEach(() => t.close());
 
@@ -437,6 +452,7 @@ describe('Release 3 review fixes', () => {
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    seedTestProviderKey(t);
     const scope = t.scopes.forGuild(GUILD);
     assistantRepo.putBehaviour(scope, direct, NOW);
     assistantRepo.putSkillGrant(
@@ -684,6 +700,7 @@ describe('first-run owner access', () => {
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    seedTestProviderKey(t);
   });
   afterEach(() => t.close());
   it('lets the owner use an empty caller-role default while refusing other members', async () => {
@@ -791,6 +808,7 @@ describe('tools, shared resources and the archive (ADR 0067)', () => {
     t = openMigratedTestDatabase();
     const scope = t.scopes.forGuild(GUILD);
     guildRepo.upsertGuild(scope, { name: 'fixture', now: NOW });
+    seedTestProviderKey(t);
     assistantRepo.putBehaviour(scope, direct, NOW);
     for (const channelId of [PUBLIC, STAFF])
       archiveRepo.enableChannel(scope, { channelId, attachmentPolicy: 'none', now: NOW });

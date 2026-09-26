@@ -47,7 +47,11 @@ export interface ChainEntry {
   readonly skip?: ChainSkipReason | undefined;
   /** True when the provider's terms do not rule out training on input (warning, not refusal). */
   readonly mayTrain: boolean;
+  readonly rpmLimit: number | null;
+  readonly rpdLimit: number | null;
 }
+
+export const ENV_KEY_ID = 'key_env';
 
 /**
  * Builds one provider behind the spend boundary, exactly as `providerFor`
@@ -79,6 +83,8 @@ interface Candidate {
   readonly keySkip: 'no-key' | 'key-unreadable' | undefined;
   readonly costClass: ProviderCostClass;
   readonly enabled: boolean;
+  readonly rpmLimit: number | null;
+  readonly rpdLimit: number | null;
 }
 
 const envKeyOf = (config: ModelChainConfig, provider: ProviderId): string | undefined =>
@@ -97,12 +103,14 @@ const envCandidates = (config: ModelChainConfig): readonly Candidate[] => {
   return [config.AI_MODEL, ...(config.AI_FALLBACK_MODELS ?? [])].map((model): Candidate => ({
     provider,
     model,
-    keyId: 'key_env',
+    keyId: ENV_KEY_ID,
     keyLabel: 'From .env',
     apiKey: key,
     keySkip: key === undefined ? 'no-key' : undefined,
     costClass,
     enabled: true,
+    rpmLimit: null,
+    rpdLimit: null,
   }));
 };
 
@@ -157,6 +165,8 @@ export const resolveModelChain = (deps: {
           keySkip: 'no-key',
           costClass,
           enabled,
+          rpmLimit: row.rpmLimit,
+          rpdLimit: row.rpdLimit,
         };
       const apiKey = deps.openKey(key.apiKeyEnc);
       return apiKey === undefined
@@ -169,6 +179,8 @@ export const resolveModelChain = (deps: {
             keySkip: 'key-unreadable',
             costClass,
             enabled,
+            rpmLimit: row.rpmLimit,
+            rpdLimit: row.rpdLimit,
           }
         : {
             provider: row.provider,
@@ -179,6 +191,8 @@ export const resolveModelChain = (deps: {
             keySkip: undefined,
             costClass,
             enabled,
+            rpmLimit: row.rpmLimit,
+            rpdLimit: row.rpdLimit,
           };
     });
 
@@ -211,6 +225,8 @@ export const resolveModelChain = (deps: {
         provider: undefined,
         skip: candidate.keySkip,
         mayTrain: false,
+        rpmLimit: candidate.rpmLimit,
+        rpdLimit: candidate.rpdLimit,
       };
     if (!candidate.enabled)
       return {
@@ -221,6 +237,8 @@ export const resolveModelChain = (deps: {
         provider: undefined,
         skip: 'disabled',
         mayTrain: false,
+        rpmLimit: candidate.rpmLimit,
+        rpdLimit: candidate.rpdLimit,
       };
     const row = deps.eligibility(candidate.provider);
     if (row === undefined)
@@ -232,6 +250,8 @@ export const resolveModelChain = (deps: {
         provider: undefined,
         skip: 'unverified',
         mayTrain: false,
+        rpmLimit: candidate.rpmLimit,
+        rpdLimit: candidate.rpdLimit,
       };
     try {
       assertProviderEligible(
@@ -252,6 +272,8 @@ export const resolveModelChain = (deps: {
         provider: undefined,
         skip: 'ineligible',
         mayTrain: false,
+        rpmLimit: candidate.rpmLimit,
+        rpdLimit: candidate.rpdLimit,
       };
     }
     return {
@@ -262,6 +284,8 @@ export const resolveModelChain = (deps: {
       provider: providerFor(candidate, candidate.apiKey as string),
       skip: undefined,
       mayTrain: providerMayTrain({ trainsOnInput: row.trainsOnInput }),
+      rpmLimit: candidate.rpmLimit,
+      rpdLimit: candidate.rpdLimit,
     };
   };
 

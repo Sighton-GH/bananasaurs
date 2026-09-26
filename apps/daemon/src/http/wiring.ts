@@ -409,6 +409,14 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
               (id) => id === row.providerId,
             );
             if (providerId === undefined) continue;
+            // The HTTP-declared row type is lossier than what `chain()` really
+            // returns: real `ChainEntry` rows carry the owner-set RPM/RPD
+            // limits (ADR 0081). Pass them through when present so Try-it
+            // enforces the same limits as the Discord path; structural fakes
+            // stay unlimited.
+            const rowLimits = row as Partial<Pick<ChainEntry, 'rpmLimit' | 'rpdLimit'>>;
+            const rpmLimit = rowLimits.rpmLimit ?? null;
+            const rpdLimit = rowLimits.rpdLimit ?? null;
             if (row.provider === undefined) {
               const skip = (
                 ['no-key', 'key-unreadable', 'disabled', 'ineligible', 'unverified'] as const
@@ -421,6 +429,8 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
                 provider: undefined,
                 ...(skip === undefined ? {} : { skip }),
                 mayTrain: row.mayTrain,
+                rpmLimit,
+                rpdLimit,
               });
               continue;
             }
@@ -432,6 +442,8 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
               keyLabel: row.keyLabel,
               provider: row.provider,
               mayTrain: row.mayTrain,
+              rpmLimit,
+              rpdLimit,
             });
           }
           const service = createAssistantService(
