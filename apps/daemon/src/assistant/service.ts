@@ -5,8 +5,6 @@ import {
   compileAssistantContext,
   estimateTokens,
   JOB_KINDS,
-  nextProviderDayStart,
-  providerDayStart,
   providerMayTrain,
   ProviderError,
   redactEvidenceText,
@@ -29,7 +27,6 @@ import {
   conversationRepo,
   eligibilityRepo,
   jobRepo,
-  modelCallsRepo,
   resourceCacheRepo,
   traceRepo,
   type GuildScope,
@@ -44,8 +41,8 @@ import type {
 } from './commands.js';
 import { braveWebSearch } from './brave-search.js';
 import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
-import { ENV_KEY_ID, type ChainEntry, type ProviderId } from './model-chain.js';
-import { LocalLimitError, localLimitReply } from './local-limit.js';
+import { type ChainEntry, type ProviderId } from './model-chain.js';
+import { LocalLimitError, localLimitReply, reserveEntryCall } from './local-limit.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
 import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
@@ -797,27 +794,8 @@ export const createAssistantService = (
       // owner-set RPM/RPD limits first; a refused entry is skipped without
       // being called. The `.env` seed has no stored key, so it is never
       // limited and never recorded.
-      const reserveCall = (entry: ChainEntry) => {
-        if (entry.keyId === ENV_KEY_ID) return { ok: true } as const;
-        const t = now();
-        const r = modelCallsRepo.reserveModelCall(instance, {
-          keyId: entry.keyId,
-          model: entry.model,
-          guildId: scope.guildId,
-          now: t,
-          rpmLimit: entry.rpmLimit,
-          rpdLimit: entry.rpdLimit,
-          dayStart: providerDayStart(entry.providerId, t),
-          nextDayStart: nextProviderDayStart(entry.providerId, t),
-        });
-        return r.ok
-          ? r
-          : ({
-              ok: false,
-              code: r.limit === 'rpm' ? 'local-rpm-limit' : 'local-rpd-limit',
-              availableAt: r.availableAt,
-            } as const);
-      };
+      const reserveCall = (entry: ChainEntry) =>
+        reserveEntryCall(instance, entry, scope.guildId, now());
       const loop = await runToolLoop({
         chain: chainEntries,
         systemInstruction:
