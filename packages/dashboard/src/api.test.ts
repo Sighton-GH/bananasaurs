@@ -36,9 +36,7 @@ describe('apiFetch write headers', () => {
         ),
       ),
     );
-    const err = await apiFetch('/api/session', 'csrf-test', () =>
-      Promise.resolve(undefined),
-    ).then(
+    const err = await apiFetch('/api/session', 'csrf-test', () => Promise.resolve(undefined)).then(
       () => undefined,
       (caught: unknown) => caught,
     );
@@ -50,13 +48,9 @@ describe('apiFetch write headers', () => {
   it('a rejected fetch becomes an OfflineError, not a raw TypeError', async () => {
     vi.stubGlobal(
       'fetch',
-      vi.fn((_url: string, _init?: RequestInit) =>
-        Promise.reject(new TypeError('fetch failed')),
-      ),
+      vi.fn((_url: string, _init?: RequestInit) => Promise.reject(new TypeError('fetch failed'))),
     );
-    const err = await apiFetch('/api/session', 'csrf-test', () =>
-      Promise.resolve(undefined),
-    ).then(
+    const err = await apiFetch('/api/session', 'csrf-test', () => Promise.resolve(undefined)).then(
       () => undefined,
       (caught: unknown) => caught,
     );

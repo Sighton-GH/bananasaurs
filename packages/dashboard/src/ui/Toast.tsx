@@ -79,9 +79,7 @@ export function ToastProvider({ children }: { readonly children: ReactNode }): R
               </Button>
             </div>
             {t.message !== undefined && <p className="mt-1">{t.message}</p>}
-            {t.detail !== undefined && (
-              <p className="mt-1 text-xs text-ink-muted">{t.detail}</p>
-            )}
+            {t.detail !== undefined && <p className="mt-1 text-xs text-ink-muted">{t.detail}</p>}
           </div>
         ))}
       </div>

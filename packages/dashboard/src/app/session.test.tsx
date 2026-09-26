@@ -385,9 +385,9 @@ describe('SessionProvider', () => {
       fireEvent.click(screen.getByText('write'));
     });
     expect(screen.getByRole('status').textContent).toContain("The owner account can't be changed.");
-    expect(
-      screen.getByText("The owner account can't be changed.").textContent,
-    ).not.toContain('owner-protected');
+    expect(screen.getByText("The owner account can't be changed.").textContent).not.toContain(
+      'owner-protected',
+    );
   });
 
   it('logout posts with the CSRF header and calls onLoggedOut', async () => {
