@@ -996,6 +996,23 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
   });
 
   it('PUT without the limit keys saves null for both', async () => {
+    const store = deps.assistantProviderConfig as unknown as {
+      saveChain: (
+        rows: readonly {
+          keyId: string;
+          model: string;
+          rpmLimit?: number | null;
+          rpdLimit?: number | null;
+        }[],
+        now?: number,
+      ) => void;
+    };
+    const original = store.saveChain.bind(store);
+    let savedRows: { rpmLimit?: number | null; rpdLimit?: number | null }[] = [];
+    store.saveChain = (rows, now) => {
+      savedRows = rows.map((row) => ({ ...row }));
+      original(rows, now);
+    };
     const owner = await signInAs('owner');
     const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
     const saved = await app.inject({
@@ -1005,6 +1022,9 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       payload: { entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash' }] },
     });
     expect(saved.statusCode).toBe(200);
+    expect(savedRows).toHaveLength(1);
+    expect(savedRows[0]?.rpmLimit).toBeNull();
+    expect(savedRows[0]?.rpdLimit).toBeNull();
     const fetched = await app.inject({
       method: 'GET',
       url: '/api/assistant/providers',
