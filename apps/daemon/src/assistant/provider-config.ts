@@ -12,6 +12,7 @@ import {
   type ChainEntry,
   type ProviderId,
 } from './model-chain.js';
+import { entryUsage, reserveEntryCall, type ReserveOutcome } from './local-limit.js';
 import { openWithKey as open, sealWithKey as seal } from '../crypto/seal.js';
 
 /** Same display labels the 0039 migration gave a provider's copied key. */
@@ -100,7 +101,25 @@ export interface ProviderConfigStore {
    */
   chain(): readonly ChainEntry[];
   /** Replaces the whole chain; empty clears it. */
-  saveChain(rows: readonly { keyId: string; model: string }[], now: number): void;
+  saveChain(
+    rows: readonly {
+      keyId: string;
+      model: string;
+      rpmLimit?: number | null;
+      rpdLimit?: number | null;
+    }[],
+    now: number,
+  ): void;
+  /** Live usage for the chain editor; `undefined` for the `.env` seed. */
+  modelUsage(
+    entry: Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'>,
+  ): { readonly lastMinute: number; readonly today: number; readonly availableAt?: number } | undefined;
+  /**
+   * A chain test is a real provider call, so it reserves against the entry's
+   * limits and is recorded with the owner's session guild. Out-of-range
+   * positions reserve nothing.
+   */
+  reserveTestCall(position: number, guildId: string): ReserveOutcome;
   saveGithubToken(token: string | null): void;
   /** Whether the stored key opens under this daemon's secret; false when unknown. */
   isKeyReadable(keyId: string): boolean;
@@ -156,9 +175,10 @@ export const createProviderConfigStore = (
   envBase?: Config,
   geminiModels: (apiKey: string) => Promise<readonly GeminiModelInfo[]> = (apiKey) =>
     listGeminiModels({ apiKey }),
-  options: { readonly providerTimeoutMs?: () => number } = {},
+  options: { readonly providerTimeoutMs?: () => number; readonly now?: () => number } = {},
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
+  const clock = options.now ?? Date.now;
   return {
     status() {
       const storedKeys = assistantProvidersRepo.listKeys(instance);
@@ -395,6 +415,14 @@ export const createProviderConfigStore = (
     },
     saveChain(rows, now) {
       assistantProvidersRepo.setModelChain(instance, rows, now);
+    },
+    modelUsage(entry) {
+      return entryUsage(instance, entry, clock());
+    },
+    reserveTestCall(position, guildId) {
+      const entry = this.chain()[position];
+      if (entry === undefined) return { ok: true };
+      return reserveEntryCall(instance, entry, guildId, clock());
     },
     saveGithubToken(token) {
       assistantProvidersRepo.setGithubTokenEnc(instance, token === null ? null : seal(key, token));
