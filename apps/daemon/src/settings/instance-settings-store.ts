@@ -104,7 +104,11 @@ export const createInstanceSettingsStore = (deps: {
     if (def === undefined) throw new Error(`unknown setting: ${key}`);
     const row = cache.get(key);
     const value = effective(key);
-    const isDefault = row === undefined || value === def.defaultValue;
+    // By value, not by reference: a stored array with the same content as
+    // the default (e.g. the retry delays) is the default, even though the
+    // parsed copy is never the same object as the registry's.
+    const isDefault =
+      row === undefined || JSON.stringify(value) === JSON.stringify(def.defaultValue);
     const secret = def.secret === true;
     return {
       key,

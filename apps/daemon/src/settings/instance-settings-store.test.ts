@@ -49,6 +49,16 @@ describe('instance settings store', () => {
     });
   });
 
+  it('compares isDefault by value, so a stored default reads as default', () => {
+    const store = createInstanceSettingsStore({ instance: t.scopes.instance(), logger });
+    const same = store.set('assistant.retryDelaysMs', [10000, 30000, 90000], 'owner-acct', 1);
+    expect(same.ok).toBe(true);
+    if (same.ok) expect(same.view.isDefault).toBe(true);
+    const different = store.set('assistant.retryDelaysMs', [10000, 30000], 'owner-acct', 2);
+    expect(different.ok).toBe(true);
+    if (different.ok) expect(different.view.isDefault).toBe(false);
+  });
+
   it('rejects an invalid value and leaves the old one', () => {
     const store = createInstanceSettingsStore({ instance: t.scopes.instance(), logger });
     store.set('assistant.maxToolRounds', 6, 'owner-acct', 1);
