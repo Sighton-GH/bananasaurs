@@ -163,4 +163,32 @@ describe('resourceRefreshHandler', () => {
     });
     expect(message).toBe('resource cache: refreshed res-1 -> error (challenge) (reason=manual)');
   });
+
+  it('the GitHub single-resource log carries resourceId and outcome', async () => {
+    const info = vi.fn();
+    const capturing = {
+      info,
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+    const handler = resourceRefreshHandler({
+      scope: SCOPE,
+      listResources: () => [
+        resource({ id: 'gh-1', url: 'https://github.com/acme/widget', kind: 'github-repo' }),
+      ],
+      refresh: { fetcher: { fetch: vi.fn() }, repo: new FakeRepo(), now: () => 1_000 },
+      logger: capturing,
+    });
+
+    await handler.run({ resourceId: 'gh-1', reason: 'manual' }, runCtx);
+
+    // No github deps wired: the GitHub path refreshes as `skipped`.
+    expect(info).toHaveBeenCalledTimes(1);
+    const [fields, message] = info.mock.calls[0] as [Record<string, unknown>, string];
+    expect(fields).toMatchObject({ resourceId: 'gh-1', outcome: 'skipped' });
+    expect(message).toBe('resource cache: refreshed gh-1 -> skipped (reason=manual)');
+  });
 });

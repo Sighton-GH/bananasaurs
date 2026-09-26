@@ -83,7 +83,12 @@ export const resourceRefreshHandler = (deps: {
     if (isGithub(resource)) {
       const outcome = await refreshGithub(resource);
       deps.logger.info(
-        safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.resourceRefresh }),
+        safeLogFields({
+          component: 'jobs',
+          jobKind: JOB_KINDS.resourceRefresh,
+          resourceId: resource.id,
+          outcome,
+        }),
         `resource cache: refreshed ${resource.id} -> ${outcome} (reason=${payload.reason})`,
       );
       return;
