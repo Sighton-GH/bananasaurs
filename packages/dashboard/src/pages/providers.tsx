@@ -188,6 +188,7 @@ function ModelOrderSection({
   const savedByPair = new Map(setup.chain.map((entry) => [`${entry.keyId} ${entry.model}`, entry]));
 
   const save = async (): Promise<void> => {
+    setSaveError(undefined);
     if (rows.some((row) => row.model.trim() === '' || row.keyId === '')) {
       setError('Name a model and pick a key for every row.');
       return;
@@ -197,7 +198,6 @@ function ModelOrderSection({
       return;
     }
     setError(undefined);
-    setSaveError(undefined);
     setSaving(true);
     try {
       const result = await session.writeOrThrow<{ ok: boolean; count: number }>(

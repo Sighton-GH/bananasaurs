@@ -1,9 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { nextProviderDayStart, providerDayStart } from '@bananasaurs/core';
-import {
-  modelCallsRepo,
-  type InstanceScope,
-} from '@bananasaurs/storage';
+import { modelCallsRepo, type InstanceScope } from '@bananasaurs/storage';
 import { assistantProvidersRepo } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,

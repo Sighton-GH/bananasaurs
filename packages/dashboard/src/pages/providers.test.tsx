@@ -838,7 +838,8 @@ describe('ProvidersPage row test refusal', () => {
   });
 });
 
-describe('Task 10 (h): AI setup Test renders a classified failure', () => {  it('shows the failure title and hint', async () => {
+describe('Task 10 (h): AI setup Test renders a classified failure', () => {
+  it('shows the failure title and hint', async () => {
     stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
@@ -992,9 +993,7 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       ),
     ).toBeTruthy();
     expect(
-      mock.mock.calls.filter(
-        (c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT',
-      ),
+      mock.mock.calls.filter((c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT'),
     ).toHaveLength(0);
   });
 });

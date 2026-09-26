@@ -35,10 +35,7 @@ export type ReserveOutcome =
   | { readonly ok: true }
   | { readonly ok: false; readonly code: LocalLimitCode; readonly availableAt: number };
 
-type EntryLimits = Pick<
-  ChainEntry,
-  'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'
->;
+type EntryLimits = Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'>;
 
 /** One provider call against an entry's RPM/RPD limits (ADR 0081). The `.env` seed is never limited or recorded. */
 export const reserveEntryCall = (

@@ -932,7 +932,9 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       method: 'PUT',
       url: '/api/assistant/model-chain',
       headers,
-      payload: { entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: 15, rpdLimit: 1000 }] },
+      payload: {
+        entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: 15, rpdLimit: 1000 }],
+      },
     });
     expect(saved.statusCode).toBe(200);
     const fetched = await app.inject({
@@ -942,12 +944,21 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
     });
     expect(fetched.statusCode).toBe(200);
     expect(
-      fetched.json<{ chain: { keyId: string; model: string; rpmLimit: number | null; rpdLimit: number | null }[] }>()
-        .chain[0],
+      fetched.json<{
+        chain: { keyId: string; model: string; rpmLimit: number | null; rpdLimit: number | null }[];
+      }>().chain[0],
     ).toMatchObject({ keyId: 'key_a', rpmLimit: 15, rpdLimit: 1000 });
     const audit = auditRows().find((row) => row.action === 'assistant_provider.chain_saved');
     expect(audit).toBeTruthy();
-    expect(JSON.parse(audit!.after as string).entries[0]).toMatchObject({
+    const after = JSON.parse(audit!.after as string) as {
+      entries: {
+        keyId: string;
+        model: string;
+        rpmLimit: number | null;
+        rpdLimit: number | null;
+      }[];
+    };
+    expect(after.entries[0]).toMatchObject({
       keyId: 'key_a',
       model: 'gemini-2.5-flash',
       rpmLimit: 15,
@@ -965,7 +976,7 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       payload: { entries: [{ keyId: 'key_a', model: 'm', rpmLimit: 0 }] },
     });
     expect(zero.statusCode).toBe(400);
-    expect(zero.json().fields).toContainEqual({
+    expect(zero.json<{ fields: { path: string; problem: string }[] }>().fields).toContainEqual({
       path: 'entries.0.rpmLimit',
       problem: expect.anything(),
     });
@@ -976,7 +987,9 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       payload: { entries: [{ keyId: 'key_a', model: 'm', rpmLimit: 1.5 }] },
     });
     expect(fractional.statusCode).toBe(400);
-    expect(fractional.json().fields).toContainEqual({
+    expect(
+      fractional.json<{ fields: { path: string; problem: string }[] }>().fields,
+    ).toContainEqual({
       path: 'entries.0.rpmLimit',
       problem: expect.anything(),
     });
@@ -1017,9 +1030,11 @@ describe('per-entry RPM/RPD limits (ADR 0081)', () => {
       url: '/api/assistant/providers',
       headers: { cookie: owner.cookie },
     });
-    expect(
-      withUsage.json<{ chain: { usage?: unknown }[] }>().chain[0]?.usage,
-    ).toEqual({ lastMinute: 3, today: 40, availableAt: 123 });
+    expect(withUsage.json<{ chain: { usage?: unknown }[] }>().chain[0]?.usage).toEqual({
+      lastMinute: 3,
+      today: 40,
+      availableAt: 123,
+    });
 
     deps = {
       ...deps,

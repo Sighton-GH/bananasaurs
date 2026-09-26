@@ -113,7 +113,9 @@ export interface ProviderConfigStore {
   /** Live usage for the chain editor; `undefined` for the `.env` seed. */
   modelUsage(
     entry: Pick<ChainEntry, 'keyId' | 'model' | 'providerId' | 'rpmLimit' | 'rpdLimit'>,
-  ): { readonly lastMinute: number; readonly today: number; readonly availableAt?: number } | undefined;
+  ):
+    | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
+    | undefined;
   /**
    * A chain test is a real provider call, so it reserves against the entry's
    * limits and is recorded with the owner's session guild. Out-of-range
