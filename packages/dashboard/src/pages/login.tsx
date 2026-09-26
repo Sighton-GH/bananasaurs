@@ -1,7 +1,10 @@
 import { useState } from 'react';
+import { ApiError, type ApiErrorBody } from '../api.js';
+import { fieldError } from '../api/describe-error.js';
 import { Attribution } from '../ui/Attribution.js';
 import { Brand } from '../ui/Brand.js';
 import { Button } from '../ui/Button.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 
@@ -132,7 +135,7 @@ export function BootstrapForm({
 }) {
   const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -147,8 +150,12 @@ export function BootstrapForm({
         body: JSON.stringify({ token, username, password }),
       });
       if (!response.ok) {
-        const body = (await response.json()) as { error: string; issues?: string[] };
-        setError(body.issues?.join('; ') ?? body.error);
+        // The server answers `{ error, title, message, hint, fields?,
+        // requestId }` (0078): keep the whole answer so the notice below
+        // renders its title, hint and request id, and each field its
+        // problem — never the bare code.
+        const body = (await response.json()) as ApiErrorBody;
+        setError(new ApiError(response.status, body));
         return;
       }
       onSignedIn();
@@ -157,11 +164,17 @@ export function BootstrapForm({
     }
   };
 
+  const usernameProblem = fieldError(error, 'username');
+  const passwordProblem = fieldError(error, 'password');
+
   return (
     <Card title="First-run setup">
       <p className="mt-1 text-sm text-ink-muted">Create the owner account. This link works once.</p>
       <form onSubmit={(e) => void submit(e)} className="mt-4 grid gap-3">
-        <Field label="Username">
+        <Field
+          label="Username"
+          {...(usernameProblem === undefined ? {} : { error: usernameProblem })}
+        >
           <Input
             value={username}
             onChange={(e) => setUsername(e.target.value)}
@@ -172,7 +185,7 @@ export function BootstrapForm({
         <Field
           label="Password"
           hint="At least 12 characters"
-          {...(error !== undefined ? { error } : {})}
+          {...(passwordProblem === undefined ? {} : { error: passwordProblem })}
         >
           <Input
             type="password"
@@ -181,6 +194,7 @@ export function BootstrapForm({
             autoComplete="new-password"
           />
         </Field>
+        {error !== undefined && <ErrorNotice error={error} />}
         <div>
           <Button type="submit" variant="primary" busy={busy}>
             Create owner account

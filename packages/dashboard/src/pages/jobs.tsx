@@ -1,5 +1,6 @@
 import { useCallback, useState } from 'react';
 import { ApiError } from '../api.js';
+import { describeError } from '../api/describe-error.js';
 import type { JobRow } from '../api/ops.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -11,6 +12,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 
@@ -26,7 +28,7 @@ const retryRefusalText = (err: ApiError): string => {
   if (body.error === 'dedupe-blocked') {
     return `A pending job already covers this work (job #${String(body.blockingJobId ?? '?')}). The retry was not queued.`;
   }
-  return err.message;
+  return describeError(err).message;
 };
 
 /**
@@ -46,7 +48,7 @@ export function JobsPage() {
   const jobs = useResource('the jobs', load);
 
   const [selected, setSelected] = useState<JobRow | undefined>(undefined);
-  const [detailError, setDetailError] = useState<string | undefined>(undefined);
+  const [detailError, setDetailError] = useState<unknown>(undefined);
   const [retrying, setRetrying] = useState<JobRow | undefined>(undefined);
   const [refusal, setRefusal] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -56,8 +58,9 @@ export function JobsPage() {
     try {
       setSelected(await session.read<JobRow>(`/api/jobs/${String(job.jobId)}`));
     } catch (err) {
+      // A load failure renders the server's answer, not the bare message.
       setSelected(undefined);
-      setDetailError(err instanceof Error ? err.message : String(err));
+      setDetailError(err);
     }
   };
 
@@ -178,9 +181,9 @@ export function JobsPage() {
         )}
       </DataState>
       {detailError !== undefined && (
-        <p role="alert" className="mt-3 text-sm text-danger">
-          Could not load the job: {detailError}
-        </p>
+        <div className="mt-3">
+          <ErrorNotice error={detailError} />
+        </div>
       )}
       {selected !== undefined && (
         <div className="mt-4 max-w-2xl">

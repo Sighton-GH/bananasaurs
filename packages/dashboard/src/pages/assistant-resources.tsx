@@ -1,6 +1,5 @@
 import { useCallback, useState } from 'react';
 import type { ClubResource } from '@bananasaurs/core';
-import { ApiError } from '../api.js';
 import {
   ASSISTANT_URL,
   GITHUB_IMPORT_URL,
@@ -16,11 +15,13 @@ import {
 } from '../api/assistant.js';
 import { useSession, type Session } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { fieldError } from '../api/describe-error.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -70,18 +71,6 @@ function StatusPill({ status }: { readonly status: ResourceCacheStatus }) {
   return <Badge tone="danger">Needs attention</Badge>;
 }
 
-/** Maps a GitHub preview/import refusal code to its plain Canadian-English sentence. */
-function githubErrorText(code: string): string {
-  if (code === 'not-github') return 'That is not a GitHub repository or organisation URL.';
-  if (code === 'not-found') return 'GitHub could not find that repository or organisation.';
-  if (code === 'rate-limited')
-    return 'GitHub rate limit reached. Add a token on the AI setup page, or try again later.';
-  return 'GitHub could not complete that. Check the URL and try again.';
-}
-
-const githubErrorOf = (err: unknown): string | undefined =>
-  err instanceof ApiError ? err.body.error : undefined;
-
 /**
  * "Add from GitHub" (Task 17): paste a repo or organisation URL, preview
  * what would be imported, pick files or repositories, add. The preview comes
@@ -100,7 +89,7 @@ function GithubPanel({
   const toast = useToast();
   const [url, setUrl] = useState('');
   const [preview, setPreview] = useState<GithubPreview | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [previewBusy, setPreviewBusy] = useState(false);
   const [importBusy, setImportBusy] = useState(false);
   const [checkedFiles, setCheckedFiles] = useState<readonly string[] | undefined>(undefined);
@@ -118,18 +107,13 @@ function GithubPanel({
     setFileFilter('');
     try {
       const result = await session.writeOrThrow<GithubPreview>(GITHUB_PREVIEW_URL, { url }, 'POST');
-      if (result === undefined) {
-        setError('Preview failed. Check the URL and try again.');
-        return;
-      }
+      // `undefined` means the session already toasted the reason.
+      if (result === undefined) return;
       setPreview(result);
       if (result.files !== undefined) setCheckedFiles(result.files);
       if (result.repos !== undefined) setCheckedRepos(result.repos.map((r) => r.name));
     } catch (err) {
-      const code = githubErrorOf(err);
-      setError(
-        code === undefined ? 'Preview failed. Check the URL and try again.' : githubErrorText(code),
-      );
+      setError(err);
     } finally {
       setPreviewBusy(false);
     }
@@ -144,10 +128,8 @@ function GithubPanel({
         body,
         'POST',
       );
-      if (result === undefined) {
-        setError('Import failed. Check the URL and try again.');
-        return;
-      }
+      // `undefined` means the session already toasted the reason.
+      if (result === undefined) return;
       toast({
         tone: 'ok',
         title: 'GitHub import added',
@@ -156,10 +138,7 @@ function GithubPanel({
       onSaved();
       onClose();
     } catch (err) {
-      const code = githubErrorOf(err);
-      setError(
-        code === undefined ? 'Import failed. Check the URL and try again.' : githubErrorText(code),
-      );
+      setError(err);
     } finally {
       setImportBusy(false);
     }
@@ -181,6 +160,7 @@ function GithubPanel({
   );
   const shownNames = new Set(shownRepos.map((repo) => repo.name));
   const reposSelection = (checkedRepos ?? []).filter((name) => shownNames.has(name));
+  const urlProblem = fieldError(error, 'url');
 
   return (
     <div className="mt-3 rounded-md border border-line bg-canvas p-3">
@@ -188,7 +168,7 @@ function GithubPanel({
         <Field
           label="GitHub URL"
           hint="A public repository or organisation, for example https://github.com/acme/widget."
-          {...(error !== undefined ? { error } : {})}
+          {...(urlProblem === undefined ? {} : { error: urlProblem })}
         >
           <Input
             value={url}
@@ -205,6 +185,11 @@ function GithubPanel({
         </Button>
         <Button onClick={onClose}>Cancel</Button>
       </div>
+      {error !== undefined && (
+        <div className="mt-3">
+          <ErrorNotice error={error} />
+        </div>
+      )}
       {preview !== undefined && (
         <div className="mt-3">
           {!preview.authenticated && (
@@ -353,7 +338,7 @@ function ResourcesCard({
   const [url, setUrl] = useState('');
   const [kind, setKind] = useState<ClubResource['kind']>('website');
   const [enabled, setEnabled] = useState(true);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | undefined>(undefined);
   const [refreshingAll, setRefreshingAll] = useState(false);
@@ -395,16 +380,10 @@ function ResourcesCard({
         onSaved();
       }
     } catch (err) {
-      const body =
-        err instanceof Error && 'body' in err
-          ? (err as { body?: { error?: unknown } }).body
-          : undefined;
-      const code = typeof body?.error === 'string' ? body.error : '';
-      setError(
-        code === 'unsafe-resource-url'
-          ? 'That address is not allowed: private and local addresses are refused.'
-          : 'The server refused this resource. Check the fields and try again.',
-      );
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer with its field
+      // problems rather than translating the code here.
+      setError(err);
     } finally {
       setBusy(false);
     }
@@ -453,6 +432,10 @@ function ResourcesCard({
     }
   };
 
+  const titleProblem = fieldError(error, 'title');
+  const kindProblem = fieldError(error, 'kind');
+  const urlProblem = fieldError(error, 'url');
+
   return (
     <Card title="Reviewed sources">
       <div className="flex items-start justify-between gap-3">
@@ -488,10 +471,13 @@ function ResourcesCard({
           }}
         >
           <div className="grid gap-3 md:grid-cols-2">
-            <Field label="Title">
+            <Field
+              label="Title"
+              {...(titleProblem === undefined ? {} : { error: titleProblem })}
+            >
               <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
             </Field>
-            <Field label="Kind">
+            <Field label="Kind" {...(kindProblem === undefined ? {} : { error: kindProblem })}>
               <select
                 value={kind}
                 onChange={(e) => setKind(e.target.value as ClubResource['kind'])}
@@ -509,7 +495,7 @@ function ResourcesCard({
             <Field
               label="URL"
               hint="HTTPS addresses only; private and local addresses are refused."
-              {...(error !== undefined ? { error } : {})}
+              {...(urlProblem === undefined ? {} : { error: urlProblem })}
             >
               <Input
                 value={url}
@@ -528,6 +514,11 @@ function ResourcesCard({
             />
             Enabled
           </label>
+          {error !== undefined && (
+            <div className="mt-3">
+              <ErrorNotice error={error} />
+            </div>
+          )}
           <div className="mt-3 flex gap-2">
             <Button variant="primary" busy={busy} type="submit">
               {editing === 'new' ? 'Add resource' : 'Save resource'}

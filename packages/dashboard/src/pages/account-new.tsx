@@ -6,10 +6,12 @@ import {
   type AccountRoleId,
   type Capability,
 } from '@bananasaurs/core';
-import { accountWriteErrorText, type AccountCreateResult } from '../api/ops.js';
+import { type AccountCreateResult } from '../api/ops.js';
+import { fieldError } from '../api/describe-error.js';
 import { useSession } from '../app/session.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { PrintOnceDialog } from '../ui/PrintOnceDialog.js';
@@ -42,7 +44,7 @@ export function AccountNewPage() {
   const [chosenPassword, setChosenPassword] = useState('');
   const [role, setRole] = useState<AccountRoleId>('viewer');
   const [customCaps, setCustomCaps] = useState<readonly Capability[]>([]);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
   const [created, setCreated] = useState<AccountCreateResult | undefined>(undefined);
 
@@ -63,6 +65,10 @@ export function AccountNewPage() {
     username.trim() === ''
       ? undefined
       : `${username} will be able to sign in and ${summaryFor(selected)} on ${guildName}.`;
+  // Client-side validation wins; the server's field problem shows once the
+  // shape is right but the value is refused.
+  const usernameProblem = usernameError ?? fieldError(error, 'username');
+  const passwordProblem = passwordError ?? fieldError(error, 'password');
 
   const create = async (): Promise<void> => {
     if (!canCreate) return;
@@ -80,7 +86,10 @@ export function AccountNewPage() {
         setCreated(result);
       }
     } catch (err) {
-      setError(accountWriteErrorText(err, 'The server could not create this account.'));
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer with its field
+      // problems rather than translating the refusal here.
+      setError(err);
     } finally {
       setBusy(false);
     }
@@ -105,7 +114,7 @@ export function AccountNewPage() {
           <Field
             label="Username"
             hint="Lowercase letters, digits, dot, dash, underscore; 3-64 characters, never a leading dash."
-            {...(usernameError === undefined ? {} : { error: usernameError })}
+            {...(usernameProblem === undefined ? {} : { error: usernameProblem })}
           >
             <Input
               value={username}
@@ -141,7 +150,7 @@ export function AccountNewPage() {
               <Field
                 label="New password"
                 hint="At least 12 characters."
-                {...(passwordError === undefined ? {} : { error: passwordError })}
+                {...(passwordProblem === undefined ? {} : { error: passwordProblem })}
               >
                 <Input
                   type="password"
@@ -172,9 +181,9 @@ export function AccountNewPage() {
             <p className="text-sm">{review}</p>
           )}
           {error !== undefined && (
-            <p role="alert" className="mt-2 text-sm text-danger">
-              {error}
-            </p>
+            <div className="mt-2">
+              <ErrorNotice error={error} />
+            </div>
           )}
           <div className="mt-3">
             <Button

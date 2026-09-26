@@ -16,6 +16,7 @@ import {
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { describeError } from '../api/describe-error.js';
 import { RuleConfigExample } from './automod-config-example.js';
 import { Button } from '../ui/Button.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
@@ -116,15 +117,25 @@ function RuleDetailView({
         const sentence =
           refusal !== undefined
             ? `Enforcement is not available yet: ${refusalReason(refusal)}.`
-            : err.message;
+            : describeError(err).message;
         setModeRefusal(sentence);
         toast({ tone: 'danger', title: 'Mode not applied', message: sentence });
         setModeOpen(false);
-      } else if (err instanceof Error) {
-        toast({ tone: 'danger', title: 'The request failed', message: err.message });
-        setModeOpen(false);
       } else {
-        throw err;
+        const d = describeError(err);
+        toast({
+          tone: 'danger',
+          title: d.title,
+          message: [d.message, d.hint].filter(Boolean).join(' '),
+          detail: [
+            d.code,
+            d.status !== undefined ? `HTTP ${d.status}` : undefined,
+            d.requestId !== undefined ? `request ${d.requestId}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        });
+        setModeOpen(false);
       }
     } finally {
       setModeBusy(false);
@@ -169,11 +180,21 @@ function RuleDetailView({
             : 'The configuration is invalid for this kind.',
         );
         setConfigOpen(false);
-      } else if (err instanceof Error) {
-        toast({ tone: 'danger', title: 'The request failed', message: err.message });
-        setConfigOpen(false);
       } else {
-        throw err;
+        const d = describeError(err);
+        toast({
+          tone: 'danger',
+          title: d.title,
+          message: [d.message, d.hint].filter(Boolean).join(' '),
+          detail: [
+            d.code,
+            d.status !== undefined ? `HTTP ${d.status}` : undefined,
+            d.requestId !== undefined ? `request ${d.requestId}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        });
+        setConfigOpen(false);
       }
     } finally {
       setConfigBusy(false);

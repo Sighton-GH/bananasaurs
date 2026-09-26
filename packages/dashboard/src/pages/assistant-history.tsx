@@ -19,6 +19,7 @@ import { Button } from '../ui/Button.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { MemberRef } from '../ui/MemberRef.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -154,7 +155,7 @@ export function AssistantHistoryPage() {
   const [cursor, setCursor] = useState<number | undefined>(undefined);
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [olderError, setOlderError] = useState<string | undefined>(undefined);
+  const [olderError, setOlderError] = useState<unknown>(undefined);
 
   const load = useCallback(() => {
     return session.read<TraceListResponse>(traceListUrl(applied)).catch((err: unknown) => {
@@ -184,7 +185,8 @@ export function AssistantHistoryPage() {
       setAdvanced(true);
       setCursor(page.nextBefore);
     } catch (err: unknown) {
-      setOlderError(err instanceof Error ? err.message : String(err));
+      // A "load older" failure renders the server's answer, not the message.
+      setOlderError(err);
     } finally {
       setBusy(false);
     }
@@ -335,9 +337,9 @@ export function AssistantHistoryPage() {
               </div>
             )}
             {olderError !== undefined && (
-              <p role="alert" className="mt-2 text-sm text-danger">
-                Could not load older runs: {olderError}
-              </p>
+              <div className="mt-2">
+                <ErrorNotice error={olderError} />
+              </div>
             )}
           </>
         )}

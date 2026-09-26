@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError } from '../api.js';
 import {
   ASSISTANT_PROVIDERS_URL,
   ASSISTANT_URL,
@@ -22,6 +21,7 @@ import {
   type SetupKeyRow,
 } from '../api/assistant.js';
 import type { EligibilityWarning, ProviderReviewResult } from '../api/ops.js';
+import { fieldError } from '../api/describe-error.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -30,6 +30,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { OrderedList } from '../ui/OrderedList.js';
@@ -116,7 +117,7 @@ interface ChainDraft {
 interface TestOutcome {
   readonly ok: boolean;
   readonly reply?: string;
-  readonly error?: string;
+  readonly error?: unknown;
 }
 
 /** Model order: an OrderedList of key + model rows with a status pill and a Test button each. */
@@ -195,10 +196,12 @@ function ModelOrderSection({
       );
       if (result === undefined) return;
       setResults((current) => ({ ...current, [index]: result }));
-    } catch {
+    } catch (err) {
+      // writeOrThrow lets the server's answer through; render it rather
+      // than translating the refusal here.
       setResults((current) => ({
         ...current,
-        [index]: { ok: false, error: 'The test request failed.' },
+        [index]: { ok: false, error: err },
       }));
     } finally {
       setTesting(undefined);
@@ -332,11 +335,9 @@ function ModelOrderSection({
                       <span className="text-sm text-ink-muted">
                         Row {number} answered “{result.reply ?? 'ready'}”.
                       </span>
-                    ) : (
-                      <span role="alert" className="text-sm text-danger">
-                        {result.error ?? 'The test request failed.'}
-                      </span>
-                    ))}
+                    ) : result.error !== undefined ? (
+                      <ErrorNotice error={result.error} compact />
+                    ) : null)}
                 </div>
               </div>
             );
@@ -962,7 +963,7 @@ function TermsForm({
   const [clause, setClause] = useState(initial?.evidenceClause ?? '');
   const [url, setUrl] = useState(initial?.evidenceUrl ?? defaultUrl);
   const [production, setProduction] = useState(initial?.productionUseAllowed ?? false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const submit = async (): Promise<void> => {
@@ -983,19 +984,17 @@ function TermsForm({
       toast({ tone: 'ok', title: 'Terms record saved' });
       onSaved();
     } catch (err: unknown) {
-      if (err instanceof ApiError && err.status === 400) {
-        setError(
-          'Check the quote (at least 10 characters) and that the link starts with https://.',
-        );
-      } else if (err instanceof ApiError) {
-        setError('The terms record was not saved. Try again.');
-      } else {
-        setError('The server refused this record. Check the fields and try again.');
-      }
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer with its field
+      // problems rather than translating the refusal here.
+      setError(err);
     } finally {
       setBusy(false);
     }
   };
+
+  const clauseProblem = fieldError(error, 'evidenceClause');
+  const urlProblem = fieldError(error, 'evidenceUrl');
 
   return (
     <form
@@ -1045,7 +1044,7 @@ function TermsForm({
       <Field
         label="Quote the sentence from the terms that says so"
         hint={`${clause.length}/2000 characters`}
-        {...(error !== undefined ? { error } : {})}
+        {...(clauseProblem === undefined ? {} : { error: clauseProblem })}
       >
         <textarea
           className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
@@ -1054,7 +1053,10 @@ function TermsForm({
           onChange={(e) => setClause(e.target.value)}
         />
       </Field>
-      <Field label="Link to that part of the terms">
+      <Field
+        label="Link to that part of the terms"
+        {...(urlProblem === undefined ? {} : { error: urlProblem })}
+      >
         <Input
           type="url"
           value={url}
@@ -1069,6 +1071,7 @@ function TermsForm({
           onChange={(e) => setProduction(e.target.checked)}
         />
       </div>
+      {error !== undefined && <ErrorNotice error={error} />}
       <div>
         <Button variant="primary" type="submit" busy={busy}>
           Save terms record

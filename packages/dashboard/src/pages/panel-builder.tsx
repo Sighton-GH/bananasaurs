@@ -17,6 +17,7 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ChannelPicker } from '../ui/ChannelPicker.js';
 import { DataTable } from '../ui/DataTable.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 
@@ -159,7 +160,7 @@ export function PanelBuilder({
   const [options, setOptions] = useState<readonly DraftOption[]>([emptyOption()]);
   const [step, setStep] = useState<'edit' | 'review'>('edit');
   const [problems, setProblems] = useState<readonly string[]>([]);
-  const [submitError, setSubmitError] = useState<string | undefined>(undefined);
+  const [submitError, setSubmitError] = useState<unknown>(undefined);
   const [created, setCreated] = useState<CreatedState | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
@@ -344,7 +345,10 @@ export function PanelBuilder({
       }
     } catch (err) {
       // writeOrThrow lets the server's 400/409 answers through; everything
-      // else already became a toast. Render the answer, keep the draft.
+      // else already became a toast. The three branches stay: each names
+      // what the operator must change (the roles, the problems, the taken
+      // name) — more than the catalog text. Anything else renders as the
+      // server's answer below.
       if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
         const body = err.body as { error?: string; problems?: string; roleIds?: string[] };
         if (body.error === 'unmanageable-role') {
@@ -360,10 +364,10 @@ export function PanelBuilder({
               'Go back and pick a new one.',
           );
         } else {
-          setSubmitError('The server could not use what the form produced.');
+          setSubmitError(err);
         }
       } else {
-        setSubmitError(err instanceof Error ? err.message : String(err));
+        setSubmitError(err);
       }
     } finally {
       setBusy(false);
@@ -811,11 +815,14 @@ export function PanelBuilder({
                 : 'posts the message and starts granting and removing roles as members use it.'}
             </HelpTip>
           </p>
-          {submitError !== undefined && (
-            <p role="alert" className="text-sm text-danger">
-              {submitError}
-            </p>
-          )}
+          {submitError !== undefined &&
+            (typeof submitError === 'string' ? (
+              <p role="alert" className="text-sm text-danger">
+                {submitError}
+              </p>
+            ) : (
+              <ErrorNotice error={submitError} />
+            ))}
           <div className="flex gap-2">
             <Button variant="primary" busy={busy} onClick={() => void submit()}>
               Create

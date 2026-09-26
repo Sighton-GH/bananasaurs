@@ -15,6 +15,7 @@ import {
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { describeError } from '../api/describe-error.js';
 import { Badge } from '../ui/Badge.js';
 import { MemberRef } from '../ui/MemberRef.js';
 import { Button } from '../ui/Button.js';
@@ -176,7 +177,19 @@ export function ReviewPage() {
         });
         setSuppressTarget(null);
       } else if (err instanceof Error) {
-        toast({ tone: 'danger', title: 'The request failed', message: err.message });
+        const d = describeError(err);
+        toast({
+          tone: 'danger',
+          title: d.title,
+          message: [d.message, d.hint].filter(Boolean).join(' '),
+          detail: [
+            d.code,
+            d.status !== undefined ? `HTTP ${d.status}` : undefined,
+            d.requestId !== undefined ? `request ${d.requestId}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · '),
+        });
         setSuppressTarget(null);
       } else {
         throw err;

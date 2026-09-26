@@ -92,26 +92,58 @@ describe('LoginForm', () => {
 });
 
 describe('BootstrapForm', () => {
-  it('posts { token, username, password } to /api/bootstrap and joins issues on failure', async () => {
-    const mock = stubFetch([
-      {
-        method: 'POST',
-        url: '/api/bootstrap',
-        status: 400,
-        body: { error: 'bad-request', issues: ['too short', 'too common'] },
-      },
-    ]);
-    renderForm(<BootstrapForm token="tok" onSignedIn={() => undefined} />);
+  it('posts { token, username, password } to /api/bootstrap on success', async () => {
+    const mock = stubFetch([{ method: 'POST', url: '/api/bootstrap', body: { ok: true } }]);
+    const onSignedIn = vi.fn();
+    renderForm(<BootstrapForm token="tok" onSignedIn={onSignedIn} />);
     fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'owner' } });
-    fireEvent.change(screen.getByLabelText('Password'), { target: { value: 'short' } });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'a long enough password' },
+    });
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create owner account' }));
     });
     expect(bodyOf(mock.mock.calls[0]!)).toEqual({
       token: 'tok',
       username: 'owner',
-      password: 'short',
+      password: 'a long enough password',
     });
-    expect(screen.getByRole('alert').textContent).toBe('too short; too common');
+    expect(onSignedIn).toHaveBeenCalledTimes(1);
+  });
+
+  it('renders a 400 bootstrap refusal with the server title, hint, request id and field problem', async () => {
+    stubFetch([
+      {
+        method: 'POST',
+        url: '/api/bootstrap',
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'username', problem: 'too_small' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderForm(<BootstrapForm token="tok" onSignedIn={() => undefined} />);
+    fireEvent.change(screen.getByLabelText('Username'), { target: { value: 'ab' } });
+    fireEvent.change(screen.getByLabelText('Password'), {
+      target: { value: 'a long enough password' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Create owner account' }));
+    });
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
+    const notice = (
+      await screen.findAllByRole('alert')
+    ).find((a) => a.textContent?.includes('The request was not valid'))!;
+    expect(notice.textContent).toContain('Fix the highlighted fields and try again.');
+    expect(notice.textContent).toContain('req-0a1b2c3d');
+    expect(notice.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');
+    expect(screen.getByText('Too small.')).toBeTruthy();
+    // The code survives only inside the `code · HTTP n · request id` meta line.
+    expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
   });
 });

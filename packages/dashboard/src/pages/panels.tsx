@@ -16,7 +16,7 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
-import { PageHeader } from '../ui/PageHeader.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 import { PanelBuilder } from './panel-builder.js';
 
@@ -47,7 +47,7 @@ export function PanelsPage() {
 
   const [building, setBuilding] = useState(false);
   const [selected, setSelected] = useState<PanelDetail | undefined>(undefined);
-  const [detailError, setDetailError] = useState<string | undefined>(undefined);
+  const [detailError, setDetailError] = useState<unknown>(undefined);
   const [publishing, setPublishing] = useState<PanelDetail | undefined>(undefined);
   const [busy, setBusy] = useState(false);
 
@@ -56,8 +56,9 @@ export function PanelsPage() {
     try {
       setSelected(await session.read<PanelDetail>(`/api/panels/${encodeURIComponent(panelId)}`));
     } catch (err) {
+      // A load failure renders the server's answer, not the bare message.
       setSelected(undefined);
-      setDetailError(err instanceof Error ? err.message : String(err));
+      setDetailError(err);
     }
   };
 
@@ -193,9 +194,9 @@ export function PanelsPage() {
         )}
       </DataState>
       {detailError !== undefined && (
-        <p role="alert" className="mt-3 text-sm text-danger">
-          Could not load the panel: {detailError}
-        </p>
+        <div className="mt-3">
+          <ErrorNotice error={detailError} />
+        </div>
       )}
       {selected !== undefined && (
         <div className="mt-4 grid max-w-4xl gap-3">
