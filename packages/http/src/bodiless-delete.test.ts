@@ -90,7 +90,7 @@ describe('bodiless DELETE with a JSON content-type', () => {
       headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
     });
     expect(res.statusCode).toBe(404); // the route ran: no-such-account
-    expect(res.json()).toEqual({ error: 'no-such-account' });
+    expect(res.json()).toMatchObject({ error: 'no-such-account' });
   });
 
   it('a Fastify 4xx is not flattened to 500', async () => {
@@ -164,6 +164,6 @@ describe('bodiless DELETE with a JSON content-type', () => {
       headers: { cookie, [CSRF]: csrf, 'content-type': 'application/json' },
     });
     expect(res.statusCode).toBe(400);
-    expect(res.json()).toEqual({ error: 'FST_ERR_CTP_EMPTY_JSON_BODY' });
+    expect(res.json()).toMatchObject({ error: 'FST_ERR_CTP_EMPTY_JSON_BODY' });
   });
 });

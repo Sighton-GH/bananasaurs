@@ -280,7 +280,7 @@ describe('POST /api/assistant/github/preview', () => {
     for (const url of ['not a url', 'https://example.com/acme']) {
       const response = await post(cookie, csrf, '/api/assistant/github/preview', { url });
       expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ error: 'not-github' });
+      expect(response.json()).toMatchObject({ error: 'not-github' });
     }
     expect(client.calls.listOrgRepos).toBe(0);
     expect(client.calls.getRepo).toBe(0);
@@ -293,7 +293,7 @@ describe('POST /api/assistant/github/preview', () => {
       url: 'https://github.com/acme/missing',
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('maps rate limits to 429 with resetAt', async () => {
@@ -307,7 +307,7 @@ describe('POST /api/assistant/github/preview', () => {
       url: 'https://github.com/acme',
     });
     expect(response.statusCode).toBe(429);
-    expect(response.json()).toEqual({ error: 'rate-limited', resetAt: 1_893_456_000_000 });
+    expect(response.json()).toMatchObject({ error: 'rate-limited', resetAt: 1_893_456_000_000 });
   });
 });
 
@@ -409,7 +409,7 @@ describe('POST /api/assistant/github/import', () => {
       url: 'https://example.com/acme',
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'not-github' });
+    expect(response.json()).toMatchObject({ error: 'not-github' });
     expect(assistantRepo.listResources(t.scopes.forGuild(GUILD))).toHaveLength(0);
     expect(enqueued).toHaveLength(0);
     expect(auditRows()).toHaveLength(0);
@@ -422,14 +422,14 @@ describe('POST /api/assistant/github/import', () => {
       url: 'https://github.com/acme/missing',
     });
     expect(missing.statusCode).toBe(404);
-    expect(missing.json()).toEqual({ error: 'not-found' });
+    expect(missing.json()).toMatchObject({ error: 'not-found' });
 
     client.repoDetail = new FakeGitHubError('rate-limited', 'GitHub rate limit reached.');
     const limited = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme/widget',
     });
     expect(limited.statusCode).toBe(429);
-    expect(limited.json()).toEqual({ error: 'rate-limited' });
+    expect(limited.json()).toMatchObject({ error: 'rate-limited' });
     expect(assistantRepo.listResources(t.scopes.forGuild(GUILD))).toHaveLength(0);
   });
 

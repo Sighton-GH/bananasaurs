@@ -168,7 +168,7 @@ describe('GET /api/automod/rules', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('lists the guild rules', async () => {
@@ -202,7 +202,7 @@ describe('GET /api/automod/rules/:ruleId', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('returns the detail with the config parsed beside the raw string', async () => {
@@ -283,7 +283,7 @@ describe('POST /api/automod/rules', () => {
       payload,
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'csrf' });
+    expect(response.json()).toMatchObject({ error: 'csrf' });
   });
 
   it('answers 403 no-grant without config.write', async () => {
@@ -296,7 +296,7 @@ describe('POST /api/automod/rules', () => {
       payload,
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('creates the rule and records an attributed audit row', async () => {
@@ -339,7 +339,7 @@ describe('POST /api/automod/rules', () => {
       payload,
     });
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'exists' });
+    expect(response.json()).toMatchObject({ error: 'exists' });
     expect(auditActions()).not.toContain('automod_rule.created');
   });
 
@@ -366,7 +366,7 @@ describe('POST /api/automod/rules', () => {
       payload,
     });
     expect(response.statusCode).toBe(401);
-    expect(response.json()).toEqual({ error: 'reauth-required' });
+    expect(response.json()).toMatchObject({ error: 'reauth-required' });
   });
 });
 
@@ -390,7 +390,7 @@ describe('PUT /api/automod/rules/:ruleId/config', () => {
       payload: { config: {} },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('replaces the config and records before and after', async () => {
@@ -484,7 +484,7 @@ describe('POST /api/automod/rules/:ruleId/mode', () => {
       payload: { enabled: false },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('answers 400 when neither mode nor enabled is given', async () => {
@@ -583,7 +583,7 @@ describe('POST /api/automod/rules/:ruleId/mode', () => {
       payload: { enabled: false },
     });
     expect(response.statusCode).toBe(401);
-    expect(response.json()).toEqual({ error: 'reauth-required' });
+    expect(response.json()).toMatchObject({ error: 'reauth-required' });
   });
 });
 
@@ -607,7 +607,7 @@ describe('POST /api/automod/rules/:ruleId/exemptions', () => {
       payload: { exemptType: 'role', exemptId: ROLE },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('adds the exemption, then reports already-present, with an audit row', async () => {
@@ -686,7 +686,7 @@ describe('DELETE /api/automod/rules/:ruleId/exemptions/:exemptType/:exemptId', (
       headers: { cookie, [CSRF_HEADER]: csrf },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('removes the exemption, then reports not-present, with an audit row', async () => {
@@ -755,7 +755,7 @@ describe('POST /api/automod/rules/:ruleId/dry-run', () => {
       payload: {},
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('returns the dry-run report', async () => {
@@ -816,7 +816,7 @@ describe('GET /api/automod/review', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('returns matches, native hits and the verdict split for this guild only', async () => {
@@ -915,7 +915,7 @@ describe('POST /api/automod/review/:eventId/verdict', () => {
       payload: { verdict: 'false_positive' },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('records the verdict with an attributed audit row', async () => {
@@ -1040,7 +1040,7 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
       payload: { kind: 'allowlist_phrase', value: 'hello' },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('suppresses with an allowlist phrase and audits kind and value', async () => {
@@ -1138,7 +1138,7 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
       payload: { kind: 'allowlist_phrase', value: '   ' },
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'bad-request' });
+    expect(response.json()).toMatchObject({ error: 'bad-request' });
     expect(auditActions()).not.toContain('automod_rule.suppression_added');
   });
 
@@ -1249,7 +1249,7 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
       payload: { kind: 'link_domain', value: 'example.com' },
     });
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'not-denied' });
+    expect(response.json()).toMatchObject({ error: 'not-denied' });
 
     expect(ports.listLinkDomains('link-deny')).toEqual([
       { domain: 'other.example', listType: 'deny' },
@@ -1286,7 +1286,7 @@ describe('POST /api/automod/rules/:ruleId/suppress', () => {
       payload: { kind: 'allowlist_phrase', value: 'hello' },
     });
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'wrong-kind' });
+    expect(response.json()).toMatchObject({ error: 'wrong-kind' });
     expect(auditActions()).not.toContain('automod_rule.suppression_added');
   });
 

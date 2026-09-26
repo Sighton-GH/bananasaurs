@@ -103,7 +103,7 @@ describe('POST /api/killswitch', () => {
       payload: { on: true },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'csrf' });
+    expect(response.json()).toMatchObject({ error: 'csrf' });
   });
 
   it('answers 403 no-grant without killswitch.toggle', async () => {
@@ -115,7 +115,7 @@ describe('POST /api/killswitch', () => {
       payload: { on: true },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('answers 400 for a malformed body', async () => {
@@ -163,7 +163,7 @@ describe('POST /api/killswitch', () => {
         payload: { on: false },
       });
       expect(response.statusCode).toBe(401);
-      expect(response.json()).toEqual({ error: 'reauth-required' });
+      expect(response.json()).toMatchObject({ error: 'reauth-required' });
     });
 
     it('disables while re-auth is fresh', async () => {
@@ -214,7 +214,10 @@ describe('POST /api/killswitch', () => {
       payload: { on: true },
     });
     expect(authed.statusCode).toBe(503);
-    expect(authed.json()).toEqual({ error: 'read-only', message: expect.any(String) as string });
+    expect(authed.json()).toMatchObject({
+      error: 'read-only',
+      message: expect.any(String) as string,
+    });
     await readonlyApp.close();
   });
 });

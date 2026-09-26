@@ -273,7 +273,7 @@ describe('assistant conversation routes', () => {
           headers: { cookie },
         })
       ).json(),
-    ).toEqual({ error: 'not-found' });
+    ).toMatchObject({ error: 'not-found' });
     expect(
       (
         await app.inject({

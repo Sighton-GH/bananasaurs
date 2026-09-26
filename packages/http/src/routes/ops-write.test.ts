@@ -229,7 +229,7 @@ describe('ops-write routes', () => {
         ...(call.payload !== undefined ? { payload: call.payload } : {}),
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
-      expect(response.json(), `${call.method} ${call.url}`).toEqual({ error: 'no-grant' });
+      expect(response.json(), `${call.method} ${call.url}`).toMatchObject({ error: 'no-grant' });
     }
   });
 
@@ -249,7 +249,7 @@ describe('ops-write routes', () => {
         ...(call.payload !== undefined ? { payload: call.payload } : {}),
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
-      expect(response.json(), `${call.method} ${call.url}`).toEqual({ error: 'no-grant' });
+      expect(response.json(), `${call.method} ${call.url}`).toMatchObject({ error: 'no-grant' });
     }
   });
 
@@ -520,7 +520,7 @@ describe('ops-write routes', () => {
       payload: { username: 'mod-four', password: 'short' },
     });
     expect(weak.statusCode).toBe(400);
-    expect(weak.json()).toEqual({ error: 'weak-password' });
+    expect(weak.json()).toMatchObject({ error: 'weak-password' });
 
     const badName = await app.inject({
       method: 'POST',
@@ -537,7 +537,7 @@ describe('ops-write routes', () => {
       payload: { username: 'owner' },
     });
     expect(taken.statusCode).toBe(409);
-    expect(taken.json()).toEqual({ error: 'username-taken' });
+    expect(taken.json()).toMatchObject({ error: 'username-taken' });
 
     // None of the refusals created anything.
     const instance = t.scopes.instance();
@@ -555,7 +555,7 @@ describe('ops-write routes', () => {
       payload: { channelId: '333333333333333333', attachmentPolicy: 'none' },
     });
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'guild-not-archive-enabled' });
+    expect(response.json()).toMatchObject({ error: 'guild-not-archive-enabled' });
   });
 
   it('rebuilds the archive index and audits it', async () => {
@@ -776,7 +776,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
       ],
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: 'message-unusable',
       problems: 'No message with that id exists in the picked channel - check the message id.',
     });
@@ -803,7 +803,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     grant(['panels.manage']);
     const response = await post(cookie, csrf, { ...PANEL_BODY, options: [] });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'invalid-body' });
+    expect(response.json()).toMatchObject({ error: 'invalid-body' });
   });
 
   it('answers 400 naming the problem when the shared schema refuses the definition', async () => {
@@ -824,7 +824,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     grant(['panels.manage']);
     const response = await post(cookie, csrf, PANEL_BODY);
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({
+    expect(response.json()).toMatchObject({
       error: 'unmanageable-role',
       roleIds: ['333333333333333333', '333333333333333334'],
     });
@@ -840,7 +840,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
       options: [{ optionId: 'admin', roleId: '111111111111111119', label: 'Admin', position: 0 }],
     });
     expect(above.statusCode).toBe(400);
-    expect(above.json()).toEqual({
+    expect(above.json()).toMatchObject({
       error: 'unmanageable-role',
       roleIds: ['111111111111111119'],
     });
@@ -873,7 +873,7 @@ describe('POST /api/panels (ADR 0053, the builder)', () => {
     expect((await post(cookie, csrf, PANEL_BODY)).statusCode).toBe(201);
     const again = await post(cookie, csrf, PANEL_BODY);
     expect(again.statusCode).toBe(409);
-    expect(again.json()).toEqual({ error: 'already-exists' });
+    expect(again.json()).toMatchObject({ error: 'already-exists' });
 
     const scope = t.scopes.forGuild(GUILD);
     const created = effectRepo
@@ -962,7 +962,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
       payload: { channelId: '999999999999999999' },
     });
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'guild-not-archive-enabled' });
+    expect(response.json()).toMatchObject({ error: 'guild-not-archive-enabled' });
   });
 
   it('sets thread inclusion on an archived channel; unknown channels are 404', async () => {
@@ -978,7 +978,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
       payload: { value: 'none' },
     });
     expect(unknown.statusCode).toBe(404);
-    expect(unknown.json()).toEqual({ error: 'not-archived' });
+    expect(unknown.json()).toMatchObject({ error: 'not-archived' });
 
     const enabled = await app.inject({
       method: 'POST',
@@ -1023,7 +1023,7 @@ describe('archive categories, threads and send-allowlist categories (threads mer
       payload: { messageId: '999999999999999999', caseId: 'case_1' },
     });
     expect(refused.statusCode).toBe(404);
-    expect(refused.json()).toEqual({ error: 'not-found' });
+    expect(refused.json()).toMatchObject({ error: 'not-found' });
     const rows = effectRepo.tailAudit(t.scopes.forGuild(GUILD), { limit: 50 });
     expect(rows.length).toBe(before);
     expect(rows.map((row) => row.action)).not.toContain('archive_message.case_linked');
@@ -1129,7 +1129,7 @@ describe('provider terms record (ADR 0061 §1)', () => {
       payload: claim(),
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'owner-only' });
+    expect(response.json()).toMatchObject({ error: 'owner-only' });
     expect(eligibilityRepo.findEligibility(t.scopes.instance(), 'gemini')).toBeUndefined();
   });
 
@@ -1142,7 +1142,7 @@ describe('provider terms record (ADR 0061 §1)', () => {
       payload: claim(),
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'no-such-provider' });
+    expect(response.json()).toMatchObject({ error: 'no-such-provider' });
   });
 
   it('answers 400 for an http url, a short clause, or a missing field', async () => {

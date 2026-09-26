@@ -12,12 +12,12 @@ import {
   TOOL_CATALOGUE,
   validateResourceUrl,
 } from '@bananasaurs/core';
-import { accountRepo, assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
+import { assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
+import { isInstanceOwner } from '../owner.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
-import type { SessionContext } from '../auth.js';
 import { computeAssistantSetup } from './assistant-setup.js';
 
 /**
@@ -109,7 +109,8 @@ const SKILL_COMMANDS: Readonly<
  * provider's cost statement and terms record are facts about the whole
  * daemon (ADR 0061), and no per-guild grant can confer them.
  */
-export { isInstanceOwner } from '../owner.js';
+/** Re-exported so existing `from './assistant.js'` imports keep working. */
+export { isInstanceOwner };
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
 const behaviour = z.object({

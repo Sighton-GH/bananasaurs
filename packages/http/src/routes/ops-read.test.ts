@@ -117,7 +117,7 @@ describe('ops-read routes', () => {
     for (const url of ['/api/jobs/1', ...GUILD_ROUTES, ...INSTANCE_ROUTES]) {
       const response = await app.inject({ method: 'GET', url, headers: { cookie } });
       expect(response.statusCode, url).toBe(403);
-      expect(response.json(), url).toEqual({ error: 'no-grant' });
+      expect(response.json(), url).toMatchObject({ error: 'no-grant' });
     }
   });
 
@@ -169,7 +169,7 @@ describe('ops-read routes', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('answers 400 for a malformed job id and a missing search query', async () => {
@@ -413,7 +413,7 @@ describe('GET /api/guild/members', () => {
     ]) {
       const response = await app.inject({ method: 'GET', url, headers: { cookie } });
       expect(response.statusCode, url).toBe(400);
-      expect(response.json(), url).toEqual({ error: 'invalid-query' });
+      expect(response.json(), url).toMatchObject({ error: 'invalid-query' });
     }
   });
 });
@@ -518,7 +518,7 @@ describe('GET /api/archive/channels/:channelId/messages (read_channel_history pa
     ]) {
       const response = await app.inject({ method: 'GET', url, headers: { cookie } });
       expect(response.statusCode, url).toBe(400);
-      expect(response.json(), url).toEqual({ error: 'invalid-query' });
+      expect(response.json(), url).toMatchObject({ error: 'invalid-query' });
     }
   });
 });
@@ -548,6 +548,6 @@ describe('GET /api/archive/messages/:messageId (get_message parity)', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 });

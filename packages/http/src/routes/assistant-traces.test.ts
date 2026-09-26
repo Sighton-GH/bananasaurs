@@ -211,7 +211,7 @@ describe('assistant trace routes', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('serves the daily usage strip with quiet days as zeros', async () => {

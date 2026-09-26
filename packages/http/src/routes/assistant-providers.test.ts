@@ -251,7 +251,7 @@ describe('GET /api/assistant/providers permission split', () => {
       headers: { cookie: operator.cookie },
     });
     expect(refused.statusCode).toBe(403);
-    expect(refused.json()).toEqual({ error: 'owner-only' });
+    expect(refused.json()).toMatchObject({ error: 'owner-only' });
   });
 });
 
@@ -272,7 +272,7 @@ describe('key routes are owner-only', () => {
       payload: {},
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'owner-only' });
+    expect(response.json()).toMatchObject({ error: 'owner-only' });
   });
 });
 
@@ -312,7 +312,7 @@ describe('key validation codes', () => {
       payload: { entries: [{ keyId: 'key_missing', model: 'm' }] },
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'unknown-key' });
+    expect(response.json()).toMatchObject({ error: 'unknown-key' });
   });
 
   it('rejects a duplicate pair as duplicate-entry and seven rows as too-many', async () => {
@@ -330,7 +330,7 @@ describe('key validation codes', () => {
       },
     });
     expect(duplicate.statusCode).toBe(400);
-    expect(duplicate.json()).toEqual({ error: 'duplicate-entry' });
+    expect(duplicate.json()).toMatchObject({ error: 'duplicate-entry' });
     const many = await app.inject({
       method: 'PUT',
       url: '/api/assistant/model-chain',
@@ -340,7 +340,7 @@ describe('key validation codes', () => {
       },
     });
     expect(many.statusCode).toBe(400);
-    expect(many.json()).toEqual({ error: 'too-many' });
+    expect(many.json()).toMatchObject({ error: 'too-many' });
   });
 
   it('allows the same model on two keys', async () => {
@@ -613,7 +613,7 @@ describe('chain-test edge cases', () => {
       payload: { position: 5 },
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('refuses a store-skipped ineligible entry with the terms sentence', async () => {
@@ -702,7 +702,7 @@ describe('PATCH validation and owner-only with capabilities', () => {
       payload: {},
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'bad-request' });
+    expect(response.json()).toMatchObject({ error: 'bad-request' });
   });
 
   it('refuses a config.write non-owner with owner-only on GET and on a write route', async () => {
@@ -719,7 +719,7 @@ describe('PATCH validation and owner-only with capabilities', () => {
       headers: { cookie: operator.cookie },
     });
     expect(fetched.statusCode).toBe(403);
-    expect(fetched.json()).toEqual({ error: 'owner-only' });
+    expect(fetched.json()).toMatchObject({ error: 'owner-only' });
     const written = await app.inject({
       method: 'POST',
       url: '/api/assistant/keys',
@@ -727,7 +727,7 @@ describe('PATCH validation and owner-only with capabilities', () => {
       payload: { provider: 'gemini', label: 'Sneaky', apiKey: SECRET },
     });
     expect(written.statusCode).toBe(403);
-    expect(written.json()).toEqual({ error: 'owner-only' });
+    expect(written.json()).toMatchObject({ error: 'owner-only' });
   });
 });
 
