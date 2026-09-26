@@ -11,6 +11,7 @@
  */
 
 import { ApiError } from '../api.js';
+import { describeError } from './describe-error.js';
 
 // --- shared -----------------------------------------------------------------
 
@@ -198,31 +199,21 @@ export interface AccountRevealResult {
 }
 
 /**
- * Dashboard sentences for the account error codes (Canadian English, plain
- * words). Applied to every account write's refusal body, so a raw code never
- * reaches the operator. The session layer's generic toast reads this same map
- * (a real 403 `owner-protected` never reaches a page inline — `writeOrThrow`
- * only re-throws 400/409 — so the toast is the only place it can surface).
+ * The server catalog now owns every account sentence (0078) — the body
+ * already carries the title, message and hint, so a dashboard map would only
+ * go stale. Kept exported for its one remaining caller shape: callers fall
+ * back when this returns `undefined`.
  */
-export const REFUSAL_SENTENCES: Readonly<Record<string, string>> = {
-  'owner-protected': "The owner account can't be changed.",
-  'owner-only': 'Only the owner can do that.',
-  'weak-password': 'Use at least 12 characters.',
-  'username-taken': 'That username is already in use.',
-  'not-revealable': "This password can't be shown. Set a new one instead.",
-};
-
-export const accountErrorText = (error: string): string | undefined => REFUSAL_SENTENCES[error];
+export const accountErrorText = (_error: string): string | undefined => undefined;
 
 /**
  * The `catch` arm every account write shares: a 400/409 refusal body becomes
- * its plain sentence, anything else falls back to `fallback` for a refused
- * body without a known code, or the thrown message when the write never got
- * an answer shape at all.
+ * the server's message, `fallback` covers a refused body without one, and the
+ * thrown message covers a write that never got an answer shape at all.
  */
 export const accountWriteErrorText = (err: unknown, fallback: string): string => {
   if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-    return accountErrorText(err.body.error) ?? fallback;
+    return err.body.message === undefined ? fallback : describeError(err).message;
   }
   return err instanceof Error ? err.message : String(err);
 };

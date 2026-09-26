@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router, Route, useLocation } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
-import { accountErrorText } from '../api/ops.js';
 import { AccountEditPage } from './account-edit.js';
 
 function LocationProbe() {
@@ -266,17 +265,6 @@ describe('AccountEditPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Remove from this server' }));
     const dialog = await screen.findByRole('dialog');
     expect(dialog.textContent).not.toContain('your own account');
-  });
-
-  it('maps account error codes to plain sentences', () => {
-    expect(accountErrorText('owner-protected')).toBe("The owner account can't be changed.");
-    expect(accountErrorText('owner-only')).toBe('Only the owner can do that.');
-    expect(accountErrorText('weak-password')).toBe('Use at least 12 characters.');
-    expect(accountErrorText('username-taken')).toBe('That username is already in use.');
-    expect(accountErrorText('not-revealable')).toBe(
-      "This password can't be shown. Set a new one instead.",
-    );
-    expect(accountErrorText('something-else')).toBeUndefined();
   });
 
   it('maps a not-revealable answer to its sentence', async () => {
