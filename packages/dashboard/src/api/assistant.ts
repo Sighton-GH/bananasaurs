@@ -347,6 +347,11 @@ export interface ResourceFreshnessRow {
   readonly errorExplain?: ResourceErrorExplain;
 }
 export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
+export interface ResourceFreshnessResponse {
+  readonly freshness: readonly ResourceFreshnessRow[];
+  /** Absent when the server cannot tell; the warning shows only on an explicit `false`. */
+  readonly githubTokenConfigured?: boolean;
+}
 export const resourceRefreshUrl = (id: string) =>
   `/api/assistant/resources/${encodeURIComponent(id)}/refresh`;
 export const RESOURCE_REFRESH_ALL_URL = '/api/assistant/resources/refresh';
