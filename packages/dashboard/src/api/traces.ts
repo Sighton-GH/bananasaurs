@@ -23,9 +23,22 @@ export interface TraceListResponse {
 }
 
 export interface TraceDetailResponse {
-  readonly trace: AssistantTrace;
+  readonly trace: Omit<AssistantTrace, 'attempts'> & {
+    readonly attempts: readonly TraceDetailAttempt[];
+  };
   readonly member: TraceMember | null;
 }
+
+/** The classified explanation the traces route attaches per known code. */
+export interface TraceAttemptExplain {
+  readonly title: string;
+  readonly explanation: string;
+  readonly hint: string;
+}
+
+export type TraceDetailAttempt = AssistantTrace['attempts'][number] & {
+  readonly explain?: TraceAttemptExplain;
+};
 
 /** The usage strip: one entry per day, oldest first, quiet days as zeros. */
 export interface UsageResponse {

@@ -90,7 +90,7 @@ describe('AssistantHistoryDetailPage', () => {
     // Model: each attempt in order with the reason it moved on, plus usage.
     expect(screen.getByText('first-model')).toBeTruthy();
     expect(screen.getByText('second-model')).toBeTruthy();
-    expect(screen.getByText('overloaded')).toBeTruthy();
+    expect(screen.getAllByText('overloaded').length).toBeGreaterThan(0);
     expect(screen.getByText(/100 prompt/)).toBeTruthy();
     // Prompt: each section expandable with its size.
     expect(screen.getByText('system · 12 characters · about 3 tokens')).toBeTruthy();
