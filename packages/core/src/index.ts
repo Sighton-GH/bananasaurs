@@ -519,6 +519,16 @@ export {
   type OpsSettingSpec,
 } from './ops/settings.js';
 export {
+  INSTANCE_SETTINGS,
+  isInstanceSettingKey,
+  settingDefinition,
+  type InstanceSettingKey,
+  type InstanceSettingValues,
+  type SettingDefinition,
+  type SettingDisplay,
+  type SettingGroup,
+} from './settings/instance-settings.js';
+export {
   ACCOUNT_ROLES,
   CAPABILITY_INFO,
   roleForCapabilities,
