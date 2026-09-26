@@ -5,7 +5,7 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { resolveModelChain, type ChainEntry } from './model-chain.js';
+import { makeProvider, resolveModelChain, type ChainEntry } from './model-chain.js';
 
 let t: MigratedTestDatabase;
 beforeEach(() => {
@@ -357,6 +357,58 @@ describe('resolveModelChain', () => {
       });
       expect(entries).toHaveLength(2);
       expect(entries.some((e) => e.keyId === 'key_env')).toBe(false);
+    });
+  });
+
+  describe('makeProvider timeout', () => {
+    afterEach(() => {
+      vi.restoreAllMocks();
+      vi.unstubAllGlobals();
+    });
+
+    // Either way no network: the fetch stub rejects at once, so the only
+    // thing under test is which timeout the adapter hands to AbortSignal.
+    const stubFetch = (): void => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async (): Promise<Response> => {
+          throw new Error('stub fetch: no network');
+        }),
+      );
+    };
+    const textRequest = {
+      model: 'm',
+      messages: [{ role: 'user' as const, text: 'hi' }],
+    };
+
+    it.each([
+      ['openrouter', 7000],
+      ['gemini', 7000],
+    ] as const)(
+      'makeProvider(%s) forwards timeoutMs %i to AbortSignal.timeout',
+      async (providerId, timeoutMs) => {
+        stubFetch();
+        const spy = vi.spyOn(AbortSignal, 'timeout');
+        await makeProvider(providerId, 'k', 'free', { timeoutMs })
+          .generateText(textRequest)
+          .then(
+            () => undefined,
+            () => undefined,
+          );
+        expect(spy).toHaveBeenCalledWith(timeoutMs);
+      },
+    );
+
+    it('defaults to 30000 without options', async () => {
+      stubFetch();
+      const spy = vi.spyOn(AbortSignal, 'timeout');
+      await makeProvider('openrouter', 'k', 'free')
+        .generateText(textRequest)
+        .then(
+          () => undefined,
+          () => undefined,
+        );
+      expect(spy).toHaveBeenCalledWith(30000);
     });
   });
 });

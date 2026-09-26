@@ -47,6 +47,7 @@ import { buildGuildRuntime, type GuildRuntime } from './guild.js';
 import { createProviderConfigStore, providerKeyFrom } from '../assistant/provider-config.js';
 import { openWithKey, sealWithKey } from '../crypto/seal.js';
 import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
+import { applyConnectFallback } from './network.js';
 import { QuotaLedger } from '../assistant/quota-ledger.js';
 import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
@@ -170,16 +171,6 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     (config.ASSISTANT_PROVIDER_SECRET_KEY === undefined
       ? { source: 'missing', reason: 'readonly-no-key-file' }
       : { source: 'env', secret: config.ASSISTANT_PROVIDER_SECRET_KEY });
-  const providerStore =
-    providerSecret.source === 'missing'
-      ? undefined
-      : createProviderConfigStore(
-          scopes.instance(),
-          providerSecret.secret,
-          providerSecret.source,
-          config,
-        );
-  const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
   // ADR 0080: the owner-edited instance settings. The sealed fetch header
   // shares the provider secret's key derivation, so it opens exactly where
   // provider keys open; without a secret the store still serves every
@@ -194,6 +185,25 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           seal: (v) => sealWithKey(providerKeyFrom(providerSecret.secret), v),
           open: (s) => openWithKey(providerKeyFrom(providerSecret.secret), s),
         }),
+  });
+  const providerStore =
+    providerSecret.source === 'missing'
+      ? undefined
+      : createProviderConfigStore(
+          scopes.instance(),
+          providerSecret.secret,
+          providerSecret.source,
+          config,
+          undefined,
+          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs') },
+        );
+  const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
+  // ADR 0080: the connect fallback wait applies to new connections at once —
+  // at startup and whenever the owner edits it, without a restart.
+  applyConnectFallback(instanceSettings.get('network.connectFallbackMs'), logger);
+  instanceSettings.onChange((key) => {
+    if (key === 'network.connectFallbackMs')
+      applyConnectFallback(instanceSettings.get(key), logger);
   });
   // ADR 0075: when no provider store exists (no encryption secret), nothing
   // was ever saved through it either — the dashboard's save routes all go
@@ -251,6 +261,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         assistantConfig,
         assistantChain,
         quotaLedger,
+        instanceSettings,
         // Task 17: the GitHub client reads the sealed token per request, for
         // the `Authorization` header only — it never reaches logs or audit.
         githubToken: () => providerStore?.githubToken(),

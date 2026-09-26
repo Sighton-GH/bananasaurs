@@ -156,6 +156,7 @@ export const createProviderConfigStore = (
   envBase?: Config,
   geminiModels: (apiKey: string) => Promise<readonly GeminiModelInfo[]> = (apiKey) =>
     listGeminiModels({ apiKey }),
+  options: { readonly providerTimeoutMs?: () => number } = {},
 ): ProviderConfigStore => {
   const key = keyFrom(masterSecret);
   return {
@@ -387,6 +388,9 @@ export const createProviderConfigStore = (
         openKey: (sealed) => open(key, sealed),
         eligibility: (providerId) => eligibilityRepo.findEligibility(instance, providerId),
         makeProvider,
+        ...(options.providerTimeoutMs === undefined
+          ? {}
+          : { providerTimeoutMs: options.providerTimeoutMs }),
       });
     },
     saveChain(rows, now) {

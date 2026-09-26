@@ -241,6 +241,39 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     expect((err as RetryAfterError).retryAfterMs).toBe(10_000);
   });
 
+  it('uses the injected retry delays: [5000] retries once at 5000 then answers busy', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('rate-limit', 'HTTP 429', true);
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler({ ...deps, retryDelaysMs: () => [5000] });
+
+    const err = await Promise.resolve(handler.run(payload, context({ attempts: 1 }))).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(RetryAfterError);
+    expect((err as RetryAfterError).retryAfterMs).toBe(5000);
+
+    await handler.run(payload, context({ attempts: 2 }));
+    expect(sent[0]?.message.content).toBe(
+      'The AI service is busy right now. Try again in a minute. No action was taken.',
+    );
+  });
+
+  it('with empty retry delays the first retryable failure answers the busy reply at once', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('outage', 'HTTP 503', true);
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler({ ...deps, retryDelaysMs: () => [] });
+
+    await handler.run(payload, context({ attempts: 1 }));
+
+    expect(sent[0]?.message.content).toBe(
+      'The AI service is busy right now. Try again in a minute. No action was taken.',
+    );
+  });
+
   it('answers BUSY_REPLY, not the daily-cap wording, for a genuine transient error past the retry ceiling', async () => {
     const svc = service(async () => {
       throw new ProviderError('outage', 'HTTP 503', true);

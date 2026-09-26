@@ -89,6 +89,7 @@ import type { InteractionTokenSealer } from '../assistant/interaction-token.js';
 import { createAssistantService } from '../assistant/service.js';
 import type { ChainEntry } from '../assistant/model-chain.js';
 import type { QuotaLedger } from '../assistant/quota-ledger.js';
+import type { InstanceSettingsStore } from '../settings/instance-settings-store.js';
 import { memberChannels } from '../assistant/member-channels.js';
 import { panelAuthorization, panelEffectsFor, panelStoreFor } from '../panels/wiring.js';
 
@@ -153,6 +154,11 @@ export interface GuildRuntimeDeps {
    * absent in tests, in which case GitHub refreshes run unauthenticated.
    */
   readonly githubToken?: (() => string | undefined) | undefined;
+  /**
+   * Task 7: the owner-edited instance settings (ADR 0080), from the
+   * composition root. Absent in isolated uses, where today's constants stand.
+   */
+  readonly instanceSettings?: InstanceSettingsStore | undefined;
 }
 
 /**
@@ -717,6 +723,9 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     logger,
   };
 
+  // Task 7: captured once for the closures below, so neither needs a
+  // non-null assertion after its explicit undefined check.
+  const settings = deps.instanceSettings;
   const assistantService = createAssistantService(
     scope,
     instance,
@@ -748,6 +757,15 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
     // A defaulted parameter accepts `undefined`: absent in isolated uses,
     // where the service falls back to its own ledger.
     deps.quotaLedger,
+    // Task 7: the live tool-loop limits from the AI tuning settings. Absent
+    // means the loop's own defaults, which equal today's constants.
+    settings === undefined
+      ? undefined
+      : () => ({
+          rounds: settings.get('assistant.maxToolRounds'),
+          totalCalls: settings.get('assistant.maxToolCalls'),
+          maxOutputTokens: settings.get('assistant.maxOutputTokens'),
+        }),
   );
   const { interactionTokenSealer } = deps;
 
@@ -817,6 +835,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         logger,
         logChannelId: () => assistantRepo.getAssistantSettings(scope).logChannelId,
         now,
+        // Task 7: the live retry delays from the AI tuning settings. Absent
+        // means today's 10 s / 30 s / 90 s defaults.
+        ...(settings === undefined
+          ? {}
+          : { retryDelaysMs: () => settings.get('assistant.retryDelaysMs') }),
         // Task 14: every answer joins a conversation (ADR 0072), posts as
         // Discord replies in staged parts, shows typing and writes a trace.
         conversations: { scope, botUserId, botDisplayName: client.user?.username ?? 'bananasaurs' },
