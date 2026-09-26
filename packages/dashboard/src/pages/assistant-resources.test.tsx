@@ -340,7 +340,7 @@ describe('Add from GitHub', () => {
   it('previews an org with a count, hides forks until toggled, and imports the checked repos', async () => {
     const mock = renderGithub(ORG_PREVIEW, { created: 3 });
     await openGithubPanel('https://github.com/acme');
-    await screen.findByText('3 public repositories');
+    await screen.findByText('3 repositories');
     expect(screen.getByText('widget')).toBeTruthy();
     expect(screen.queryByText('forked')).toBeNull();
     fireEvent.click(screen.getByRole('checkbox', { name: 'Include forks' }));
@@ -362,8 +362,93 @@ describe('Add from GitHub', () => {
   it('shows an empty org with no Add button', async () => {
     renderGithub({ ...ORG_PREVIEW, repos: [] });
     await openGithubPanel('https://github.com/acme');
-    expect(await screen.findByText('This organisation has no public repositories.')).toBeTruthy();
+    expect(await screen.findByText('This organisation has no repositories this token can see.')).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+  });
+
+  it('shows the URL hint with the private-repository token note', async () => {
+    renderGithub(REPO_PREVIEW);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add from GitHub' }));
+    expect(
+      screen.getByText(
+        'A repository or organisation, for example https://github.com/acme/widget. Private repositories need a GitHub token that can read them.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('marks a private repo in the org list and discloses the private-repository terms', async () => {
+    renderGithub({
+      ...ORG_PREVIEW,
+      repos: [
+        { name: 'widget', description: 'Does things', fork: false, archived: false, private: false },
+        { name: 'secret', description: null, fork: false, archived: false, private: true },
+      ],
+    });
+    await openGithubPanel('https://github.com/acme');
+    expect(await screen.findByText('2 repositories')).toBeTruthy();
+    expect(screen.getByText('Private')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Private repositories: club members will be able to ask about them, and their text is sent to your AI providers, which may train on it.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('discloses the private-repository terms for a private repo preview', async () => {
+    renderGithub({ ...REPO_PREVIEW, private: true });
+    await openGithubPanel();
+    expect(await screen.findByText('README.md')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Private repositories: club members will be able to ask about them, and their text is sent to your AI providers, which may train on it.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows no private disclosure for an all-public org preview', async () => {
+    renderGithub(ORG_PREVIEW);
+    await openGithubPanel('https://github.com/acme');
+    expect(await screen.findByText('3 repositories')).toBeTruthy();
+    expect(screen.queryByText('Private')).toBeNull();
+    expect(
+      screen.queryByText(
+        'Private repositories: club members will be able to ask about them, and their text is sent to your AI providers, which may train on it.',
+      ),
+    ).toBeNull();
+  });
+
+  it('badges a private resource and not a public one', async () => {
+    renderPage(
+      {
+        ...FULL,
+        resources: [
+          {
+            id: 'gh-acme-secret',
+            guildId: '1540816150026518620',
+            title: 'acme/secret',
+            url: 'https://github.com/acme/secret',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme', repo: 'secret', branch: 'main', private: true },
+          },
+          {
+            id: 'gh-acme-widget',
+            guildId: '1540816150026518620',
+            title: 'acme/widget',
+            url: 'https://github.com/acme/widget',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme', repo: 'widget', branch: 'main' },
+          },
+        ],
+      },
+      [],
+    );
+    expect(await screen.findByText('acme/secret')).toBeTruthy();
+    expect(screen.getByText('Private')).toBeTruthy();
+    expect(screen.getAllByText('Private')).toHaveLength(1);
   });
 
   it('notes a truncated org list', async () => {

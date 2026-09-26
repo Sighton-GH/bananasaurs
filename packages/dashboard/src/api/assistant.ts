@@ -371,10 +371,13 @@ export interface GithubPreviewRepo {
   readonly description: string | null;
   readonly fork: boolean;
   readonly archived: boolean;
+  readonly private?: boolean;
 }
 export interface GithubPreview {
   readonly target: GithubPreviewTarget;
   readonly authenticated: boolean;
+  /** True when an authenticated repo preview is for a private repository (ADR 0083). */
+  readonly private?: boolean;
   readonly repos?: readonly GithubPreviewRepo[];
   readonly truncated?: boolean;
   readonly files?: readonly string[];

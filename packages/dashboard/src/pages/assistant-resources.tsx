@@ -162,6 +162,8 @@ function GithubPanel({
   );
   const shownNames = new Set(shownRepos.map((repo) => repo.name));
   const reposSelection = (checkedRepos ?? []).filter((name) => shownNames.has(name));
+  const showsPrivateNotice =
+    preview?.private === true || (preview?.repos ?? []).some((repo) => repo.private === true);
   const urlProblem = fieldError(error, 'url');
 
   return (
@@ -169,7 +171,7 @@ function GithubPanel({
       <div className="grid gap-3">
         <Field
           label="GitHub URL"
-          hint="A public repository or organisation, for example https://github.com/acme/widget."
+          hint="A repository or organisation, for example https://github.com/acme/widget. Private repositories need a GitHub token that can read them."
           {...(urlProblem === undefined ? {} : { error: urlProblem })}
         >
           <Input
@@ -194,6 +196,12 @@ function GithubPanel({
       )}
       {preview !== undefined && (
         <div className="mt-3">
+          {showsPrivateNotice && (
+            <p role="note" className="text-sm">
+              Private repositories: club members will be able to ask about them, and their text is
+              sent to your AI providers, which may train on it.
+            </p>
+          )}
           {!preview.authenticated && (
             <p className="text-sm text-ink-muted">
               Without a GitHub token, only the README is read and organisations refresh once a
@@ -207,13 +215,13 @@ function GithubPanel({
           {isOrg ? (
             <>
               <p className="text-sm">
-                {`${String(preview.repos?.length ?? 0)} public repositor${(preview.repos?.length ?? 0) === 1 ? 'y' : 'ies'}`}
+                {`${String(preview.repos?.length ?? 0)} repositor${(preview.repos?.length ?? 0) === 1 ? 'y' : 'ies'}`}
               </p>
               {preview.truncated === true && (
                 <p className="text-sm text-ink-muted">Showing the first 500 repositories.</p>
               )}
               {(preview.repos?.length ?? 0) === 0 ? (
-                <p className="mt-2 text-sm">This organisation has no public repositories.</p>
+                <p className="mt-2 text-sm">This organisation has no repositories this token can see.</p>
               ) : (
                 <>
                   <div className="mt-2 flex flex-wrap gap-4 text-sm">
@@ -246,6 +254,7 @@ function GithubPanel({
                             }
                           />
                           <span>{repo.name}</span>
+                          {repo.private === true && <Badge tone="hold">Private</Badge>}
                           {repo.description !== null && (
                             <span className="text-ink-muted">{repo.description}</span>
                           )}
@@ -572,6 +581,11 @@ function ResourcesCard({
                 {resource.meta?.autoDiscovered === true && (
                   <p className="mt-1">
                     <Badge tone="neutral">New — found automatically</Badge>
+                  </p>
+                )}
+                {resource.meta?.private === true && (
+                  <p className="mt-1">
+                    <Badge tone="hold">Private</Badge>
                   </p>
                 )}
                 {(resource.kind === 'github-repo' || resource.kind === 'github-org') &&
