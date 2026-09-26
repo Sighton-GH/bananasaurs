@@ -18,6 +18,7 @@ import {
   createServer,
   issueBootstrapTokenIfNeeded,
   registerAssistantProviderRoutes,
+  registerAssistantTuningRoutes,
   registerAssistantGithubRoutes,
   registerAssistantRoutes,
   registerAssistantTryRoutes,
@@ -87,6 +88,8 @@ export interface DashboardApiDeps {
   readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
   /** Why there is no provider store, when there is none (ADR 0061 §3). */
   readonly assistantSecretProblem?: AssistantProviderStatus['secretProblem'];
+  /** ADR 0080: the owner-edited instance settings (AI tuning). Absent in isolated uses. */
+  readonly instanceSettings?: HttpDeps['instanceSettings'];
   /**
    * Task 8: the one process-wide QuotaLedger (`runtime/daemon.ts`), read by
    * the dashboard's allowance pill. Absent in isolated uses, and then no
@@ -126,6 +129,8 @@ export interface DashboardAppDeps {
   readonly distDir: string;
   readonly assistantProviderConfig?: HttpDeps['assistantProviderConfig'];
   readonly assistantAiStatus?: HttpDeps['assistantAiStatus'];
+  /** ADR 0080: the owner-edited instance settings (AI tuning). Absent in isolated uses. */
+  readonly instanceSettings?: HttpDeps['instanceSettings'];
   /**
    * Task 8: the one process-wide QuotaLedger (`runtime/daemon.ts`), read by
    * the dashboard's allowance pill. Absent in isolated uses, and then no
@@ -246,6 +251,9 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       ? {}
       : { assistantProviderConfig: deps.assistantProviderConfig }),
     ...(deps.assistantAiStatus === undefined ? {} : { assistantAiStatus: deps.assistantAiStatus }),
+    // ADR 0080: carried through, never rebuilt — the same store the daemon
+    // built, so the tuning routes read what the daemon serves.
+    ...(deps.instanceSettings === undefined ? {} : { instanceSettings: deps.instanceSettings }),
     // Task 8: the allowance pill reads the single process-wide ledger the
     // composition root handed in — an arrow over the captured instance, never
     // a detached method, so the loop and the pill cannot disagree.
@@ -285,6 +293,7 @@ export const buildDashboardApp = (deps: DashboardAppDeps): FastifyInstance => {
       // carries the Try-it runner, which `HttpDeps` itself never mentions.
       registerAssistantTryRoutes(instance, guard, httpDeps);
       registerAssistantProviderRoutes(instance, guard, routeDeps);
+      registerAssistantTuningRoutes(instance, guard, routeDeps);
       registerAssistantGithubRoutes(instance, guard, routeDeps);
       registerAssistantResourceCacheRoutes(instance, guard, routeDeps);
       registerAssistantTraceRoutes(instance, guard, routeDeps);
@@ -346,6 +355,9 @@ export async function startDashboardApi(deps: DashboardApiDeps): Promise<Dashboa
     ...(deps.assistantProviderConfig === undefined
       ? {}
       : { assistantProviderConfig: deps.assistantProviderConfig }),
+    // ADR 0080: the tuning routes ride along when the composition root
+    // handed in a settings store; they answer 503 without it.
+    ...(deps.instanceSettings === undefined ? {} : { instanceSettings: deps.instanceSettings }),
     // Only read when there is no store: the env-configured provider, with the
     // reason the dashboard cannot save keys itself.
     assistantAiStatus: {
