@@ -1122,12 +1122,14 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
   const [traceId, setTraceId] = useState<string | undefined>(undefined);
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
+  const [quotaText, setQuotaText] = useState<string | undefined>(undefined);
   const [error, setError] = useState<unknown>(undefined);
 
   const run = async (continuing: boolean): Promise<void> => {
     const cleaned = question.trim();
     if (cleaned === '' || busy) return;
     setBusy(true);
+    setQuotaText(undefined);
     setError(undefined);
     try {
       // The 429 rethrows (rather than toasting and resolving `undefined`)
@@ -1149,11 +1151,11 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
     } catch (err) {
       // The 429 branch stays: the hourly quota sentence says more than the
       // catalog text. Anything else renders as the server's answer.
-      setError(
-        err instanceof ApiError && err.body.error === 'rate-limited'
-          ? 'You have used your 20 tries for this hour. Try again later.'
-          : err,
-      );
+      if (err instanceof ApiError && err.body.error === 'rate-limited') {
+        setQuotaText('You have used your 20 tries for this hour. Try again later.');
+      } else {
+        setError(err);
+      }
     } finally {
       setBusy(false);
     }
@@ -1192,16 +1194,16 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
           </Button>
         )}
       </div>
-      {error !== undefined &&
-        (typeof error === 'string' ? (
-          <p role="alert" className="mt-3 text-sm text-danger">
-            {error}
-          </p>
-        ) : (
-          <div className="mt-3">
-            <ErrorNotice error={error} />
-          </div>
-        ))}
+      {quotaText !== undefined && (
+        <p role="alert" className="mt-3 text-sm text-danger">
+          {quotaText}
+        </p>
+      )}
+      {error !== undefined && (
+        <div className="mt-3">
+          <ErrorNotice error={error} />
+        </div>
+      )}
       {answer !== undefined && traceId !== undefined && (
         <section
           aria-label="Tried answer"
