@@ -30,7 +30,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
-import { ErrorNotice } from '../ui/ErrorNotice.js';
+import { ErrorNotice, DescribedNotice } from '../ui/ErrorNotice.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { OrderedList } from '../ui/OrderedList.js';
@@ -128,28 +128,6 @@ interface TestOutcome {
     readonly httpStatus?: number;
     readonly netCode?: string;
   };
-}
-
-/**
- * The classified chain-test failure, rendered where `ErrorNotice` would go:
- * no such component exists in this tree, so the page owns the small markup —
- * title, explanation and hint, plus the muted host line the caller adds.
- */
-export function FailureNotice({
-  failure,
-}: {
-  readonly failure: { readonly title: string; readonly explanation: string; readonly hint: string };
-}) {
-  return (
-    <div role="alert" className="grid gap-1 text-sm">
-      <strong>{failure.title}</strong>
-      <p>{failure.explanation}</p>
-      <p>
-        <span className="text-ink-muted">What to do: </span>
-        {failure.hint}
-      </p>
-    </div>
-  );
 }
 
 /** Model order: an OrderedList of key + model rows with a status pill and a Test button each. */
@@ -368,28 +346,21 @@ function ModelOrderSection({
                         Row {number} answered “{result.reply ?? 'ready'}”.
                       </span>
                     ) : result.failure !== undefined ? (
-                      <div className="grid gap-1">
-                        <FailureNotice failure={result.failure} />
-                        {[
-                          result.failure.host,
-                          result.failure.httpStatus === undefined
-                            ? undefined
-                            : `HTTP ${String(result.failure.httpStatus)}`,
-                          result.failure.netCode,
-                        ].filter((part) => part !== undefined && part !== '').length > 0 && (
-                          <p className="text-xs text-ink-muted">
-                            {[
-                              result.failure.host,
-                              result.failure.httpStatus === undefined
-                                ? undefined
-                                : `HTTP ${String(result.failure.httpStatus)}`,
-                              result.failure.netCode,
-                            ]
-                              .filter((part) => part !== undefined && part !== '')
-                              .join(' · ')}
-                          </p>
+                      <DescribedNotice
+                        described={{
+                          title: result.failure.title,
+                          message: result.failure.explanation,
+                          hint: result.failure.hint,
+                          code: result.failure.code,
+                          ...(result.failure.httpStatus === undefined
+                            ? {}
+                            : { status: result.failure.httpStatus }),
+                          fields: [],
+                        }}
+                        detail={[result.failure.host, result.failure.netCode].filter(
+                          (part): part is string => part !== undefined && part !== '',
                         )}
-                      </div>
+                      />
                     ) : typeof result.error === 'string' ? (
                       <span role="alert" className="text-sm text-danger">
                         {result.error}

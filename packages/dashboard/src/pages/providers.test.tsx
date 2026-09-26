@@ -856,6 +856,9 @@ describe('Task 10 (h): AI setup Test renders a classified failure', () => {
             title: 'Could not connect to the AI provider',
             explanation: 'The connection timed out.',
             hint: 'Check the host VPN.',
+            host: 'api.example.test',
+            httpStatus: 504,
+            netCode: 'ETIMEDOUT',
           },
         },
       },
@@ -866,6 +869,11 @@ describe('Task 10 (h): AI setup Test renders a classified failure', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Test gemini-2.5-flash on Main key' }));
     });
     expect(await screen.findByText('Could not connect to the AI provider')).toBeTruthy();
-    expect(screen.getByText('Check the host VPN.')).toBeTruthy();
+    expect(screen.getByText('The connection timed out.')).toBeTruthy();
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('What to do: Check the host VPN.');
+    expect(alert.textContent).toContain('api.example.test');
+    expect(alert.textContent).toContain('HTTP 504');
+    expect(alert.textContent).toContain('ETIMEDOUT');
   });
 });
