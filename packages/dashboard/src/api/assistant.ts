@@ -347,6 +347,11 @@ export interface ResourceFreshnessRow {
   readonly errorExplain?: ResourceErrorExplain;
 }
 export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
+export interface ResourceFreshnessResponse {
+  readonly freshness: readonly ResourceFreshnessRow[];
+  /** Absent when the server cannot tell; the warning shows only on an explicit `false`. */
+  readonly githubTokenConfigured?: boolean;
+}
 export const resourceRefreshUrl = (id: string) =>
   `/api/assistant/resources/${encodeURIComponent(id)}/refresh`;
 export const RESOURCE_REFRESH_ALL_URL = '/api/assistant/resources/refresh';
@@ -366,10 +371,13 @@ export interface GithubPreviewRepo {
   readonly description: string | null;
   readonly fork: boolean;
   readonly archived: boolean;
+  readonly private?: boolean;
 }
 export interface GithubPreview {
   readonly target: GithubPreviewTarget;
   readonly authenticated: boolean;
+  /** True when an authenticated repo preview is for a private repository (ADR 0083). */
+  readonly private?: boolean;
   readonly repos?: readonly GithubPreviewRepo[];
   readonly truncated?: boolean;
   readonly files?: readonly string[];

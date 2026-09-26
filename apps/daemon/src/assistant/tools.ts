@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  clipHeading,
   humaniseDuration,
   redactEvidenceText,
   scanOutboundRequest,
@@ -262,7 +263,7 @@ export const runAssistantTool = async (
         let used = head.length;
         const shown: string[] = [];
         for (const chunk of chunks) {
-          const line = `[${chunk.chunkId}] ${chunk.headingPath}: ${chunk.text}`;
+          const line = `[${chunk.chunkId}] ${clipHeading(chunk.headingPath, 200)}: ${chunk.text}`;
           if (used + line.length + 1 > 4_000) break;
           lines.push(line);
           shown.push(chunk.chunkId);
@@ -272,9 +273,9 @@ export const runAssistantTool = async (
           const first = chunks[0]!;
           const room = Math.max(
             0,
-            4_000 - head.length - `[${first.chunkId}] ${first.headingPath}: `.length - 1,
+            4_000 - head.length - `[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: `.length - 1,
           );
-          lines.push(`[${first.chunkId}] ${first.headingPath}: ${first.text.slice(0, room)}`);
+          lines.push(`[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: ${first.text.slice(0, room)}`);
           shown.push(first.chunkId);
         }
         return {
@@ -378,8 +379,8 @@ export const runAssistantTool = async (
           if (!enabled.has(hit.resourceId)) continue;
           const title = byId.get(hit.resourceId)?.title ?? hit.resourceId;
           const snippet = hit.snippet.length > 300 ? `${hit.snippet.slice(0, 299)}…` : hit.snippet;
-          const line = `[${hit.chunkId}] ${title} › ${hit.headingPath}: ${snippet}`;
-          if (used + line.length + (lines.length > 0 ? 1 : 0) > 2_000) break;
+          const line = `[${hit.chunkId}] ${title} › ${clipHeading(hit.headingPath, 200)}: ${snippet}`;
+          if (used + line.length + (lines.length > 0 ? 1 : 0) > 2_000) continue;
           lines.push(line);
           handles.push(hit.chunkId, hit.docId);
           used += line.length + (lines.length > 1 ? 1 : 0);
@@ -404,8 +405,8 @@ export const runAssistantTool = async (
         const sourceList = found === undefined ? [] : [{ title: found.title, url: found.url }];
         const head =
           url === ''
-            ? `${title} › ${center.headingPath}\n`
-            : `${title} › ${center.headingPath}\n${url}\n`;
+            ? `${title} › ${clipHeading(center.headingPath, 200)}\n`
+            : `${title} › ${clipHeading(center.headingPath, 200)}\n${url}\n`;
         let used = head.length;
         const lines: string[] = [];
         const handles: string[] = [];
@@ -446,7 +447,7 @@ export const runAssistantTool = async (
         const handles: string[] = [];
         let used = 0;
         for (const row of rows) {
-          const line = `[${row.chunkId}] ${row.headingPath}`;
+          const line = `[${row.chunkId}] ${clipHeading(row.headingPath, 200)}`;
           if (used + line.length + 1 > 1_500) break;
           lines.push(line);
           handles.push(row.chunkId);

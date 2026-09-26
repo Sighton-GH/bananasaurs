@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { chunkDocument, htmlToText } from './chunker.js';
+import { chunkDocument, clipHeading, htmlToText } from './chunker.js';
 
 describe('chunkDocument — markdown', () => {
   it('builds heading-path breadcrumbs and correct 1-based line ranges', () => {
@@ -246,5 +246,114 @@ describe('htmlToText', () => {
       .map((l) => l.trim())
       .filter((l) => l !== '');
     expect(lines).toEqual(['First', 'Second', 'Third']);
+  });
+});
+
+describe('chunkDocument — long documents keep structure', () => {
+  it('keeps short heading paths and no lost text for a 60-section document', () => {
+    const lines: string[] = ['# Title', ''];
+    for (let n = 1; n <= 60; n++) {
+      lines.push(`## Section ${n}`, '');
+      lines.push(`Section ${n} explains the club policy in detail for members. `.repeat(12));
+      lines.push('');
+    }
+    const text = lines.join('\n');
+    expect(text.length).toBeGreaterThan(8_000);
+
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'doc.md' });
+    expect(chunks.map((c) => c.headingPath)).toContain('doc.md › Title › Section 7');
+    for (const chunk of chunks) expect(chunk.headingPath.length).toBeLessThanOrEqual(60);
+    const joined = chunks.map((c) => c.text).join('\n');
+    expect(joined).toContain(
+      `Section 60 explains the club policy in detail for members. `.repeat(12),
+    );
+  });
+
+  it('clips a heading line longer than 120 characters to exactly 120 ending in …', () => {
+    const text = [`# ${'A'.repeat(200)}`, '', 'Body.'].join('\n');
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'doc.md' });
+    const segment = chunks[0]!.headingPath.split(' › ')[1]!;
+    expect(segment).toHaveLength(120);
+    expect(segment.endsWith('…')).toBe(true);
+  });
+});
+
+describe('clipHeading', () => {
+  it('leaves short text alone and clips long text with an ellipsis', () => {
+    expect(clipHeading('abc', 120)).toBe('abc');
+    const clipped = clipHeading('x'.repeat(200), 50);
+    expect(clipped).toHaveLength(50);
+    expect(clipped.endsWith('…')).toBe(true);
+  });
+});
+
+describe('chunkDocument — fenced code blocks', () => {
+  it('treats # lines inside a ``` fence as content, not headings', () => {
+    const text = [
+      '# Setup',
+      '```bash',
+      '# Load module into kernel',
+      'sudo insmod x.ko',
+      '```',
+      '## Usage',
+      'run it',
+    ].join('\n');
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'README.md' });
+    expect(chunks.map((c) => c.headingPath)).toEqual([
+      'README.md › Setup',
+      'README.md › Setup › Usage',
+    ]);
+    expect(chunks[0]!.text).toContain('# Load module into kernel');
+  });
+
+  it('treats # lines inside a ~~~ fence as content, not headings', () => {
+    const text = [
+      '# Guide',
+      '~~~python',
+      '# a comment, not a heading',
+      'print("hi")',
+      '~~~',
+      '## Next',
+      'after',
+    ].join('\n');
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'guide.md' });
+    expect(chunks.map((c) => c.headingPath)).toEqual(['guide.md › Guide', 'guide.md › Guide › Next']);
+    expect(chunks[0]!.text).toContain('# a comment, not a heading');
+  });
+
+  it('treats an unclosed fence as running to the end of the document', () => {
+    const text = ['# Top', '```', '# not a heading', 'more'].join('\n');
+    const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'notes.md' });
+    expect(chunks.map((c) => c.headingPath)).toEqual(['notes.md › Top']);
+    expect(chunks[0]!.text).toContain('# not a heading');
+  });
+});
+
+describe('chunkDocument — cached HTML evidence', () => {
+  it('reduces fetched HTML to useful page text', () => {
+    const html = `<!doctype html><html><head><title>Handbook</title><style>body{color:red}</style></head><body><h1>Club handbook</h1><script>steal()</script><p>Batteries must be &lt;approved&gt;.</p></body></html>`;
+    const chunks = chunkDocument({ text: html, mediaType: 'text/html', path: 'page.html' });
+    const joined = chunks.map((c) => c.text).join('\n');
+    expect(joined).toContain('Club handbook');
+    expect(joined).toContain('Batteries must be <approved>.');
+    expect(joined).not.toContain('steal');
+    expect(joined).not.toContain('color:red');
+    expect(joined).not.toContain('<title>');
+    for (const chunk of chunks) expect(chunk.text.startsWith('Handbook')).toBe(false);
+    expect(chunks[0]!.headingPath).toBe('page.html › Club handbook');
+  });
+});
+
+describe('htmlToText — head, header and svg', () => {
+  it('keeps <header> content even though <head> is dropped', () => {
+    const text = htmlToText('<header><h1>Site</h1></header><p>Body text</p>');
+    expect(text).toContain('Site');
+    expect(text).toContain('Body text');
+  });
+
+  it('drops inline SVG content', () => {
+    const text = htmlToText('<svg><text>logo</text></svg><p>Hi</p>');
+    expect(text).not.toContain('logo');
+    expect(text).toContain('Hi');
   });
 });

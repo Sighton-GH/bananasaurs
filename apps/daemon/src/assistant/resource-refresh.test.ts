@@ -286,6 +286,58 @@ describe('refreshResource', () => {
     expect(fetch).toHaveBeenCalledWith('https://example.com/repo', {});
   });
 
+  it('fails a github.com website/document/repository with no network call and clears its chunks', async () => {
+    for (const kind of ['website', 'document', 'repository'] as const) {
+      const repo = new FakeRepo();
+      const fetch = vi.fn<ResourceRefreshFetcher['fetch']>();
+      const outcome = await refreshResource(
+        SCOPE,
+        resource({ kind, url: 'https://github.com/sfu-racerbot/racerbot-docs' }),
+        deps({ fetch }, repo),
+      );
+      expect(outcome, kind).toEqual({ outcome: 'error', code: 'github-url-needs-import' });
+      expect(fetch, kind).not.toHaveBeenCalled();
+      const [doc] = [...repo.docs.values()];
+      expect(doc, kind).toMatchObject({
+        status: 'error',
+        errorCode: 'github-url-needs-import',
+        contentHash: '',
+        bytes: 0,
+      });
+      expect(doc?.error, kind).toBe(
+        "A github.com page is GitHub's own website. Saved as a website, Bananasaurs would read GitHub's menus instead of your files.",
+      );
+      expect(repo.chunkCalls, kind).toHaveLength(1);
+      expect(repo.chunkCalls[0], kind).toMatchObject({ resourceId: 'res-1', chunkCount: 0 });
+    }
+  });
+
+  it('still fetches a raw.githubusercontent.com website normally', async () => {
+    const repo = new FakeRepo();
+    const fetch = vi.fn<ResourceRefreshFetcher['fetch']>().mockResolvedValueOnce({
+      ok: true,
+      evidence: {
+        url: 'https://raw.githubusercontent.com/sfu-racerbot/racerbot-docs/main/README.md',
+        mediaType: 'text/plain',
+        text: 'the readme text',
+        fetchedAt: 1,
+        trust: 'untrusted-reviewed-resource',
+      },
+      cache: 'miss',
+    });
+    const outcome = await refreshResource(
+      SCOPE,
+      resource({
+        kind: 'website',
+        url: 'https://raw.githubusercontent.com/sfu-racerbot/racerbot-docs/main/README.md',
+      }),
+      deps({ fetch }, repo),
+    );
+    expect(outcome).toEqual({ outcome: 'ok' });
+    expect(fetch).toHaveBeenCalledTimes(1);
+    expect(repo.chunkCalls).toHaveLength(1);
+  });
+
   it("changing a resource's URL leaves only the new document, chunks, search hits and one freshness row", async () => {
     guildRepo.upsertGuild(SCOPE, { name: 'guild', now: 0 });
     assistantRepo.putResource(SCOPE, {

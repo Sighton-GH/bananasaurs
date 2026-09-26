@@ -43,7 +43,7 @@ const isHtmlInput = (mediaType: string, path: string): boolean =>
 // htmlToText
 // ---------------------------------------------------------------------------
 
-const DROP_TAGS = ['script', 'style', 'nav', 'footer', 'noscript'] as const;
+const DROP_TAGS = ['head', 'svg', 'script', 'style', 'nav', 'footer', 'noscript'] as const;
 
 const dropTagContents = (html: string): string =>
   DROP_TAGS.reduce(
@@ -138,6 +138,17 @@ interface StackEntry {
 
 const HEADING_LINE_RE = /^ {0,3}(#{1,6})\s+(.*?)\s*#*\s*$/;
 
+const FENCE_OPEN_RE = /^ {0,3}(`{3,}|~{3,})/;
+
+const isFenceClose = (line: string, char: '`' | '~', len: number): boolean => {
+  const run = new RegExp(`^ {0,3}${char === '`' ? '`' : '~'}{${len},}\\s*$`, 'u').exec(line);
+  return run !== null;
+};
+
+/** Clips a heading (or a whole heading path) to `max` characters, ending in "…" when cut. */
+export const clipHeading = (text: string, max = 120): string =>
+  text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+
 const splitSections = (text: string, path: string): readonly Section[] => {
   const lines = text.split('\n');
   const base = basename(path);
@@ -145,6 +156,7 @@ const splitSections = (text: string, path: string): readonly Section[] => {
   const stack: StackEntry[] = [];
   let sectionStartIndex = 0; // 0-based
   let sectionHeadingPath = base;
+  let inFence: { readonly char: '`' | '~'; readonly len: number } | null = null;
 
   const flush = (endIndexExclusive: number): void => {
     if (endIndexExclusive <= sectionStartIndex) return;
@@ -159,11 +171,20 @@ const splitSections = (text: string, path: string): readonly Section[] => {
   };
 
   lines.forEach((line, index) => {
+    if (inFence !== null) {
+      if (isFenceClose(line, inFence.char, inFence.len)) inFence = null;
+      return;
+    }
+    const fence = FENCE_OPEN_RE.exec(line);
+    if (fence !== null) {
+      inFence = { char: fence[1]![0]! as '`' | '~', len: fence[1]!.length };
+      return;
+    }
     const match = HEADING_LINE_RE.exec(line);
     if (match === null) return;
     flush(index);
     const level = match[1]!.length;
-    const headingText = match[2]!;
+    const headingText = clipHeading(match[2]!);
     while (stack.length > 0 && stack[stack.length - 1]!.level >= level) stack.pop();
     stack.push({ level, text: headingText });
     sectionStartIndex = index;

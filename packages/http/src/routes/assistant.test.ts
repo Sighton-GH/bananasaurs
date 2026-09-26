@@ -971,6 +971,40 @@ describe('PUT /api/assistant/resources/:id (ADR 0073 enqueue on add)', () => {
     expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
   });
 
+  it('refuses a github.com website with github-url-needs-import and saves nothing', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    const res = await putResource(cookie, csrf, {
+      url: 'https://github.com/sfu-racerbot/racerbot-docs',
+      kind: 'website',
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'github-url-needs-import' });
+    expect(assistantRepo.listResources(scope)).toHaveLength(0);
+    expect(jobRepo.listJobs(scope, {})).toHaveLength(0);
+  });
+
+  it('does not refuse a github.com URL saved as a note', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const res = await putResource(cookie, csrf, {
+      url: 'https://github.com/sfu-racerbot/racerbot-docs',
+      kind: 'note',
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('accepts a raw.githubusercontent.com website', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const res = await putResource(cookie, csrf, {
+      url: 'https://raw.githubusercontent.com/sfu-racerbot/racerbot-docs/main/README.md',
+      kind: 'website',
+    });
+    expect(res.statusCode).toBe(200);
+  });
+
   it('calls the injected enqueue with reason added on create and on edit, and enqueues nothing without it', async () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();

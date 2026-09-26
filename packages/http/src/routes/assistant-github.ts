@@ -107,12 +107,12 @@ export const registerAssistantGithubRoutes = (
     try {
       if (target.kind === 'org') {
         const listed = await client.listOrgRepos(target.owner);
-        const publicRepos = listed.repos.filter((s) => !s.private);
-        const repos = publicRepos.slice(0, PREVIEW_LIMIT).map((s) => ({
+        const repos = listed.repos.slice(0, PREVIEW_LIMIT).map((s) => ({
           name: s.name,
           description: s.description,
           fork: s.fork,
           archived: s.archived,
+          private: s.private,
         }));
         return reply.status(200).send({
           target: { kind: 'org', owner: target.owner },
@@ -136,6 +136,7 @@ export const registerAssistantGithubRoutes = (
       return reply.status(200).send({
         target: { kind: 'repo', owner: target.owner, repo: target.repo, branch },
         authenticated: true,
+        private: detail.private,
         files: selectRepoFiles(tree.entries),
       });
     } catch (error) {
@@ -175,7 +176,7 @@ export const registerAssistantGithubRoutes = (
       if (target.kind === 'org') {
         const summaries = (await client.listOrgRepos(target.owner)).repos;
         const eligible = summaries.filter(
-          (s) => !s.private && (includeForks || !s.fork) && (includeArchived || !s.archived),
+          (s) => (includeForks || !s.fork) && (includeArchived || !s.archived),
         );
         const wanted =
           parsed.data.repos === undefined
@@ -215,6 +216,7 @@ export const registerAssistantGithubRoutes = (
               repo: repo.name,
               branch: repo.defaultBranch,
               ...(include === undefined ? {} : { include }),
+              ...(repo.private ? { private: true } : {}),
             },
           });
           enqueue(childId);
@@ -248,6 +250,7 @@ export const registerAssistantGithubRoutes = (
           repo: target.repo,
           branch,
           ...(include === undefined ? {} : { include }),
+          ...(detail.private ? { private: true } : {}),
         },
       });
       enqueue(repoId);

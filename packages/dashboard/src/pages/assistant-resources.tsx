@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { Link } from 'wouter';
 import type { ClubResource } from '@bananasaurs/core';
 import {
   ASSISTANT_URL,
@@ -11,6 +12,7 @@ import {
   type AssistantData,
   type GithubImportResult,
   type GithubPreview,
+  type ResourceFreshnessResponse,
   type ResourceFreshnessRow,
 } from '../api/assistant.js';
 import { useSession, type Session } from '../app/session.js';
@@ -160,6 +162,8 @@ function GithubPanel({
   );
   const shownNames = new Set(shownRepos.map((repo) => repo.name));
   const reposSelection = (checkedRepos ?? []).filter((name) => shownNames.has(name));
+  const showsPrivateNotice =
+    preview?.private === true || (preview?.repos ?? []).some((repo) => repo.private === true);
   const urlProblem = fieldError(error, 'url');
 
   return (
@@ -167,7 +171,7 @@ function GithubPanel({
       <div className="grid gap-3">
         <Field
           label="GitHub URL"
-          hint="A public repository or organisation, for example https://github.com/acme/widget."
+          hint="A repository or organisation, for example https://github.com/acme/widget. Private repositories need a GitHub token that can read them."
           {...(urlProblem === undefined ? {} : { error: urlProblem })}
         >
           <Input
@@ -192,24 +196,32 @@ function GithubPanel({
       )}
       {preview !== undefined && (
         <div className="mt-3">
+          {showsPrivateNotice && (
+            <p role="note" className="text-sm">
+              Private repositories: club members will be able to ask about them, and their text is
+              sent to your AI providers, which may train on it.
+            </p>
+          )}
           {!preview.authenticated && (
             <p className="text-sm text-ink-muted">
-              <HelpTip label="GitHub token limits">
-                Without a GitHub token only README files are read and organisations refresh once a
-                day. Add a token on the AI setup page.
-              </HelpTip>
+              Without a GitHub token, only the README is read and organisations refresh once a
+              day. Add a token on the{' '}
+              <Link href="/assistant/setup" className="underline">
+                AI setup page
+              </Link>
+              .
             </p>
           )}
           {isOrg ? (
             <>
               <p className="text-sm">
-                {`${String(preview.repos?.length ?? 0)} public repositor${(preview.repos?.length ?? 0) === 1 ? 'y' : 'ies'}`}
+                {`${String(preview.repos?.length ?? 0)} repositor${(preview.repos?.length ?? 0) === 1 ? 'y' : 'ies'}`}
               </p>
               {preview.truncated === true && (
                 <p className="text-sm text-ink-muted">Showing the first 500 repositories.</p>
               )}
               {(preview.repos?.length ?? 0) === 0 ? (
-                <p className="mt-2 text-sm">This organisation has no public repositories.</p>
+                <p className="mt-2 text-sm">This organisation has no repositories this token can see.</p>
               ) : (
                 <>
                   <div className="mt-2 flex flex-wrap gap-4 text-sm">
@@ -242,6 +254,7 @@ function GithubPanel({
                             }
                           />
                           <span>{repo.name}</span>
+                          {repo.private === true && <Badge tone="hold">Private</Badge>}
                           {repo.description !== null && (
                             <span className="text-ink-muted">{repo.description}</span>
                           )}
@@ -324,11 +337,13 @@ function GithubPanel({
 function ResourcesCard({
   resources,
   freshness,
+  githubTokenConfigured,
   session,
   onSaved,
 }: {
   readonly resources: readonly ClubResource[];
   readonly freshness: readonly ResourceFreshnessRow[];
+  readonly githubTokenConfigured: boolean | undefined;
   readonly session: Session;
   readonly onSaved: () => void;
 }) {
@@ -435,6 +450,9 @@ function ResourcesCard({
   const titleProblem = fieldError(error, 'title');
   const kindProblem = fieldError(error, 'kind');
   const urlProblem = fieldError(error, 'url');
+  const showReadmeOnlyWarning =
+    githubTokenConfigured === false &&
+    resources.some((r) => r.kind === 'github-repo' || r.kind === 'github-org');
 
   return (
     <Card title="Reviewed sources">
@@ -524,6 +542,19 @@ function ResourcesCard({
           </div>
         </form>
       )}
+      {showReadmeOnlyWarning && (
+        <div role="status" className="mt-3 rounded-md border border-hold p-3 text-sm">
+          <p className="font-medium">GitHub repositories are caching their README only</p>
+          <p className="mt-1 text-ink-muted">
+            Without a GitHub token, Bananasaurs reads only each repository's README. Docs,
+            notes and other Markdown files are skipped. Add a fine-grained token on the{' '}
+            <Link href="/assistant/setup" className="underline">
+              AI setup page
+            </Link>
+            . For public repositories it needs no permissions.
+          </p>
+        </div>
+      )}
       {resources.length === 0 ? (
         <div className="mt-3">
           <EmptyState
@@ -552,6 +583,17 @@ function ResourcesCard({
                     <Badge tone="neutral">New — found automatically</Badge>
                   </p>
                 )}
+                {resource.meta?.private === true && (
+                  <p className="mt-1">
+                    <Badge tone="hold">Private</Badge>
+                  </p>
+                )}
+                {(resource.kind === 'github-repo' || resource.kind === 'github-org') &&
+                  githubTokenConfigured === false && (
+                    <p className="mt-1">
+                      <Badge tone="hold">README only</Badge>
+                    </p>
+                  )}
                 <p className="mt-1 break-all text-xs text-ink-muted">{resource.url}</p>
                 <p className="mt-1 text-xs text-ink-muted">
                   {resource.kind} · reviewed{' '}
@@ -619,7 +661,7 @@ export function AssistantResourcesPage() {
   const load = useCallback(() => session.read<AssistantData>(ASSISTANT_URL), [session]);
   const assistant = useResource('assistant resources', load);
   const loadFreshness = useCallback(
-    () => session.read<{ freshness: readonly ResourceFreshnessRow[] }>(RESOURCE_FRESHNESS_URL),
+    () => session.read<ResourceFreshnessResponse>(RESOURCE_FRESHNESS_URL),
     [session],
   );
   const freshness = useResource('resource cache freshness', loadFreshness);
@@ -631,6 +673,10 @@ export function AssistantResourcesPage() {
 
   const freshnessRows =
     freshness.resource.state === 'ready' ? freshness.resource.data.freshness : [];
+  const githubTokenConfigured =
+    freshness.resource.state === 'ready'
+      ? freshness.resource.data.githubTokenConfigured
+      : undefined;
 
   return (
     <>
@@ -645,6 +691,7 @@ export function AssistantResourcesPage() {
           <ResourcesCard
             resources={[]}
             freshness={freshnessRows}
+            githubTokenConfigured={githubTokenConfigured}
             session={session}
             onSaved={reloadBoth}
           />
@@ -654,6 +701,7 @@ export function AssistantResourcesPage() {
           <ResourcesCard
             resources={data.resources}
             freshness={freshnessRows}
+            githubTokenConfigured={githubTokenConfigured}
             session={session}
             onSaved={reloadBoth}
           />

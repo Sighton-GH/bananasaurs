@@ -337,6 +337,13 @@
       "when": 1790394689110,
       "tag": "0047_rich_bug",
       "breakpoints": true
+    },
+    {
+      "idx": 48,
+      "version": "6",
+      "when": 1790446119854,
+      "tag": "0048_reset_resource_cache_validators",
+      "breakpoints": true
     }
   ]
 }

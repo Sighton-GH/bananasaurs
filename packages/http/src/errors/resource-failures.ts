@@ -15,7 +15,13 @@ export const RESOURCE_FAILURE_TEXT: Readonly<
     title: "The site's bot protection blocked Bananasaurs",
     explanation:
       'The site answered with a Cloudflare challenge page ("Just a moment…"), which only a browser can pass.',
-    hint: "Ask the site's owner to add a Cloudflare WAF Skip rule for the header set in AI tuning → Resources, or import the content from GitHub instead.",
+    hint: "On Cloudflare's Free plan, Bot Fight Mode blocks Bananasaurs and no rule can skip it: turn Bot Fight Mode off, or add an IP Access rule that allows this server's IP. On Pro or higher, add a WAF custom rule that skips Super Bot Fight Mode when the header set in AI tuning → Resources is present. Or import the content from GitHub instead.",
+  },
+  'github-url-needs-import': {
+    title: 'Use "Add from GitHub" for GitHub links',
+    explanation:
+      "A github.com page is GitHub's own website. Saved as a website, Bananasaurs would read GitHub's menus instead of your files.",
+    hint: 'Add it with "Add from GitHub" on this page. For a single file, use its raw.githubusercontent.com link.',
   },
   'http-status': {
     title: 'The site answered with an error',

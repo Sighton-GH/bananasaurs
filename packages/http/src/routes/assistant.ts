@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  isGithubWebHost,
   promptWizardAnswers,
   ProviderError,
   SAFETY_SUFFIX,
@@ -679,6 +680,14 @@ export const registerAssistantRoutes = (
       validateResourceUrl(parsed.data.url);
     } catch {
       return reply.status(400).send({ error: 'unsafe-resource-url' });
+    }
+    if (
+      (parsed.data.kind === 'website' ||
+        parsed.data.kind === 'document' ||
+        parsed.data.kind === 'repository') &&
+      isGithubWebHost(new URL(parsed.data.url).hostname)
+    ) {
+      return reply.status(400).send({ error: 'github-url-needs-import' });
     }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),

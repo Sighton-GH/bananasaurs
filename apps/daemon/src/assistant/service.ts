@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import {
   assertProviderEligible,
+  clipHeading,
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
   estimateTokens,
@@ -137,7 +138,7 @@ const sourcesLine = (sources: readonly AnswerSource[]): string => {
     entries.push(
       source.heading === undefined || source.heading === ''
         ? source.title
-        : `${source.title} › ${source.heading}`,
+        : `${source.title} › ${clipHeading(source.heading, 120)}`,
     );
     if (entries.length >= 3) break;
   }
