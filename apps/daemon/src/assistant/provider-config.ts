@@ -21,8 +21,9 @@ const PROVIDER_LABEL: Record<ProviderId, string> = {
   'nvidia-nim': 'NVIDIA NIM',
 };
 
-const keyFrom = (secret: string): Buffer =>
+export const providerKeyFrom = (secret: string): Buffer =>
   createHash('sha256').update(`bananasaurs:assistant-provider:${secret}`, 'utf8').digest();
+const keyFrom = providerKeyFrom;
 export type ProviderSecretSource = 'env' | 'file' | 'missing';
 export type ProviderCostClass = 'free' | 'paid' | 'unknown';
 export interface ProviderConfigStatus {

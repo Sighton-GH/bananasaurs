@@ -21,6 +21,7 @@ import {
   setModelChain,
   updateKey,
 } from './assistant-providers.js';
+import { createScopeFactory } from '../scope.js';
 
 let t: MigratedTestDatabase;
 beforeEach(() => {
@@ -261,7 +262,14 @@ describe('assistant provider keys', () => {
     expect(listKeys(scope).map((k) => k.keyId)).toEqual([openrouter]);
     // The cascade drops gemini's chain row; the survivor keeps its position.
     expect(getModelChain(scope)).toEqual([
-      { position: 1, keyId: openrouter, provider: 'openrouter', model: 'or-model' },
+      {
+        position: 1,
+        keyId: openrouter,
+        provider: 'openrouter',
+        model: 'or-model',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
     ]);
   });
 });
@@ -286,13 +294,34 @@ describe('model chain', () => {
       11,
     );
     expect(getModelChain(scope)).toEqual([
-      { position: 0, keyId: openrouter, provider: 'openrouter', model: 'or-second' },
-      { position: 1, keyId: gemini, provider: 'gemini', model: 'gemini-first' },
+      {
+        position: 0,
+        keyId: openrouter,
+        provider: 'openrouter',
+        model: 'or-second',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
+      {
+        position: 1,
+        keyId: gemini,
+        provider: 'gemini',
+        model: 'gemini-first',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
     ]);
     // Setting again replaces, not appends.
     setModelChain(scope, [{ keyId: gemini, model: 'gemini-only' }], 12);
     expect(getModelChain(scope)).toEqual([
-      { position: 0, keyId: gemini, provider: 'gemini', model: 'gemini-only' },
+      {
+        position: 0,
+        keyId: gemini,
+        provider: 'gemini',
+        model: 'gemini-only',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
     ]);
   });
 
@@ -309,8 +338,22 @@ describe('model chain', () => {
       10,
     );
     expect(getModelChain(scope)).toEqual([
-      { position: 0, keyId: a, provider: 'gemini', model: 'gemini-2.5-flash' },
-      { position: 1, keyId: b, provider: 'gemini', model: 'gemini-2.5-flash' },
+      {
+        position: 0,
+        keyId: a,
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
+      {
+        position: 1,
+        keyId: b,
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
     ]);
   });
 
@@ -347,6 +390,90 @@ describe('model chain', () => {
     const scope = t.scopes.instance();
     expect(() => setModelChain(scope, [{ keyId: 'key_missing', model: 'm' }], 10)).toThrow();
     expect(getModelChain(scope)).toEqual([]);
+  });
+});
+
+describe('model chain rpm/rpd limits', () => {
+  it('round-trips per-entry limits through setModelChain/getModelChain', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, { provider: 'gemini', label: 'Gemini', apiKeyEnc: 'g', now: 10 });
+    setModelChain(scope, [{ keyId, model: 'm', rpmLimit: 15, rpdLimit: 1000 }], 11);
+    expect(getModelChain(scope)).toEqual([
+      {
+        position: 0,
+        keyId,
+        provider: 'gemini',
+        model: 'm',
+        rpmLimit: 15,
+        rpdLimit: 1000,
+      },
+    ]);
+  });
+
+  it('omitted limits read back as null', () => {
+    const scope = t.scopes.instance();
+    const keyId = addKey(scope, { provider: 'gemini', label: 'Gemini', apiKeyEnc: 'g', now: 10 });
+    setModelChain(scope, [{ keyId, model: 'm' }], 11);
+    expect(getModelChain(scope)).toEqual([
+      { position: 0, keyId, provider: 'gemini', model: 'm', rpmLimit: null, rpdLimit: null },
+    ]);
+  });
+});
+
+describe('migration 0047 adds chain limits and the resource error_code', () => {
+  it('keeps an existing chain row with null limits and a document with a null error_code', () => {
+    const raw = new Database(':memory:');
+    raw.pragma('foreign_keys = ON');
+    const db = drizzle(raw, { schema });
+    runMigrations(raw, db, migrationsFolderUpTo(46));
+    raw
+      .prepare(
+        `INSERT INTO assistant_provider_keys (key_id, provider, label, api_key_enc, cost_class, enabled, created_at, updated_at)
+         VALUES ('key_1', 'gemini', 'Gemini', 'sealed', 'free', 1, 7, 7)`,
+      )
+      .run();
+    raw
+      .prepare(
+        `INSERT INTO assistant_model_chain (position, key_id, model, updated_at)
+         VALUES (0, 'key_1', 'gemini-2.5-flash', 7)`,
+      )
+      .run();
+    raw
+      .prepare(
+        `INSERT INTO guilds (guild_id, name, created_at, updated_at)
+         VALUES ('111111111111111111', 'guild', 7, 7)`,
+      )
+      .run();
+    raw
+      .prepare(
+        `INSERT INTO assistant_resources (guild_id, resource_id, title, url, kind, reviewed_at)
+         VALUES ('111111111111111111', 'res-1', 'R', 'https://example.com/guide', 'website', 7)`,
+      )
+      .run();
+    raw
+      .prepare(
+        `INSERT INTO resource_documents (guild_id, doc_id, resource_id, url, path, title, content_hash, fetched_at, bytes, status)
+         VALUES ('111111111111111111', 'd_guide', 'res-1', 'https://example.com/guide', '/guide', 'Guide', 'h', 7, 10, 'ok')`,
+      )
+      .run();
+
+    runMigrations(raw, db, MIGRATIONS_FOLDER);
+
+    const migrated = createScopeFactory(db, { readonly: false }).instance();
+    expect(getModelChain(migrated)).toEqual([
+      {
+        position: 0,
+        keyId: 'key_1',
+        provider: 'gemini',
+        model: 'gemini-2.5-flash',
+        rpmLimit: null,
+        rpdLimit: null,
+      },
+    ]);
+    expect(raw.prepare('SELECT error_code FROM resource_documents').get()).toEqual({
+      error_code: null,
+    });
+    raw.close();
   });
 });
 

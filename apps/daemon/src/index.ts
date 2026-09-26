@@ -331,6 +331,8 @@ async function main(): Promise<void> {
       // Task 8: the one process-wide ledger — the same instance every
       // guild's assistant loop shares — so the allowance pill agrees.
       assistantQuotaLedger: daemon.quotaLedger,
+      // ADR 0080: the owner-edited instance settings (AI tuning).
+      instanceSettings: daemon.instanceSettings,
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and

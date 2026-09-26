@@ -35,6 +35,11 @@ export {
   type TryAssistantDeps,
 } from './routes/assistant-try.js';
 export { registerAssistantProviderRoutes } from './routes/assistant-providers.js';
+export {
+  registerAssistantTuningRoutes,
+  type InstanceSettingsPort,
+  type TuningSetResult,
+} from './routes/assistant-tuning.js';
 export { registerAssistantTraceRoutes } from './routes/assistant-traces.js';
 export { registerAssistantResourceCacheRoutes } from './routes/assistant-resources-cache.js';
 export { registerAssistantConversationRoutes } from './routes/assistant-conversations.js';
