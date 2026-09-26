@@ -34,10 +34,12 @@ Driving the pipeline with the real files found these causes:
 
 ## Decision
 
-1. **Text keeps its lines.** The fetcher converts HTML with the chunker's `htmlToText` (which
-   keeps headings, list items and paragraphs, and now also drops `<head>` and `<svg>`), and
-   passes every other type through with line endings normalised. Converted HTML is chunked as
-   markdown. `extractEvidenceText` becomes `extractResourceText`.
+1. **Text keeps its lines.** The fetcher passes the body through with only NUL characters
+   removed. `extractEvidenceText` is deleted. The chunker already converts HTML with
+   `htmlToText`, which keeps headings, list items and paragraphs, and now also drops `<head>`
+   and `<svg>`. Converting once, in the chunker, avoids a second pass that would strip a
+   decoded `<approved>` a second time. The chunker also ignores `#` lines inside fenced code
+   blocks, because shell comments are not headings.
 2. **No character cap on cached text.** The fetcher's 1 MB body cap, GitHub's 200 KB per-file
    cap and the chunker bound it. Every tool result is still capped where it is shown.
 3. **Headings are bounded twice.** The chunker clips each heading segment to 120 characters.
