@@ -189,6 +189,17 @@ export const createAssistantService = (
    * ledger (one per service) for tests that do not pass one.
    */
   quotaLedger: QuotaLedger = new QuotaLedger(),
+  /**
+   * Task 7: the live tool-loop limits from the AI tuning settings
+   * (`assistant.maxToolRounds`, `assistant.maxToolCalls`,
+   * `assistant.maxOutputTokens`). Merged over the loop's defaults by
+   * `runToolLoop` itself; absent means today's behaviour.
+   */
+  loopLimits: () => {
+    readonly rounds?: number;
+    readonly totalCalls?: number;
+    readonly maxOutputTokens?: number;
+  } = () => ({}),
 ): AssistantCommandService & {
   tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
 } => {
@@ -802,6 +813,7 @@ export const createAssistantService = (
           idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
           run: (call) => runAssistantTool(call, toolPorts),
         },
+        limits: loopLimits(),
         quotaLedger: ledger,
         now,
       });

@@ -240,9 +240,12 @@ const parseCursor = (cursor: string | null): StagedCursor | undefined => {
  * is bounded below the store's default `maxAttempts` (5), so the member always
  * gets an answer, and ends well inside Discord's 15-minute interaction-token
  * window. Non-retryable failures answer at once.
+ *
+ * These delays are the defaults for the AI tuning setting
+ * `assistant.retryDelaysMs`: at most 4 delays, so the ceiling
+ * (`delays.length + 1`) never exceeds the store's `maxAttempts` of 5.
  */
 const PROVIDER_RETRY_DELAYS_MS = [10_000, 30_000, 90_000] as const;
-const PROVIDER_RETRY_CEILING = PROVIDER_RETRY_DELAYS_MS.length + 1;
 
 export const assistantInvokeHandler = (deps: {
   guildId: string;
@@ -282,6 +285,12 @@ export const assistantInvokeHandler = (deps: {
         messageId: string,
       ) => Promise<{ authorId: string; authorName: string; content: string } | undefined>)
     | undefined;
+  /**
+   * Task 7: the live retry delays from the AI tuning settings
+   * (`assistant.retryDelaysMs`). Absent means today's 10 s / 30 s / 90 s
+   * defaults; empty means the first retryable failure answers at once.
+   */
+  readonly retryDelaysMs?: (() => readonly number[]) | undefined;
 }): JobHandler<AssistantInvokePayload> => ({
   kind: JOB_KINDS.assistantInvoke,
   payload: assistantInvokePayload,
@@ -553,6 +562,7 @@ export const assistantInvokeHandler = (deps: {
           if (!flags.includes(flag)) flags.push(flag);
         }
       } catch (err) {
+        const delays = deps.retryDelaysMs?.() ?? PROVIDER_RETRY_DELAYS_MS;
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of
         // tomorrow's requests for the same guaranteed failure.
@@ -569,7 +579,7 @@ export const assistantInvokeHandler = (deps: {
         if (
           err instanceof ProviderError &&
           err.retryable &&
-          context.attempts < PROVIDER_RETRY_CEILING
+          context.attempts < delays.length + 1
         ) {
           deps.logger.warn(
             safeLogFields({
@@ -582,7 +592,7 @@ export const assistantInvokeHandler = (deps: {
           );
           throw new RetryAfterError(
             err.message,
-            PROVIDER_RETRY_DELAYS_MS[context.attempts - 1] ?? PROVIDER_RETRY_DELAYS_MS.at(-1)!,
+            delays[context.attempts - 1] ?? delays.at(-1)!,
           );
         }
         // Anything else - or the last permitted attempt - answers the member

@@ -58,13 +58,15 @@ export const makeProvider = (
   provider: ProviderId,
   apiKey: string,
   costClass: ProviderCostClass,
+  options?: { readonly timeoutMs?: number },
 ): TextProvider => {
+  const timeoutMs = options?.timeoutMs;
   const inner =
     provider === 'gemini'
-      ? new GeminiProvider({ apiKey })
+      ? new GeminiProvider({ apiKey, ...(timeoutMs === undefined ? {} : { timeoutMs }) })
       : provider === 'openrouter'
-        ? createOpenRouterProvider({ apiKey })
-        : createNvidiaNimProvider({ apiKey });
+        ? createOpenRouterProvider({ apiKey, ...(timeoutMs === undefined ? {} : { timeoutMs }) })
+        : createNvidiaNimProvider({ apiKey, ...(timeoutMs === undefined ? {} : { timeoutMs }) });
   return new SafeProvider(inner, costClass, { monthlyCapUsdMicros: 0 });
 };
 
@@ -129,7 +131,10 @@ export const resolveModelChain = (deps: {
     provider: ProviderId,
     apiKey: string,
     costClass: ProviderCostClass,
+    options?: { readonly timeoutMs?: number },
   ) => TextProvider;
+  /** Read once per resolve and passed to `makeProvider`. Absent means the provider default. */
+  readonly providerTimeoutMs?: () => number;
 }): readonly ChainEntry[] => {
   const storedKeys = assistantProvidersRepo.listKeys(deps.instance);
   const keysById = new Map(storedKeys.map((k) => [k.keyId, k] as const));
@@ -184,10 +189,14 @@ export const resolveModelChain = (deps: {
 
   // Entries sharing a key share one constructed provider instance.
   const providerCache = new Map<string, TextProvider>();
+  const timeoutMs = deps.providerTimeoutMs?.();
   const providerFor = (candidate: Candidate, apiKey: string): TextProvider => {
     const existing = providerCache.get(candidate.keyId);
     if (existing !== undefined) return existing;
-    const built = deps.makeProvider(candidate.provider, apiKey, candidate.costClass);
+    const built =
+      timeoutMs === undefined
+        ? deps.makeProvider(candidate.provider, apiKey, candidate.costClass)
+        : deps.makeProvider(candidate.provider, apiKey, candidate.costClass, { timeoutMs });
     providerCache.set(candidate.keyId, built);
     return built;
   };
