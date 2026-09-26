@@ -34,7 +34,9 @@ describe('instance settings', () => {
   it('upsert of the same key overwrites the prior row', () => {
     upsertSetting(scope, { key: 'k', valueJson: '1', updatedAt: 1, updatedBy: 'a' });
     upsertSetting(scope, { key: 'k', valueJson: '2', updatedAt: 2, updatedBy: 'b' });
-    expect(listSettings(scope)).toEqual([{ key: 'k', valueJson: '2', updatedAt: 2, updatedBy: 'b' }]);
+    expect(listSettings(scope)).toEqual([
+      { key: 'k', valueJson: '2', updatedAt: 2, updatedBy: 'b' },
+    ]);
   });
 
   it('delete removes the key and is a no-op for an unknown key', () => {
@@ -47,7 +49,12 @@ describe('instance settings', () => {
 
   it('refuses a key longer than 64 characters', () => {
     expect(() =>
-      upsertSetting(scope, { key: `k${'x'.repeat(64)}`, valueJson: '1', updatedAt: 1, updatedBy: 'a' }),
+      upsertSetting(scope, {
+        key: `k${'x'.repeat(64)}`,
+        valueJson: '1',
+        updatedAt: 1,
+        updatedBy: 'a',
+      }),
     ).toThrow();
     expect(listSettings(scope)).toEqual([]);
   });

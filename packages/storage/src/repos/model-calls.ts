@@ -52,7 +52,10 @@ const PRUNE_AFTER_MS = 172800000;
 const forKeyModel = (keyId: string, model: string) =>
   and(eq(assistantModelCalls.keyId, keyId), eq(assistantModelCalls.model, model));
 
-export const reserveModelCall = (scope: InstanceScope, input: ReserveModelCallInput): ReserveResult =>
+export const reserveModelCall = (
+  scope: InstanceScope,
+  input: ReserveModelCallInput,
+): ReserveResult =>
   writeInstance(scope, ({ db }) => {
     // 1. Prune rows older than 48 h.
     db.delete(assistantModelCalls)
@@ -64,7 +67,10 @@ export const reserveModelCall = (scope: InstanceScope, input: ReserveModelCallIn
         .select({ at: assistantModelCalls.at })
         .from(assistantModelCalls)
         .where(
-          and(forKeyModel(input.keyId, input.model), sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`),
+          and(
+            forKeyModel(input.keyId, input.model),
+            sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`,
+          ),
         )
         .all();
       if (minuteRows.length >= input.rpmLimit) {
@@ -82,7 +88,10 @@ export const reserveModelCall = (scope: InstanceScope, input: ReserveModelCallIn
         .select({ n: sql<number>`count(*)` })
         .from(assistantModelCalls)
         .where(
-          and(forKeyModel(input.keyId, input.model), sql`${assistantModelCalls.at} >= ${input.dayStart}`),
+          and(
+            forKeyModel(input.keyId, input.model),
+            sql`${assistantModelCalls.at} >= ${input.dayStart}`,
+          ),
         )
         .get()?.n;
       if ((today ?? 0) >= input.rpdLimit) {
@@ -102,7 +111,10 @@ export const modelUsage = (scope: InstanceScope, input: ModelUsageInput): ModelU
       .select({ at: assistantModelCalls.at })
       .from(assistantModelCalls)
       .where(
-        and(forKeyModel(input.keyId, input.model), sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`),
+        and(
+          forKeyModel(input.keyId, input.model),
+          sql`${assistantModelCalls.at} > ${input.now - MINUTE_MS}`,
+        ),
       )
       .all();
     const today =
@@ -110,7 +122,10 @@ export const modelUsage = (scope: InstanceScope, input: ModelUsageInput): ModelU
         .select({ n: sql<number>`count(*)` })
         .from(assistantModelCalls)
         .where(
-          and(forKeyModel(input.keyId, input.model), sql`${assistantModelCalls.at} >= ${input.dayStart}`),
+          and(
+            forKeyModel(input.keyId, input.model),
+            sql`${assistantModelCalls.at} >= ${input.dayStart}`,
+          ),
         )
         .get()?.n ?? 0;
     return {
@@ -118,6 +133,11 @@ export const modelUsage = (scope: InstanceScope, input: ModelUsageInput): ModelU
       today: Number(today),
       ...(minuteRows.length === 0
         ? {}
-        : { oldestInMinute: minuteRows.reduce((min, r) => Math.min(min, r.at), Number.POSITIVE_INFINITY) }),
+        : {
+            oldestInMinute: minuteRows.reduce(
+              (min, r) => Math.min(min, r.at),
+              Number.POSITIVE_INFINITY,
+            ),
+          }),
     };
   });

@@ -103,10 +103,7 @@ describe('reserveModelCall counters are per (key, model)', () => {
 
 describe('reserveModelCall last slot', () => {
   it('two reservations at the same now with rpm 1 yield exactly one ok', () => {
-    const results = [
-      reserve({ now: 5000, rpmLimit: 1 }),
-      reserve({ now: 5000, rpmLimit: 1 }),
-    ];
+    const results = [reserve({ now: 5000, rpmLimit: 1 }), reserve({ now: 5000, rpmLimit: 1 })];
     expect(results.filter((r) => r.ok)).toHaveLength(1);
     expect(results.filter((r) => !r.ok)).toHaveLength(1);
   });
@@ -130,9 +127,11 @@ describe('modelUsage', () => {
     reserve({ now: 50000 });
     reserve({ now: 90000 });
     reserve({ now: 99500 });
-    expect(
-      modelUsage(scope, { keyId, model: MODEL, now: 100000, dayStart: DAY_START }),
-    ).toEqual({ lastMinute: 3, today: 3, oldestInMinute: 50000 });
+    expect(modelUsage(scope, { keyId, model: MODEL, now: 100000, dayStart: DAY_START })).toEqual({
+      lastMinute: 3,
+      today: 3,
+      oldestInMinute: 50000,
+    });
   });
 
   it('excludes rows outside the windows and omits oldestInMinute when the minute is empty', () => {
