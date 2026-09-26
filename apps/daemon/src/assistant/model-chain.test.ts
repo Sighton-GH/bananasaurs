@@ -1,11 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { parseConfig, type TextProvider } from '@bananasaurs/core';
+import { parseConfig, ProviderError, type TextProvider } from '@bananasaurs/core';
 import { assistantProvidersRepo, type InstanceScope } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { resolveModelChain, type ChainEntry } from './model-chain.js';
+import { makeProvider, resolveModelChain, type ChainEntry } from './model-chain.js';
 
 let t: MigratedTestDatabase;
 beforeEach(() => {
@@ -357,6 +357,48 @@ describe('resolveModelChain', () => {
       });
       expect(entries).toHaveLength(2);
       expect(entries.some((e) => e.keyId === 'key_env')).toBe(false);
+    });
+  });
+
+  describe('makeProvider timeout', () => {
+    it('makeProvider with timeoutMs 7000 aborts at 7000 ms, not 30000', async () => {
+      vi.useFakeTimers();
+      try {
+        const fetchImpl = vi.fn(
+          (_url: string | URL | Request, init?: { signal?: AbortSignal | null }): Promise<Response> =>
+            new Promise<Response>((_resolve, reject) => {
+              const signal = init?.signal;
+              if (signal === undefined || signal === null) return;
+              if (signal.aborted) {
+                reject(signal.reason);
+                return;
+              }
+              signal.addEventListener('abort', () => reject(signal.reason), { once: true });
+            }),
+        );
+        vi.stubGlobal('fetch', fetchImpl);
+        const provider = makeProvider('openrouter', 'k', 'free', { timeoutMs: 7000 });
+        let settled: unknown;
+        const pending = provider.generateText({
+          model: 'm',
+          messages: [{ role: 'user', text: 'hi' }],
+        });
+        pending.then(
+          () => {
+            settled = 'resolved';
+          },
+          (err: unknown) => {
+            settled = err;
+          },
+        );
+        await vi.advanceTimersByTimeAsync(7000);
+        expect(fetchImpl).toHaveBeenCalled();
+        expect(settled).toBeInstanceOf(ProviderError);
+        expect((settled as ProviderError).kind).toBe('timeout');
+      } finally {
+        vi.unstubAllGlobals();
+        vi.useRealTimers();
+      }
     });
   });
 });
