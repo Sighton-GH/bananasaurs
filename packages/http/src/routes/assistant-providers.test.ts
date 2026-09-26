@@ -65,18 +65,30 @@ const auditText = (): string =>
 const fakeStore = (
   over: {
     keys?: FakeKey[];
-    chain?: { keyId: string; model: string }[];
+    chain?: { keyId: string; model: string; rpmLimit?: number | null; rpdLimit?: number | null }[];
     eligibility?: Record<string, { trainsOnInput: string; productionUseAllowed: boolean }>;
     webSearch?: { keyConfigured: boolean; enabled: boolean };
     githubConfigured?: boolean;
+    modelUsage?: (entry: {
+      readonly keyId: string;
+      readonly model: string;
+      readonly providerId: string;
+      readonly rpmLimit: number | null;
+      readonly rpdLimit: number | null;
+    }) =>
+      | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
+      | undefined;
   } = {},
 ) => {
   let keys: FakeKey[] = over.keys ?? [
     { keyId: 'key_a', provider: 'gemini', label: 'Main key', costClass: 'free', enabled: true },
   ];
-  let chain: { keyId: string; model: string }[] = over.chain ?? [
-    { keyId: 'key_a', model: 'gemini-2.5-flash' },
-  ];
+  let chain: {
+    keyId: string;
+    model: string;
+    rpmLimit?: number | null;
+    rpdLimit?: number | null;
+  }[] = over.chain ?? [{ keyId: 'key_a', model: 'gemini-2.5-flash' }];
   let next = 1;
   const eligibility = over.eligibility ?? {
     gemini: { trainsOnInput: 'no', productionUseAllowed: true },
@@ -141,6 +153,8 @@ const fakeStore = (
             provider: undefined,
             skip: key === undefined ? ('no-key' as const) : ('disabled' as const),
             mayTrain: false,
+            rpmLimit: row.rpmLimit ?? null,
+            rpdLimit: row.rpdLimit ?? null,
           };
         }
         const elig = eligibility[key.provider];
@@ -153,6 +167,8 @@ const fakeStore = (
             provider: undefined,
             skip: 'unverified' as const,
             mayTrain: false,
+            rpmLimit: row.rpmLimit ?? null,
+            rpdLimit: row.rpdLimit ?? null,
           };
         }
         if (!elig.productionUseAllowed) {
@@ -164,6 +180,8 @@ const fakeStore = (
             provider: undefined,
             skip: 'ineligible' as const,
             mayTrain: false,
+            rpmLimit: row.rpmLimit ?? null,
+            rpdLimit: row.rpdLimit ?? null,
           };
         }
         return {
@@ -178,11 +196,21 @@ const fakeStore = (
           },
           skip: undefined,
           mayTrain: elig.trainsOnInput !== 'no',
+          rpmLimit: row.rpmLimit ?? null,
+          rpdLimit: row.rpdLimit ?? null,
         };
       }),
-    saveChain: (rows: readonly { keyId: string; model: string }[]) => {
+    saveChain: (
+      rows: readonly {
+        keyId: string;
+        model: string;
+        rpmLimit?: number | null;
+        rpdLimit?: number | null;
+      }[],
+    ) => {
       chain = rows.map((r) => ({ ...r }));
     },
+    ...(over.modelUsage === undefined ? {} : { modelUsage: over.modelUsage }),
     saveGithubToken: () => undefined,
     isKeyReadable: () => true,
     githubTokenConfigured: () => over.githubConfigured ?? false,
@@ -893,5 +921,122 @@ describe('Task 10 (f): chain test classifies failures and honours reserveTestCal
     expect(body.ok).toBe(false);
     expect(body.failure?.code).toBe('local-rpm-limit');
     expect(calls).toBe(0);
+  });
+});
+
+describe('per-entry RPM/RPD limits (ADR 0081)', () => {
+  it('PUT stores the limits, audits them and GET returns them', async () => {
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/model-chain',
+      headers,
+      payload: { entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: 15, rpdLimit: 1000 }] },
+    });
+    expect(saved.statusCode).toBe(200);
+    const fetched = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/providers',
+      headers: { cookie: owner.cookie },
+    });
+    expect(fetched.statusCode).toBe(200);
+    expect(
+      fetched.json<{ chain: { keyId: string; model: string; rpmLimit: number | null; rpdLimit: number | null }[] }>()
+        .chain[0],
+    ).toMatchObject({ keyId: 'key_a', rpmLimit: 15, rpdLimit: 1000 });
+    const audit = auditRows().find((row) => row.action === 'assistant_provider.chain_saved');
+    expect(audit).toBeTruthy();
+    expect(JSON.parse(audit!.after as string).entries[0]).toMatchObject({
+      keyId: 'key_a',
+      model: 'gemini-2.5-flash',
+      rpmLimit: 15,
+      rpdLimit: 1000,
+    });
+  });
+
+  it('PUT refuses 0 and 1.5 with a field error on entries.0.rpmLimit', async () => {
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const zero = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/model-chain',
+      headers,
+      payload: { entries: [{ keyId: 'key_a', model: 'm', rpmLimit: 0 }] },
+    });
+    expect(zero.statusCode).toBe(400);
+    expect(zero.json().fields).toContainEqual({
+      path: 'entries.0.rpmLimit',
+      problem: expect.anything(),
+    });
+    const fractional = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/model-chain',
+      headers,
+      payload: { entries: [{ keyId: 'key_a', model: 'm', rpmLimit: 1.5 }] },
+    });
+    expect(fractional.statusCode).toBe(400);
+    expect(fractional.json().fields).toContainEqual({
+      path: 'entries.0.rpmLimit',
+      problem: expect.anything(),
+    });
+  });
+
+  it('PUT without the limit keys saves null for both', async () => {
+    const owner = await signInAs('owner');
+    const headers = { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf };
+    const saved = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/model-chain',
+      headers,
+      payload: { entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash' }] },
+    });
+    expect(saved.statusCode).toBe(200);
+    const fetched = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/providers',
+      headers: { cookie: owner.cookie },
+    });
+    expect(
+      fetched.json<{ chain: { rpmLimit: number | null; rpdLimit: number | null }[] }>().chain[0],
+    ).toMatchObject({ rpmLimit: null, rpdLimit: null });
+  });
+
+  it('GET includes usage from modelUsage and omits it when undefined', async () => {
+    deps = {
+      ...deps,
+      assistantProviderConfig: fakeStore({
+        modelUsage: () => ({ lastMinute: 3, today: 40, availableAt: 123 }),
+      }) as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+    const owner = await signInAs('owner');
+    const withUsage = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/providers',
+      headers: { cookie: owner.cookie },
+    });
+    expect(
+      withUsage.json<{ chain: { usage?: unknown }[] }>().chain[0]?.usage,
+    ).toEqual({ lastMinute: 3, today: 40, availableAt: 123 });
+
+    deps = {
+      ...deps,
+      assistantProviderConfig: fakeStore({
+        modelUsage: () => undefined,
+      }) as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+    const owner2 = await signInAs('owner');
+    const withoutUsage = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/providers',
+      headers: { cookie: owner2.cookie },
+    });
+    expect(
+      'usage' in (withoutUsage.json<{ chain: Record<string, unknown>[] }>().chain[0] ?? {}),
+    ).toBe(false);
   });
 });

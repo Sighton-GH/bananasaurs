@@ -175,8 +175,27 @@ export interface HttpDeps extends AuthDeps {
             | undefined;
           readonly skip?: AssistantChainSkipReason | undefined;
           readonly mayTrain: boolean;
+          readonly rpmLimit: number | null;
+          readonly rpdLimit: number | null;
         }[];
-        saveChain?(rows: readonly { keyId: string; model: string }[], now: number): void;
+        saveChain?(
+          rows: readonly {
+            keyId: string;
+            model: string;
+            rpmLimit?: number | null;
+            rpdLimit?: number | null;
+          }[],
+          now: number,
+        ): void;
+        modelUsage?(entry: {
+          readonly keyId: string;
+          readonly model: string;
+          readonly providerId: string;
+          readonly rpmLimit: number | null;
+          readonly rpdLimit: number | null;
+        }):
+          | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
+          | undefined;
         saveGithubToken?(token: string | null): void;
         isKeyReadable?(keyId: string): boolean;
         githubTokenConfigured?(): boolean;

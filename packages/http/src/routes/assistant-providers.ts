@@ -35,7 +35,14 @@ const keyPatch = z
 const chainBody = z
   .object({
     entries: z.array(
-      z.object({ keyId: z.string().min(1).max(200), model: z.string().min(1).max(200) }).strict(),
+      z
+        .object({
+          keyId: z.string().min(1).max(200),
+          model: z.string().min(1).max(200),
+          rpmLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
+          rpdLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
+        })
+        .strict(),
     ),
   })
   .strict();
@@ -111,6 +118,7 @@ export const registerAssistantProviderRoutes = (
     const chain = chainEntries.map((entry, position) => {
       const reset = resetsAt(entry.keyId);
       const status = reset !== undefined ? 'allowance-used' : (entry.skip ?? 'ready');
+      const usage = configured.modelUsage?.(entry);
       return {
         position,
         keyId: entry.keyId,
@@ -118,7 +126,10 @@ export const registerAssistantProviderRoutes = (
         provider: entry.providerId,
         model: entry.model,
         status,
+        rpmLimit: entry.rpmLimit,
+        rpdLimit: entry.rpdLimit,
         ...(reset === undefined ? {} : { allowanceResetsAt: reset }),
+        ...(usage === undefined ? {} : { usage }),
       };
     });
     const providers = PROVIDERS.map((provider) => ({
@@ -260,7 +271,12 @@ export const registerAssistantProviderRoutes = (
     }
     try {
       configured.saveChain(
-        parsed.data.entries.map((entry) => ({ keyId: entry.keyId, model: entry.model })),
+        parsed.data.entries.map((entry) => ({
+          keyId: entry.keyId,
+          model: entry.model,
+          rpmLimit: entry.rpmLimit ?? null,
+          rpdLimit: entry.rpdLimit ?? null,
+        })),
         deps.now(),
       );
     } catch {
@@ -278,6 +294,8 @@ export const registerAssistantProviderRoutes = (
           position,
           keyId: entry.keyId,
           model: entry.model,
+          rpmLimit: entry.rpmLimit ?? null,
+          rpdLimit: entry.rpdLimit ?? null,
         })),
       },
     });
