@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { parseDuration, snowflakeIdSchema } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { requireCapability } from './capability.js';
 
 /**
@@ -148,7 +149,7 @@ export const registerOpsReadRoutes = (
         limit: z.coerce.number().int().min(1).max(100).optional(),
       })
       .safeParse(request.query);
-    if (!query.success) return reply.status(400).send({ error: 'invalid-query' });
+    if (!query.success) return badRequest(reply, query.error, 'invalid-query');
 
     const ports = deps.portsFor(session.scope);
     const page = await ports.listGuildMembers({
@@ -204,7 +205,7 @@ export const registerOpsReadRoutes = (
     if (!requireCapability(session, 'audit.read', reply)) return reply;
 
     const parsed = archiveSearchQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const input: {
@@ -317,7 +318,7 @@ export const registerOpsReadRoutes = (
       const parsedLimit = limitQuery.safeParse(
         request.query.limit === '' ? undefined : request.query.limit,
       );
-      if (!parsedLimit.success) return reply.status(400).send({ error: 'invalid-query' });
+      if (!parsedLimit.success) return badRequest(reply, parsedLimit.error, 'invalid-query');
       const rows = deps
         .portsFor(session.scope)
         .listSends({ sinceMs, limit: parsedLimit.data ?? 25 });

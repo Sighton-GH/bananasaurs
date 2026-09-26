@@ -1,0 +1,55 @@
+import { describe, expect, it } from 'vitest';
+import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
+
+describe('instance settings registry', () => {
+  it('has 11 definitions and every default parses under its own schema', () => {
+    expect(INSTANCE_SETTINGS).toHaveLength(11);
+    for (const def of INSTANCE_SETTINGS) {
+      expect(def.schema.safeParse(def.defaultValue).success, def.key).toBe(true);
+    }
+  });
+
+  it('retry delays accept an empty list and refuse bad shapes', () => {
+    const def = settingDefinition('assistant.retryDelaysMs');
+    expect(def).toBeDefined();
+    expect(def?.schema.safeParse([60_000, 60_000, 60_000]).success).toBe(true);
+    expect(def?.schema.safeParse([]).success).toBe(true);
+    const over = def?.schema.safeParse([60_000, 60_000, 60_001]);
+    expect(over?.success).toBe(false);
+    if (over !== undefined && !over.success) {
+      expect(over.error.issues[0]?.message).toBe('Retry delays must add up to 3 minutes or less.');
+    }
+    expect(def?.schema.safeParse([10_000, 10_000, 10_000, 10_000, 10_000]).success).toBe(false);
+    expect(def?.schema.safeParse([500]).success).toBe(false);
+  });
+
+  it('refuses a reserved fetch header name and accepts a custom one', () => {
+    const def = settingDefinition('resources.fetchHeaderName');
+    expect(def?.schema.safeParse('Authorization').success).toBe(false);
+    expect(def?.schema.safeParse('X-Bananasaurs-Fetch').success).toBe(true);
+  });
+
+  it('accepts a bare host and refuses a URL', () => {
+    const def = settingDefinition('resources.fetchHeaderHosts');
+    expect(def?.schema.safeParse(['sfuracerbot.ca']).success).toBe(true);
+    expect(def?.schema.safeParse(['https://x.ca']).success).toBe(false);
+  });
+
+  it('defaults equal today\u2019s constants', () => {
+    const valueOf = (key: string): unknown => settingDefinition(key)?.defaultValue;
+    expect(valueOf('assistant.retryDelaysMs')).toEqual([10_000, 30_000, 90_000]);
+    expect(valueOf('assistant.providerTimeoutMs')).toBe(30_000);
+    expect(valueOf('assistant.maxToolRounds')).toBe(4);
+    expect(valueOf('assistant.maxToolCalls')).toBe(12);
+    expect(valueOf('assistant.maxOutputTokens')).toBe(2048);
+    expect(valueOf('network.connectFallbackMs')).toBe(1000);
+    expect(valueOf('resources.fetchTimeoutMs')).toBe(5000);
+    expect(valueOf('resources.refreshIntervalMin')).toBe(60);
+  });
+
+  it('recognises known keys', () => {
+    expect(isInstanceSettingKey('assistant.maxToolRounds')).toBe(true);
+    expect(isInstanceSettingKey('nope')).toBe(false);
+    expect(settingDefinition('nope')).toBeUndefined();
+  });
+});

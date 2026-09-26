@@ -94,7 +94,7 @@ describe('refreshResource', () => {
       resource({ kind: 'discord-channel' }),
       deps({ fetch }, repo),
     );
-    expect(outcome).toBe('skipped');
+    expect(outcome).toEqual({ outcome: 'skipped' });
     expect(fetch).not.toHaveBeenCalled();
     expect(repo.docs.size).toBe(0);
     expect(repo.chunkCalls).toHaveLength(0);
@@ -109,7 +109,7 @@ describe('refreshResource', () => {
       url: 'Meet Tuesdays at 6pm in the CS building, room 204.',
     });
     const outcome = await refreshResource(SCOPE, note, deps({ fetch }, repo));
-    expect(outcome).toBe('ok');
+    expect(outcome).toEqual({ outcome: 'ok' });
     expect(fetch).not.toHaveBeenCalled();
     expect(repo.chunkCalls).toHaveLength(1);
     expect(repo.chunkCalls[0]?.chunkCount).toBeGreaterThan(0);
@@ -131,7 +131,7 @@ describe('refreshResource', () => {
       note,
       deps({ fetch }, repo, () => 2_000),
     );
-    expect(outcome).toBe('not-modified');
+    expect(outcome).toEqual({ outcome: 'not-modified' });
     expect(repo.chunkCalls).toHaveLength(1); // only the first refresh replaced chunks
     const [doc] = [...repo.docs.values()];
     expect(doc?.fetchedAt).toBe(2_000); // fetchedAt still bumps
@@ -160,7 +160,7 @@ describe('refreshResource', () => {
       resource(),
       deps({ fetch }, repo, () => 1_000),
     );
-    expect(first).toBe('ok');
+    expect(first).toEqual({ outcome: 'ok' });
     expect(repo.chunkCalls).toHaveLength(1);
 
     const second = await refreshResource(
@@ -168,7 +168,7 @@ describe('refreshResource', () => {
       resource(),
       deps({ fetch }, repo, () => 2_000),
     );
-    expect(second).toBe('not-modified');
+    expect(second).toEqual({ outcome: 'not-modified' });
     expect(repo.chunkCalls).toHaveLength(1); // still just the one, from the first refresh
     const [doc] = [...repo.docs.values()];
     expect(doc?.fetchedAt).toBe(2_000);
@@ -206,13 +206,13 @@ describe('refreshResource', () => {
       resource(),
       deps({ fetch }, repo, () => 2_000),
     );
-    expect(second).toBe('ok');
+    expect(second).toEqual({ outcome: 'ok' });
     expect(repo.chunkCalls).toHaveLength(2);
     const [doc] = [...repo.docs.values()];
     expect(doc?.contentHash).not.toBe('');
   });
 
-  it('a fetch error sets document status error with a plain message and keeps the old chunks', async () => {
+  it('a failed fetch persists its errorCode and reports code, status and host for logging', async () => {
     const repo = new FakeRepo();
     const fetch = vi
       .fn<ResourceRefreshFetcher['fetch']>()
@@ -229,8 +229,10 @@ describe('refreshResource', () => {
       })
       .mockResolvedValueOnce({
         ok: false,
-        code: 'timeout',
-        message: 'The reviewed resource could not be retrieved safely.',
+        code: 'challenge',
+        message: "The site's Cloudflare bot protection challenged Bananasaurs.",
+        httpStatus: 403,
+        host: 'example.com',
       });
 
     await refreshResource(
@@ -245,13 +247,19 @@ describe('refreshResource', () => {
       resource(),
       deps({ fetch }, repo, () => 2_000),
     );
-    expect(outcome).toBe('error');
+    expect(outcome).toEqual({
+      outcome: 'error',
+      code: 'challenge',
+      httpStatus: 403,
+      host: 'example.com',
+    });
     // Old chunks kept: no second replaceChunks call.
     expect(repo.chunkCalls).toHaveLength(1);
     const [doc] = [...repo.docs.values()];
     expect(doc).toMatchObject({
       status: 'error',
-      error: 'The reviewed resource could not be retrieved safely.',
+      error: "The site's Cloudflare bot protection challenged Bananasaurs.",
+      errorCode: 'challenge',
       fetchedAt: 2_000,
     });
   });
@@ -274,7 +282,7 @@ describe('refreshResource', () => {
       resource({ kind: 'repository', url: 'https://example.com/repo' }),
       deps({ fetch }, repo),
     );
-    expect(outcome).toBe('ok');
+    expect(outcome).toEqual({ outcome: 'ok' });
     expect(fetch).toHaveBeenCalledWith('https://example.com/repo', {});
   });
 

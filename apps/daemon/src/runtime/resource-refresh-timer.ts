@@ -31,7 +31,10 @@ export interface ResourceRefreshTimer {
 
 export interface ResourceRefreshTimerDeps {
   readonly guilds: () => readonly { scope: GuildScope }[];
-  readonly enqueue: (scope: GuildScope, input: jobRepo.EnqueueInput) => unknown;
+  readonly enqueue: (
+    scope: GuildScope,
+    input: jobRepo.EnqueueInput,
+  ) => { readonly enqueued: boolean };
   /**
    * Cheap peek before enqueueing: without it every guild gets one empty
    * `resource_refresh` job an hour forever, which only noise up `/status`'s
@@ -41,35 +44,41 @@ export interface ResourceRefreshTimerDeps {
    * for free; tests can inject a stub.
    */
   readonly hasResources?: (scope: GuildScope) => boolean;
+  /**
+   * The refresh bucket size: the owner's AI tuning setting (live, so edits
+   * apply without a restart). Defaults to the hourly constant. The recurring
+   * tick itself stays at 60 seconds — the bucket decides when a sweep is due,
+   * so a shorter interval never enqueues twice for one bucket.
+   */
+  readonly intervalMs?: () => number;
   readonly now: () => number;
   readonly logger: Logger;
 }
-
-const hourBucket = (nowMs: number): number => Math.floor(nowMs / RESOURCE_REFRESH_INTERVAL_MS);
 
 export function createResourceRefreshTimer(deps: ResourceRefreshTimerDeps): ResourceRefreshTimer {
   let timer: NodeJS.Timeout | undefined;
   const hasResources =
     deps.hasResources ?? ((scope) => assistantRepo.listResources(scope).length > 0);
+  const intervalMs = deps.intervalMs ?? (() => RESOURCE_REFRESH_INTERVAL_MS);
 
   const runOnce = (): void => {
     const now = deps.now();
-    const bucket = hourBucket(now);
+    const bucket = Math.floor(now / intervalMs());
     let enqueued = 0;
     for (const { scope } of deps.guilds()) {
       if (!hasResources(scope)) continue;
-      deps.enqueue(scope, {
+      const result = deps.enqueue(scope, {
         kind: JOB_KINDS.resourceRefresh,
         payload: JSON.stringify({ reason: 'hourly' }),
         dedupeKey: resourceRefreshDedupeKey({ reason: 'hourly', hourBucket: bucket }),
         now,
       });
-      enqueued += 1;
+      if (result.enqueued) enqueued += 1;
     }
     if (enqueued > 0) {
       deps.logger.info(
         safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.resourceRefresh }),
-        'resource cache: hourly refresh enqueued',
+        'resource cache: refresh enqueued',
       );
     }
   };
@@ -77,11 +86,14 @@ export function createResourceRefreshTimer(deps: ResourceRefreshTimerDeps): Reso
   return {
     runOnce,
     start() {
-      // Run once immediately rather than waiting out the first hour — a
+      // Run once immediately rather than waiting out the first interval — a
       // fresh install's resources should be fetched into the cache right
-      // away, not up to an hour later.
+      // away, not up to an interval later. The recurring tick is every
+      // minute; the bucket (the owner's refresh interval) decides when a
+      // sweep is actually due, so a tick inside the current bucket enqueues
+      // nothing.
       runOnce();
-      timer = setInterval(runOnce, RESOURCE_REFRESH_INTERVAL_MS);
+      timer = setInterval(runOnce, 60_000);
       // Same reasoning as the other timers: a pending refresh tick must not
       // be what keeps the process alive after the gateway connection dies.
       timer.unref();

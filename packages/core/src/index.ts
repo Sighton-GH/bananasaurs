@@ -519,6 +519,16 @@ export {
   type OpsSettingSpec,
 } from './ops/settings.js';
 export {
+  INSTANCE_SETTINGS,
+  isInstanceSettingKey,
+  settingDefinition,
+  type InstanceSettingKey,
+  type InstanceSettingValues,
+  type SettingDefinition,
+  type SettingDisplay,
+  type SettingGroup,
+} from './settings/instance-settings.js';
+export {
   ACCOUNT_ROLES,
   CAPABILITY_INFO,
   roleForCapabilities,
@@ -569,6 +579,17 @@ export type {
 } from './providers/contracts.js';
 export { ProviderError, type ProviderErrorKind } from './providers/errors.js';
 export {
+  classifyProviderFailure,
+  netCodeOf,
+  NET_ERROR_CODES,
+  PROVIDER_FAILURE_CODES,
+  PROVIDER_FAILURE_TEXT,
+  type FailureText,
+  type NetErrorCode,
+  type ProviderFailure,
+  type ProviderFailureCode,
+} from './providers/failure.js';
+export {
   assertProviderEligible,
   providerMayTrain,
   type ProviderAudience,
@@ -594,6 +615,11 @@ export {
   type OpenAiCompatibleProviderOptions,
 } from './providers/openai-compatible.js';
 export { SafeProvider } from './providers/safe-provider.js';
+export {
+  nextProviderDayStart,
+  providerDayStart,
+  providerDayZone,
+} from './providers/provider-day.js';
 export {
   assertSpendAllowed,
   type ProviderCostClass,

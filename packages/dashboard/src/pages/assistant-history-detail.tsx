@@ -160,6 +160,38 @@ export function AssistantHistoryDetailPage() {
                       header: 'Reason',
                       cell: (r) => r.reason ?? <span className="text-ink-muted">—</span>,
                     },
+                    {
+                      key: 'why',
+                      header: 'Why',
+                      cell: (r) => {
+                        if (r.explain === undefined) {
+                          return r.reason ?? <span className="text-ink-muted">—</span>;
+                        }
+                        const parts: string[] = [];
+                        if (r.host !== undefined && r.host !== '') parts.push(r.host);
+                        if (r.httpStatus !== undefined) parts.push(`HTTP ${String(r.httpStatus)}`);
+                        if (r.netCode !== undefined && r.netCode !== '') parts.push(r.netCode);
+                        if (
+                          (r.code === 'local-rpm-limit' || r.code === 'local-rpd-limit') &&
+                          r.availableAt !== undefined
+                        ) {
+                          parts.push(`frees up ${new Date(r.availableAt).toLocaleString('en-CA')}`);
+                        }
+                        return (
+                          <div className="grid gap-1 text-sm">
+                            <strong>{r.explain.title}</strong>
+                            <p>{r.explain.explanation}</p>
+                            <p>
+                              <span className="text-ink-muted">What to do: </span>
+                              {r.explain.hint}
+                            </p>
+                            {parts.length > 0 && (
+                              <p className="text-xs text-ink-muted">{parts.join(' · ')}</p>
+                            )}
+                          </div>
+                        );
+                      },
+                    },
                     { key: 'ms', header: 'Duration', numeric: true, cell: (r) => `${r.ms} ms` },
                   ]}
                 />

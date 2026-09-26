@@ -14,6 +14,7 @@ import {
   eligibilityRepo,
   guildRepo,
   jobRepo,
+  modelCallsRepo,
   resourceCacheRepo,
   traceRepo,
 } from '@bananasaurs/storage';
@@ -21,7 +22,8 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { resolveModelChain, type ChainEntry } from './model-chain.js';
+import { resolveModelChain, ENV_KEY_ID, type ChainEntry } from './model-chain.js';
+import { LocalLimitError } from './local-limit.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { createAssistantService, sanitizeMentionsForProvider } from './service.js';
 import type { AssistantServiceTestPorts } from './service.js';
@@ -83,6 +85,24 @@ describe('Task 6b fix round 2: ChainEntry.mayTrain training warning', () => {
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entries and
+    // the `key_test` test-provider entries run on real stored keys instead of
+    // bare ids.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
     assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
     assistantRepo.putSkillGrant(
       t.scopes.forGuild(GUILD),
@@ -294,6 +314,8 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
     ...over,
   });
 
@@ -305,12 +327,32 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     provider: undefined,
     skip,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   let t: MigratedTestDatabase;
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entries and
+    // the `key_test` test-provider entries run on real stored keys instead of
+    // bare ids.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
     assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
     assistantRepo.putSkillGrant(
       t.scopes.forGuild(GUILD),
@@ -510,6 +552,47 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
       content: 'Store them half charged.\n\n-# Powered by Brave Search',
     });
   });
+
+  it('a chain entry at its RPM limit throws LocalLimitError and the provider stays at one call', async () => {
+    const scripted = fakeProvider([{ text: 'First answer.', model: 'model-a' }]);
+    const service = serviceWith(() => [usable(scripted.provider, { rpmLimit: 1 })]);
+    await expect(service.invoke({ ...ask, invocationId: 'int-rpm-1' })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(service.invoke({ ...ask, invocationId: 'int-rpm-2' })).rejects.toBeInstanceOf(
+      LocalLimitError,
+    );
+    await expect(service.invoke({ ...ask, invocationId: 'int-rpm-3' })).rejects.toMatchObject({
+      code: 'local-rpm-limit',
+      availableAt: NOW + 60_000,
+    });
+    expect(scripted.calls()).toBe(1);
+  });
+
+  it('an .env-seed entry is never limited and inserts no ledger row', async () => {
+    const scripted = fakeProvider([
+      { text: 'First.', model: 'model-a' },
+      { text: 'Second.', model: 'model-a' },
+    ]);
+    const service = serviceWith(() => [
+      usable(scripted.provider, { keyId: ENV_KEY_ID, rpmLimit: 1, rpdLimit: 1 }),
+    ]);
+    await expect(service.invoke({ ...ask, invocationId: 'int-env-1' })).resolves.toMatchObject({
+      ok: true,
+    });
+    await expect(service.invoke({ ...ask, invocationId: 'int-env-2' })).resolves.toMatchObject({
+      ok: true,
+    });
+    expect(scripted.calls()).toBe(2);
+    expect(
+      modelCallsRepo.modelUsage(t.scopes.instance(), {
+        keyId: ENV_KEY_ID,
+        model: 'model-a',
+        now: NOW,
+        dayStart: 0,
+      }).today,
+    ).toBe(0);
+  });
 });
 
 describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () => {
@@ -552,12 +635,32 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   let t: MigratedTestDatabase;
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entries and
+    // the `key_test` test-provider entries run on real stored keys instead of
+    // bare ids.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
     assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
     assistantRepo.putSkillGrant(
       t.scopes.forGuild(GUILD),
@@ -852,12 +955,32 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   let t: MigratedTestDatabase;
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entries and
+    // the `key_test` test-provider entries run on real stored keys instead of
+    // bare ids.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
     assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
     assistantRepo.putSkillGrant(
       t.scopes.forGuild(GUILD),
@@ -1009,6 +1132,8 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   const answering = (text: string): TextProvider => ({
@@ -1021,6 +1146,24 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entries and
+    // the `key_test` test-provider entries run on real stored keys instead of
+    // bare ids.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
     assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
     assistantRepo.putSkillGrant(
       t.scopes.forGuild(GUILD),
@@ -1176,6 +1319,44 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     );
     const trace = traceRepo.getTrace(t.scopes.forGuild(GUILD), result.traceId);
     expect(trace?.outcome).toBe('failed');
+  });
+
+  it('answers the local-limit text when every entry is at its configured limit', async () => {
+    let n = 0;
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async () => {
+        n += 1;
+        return { text: 'First.', model: 'model-a' };
+      },
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [{ ...usable(provider), rpmLimit: 1 }],
+    );
+    const first = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'hi',
+      accountUsername: 'owner-name',
+    });
+    expect(first.answer).toBe('First.');
+    const second = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'hi again',
+      accountUsername: 'owner-name',
+    });
+    expect(second.answer).toBe(
+      'All AI models have reached the limits set for them. The next one frees up in about 1 minute.',
+    );
+    expect(n).toBe(1);
   });
 
   it('answers the configured-refusal text when no provider is usable', async () => {
@@ -1428,5 +1609,242 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     const content = result.ok === true ? result.content : '';
     const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
     expect((line.match(/ · /g) ?? []).length).toBe(2);
+  });
+});
+
+describe('Task 7: loop limits from the AI tuning settings', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entries and
+    // the `key_test` test-provider entries run on real stored keys instead of
+    // bare ids.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+    assistantRepo.putSkillGrant(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  it('passes loopLimits through to the provider request', async () => {
+    const seen: { readonly maxOutputTokens?: number | undefined }[] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (request) => {
+        seen.push({ maxOutputTokens: request.maxOutputTokens });
+        return { text: 'ok', model: 'model-a' };
+      },
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [
+        {
+          providerId: 'gemini',
+          model: 'model-a',
+          keyId: 'key_a',
+          keyLabel: 'Key A',
+          provider,
+          skip: undefined,
+          mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
+        },
+      ],
+      undefined,
+      () => ({ rounds: 1, totalCalls: 2, maxOutputTokens: 300 }),
+    );
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: CHANNEL,
+      userId: MEMBER,
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'hi' },
+      source: 'slash-command',
+      invocationId: 'int-loop-limits',
+    });
+    expect(result.ok).toBe(true);
+    expect(seen[0]?.maxOutputTokens).toBe(300);
+  });
+});
+
+describe('Task 10 (b): busy chain throws ChainFailedError', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const ask = {
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: MEMBER,
+    callerRoleIds: [CLUB_ROLE],
+    behaviour: direct,
+    command: 'ask' as const,
+    input: { question: 'when is the meeting?' },
+    source: 'slash-command' as const,
+    invocationId: 'int-chain-failed',
+  };
+
+  const connectTimeout = (): ProviderError =>
+    new ProviderError('outage', 'openrouter request failed', true, {
+      cause: new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+      }),
+      host: 'openrouter.ai',
+    });
+
+  const failingProvider = (): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools'] as const),
+    generateText: async () => {
+      throw connectTimeout();
+    },
+  });
+
+  const usable = (provider: TextProvider, model: string): ChainEntry => ({
+    providerId: 'openrouter',
+    model,
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+  });
+
+  it('two connect-timeout entries throw ChainFailedError naming both', async () => {
+    const { ChainFailedError } = await import('./chain-failed-error.js');
+    const t: MigratedTestDatabase = openMigratedTestDatabase();
+    try {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+      assistantProvidersRepo.addKey(t.scopes.instance(), {
+        provider: 'openrouter',
+        label: 'Key A',
+        apiKeyEnc: 'sealed-key-a',
+        now: NOW,
+        keyId: 'key_a',
+      });
+      assistantProvidersRepo.addKey(t.scopes.instance(), {
+        provider: 'openrouter',
+        label: 'Test provider',
+        apiKeyEnc: 'sealed-key-test',
+        now: NOW,
+        keyId: 'key_test',
+      });
+      assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+      const service = createAssistantService(
+        t.scopes.forGuild(GUILD),
+        t.scopes.instance(),
+        config,
+        () => NOW,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        () => [usable(failingProvider(), 'model-a'), usable(failingProvider(), 'model-b')],
+      );
+      const err = await service.invoke(ask).then(
+        () => {
+          throw new Error('expected invoke to throw');
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ChainFailedError);
+      const chained = err as InstanceType<typeof ChainFailedError>;
+      expect(chained.code).toBe('chain-failed');
+      expect(chained.attempts).toHaveLength(2);
+      const occurrences = chained.summary.split('provider-connect-timeout').length - 1;
+      expect(occurrences).toBe(2);
+    } finally {
+      t.close();
+    }
   });
 });

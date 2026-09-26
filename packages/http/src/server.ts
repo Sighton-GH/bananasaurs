@@ -1,5 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import type { Logger, OpsInstance, OpsPorts } from '@bananasaurs/core';
+import { safeLogFields, type Logger, type OpsInstance, type OpsPorts } from '@bananasaurs/core';
 import { parseGuildId } from '@bananasaurs/core';
 import { accountRepo, sessionRepo, type GuildScope } from '@bananasaurs/storage';
 import {
@@ -22,8 +23,12 @@ import {
   POLICY,
 } from './policy.js';
 import { dashboardAuditBase } from './routes/audit-base.js';
+import { explainError } from './errors/catalog.js';
+import { badRequest } from './errors/reply.js';
+import { isInstanceOwner } from './owner.js';
 import { secretsMatch } from './secrets.js';
 import type { GithubRouteClient } from './routes/assistant-github.js';
+import type { InstanceSettingsPort } from './routes/assistant-tuning.js';
 
 /**
  * The dashboard API.
@@ -170,11 +175,45 @@ export interface HttpDeps extends AuthDeps {
             | undefined;
           readonly skip?: AssistantChainSkipReason | undefined;
           readonly mayTrain: boolean;
+          readonly rpmLimit: number | null;
+          readonly rpdLimit: number | null;
         }[];
-        saveChain?(rows: readonly { keyId: string; model: string }[], now: number): void;
+        saveChain?(
+          rows: readonly {
+            keyId: string;
+            model: string;
+            rpmLimit?: number | null;
+            rpdLimit?: number | null;
+          }[],
+          now: number,
+        ): void;
+        modelUsage?(entry: {
+          readonly keyId: string;
+          readonly model: string;
+          readonly providerId: string;
+          readonly rpmLimit: number | null;
+          readonly rpdLimit: number | null;
+        }):
+          | { readonly lastMinute: number; readonly today: number; readonly availableAt?: number }
+          | undefined;
         saveGithubToken?(token: string | null): void;
         isKeyReadable?(keyId: string): boolean;
         githubTokenConfigured?(): boolean;
+        /**
+         * Task 10: the chain test reserves its call against the entry's
+         * owner-set RPM/RPD limits first (wired by a later task). Absent in
+         * older wiring, and then the test calls the provider directly.
+         */
+        reserveTestCall?(
+          position: number,
+          guildId: string,
+        ):
+          | { readonly ok: true }
+          | {
+              readonly ok: false;
+              readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+              readonly availableAt: number;
+            };
         /**
          * Task 17: the sealed GitHub token, opened for the client's
          * `Authorization` header only. Absent in older wiring.
@@ -190,6 +229,12 @@ export interface HttpDeps extends AuthDeps {
         channels: readonly { id: string; name: string }[];
       }>)
     | undefined;
+  /**
+   * ADR 0080: the daemon's instance settings store, for Assistant → AI
+   * tuning. Absent in isolated route tests, and then the tuning routes
+   * answer 503 `settings-unavailable`.
+   */
+  readonly instanceSettings?: InstanceSettingsPort | undefined;
   /**
    * ADR 0073: adding or editing a resource enqueues a cache refresh with
    * reason `added`, so a newly added resource has cached chunks before the
@@ -388,7 +433,11 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export function createServer(options: CreateServerOptions): FastifyInstance {
   const { deps } = options;
-  const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 64 * 1024,
+    genReqId: () => `req-${randomBytes(4).toString('hex')}`,
+  });
 
   // No CORS headers are sent, ever, and that is a security property rather than
   // an omission: it is what stops a cross-origin page reading the body of
@@ -412,7 +461,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     void defaultJsonParser(request, text, done);
   });
 
-  app.setErrorHandler((err, _request, reply) => {
+  app.setErrorHandler((err, request, reply) => {
     if (isReadonlyRefusal(err)) {
       void reply.status(READONLY_STATUS).send(READONLY_BODY);
       return;
@@ -423,15 +472,81 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     const status = (err as { statusCode?: unknown }).statusCode;
     if (typeof status === 'number' && status >= 400 && status < 500) {
       const code = (err as { code?: unknown }).code;
-      void reply.status(status).send({ error: typeof code === 'string' ? code : 'bad-request' });
+      const sent = typeof code === 'string' ? code : 'bad-request';
+      deps.logger.warn(
+        safeLogFields({
+          component: 'http',
+          requestId: request.id,
+          method: request.method,
+          route: request.routeOptions.url ?? 'unmatched',
+          httpStatus: status,
+          code: sent,
+        }),
+        'request refused',
+      );
+      void reply.status(status).send({ error: sent });
       return;
     }
     // The message only, never the error object: a thrown value could carry a
     // bound parameter or a row, and pino's redaction is an allowlist over
     // known field names rather than a filter over arbitrary nesting.
     const message = err instanceof Error ? err.message : 'a non-Error was thrown';
-    deps.logger.error({ component: 'http', err: message }, 'request failed');
-    void reply.status(500).send({ error: 'internal' });
+    deps.logger.error(
+      safeLogFields({
+        component: 'http',
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url ?? 'unmatched',
+        httpStatus: 500,
+        err: message,
+      }),
+      'request failed',
+    );
+    void reply.status(500).send({ error: 'internal', requestId: request.id });
+  });
+
+  /**
+   * ADR 0078: every non-2xx JSON body on the dashboard API carries its
+   * explanation. Fastify passes the already-serialized payload string here,
+   * so the hook parses it, fills in `title`, `message` (the catalog
+   * explanation), `hint` and `requestId` wherever the route left them
+   * absent, and re-serializes. A field the route set itself is never
+   * overwritten; anything that is not a JSON error body passes through
+   * untouched.
+   *
+   * Scope: `/api/` paths only. OAuth endpoints, `/.well-known/*`, `/mcp`
+   * and anything else are protocol surfaces read by machine clients
+   * (RFC 6749/9728 shapes must not change), so their bodies pass through
+   * byte-identical.
+   */
+  app.addHook('onSend', (request, reply, payload, done) => {
+    try {
+      const path = request.url.split('?')[0] ?? '';
+      if (!path.startsWith('/api/')) return done(null, payload);
+      if (reply.statusCode < 400) return done(null, payload);
+      const contentType = reply.getHeader('content-type');
+      if (typeof contentType !== 'string' || !contentType.startsWith('application/json')) {
+        return done(null, payload);
+      }
+      if (typeof payload !== 'string') return done(null, payload);
+      const parsed: unknown = JSON.parse(payload);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return done(null, payload);
+      }
+      const body = parsed as Record<string, unknown>;
+      if (typeof body['error'] !== 'string') return done(null, payload);
+      const explained = explainError(body['error']);
+      const enriched: Record<string, unknown> = { ...body };
+      if (enriched['title'] === undefined) enriched['title'] = explained.title;
+      if (enriched['message'] === undefined) enriched['message'] = explained.explanation;
+      if (enriched['hint'] === undefined && explained.hint !== undefined) {
+        enriched['hint'] = explained.hint;
+      }
+      if (enriched['requestId'] === undefined) enriched['requestId'] = request.id;
+      return done(null, JSON.stringify(enriched));
+    } catch {
+      return done(null, payload);
+    }
   });
 
   const sessionFor = (request: FastifyRequest): SessionContext | undefined => {
@@ -506,6 +621,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
       expiresAt: result.session.expiresAt,
       reauthFresh: reauthIsFresh(result.session, deps.now()),
       readonly: deps.readonly,
+      instanceOwner: isInstanceOwner(deps, result.session),
     });
   });
 
@@ -513,7 +629,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (deps.readonly) return reply.status(READONLY_STATUS).send(READONLY_BODY);
 
     const parsed = loginBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const result = await login(deps, { ...parsed.data, ip: ipOf(request) });
     if (!result.ok) {
@@ -566,7 +682,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (session === undefined) return reply;
 
     const parsed = sessionGuildBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     // The target scope is built from the request body but trusted only after
     // `hasGuildAccess` confirms the account reaches it — this route is the one
@@ -625,7 +741,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (session === undefined) return reply;
 
     const parsed = reauthBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ok = await reauthenticate(deps, session, parsed.data.password);
     if (!ok) return reply.status(401).send({ error: 'invalid-credentials' });
@@ -650,11 +766,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   if (bootstrapIsArmed(deps)) {
     app.post('/api/bootstrap', async (request, reply) => {
       const parsed = bootstrapBodySchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply
-          .status(400)
-          .send({ error: 'bad-request', issues: parsed.error.issues.map((i) => i.message) });
-      }
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const result = await bootstrap(deps, { ...parsed.data, ip: ipOf(request) });
       if (!result.ok) return reply.status(400).send({ error: result.reason });

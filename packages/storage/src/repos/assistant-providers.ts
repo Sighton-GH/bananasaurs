@@ -35,6 +35,8 @@ export interface ChainRow {
   readonly keyId: string;
   readonly provider: ProviderId;
   readonly model: string;
+  readonly rpmLimit: number | null;
+  readonly rpdLimit: number | null;
 }
 
 const asProviderId = (value: string): ProviderId => {
@@ -165,6 +167,8 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
         position: assistantModelChain.position,
         keyId: assistantModelChain.keyId,
         model: assistantModelChain.model,
+        rpmLimit: assistantModelChain.rpmLimit,
+        rpdLimit: assistantModelChain.rpdLimit,
         provider: assistantProviderKeys.provider,
       })
       .from(assistantModelChain)
@@ -176,6 +180,8 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
         keyId: row.keyId,
         provider: asProviderId(row.provider),
         model: row.model,
+        rpmLimit: row.rpmLimit,
+        rpdLimit: row.rpdLimit,
       })),
   );
 
@@ -187,7 +193,12 @@ export const getModelChain = (scope: InstanceScope): ChainRow[] =>
  */
 export const setModelChain = (
   scope: InstanceScope,
-  rows: readonly { keyId: string; model: string }[],
+  rows: readonly {
+    keyId: string;
+    model: string;
+    rpmLimit?: number | null;
+    rpdLimit?: number | null;
+  }[],
   now: number,
 ): void => {
   if (rows.length > 6) throw new Error('the model chain holds at most six entries');
@@ -206,7 +217,14 @@ export const setModelChain = (
       // An entry naming a key with no row fails here on the foreign key, not
       // later at request time.
       db.insert(assistantModelChain)
-        .values({ position, keyId: row.keyId, model: row.model, updatedAt: now })
+        .values({
+          position,
+          keyId: row.keyId,
+          model: row.model,
+          rpmLimit: row.rpmLimit ?? null,
+          rpdLimit: row.rpdLimit ?? null,
+          updatedAt: now,
+        })
         .run();
     }
   });

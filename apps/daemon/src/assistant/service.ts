@@ -42,7 +42,9 @@ import type {
 import { braveWebSearch } from './brave-search.js';
 import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
 import { type ChainEntry, type ProviderId } from './model-chain.js';
+import { LocalLimitError, localLimitReply, reserveEntryCall } from './local-limit.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
   runAssistantTool,
@@ -189,6 +191,17 @@ export const createAssistantService = (
    * ledger (one per service) for tests that do not pass one.
    */
   quotaLedger: QuotaLedger = new QuotaLedger(),
+  /**
+   * Task 7: the live tool-loop limits from the AI tuning settings
+   * (`assistant.maxToolRounds`, `assistant.maxToolCalls`,
+   * `assistant.maxOutputTokens`). Merged over the loop's defaults by
+   * `runToolLoop` itself; absent means today's behaviour.
+   */
+  loopLimits: () => {
+    readonly rounds?: number;
+    readonly totalCalls?: number;
+    readonly maxOutputTokens?: number;
+  } = () => ({}),
 ): AssistantCommandService & {
   tryIt(input: AssistantTryItInput): Promise<AssistantTryItResult>;
 } => {
@@ -217,6 +230,8 @@ export const createAssistantService = (
         provider: wrapped,
         skip: undefined,
         mayTrain: false,
+        rpmLimit: null,
+        rpdLimit: null,
       },
     ];
   };
@@ -684,6 +699,8 @@ export const createAssistantService = (
           usage: failed.usage,
           guard: failed.guard,
         });
+        if (failed.localLimit !== undefined)
+          throw new LocalLimitError(failed.localLimit.availableAt, failed.localLimit.code);
         if (failed.dailyQuota !== undefined) {
           throw new ProviderError('quota', 'free-model daily allowance exhausted', false, {
             quotaScope: 'daily-free',
@@ -705,10 +722,11 @@ export const createAssistantService = (
               : lastTried.outcome === 'timeout'
                 ? ('timeout' as const)
                 : ('outage' as const);
-          throw new ProviderError(
+          throw new ChainFailedError(
             kind,
-            `Every assistant model is busy (${lastTried.outcome})`,
+            `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`,
             true,
+            failed.attempts,
           );
         }
         const allSkipped =
@@ -772,6 +790,12 @@ export const createAssistantService = (
       // Task 14: the job-built conversation history travels ahead of the
       // current user text. Absent (or empty) means a history-free request.
       const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      // ADR 0081: every provider call is reserved against its chain entry's
+      // owner-set RPM/RPD limits first; a refused entry is skipped without
+      // being called. The `.env` seed has no stored key, so it is never
+      // limited and never recorded.
+      const reserveCall = (entry: ChainEntry) =>
+        reserveEntryCall(instance, entry, scope.guildId, now());
       const loop = await runToolLoop({
         chain: chainEntries,
         systemInstruction:
@@ -802,7 +826,11 @@ export const createAssistantService = (
           idRound: declarations.filter((d) => d.name in ID_TOOL_ARGS),
           run: (call) => runAssistantTool(call, toolPorts),
         },
+        limits: loopLimits(),
         quotaLedger: ledger,
+        reserveCall,
+        logger,
+        guildId: scope.guildId,
         now,
       });
       // The loop records exactly one attempt per entry, in chain order, so
@@ -1073,7 +1101,12 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         if (!result.ok) outcome = 'refused';
       } catch (err) {
         outcome = 'failed';
-        if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
+        if (err instanceof LocalLimitError) {
+          result = {
+            ok: false,
+            content: localLimitReply(err.availableAt, now(), config.BANANASAURS_TIME_ZONE),
+          };
+        } else if (err instanceof ProviderError && err.quotaScope === 'daily-free') {
           result = { ok: false, content: dailyQuotaReply(err.resetAt, now()) };
         } else if (err instanceof ProviderError && err.retryable) {
           result = { ok: false, content: BUSY_REPLY };

@@ -1,5 +1,7 @@
 import { useCallback, useState } from 'react';
+import { ApiError } from '../api.js';
 import type { RedactedConfig, SettingBody } from '../api/ops.js';
+import { fieldError } from '../api/describe-error.js';
 import { useHealth } from '../app/health.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -8,6 +10,7 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -57,6 +60,7 @@ export function ConfigPage() {
 
   const [confirming, setConfirming] = useState<'dry_run' | 'breaker' | undefined>(undefined);
   const [limitErrors, setLimitErrors] = useState<Partial<Record<string, string>>>({});
+  const [limitsError, setLimitsError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const safety = health.resource.state === 'ready' ? health.resource.data.safety : undefined;
@@ -117,16 +121,27 @@ export function ConfigPage() {
       if (value !== current[field.key]) changes.push({ key: field.key, value });
     }
     setLimitErrors(errors);
+    setLimitsError(undefined);
     if (Object.keys(errors).length > 0 || changes.length === 0) return;
     setBusy(true);
     try {
       let applied = 0;
       for (const change of changes) {
-        const ok = await applySetting(
-          change,
-          `${LIMIT_FIELDS.find((f) => f.key === change.key)?.label ?? change.key} set to ${String(change.value)}`,
-        );
-        if (!ok) break;
+        // `writeOrThrow` (not `write`) so a 400 reaches this form's inline
+        // error and field problems instead of a toast; anything else is the
+        // session's toast contract, like every other write.
+        try {
+          const updated = await session.writeOrThrow<{ ok: boolean }>('/api/settings', change);
+          if (updated === undefined) break;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 400) {
+            setLimitsError(err);
+            break;
+          }
+          throw err;
+        }
+        const label = LIMIT_FIELDS.find((f) => f.key === change.key)?.label ?? change.key;
+        toast({ tone: 'ok', title: `${label} set to ${String(change.value)}` });
         applied += 1;
       }
       if (applied > 0) health.reload();
@@ -213,22 +228,26 @@ export function ConfigPage() {
               onSubmit={(e) => void applyLimits(e)}
               className="grid max-w-md gap-3"
             >
-              {LIMIT_FIELDS.map((field) => (
-                <Field
-                  key={field.key}
-                  label={field.label}
-                  hint={field.hint}
-                  {...(limitErrors[field.key] !== undefined
-                    ? { error: limitErrors[field.key] }
-                    : {})}
-                >
-                  <Input
-                    name={field.key}
-                    inputMode="decimal"
-                    defaultValue={String(currentValue(safety, field.key))}
-                  />
-                </Field>
-              ))}
+              {LIMIT_FIELDS.map((field) => {
+                // Client-side validation wins; the server's field problem
+                // shows once the shape is right but the value is refused.
+                const problem = limitErrors[field.key] ?? fieldError(limitsError, 'value');
+                return (
+                  <Field
+                    key={field.key}
+                    label={field.label}
+                    hint={field.hint}
+                    {...(problem === undefined ? {} : { error: problem })}
+                  >
+                    <Input
+                      name={field.key}
+                      inputMode="decimal"
+                      defaultValue={String(currentValue(safety, field.key))}
+                    />
+                  </Field>
+                );
+              })}
+              {limitsError !== undefined && <ErrorNotice error={limitsError} />}
               <div>
                 <Button type="submit" variant="primary" busy={busy}>
                   Apply changes

@@ -460,8 +460,8 @@ describe('ProvidersPage model order', () => {
     expect(put).toBeTruthy();
     expect(bodyOf(put!)).toEqual({
       entries: [
-        { keyId: 'key_b', model: 'some-open-model' },
-        { keyId: 'key_a', model: 'gemini-2.5-flash' },
+        { keyId: 'key_b', model: 'some-open-model', rpmLimit: null, rpdLimit: null },
+        { keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: null, rpdLimit: null },
       ],
     });
   });
@@ -486,8 +486,8 @@ describe('ProvidersPage model order', () => {
     );
     expect(bodyOf(put!)).toEqual({
       entries: [
-        { keyId: 'key_a', model: 'gemini-2.5-flash' },
-        { keyId: 'key_b', model: 'gemini-2.5-flash' },
+        { keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: null, rpdLimit: null },
+        { keyId: 'key_b', model: 'gemini-2.5-flash', rpmLimit: null, rpdLimit: null },
       ],
     });
     expect(screen.queryByText(/different model/)).toBeNull();
@@ -700,7 +700,14 @@ describe('ProvidersPage terms and web search', () => {
         method: 'PUT',
         url: '/api/providers/gemini/terms',
         status: 400,
-        body: { error: 'invalid-terms', message: 'Quote too short.' },
+        body: {
+          error: 'invalid-terms',
+          title: 'Those terms are not valid',
+          message: 'Quote too short.',
+          hint: 'Quote at least 10 characters and link a page starting with https://.',
+          fields: [{ path: 'evidenceClause', problem: 'too_small' }],
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -711,11 +718,49 @@ describe('ProvidersPage terms and web search', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save terms record' }));
     });
-    expect(
-      screen.getByText(
-        'Check the quote (at least 10 characters) and that the link starts with https://.',
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByText('Those terms are not valid')).toBeTruthy();
+    expect(screen.getByText('Quote too short.')).toBeTruthy();
+    expect(screen.getByText('Too small.')).toBeTruthy();
+    expect(screen.queryByText('Terms record saved')).toBeNull();
+  });
+
+  it('renders a 400 terms refusal with the server title, hint, request id and field problem', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: '/api/providers/gemini/terms',
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'evidenceClause', problem: 'too_big' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('button', { name: 'Save terms record' });
+    fireEvent.change(screen.getByLabelText(/Quote the sentence/), {
+      target: { value: 'A very long quoted sentence that the server refuses.' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save terms record' }));
+    });
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
+    const notice = (await screen.findAllByRole('alert')).find((a) =>
+      a.textContent?.includes('The request was not valid'),
+    )!;
+    expect(notice.textContent).toContain('Fix the highlighted fields and try again.');
+    expect(notice.textContent).toContain('req-0a1b2c3d');
+    expect(notice.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');
+    expect(screen.getByText('Too large.')).toBeTruthy();
+    // The code survives only inside the `code · HTTP n · request id` meta line.
+    expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
     expect(screen.queryByText('Terms record saved')).toBeNull();
   });
 
@@ -765,7 +810,7 @@ describe('ProvidersPage terms and web search', () => {
 });
 
 describe('ProvidersPage row test refusal', () => {
-  it('maps a refused test to its sentence', async () => {
+  it('renders a refused test through the server answer', async () => {
     stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
@@ -774,7 +819,13 @@ describe('ProvidersPage row test refusal', () => {
         method: 'POST',
         url: MODEL_CHAIN_TEST_URL,
         status: 400,
-        body: { error: 'bad-request' },
+        body: {
+          error: 'bad-request',
+          title: 'The test could not run',
+          message: 'The test request was not valid.',
+          hint: 'Check the row and try again.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -782,6 +833,194 @@ describe('ProvidersPage row test refusal', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Test gemini-2.5-flash on Main key' }));
     });
-    expect(screen.getByText('The test request failed.')).toBeTruthy();
+    expect(await screen.findByText('The test could not run')).toBeTruthy();
+    expect(screen.getByText('The test request was not valid.')).toBeTruthy();
+  });
+});
+
+describe('Task 10 (h): AI setup Test renders a classified failure', () => {
+  it('shows the failure title and hint', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'POST',
+        url: MODEL_CHAIN_TEST_URL,
+        body: {
+          ok: false,
+          latencyMs: 5,
+          error: 'Could not connect to the AI provider',
+          failure: {
+            code: 'provider-connect-timeout',
+            title: 'Could not connect to the AI provider',
+            explanation: 'The connection timed out.',
+            hint: 'Check the host VPN.',
+            host: 'api.example.test',
+            httpStatus: 504,
+            netCode: 'ETIMEDOUT',
+          },
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Test gemini-2.5-flash on Main key' }));
+    });
+    expect(await screen.findByText('Could not connect to the AI provider')).toBeTruthy();
+    expect(screen.getByText('The connection timed out.')).toBeTruthy();
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('What to do: Check the host VPN.');
+    expect(alert.textContent).toContain('api.example.test');
+    expect(alert.textContent).toContain('HTTP 504');
+    expect(alert.textContent).toContain('ETIMEDOUT');
+  });
+});
+
+describe('per-entry RPM/RPD limits (ADR 0081)', () => {
+  const limitedRow = (overrides: Record<string, unknown> = {}) => ({
+    position: 0,
+    keyId: 'key_a',
+    keyLabel: 'Main key',
+    provider: 'gemini',
+    model: 'gemini-2.5-flash',
+    status: 'ready',
+    rpmLimit: 15,
+    rpdLimit: null,
+    usage: { lastMinute: 12, today: 180 },
+    ...overrides,
+  });
+
+  it('shows the saved limits in the inputs and the usage line', async () => {
+    stubPage(setupBody({ chain: [limitedRow()] }));
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    expect(inputOf(screen.getByLabelText('RPM limit for row 1')).value).toBe('15');
+    const rpd = inputOf(screen.getByLabelText('RPD limit for row 1'));
+    expect(rpd.value).toBe('');
+    expect(rpd.getAttribute('placeholder')).toBe('no limit');
+    expect(screen.getByText(/RPM 12 \/ 15 · today 180/)).toBeTruthy();
+  });
+
+  it('names when the entry frees up once it is at its limit', async () => {
+    stubPage(
+      setupBody({
+        chain: [
+          limitedRow({
+            rpdLimit: 1000,
+            usage: { lastMinute: 12, today: 180, availableAt: 1_700_000_000_000 },
+          }),
+        ],
+      }),
+    );
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    expect(screen.getByText(/frees up/)).toBeTruthy();
+  });
+
+  it('sends the edited limits with the order', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody({ chain: [limitedRow()] }) },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    fireEvent.change(inputOf(screen.getByLabelText('RPD limit for row 1')), {
+      target: { value: '20' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT',
+    );
+    expect(put).toBeTruthy();
+    expect(bodyOf(put!)).toEqual({
+      entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: 15, rpdLimit: 20 }],
+    });
+  });
+
+  it('shows a server field error under the RPM input', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: MODEL_CHAIN_URL,
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'entries.0.rpmLimit', problem: 'too_small' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    const rpm = screen.getByLabelText('RPM limit for row 1');
+    expect(rpm.getAttribute('aria-invalid')).toBe('true');
+    expect(await screen.findByText('Too small.')).toBeTruthy();
+  });
+
+  it('refuses a zero limit before sending', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    fireEvent.change(inputOf(screen.getByLabelText('RPM limit for row 1')), {
+      target: { value: '0' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    expect(
+      await screen.findByText(
+        'Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.',
+      ),
+    ).toBeTruthy();
+    expect(
+      mock.mock.calls.filter((c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT'),
+    ).toHaveLength(0);
+  });
+
+  // `abc` is not used here: the RPM input is type="number", so jsdom drops
+  // non-numeric text to an empty value (which means "no limit" and would send).
+  it.each(['1.5', '-3', '1e2'])('refuses a %s limit before sending', async (value) => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    fireEvent.change(inputOf(screen.getByLabelText('RPM limit for row 1')), {
+      target: { value },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    expect(
+      await screen.findByText(
+        'Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.',
+      ),
+    ).toBeTruthy();
+    expect(
+      mock.mock.calls.filter((c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT'),
+    ).toHaveLength(0);
   });
 });

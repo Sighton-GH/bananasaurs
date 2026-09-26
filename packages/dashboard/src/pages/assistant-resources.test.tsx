@@ -100,6 +100,30 @@ describe('AssistantResourcesPage', () => {
     expect(screen.getByText('Never updated')).toBeTruthy();
   });
 
+  it('shows the catalog title, explanation and hint for a challenge failure', async () => {
+    renderPage(FULL, [
+      {
+        resourceId: 'handbook',
+        fetchedAt: 1790000000000,
+        chunks: 0,
+        bytes: 0,
+        lastError: "The site's Cloudflare bot protection challenged Bananasaurs.",
+        errorCode: 'challenge',
+        errorExplain: {
+          title: "The site's bot protection blocked Bananasaurs",
+          explanation:
+            'The site answered with a Cloudflare challenge page ("Just a moment…"), which only a browser can pass.',
+          hint: "Ask the site's owner to add a Cloudflare WAF Skip rule for the header set in AI tuning → Resources, or import the content from GitHub instead.",
+        },
+      },
+    ]);
+    expect(await screen.findByText('Needs attention')).toBeTruthy();
+    expect(screen.getByText("The site's bot protection blocked Bananasaurs")).toBeTruthy();
+    expect(screen.getByText(/The site answered with a Cloudflare challenge page/)).toBeTruthy();
+    expect(screen.getByText(/What to do:/)).toBeTruthy();
+    expect(screen.getByText('challenge')).toBeTruthy();
+  });
+
   it('shows Off for a disabled resource even when its cache is current', async () => {
     renderPage({ ...FULL, resources: [{ ...FULL.resources[0]!, enabled: false }] });
     expect(await screen.findByText('Off')).toBeTruthy();
@@ -136,7 +160,13 @@ describe('AssistantResourcesPage', () => {
         method: 'PUT',
         url: `/api/assistant/resources/res-${NOW.toString(36)}`,
         status: 400,
-        body: { error: 'unsafe-resource-url' },
+        body: {
+          error: 'unsafe-resource-url',
+          title: 'That link is not allowed',
+          message: 'Resource links must be safe http or https addresses.',
+          hint: 'Paste another link.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<AssistantResourcesPage />);
@@ -151,11 +181,8 @@ describe('AssistantResourcesPage', () => {
       .getAllByRole('button', { name: 'Add resource' })
       .find((b) => b.getAttribute('type') === 'submit')!;
     fireEvent.click(submit);
-    expect(
-      await screen.findByText(
-        'That address is not allowed: private and local addresses are refused.',
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByText('That link is not allowed')).toBeTruthy();
+    expect(screen.getByText('Resource links must be safe http or https addresses.')).toBeTruthy();
     const put = mock.mock.calls.find((c) =>
       (c[0] as string).startsWith('/api/assistant/resources/res-'),
     )!;
@@ -164,6 +191,50 @@ describe('AssistantResourcesPage', () => {
     expect(sent.id).toMatch(/^res-/);
     expect(sent.title).toBe('Club website');
     expect(sent.enabled).toBe(true);
+  });
+
+  it('renders a 400 save refusal with the server title, hint, request id and field problem', async () => {
+    const NOW = 1750000000000;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { url: '/api/assistant/resources/freshness', body: { freshness: [FRESH_ROW] } },
+      {
+        method: 'PUT',
+        url: `/api/assistant/resources/res-${NOW.toString(36)}`,
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'title', problem: 'too_big' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderWithSession(<AssistantResourcesPage />);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Add resource' }))[0]!);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), {
+      target: { value: 'An absurdly long title that the server refuses' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'URL' }), {
+      target: { value: 'https://example.com/too-big' },
+    });
+    const submit = screen
+      .getAllByRole('button', { name: 'Add resource' })
+      .find((b) => b.getAttribute('type') === 'submit')!;
+    fireEvent.click(submit);
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
+    const notice = (await screen.findAllByRole('alert')).find((a) =>
+      a.textContent?.includes('The request was not valid'),
+    )!;
+    expect(notice.textContent).toContain('Fix the highlighted fields and try again.');
+    expect(notice.textContent).toContain('req-0a1b2c3d');
+    expect(notice.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');
+    expect(screen.getByText('Too large.')).toBeTruthy();
+    // The code survives only inside the `code · HTTP n · request id` meta line.
+    expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
   });
 
   it('enables a disabled resource with a whole-object write', async () => {
@@ -322,7 +393,13 @@ describe('Add from GitHub', () => {
         method: 'POST',
         url: '/api/assistant/github/preview',
         status: 400,
-        body: { error: 'not-github' },
+        body: {
+          error: 'not-github',
+          title: 'Not a GitHub link',
+          message: 'That address is not a GitHub repository or organisation page.',
+          hint: 'Paste a github.com link.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<AssistantResourcesPage />);
@@ -331,8 +408,9 @@ describe('Add from GitHub', () => {
       target: { value: 'https://example.com/acme' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(await screen.findByText('Not a GitHub link')).toBeTruthy();
     expect(
-      await screen.findByText('That is not a GitHub repository or organisation URL.'),
+      screen.getByText('That address is not a GitHub repository or organisation page.'),
     ).toBeTruthy();
   });
 

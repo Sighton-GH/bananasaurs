@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { ProviderError } from '@bananasaurs/core';
+import { classifyProviderFailure, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
 import { eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import type { SessionContext } from '../auth.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { isInstanceOwner } from './assistant.js';
@@ -34,7 +35,14 @@ const keyPatch = z
 const chainBody = z
   .object({
     entries: z.array(
-      z.object({ keyId: z.string().min(1).max(200), model: z.string().min(1).max(200) }).strict(),
+      z
+        .object({
+          keyId: z.string().min(1).max(200),
+          model: z.string().min(1).max(200),
+          rpmLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
+          rpdLimit: z.number().int().min(1).max(1_000_000).nullable().optional(),
+        })
+        .strict(),
     ),
   })
   .strict();
@@ -58,31 +66,6 @@ const eligibilityOf = (
 
 const TERMS_REFUSAL =
   "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.";
-
-const statusOf = (err: unknown): number | undefined => {
-  if (typeof err !== 'object' || err === null) return undefined;
-  const status = (err as { status?: unknown }).status;
-  return typeof status === 'number' ? status : undefined;
-};
-
-/**
- * What a chain test answers when the provider call fails (hard rule 4).
- *
- * The provider's error text is never repeated — it can echo request
- * details, so every failure becomes one of four fixed sentences chosen
- * from the error's kind or status only.
- */
-const chainTestFailure = (err: unknown): string => {
-  const kind = err instanceof ProviderError ? err.kind : undefined;
-  const status = statusOf(err);
-  if (kind === 'authentication' || status === 401 || status === 403)
-    return 'The provider refused the key.';
-  if (kind === 'timeout' || status === 408 || status === 504)
-    return 'The provider did not answer in time.';
-  if (kind === 'invalid-request' || kind === 'capability-mismatch' || status === 404)
-    return 'The model is not available on this key.';
-  return 'The test request failed.';
-};
 
 /**
  * Task 8: several labelled keys across several providers, ordered into one
@@ -135,6 +118,7 @@ export const registerAssistantProviderRoutes = (
     const chain = chainEntries.map((entry, position) => {
       const reset = resetsAt(entry.keyId);
       const status = reset !== undefined ? 'allowance-used' : (entry.skip ?? 'ready');
+      const usage = configured.modelUsage?.(entry);
       return {
         position,
         keyId: entry.keyId,
@@ -142,7 +126,10 @@ export const registerAssistantProviderRoutes = (
         provider: entry.providerId,
         model: entry.model,
         status,
+        rpmLimit: entry.rpmLimit,
+        rpdLimit: entry.rpdLimit,
         ...(reset === undefined ? {} : { allowanceResetsAt: reset }),
+        ...(usage === undefined ? {} : { usage }),
       };
     });
     const providers = PROVIDERS.map((provider) => ({
@@ -172,7 +159,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.addKey === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = keyBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const keyId = configured.addKey(
       {
         provider: parsed.data.provider,
@@ -208,7 +195,7 @@ export const registerAssistantProviderRoutes = (
     const before = configured.keys().find((key) => key.keyId === keyId);
     if (before === undefined) return reply.status(404).send({ error: 'not-found' });
     const parsed = keyPatch.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     if (
       parsed.data.label === undefined &&
       parsed.data.apiKey === undefined &&
@@ -271,7 +258,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.keys === undefined || configured.saveChain === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = chainBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     if (parsed.data.entries.length > 6) return reply.status(400).send({ error: 'too-many' });
     const known = new Set(configured.keys().map((key) => key.keyId));
     if (parsed.data.entries.some((entry) => !known.has(entry.keyId)))
@@ -284,7 +271,12 @@ export const registerAssistantProviderRoutes = (
     }
     try {
       configured.saveChain(
-        parsed.data.entries.map((entry) => ({ keyId: entry.keyId, model: entry.model })),
+        parsed.data.entries.map((entry) => ({
+          keyId: entry.keyId,
+          model: entry.model,
+          rpmLimit: entry.rpmLimit ?? null,
+          rpdLimit: entry.rpdLimit ?? null,
+        })),
         deps.now(),
       );
     } catch {
@@ -302,6 +294,8 @@ export const registerAssistantProviderRoutes = (
           position,
           keyId: entry.keyId,
           model: entry.model,
+          rpmLimit: entry.rpmLimit ?? null,
+          rpdLimit: entry.rpdLimit ?? null,
         })),
       },
     });
@@ -316,7 +310,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.chain === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = testBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const entries = configured.chain();
     const entry = entries[parsed.data.position];
     if (entry === undefined) return reply.status(404).send({ error: 'not-found' });
@@ -340,6 +334,23 @@ export const registerAssistantProviderRoutes = (
         return reply.status(200).send({ ok: false, latencyMs: latencyOf(), error: TERMS_REFUSAL });
       }
     }
+    if (configured.reserveTestCall !== undefined) {
+      const reserved = configured.reserveTestCall(parsed.data.position, session.guildId);
+      if (!reserved.ok) {
+        const text = PROVIDER_FAILURE_TEXT[reserved.code];
+        return reply.status(200).send({
+          ok: false,
+          latencyMs: latencyOf(),
+          error: text.title,
+          failure: {
+            code: reserved.code,
+            title: text.title,
+            explanation: text.explanation,
+            hint: text.hint,
+          },
+        });
+      }
+    }
     try {
       const result = await entry.provider.generateText({
         model: entry.model,
@@ -347,9 +358,25 @@ export const registerAssistantProviderRoutes = (
       });
       return reply.status(200).send({ ok: true, latencyMs: latencyOf(), reply: result.text });
     } catch (err) {
-      return reply
-        .status(200)
-        .send({ ok: false, latencyMs: latencyOf(), error: chainTestFailure(err) });
+      const f = classifyProviderFailure(err, {
+        provider: entry.providerId,
+        model: entry.model,
+      });
+      const text = PROVIDER_FAILURE_TEXT[f.code];
+      return reply.status(200).send({
+        ok: false,
+        latencyMs: latencyOf(),
+        error: text.title,
+        failure: {
+          code: f.code,
+          title: text.title,
+          explanation: text.explanation,
+          hint: text.hint,
+          ...(f.host === undefined ? {} : { host: f.host }),
+          ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+          ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+        },
+      });
     }
   });
 
@@ -361,7 +388,7 @@ export const registerAssistantProviderRoutes = (
     if (configured?.saveGithubToken === undefined)
       return reply.status(503).send({ error: 'provider-secret-store-not-configured' });
     const parsed = githubBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     configured.saveGithubToken(parsed.data.token);
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),

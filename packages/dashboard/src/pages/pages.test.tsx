@@ -349,7 +349,6 @@ describe('AuditPage', () => {
   it('renders the error state naming the request when the API fails', async () => {
     stubFetch([{ url: '/api/audit?limit=50', status: 500, body: { error: 'boom' } }]);
     renderWithSession(<AuditPage />);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Could not load the audit log');
+    expect(await screen.findByText(/Could not load the audit log/)).toBeTruthy();
   });
 });

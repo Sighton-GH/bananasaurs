@@ -17,6 +17,7 @@ import {
 } from '../api/automod.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { RuleConfigExample } from './automod-config-example.js';
 import { Badge } from '../ui/Badge.js';
 import { Card } from '../ui/Card.js';
@@ -58,7 +59,7 @@ export function AutomodRulesPage() {
   const [kind, setKind] = useState<RuleKind>('keyword_filter');
   const [configText, setConfigText] = useState('{}');
   const [configError, setConfigError] = useState<string | undefined>(undefined);
-  const [formError, setFormError] = useState<string | undefined>(undefined);
+  const [formError, setFormError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const submit = async (e: React.FormEvent) => {
@@ -95,17 +96,16 @@ export function AutomodRulesPage() {
       setConfigText('{}');
       rules.reload();
     } catch (err) {
+      // The 400 branch stays: the route's own `detail` names the exact
+      // schema violation, which says more than the catalog text. Anything
+      // else renders as the server's answer below.
       if (err instanceof ApiError && err.status === 400 && err.body.error === 'invalid-config') {
         const detail = (err.body as { detail?: unknown }).detail;
         setConfigError(
           typeof detail === 'string' ? detail : 'The configuration is invalid for this kind.',
         );
-      } else if (err instanceof ApiError && err.status === 409) {
-        setFormError('A rule with that id already exists.');
-      } else if (err instanceof Error) {
-        setFormError(err.message);
       } else {
-        throw err;
+        setFormError(err);
       }
     } finally {
       setBusy(false);
@@ -290,11 +290,7 @@ export function AutomodRulesPage() {
                 }}
               />
             </details>
-            {formError !== undefined && (
-              <p role="alert" className="text-sm text-danger">
-                {formError}
-              </p>
-            )}
+            {formError !== undefined && <ErrorNotice error={formError} />}
             <div>
               <Button type="submit" variant="primary" busy={busy}>
                 Create rule

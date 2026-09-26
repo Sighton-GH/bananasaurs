@@ -166,7 +166,7 @@ describe('POST /api/assistant/behaviours/:id/try', () => {
     }
     const limited = await post(cookie, csrf, 'club', { question: 'one too many' });
     expect(limited.statusCode).toBe(429);
-    expect(limited.json()).toEqual({
+    expect(limited.json()).toMatchObject({
       error: 'rate-limited',
       message: 'You have used your 20 tries for this hour. Try again later.',
     });

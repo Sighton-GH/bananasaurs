@@ -115,7 +115,7 @@ describe.each(readRouteCases)('%s', (_name, url, capability) => {
     const { cookie } = await signIn();
     const response = await app.inject({ method: 'GET', url, headers: { cookie } });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('answers 200 once granted', async () => {

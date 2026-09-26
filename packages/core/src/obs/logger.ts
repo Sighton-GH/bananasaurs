@@ -93,6 +93,22 @@ export const LOGGABLE_FIELDS = new Set([
   'err',
   'error',
   'msg',
+  // ADR 0078: the HTTP layer's request log fields — ids and routing facts
+  // only, never content or credentials.
+  'requestId',
+  'route',
+  'method',
+  'httpStatus',
+  'netCode',
+  'host',
+  'provider',
+  'model',
+  'keyLabel',
+  'providerMessage',
+  'ms',
+  'settingKey',
+  'availableAt',
+  'resourceId',
 ]);
 
 /**

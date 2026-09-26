@@ -321,4 +321,36 @@ describe('listGeminiModels (ADR 0068)', () => {
       kind: 'authentication',
     });
   });
+
+  describe('error fields (ADR 0079)', () => {
+    const connectTimeout = (): TypeError =>
+      new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+      });
+
+    it('attaches netCode and host when fetch fails to connect', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(connectTimeout());
+      const provider = new GeminiProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
+        .catch((value: unknown) => value);
+      expect(err).toMatchObject({
+        netCode: 'UND_ERR_CONNECT_TIMEOUT',
+        host: 'generativelanguage.googleapis.com',
+      });
+    });
+
+    it.each([429, 401])('attaches status and host on HTTP %s', async (status) => {
+      const provider = new GeminiProvider({
+        apiKey: 'secret',
+        fetch: vi.fn<typeof globalThis.fetch>().mockResolvedValue(new Response('{}', { status })),
+      });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'hi' }] })
+        .catch((value: unknown) => value);
+      expect(err).toMatchObject({ status, host: 'generativelanguage.googleapis.com' });
+    });
+  });
 });

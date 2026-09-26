@@ -450,7 +450,7 @@ describe('AssistantPage', () => {
     expect(await screen.findByRole('region', { name: 'Ticket routing' })).toBeTruthy();
   });
 
-  it('maps a mention-role refusal to a plain-language inline error', async () => {
+  it('renders a mention-role refusal through the server answer', async () => {
     const NOW = 1750000000000;
     vi.spyOn(Date, 'now').mockReturnValue(NOW);
     const id = `welcome-${NOW.toString(36)}`;
@@ -460,7 +460,14 @@ describe('AssistantPage', () => {
         method: 'PUT',
         url: `/api/assistant/behaviours/${id}`,
         status: 400,
-        body: { error: 'mention-role-required' },
+        body: {
+          error: 'mention-role-required',
+          title: 'A mention role is needed',
+          message: 'A behaviour outside direct commands must mention a role.',
+          hint: 'Pick which role mentions it.',
+          fields: [{ path: 'mentionRoleId', problem: 'invalid_type' }],
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<AssistantPage />);
@@ -475,11 +482,8 @@ describe('AssistantPage', () => {
       target: { value: 'Welcome new members.' },
     });
     fireEvent.click(screen.getAllByRole('button', { name: 'Create behaviour' })[0]!);
-    expect(
-      await screen.findByText(
-        'Choose the Discord role members will mention to reach this behaviour.',
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByText('A mention role is needed')).toBeTruthy();
+    expect(screen.getByText('Missing or the wrong kind of value.')).toBeTruthy();
   });
 
   it('cannot create a behaviour when the role directory did not load', async () => {
@@ -719,15 +723,33 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
   });
 
   it('explains a refused save inline', async () => {
-    render(withFlag(undefined), { status: 409, body: { error: 'behaviour-disabled' } });
+    render(withFlag(undefined), {
+      status: 409,
+      body: {
+        error: 'behaviour-disabled',
+        title: 'That behaviour is off',
+        message: 'The behaviour this needs is disabled.',
+        hint: 'Turn the behaviour on first.',
+        requestId: 'req-0a1b2c3d',
+      },
+    });
     fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('Turn that behaviour on first.')).toBeTruthy();
+    expect(await screen.findByText('That behaviour is off')).toBeTruthy();
     cleanup();
-    render(withFlag(undefined), { status: 400, body: { error: 'bad-request' } });
+    render(withFlag(undefined), {
+      status: 400,
+      body: {
+        error: 'bad-request',
+        title: 'The request was not valid',
+        message: 'One or more fields were missing or had the wrong format.',
+        hint: 'Fix the highlighted fields and try again.',
+        requestId: 'req-0a1b2c3d',
+      },
+    });
     fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
-    expect(await screen.findByText('The choice was not saved. Try again.')).toBeTruthy();
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
   });
 
   it('badges only the behaviour that answers the bot tag', async () => {

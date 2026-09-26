@@ -120,10 +120,21 @@ describe('AutomodRulesPage', () => {
     expect(screen.queryByText('Rule created')).toBeNull();
   });
 
-  it('renders a 409 as "already exists"', async () => {
+  it('renders a 409 through the server answer', async () => {
     stubFetch([
       { url: '/api/automod/rules', body: { rules: [] } },
-      { method: 'POST', url: '/api/automod/rules', status: 409, body: { error: 'exists' } },
+      {
+        method: 'POST',
+        url: '/api/automod/rules',
+        status: 409,
+        body: {
+          error: 'exists',
+          title: 'Already exists',
+          message: 'A rule with that id already exists.',
+          hint: 'Pick another id or edit the existing rule.',
+          requestId: 'req-0a1b2c3d',
+        },
+      },
     ]);
     renderWithSession(<AutomodRulesPage />);
     await screen.findByText('No rules yet. Create one below.');
@@ -131,7 +142,8 @@ describe('AutomodRulesPage', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Create rule' }));
     });
-    expect(await screen.findByText('A rule with that id already exists.')).toBeTruthy();
+    expect(await screen.findByText('Already exists')).toBeTruthy();
+    expect(screen.getByText('A rule with that id already exists.')).toBeTruthy();
   });
 
   it('shows the empty state when there are no rules', async () => {

@@ -1,0 +1,225 @@
+// @vitest-environment jsdom
+import { act, cleanup, fireEvent, screen, within } from '@testing-library/react';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import { TUNING_URL, tuningKeyUrl } from '../api/tuning.js';
+import { renderWithSession, stubFetch, bodyOf } from '../test-support.js';
+import { AssistantTuningPage } from './assistant-tuning.js';
+
+const SETTINGS = [
+  {
+    key: 'assistant.retryDelaysMs',
+    group: 'Assistant retries',
+    label: 'Retry delays',
+    help: 'How long to wait before retrying when every AI model was busy or timed out.',
+    display: 'seconds-list',
+    bounds: { min: 1000, max: 180000, maxItems: 4 },
+    value: [10000, 30000, 90000],
+    defaultValue: [10000, 30000, 90000],
+    isDefault: true,
+  },
+  {
+    key: 'assistant.providerTimeoutMs',
+    group: 'Assistant retries',
+    label: 'Provider request timeout',
+    help: 'How long one request to an AI provider may take before it is abandoned.',
+    display: 'seconds',
+    bounds: { min: 5000, max: 120000 },
+    value: 60000,
+    defaultValue: 30000,
+    isDefault: false,
+  },
+  {
+    key: 'assistant.maxToolRounds',
+    group: 'Assistant tool loop',
+    label: 'Max tool rounds',
+    help: 'How many rounds of tool use one question may take.',
+    display: 'count',
+    bounds: { min: 1, max: 8 },
+    value: 4,
+    defaultValue: 4,
+    isDefault: true,
+  },
+  {
+    key: 'network.connectFallbackMs',
+    group: 'Network',
+    label: 'Connect fallback wait (IPv4/IPv6)',
+    help: 'How long to try one address family before falling back to the other.',
+    display: 'milliseconds',
+    bounds: { min: 100, max: 5000 },
+    value: 1000,
+    defaultValue: 1000,
+    isDefault: true,
+  },
+  {
+    key: 'resources.refreshIntervalMin',
+    group: 'Resources',
+    label: 'Refresh interval',
+    help: 'How often cached resources are refreshed.',
+    display: 'minutes',
+    bounds: { min: 15, max: 1440 },
+    value: 60,
+    defaultValue: 60,
+    isDefault: true,
+  },
+  {
+    key: 'resources.fetchHeaderName',
+    group: 'Resources',
+    label: 'Fetch header name',
+    help: 'An optional header sent with website fetches.',
+    display: 'text',
+    value: null,
+    defaultValue: null,
+    isDefault: true,
+  },
+  {
+    key: 'resources.fetchHeaderValue',
+    group: 'Resources',
+    label: 'Fetch header value',
+    help: "The header's secret value. Stored encrypted; never shown again.",
+    display: 'secret',
+    value: { configured: true },
+    defaultValue: { configured: false },
+    isDefault: false,
+  },
+  {
+    key: 'resources.fetchHeaderHosts',
+    group: 'Resources',
+    label: 'Send the header only to',
+    help: 'The header is sent only to these hosts, and never anywhere else.',
+    display: 'host-list',
+    bounds: { maxItems: 10 },
+    value: [],
+    defaultValue: [],
+    isDefault: true,
+  },
+];
+
+const rowOf = (key: string) => screen.getByTestId(`tuning-row-${key}`);
+
+const renderPage = () => renderWithSession(<AssistantTuningPage />);
+
+afterEach(cleanup);
+afterEach(() => vi.unstubAllGlobals());
+
+describe('AssistantTuningPage', () => {
+  it('renders the four group headings and every label', async () => {
+    stubFetch([{ url: TUNING_URL, body: { settings: SETTINGS } }]);
+    renderPage();
+    for (const group of ['Assistant retries', 'Assistant tool loop', 'Network', 'Resources']) {
+      expect(await screen.findByRole('heading', { name: group })).toBeTruthy();
+    }
+    for (const setting of SETTINGS) {
+      expect(screen.getByLabelText(setting.label)).toBeTruthy();
+    }
+  });
+
+  it('saving the provider timeout converts seconds to milliseconds', async () => {
+    const updated = {
+      ...SETTINGS[1],
+      value: 45000,
+    };
+    const mock = stubFetch([
+      { url: TUNING_URL, body: { settings: SETTINGS } },
+      {
+        method: 'PUT',
+        url: tuningKeyUrl('assistant.providerTimeoutMs'),
+        body: { setting: updated },
+      },
+    ]);
+    renderPage();
+    const input = await screen.findByLabelText('Provider request timeout');
+    expect(input).toHaveProperty('value', '60');
+    fireEvent.change(input, { target: { value: '45' } });
+    await act(async () => {
+      fireEvent.click(
+        within(rowOf('assistant.providerTimeoutMs')).getByRole('button', { name: 'Save' }),
+      );
+    });
+    const put = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
+    expect(put?.[1]).toMatchObject({ method: 'PUT' });
+    expect(bodyOf(put!)).toEqual({ value: 45000 });
+    expect(await screen.findByText('Saved')).toBeTruthy();
+  });
+
+  it('a refused retry-delay edit shows the server message under that row', async () => {
+    stubFetch([
+      { url: TUNING_URL, body: { settings: SETTINGS } },
+      {
+        method: 'PUT',
+        url: tuningKeyUrl('assistant.retryDelaysMs'),
+        status: 400,
+        body: {
+          error: 'invalid-setting',
+          title: 'That value is not allowed',
+          message: 'Retry delays must add up to 3 minutes or less.',
+          fields: [{ path: '', problem: 'custom' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderPage();
+    const input = await screen.findByLabelText('Retry delays');
+    fireEvent.change(input, { target: { value: '60, 60, 61' } });
+    await act(async () => {
+      fireEvent.click(
+        within(rowOf('assistant.retryDelaysMs')).getByRole('button', { name: 'Save' }),
+      );
+    });
+    const row = rowOf('assistant.retryDelaysMs');
+    expect(
+      await within(row).findByText('Retry delays must add up to 3 minutes or less.'),
+    ).toBeTruthy();
+  });
+
+  it('never shows or pre-fills the secret value', async () => {
+    stubFetch([{ url: TUNING_URL, body: { settings: SETTINGS } }]);
+    renderPage();
+    const secret = await screen.findByLabelText('Fetch header value');
+    expect(secret.getAttribute('type')).toBe('password');
+    expect(secret).toHaveProperty('value', '');
+    // No secret input anywhere on the page may carry a pre-filled value.
+    const passwords = document.querySelectorAll('input[type="password"]');
+    expect(passwords.length).toBeGreaterThan(0);
+    for (const input of passwords) {
+      expect((input as HTMLInputElement).value).toBe('');
+    }
+  });
+
+  it('reset on a non-default row sends DELETE', async () => {
+    const reset = { ...SETTINGS[1], value: 30000, isDefault: true };
+    const mock = stubFetch([
+      { url: TUNING_URL, body: { settings: SETTINGS } },
+      {
+        method: 'DELETE',
+        url: tuningKeyUrl('assistant.providerTimeoutMs'),
+        body: { setting: reset },
+      },
+    ]);
+    renderPage();
+    await screen.findByLabelText('Provider request timeout');
+    await act(async () => {
+      fireEvent.click(
+        within(rowOf('assistant.providerTimeoutMs')).getByRole('button', { name: 'Reset' }),
+      );
+    });
+    const del = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
+    expect(del?.[1]).toMatchObject({ method: 'DELETE' });
+    expect(await screen.findByText('Reset to default')).toBeTruthy();
+  });
+
+  it('a non-owner load refusal renders the owner-only title', async () => {
+    stubFetch([
+      {
+        url: TUNING_URL,
+        status: 403,
+        body: {
+          error: 'owner-only',
+          title: 'Only the owner can do that',
+          message: "This setting belongs to the bot's owner account.",
+        },
+      },
+    ]);
+    renderPage();
+    expect(await screen.findByText('Only the owner can do that')).toBeTruthy();
+  });
+});

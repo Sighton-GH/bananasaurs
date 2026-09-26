@@ -6,7 +6,7 @@ import { memoryLocation } from 'wouter/memory-location';
 import { renderWithSession, stubFetch } from '../test-support.js';
 import { HealthProvider } from './health.js';
 import { currentNavEntry, JumpNav } from './JumpNav.js';
-import { NAV } from './routes.js';
+import { visibleNav } from './routes.js';
 
 const HEALTH = {
   guildId: '1540816150026518620',
@@ -66,8 +66,14 @@ describe('JumpNav', () => {
       a.textContent?.replace(/Current|Future/g, ''),
     );
     const groupOrder = ['Start here', 'Moderation', 'Messages', 'Assistant', 'Advanced / System'];
+    // The default test session is not the instance owner, so the
+    // owner-only AI tuning entry stays out of the sheet here.
     expect(labels).toEqual(
-      groupOrder.flatMap((group) => NAV.filter((n) => n.group === group).map((n) => n.label)),
+      groupOrder.flatMap((group) =>
+        visibleNav(false)
+          .filter((n) => n.group === group)
+          .map((n) => n.label),
+      ),
     );
     const current = within(nav).getByRole('link', { current: 'page' });
     expect(current.getAttribute('href')).toBe('/audit');

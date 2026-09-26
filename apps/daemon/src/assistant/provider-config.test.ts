@@ -465,3 +465,59 @@ describe('githubToken() (Task 17)', () => {
     expect(wrongKey.githubToken()).toBeUndefined();
   });
 });
+
+describe('per-entry RPM/RPD limits (ADR 0081)', () => {
+  const GUILD_ID = '123456789012345678';
+
+  it('saveChain stores the limits and chain() carries them; absent limits read as null', () => {
+    let now = 1_800_000_000_000;
+    const store = createProviderConfigStore(
+      t.scopes.instance(),
+      'a'.repeat(32),
+      'env',
+      undefined,
+      undefined,
+      { now: () => now },
+    );
+    const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k' }, now);
+    now += 1;
+    store.saveChain(
+      [
+        { keyId, model: 'm-limited', rpmLimit: 15, rpdLimit: 1000 },
+        { keyId, model: 'm-plain' },
+      ],
+      now,
+    );
+    const chain = store.chain();
+    expect(chain[0]).toMatchObject({ rpmLimit: 15, rpdLimit: 1000 });
+    expect(chain[1]).toMatchObject({ rpmLimit: null, rpdLimit: null });
+    expect(assistantProvidersRepo.getModelChain(t.scopes.instance())[0]).toMatchObject({
+      rpmLimit: 15,
+      rpdLimit: 1000,
+    });
+  });
+
+  it('reserveTestCall counts against the limits and modelUsage reports the call', () => {
+    let now = 1_800_000_000_000;
+    const store = createProviderConfigStore(
+      t.scopes.instance(),
+      'a'.repeat(32),
+      'env',
+      undefined,
+      undefined,
+      { now: () => now },
+    );
+    const keyId = store.addKey({ provider: 'gemini', label: 'Gemini', apiKey: 'k' }, now);
+    now += 1;
+    store.saveChain([{ keyId, model: 'm', rpmLimit: 1 }], now);
+    expect(store.reserveTestCall(0, GUILD_ID)).toEqual({ ok: true });
+    now += 1000;
+    expect(store.reserveTestCall(0, GUILD_ID)).toEqual({
+      ok: false,
+      code: 'local-rpm-limit',
+      availableAt: 1_800_000_000_001 + 60_000,
+    });
+    expect(store.modelUsage(store.chain()[0]!)).toMatchObject({ lastMinute: 1 });
+    expect(store.reserveTestCall(9, GUILD_ID)).toEqual({ ok: true });
+  });
+});

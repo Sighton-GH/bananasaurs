@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError } from '../api.js';
 import {
   ASSISTANT_PROVIDERS_URL,
   ASSISTANT_URL,
@@ -22,6 +21,8 @@ import {
   type SetupKeyRow,
 } from '../api/assistant.js';
 import type { EligibilityWarning, ProviderReviewResult } from '../api/ops.js';
+import { ApiError } from '../api.js';
+import { fieldError } from '../api/describe-error.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -30,6 +31,7 @@ import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
+import { ErrorNotice, DescribedNotice } from '../ui/ErrorNotice.js';
 import { Checkbox, Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { OrderedList } from '../ui/OrderedList.js';
@@ -111,12 +113,27 @@ function ChecklistSection({
 interface ChainDraft {
   readonly keyId: string;
   readonly model: string;
+  readonly rpmLimit: string;
+  readonly rpdLimit: string;
 }
+
+/** A limit input is blank (no limit) or a whole number of 1 or more. */
+const validLimit = (text: string): boolean => text === '' || /^[1-9]\d*$/.test(text);
 
 interface TestOutcome {
   readonly ok: boolean;
   readonly reply?: string;
-  readonly error?: string;
+  /** The server's fixed sentence on a 200 refusal, or the thrown `ApiError`. */
+  readonly error?: unknown;
+  readonly failure?: {
+    readonly code: string;
+    readonly title: string;
+    readonly explanation: string;
+    readonly hint: string;
+    readonly host?: string;
+    readonly httpStatus?: number;
+    readonly netCode?: string;
+  };
 }
 
 /** Model order: an OrderedList of key + model rows with a status pill and a Test button each. */
@@ -130,11 +147,17 @@ function ModelOrderSection({
   const session = useSession();
   const toast = useToast();
   const [rows, setRows] = useState<readonly ChainDraft[]>(() =>
-    setup.chain.map((entry) => ({ keyId: entry.keyId, model: entry.model })),
+    setup.chain.map((entry) => ({
+      keyId: entry.keyId,
+      model: entry.model,
+      rpmLimit: entry.rpmLimit?.toString() ?? '',
+      rpdLimit: entry.rpdLimit?.toString() ?? '',
+    })),
   );
   const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [saveError, setSaveError] = useState<unknown>(undefined);
   const [testing, setTesting] = useState<number | undefined>(undefined);
   const [results, setResults] = useState<Readonly<Record<number, TestOutcome>>>({});
 
@@ -165,21 +188,39 @@ function ModelOrderSection({
   const savedByPair = new Map(setup.chain.map((entry) => [`${entry.keyId} ${entry.model}`, entry]));
 
   const save = async (): Promise<void> => {
+    setSaveError(undefined);
     if (rows.some((row) => row.model.trim() === '' || row.keyId === '')) {
       setError('Name a model and pick a key for every row.');
+      return;
+    }
+    if (rows.some((row) => !validLimit(row.rpmLimit) || !validLimit(row.rpdLimit))) {
+      setError('Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.');
       return;
     }
     setError(undefined);
     setSaving(true);
     try {
-      const result = await session.write<{ ok: boolean; count: number }>(
+      const result = await session.writeOrThrow<{ ok: boolean; count: number }>(
         MODEL_CHAIN_URL,
-        { entries: rows.map((row) => ({ keyId: row.keyId, model: row.model.trim() })) },
+        {
+          entries: rows.map((row) => ({
+            keyId: row.keyId,
+            model: row.model.trim(),
+            rpmLimit: row.rpmLimit === '' ? null : Number(row.rpmLimit),
+            rpdLimit: row.rpdLimit === '' ? null : Number(row.rpdLimit),
+          })),
+        },
         'PUT',
       );
       if (result === undefined) return;
       toast({ tone: 'ok', title: 'Model order saved' });
       onChanged();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setSaveError(err);
+        return;
+      }
+      throw err;
     } finally {
       setSaving(false);
     }
@@ -195,10 +236,12 @@ function ModelOrderSection({
       );
       if (result === undefined) return;
       setResults((current) => ({ ...current, [index]: result }));
-    } catch {
+    } catch (err) {
+      // writeOrThrow lets the server's answer through; render it rather
+      // than translating the refusal here.
       setResults((current) => ({
         ...current,
-        [index]: { ok: false, error: 'The test request failed.' },
+        [index]: { ok: false, error: err },
       }));
     } finally {
       setTesting(undefined);
@@ -239,6 +282,8 @@ function ModelOrderSection({
                   : saved.status === 'allowance-used'
                     ? `Free allowance used — resets ${new Date(saved.allowanceResetsAt ?? 0).toLocaleString()}`
                     : CHAIN_REASON[saved.status];
+            const rpmProblem = fieldError(saveError, `entries.${index}.rpmLimit`);
+            const rpdProblem = fieldError(saveError, `entries.${index}.rpdLimit`);
             return (
               <div className="grid gap-1.5">
                 <div className="flex flex-wrap items-center gap-2">
@@ -304,11 +349,60 @@ function ModelOrderSection({
                       />
                     </Field>
                   )}
+                  <div className="w-24">
+                    <Field label="RPM" {...(rpmProblem === undefined ? {} : { error: rpmProblem })}>
+                      <Input
+                        aria-label={`RPM limit for row ${number}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        placeholder="no limit"
+                        value={row.rpmLimit}
+                        onChange={(event) => {
+                          const rpmLimit = event.target.value;
+                          setRows((current) =>
+                            current.map((r, i) => (i === index ? { ...r, rpmLimit } : r)),
+                          );
+                        }}
+                      />
+                    </Field>
+                  </div>
+                  <div className="w-24">
+                    <Field label="RPD" {...(rpdProblem === undefined ? {} : { error: rpdProblem })}>
+                      <Input
+                        aria-label={`RPD limit for row ${number}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        placeholder="no limit"
+                        value={row.rpdLimit}
+                        onChange={(event) => {
+                          const rpdLimit = event.target.value;
+                          setRows((current) =>
+                            current.map((r, i) => (i === index ? { ...r, rpdLimit } : r)),
+                          );
+                        }}
+                      />
+                    </Field>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   {pill}
                   {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
                 </div>
+                {saved?.usage !== undefined && (
+                  <p className="text-xs text-ink-muted">
+                    RPM {saved.usage.lastMinute}
+                    {saved.rpmLimit !== null ? ` / ${saved.rpmLimit}` : ''} · today{' '}
+                    {saved.usage.today}
+                    {saved.rpdLimit !== null ? ` / ${saved.rpdLimit}` : ''}
+                    {saved.usage.availableAt !== undefined
+                      ? ` · frees up ${new Date(saved.usage.availableAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                      : ''}
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     busy={testing === index}
@@ -332,9 +426,31 @@ function ModelOrderSection({
                       <span className="text-sm text-ink-muted">
                         Row {number} answered “{result.reply ?? 'ready'}”.
                       </span>
+                    ) : result.failure !== undefined ? (
+                      <DescribedNotice
+                        described={{
+                          title: result.failure.title,
+                          message: result.failure.explanation,
+                          hint: result.failure.hint,
+                          code: result.failure.code,
+                          ...(result.failure.httpStatus === undefined
+                            ? {}
+                            : { status: result.failure.httpStatus }),
+                          fields: [],
+                        }}
+                        detail={[result.failure.host, result.failure.netCode].filter(
+                          (part): part is string => part !== undefined && part !== '',
+                        )}
+                      />
+                    ) : typeof result.error === 'string' ? (
+                      <span role="alert" className="text-sm text-danger">
+                        {result.error}
+                      </span>
+                    ) : result.error !== undefined ? (
+                      <ErrorNotice error={result.error} compact />
                     ) : (
                       <span role="alert" className="text-sm text-danger">
-                        {result.error ?? 'The test request failed.'}
+                        The test request failed.
                       </span>
                     ))}
                 </div>
@@ -353,7 +469,10 @@ function ModelOrderSection({
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           onClick={() =>
-            setRows((current) => [...current, { keyId: setup.keys[0]?.keyId ?? '', model: '' }])
+            setRows((current) => [
+              ...current,
+              { keyId: setup.keys[0]?.keyId ?? '', model: '', rpmLimit: '', rpdLimit: '' },
+            ])
           }
           disabled={setup.keys.length === 0}
           title={setup.keys.length === 0 ? 'Add a key first' : undefined}
@@ -363,6 +482,12 @@ function ModelOrderSection({
         <Button variant="primary" busy={saving} onClick={() => void save()}>
           Save order
         </Button>
+        {saveError !== undefined &&
+          !rows.some(
+            (_, index) =>
+              fieldError(saveError, `entries.${index}.rpmLimit`) !== undefined ||
+              fieldError(saveError, `entries.${index}.rpdLimit`) !== undefined,
+          ) && <ErrorNotice error={saveError} compact />}
       </div>
     </Card>
   );
@@ -962,7 +1087,7 @@ function TermsForm({
   const [clause, setClause] = useState(initial?.evidenceClause ?? '');
   const [url, setUrl] = useState(initial?.evidenceUrl ?? defaultUrl);
   const [production, setProduction] = useState(initial?.productionUseAllowed ?? false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const submit = async (): Promise<void> => {
@@ -983,19 +1108,17 @@ function TermsForm({
       toast({ tone: 'ok', title: 'Terms record saved' });
       onSaved();
     } catch (err: unknown) {
-      if (err instanceof ApiError && err.status === 400) {
-        setError(
-          'Check the quote (at least 10 characters) and that the link starts with https://.',
-        );
-      } else if (err instanceof ApiError) {
-        setError('The terms record was not saved. Try again.');
-      } else {
-        setError('The server refused this record. Check the fields and try again.');
-      }
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer with its field
+      // problems rather than translating the refusal here.
+      setError(err);
     } finally {
       setBusy(false);
     }
   };
+
+  const clauseProblem = fieldError(error, 'evidenceClause');
+  const urlProblem = fieldError(error, 'evidenceUrl');
 
   return (
     <form
@@ -1045,7 +1168,7 @@ function TermsForm({
       <Field
         label="Quote the sentence from the terms that says so"
         hint={`${clause.length}/2000 characters`}
-        {...(error !== undefined ? { error } : {})}
+        {...(clauseProblem === undefined ? {} : { error: clauseProblem })}
       >
         <textarea
           className="block w-full rounded-sm border border-line bg-canvas px-2 py-1 text-ink"
@@ -1054,7 +1177,10 @@ function TermsForm({
           onChange={(e) => setClause(e.target.value)}
         />
       </Field>
-      <Field label="Link to that part of the terms">
+      <Field
+        label="Link to that part of the terms"
+        {...(urlProblem === undefined ? {} : { error: urlProblem })}
+      >
         <Input
           type="url"
           value={url}
@@ -1069,6 +1195,7 @@ function TermsForm({
           onChange={(e) => setProduction(e.target.checked)}
         />
       </div>
+      {error !== undefined && <ErrorNotice error={error} />}
       <div>
         <Button variant="primary" type="submit" busy={busy}>
           Save terms record
@@ -1317,7 +1444,9 @@ function SetupBody({
   readonly assistant: AssistantData | undefined;
   readonly onChanged: () => void;
 }) {
-  const chainSignature = JSON.stringify(setup.chain.map((c) => [c.keyId, c.model]));
+  const chainSignature = JSON.stringify(
+    setup.chain.map((c) => [c.keyId, c.model, c.rpmLimit, c.rpdLimit]),
+  );
   return (
     <>
       <ChecklistSection setup={setup} assistant={assistant} />

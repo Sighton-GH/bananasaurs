@@ -44,7 +44,10 @@ import { createReminderDeliveryTimer } from './reminder-timer.js';
 import { createResourceRefreshTimer } from './resource-refresh-timer.js';
 import { buildDoctorReport, formatDoctorReport } from './doctor.js';
 import { buildGuildRuntime, type GuildRuntime } from './guild.js';
-import { createProviderConfigStore } from '../assistant/provider-config.js';
+import { createProviderConfigStore, providerKeyFrom } from '../assistant/provider-config.js';
+import { openWithKey, sealWithKey } from '../crypto/seal.js';
+import { createInstanceSettingsStore } from '../settings/instance-settings-store.js';
+import { applyConnectFallback } from './network.js';
 import { QuotaLedger } from '../assistant/quota-ledger.js';
 import { makeProvider, resolveModelChain, type ChainEntry } from '../assistant/model-chain.js';
 import type { ProviderSecretResolution } from '../assistant/provider-secret.js';
@@ -110,6 +113,8 @@ export interface Daemon {
   /** The dashboard API's seam into process-level facts (`HttpDeps.instance`). */
   readonly instance: OpsInstance;
   readonly providerStore?: ReturnType<typeof createProviderConfigStore> | undefined;
+  /** ADR 0080: the cached, validated instance settings (AI tuning). Always present. */
+  readonly instanceSettings: ReturnType<typeof createInstanceSettingsStore>;
   /**
    * Task 8: the one process-wide QuotaLedger, shared by every guild's
    * assistant loop and read by the dashboard's allowance pill.
@@ -166,6 +171,21 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     (config.ASSISTANT_PROVIDER_SECRET_KEY === undefined
       ? { source: 'missing', reason: 'readonly-no-key-file' }
       : { source: 'env', secret: config.ASSISTANT_PROVIDER_SECRET_KEY });
+  // ADR 0080: the owner-edited instance settings. The sealed fetch header
+  // shares the provider secret's key derivation, so it opens exactly where
+  // provider keys open; without a secret the store still serves every
+  // default and refuses the sealed write with
+  // `provider-secret-store-not-configured`.
+  const instanceSettings = createInstanceSettingsStore({
+    instance: scopes.instance(),
+    logger,
+    ...(providerSecret.source === 'missing'
+      ? {}
+      : {
+          seal: (v) => sealWithKey(providerKeyFrom(providerSecret.secret), v),
+          open: (s) => openWithKey(providerKeyFrom(providerSecret.secret), s),
+        }),
+  });
   const providerStore =
     providerSecret.source === 'missing'
       ? undefined
@@ -174,8 +194,17 @@ export function createDaemon(deps: DaemonDeps): Daemon {
           providerSecret.secret,
           providerSecret.source,
           config,
+          undefined,
+          { providerTimeoutMs: () => instanceSettings.get('assistant.providerTimeoutMs') },
         );
   const assistantConfig = (): Config => providerStore?.effective(config) ?? config;
+  // ADR 0080: the connect fallback wait applies to new connections at once —
+  // at startup and whenever the owner edits it, without a restart.
+  applyConnectFallback(instanceSettings.get('network.connectFallbackMs'), logger);
+  instanceSettings.onChange((key) => {
+    if (key === 'network.connectFallbackMs')
+      applyConnectFallback(instanceSettings.get(key), logger);
+  });
   // ADR 0075: when no provider store exists (no encryption secret), nothing
   // was ever saved through it either — the dashboard's save routes all go
   // through the store — so the several-providers and model-chain tables are
@@ -232,6 +261,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
         assistantConfig,
         assistantChain,
         quotaLedger,
+        instanceSettings,
         // Task 17: the GitHub client reads the sealed token per request, for
         // the `Authorization` header only — it never reaches logs or audit.
         githubToken: () => providerStore?.githubToken(),
@@ -264,6 +294,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const resourceRefreshTimer = createResourceRefreshTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    // The owner's refresh interval from the AI tuning settings (live, so
+    // edits apply without a restart).
+    intervalMs: () => instanceSettings.get('resources.refreshIntervalMin') * 60_000,
     now,
     logger,
   });
@@ -571,6 +604,7 @@ export function createDaemon(deps: DaemonDeps): Daemon {
     // Returned, not only closed over: `index.ts` hands it to the dashboard, and
     // before 2026-09-23 it was never returned, so the dashboard had no store.
     ...(providerStore === undefined ? {} : { providerStore }),
+    instanceSettings,
     ...(providerSecret.source === 'missing'
       ? { providerSecretProblem: providerSecret.reason }
       : {}),

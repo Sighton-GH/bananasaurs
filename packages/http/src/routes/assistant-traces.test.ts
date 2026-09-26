@@ -211,7 +211,7 @@ describe('assistant trace routes', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('serves the daily usage strip with quiet days as zeros', async () => {
@@ -235,5 +235,36 @@ describe('assistant trace routes', () => {
         { day: '2026-09-21', answers: 1, failures: 0, fallbacks: 0, tokens: 130 },
       ],
     });
+  });
+
+  it('Task 10 (e): a stored provider-auth code returns its explanation', async () => {
+    grant('audit.read');
+    grant('config.read');
+    const { cookie } = await signIn();
+    traceRepo.insertTrace(
+      t.scopes.forGuild(GUILD),
+      trace({
+        attempts: [
+          {
+            provider: 'gemini',
+            model: 'm',
+            outcome: 'error',
+            reason: 'auth',
+            ms: 5,
+            code: 'provider-auth',
+          },
+        ],
+      }),
+    );
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/traces/trace-1',
+      headers: { cookie },
+    });
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      trace: { attempts: { explain?: { title?: string } }[] };
+    }>();
+    expect(body.trace.attempts[0]?.explain?.title).toBe('The provider rejected the API key');
   });
 });

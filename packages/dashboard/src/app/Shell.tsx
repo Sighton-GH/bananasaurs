@@ -9,6 +9,7 @@ import { AssistantHistoryDetailPage } from '../pages/assistant-history-detail.js
 import { AssistantHistoryPage } from '../pages/assistant-history.js';
 import { AssistantPage } from '../pages/assistant.js';
 import { AssistantPromptWizardPage } from '../pages/assistant-prompt-wizard.js';
+import { AssistantTuningPage } from '../pages/assistant-tuning.js';
 import { AssistantResourcesPage } from '../pages/assistant-resources.js';
 import { AssistantSchedulesPage } from '../pages/assistant-schedules.js';
 import { AssistantSkillPage } from '../pages/assistant-skill.js';
@@ -41,7 +42,7 @@ import { Brand } from '../ui/Brand.js';
 import { ThemeToggle } from '../ui/ThemeToggle.js';
 import { HealthProvider, useHealth } from './health.js';
 import { JumpNav } from './JumpNav.js';
-import { GROUPS, NAV } from './routes.js';
+import { GROUPS, visibleNav } from './routes.js';
 import { useSession } from './session.js';
 import { GuildIdentity, ShellFooter } from './shell-chrome.js';
 import { StateStrip } from './StateStrip.js';
@@ -97,12 +98,14 @@ function DesktopHeader() {
 
 function Rail() {
   const [location] = useLocation();
+  const session = useSession();
+  const entries = visibleNav(session.info.instanceOwner === true);
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <nav aria-label="Areas" className="flex-1 overflow-y-auto px-3 py-2">
         {GROUPS.map((group) => {
-          const entries = NAV.filter((entry) => entry.group === group);
-          if (entries.length === 0) return null;
+          const groupEntries = entries.filter((entry) => entry.group === group);
+          if (groupEntries.length === 0) return null;
           return (
             <section
               key={group}
@@ -116,7 +119,7 @@ function Rail() {
                 {group}
               </h2>
               <ul className="grid gap-0.5">
-                {entries.map((entry) => {
+                {groupEntries.map((entry) => {
                   const active = location === entry.path;
                   return (
                     <li key={entry.path}>
@@ -179,6 +182,7 @@ function Pages() {
       {/* /providers is an alias of the AI setup page; /assistant/setup is the NAV entry (Task 9). */}
       <Route path="/providers" component={ProvidersPage} />
       <Route path="/assistant/setup" component={ProvidersPage} />
+      <Route path="/assistant/tuning" component={AssistantTuningPage} />
       <Route path="/assistant" component={AssistantPage} />
       <Route path="/assistant/behaviours/:id/wizard" component={AssistantPromptWizardPage} />
       {/* Task 19: the Conversations list, with the transcript right after it. */}

@@ -25,6 +25,7 @@ import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 import { behaviourBody, toggleIn } from './assistant-shared.js';
+import { describeError } from '../api/describe-error.js';
 import { TryItBox } from './assistant.js';
 
 /**
@@ -258,10 +259,18 @@ function Wizard({
         });
         reload();
       } else {
+        const d = describeError(err);
         toast({
           tone: 'danger',
-          title: 'Instructions not saved',
-          message: 'The server refused these instructions. Check the fields and try again.',
+          title: d.title,
+          message: [d.message, d.hint].filter(Boolean).join(' '),
+          detail: [
+            d.code,
+            d.status !== undefined ? `HTTP ${d.status}` : undefined,
+            d.requestId !== undefined ? `request ${d.requestId}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · '),
         });
       }
     } finally {

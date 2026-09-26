@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { apiFetch, CSRF_HEADER } from './api.js';
+import { ApiError, apiFetch, CSRF_HEADER, OfflineError } from './api.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -22,6 +22,39 @@ describe('apiFetch write headers', () => {
     expect(headers[CSRF_HEADER]).toBe('csrf-test');
     expect(headers).not.toHaveProperty('content-type');
     expect(init.body).toBeUndefined();
+  });
+
+  it('a 502 with a non-JSON body becomes an unreadable-response ApiError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, _init?: RequestInit) =>
+        Promise.resolve(
+          new Response('<html>Bad gateway</html>', {
+            status: 502,
+            headers: { 'content-type': 'text/html' },
+          }),
+        ),
+      ),
+    );
+    const err = await apiFetch('/api/session', 'csrf-test', () => Promise.resolve(undefined)).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(502);
+    expect((err as ApiError).body.error).toBe('unreadable-response');
+  });
+
+  it('a rejected fetch becomes an OfflineError, not a raw TypeError', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn((_url: string, _init?: RequestInit) => Promise.reject(new TypeError('fetch failed'))),
+    );
+    const err = await apiFetch('/api/session', 'csrf-test', () => Promise.resolve(undefined)).then(
+      () => undefined,
+      (caught: unknown) => caught,
+    );
+    expect(err).toBeInstanceOf(OfflineError);
   });
 
   it('a POST with a body sends both the CSRF and content-type headers', async () => {

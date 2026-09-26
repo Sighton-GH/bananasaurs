@@ -265,7 +265,7 @@ describe('login sets a session cookie with the right attributes (ADR 0029)', () 
         payload: new URLSearchParams({ username: 'owner', password: 'wrong' }).toString(),
       });
       expect(response.statusCode).toBe(415);
-      expect(response.json()).toEqual({ error: 'FST_ERR_CTP_INVALID_MEDIA_TYPE' });
+      expect(response.json()).toMatchObject({ error: 'FST_ERR_CTP_INVALID_MEDIA_TYPE' });
     } finally {
       await withOAuth.close();
     }
@@ -336,7 +336,7 @@ describe('CSRF is enforced on every state-changing request (ADR 0029)', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'csrf' });
+    expect(response.json()).toMatchObject({ error: 'csrf' });
   });
 
   it('refuses a POST with a wrong CSRF header', async () => {
@@ -465,7 +465,7 @@ describe('re-authentication gates destructive routes (ADR 0029)', () => {
       headers: { cookie, [CSRF_HEADER]: csrf },
     });
     expect(response.statusCode).toBe(401);
-    expect(response.json()).toEqual({ error: 'reauth-required' });
+    expect(response.json()).toMatchObject({ error: 'reauth-required' });
 
     const stillLive = await app.inject({ method: 'GET', url: '/api/probe', headers: { cookie } });
     expect(stillLive.statusCode).toBe(200);
@@ -667,7 +667,12 @@ describe('read-only mode (ADR 0029)', () => {
     });
     expect(unknown.statusCode).toBe(503);
     expect(unknown.statusCode).toBe(known.statusCode);
-    expect(unknown.json()).toEqual(known.json());
+    // Enrichment adds a per-request `requestId`, so the oracle comparison
+    // overrides it on both sides: everything else must still be identical.
+    expect({ ...unknown.json(), requestId: expect.any(String) }).toEqual({
+      ...known.json(),
+      requestId: expect.any(String),
+    });
     await ro.close();
   });
 

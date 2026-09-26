@@ -18,6 +18,7 @@ import {
   type TryItResponse,
 } from '../api/assistant.js';
 import { historyUrl } from '../api/traces.js';
+import { fieldError } from '../api/describe-error.js';
 import { useSession, type Session } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -26,6 +27,7 @@ import { Card } from '../ui/Card.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { HelpTip } from '../ui/HelpTip.js';
 import { PageHeader } from '../ui/PageHeader.js';
@@ -86,7 +88,7 @@ function CreateBehaviourForm({
   const [prompt, setPrompt] = useState('');
   const [skillIds, setSkillIds] = useState<readonly string[]>([]);
   const [callerRoleIds, setCallerRoleIds] = useState<readonly string[]>([]);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const rolesReady = data.roles !== undefined && data.roles.length > 0;
@@ -134,22 +136,18 @@ function CreateBehaviourForm({
         onCreated(id);
       }
     } catch (err) {
-      const body =
-        err instanceof Error && 'body' in err
-          ? (err as { body?: { error?: unknown } }).body
-          : undefined;
-      const code = typeof body?.error === 'string' ? body.error : '';
-      setError(
-        code === 'mention-role-required'
-          ? 'Choose the Discord role members will mention to reach this behaviour.'
-          : code === 'behaviour-conflict'
-            ? 'Another enabled behaviour already answers that mention role. Turn the other one off first.'
-            : 'The server refused this behaviour. Check the fields and try again.',
-      );
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer with its field
+      // problems rather than translating the refusal here.
+      setError(err);
     } finally {
       setBusy(false);
     }
   };
+
+  const nameProblem = fieldError(error, 'name');
+  const mentionRoleProblem = fieldError(error, 'mentionRoleId');
+  const promptProblem = fieldError(error, 'systemPrompt');
 
   return (
     <Card title="Create a behaviour">
@@ -164,7 +162,11 @@ function CreateBehaviourForm({
         }}
       >
         <div className="grid gap-3 md:grid-cols-2">
-          <Field label="Name" hint="Shown to operators only, for example New member help.">
+          <Field
+            label="Name"
+            hint="Shown to operators only, for example New member help."
+            {...(nameProblem === undefined ? {} : { error: nameProblem })}
+          >
             <Input
               value={name}
               onChange={(e) => setName(e.target.value)}
@@ -190,7 +192,10 @@ function CreateBehaviourForm({
           </Field>
         </div>
         <div className="mt-3">
-          <Field label="Mention role">
+          <Field
+            label="Mention role"
+            {...(mentionRoleProblem === undefined ? {} : { error: mentionRoleProblem })}
+          >
             <select
               value={mentionRoleId}
               onChange={(e) => setMentionRoleId(e.target.value)}
@@ -226,6 +231,7 @@ function CreateBehaviourForm({
           <Field
             label="Instructions for the new behaviour"
             hint="Members do not see these operator instructions. 1 to 4,000 characters."
+            {...(promptProblem === undefined ? {} : { error: promptProblem })}
           >
             <textarea
               value={prompt}
@@ -277,9 +283,9 @@ function CreateBehaviourForm({
           <p className="mt-2 text-xs text-ink-muted">If no role is ticked, nobody can use it.</p>
         </section>
         {error !== undefined && (
-          <p role="alert" className="mt-3 text-sm text-danger">
-            {error}
-          </p>
+          <div className="mt-3">
+            <ErrorNotice error={error} />
+          </div>
         )}
         <div className="mt-4 flex gap-2">
           <Button variant="primary" busy={busy} disabled={!canSubmit} type="submit">
@@ -770,7 +776,7 @@ function BotTagCard({
   const current = data.behaviours.find((b) => b.answersBotTag === true)?.id ?? '';
   const [choice, setChoice] = useState(current);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const offered = data.behaviours.filter((b) => b.enabled);
 
   const save = async () => {
@@ -791,15 +797,14 @@ function BotTagCard({
       reload();
     } catch (err: unknown) {
       // writeOrThrow throws only 400 and 409; the session reports the rest.
-      setError(
-        err instanceof ApiError && err.status === 409
-          ? 'Turn that behaviour on first.'
-          : 'The choice was not saved. Try again.',
-      );
+      // Render the server's answer rather than translating the refusal here.
+      setError(err);
     } finally {
       setBusy(false);
     }
   };
+
+  const behaviourProblem = fieldError(error, 'behaviourId');
 
   return (
     <Card title="Tagging @Bananasaurs">
@@ -810,7 +815,7 @@ function BotTagCard({
       <div className="mt-3">
         <Field
           label="When someone tags @Bananasaurs, answer with"
-          {...(error === undefined ? {} : { error })}
+          {...(behaviourProblem === undefined ? {} : { error: behaviourProblem })}
         >
           <select
             value={choice}
@@ -830,6 +835,11 @@ function BotTagCard({
         <p className="mt-2 text-xs text-hold">
           Tagging the bot does nothing until you pick a behaviour. Members can still use /ask.
         </p>
+      )}
+      {error !== undefined && (
+        <div className="mt-3">
+          <ErrorNotice error={error} />
+        </div>
       )}
       <div className="mt-3">
         <Button busy={busy} disabled={choice === current || busy} onClick={() => void save()}>
@@ -1112,12 +1122,14 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
   const [traceId, setTraceId] = useState<string | undefined>(undefined);
   const [conversationId, setConversationId] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [quotaText, setQuotaText] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
 
   const run = async (continuing: boolean): Promise<void> => {
     const cleaned = question.trim();
     if (cleaned === '' || busy) return;
     setBusy(true);
+    setQuotaText(undefined);
     setError(undefined);
     try {
       // The 429 rethrows (rather than toasting and resolving `undefined`)
@@ -1137,11 +1149,13 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
       setTraceId(result.traceId);
       setConversationId(result.conversationId);
     } catch (err) {
-      setError(
-        err instanceof ApiError && err.body.error === 'rate-limited'
-          ? 'You have used your 20 tries for this hour. Try again later.'
-          : 'The assistant could not be tried right now. Try again.',
-      );
+      // The 429 branch stays: the hourly quota sentence says more than the
+      // catalog text. Anything else renders as the server's answer.
+      if (err instanceof ApiError && err.body.error === 'rate-limited') {
+        setQuotaText('You have used your 20 tries for this hour. Try again later.');
+      } else {
+        setError(err);
+      }
     } finally {
       setBusy(false);
     }
@@ -1180,10 +1194,15 @@ export function TryItBox({ behaviourId }: { readonly behaviourId: string }) {
           </Button>
         )}
       </div>
-      {error !== undefined && (
+      {quotaText !== undefined && (
         <p role="alert" className="mt-3 text-sm text-danger">
-          {error}
+          {quotaText}
         </p>
+      )}
+      {error !== undefined && (
+        <div className="mt-3">
+          <ErrorNotice error={error} />
+        </div>
       )}
       {answer !== undefined && traceId !== undefined && (
         <section

@@ -218,6 +218,23 @@ export const assistantKeyUrl = (keyId: string) =>
   `/api/assistant/keys/${encodeURIComponent(keyId)}`;
 export const MODEL_CHAIN_URL = '/api/assistant/model-chain';
 export const MODEL_CHAIN_TEST_URL = '/api/assistant/model-chain/test';
+/** The classified failure the chain test answers alongside its title (Task 10). */
+export interface ChainTestFailure {
+  readonly code: string;
+  readonly title: string;
+  readonly explanation: string;
+  readonly hint: string;
+  readonly host?: string;
+  readonly httpStatus?: number;
+  readonly netCode?: string;
+}
+export interface ChainTestResponse {
+  readonly ok: boolean;
+  readonly latencyMs: number;
+  readonly reply?: string;
+  readonly error?: string;
+  readonly failure?: ChainTestFailure;
+}
 export const GITHUB_TOKEN_URL = '/api/assistant/github-token';
 export type SetupEligibility = 'eligible' | 'may-train' | 'ineligible' | 'unverified';
 export type ChainStatus =
@@ -251,6 +268,13 @@ export interface SetupChainRow {
   readonly model: string;
   readonly status: ChainStatus;
   readonly allowanceResetsAt?: number;
+  readonly rpmLimit: number | null;
+  readonly rpdLimit: number | null;
+  readonly usage?: {
+    readonly lastMinute: number;
+    readonly today: number;
+    readonly availableAt?: number;
+  };
 }
 export interface AssistantSetupData {
   readonly providers: readonly SetupProviderRow[];
@@ -308,12 +332,19 @@ export const decisionSaveUrl = (id: string) =>
   `/api/assistant/decisions/${encodeURIComponent(id)}/save`;
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
 /** ADR 0073: cached-document freshness per resource — fetchedAt/chunks/bytes/lastError, one row per resource that has ever been cached. */
+export interface ResourceErrorExplain {
+  readonly title: string;
+  readonly explanation: string;
+  readonly hint: string;
+}
 export interface ResourceFreshnessRow {
   readonly resourceId: string;
   readonly fetchedAt?: number;
   readonly chunks: number;
   readonly bytes: number;
   readonly lastError?: string;
+  readonly errorCode?: string;
+  readonly errorExplain?: ResourceErrorExplain;
 }
 export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
 export const resourceRefreshUrl = (id: string) =>

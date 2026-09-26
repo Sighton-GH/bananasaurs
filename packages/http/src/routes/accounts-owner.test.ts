@@ -160,7 +160,7 @@ describe('owner protection (ADR 0069)', () => {
     const headers = await signInAs('ops');
     const response = await app.inject({ method: 'DELETE', url: '/api/accounts/alice', headers });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'owner-protected' });
+    expect(response.json()).toMatchObject({ error: 'owner-protected' });
     expect(accountDeleteSpy).not.toHaveBeenCalled();
     expect(accountRepo.findAccountByUsername(t.scopes.instance(), 'alice')).toBeDefined();
   });
@@ -185,7 +185,7 @@ describe('owner protection (ADR 0069)', () => {
       ...(payload !== undefined ? { payload } : {}),
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'owner-protected' });
+    expect(response.json()).toMatchObject({ error: 'owner-protected' });
   });
 
   it('refuses every other owner mutation even from the owner session', async () => {
@@ -203,7 +203,7 @@ describe('owner protection (ADR 0069)', () => {
         ...('payload' in call ? { payload: call.payload } : {}),
       });
       expect(response.statusCode, `${call.method} ${call.url}`).toBe(403);
-      expect(response.json()).toEqual({ error: 'owner-protected' });
+      expect(response.json()).toMatchObject({ error: 'owner-protected' });
     }
     expect(accountDeleteSpy).not.toHaveBeenCalled();
   });
@@ -217,7 +217,7 @@ describe('owner protection (ADR 0069)', () => {
       payload: {},
     });
     expect(refused.statusCode).toBe(403);
-    expect(refused.json()).toEqual({ error: 'owner-protected' });
+    expect(refused.json()).toMatchObject({ error: 'owner-protected' });
 
     const aliceHeaders = await signInAs('alice');
     const allowed = await app.inject({
@@ -358,7 +358,7 @@ describe('revoke one permission (ADR 0069)', () => {
       headers,
     });
     expect(unknownAccount.statusCode).toBe(404);
-    expect(unknownAccount.json()).toEqual({ error: 'no-such-account' });
+    expect(unknownAccount.json()).toMatchObject({ error: 'no-such-account' });
   });
 });
 
@@ -372,7 +372,7 @@ describe('chosen passwords (ADR 0069)', () => {
       payload: { password: 'short' },
     });
     expect(response.statusCode).toBe(400);
-    expect(response.json()).toEqual({ error: 'weak-password' });
+    expect(response.json()).toMatchObject({ error: 'weak-password' });
     expect(accountSetPasswordSpy).not.toHaveBeenCalled();
   });
 

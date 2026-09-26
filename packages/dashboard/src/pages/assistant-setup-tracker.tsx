@@ -1,6 +1,5 @@
 import { useState, type ReactElement } from 'react';
 import { Link } from 'wouter';
-import { ApiError } from '../api.js';
 import {
   behaviourUrl,
   STARTER_URL,
@@ -11,6 +10,7 @@ import type { Session } from '../app/session.js';
 import { Badge } from '../ui/Badge.js';
 import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { useToast } from '../ui/Toast.js';
 import { behaviourBody, RoleChecklist, toggleIn } from './assistant-shared.js';
 
@@ -240,8 +240,7 @@ function OnAction({
 }) {
   const toast = useToast();
   const [busy, setBusy] = useState(false);
-  const [conflict, setConflict] = useState(false);
-  const [failed, setFailed] = useState(false);
+  const [turnOnError, setTurnOnError] = useState<unknown>(undefined);
 
   if (data.aiStatus?.enabled !== true) {
     return (
@@ -257,8 +256,7 @@ function OnAction({
 
   const turnOn = async () => {
     setBusy(true);
-    setConflict(false);
-    setFailed(false);
+    setTurnOnError(undefined);
     try {
       const result = await session.writeOrThrow(
         behaviourUrl(target.id),
@@ -270,17 +268,10 @@ function OnAction({
         reload();
       }
     } catch (err) {
-      const code =
-        err instanceof ApiError
-          ? err.body.error
-          : err instanceof Error && 'body' in err
-            ? (err as { body?: { error?: unknown } }).body?.error
-            : undefined;
-      if (code === 'behaviour-conflict') {
-        setConflict(true);
-      } else {
-        setFailed(true);
-      }
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer rather than
+      // translating the refusal here.
+      setTurnOnError(err);
     } finally {
       setBusy(false);
     }
@@ -291,15 +282,10 @@ function OnAction({
       <Button variant={isNext ? 'primary' : 'default'} busy={busy} onClick={() => void turnOn()}>
         Turn on {target.name}
       </Button>
-      {conflict && (
-        <p role="alert" className="mt-1 text-sm text-danger">
-          Another behaviour already answers that mention role. Turn that one off first.
-        </p>
-      )}
-      {failed && (
-        <p role="alert" className="mt-1 text-sm text-danger">
-          Couldn&apos;t turn it on. Try again.
-        </p>
+      {turnOnError !== undefined && (
+        <div className="mt-1">
+          <ErrorNotice error={turnOnError} />
+        </div>
       )}
     </div>
   );

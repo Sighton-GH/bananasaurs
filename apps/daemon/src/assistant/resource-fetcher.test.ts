@@ -181,6 +181,7 @@ describe('reviewed resource fetcher', () => {
       ok: false,
       code: 'timeout',
       message: 'The reviewed resource could not be retrieved safely.',
+      host: 'example.com',
     });
   });
 
@@ -223,6 +224,7 @@ describe('reviewed resource fetcher', () => {
         ok: false,
         code: 'redirect',
         message: 'The reviewed resource redirected outside the allowed hosts.',
+        host: 'example.com',
       });
       expect(request).toHaveBeenCalledTimes(1);
     });
@@ -255,6 +257,7 @@ describe('reviewed resource fetcher', () => {
         ok: false,
         code: 'redirect',
         message: 'The reviewed resource redirected outside the allowed hosts.',
+        host: 'example.com',
       });
       expect(request).not.toHaveBeenCalled();
     });
@@ -271,6 +274,79 @@ describe('reviewed resource fetcher', () => {
         evidence: { text: 'final' },
       });
       expect(request).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  describe('failure codes (challenge classification, status and host)', () => {
+    it("a 403 with a Cloudflare challenge header is a 'challenge' failure", async () => {
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request: async () => response(403, 'challenge page', { 'cf-mitigated': 'challenge' }),
+      });
+      await expect(fetcher.fetch('https://example.com/')).resolves.toEqual({
+        ok: false,
+        code: 'challenge',
+        message: "The site's Cloudflare bot protection challenged Bananasaurs.",
+        httpStatus: 403,
+        host: 'example.com',
+      });
+    });
+
+    it('a plain 403 is an http-status failure with status and host', async () => {
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request: async () => response(403, 'forbidden'),
+      });
+      await expect(fetcher.fetch('https://example.com/')).resolves.toMatchObject({
+        ok: false,
+        code: 'http-status',
+        httpStatus: 403,
+        host: 'example.com',
+      });
+    });
+  });
+
+  describe('headersFor (owner-set website fetch header)', () => {
+    it('sends the header to a listed host and not to any other host', async () => {
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'body'));
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        headersFor: (host) =>
+          host === 'example.com' ? { 'x-bananasaurs-fetch': 'tok' } : undefined,
+      });
+      await fetcher.fetch('https://example.com/guide');
+      expect(request).toHaveBeenCalledWith(
+        new URL('https://example.com/guide'),
+        { address: '93.184.216.34', family: 4 },
+        5_000,
+        { 'x-bananasaurs-fetch': 'tok' },
+      );
+      request.mockClear();
+      await fetcher.fetch('https://other.com/guide');
+      expect(request).toHaveBeenCalledWith(
+        new URL('https://other.com/guide'),
+        { address: '93.184.216.34', family: 4 },
+        5_000,
+      );
+    });
+  });
+
+  describe('limits getter (live fetch timeout)', () => {
+    it('reads the getter on every fetch, including the second request', async () => {
+      let timeoutMs = 5_000;
+      const request = vi.fn<PinnedRequest>(async () => response(200, 'body'));
+      const fetcher = new ReviewedResourceFetcher({
+        resolve: publicDns,
+        request,
+        now: () => 1_000_000,
+        limits: () => ({ timeoutMs, cacheTtlMs: 0 }),
+      });
+      await fetcher.fetch('https://example.com/one');
+      timeoutMs = 9_000;
+      await fetcher.fetch('https://example.com/two');
+      expect(request.mock.calls[0]?.[2]).toBe(5_000);
+      expect(request.mock.calls[1]?.[2]).toBe(9_000);
     });
   });
 

@@ -4,7 +4,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router, Route, useLocation } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
-import { accountErrorText } from '../api/ops.js';
 import { AccountEditPage } from './account-edit.js';
 
 function LocationProbe() {
@@ -268,17 +267,6 @@ describe('AccountEditPage', () => {
     expect(dialog.textContent).not.toContain('your own account');
   });
 
-  it('maps account error codes to plain sentences', () => {
-    expect(accountErrorText('owner-protected')).toBe("The owner account can't be changed.");
-    expect(accountErrorText('owner-only')).toBe('Only the owner can do that.');
-    expect(accountErrorText('weak-password')).toBe('Use at least 12 characters.');
-    expect(accountErrorText('username-taken')).toBe('That username is already in use.');
-    expect(accountErrorText('not-revealable')).toBe(
-      "This password can't be shown. Set a new one instead.",
-    );
-    expect(accountErrorText('something-else')).toBeUndefined();
-  });
-
   it('maps a not-revealable answer to its sentence', async () => {
     renderEdit('/accounts/sam', [
       { url: '/api/accounts', body: LIST },
@@ -286,7 +274,11 @@ describe('AccountEditPage', () => {
         method: 'POST',
         url: '/api/accounts/sam/reveal-password',
         status: 409,
-        body: { error: 'not-revealable' },
+        body: {
+          error: 'not-revealable',
+          title: "That password can't be shown",
+          message: "This password can't be shown. Set a new one instead.",
+        },
       },
     ]);
     await screen.findByText('sam');

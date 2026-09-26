@@ -148,6 +148,45 @@ describe('upsertDocument / getDocumentByUrl / listDocuments', () => {
       error: 'timeout: the reviewed resource could not be retrieved safely.',
     });
   });
+
+  it('round-trips errorCode on an error document and omits it on ok documents', () => {
+    seedResource(a, 'res-1', 'https://example.com/guide');
+    const docId = computeDocId('https://example.com/guide');
+    upsertDocument(a, {
+      resourceId: 'res-1',
+      docId,
+      url: 'https://example.com/guide',
+      path: '/guide',
+      title: 'Guide',
+      contentHash: '',
+      fetchedAt: 1000,
+      bytes: 0,
+      status: 'error',
+      error: 'x',
+      errorCode: 'challenge',
+    });
+    expect(getDocumentByUrl(a, 'https://example.com/guide')).toMatchObject({
+      status: 'error',
+      errorCode: 'challenge',
+    });
+
+    seedResource(a, 'res-2', 'https://example.com/ok');
+    const okId = computeDocId('https://example.com/ok');
+    upsertDocument(a, {
+      resourceId: 'res-2',
+      docId: okId,
+      url: 'https://example.com/ok',
+      path: '/ok',
+      title: 'Ok',
+      contentHash: 'h',
+      fetchedAt: 1000,
+      bytes: 10,
+      status: 'ok',
+    });
+    const okDoc = getDocumentByUrl(a, 'https://example.com/ok');
+    expect(okDoc?.status).toBe('ok');
+    expect(okDoc).not.toHaveProperty('errorCode');
+  });
 });
 
 describe('replaceChunks / getChunk / neighbours / outline', () => {
@@ -417,9 +456,11 @@ describe('resourceFreshness', () => {
       bytes: 321,
       status: 'error',
       error: 'timeout: could not be retrieved safely.',
+      errorCode: 'timeout',
     });
     const [after] = resourceFreshness(a);
     expect(after?.lastError).toBe('timeout: could not be retrieved safely.');
+    expect(after?.errorCode).toBe('timeout');
   });
 });
 

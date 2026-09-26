@@ -451,4 +451,33 @@ describe('OpenAI-compatible providers', () => {
     expect('thinkingConfig' in body).toBe(false);
     expect('thinking_config' in body).toBe(false);
   });
+
+  describe('error fields (ADR 0079)', () => {
+    const connectTimeout = (): TypeError =>
+      new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+      });
+
+    it('attaches netCode and host when fetch fails to connect', async () => {
+      const fetch = vi.fn<typeof globalThis.fetch>().mockRejectedValue(connectTimeout());
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ netCode: 'UND_ERR_CONNECT_TIMEOUT', host: 'openrouter.ai' });
+    });
+
+    it.each([429, 401])('attaches status and host on HTTP %s', async (status) => {
+      const fetch = vi
+        .fn<typeof globalThis.fetch>()
+        .mockResolvedValue(new Response('{}', { status }));
+      const provider = createOpenRouterProvider({ apiKey: 'secret', fetch });
+      const err = await provider
+        .generateText({ model: 'm', messages: [{ role: 'user', text: 'q' }] })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ status, host: 'openrouter.ai' });
+    });
+  });
 });

@@ -9,7 +9,7 @@ import {
   type ReactNode,
 } from 'react';
 import { apiFetch, ApiError, CSRF_HEADER, ReadonlyError, type SessionInfo } from '../api.js';
-import { accountErrorText } from '../api/ops.js';
+import { describeError } from '../api/describe-error.js';
 import { ReauthDialog } from '../ui/ReauthDialog.js';
 import { ToastProvider, useToast } from '../ui/Toast.js';
 
@@ -129,13 +129,21 @@ function SessionInner({
         return true;
       }
       if (err instanceof ApiError) {
-        // A refusal body carries `{ error: code }` with no `message`, so
-        // `err.message` would be the raw code — map known codes to their
-        // plain sentence first, keeping the raw code only as the fallback.
+        // The server's body already carries the catalog title, message and
+        // hint (0078) — render them, with the code, status and request id as
+        // the small detail line.
+        const d = describeError(err);
         toast({
           tone: 'danger',
-          title: 'The request failed',
-          message: accountErrorText(err.body.error) ?? err.message,
+          title: d.title,
+          message: [d.message, d.hint].filter(Boolean).join(' '),
+          detail: [
+            d.code,
+            d.status !== undefined ? `HTTP ${d.status}` : undefined,
+            d.requestId !== undefined ? `request ${d.requestId}` : undefined,
+          ]
+            .filter(Boolean)
+            .join(' · '),
         });
         return true;
       }
@@ -174,10 +182,18 @@ function SessionInner({
         return await writeOrThrow<T>(url, body, method);
       } catch (err) {
         if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
+          const d = describeError(err);
           toast({
             tone: 'danger',
-            title: 'The request failed',
-            message: accountErrorText(err.body.error) ?? err.message,
+            title: d.title,
+            message: [d.message, d.hint].filter(Boolean).join(' '),
+            detail: [
+              d.code,
+              d.status !== undefined ? `HTTP ${d.status}` : undefined,
+              d.requestId !== undefined ? `request ${d.requestId}` : undefined,
+            ]
+              .filter(Boolean)
+              .join(' · '),
           });
           return undefined;
         }
