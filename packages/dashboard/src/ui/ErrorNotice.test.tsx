@@ -2,7 +2,7 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ApiError } from '../api.js';
-import { ErrorNotice } from './ErrorNotice.js';
+import { DescribedNotice, ErrorNotice } from './ErrorNotice.js';
 
 afterEach(cleanup);
 
@@ -47,5 +47,28 @@ describe('ErrorNotice', () => {
     expect(alert.textContent).toContain('rpmLimit must be a number.');
     expect(alert.textContent).not.toContain('What to do:');
     expect(alert.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');
+  });
+
+  it('DescribedNotice appends detail parts to the meta line', () => {
+    render(
+      <DescribedNotice
+        described={{
+          title: 'Could not connect to the AI provider',
+          message: 'The connection timed out.',
+          hint: 'Check the host VPN.',
+          code: 'provider-connect-timeout',
+          status: 504,
+          fields: [],
+        }}
+        detail={['api.example.test', '', 'ETIMEDOUT']}
+      />,
+    );
+    const alert = screen.getByRole('alert');
+    expect(alert.textContent).toContain('Could not connect to the AI provider');
+    expect(alert.textContent).toContain('The connection timed out.');
+    expect(alert.textContent).toContain('What to do: Check the host VPN.');
+    expect(alert.textContent).toContain(
+      'provider-connect-timeout · HTTP 504 · api.example.test · ETIMEDOUT',
+    );
   });
 });

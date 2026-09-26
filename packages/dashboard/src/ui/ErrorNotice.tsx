@@ -1,26 +1,30 @@
 import type { ReactElement } from 'react';
-import { describeError } from '../api/describe-error.js';
+import { describeError, type DescribedError } from '../api/describe-error.js';
 
 /**
- * One `role="alert"` block for any thrown error: the title, the message, the
- * hint ("What to do: …") and a small `code · HTTP n · request id` meta line.
- * `compact` drops the hint. The error tokens match `Field.tsx` (`text-danger`
- * for the title, `text-ink-muted` for the hint and the meta line).
+ * One `role="alert"` block for an already-described error: the title, the
+ * message, the hint ("What to do: …") and a small `code · HTTP n · request id`
+ * meta line. `compact` drops the hint. `detail` parts are appended to the meta
+ * line after the existing parts (empty strings dropped). The error tokens
+ * match `Field.tsx` (`text-danger` for the title, `text-ink-muted` for the
+ * hint and the meta line).
  */
-export function ErrorNotice({
-  error,
+export function DescribedNotice({
+  described,
   compact = false,
+  detail = [],
 }: {
-  readonly error: unknown;
+  readonly described: DescribedError;
   readonly compact?: boolean;
+  readonly detail?: readonly string[];
 }): ReactElement {
-  const described = describeError(error);
   const meta = [
     described.code,
     described.status !== undefined ? `HTTP ${described.status}` : undefined,
     described.requestId !== undefined ? `request ${described.requestId}` : undefined,
+    ...detail,
   ]
-    .filter((part): part is string => part !== undefined)
+    .filter((part): part is string => part !== undefined && part !== '')
     .join(' · ');
   return (
     <div role="alert" className="text-sm">
@@ -41,4 +45,20 @@ export function ErrorNotice({
       )}
     </div>
   );
+}
+
+/**
+ * One `role="alert"` block for any thrown error: the title, the message, the
+ * hint ("What to do: …") and a small `code · HTTP n · request id` meta line.
+ * `compact` drops the hint. The error tokens match `Field.tsx` (`text-danger`
+ * for the title, `text-ink-muted` for the hint and the meta line).
+ */
+export function ErrorNotice({
+  error,
+  compact = false,
+}: {
+  readonly error: unknown;
+  readonly compact?: boolean;
+}): ReactElement {
+  return <DescribedNotice described={describeError(error)} compact={compact} />;
 }
