@@ -10,6 +10,7 @@ import { createServer, CSRF_HEADER, type HttpDeps } from '../server.js';
 import { hashPassword } from '../secrets.js';
 import { testInstanceFor, testPortsFor } from '../test-support.js';
 import { registerAssistantProviderRoutes } from '../routes/assistant-providers.js';
+import { registerOAuthRoutes } from '../routes/oauth.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const OWNER = 'acct_0123456789abcdef0123456789abcdef';
@@ -65,6 +66,7 @@ const buildDeps = (): HttpDeps => ({
   readonly: false,
   portsFor: (scope) => testPortsFor(scope, () => clock),
   instance: testInstanceFor(t.scopes.instance(), () => clock),
+  mcpPublicUrl: 'https://bot.test',
   assistantProviderConfig: {
     status: () => ({
       provider: 'gemini',
@@ -109,12 +111,9 @@ beforeEach(async () => {
     deps,
     registerRoutes: (fastify, guard, routeDeps) => {
       registerAssistantProviderRoutes(fastify, guard, routeDeps);
+      registerOAuthRoutes(fastify, guard, routeDeps);
       fastify.get('/api/test/boom', () => {
         throw new Error('boom');
-      });
-      // A non-dashboard-API error surface: the hook must leave it alone.
-      fastify.get('/probe-unauth', (_request, reply) => {
-        void reply.status(401).send({ error: 'unauthenticated' });
       });
     },
   });
@@ -225,9 +224,17 @@ describe('enriched error bodies', () => {
     expect(asOperator.json<Record<string, unknown>>()['instanceOwner']).toBe(false);
   });
 
-  it('(f) leaves a non-/api/ error body byte-identical', async () => {
-    const response = await app.inject({ method: 'GET', url: '/probe-unauth' });
-    expect(response.statusCode).toBe(401);
-    expect(response.json()).toEqual({ error: 'unauthenticated' });
+  it('(f) leaves a protocol-surface error body byte-identical', async () => {
+    // RFC 7009 §2.2.1: a malformed revocation request answers the bare
+    // `invalid_request` body. The enrichment hook must not touch it: no
+    // `title`, `message`, `hint`, `fields` or `requestId`.
+    const response = await app.inject({
+      method: 'POST',
+      url: '/oauth/revoke',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: 'token=only-a-token',
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ error: 'invalid_request' });
   });
 });
