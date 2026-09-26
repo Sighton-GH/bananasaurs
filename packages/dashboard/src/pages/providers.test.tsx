@@ -700,7 +700,14 @@ describe('ProvidersPage terms and web search', () => {
         method: 'PUT',
         url: '/api/providers/gemini/terms',
         status: 400,
-        body: { error: 'invalid-terms', message: 'Quote too short.' },
+        body: {
+          error: 'invalid-terms',
+          title: 'Those terms are not valid',
+          message: 'Quote too short.',
+          hint: 'Quote at least 10 characters and link a page starting with https://.',
+          fields: [{ path: 'evidenceClause', problem: 'too_small' }],
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -711,11 +718,9 @@ describe('ProvidersPage terms and web search', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Save terms record' }));
     });
-    expect(
-      screen.getByText(
-        'Check the quote (at least 10 characters) and that the link starts with https://.',
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByText('Those terms are not valid')).toBeTruthy();
+    expect(screen.getByText('Quote too short.')).toBeTruthy();
+    expect(screen.getByText('Too small.')).toBeTruthy();
     expect(screen.queryByText('Terms record saved')).toBeNull();
   });
 
@@ -805,7 +810,7 @@ describe('ProvidersPage terms and web search', () => {
 });
 
 describe('ProvidersPage row test refusal', () => {
-  it('maps a refused test to its sentence', async () => {
+  it('renders a refused test through the server answer', async () => {
     stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
@@ -814,7 +819,13 @@ describe('ProvidersPage row test refusal', () => {
         method: 'POST',
         url: MODEL_CHAIN_TEST_URL,
         status: 400,
-        body: { error: 'bad-request' },
+        body: {
+          error: 'bad-request',
+          title: 'The test could not run',
+          message: 'The test request was not valid.',
+          hint: 'Check the row and try again.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<ProvidersPage />);
@@ -822,6 +833,7 @@ describe('ProvidersPage row test refusal', () => {
     await act(async () => {
       fireEvent.click(screen.getByRole('button', { name: 'Test gemini-2.5-flash on Main key' }));
     });
-    expect(screen.getByText('The test request failed.')).toBeTruthy();
+    expect(await screen.findByText('The test could not run')).toBeTruthy();
+    expect(screen.getByText('The test request was not valid.')).toBeTruthy();
   });
 });

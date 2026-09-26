@@ -324,7 +324,13 @@ describe('SetupTracker', () => {
         method: 'PUT',
         url: '/api/assistant/behaviours/club',
         status: 400,
-        body: { error: 'bad-request' },
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderTracker(
@@ -359,7 +365,8 @@ describe('SetupTracker', () => {
       .getAllByRole('listitem')
       .find((li) => within(li).queryByText('Turn it on') !== null)!;
     fireEvent.click(within(onRow).getByRole('button', { name: 'Turn on Club assistant' }));
-    expect(await within(onRow).findByText("Couldn't turn it on. Try again.")).toBeTruthy();
+    expect(await within(onRow).findByText('The request was not valid')).toBeTruthy();
+    expect(within(onRow).getByText(/req-0a1b2c3d/)).toBeTruthy();
   });
 
   it('with no behaviours, Save who can ask creates the disabled club assistant', async () => {
@@ -529,13 +536,19 @@ describe('SetupTracker', () => {
     expect(within(skillsRow).getByText('Choose who can ask first')).toBeTruthy();
   });
 
-  it('Turn on writes enabled true and shows the inline conflict sentence on 409', async () => {
+  it('Turn on writes enabled true and shows the server answer inline on 409', async () => {
     stubFetch([
       {
         method: 'PUT',
         url: '/api/assistant/behaviours/club',
         status: 409,
-        body: { error: 'behaviour-conflict' },
+        body: {
+          error: 'behaviour-conflict',
+          title: 'Two behaviours would answer',
+          message: 'Another behaviour already answers the same mention.',
+          hint: 'Change one of the mentions.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderTracker(
@@ -570,10 +583,9 @@ describe('SetupTracker', () => {
       .getAllByRole('listitem')
       .find((li) => within(li).queryByText('Turn it on') !== null)!;
     fireEvent.click(within(onRow).getByRole('button', { name: 'Turn on Club assistant' }));
+    expect(await within(onRow).findByText('Two behaviours would answer')).toBeTruthy();
     expect(
-      await within(onRow).findByText(
-        'Another behaviour already answers that mention role. Turn that one off first.',
-      ),
+      within(onRow).getByText('Another behaviour already answers the same mention.'),
     ).toBeTruthy();
   });
 

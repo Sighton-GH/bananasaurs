@@ -136,7 +136,13 @@ describe('AssistantResourcesPage', () => {
         method: 'PUT',
         url: `/api/assistant/resources/res-${NOW.toString(36)}`,
         status: 400,
-        body: { error: 'unsafe-resource-url' },
+        body: {
+          error: 'unsafe-resource-url',
+          title: 'That link is not allowed',
+          message: 'Resource links must be safe http or https addresses.',
+          hint: 'Paste another link.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<AssistantResourcesPage />);
@@ -151,11 +157,8 @@ describe('AssistantResourcesPage', () => {
       .getAllByRole('button', { name: 'Add resource' })
       .find((b) => b.getAttribute('type') === 'submit')!;
     fireEvent.click(submit);
-    expect(
-      await screen.findByText(
-        'That address is not allowed: private and local addresses are refused.',
-      ),
-    ).toBeTruthy();
+    expect(await screen.findByText('That link is not allowed')).toBeTruthy();
+    expect(screen.getByText('Resource links must be safe http or https addresses.')).toBeTruthy();
     const put = mock.mock.calls.find((c) =>
       (c[0] as string).startsWith('/api/assistant/resources/res-'),
     )!;
@@ -366,7 +369,13 @@ describe('Add from GitHub', () => {
         method: 'POST',
         url: '/api/assistant/github/preview',
         status: 400,
-        body: { error: 'not-github' },
+        body: {
+          error: 'not-github',
+          title: 'Not a GitHub link',
+          message: 'That address is not a GitHub repository or organisation page.',
+          hint: 'Paste a github.com link.',
+          requestId: 'req-0a1b2c3d',
+        },
       },
     ]);
     renderWithSession(<AssistantResourcesPage />);
@@ -375,8 +384,9 @@ describe('Add from GitHub', () => {
       target: { value: 'https://example.com/acme' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Preview' }));
+    expect(await screen.findByText('Not a GitHub link')).toBeTruthy();
     expect(
-      await screen.findByText('That is not a GitHub repository or organisation URL.'),
+      screen.getByText('That address is not a GitHub repository or organisation page.'),
     ).toBeTruthy();
   });
 
