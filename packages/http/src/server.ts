@@ -1,5 +1,6 @@
+import { randomBytes } from 'node:crypto';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
-import type { Logger, OpsInstance, OpsPorts } from '@bananasaurs/core';
+import { safeLogFields, type Logger, type OpsInstance, type OpsPorts } from '@bananasaurs/core';
 import { parseGuildId } from '@bananasaurs/core';
 import { accountRepo, sessionRepo, type GuildScope } from '@bananasaurs/storage';
 import {
@@ -22,6 +23,8 @@ import {
   POLICY,
 } from './policy.js';
 import { dashboardAuditBase } from './routes/audit-base.js';
+import { explainError } from './errors/catalog.js';
+import { isInstanceOwner } from './owner.js';
 import { secretsMatch } from './secrets.js';
 import type { GithubRouteClient } from './routes/assistant-github.js';
 
@@ -388,7 +391,11 @@ const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
 export function createServer(options: CreateServerOptions): FastifyInstance {
   const { deps } = options;
-  const app = Fastify({ logger: false, bodyLimit: 64 * 1024 });
+  const app = Fastify({
+    logger: false,
+    bodyLimit: 64 * 1024,
+    genReqId: () => `req-${randomBytes(4).toString('hex')}`,
+  });
 
   // No CORS headers are sent, ever, and that is a security property rather than
   // an omission: it is what stops a cross-origin page reading the body of
@@ -412,7 +419,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     void defaultJsonParser(request, text, done);
   });
 
-  app.setErrorHandler((err, _request, reply) => {
+  app.setErrorHandler((err, request, reply) => {
     if (isReadonlyRefusal(err)) {
       void reply.status(READONLY_STATUS).send(READONLY_BODY);
       return;
@@ -423,15 +430,73 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     const status = (err as { statusCode?: unknown }).statusCode;
     if (typeof status === 'number' && status >= 400 && status < 500) {
       const code = (err as { code?: unknown }).code;
-      void reply.status(status).send({ error: typeof code === 'string' ? code : 'bad-request' });
+      const sent = typeof code === 'string' ? code : 'bad-request';
+      deps.logger.warn(
+        safeLogFields({
+          component: 'http',
+          requestId: request.id,
+          method: request.method,
+          route: request.routeOptions.url ?? 'unmatched',
+          httpStatus: status,
+          code: sent,
+        }),
+        'request refused',
+      );
+      void reply.status(status).send({ error: sent });
       return;
     }
     // The message only, never the error object: a thrown value could carry a
     // bound parameter or a row, and pino's redaction is an allowlist over
     // known field names rather than a filter over arbitrary nesting.
     const message = err instanceof Error ? err.message : 'a non-Error was thrown';
-    deps.logger.error({ component: 'http', err: message }, 'request failed');
-    void reply.status(500).send({ error: 'internal' });
+    deps.logger.error(
+      safeLogFields({
+        component: 'http',
+        requestId: request.id,
+        method: request.method,
+        route: request.routeOptions.url ?? 'unmatched',
+        httpStatus: 500,
+        err: message,
+      }),
+      'request failed',
+    );
+    void reply.status(500).send({ error: 'internal', requestId: request.id });
+  });
+
+  /**
+   * ADR 0078: every non-2xx JSON body carries its explanation. Fastify passes
+   * the already-serialized payload string here, so the hook parses it, fills
+   * in `title`, `message` (the catalog explanation), `hint` and `requestId`
+   * wherever the route left them absent, and re-serializes. A field the route
+   * set itself is never overwritten; anything that is not a JSON error body
+   * passes through untouched.
+   */
+  app.addHook('onSend', (request, reply, payload, done) => {
+    try {
+      if (reply.statusCode < 400) return done(null, payload);
+      const contentType = reply.getHeader('content-type');
+      if (typeof contentType !== 'string' || !contentType.startsWith('application/json')) {
+        return done(null, payload);
+      }
+      if (typeof payload !== 'string') return done(null, payload);
+      const parsed: unknown = JSON.parse(payload);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return done(null, payload);
+      }
+      const body = parsed as Record<string, unknown>;
+      if (typeof body['error'] !== 'string') return done(null, payload);
+      const explained = explainError(body['error']);
+      const enriched: Record<string, unknown> = { ...body };
+      if (enriched['title'] === undefined) enriched['title'] = explained.title;
+      if (enriched['message'] === undefined) enriched['message'] = explained.explanation;
+      if (enriched['hint'] === undefined && explained.hint !== undefined) {
+        enriched['hint'] = explained.hint;
+      }
+      if (enriched['requestId'] === undefined) enriched['requestId'] = request.id;
+      return done(null, JSON.stringify(enriched));
+    } catch {
+      return done(null, payload);
+    }
   });
 
   const sessionFor = (request: FastifyRequest): SessionContext | undefined => {
@@ -506,6 +571,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
       expiresAt: result.session.expiresAt,
       reauthFresh: reauthIsFresh(result.session, deps.now()),
       readonly: deps.readonly,
+      instanceOwner: isInstanceOwner(deps, result.session),
     });
   });
 

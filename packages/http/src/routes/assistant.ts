@@ -108,8 +108,7 @@ const SKILL_COMMANDS: Readonly<
  * provider's cost statement and terms record are facts about the whole
  * daemon (ADR 0061), and no per-guild grant can confer them.
  */
-export const isInstanceOwner = (deps: HttpDeps, session: SessionContext): boolean =>
-  accountRepo.findAccountById(deps.scopes.instance(), session.accountId)?.isOwner === true;
+export { isInstanceOwner } from '../owner.js';
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
 const behaviour = z.object({
