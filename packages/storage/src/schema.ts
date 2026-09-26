@@ -1838,12 +1838,16 @@ export const assistantProviderKeys = sqliteTable(
 // listed twice under two different keys as a fallback pair. Positions are
 // dense from 0. The foreign key keeps a chain entry from naming a key that
 // does not exist, and removing a key drops its chain rows with it.
+// ADR 0081: each entry carries nullable per-model RPM and RPD limits
+// (null = no limit), enforced at reserve time against `assistant_model_calls`.
 export const assistantModelChain = sqliteTable(
   'assistant_model_chain',
   {
     position: integer('position').primaryKey(),
     keyId: text('key_id').notNull(),
     model: text('model').notNull(),
+    rpmLimit: integer('rpm_limit'),
+    rpdLimit: integer('rpd_limit'),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
@@ -1852,6 +1856,42 @@ export const assistantModelChain = sqliteTable(
     ),
     unique('assistant_model_chain_key_model').on(t.keyId, t.model),
     check('assistant_model_chain_position', sql`${t.position} BETWEEN 0 AND 5`),
+  ],
+);
+
+// ADR 0080: owner-edited instance settings. One row per setting key; the
+// value is JSON typed by the registry in `packages/core`, so this table
+// stores it opaquely. Instance-level like the provider keys and model chain.
+export const instanceSettings = sqliteTable(
+  'instance_settings',
+  {
+    key: text('key').primaryKey(),
+    valueJson: text('value_json').notNull(),
+    updatedAt: integer('updated_at').notNull(),
+    updatedBy: text('updated_by').notNull(),
+  },
+  (t) => [check('instance_settings_key_length', sql`length(${t.key}) BETWEEN 1 AND 64`)],
+);
+
+// ADR 0081: every provider HTTP call is recorded here (key + model + time,
+// plus which guild spent the call), so a chain entry at its RPM/RPD limit
+// can be skipped before calling. Instance-scoped because the key is shared;
+// rows older than 48 h are pruned on reserve.
+export const assistantModelCalls = sqliteTable(
+  'assistant_model_calls',
+  {
+    callId: integer('call_id').primaryKey({ autoIncrement: true }),
+    keyId: text('key_id').notNull(),
+    model: text('model').notNull(),
+    at: integer('at').notNull(),
+    guildId: snowflake('guild_id').notNull(),
+  },
+  (t) => [
+    foreignKey({ columns: [t.keyId], foreignColumns: [assistantProviderKeys.keyId] }).onDelete(
+      'cascade',
+    ),
+    index('assistant_model_calls_key_model_at').on(t.keyId, t.model, t.at),
+    check('assistant_model_calls_guild_id_snowflake', snowflakeCheck(t.guildId)),
   ],
 );
 
@@ -2180,6 +2220,9 @@ export const resourceDocuments = sqliteTable(
     bytes: integer('bytes').notNull().default(0),
     status: text('status').notNull().default('ok'),
     error: text('error'),
+    // The provider or fetch failure code (e.g. a bot challenge), if any.
+    // Null when absent or when the fetch succeeded.
+    errorCode: text('error_code'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.docId] }),
