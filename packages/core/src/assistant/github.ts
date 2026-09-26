@@ -16,7 +16,8 @@ export type GitHubTarget =
 const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
 
 /** True for GitHub's website hosts (github.com, www.github.com) — pages there are GitHub's UI, not a repository's files. */
-export const isGithubWebHost = (hostname: string): boolean => GITHUB_HOSTS.has(hostname.toLowerCase());
+export const isGithubWebHost = (hostname: string): boolean =>
+  GITHUB_HOSTS.has(hostname.toLowerCase());
 
 // Top-level path segments that are GitHub site sections, not usernames or
 // organisation handles, so a URL like github.com/settings must never be

@@ -2,11 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import {
-  embeddedIpv4,
-  ipv6Bytes,
-  validateResourceUrl,
-} from '@bananasaurs/core';
+import { embeddedIpv4, ipv6Bytes, validateResourceUrl } from '@bananasaurs/core';
 
 export const DEFAULT_RESOURCE_FETCH_LIMITS = {
   maxBytes: 1_000_000,

@@ -317,7 +317,10 @@ describe('chunkDocument — fenced code blocks', () => {
       'after',
     ].join('\n');
     const chunks = chunkDocument({ text, mediaType: 'text/markdown', path: 'guide.md' });
-    expect(chunks.map((c) => c.headingPath)).toEqual(['guide.md › Guide', 'guide.md › Guide › Next']);
+    expect(chunks.map((c) => c.headingPath)).toEqual([
+      'guide.md › Guide',
+      'guide.md › Guide › Next',
+    ]);
     expect(chunks[0]!.text).toContain('# a comment, not a heading');
   });
 

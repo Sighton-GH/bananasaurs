@@ -204,8 +204,8 @@ function GithubPanel({
           )}
           {!preview.authenticated && (
             <p className="text-sm text-ink-muted">
-              Without a GitHub token, only the README is read and organisations refresh once a
-              day. Add a token on the{' '}
+              Without a GitHub token, only the README is read and organisations refresh once a day.
+              Add a token on the{' '}
               <Link href="/assistant/setup" className="underline">
                 AI setup page
               </Link>
@@ -221,7 +221,9 @@ function GithubPanel({
                 <p className="text-sm text-ink-muted">Showing the first 500 repositories.</p>
               )}
               {(preview.repos?.length ?? 0) === 0 ? (
-                <p className="mt-2 text-sm">This organisation has no repositories this token can see.</p>
+                <p className="mt-2 text-sm">
+                  This organisation has no repositories this token can see.
+                </p>
               ) : (
                 <>
                   <div className="mt-2 flex flex-wrap gap-4 text-sm">
@@ -546,8 +548,8 @@ function ResourcesCard({
         <div role="status" className="mt-3 rounded-md border border-hold p-3 text-sm">
           <p className="font-medium">GitHub repositories are caching their README only</p>
           <p className="mt-1 text-ink-muted">
-            Without a GitHub token, Bananasaurs reads only each repository's README. Docs,
-            notes and other Markdown files are skipped. Add a fine-grained token on the{' '}
+            Without a GitHub token, Bananasaurs reads only each repository's README. Docs, notes and
+            other Markdown files are skipped. Add a fine-grained token on the{' '}
             <Link href="/assistant/setup" className="underline">
               AI setup page
             </Link>

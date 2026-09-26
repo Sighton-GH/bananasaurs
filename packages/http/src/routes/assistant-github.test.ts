@@ -264,7 +264,13 @@ describe('POST /api/assistant/github/preview', () => {
       target: { kind: 'org', owner: 'acme' },
       authenticated: true,
       repos: [
-        { name: 'widget', description: 'Does things', fork: false, archived: false, private: false },
+        {
+          name: 'widget',
+          description: 'Does things',
+          fork: false,
+          archived: false,
+          private: false,
+        },
         {
           name: 'forked',
           description: 'forked description',
@@ -471,9 +477,10 @@ describe('POST /api/assistant/github/import', () => {
       url: 'https://github.com/acme/widget',
     });
     expect(pub.statusCode).toBe(200);
-    expect(assistantRepo.listResources(t.scopes.forGuild(GUILD)).find(
-      (r) => r.id === 'gh-acme-widget',
-    )?.meta).toEqual({ owner: 'acme', repo: 'widget', branch: 'main' });
+    expect(
+      assistantRepo.listResources(t.scopes.forGuild(GUILD)).find((r) => r.id === 'gh-acme-widget')
+        ?.meta,
+    ).toEqual({ owner: 'acme', repo: 'widget', branch: 'main' });
   });
 
   it('answers 400 not-github and creates nothing', async () => {

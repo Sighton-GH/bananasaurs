@@ -152,7 +152,7 @@ describe('assistant resource cache routes', () => {
   it('GET freshness reports githubTokenConfigured false when no token is saved', async () => {
     grant('config.read');
     const { cookie } = await signIn();
-    deps.assistantProviderConfig = { githubTokenConfigured: () => false };
+    Object.assign(deps, { assistantProviderConfig: { githubTokenConfigured: () => false } });
 
     const res = await app.inject({
       method: 'GET',
@@ -166,7 +166,7 @@ describe('assistant resource cache routes', () => {
   it('GET freshness reports githubTokenConfigured true when a token is saved', async () => {
     grant('config.read');
     const { cookie } = await signIn();
-    deps.assistantProviderConfig = { githubTokenConfigured: () => true };
+    Object.assign(deps, { assistantProviderConfig: { githubTokenConfigured: () => true } });
 
     const res = await app.inject({
       method: 'GET',

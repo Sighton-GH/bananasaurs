@@ -273,9 +273,14 @@ export const runAssistantTool = async (
           const first = chunks[0]!;
           const room = Math.max(
             0,
-            4_000 - head.length - `[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: `.length - 1,
+            4_000 -
+              head.length -
+              `[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: `.length -
+              1,
           );
-          lines.push(`[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: ${first.text.slice(0, room)}`);
+          lines.push(
+            `[${first.chunkId}] ${clipHeading(first.headingPath, 200)}: ${first.text.slice(0, room)}`,
+          );
           shown.push(first.chunkId);
         }
         return {

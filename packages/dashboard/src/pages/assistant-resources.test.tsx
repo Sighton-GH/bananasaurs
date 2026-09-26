@@ -362,7 +362,9 @@ describe('Add from GitHub', () => {
   it('shows an empty org with no Add button', async () => {
     renderGithub({ ...ORG_PREVIEW, repos: [] });
     await openGithubPanel('https://github.com/acme');
-    expect(await screen.findByText('This organisation has no repositories this token can see.')).toBeTruthy();
+    expect(
+      await screen.findByText('This organisation has no repositories this token can see.'),
+    ).toBeTruthy();
     expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
   });
 
@@ -380,7 +382,13 @@ describe('Add from GitHub', () => {
     renderGithub({
       ...ORG_PREVIEW,
       repos: [
-        { name: 'widget', description: 'Does things', fork: false, archived: false, private: false },
+        {
+          name: 'widget',
+          description: 'Does things',
+          fork: false,
+          archived: false,
+          private: false,
+        },
         { name: 'secret', description: null, fork: false, archived: false, private: true },
       ],
     });
@@ -461,9 +469,7 @@ describe('Add from GitHub', () => {
     renderGithub({ ...REPO_PREVIEW, authenticated: false });
     await openGithubPanel();
     await screen.findByText('README.md');
-    expect(
-      screen.getByText(/Without a GitHub token, only the README is read/),
-    ).toBeTruthy();
+    expect(screen.getByText(/Without a GitHub token, only the README is read/)).toBeTruthy();
     const link = screen.getByRole('link', { name: 'AI setup page' });
     expect(link.getAttribute('href')?.endsWith('/assistant/setup')).toBe(true);
     // README-only preview still offers the Add button.
@@ -555,29 +561,38 @@ const README_ONLY_TITLE = 'GitHub repositories are caching their README only';
 
 describe('README-only warning', () => {
   it('shows the warning and a README only badge for a GitHub repo without a token', async () => {
-    renderPage({ ...FULL, resources: [GITHUB_REPO_RESOURCE] }, {
-      freshness: [GITHUB_FRESH_ROW],
-      githubTokenConfigured: false,
-    });
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+        githubTokenConfigured: false,
+      },
+    );
     expect(await screen.findByText(README_ONLY_TITLE)).toBeTruthy();
     expect(screen.getByText(README_ONLY_TITLE).closest('[role="status"]')).toBeTruthy();
     expect(screen.getByText('README only')).toBeTruthy();
   });
 
   it('shows neither the warning nor the badge when a token is configured', async () => {
-    renderPage({ ...FULL, resources: [GITHUB_REPO_RESOURCE] }, {
-      freshness: [GITHUB_FRESH_ROW],
-      githubTokenConfigured: true,
-    });
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+        githubTokenConfigured: true,
+      },
+    );
     expect(await screen.findByText('acme/widget')).toBeTruthy();
     expect(screen.queryByText(README_ONLY_TITLE)).toBeNull();
     expect(screen.queryByText('README only')).toBeNull();
   });
 
   it('shows neither the warning nor the badge when the server cannot tell', async () => {
-    renderPage({ ...FULL, resources: [GITHUB_REPO_RESOURCE] }, {
-      freshness: [GITHUB_FRESH_ROW],
-    });
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+      },
+    );
     expect(await screen.findByText('acme/widget')).toBeTruthy();
     expect(screen.queryByText(README_ONLY_TITLE)).toBeNull();
     expect(screen.queryByText('README only')).toBeNull();
@@ -591,10 +606,13 @@ describe('README-only warning', () => {
   });
 
   it('links the warning to the AI setup page', async () => {
-    renderPage({ ...FULL, resources: [GITHUB_REPO_RESOURCE] }, {
-      freshness: [GITHUB_FRESH_ROW],
-      githubTokenConfigured: false,
-    });
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+        githubTokenConfigured: false,
+      },
+    );
     await screen.findByText(README_ONLY_TITLE);
     const link = screen.getByRole('link', { name: 'AI setup page' });
     expect(link.getAttribute('href')?.endsWith('/assistant/setup')).toBe(true);
