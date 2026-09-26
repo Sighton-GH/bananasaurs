@@ -25,6 +25,26 @@ const collectSlugs = (dir: string): Set<string> => {
   return slugs;
 };
 
+/**
+ * Codes sent through a variable rather than a literal (`error: result.reason`
+ * and friends): the slug scan above cannot see them, so they are pinned here.
+ * Sourced from `LoginFailure` and `BootstrapFailure` (`packages/http/src/auth.ts`),
+ * the `'no-key' | 'unsupported'` message match in `routes/assistant.ts`, and
+ * `OpsSetAutomodRuleReadyOutcome['reason']` (`packages/core/src/ops/ports.ts`).
+ */
+const VARIABLE_CODES = [
+  'invalid-credentials',
+  'locked-out',
+  'no-guild-access',
+  'guild-required',
+  'bad-token',
+  'already-provisioned',
+  'no-guild',
+  'no-key',
+  'unsupported',
+  'not-observing',
+] as const;
+
 describe('ERROR_CATALOG covers every error slug', () => {
   it('has a non-empty title and explanation for each slug sent in packages/http/src', () => {
     const src = fileURLToPath(new URL('..', import.meta.url));
@@ -58,5 +78,14 @@ describe('ERROR_CATALOG covers every error slug', () => {
       title: 'The request failed',
       explanation: 'Bananasaurs refused the request (no-such-code).',
     });
+  });
+
+  it('has an entry for every variable-sent code', () => {
+    for (const code of VARIABLE_CODES) {
+      const entry = ERROR_CATALOG[code];
+      expect(entry, `missing catalog entry for '${code}'`).toBeDefined();
+      expect(entry?.title.length ?? 0, `empty title for '${code}'`).toBeGreaterThan(0);
+      expect(entry?.explanation.length ?? 0, `empty explanation for '${code}'`).toBeGreaterThan(0);
+    }
   });
 });
