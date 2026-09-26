@@ -724,6 +724,41 @@ describe('runToolLoop local per-entry limits (ADR 0081)', () => {
     expect(calls).toHaveLength(2);
     expect(reserveCall).toHaveBeenCalledTimes(2);
   });
+
+  it('empty-answer retry is reserved: allowed twice calls the provider twice', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider, calls } = scripted([textAnswer(toolShaped), textAnswer('Recovered.')]);
+    const reserveCall = vi.fn((_e: ChainEntry) => allowed);
+    const result = await runToolLoop(baseInput([entry({ provider })], { reserveCall }));
+    expect(result.outcome).toBe('answered');
+    expect(result.text).toBe('Recovered.');
+    expect(calls).toHaveLength(2);
+    expect(reserveCall).toHaveBeenCalledTimes(2);
+  });
+
+  it('empty-answer retry refused for a local limit calls the provider once and fails guarded', async () => {
+    const toolShaped = '{"name":"search_sources","args":{"query":"x"}}';
+    const { provider, calls } = scripted([textAnswer(toolShaped), textAnswer('must not run')]);
+    let n = 0;
+    const reserveCall = vi.fn((_e: ChainEntry): ReturnType<Reserve> => {
+      n += 1;
+      return n === 1 ? allowed : refused('local-rpm-limit', 5000);
+    });
+    const result = await runToolLoop(baseInput([entry({ provider })], { reserveCall }));
+    expect(result.outcome).toBe('failed');
+    expect(result.text).toBe("I couldn't finish that answer — please try again.");
+    expect(calls).toHaveLength(1);
+    expect(reserveCall).toHaveBeenCalledTimes(2);
+    expect(result.attempts).toMatchObject([
+      {
+        outcome: 'skipped',
+        reason: 'local-rpm-limit',
+        code: 'local-rpm-limit',
+        availableAt: 5000,
+      },
+      { outcome: 'error', reason: 'empty-answer' },
+    ]);
+  });
 });
 
 describe('runToolLoop daily quota (Task Q)', () => {

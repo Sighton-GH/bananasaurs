@@ -113,6 +113,24 @@ const isBusy = (err: unknown): boolean =>
 type Attempt = AssistantTrace['attempts'][number];
 type TraceToolCall = AssistantTrace['toolCalls'][number];
 
+type LocalLimitCode = 'local-rpm-limit' | 'local-rpd-limit';
+
+const skippedLocalLimitAttempt = (
+  entry: ChainEntry,
+  code: LocalLimitCode,
+  availableAt: number,
+  ms: number,
+): Attempt => ({
+  provider: entry.providerId,
+  model: entry.model,
+  keyLabel: entry.keyLabel,
+  outcome: 'skipped',
+  reason: code,
+  code,
+  availableAt,
+  ms,
+});
+
 /*
  * Bounded tool loop over the ordered model chain (ADRs 0071, 0075):
  * 1. For each chain entry in order: no provider means attempt `skipped`.
@@ -436,16 +454,9 @@ const runEntry = async (deps: {
   ): Promise<GenerateTextResponse | undefined> => {
     const reserved = deps.reserveCall?.(entry);
     if (reserved !== undefined && !reserved.ok) {
-      deps.attempts.push({
-        provider: entry.providerId,
-        model: entry.model,
-        keyLabel: entry.keyLabel,
-        outcome: 'skipped',
-        reason: reserved.code,
-        code: reserved.code,
-        availableAt: reserved.availableAt,
-        ms: deps.entryMs(),
-      });
+      deps.attempts.push(
+        skippedLocalLimitAttempt(entry, reserved.code, reserved.availableAt, deps.entryMs()),
+      );
       return undefined;
     }
     const declarations = offerTools ? declarationsFor(deps.tools, provider, round) : [];
@@ -581,7 +592,22 @@ const runEntry = async (deps: {
     if (response === undefined) return undefined;
     const calls = response.toolCalls ?? [];
     if (calls.length === 0) {
-      return finishEntry({ entry, provider, response, messages, deps });
+      return finishEntry({
+        entry,
+        provider,
+        response,
+        messages,
+        deps: {
+          protectedText: deps.protectedText,
+          systemInstruction: deps.systemInstruction,
+          limits: deps.limits,
+          modelIds: deps.modelIds,
+          attempts: deps.attempts,
+          entryMs: deps.entryMs,
+          recordUsage: deps.recordUsage,
+          reserveCall: deps.reserveCall,
+        },
+      });
     }
     // The assistant turn stays in the transcript so the next round sees what
     // was called; provider-specific parts are echoed back only within this
@@ -600,7 +626,22 @@ const runEntry = async (deps: {
   const extra: GenerationMessage = { role: 'user', text: ANSWER_INSTRUCTION };
   const final = await callProvider(0, [extra], false);
   if (final === undefined) return undefined;
-  return finishEntry({ entry, provider, response: final, messages: [...messages, extra], deps });
+  return finishEntry({
+    entry,
+    provider,
+    response: final,
+    messages: [...messages, extra],
+    deps: {
+      protectedText: deps.protectedText,
+      systemInstruction: deps.systemInstruction,
+      limits: deps.limits,
+      modelIds: deps.modelIds,
+      attempts: deps.attempts,
+      entryMs: deps.entryMs,
+      recordUsage: deps.recordUsage,
+      reserveCall: deps.reserveCall,
+    },
+  });
 };
 
 const finishEntry = async (deps: {
@@ -616,6 +657,15 @@ const finishEntry = async (deps: {
     readonly attempts: Attempt[];
     readonly entryMs: () => number;
     readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
+    readonly reserveCall?:
+      | ((entry: ChainEntry) =>
+          | { readonly ok: true }
+          | {
+              readonly ok: false;
+              readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+              readonly availableAt: number;
+            })
+      | undefined;
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
@@ -661,44 +711,51 @@ const finishEntry = async (deps: {
   }
   // Empty after stripping tool-call text: one retry with no declarations and
   // the same answer-now instruction, then the fixed failure text.
-  try {
-    const retry = await deps.provider.generateText({
-      model: deps.entry.model,
-      systemInstruction: outer.systemInstruction,
-      messages: [...deps.messages, { role: 'user', text: ANSWER_INSTRUCTION }],
-      maxOutputTokens: outer.limits.maxOutputTokens,
-      thinkingBudget: outer.limits.answerThinking,
-    });
-    outer.recordUsage(retry.usage);
-    const second = guardAnswer({
-      text: retry.text,
-      protectedText: outer.protectedText,
-      modelIds: outer.modelIds,
-    });
-    if (second.ok) {
-      okAttempt();
-      return {
-        outcome: 'answered',
-        text: second.text,
-        model: retry.model,
-        provider: deps.entry.providerId,
-        ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
-        guard: { removed: [...guarded.removed, ...second.removed] },
-      };
+  const reserved = outer.reserveCall?.(deps.entry);
+  if (reserved !== undefined && !reserved.ok) {
+    outer.attempts.push(
+      skippedLocalLimitAttempt(deps.entry, reserved.code, reserved.availableAt, outer.entryMs()),
+    );
+  } else {
+    try {
+      const retry = await deps.provider.generateText({
+        model: deps.entry.model,
+        systemInstruction: outer.systemInstruction,
+        messages: [...deps.messages, { role: 'user', text: ANSWER_INSTRUCTION }],
+        maxOutputTokens: outer.limits.maxOutputTokens,
+        thinkingBudget: outer.limits.answerThinking,
+      });
+      outer.recordUsage(retry.usage);
+      const second = guardAnswer({
+        text: retry.text,
+        protectedText: outer.protectedText,
+        modelIds: outer.modelIds,
+      });
+      if (second.ok) {
+        okAttempt();
+        return {
+          outcome: 'answered',
+          text: second.text,
+          model: retry.model,
+          provider: deps.entry.providerId,
+          ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
+          guard: { removed: [...guarded.removed, ...second.removed] },
+        };
+      }
+      if (second.reason === 'prompt-leak') {
+        okAttempt();
+        return {
+          outcome: 'answered',
+          text: PROMPT_LEAK_TEXT,
+          model: retry.model,
+          provider: deps.entry.providerId,
+          ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
+          guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
+        };
+      }
+    } catch {
+      // A failed retry is still a failed answer, not a chain error.
     }
-    if (second.reason === 'prompt-leak') {
-      okAttempt();
-      return {
-        outcome: 'answered',
-        text: PROMPT_LEAK_TEXT,
-        model: retry.model,
-        provider: deps.entry.providerId,
-        ...(retry.finishReason === undefined ? {} : { finishReason: retry.finishReason }),
-        guard: { removed: [...guarded.removed, ...second.removed], blocked: 'prompt-leak' },
-      };
-    }
-  } catch {
-    // A failed retry is still a failed answer, not a chain error.
   }
   outer.attempts.push({
     provider: deps.entry.providerId,
