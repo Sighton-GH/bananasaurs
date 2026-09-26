@@ -31,7 +31,8 @@ describe('useResource', () => {
       <Probe answers={[() => Promise.reject(new Error('nope')), () => Promise.resolve('two')]} />,
     );
     const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Could not load the thing: nope');
+    expect(screen.getByText('Could not load the thing.')).toBeTruthy();
+    expect(alert.textContent).toContain('nope');
     await act(async () => {
       screen.getByRole('button', { name: 'Try again' }).click();
     });
