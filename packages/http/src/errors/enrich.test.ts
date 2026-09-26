@@ -192,7 +192,8 @@ describe('enriched error bodies', () => {
     expect(failed, 'expected a request failed log line with the same requestId').toBeDefined();
   });
 
-  it('(e) reports instanceOwner on /api/session', async () => {    const owner = await signInAs('owner');
+  it('(e) reports instanceOwner on /api/session', async () => {
+    const owner = await signInAs('owner');
     const asOwner = await app.inject({
       method: 'GET',
       url: '/api/session',

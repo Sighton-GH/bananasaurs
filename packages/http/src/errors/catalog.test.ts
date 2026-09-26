@@ -47,9 +47,7 @@ describe('ERROR_CATALOG covers every error slug', () => {
       "This setting belongs to the bot's owner account.",
     );
     expect(ERROR_CATALOG['weak-password']?.explanation).toBe('Use at least 12 characters.');
-    expect(ERROR_CATALOG['username-taken']?.explanation).toBe(
-      'That username is already in use.',
-    );
+    expect(ERROR_CATALOG['username-taken']?.explanation).toBe('That username is already in use.');
     expect(ERROR_CATALOG['not-revealable']?.explanation).toBe(
       "This password can't be shown. Set a new one instead.",
     );

@@ -52,8 +52,7 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
   },
   'read-only': {
     title: 'Bananasaurs is read-only',
-    explanation:
-      'This instance was started with BANANASAURS_READONLY, so nothing can be changed.',
+    explanation: 'This instance was started with BANANASAURS_READONLY, so nothing can be changed.',
     hint: 'Restart without BANANASAURS_READONLY to make changes.',
   },
   csrf: {
@@ -72,8 +71,7 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
   },
   'provider-secret-store-not-configured': {
     title: "Provider keys can't be stored",
-    explanation:
-      "The daemon has no provider secret, so keys and sealed settings can't be saved.",
+    explanation: "The daemon has no provider secret, so keys and sealed settings can't be saved.",
     hint: 'Set ASSISTANT_PROVIDER_SECRET_KEY or let the daemon create its key file, then restart.',
   },
   'unknown-setting': {

@@ -14,16 +14,13 @@ export interface FieldProblem {
 
 /** `issue.path.join('.')` and `issue.code` only. The first 20 issues. */
 export const fieldsOf = (error: ZodError): FieldProblem[] =>
-  error.issues
-    .slice(0, 20)
-    .map((issue) => ({ path: issue.path.join('.'), problem: issue.code }));
+  error.issues.slice(0, 20).map((issue) => ({ path: issue.path.join('.'), problem: issue.code }));
 
 /** A 400 that carries the code plus `fields`, so the page can highlight. */
-export const badRequest = (
-  reply: FastifyReply,
-  error?: ZodError,
-  code?: string,
-): FastifyReply =>
+export const badRequest = (reply: FastifyReply, error?: ZodError, code?: string): FastifyReply =>
   reply
     .status(400)
-    .send({ error: code ?? 'bad-request', ...(error === undefined ? {} : { fields: fieldsOf(error) }) });
+    .send({
+      error: code ?? 'bad-request',
+      ...(error === undefined ? {} : { fields: fieldsOf(error) }),
+    });

@@ -73,8 +73,7 @@ export const PROVIDER_FAILURE_TEXT: Readonly<Record<ProviderFailureCode, Failure
     title: 'Could not connect to the AI provider',
     explanation:
       "The connection to the provider's server timed out before it was established. This is almost always the network on the Bananasaurs host: a VPN, a firewall, or broken IPv6.",
-    hint:
-      'Check the host’s VPN and network. If a VPN is on, raise AI tuning → Network → Connect fallback wait, or turn the VPN off.',
+    hint: 'Check the host’s VPN and network. If a VPN is on, raise AI tuning → Network → Connect fallback wait, or turn the VPN off.',
   },
   'provider-dns': {
     title: "The provider's address could not be looked up",
@@ -154,8 +153,7 @@ export const PROVIDER_FAILURE_TEXT: Readonly<Record<ProviderFailureCode, Failure
   },
   'local-rpm-limit': {
     title: 'This model reached its per-minute limit',
-    explanation:
-      "Bananasaurs did not call it, because this chain entry's RPM limit is used up.",
+    explanation: "Bananasaurs did not call it, because this chain entry's RPM limit is used up.",
     hint: 'It frees up within a minute. Raise the RPM limit in AI setup if the provider allows more.',
   },
   'local-rpd-limit': {
@@ -318,11 +316,7 @@ export const classifyProviderFailure: (
   }
 
   // Rule 7: the request never reached the provider.
-  if (
-    err instanceof ProviderError &&
-    err.kind === 'outage' &&
-    fields.httpStatus === undefined
-  ) {
+  if (err instanceof ProviderError && err.kind === 'outage' && fields.httpStatus === undefined) {
     return { code: 'provider-network-error', ...base };
   }
 

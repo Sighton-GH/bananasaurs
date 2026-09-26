@@ -150,7 +150,7 @@ describe('classifyProviderFailure', () => {
     ).toBe('provider-safety-refusal');
   });
 
-  it("maps a bare outage to provider-network-error", () => {
+  it('maps a bare outage to provider-network-error', () => {
     const failure = classifyProviderFailure(new ProviderError('outage', 'x', true), {
       provider: 'p',
       model: 'm',
