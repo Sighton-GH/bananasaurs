@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { randomBytes } from 'node:crypto';
 import { oauthRepo } from '@bananasaurs/storage';
 import { originMatchesHost, type HttpDeps, type RouteGuard } from '../server.js';
-import { badRequest } from '../errors/reply.js';
 import { hashToken, secretsMatch } from '../secrets.js';
 import { verifyAccountCredentials } from '../auth.js';
 import {
@@ -397,7 +396,9 @@ export const registerOAuthRoutes = (
         return reply.status(429).send({ error: 'too_many_requests' });
       }
       const parsed = registerBodySchema.safeParse(request.body);
-      if (!parsed.success) return badRequest(reply, parsed.error, 'invalid_request');
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'invalid_request' });
+      }
       for (const uri of parsed.data.redirect_uris) {
         if (!isAllowedRedirectUri(uri)) {
           return reply.status(400).send({ error: 'invalid_redirect_uri' });
@@ -425,7 +426,9 @@ export const registerOAuthRoutes = (
 
     scoped.post('/oauth/revoke', (request, reply) => {
       const parsed = revokeBodySchema.safeParse(request.body);
-      if (!parsed.success) return badRequest(reply, parsed.error, 'invalid_request');
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'invalid_request' });
+      }
       const existing = oauthRepo.findTokenByHash(
         deps.scopes.instance(),
         hashToken(parsed.data.token),
