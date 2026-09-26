@@ -10,9 +10,6 @@
  * server shape, update the mirror here and the page that reads it.
  */
 
-import { ApiError } from '../api.js';
-import { describeError } from './describe-error.js';
-
 // --- shared -----------------------------------------------------------------
 
 /** `GET /api/jobs` and `GET /api/jobs/:id` — mirrors `OpsJobRow`. */
@@ -197,26 +194,6 @@ export interface AccountRevealResult {
   readonly username: string;
   readonly password: string;
 }
-
-/**
- * The server catalog now owns every account sentence (0078) — the body
- * already carries the title, message and hint, so a dashboard map would only
- * go stale. Kept exported for its one remaining caller shape: callers fall
- * back when this returns `undefined`.
- */
-export const accountErrorText = (_error: string): string | undefined => undefined;
-
-/**
- * The `catch` arm every account write shares: a 400/409 refusal body becomes
- * the server's message, `fallback` covers a refused body without one, and the
- * thrown message covers a write that never got an answer shape at all.
- */
-export const accountWriteErrorText = (err: unknown, fallback: string): string => {
-  if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
-    return err.body.message === undefined ? fallback : describeError(err).message;
-  }
-  return err instanceof Error ? err.message : String(err);
-};
 
 // --- mcp --------------------------------------------------------------------
 
