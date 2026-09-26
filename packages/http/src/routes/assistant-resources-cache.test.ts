@@ -149,6 +149,47 @@ describe('assistant resource cache routes', () => {
     expect(body.freshness).toEqual([expect.objectContaining({ resourceId: 'res-1', bytes: 42 })]);
   });
 
+  it('GET freshness reports githubTokenConfigured false when no token is saved', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    deps.assistantProviderConfig = { githubTokenConfigured: () => false };
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/resources/freshness',
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ githubTokenConfigured?: boolean }>().githubTokenConfigured).toBe(false);
+  });
+
+  it('GET freshness reports githubTokenConfigured true when a token is saved', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    deps.assistantProviderConfig = { githubTokenConfigured: () => true };
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/resources/freshness',
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<{ githubTokenConfigured?: boolean }>().githubTokenConfigured).toBe(true);
+  });
+
+  it('GET freshness omits githubTokenConfigured when the server cannot tell', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/resources/freshness',
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json<Record<string, unknown>>()).not.toHaveProperty('githubTokenConfigured');
+  });
+
   it('GET freshness explains a challenge failure with the resource-failure catalog text', async () => {
     grant('config.read');
     const { cookie } = await signIn();
