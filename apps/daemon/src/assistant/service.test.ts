@@ -1572,6 +1572,40 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(content).toContain('-# Sources: Handbook › Guide › Part 0');
   });
 
+  it('clips a 5000-char pre-retrieved heading in the sources line', async () => {
+    seedResource('handbook', 'Handbook', ['battery care guide for the club']);
+    const longHeading = 'H'.repeat(5_000);
+    const service = serviceWith(answering('Here is the care guide.'), {
+      cacheSearch: () => [
+        {
+          resourceId: 'handbook',
+          chunkId: 'c_long_0',
+          docId: 'd_long',
+          headingPath: longHeading,
+          snippet: 'battery care guide',
+        },
+      ],
+    });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-long-heading-sources',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
+    expect(line).not.toBe('');
+    expect(line.length).toBeLessThan(300);
+    expect(line).toContain('…');
+    expect(content).not.toContain(longHeading);
+  });
+
   it('dedupes sources by URL and never lists more than three', async () => {
     const ids = ['alpha', 'beta', 'gamma', 'delta'] as const;
     const docIds = ids.map((id, i) =>
