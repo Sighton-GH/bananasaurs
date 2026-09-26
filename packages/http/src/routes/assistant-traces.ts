@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { authorize } from '@bananasaurs/core';
+import { authorize, PROVIDER_FAILURE_CODES, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
 import { authzStoreFor, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
@@ -88,6 +88,15 @@ export const registerAssistantTraceRoutes = (
         trace: {
           ...trace,
           sections: trace.sections.map((s) => ({ ...s, text: showText ? s.text : '' })),
+          attempts: trace.attempts.map((a) => ({
+            ...a,
+            ...(a.code !== undefined &&
+            (PROVIDER_FAILURE_CODES as readonly string[]).includes(a.code)
+              ? {
+                  explain: PROVIDER_FAILURE_TEXT[a.code as (typeof PROVIDER_FAILURE_CODES)[number]],
+                }
+              : {}),
+          })),
         },
         member: member ?? null,
       });

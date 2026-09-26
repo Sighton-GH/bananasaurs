@@ -47,6 +47,7 @@ import { BUSY_REPLY, dailyQuotaReply } from './fallback-replies.js';
 import { ENV_KEY_ID, type ChainEntry, type ProviderId } from './model-chain.js';
 import { LocalLimitError, localLimitReply } from './local-limit.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopResult } from './tool-loop.js';
+import { ChainFailedError, summarizeAttempts } from './chain-failed-error.js';
 import { QuotaLedger } from './quota-ledger.js';
 import {
   runAssistantTool,
@@ -724,10 +725,11 @@ export const createAssistantService = (
               : lastTried.outcome === 'timeout'
                 ? ('timeout' as const)
                 : ('outage' as const);
-          throw new ProviderError(
+          throw new ChainFailedError(
             kind,
-            `Every assistant model is busy (${lastTried.outcome})`,
+            `Every assistant model failed — ${summarizeAttempts(failed.attempts)}`,
             true,
+            failed.attempts,
           );
         }
         const allSkipped =
@@ -849,6 +851,8 @@ export const createAssistantService = (
         limits: loopLimits(),
         quotaLedger: ledger,
         reserveCall,
+        logger,
+        guildId: scope.guildId,
         now,
       });
       // The loop records exactly one attempt per entry, in chain order, so

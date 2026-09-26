@@ -218,6 +218,23 @@ export const assistantKeyUrl = (keyId: string) =>
   `/api/assistant/keys/${encodeURIComponent(keyId)}`;
 export const MODEL_CHAIN_URL = '/api/assistant/model-chain';
 export const MODEL_CHAIN_TEST_URL = '/api/assistant/model-chain/test';
+/** The classified failure the chain test answers alongside its title (Task 10). */
+export interface ChainTestFailure {
+  readonly code: string;
+  readonly title: string;
+  readonly explanation: string;
+  readonly hint: string;
+  readonly host?: string;
+  readonly httpStatus?: number;
+  readonly netCode?: string;
+}
+export interface ChainTestResponse {
+  readonly ok: boolean;
+  readonly latencyMs: number;
+  readonly reply?: string;
+  readonly error?: string;
+  readonly failure?: ChainTestFailure;
+}
 export const GITHUB_TOKEN_URL = '/api/assistant/github-token';
 export type SetupEligibility = 'eligible' | 'may-train' | 'ineligible' | 'unverified';
 export type ChainStatus =

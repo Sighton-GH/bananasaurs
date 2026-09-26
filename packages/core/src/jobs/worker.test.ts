@@ -311,3 +311,26 @@ describe('handler registration', () => {
     expect(() => build([handlerFor(ran), handlerFor(ran)])).toThrow(/duplicate job handler/);
   });
 });
+
+describe('Task 10 (d): job failed line carries a string code', () => {
+  it('logs code chain-failed when the thrown error carries one', async () => {
+    const { logger: capturing, lines } = capturingLogger();
+    s.add();
+    const coded: AnyJobHandler = {
+      kind: 'sweep',
+      payload: sweepPayload,
+      run() {
+        throw Object.assign(new Error('every model failed'), { code: 'chain-failed' });
+      },
+    };
+    const worker = new JobWorker({
+      store: s.store,
+      handlers: [coded],
+      logger: capturing,
+      now: () => 1000,
+    });
+    await worker.runOnce();
+    const entry = JSON.parse(lines.at(-1) ?? '{}') as { code?: string };
+    expect(entry.code).toBe('chain-failed');
+  });
+});

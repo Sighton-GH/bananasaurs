@@ -1,6 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
 import { z } from 'zod';
-import { ProviderError } from '@bananasaurs/core';
+import { classifyProviderFailure, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
 import { eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest } from '../errors/reply.js';
@@ -59,31 +59,6 @@ const eligibilityOf = (
 
 const TERMS_REFUSAL =
   "The AI provider's terms are not recorded or don't allow this use, so no content was sent outside the server.";
-
-const statusOf = (err: unknown): number | undefined => {
-  if (typeof err !== 'object' || err === null) return undefined;
-  const status = (err as { status?: unknown }).status;
-  return typeof status === 'number' ? status : undefined;
-};
-
-/**
- * What a chain test answers when the provider call fails (hard rule 4).
- *
- * The provider's error text is never repeated — it can echo request
- * details, so every failure becomes one of four fixed sentences chosen
- * from the error's kind or status only.
- */
-const chainTestFailure = (err: unknown): string => {
-  const kind = err instanceof ProviderError ? err.kind : undefined;
-  const status = statusOf(err);
-  if (kind === 'authentication' || status === 401 || status === 403)
-    return 'The provider refused the key.';
-  if (kind === 'timeout' || status === 408 || status === 504)
-    return 'The provider did not answer in time.';
-  if (kind === 'invalid-request' || kind === 'capability-mismatch' || status === 404)
-    return 'The model is not available on this key.';
-  return 'The test request failed.';
-};
 
 /**
  * Task 8: several labelled keys across several providers, ordered into one
@@ -341,6 +316,23 @@ export const registerAssistantProviderRoutes = (
         return reply.status(200).send({ ok: false, latencyMs: latencyOf(), error: TERMS_REFUSAL });
       }
     }
+    if (configured.reserveTestCall !== undefined) {
+      const reserved = configured.reserveTestCall(parsed.data.position, session.guildId);
+      if (!reserved.ok) {
+        const text = PROVIDER_FAILURE_TEXT[reserved.code];
+        return reply.status(200).send({
+          ok: false,
+          latencyMs: latencyOf(),
+          error: text.title,
+          failure: {
+            code: reserved.code,
+            title: text.title,
+            explanation: text.explanation,
+            hint: text.hint,
+          },
+        });
+      }
+    }
     try {
       const result = await entry.provider.generateText({
         model: entry.model,
@@ -348,9 +340,25 @@ export const registerAssistantProviderRoutes = (
       });
       return reply.status(200).send({ ok: true, latencyMs: latencyOf(), reply: result.text });
     } catch (err) {
-      return reply
-        .status(200)
-        .send({ ok: false, latencyMs: latencyOf(), error: chainTestFailure(err) });
+      const f = classifyProviderFailure(err, {
+        provider: entry.providerId,
+        model: entry.model,
+      });
+      const text = PROVIDER_FAILURE_TEXT[f.code];
+      return reply.status(200).send({
+        ok: false,
+        latencyMs: latencyOf(),
+        error: text.title,
+        failure: {
+          code: f.code,
+          title: text.title,
+          explanation: text.explanation,
+          hint: text.hint,
+          ...(f.host === undefined ? {} : { host: f.host }),
+          ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+          ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+        },
+      });
     }
   });
 

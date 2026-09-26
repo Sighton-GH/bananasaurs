@@ -181,6 +181,21 @@ export interface HttpDeps extends AuthDeps {
         isKeyReadable?(keyId: string): boolean;
         githubTokenConfigured?(): boolean;
         /**
+         * Task 10: the chain test reserves its call against the entry's
+         * owner-set RPM/RPD limits first (wired by a later task). Absent in
+         * older wiring, and then the test calls the provider directly.
+         */
+        reserveTestCall?(
+          position: number,
+          guildId: string,
+        ):
+          | { readonly ok: true }
+          | {
+              readonly ok: false;
+              readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+              readonly availableAt: number;
+            };
+        /**
          * Task 17: the sealed GitHub token, opened for the client's
          * `Authorization` header only. Absent in older wiring.
          */
