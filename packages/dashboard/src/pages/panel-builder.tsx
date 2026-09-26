@@ -160,6 +160,7 @@ export function PanelBuilder({
   const [options, setOptions] = useState<readonly DraftOption[]>([emptyOption()]);
   const [step, setStep] = useState<'edit' | 'review'>('edit');
   const [problems, setProblems] = useState<readonly string[]>([]);
+  const [submitText, setSubmitText] = useState<string | undefined>(undefined);
   const [submitError, setSubmitError] = useState<unknown>(undefined);
   const [created, setCreated] = useState<CreatedState | undefined>(undefined);
   const [busy, setBusy] = useState(false);
@@ -330,6 +331,7 @@ export function PanelBuilder({
 
   const submit = async () => {
     setBusy(true);
+    setSubmitText(undefined);
     setSubmitError(undefined);
     try {
       const result = await session.writeOrThrow<{
@@ -352,14 +354,14 @@ export function PanelBuilder({
       if (err instanceof ApiError && (err.status === 400 || err.status === 409)) {
         const body = err.body as { error?: string; problems?: string; roleIds?: string[] };
         if (body.error === 'unmanageable-role') {
-          setSubmitError(
+          setSubmitText(
             `Bananasaurs cannot manage these roles in Discord: ${(body.roleIds ?? []).map(roleName).join(', ')}. ` +
               "Move them below the bot's highest role or pick different roles.",
           );
         } else if (body.error === 'invalid-definition') {
-          setSubmitError(body.problems ?? 'The definition failed validation.');
+          setSubmitText(body.problems ?? 'The definition failed validation.');
         } else if (body.error === 'already-exists') {
-          setSubmitError(
+          setSubmitText(
             `The name "${panelId.trim()}" is already taken — names are immutable. ` +
               'Go back and pick a new one.',
           );
@@ -815,14 +817,12 @@ export function PanelBuilder({
                 : 'posts the message and starts granting and removing roles as members use it.'}
             </HelpTip>
           </p>
-          {submitError !== undefined &&
-            (typeof submitError === 'string' ? (
-              <p role="alert" className="text-sm text-danger">
-                {submitError}
-              </p>
-            ) : (
-              <ErrorNotice error={submitError} />
-            ))}
+          {submitText !== undefined && (
+            <p role="alert" className="text-sm text-danger">
+              {submitText}
+            </p>
+          )}
+          {submitError !== undefined && <ErrorNotice error={submitError} />}
           <div className="flex gap-2">
             <Button variant="primary" busy={busy} onClick={() => void submit()}>
               Create
