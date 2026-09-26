@@ -719,6 +719,42 @@ describe('ProvidersPage terms and web search', () => {
     expect(screen.queryByText('Terms record saved')).toBeNull();
   });
 
+  it('renders a 400 terms refusal with the server title, hint, request id and field problem', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: '/api/providers/gemini/terms',
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'evidenceClause', problem: 'too_big' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('button', { name: 'Save terms record' });
+    fireEvent.change(screen.getByLabelText(/Quote the sentence/), {
+      target: { value: 'A very long quoted sentence that the server refuses.' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save terms record' }));
+    });
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
+    expect(screen.getByText('Fix the highlighted fields and try again.')).toBeTruthy();
+    expect(screen.getByText(/req-0a1b2c3d/)).toBeTruthy();
+    expect(screen.getByText('Too large.')).toBeTruthy();
+    // The code survives only inside the `code · HTTP n · request id` meta line.
+    expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
+    expect(screen.queryByText('Terms record saved')).toBeNull();
+  });
+
   it('lets the owner save a Brave key and turn web search on, keeping the key write-only', async () => {
     const mock = stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },

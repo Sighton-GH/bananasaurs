@@ -166,6 +166,46 @@ describe('AssistantResourcesPage', () => {
     expect(sent.enabled).toBe(true);
   });
 
+  it('renders a 400 save refusal with the server title, hint, request id and field problem', async () => {
+    const NOW = 1750000000000;
+    vi.spyOn(Date, 'now').mockReturnValue(NOW);
+    stubFetch([
+      { url: '/api/assistant', body: FULL },
+      { url: '/api/assistant/resources/freshness', body: { freshness: [FRESH_ROW] } },
+      {
+        method: 'PUT',
+        url: `/api/assistant/resources/res-${NOW.toString(36)}`,
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'title', problem: 'too_big' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderWithSession(<AssistantResourcesPage />);
+    fireEvent.click((await screen.findAllByRole('button', { name: 'Add resource' }))[0]!);
+    fireEvent.change(screen.getByRole('textbox', { name: 'Title' }), {
+      target: { value: 'An absurdly long title that the server refuses' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'URL' }), {
+      target: { value: 'https://example.com/too-big' },
+    });
+    const submit = screen
+      .getAllByRole('button', { name: 'Add resource' })
+      .find((b) => b.getAttribute('type') === 'submit')!;
+    fireEvent.click(submit);
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
+    expect(screen.getByText('Fix the highlighted fields and try again.')).toBeTruthy();
+    expect(screen.getByText(/req-0a1b2c3d/)).toBeTruthy();
+    expect(screen.getByText('Too large.')).toBeTruthy();
+    // The code survives only inside the `code · HTTP n · request id` meta line.
+    expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
+  });
+
   it('enables a disabled resource with a whole-object write', async () => {
     const mock = renderPage({
       ...FULL,
