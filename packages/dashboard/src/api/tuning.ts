@@ -9,8 +9,7 @@
  */
 
 export const TUNING_URL = '/api/assistant/tuning';
-export const tuningKeyUrl = (key: string): string =>
-  `${TUNING_URL}/${encodeURIComponent(key)}`;
+export const tuningKeyUrl = (key: string): string => `${TUNING_URL}/${encodeURIComponent(key)}`;
 
 export type TuningDisplay =
   | 'seconds'

@@ -70,7 +70,9 @@ describe('JumpNav', () => {
     // owner-only AI tuning entry stays out of the sheet here.
     expect(labels).toEqual(
       groupOrder.flatMap((group) =>
-        visibleNav(false).filter((n) => n.group === group).map((n) => n.label),
+        visibleNav(false)
+          .filter((n) => n.group === group)
+          .map((n) => n.label),
       ),
     );
     const current = within(nav).getByRole('link', { current: 'page' });

@@ -39,14 +39,16 @@ const toDraft = (setting: TuningSetting): string => {
   }
 };
 
-type Parsed = { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
+type Parsed =
+  { readonly ok: true; readonly value: unknown } | { readonly ok: false; readonly error: string };
 
 /** The draft back to a base-unit value, or a short message when it does not parse. */
 const parseDraft = (setting: TuningSetting, draft: string): Parsed => {
   const trimmed = draft.trim();
   const number = (unit: string): Parsed => {
     const n = Number(trimmed);
-    if (trimmed === '' || !Number.isFinite(n)) return { ok: false, error: `Enter a number of ${unit}.` };
+    if (trimmed === '' || !Number.isFinite(n))
+      return { ok: false, error: `Enter a number of ${unit}.` };
     return { ok: true, value: n };
   };
   switch (setting.display) {
@@ -93,7 +95,9 @@ const parseDraft = (setting: TuningSetting, draft: string): Parsed => {
 };
 
 const isConfigured = (value: unknown): boolean =>
-  typeof value === 'object' && value !== null && (value as { configured?: unknown }).configured === true;
+  typeof value === 'object' &&
+  value !== null &&
+  (value as { configured?: unknown }).configured === true;
 
 /** The default in the unit the control shows; null and [] read as None. */
 const formatDefault = (setting: TuningSetting): string => {
@@ -126,7 +130,11 @@ const formatDefault = (setting: TuningSetting): string => {
 const allowedText = (setting: TuningSetting): string | undefined => {
   const bounds = setting.bounds;
   if (bounds === undefined) return undefined;
-  const range = (min: number | undefined, max: number | undefined, unit: string): string | undefined => {
+  const range = (
+    min: number | undefined,
+    max: number | undefined,
+    unit: string,
+  ): string | undefined => {
     if (min === undefined && max === undefined) return undefined;
     const span = `${min ?? '…'}–${max ?? '…'}`;
     return unit === '' ? `Allowed: ${span}` : `Allowed: ${span} ${unit}`;
@@ -273,7 +281,11 @@ function TuningRow({
     setting.display === 'minutes' ||
     setting.display === 'count';
   const secret = setting.display === 'secret';
-  const placeholder = secret ? (configured ? 'Configured — type to replace' : 'Not set') : undefined;
+  const placeholder = secret
+    ? configured
+      ? 'Configured — type to replace'
+      : 'Not set'
+    : undefined;
 
   return (
     <div

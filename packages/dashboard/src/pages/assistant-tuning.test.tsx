@@ -120,14 +120,20 @@ describe('AssistantTuningPage', () => {
     };
     const mock = stubFetch([
       { url: TUNING_URL, body: { settings: SETTINGS } },
-      { method: 'PUT', url: tuningKeyUrl('assistant.providerTimeoutMs'), body: { setting: updated } },
+      {
+        method: 'PUT',
+        url: tuningKeyUrl('assistant.providerTimeoutMs'),
+        body: { setting: updated },
+      },
     ]);
     renderPage();
     const input = await screen.findByLabelText('Provider request timeout');
     expect(input).toHaveProperty('value', '60');
     fireEvent.change(input, { target: { value: '45' } });
     await act(async () => {
-      fireEvent.click(within(rowOf('assistant.providerTimeoutMs')).getByRole('button', { name: 'Save' }));
+      fireEvent.click(
+        within(rowOf('assistant.providerTimeoutMs')).getByRole('button', { name: 'Save' }),
+      );
     });
     const put = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
     expect(put?.[1]).toMatchObject({ method: 'PUT' });
@@ -155,10 +161,14 @@ describe('AssistantTuningPage', () => {
     const input = await screen.findByLabelText('Retry delays');
     fireEvent.change(input, { target: { value: '60, 60, 61' } });
     await act(async () => {
-      fireEvent.click(within(rowOf('assistant.retryDelaysMs')).getByRole('button', { name: 'Save' }));
+      fireEvent.click(
+        within(rowOf('assistant.retryDelaysMs')).getByRole('button', { name: 'Save' }),
+      );
     });
     const row = rowOf('assistant.retryDelaysMs');
-    expect(await within(row).findByText('Retry delays must add up to 3 minutes or less.')).toBeTruthy();
+    expect(
+      await within(row).findByText('Retry delays must add up to 3 minutes or less.'),
+    ).toBeTruthy();
   });
 
   it('never shows or pre-fills the secret value', async () => {
@@ -179,12 +189,18 @@ describe('AssistantTuningPage', () => {
     const reset = { ...SETTINGS[1], value: 30000, isDefault: true };
     const mock = stubFetch([
       { url: TUNING_URL, body: { settings: SETTINGS } },
-      { method: 'DELETE', url: tuningKeyUrl('assistant.providerTimeoutMs'), body: { setting: reset } },
+      {
+        method: 'DELETE',
+        url: tuningKeyUrl('assistant.providerTimeoutMs'),
+        body: { setting: reset },
+      },
     ]);
     renderPage();
     await screen.findByLabelText('Provider request timeout');
     await act(async () => {
-      fireEvent.click(within(rowOf('assistant.providerTimeoutMs')).getByRole('button', { name: 'Reset' }));
+      fireEvent.click(
+        within(rowOf('assistant.providerTimeoutMs')).getByRole('button', { name: 'Reset' }),
+      );
     });
     const del = mock.mock.calls.find((c) => (c[0] as string).includes('/api/assistant/tuning/'));
     expect(del?.[1]).toMatchObject({ method: 'DELETE' });

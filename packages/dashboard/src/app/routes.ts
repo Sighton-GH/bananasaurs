@@ -46,7 +46,13 @@ export const NAV: readonly NavEntry[] = [
   // Task 9: the Assistant group is ordered setup-first, with History moved
   // in from Advanced / System (ADR 0051 D6, revisited).
   { path: '/assistant/setup', label: 'AI setup', status: 'built', group: 'Assistant' },
-  { path: '/assistant/tuning', label: 'AI tuning', status: 'built', group: 'Assistant', ownerOnly: true },
+  {
+    path: '/assistant/tuning',
+    label: 'AI tuning',
+    status: 'built',
+    group: 'Assistant',
+    ownerOnly: true,
+  },
   { path: '/assistant', label: 'Behaviours', status: 'built', group: 'Assistant' },
   // Task 19: the Conversations list and transcript are built.
   { path: '/assistant/conversations', label: 'Conversations', status: 'built', group: 'Assistant' },
