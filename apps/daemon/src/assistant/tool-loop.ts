@@ -1,10 +1,13 @@
 import {
+  classifyProviderFailure,
   guardAnswer,
   ProviderError,
+  safeLogFields,
   type AssistantTrace,
   type GenerateTextRequest,
   type GenerateTextResponse,
   type GenerationMessage,
+  type Logger,
   type TextProvider,
   type ToolCall,
   type ToolDeclaration,
@@ -164,6 +167,8 @@ export const runToolLoop = async (input: {
   readonly limits?: Partial<LoopLimits> | undefined;
   readonly quotaLedger?: QuotaLedger | undefined;
   readonly reserveCall?: ReserveCall | undefined;
+  readonly logger?: Pick<Logger, 'warn'> | undefined;
+  readonly guildId?: string | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -309,6 +314,8 @@ export const runToolLoop = async (input: {
         input.quotaLedger?.markExhausted(entry.keyId, resetAt ?? nextUtcMidnight(input.now()));
       },
       reserveCall: input.reserveCall,
+      logger: input.logger,
+      guildId: input.guildId,
       now: input.now,
       entryMs: ms,
     });
@@ -392,6 +399,8 @@ const runEntry = async (deps: {
   readonly recordWeb: () => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
   readonly reserveCall?: ReserveCall | undefined;
+  readonly logger?: Pick<Logger, 'warn'> | undefined;
+  readonly guildId?: string | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
 }): Promise<EntrySuccess | undefined> => {
@@ -406,6 +415,29 @@ const runEntry = async (deps: {
 
   const failAttempt = (err: unknown): void => {
     if (err instanceof ProviderError) deps.noteError(err);
+    const f = classifyProviderFailure(err, {
+      provider: entry.providerId,
+      model: entry.model,
+    });
+    const logFailure = (): void => {
+      if (deps.logger === undefined) return;
+      deps.logger.warn(
+        safeLogFields({
+          component: 'assistant',
+          ...(deps.guildId === undefined ? {} : { guildId: deps.guildId }),
+          provider: entry.providerId,
+          model: entry.model,
+          keyLabel: entry.keyLabel,
+          code: f.code,
+          ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+          ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+          ...(f.host === undefined ? {} : { host: f.host }),
+          ms: deps.entryMs(),
+          ...(err instanceof Error ? { providerMessage: err.message } : {}),
+        }),
+        'provider attempt failed',
+      );
+    };
     if (isDailyCap(err)) {
       deps.onDailyCap(err.resetAt);
       deps.attempts.push({
@@ -414,8 +446,13 @@ const runEntry = async (deps: {
         keyLabel: entry.keyLabel,
         outcome: 'error',
         reason: 'daily-free',
+        code: f.code,
+        ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+        ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+        ...(f.host === undefined ? {} : { host: f.host }),
         ms: deps.entryMs(),
       });
+      logFailure();
       return;
     }
     const outcome: Attempt['outcome'] =
@@ -435,8 +472,13 @@ const runEntry = async (deps: {
       // kind/status. The provider's own text stays in the Pino line only —
       // it can echo request details, so it never reaches the trace.
       ...(err instanceof Error ? { reason: attemptReasonFor(err) } : {}),
+      code: f.code,
+      ...(f.httpStatus === undefined ? {} : { httpStatus: f.httpStatus }),
+      ...(f.netCode === undefined ? {} : { netCode: f.netCode }),
+      ...(f.host === undefined ? {} : { host: f.host }),
       ms: deps.entryMs(),
     });
+    logFailure();
   };
 
   const callProvider = async (

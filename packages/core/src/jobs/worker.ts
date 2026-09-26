@@ -169,11 +169,16 @@ export class JobWorker {
     try {
       await handler.run(payload, context);
     } catch (err) {
+      const code =
+        typeof err === 'object' && err !== null && typeof (err as { code?: unknown }).code === 'string'
+          ? (err as { code: string }).code
+          : undefined;
       return this.#fail(
         job,
         describeError(err),
         false,
         err instanceof RetryAfterError ? err.retryAfterMs : undefined,
+        code,
       );
     }
 
@@ -208,7 +213,13 @@ export class JobWorker {
     return ran;
   }
 
-  #fail(job: ClaimedJob, error: string, permanent: boolean, retryAfterMs?: number): RunOutcome {
+  #fail(
+    job: ClaimedJob,
+    error: string,
+    permanent: boolean,
+    retryAfterMs?: number,
+    code?: string,
+  ): RunOutcome {
     const { willRetry } = this.deps.store.fail(job.jobId, error, this.deps.now(), {
       permanent,
       ...(retryAfterMs === undefined ? {} : { retryAfterMs }),
@@ -222,6 +233,7 @@ export class JobWorker {
         maxAttempts: job.maxAttempts,
         outcome: willRetry ? 'will-retry' : 'failed',
         error,
+        ...(code === undefined ? {} : { code }),
       }),
       'job failed',
     );

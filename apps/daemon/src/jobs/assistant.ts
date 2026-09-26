@@ -26,6 +26,7 @@ import type {
 } from '../assistant/commands.js';
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
 import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
+import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
@@ -135,6 +136,11 @@ const rebuildDetail = (detail: CursorDetail): AssistantTraceDetail => ({
     ...(attempt.keyLabel === undefined ? {} : { keyLabel: attempt.keyLabel }),
     outcome: attempt.outcome,
     ...(attempt.reason === undefined ? {} : { reason: attempt.reason }),
+    ...(attempt.code === undefined ? {} : { code: attempt.code }),
+    ...(attempt.httpStatus === undefined ? {} : { httpStatus: attempt.httpStatus }),
+    ...(attempt.netCode === undefined ? {} : { netCode: attempt.netCode }),
+    ...(attempt.host === undefined ? {} : { host: attempt.host }),
+    ...(attempt.availableAt === undefined ? {} : { availableAt: attempt.availableAt }),
     ms: attempt.ms,
   })),
   toolCalls: detail.toolCalls.map((call) => ({
@@ -569,6 +575,48 @@ export const assistantInvokeHandler = (deps: {
         }
       } catch (err) {
         const delays = deps.retryDelaysMs?.() ?? PROVIDER_RETRY_DELAYS_MS;
+        const ceiling = delays.length + 1;
+        /**
+         * ADR 0079: a retryable chain failure leaves a trace for every job
+         * attempt that fails — `trace_<key>_a<n>` with `retry:<n>` while the
+         * job will retry, `gave-up` on the last one. Skipped when the trace
+         * already exists (a retry re-running the catch after a crash between
+         * the insert and the throw).
+         */
+        const insertChainFailureTrace = (): void => {
+          if (!(err instanceof ChainFailedError)) return;
+          if (deps.conversations === undefined) return;
+          const conv = deps.conversations;
+          const traceId = `trace_${payload.invocationId}_a${context.attempts}`;
+          if (traceRepo.getTrace(conv.scope, traceId) !== undefined) return;
+          const elapsed = Math.max(0, deps.now() - startedAt);
+          traceRepo.insertTrace(conv.scope, {
+            traceId,
+            at: deps.now(),
+            userId: payload.userId,
+            ...(payload.channelId === undefined ? {} : { channelId: payload.channelId }),
+            behaviourId: payload.behaviourId,
+            command: payload.command,
+            source: payload.source,
+            ...(conversationId === undefined ? {} : { conversationId }),
+            question: Object.values(payload.input).join('\n'),
+            outcome: 'failed',
+            durationMs: elapsed,
+            attempts: err.attempts,
+            usage: {},
+            sections: [],
+            toolCalls: [],
+            guard: { removed: [] },
+            timeline: [
+              { label: 'received', atMs: 0 },
+              { label: 'failed', atMs: elapsed },
+            ],
+            error: { kind: err.kind, message: err.summary },
+            discordMessageIds: [],
+            sources: [],
+            flags: [context.attempts < ceiling ? `retry:${context.attempts}` : 'gave-up'],
+          });
+        };
         // ADR 0077: a daily free-model cap answers at once - no job retry,
         // no RetryAfterError - because a retry only burns another of
         // tomorrow's requests for the same guaranteed failure.
@@ -599,13 +647,14 @@ export const assistantInvokeHandler = (deps: {
           await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
           return;
         }
-        if (err instanceof ProviderError && err.retryable && context.attempts < delays.length + 1) {
+        if (err instanceof ProviderError && err.retryable && context.attempts < ceiling) {
+          insertChainFailureTrace();
           deps.logger.warn(
             safeLogFields({
               component: 'assistant-job',
               guildId: deps.guildId,
               attempt: context.attempts,
-              err,
+              ...(err instanceof ChainFailedError ? { code: err.code } : { err }),
             }),
             'assistant invocation hit a retryable provider error; job will retry',
           );
@@ -613,8 +662,13 @@ export const assistantInvokeHandler = (deps: {
         }
         // Anything else - or the last permitted attempt - answers the member
         // instead of vanishing into a job retry.
+        insertChainFailureTrace();
         deps.logger.error(
-          safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+          safeLogFields({
+            component: 'assistant-job',
+            guildId: deps.guildId,
+            ...(err instanceof ChainFailedError ? { code: err.code } : { err }),
+          }),
           'assistant invocation failed before a response was produced',
         );
         const text =
