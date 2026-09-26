@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { githubChildId, githubOrgId, parseGitHubUrl, selectRepoFiles } from '@bananasaurs/core';
 import { assistantRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
@@ -97,7 +98,7 @@ export const registerAssistantGithubRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const parsed = previewBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const target = parseGitHubUrl(parsed.data.url);
     if (target === undefined) return reply.status(400).send({ error: 'not-github' });
     const client = clientFor();
@@ -156,7 +157,7 @@ export const registerAssistantGithubRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
     const parsed = importBody.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const target = parseGitHubUrl(parsed.data.url);
     if (target === undefined) return reply.status(400).send({ error: 'not-github' });
     const client = clientFor();

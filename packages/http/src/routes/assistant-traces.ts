@@ -1,8 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { authorize } from '@bananasaurs/core';
+import { authorize, PROVIDER_FAILURE_CODES, PROVIDER_FAILURE_TEXT } from '@bananasaurs/core';
 import { authzStoreFor, traceRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import type { SessionContext } from '../auth.js';
 import { requireCapability } from './capability.js';
 
@@ -48,7 +49,7 @@ export const registerAssistantTraceRoutes = (
     if (!requireCapability(session, 'audit.read', reply)) return reply;
 
     const parsed = traceListQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const limit = parsed.data.limit ?? 50;
     const traces = traceRepo.listTraces(session.scope, {
       ...(parsed.data.before === undefined ? {} : { before: parsed.data.before }),
@@ -87,6 +88,15 @@ export const registerAssistantTraceRoutes = (
         trace: {
           ...trace,
           sections: trace.sections.map((s) => ({ ...s, text: showText ? s.text : '' })),
+          attempts: trace.attempts.map((a) => ({
+            ...a,
+            ...(a.code !== undefined &&
+            (PROVIDER_FAILURE_CODES as readonly string[]).includes(a.code)
+              ? {
+                  explain: PROVIDER_FAILURE_TEXT[a.code as (typeof PROVIDER_FAILURE_CODES)[number]],
+                }
+              : {}),
+          })),
         },
         member: member ?? null,
       });
@@ -99,7 +109,7 @@ export const registerAssistantTraceRoutes = (
     if (!requireCapability(session, 'audit.read', reply)) return reply;
 
     const parsed = usageQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     // The strip renders one bar per day, so the answer carries the whole
     // window — oldest first, quiet days as zeros — rather than only the days
     // with runs.

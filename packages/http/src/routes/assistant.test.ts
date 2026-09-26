@@ -130,7 +130,7 @@ describe('assistant routes', () => {
     expect((await put(cookie, csrf, body())).statusCode).toBe(200);
     const conflict = await put(cookie, csrf, body({ systemPrompt: 'stale edit' }));
     expect(conflict.statusCode).toBe(409);
-    expect(conflict.json()).toEqual({ error: 'prompt-version-conflict', currentVersion: 1 });
+    expect(conflict.json()).toMatchObject({ error: 'prompt-version-conflict', currentVersion: 1 });
     expect(assistantRepo.listBehaviours(t.scopes.forGuild(GUILD))[0]?.systemPrompt).toBe(
       'Be helpful.',
     );
@@ -141,7 +141,7 @@ describe('assistant routes', () => {
     const { cookie, csrf } = await signIn();
     const missing = await put(cookie, csrf, body({ mentionRoleId: undefined }));
     expect(missing.statusCode).toBe(400);
-    expect(missing.json()).toEqual({ error: 'mention-role-required' });
+    expect(missing.json()).toMatchObject({ error: 'mention-role-required' });
     expect((await put(cookie, csrf, body())).statusCode).toBe(200);
     const duplicateMention = await put(
       cookie,
@@ -149,7 +149,10 @@ describe('assistant routes', () => {
       body({ id: 'help', surface: 'help', name: 'Help', promptVersion: 0 }),
     );
     expect(duplicateMention.statusCode).toBe(409);
-    expect(duplicateMention.json()).toEqual({ error: 'behaviour-conflict', behaviourId: 'club' });
+    expect(duplicateMention.json()).toMatchObject({
+      error: 'behaviour-conflict',
+      behaviourId: 'club',
+    });
     expect(
       (
         await put(
@@ -165,7 +168,10 @@ describe('assistant routes', () => {
       body({ id: 'direct-two', surface: 'direct-command', mentionRoleId: undefined }),
     );
     expect(duplicateDirect.statusCode).toBe(409);
-    expect(duplicateDirect.json()).toEqual({ error: 'behaviour-conflict', behaviourId: 'direct' });
+    expect(duplicateDirect.json()).toMatchObject({
+      error: 'behaviour-conflict',
+      behaviourId: 'direct',
+    });
     expect(
       (
         await put(
@@ -512,10 +518,10 @@ describe('assistant skill-grant starter', () => {
     const { cookie, csrf } = await signIn();
     const empty = await postStarter(cookie, csrf, { roleIds: [] });
     expect(empty.statusCode).toBe(400);
-    expect(empty.json()).toEqual({ error: 'bad-request' });
+    expect(empty.json()).toMatchObject({ error: 'bad-request' });
     const bad = await postStarter(cookie, csrf, { roleIds: ['not-a-snowflake'] });
     expect(bad.statusCode).toBe(400);
-    expect(bad.json()).toEqual({ error: 'bad-request' });
+    expect(bad.json()).toMatchObject({ error: 'bad-request' });
   });
   it('grants the starter skills once, leaves confirmation skills alone, and stays idempotent', async () => {
     grant('config.write');
@@ -629,14 +635,14 @@ describe('PUT /api/assistant/bot-tag (ADR 0063)', () => {
     await putBotTag(cookie, csrf, { behaviourId: 'club' });
     const missing = await putBotTag(cookie, csrf, { behaviourId: 'nope' });
     expect(missing.statusCode).toBe(404);
-    expect(missing.json()).toEqual({ error: 'not-found' });
+    expect(missing.json()).toMatchObject({ error: 'not-found' });
     const disabled = await putBotTag(cookie, csrf, { behaviourId: 'off' });
     expect(disabled.statusCode).toBe(409);
-    expect(disabled.json()).toEqual({ error: 'behaviour-disabled' });
+    expect(disabled.json()).toMatchObject({ error: 'behaviour-disabled' });
     for (const payload of [{}, { behaviourId: 5 }, { behaviourId: '' }]) {
       const bad = await putBotTag(cookie, csrf, payload);
       expect(bad.statusCode).toBe(400);
-      expect(bad.json()).toEqual({ error: 'bad-request' });
+      expect(bad.json()).toMatchObject({ error: 'bad-request' });
     }
     expect(await flags(cookie)).toEqual({ club: true, help: false, off: false });
     expect(auditRows()).toHaveLength(1);
@@ -761,9 +767,9 @@ describe('provider fallback model and web search (ADR 0066)', () => {
     const csrf = login.json<{ csrfToken: string }>().csrfToken;
     const on = await putProvider(cookie, csrf, { searchEnabled: true });
     expect(on.statusCode).toBe(403);
-    expect(on.json()).toEqual({ error: 'owner-only', field: 'searchEnabled' });
+    expect(on.json()).toMatchObject({ error: 'owner-only', field: 'searchEnabled' });
     const key = await putProvider(cookie, csrf, { searchApiKey: 'x'.repeat(20) });
-    expect(key.json()).toEqual({ error: 'owner-only', field: 'searchApiKey' });
+    expect(key.json()).toMatchObject({ error: 'owner-only', field: 'searchApiKey' });
     expect(saved).toHaveLength(0);
   });
 });
@@ -870,13 +876,13 @@ describe('POST /api/assistant/provider/models (ADR 0068)', () => {
     const { cookie, csrf } = await signIn();
     const noKey = await post(cookie, csrf, { provider: 'gemini' });
     expect(noKey.statusCode).toBe(409);
-    expect(noKey.json()).toEqual({ error: 'no-key' });
+    expect(noKey.json()).toMatchObject({ error: 'no-key' });
     const other = await post(cookie, csrf, { provider: 'openrouter', apiKey: 'k' });
     expect(other.statusCode).toBe(409);
-    expect(other.json()).toEqual({ error: 'unsupported' });
+    expect(other.json()).toMatchObject({ error: 'unsupported' });
     const bad = await post(cookie, csrf, { provider: 'gemini', apiKey: 'bad' });
     expect(bad.statusCode).toBe(409);
-    expect(bad.json()).toEqual({ error: 'provider-refused', kind: 'authentication' });
+    expect(bad.json()).toMatchObject({ error: 'provider-refused', kind: 'authentication' });
   });
 
   it('requires config.write', async () => {
@@ -1047,7 +1053,7 @@ describe('GET /api/assistant/skills/:skillId', () => {
     const { cookie } = await signIn();
     const response = await get(cookie, 'no-such-skill');
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('returns the skill, its exact instruction line, its tools and every behaviour with allowed', async () => {
@@ -1301,7 +1307,7 @@ describe('PUT /api/assistant/behaviours/:id promptWizard (Task 18)', () => {
     // Invalid answers are refused without touching the stored behaviour.
     const bad = await put(cookie, csrf, body({ promptVersion: 3, promptWizard: { audience: [] } }));
     expect(bad.statusCode).toBe(400);
-    expect(bad.json()).toEqual({ error: 'bad-request' });
+    expect(bad.json()).toMatchObject({ error: 'bad-request' });
     expect(assistantRepo.listBehaviours(scope)[0]?.promptVersion).toBe(3);
   });
 
@@ -1379,7 +1385,7 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
     const { cookie } = await signIn();
     const response = await get(cookie, 'no-such-behaviour');
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'not-found' });
+    expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
   it('returns the seven sections in order with sizes, and never member memories', async () => {

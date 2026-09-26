@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { snowflakeIdSchema } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { requireCapability } from './capability.js';
 
 /**
@@ -33,7 +34,7 @@ export const registerCaseRoutes = (
     if (!requireCapability(session, 'audit.read', reply)) return reply;
 
     const parsed = casesQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const cases = ports.listRecentCases({ limit: parsed.data.limit ?? 50 });

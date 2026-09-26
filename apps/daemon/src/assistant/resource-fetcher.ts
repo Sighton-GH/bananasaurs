@@ -77,6 +77,8 @@ export interface ResourceFetchFailure {
   readonly ok: false;
   readonly code: ResourceFetchFailureCode;
   readonly message: string;
+  readonly httpStatus?: number;
+  readonly host?: string;
 }
 /**
  * The no-conditional-argument shape, unchanged from before ADR 0073: every
@@ -94,15 +96,22 @@ export type ResourceFetchFailureCode =
   | 'private-address'
   | 'redirect'
   | 'http-status'
+  | 'challenge'
   | 'content-type'
   | 'too-large'
   | 'timeout'
   | 'network';
 
-const fail = (code: ResourceFetchFailureCode, message: string): ResourceFetchFailure => ({
+const fail = (
+  code: ResourceFetchFailureCode,
+  message: string,
+  extra?: { readonly httpStatus?: number; readonly host?: string },
+): ResourceFetchFailure => ({
   ok: false,
   code,
   message,
+  ...(extra?.httpStatus === undefined ? {} : { httpStatus: extra.httpStatus }),
+  ...(extra?.host === undefined ? {} : { host: extra.host }),
 });
 
 const ipv4Number = (address: string): number | undefined => {
@@ -233,15 +242,22 @@ export class ReviewedResourceFetcher {
   readonly #cache = new Map<string, ReviewedResourceEvidence>();
   readonly #resolve: ResolveHost;
   readonly #request: PinnedRequest;
-  readonly #limits: ResourceFetchLimits;
+  readonly #limitsOpt: Partial<ResourceFetchLimits> | (() => Partial<ResourceFetchLimits>);
   readonly #now: () => number;
   readonly #allowedHosts: readonly string[] | undefined;
+  readonly #headersFor:
+    ((host: string) => Readonly<Record<string, string>> | undefined) | undefined;
 
   constructor(
     options: {
       readonly resolve?: ResolveHost;
       readonly request?: PinnedRequest;
-      readonly limits?: Partial<ResourceFetchLimits>;
+      /**
+       * A snapshot or a getter: when a function, it is read on every
+       * `fetch()` (including the cache-TTL check), so owner-edited settings
+       * apply without a restart.
+       */
+      readonly limits?: Partial<ResourceFetchLimits> | (() => Partial<ResourceFetchLimits>);
       readonly now?: () => number;
       /**
        * Task 17 fix: when set, the initial URL and every redirect target must
@@ -251,13 +267,21 @@ export class ReviewedResourceFetcher {
        * HTTPS URL, including redirects.
        */
       readonly allowedHosts?: readonly string[];
+      /**
+       * Extra request headers for a hostname (the owner's Cloudflare-allow
+       * header, only for listed hosts, website fetches only). Re-evaluated
+       * for every redirect hop's hostname.
+       */
+      readonly headersFor?:
+        ((host: string) => Readonly<Record<string, string>> | undefined) | undefined;
     } = {},
   ) {
     this.#resolve = options.resolve ?? resolvePublicAddress;
     this.#request = options.request ?? pinnedHttpsRequest;
-    this.#limits = { ...DEFAULT_RESOURCE_FETCH_LIMITS, ...options.limits };
+    this.#limitsOpt = options.limits ?? {};
     this.#now = options.now ?? Date.now;
     this.#allowedHosts = options.allowedHosts;
+    this.#headersFor = options.headersFor;
   }
 
   /**
@@ -298,17 +322,23 @@ export class ReviewedResourceFetcher {
       this.#allowedHosts !== undefined &&
       !this.#allowedHosts.some((host) => initial.hostname.toLowerCase() === host.toLowerCase())
     )
-      return fail('redirect', 'The reviewed resource redirected outside the allowed hosts.');
+      return fail('redirect', 'The reviewed resource redirected outside the allowed hosts.', {
+        host: initial.hostname,
+      });
+    const limits: ResourceFetchLimits = {
+      ...DEFAULT_RESOURCE_FETCH_LIMITS,
+      ...(typeof this.#limitsOpt === 'function' ? this.#limitsOpt() : this.#limitsOpt),
+    };
     if (conditional === undefined) {
       const cached = this.#cache.get(initial.href);
-      if (cached !== undefined && this.#now() - cached.fetchedAt < this.#limits.cacheTtlMs)
+      if (cached !== undefined && this.#now() - cached.fetchedAt < limits.cacheTtlMs)
         return { ok: true, evidence: cached, cache: 'hit' };
     }
     const extraHeaders: Record<string, string> = {};
     if (conditional?.etag !== undefined) extraHeaders['if-none-match'] = conditional.etag;
     if (conditional?.lastModified !== undefined)
       extraHeaders['if-modified-since'] = conditional.lastModified;
-    const result = await this.#fetchFrom(initial, new Set(), 0, extraHeaders);
+    const result = await this.#fetchFrom(initial, new Set(), 0, extraHeaders, limits);
     if (conditional === undefined && result.ok && result.notModified !== true)
       this.#cache.set(initial.href, result.evidence);
     return result;
@@ -319,27 +349,41 @@ export class ReviewedResourceFetcher {
     visited: Set<string>,
     redirects: number,
     extraHeaders: Readonly<Record<string, string>>,
+    limits: ResourceFetchLimits,
   ): Promise<ConditionalResourceFetchResult> {
-    if (visited.has(url.href)) return fail('redirect', 'The reviewed resource redirect looped.');
+    if (visited.has(url.href))
+      return fail('redirect', 'The reviewed resource redirect looped.', { host: url.hostname });
     visited.add(url.href);
     let addresses: readonly ResolvedAddress[];
     try {
       addresses = await this.#resolve(url.hostname);
     } catch {
-      return fail('dns-failed', 'The reviewed resource host could not be resolved.');
+      return fail('dns-failed', 'The reviewed resource host could not be resolved.', {
+        host: url.hostname,
+      });
     }
     if (addresses.length === 0)
-      return fail('dns-failed', 'The reviewed resource host has no address.');
+      return fail('dns-failed', 'The reviewed resource host has no address.', {
+        host: url.hostname,
+      });
     if (addresses.some(({ address }) => !isPublicAddress(address)))
-      return fail('private-address', 'The reviewed resource resolved to a non-public address.');
+      return fail('private-address', 'The reviewed resource resolved to a non-public address.', {
+        host: url.hostname,
+      });
+    // The owner's header for this hop's hostname, if any — merged fresh per
+    // hop so a redirect never carries one host's header to another host.
+    const hopHeaders: Readonly<Record<string, string>> = {
+      ...extraHeaders,
+      ...this.#headersFor?.(url.hostname),
+    };
     let response: PinnedResponse | undefined;
     let lastError: unknown;
     for (const address of addresses) {
       try {
         response =
-          Object.keys(extraHeaders).length > 0
-            ? await this.#request(url, address, this.#limits.timeoutMs, extraHeaders)
-            : await this.#request(url, address, this.#limits.timeoutMs);
+          Object.keys(hopHeaders).length > 0
+            ? await this.#request(url, address, limits.timeoutMs, hopHeaders)
+            : await this.#request(url, address, limits.timeoutMs);
         break;
       } catch (error) {
         lastError = error;
@@ -349,6 +393,7 @@ export class ReviewedResourceFetcher {
       return fail(
         lastError instanceof Error && /timed out/i.test(lastError.message) ? 'timeout' : 'network',
         'The reviewed resource could not be retrieved safely.',
+        { host: url.hostname },
       );
     }
     if (response.status === 304) {
@@ -358,11 +403,15 @@ export class ReviewedResourceFetcher {
     }
     if (response.status >= 300 && response.status < 400) {
       response.discard?.();
-      if (redirects >= this.#limits.maxRedirects)
-        return fail('redirect', 'The reviewed resource exceeded the redirect limit.');
+      if (redirects >= limits.maxRedirects)
+        return fail('redirect', 'The reviewed resource exceeded the redirect limit.', {
+          host: url.hostname,
+        });
       const location = redirectLocation(response);
       if (location === undefined)
-        return fail('redirect', 'The reviewed resource redirect had no location.');
+        return fail('redirect', 'The reviewed resource redirect had no location.', {
+          host: url.hostname,
+        });
       let redirected: URL;
       try {
         redirected = validateResourceUrl(new URL(location, url).href);
@@ -370,42 +419,64 @@ export class ReviewedResourceFetcher {
         return fail(
           'redirect',
           'The reviewed resource redirected outside allowed public HTTPS URLs.',
+          { host: url.hostname },
         );
       }
       if (
         this.#allowedHosts !== undefined &&
         !this.#allowedHosts.some((host) => redirected.hostname.toLowerCase() === host.toLowerCase())
       )
-        return fail('redirect', 'The reviewed resource redirected outside the allowed hosts.');
-      return this.#fetchFrom(redirected, visited, redirects + 1, extraHeaders);
+        return fail('redirect', 'The reviewed resource redirected outside the allowed hosts.', {
+          host: redirected.hostname,
+        });
+      return this.#fetchFrom(redirected, visited, redirects + 1, extraHeaders, limits);
     }
     if (response.status < 200 || response.status >= 300) {
       response.discard?.();
-      return fail('http-status', `The reviewed resource returned HTTP ${response.status}.`);
+      if (
+        (response.status === 403 || response.status === 503) &&
+        (response.headers['cf-mitigated'] ?? '').toLowerCase() === 'challenge'
+      )
+        return fail('challenge', "The site's Cloudflare bot protection challenged Bananasaurs.", {
+          httpStatus: response.status,
+          host: url.hostname,
+        });
+      return fail('http-status', `The reviewed resource returned HTTP ${response.status}.`, {
+        httpStatus: response.status,
+        host: url.hostname,
+      });
     }
     const mediaType = mediaTypeOf(response.headers['content-type']);
     if (!ALLOWED_TYPES.has(mediaType)) {
       response.discard?.();
-      return fail('content-type', 'The reviewed resource did not return a supported text type.');
+      return fail('content-type', 'The reviewed resource did not return a supported text type.', {
+        host: url.hostname,
+      });
     }
     const declaredLength = Number(response.headers['content-length']);
-    if (Number.isFinite(declaredLength) && declaredLength > this.#limits.maxBytes) {
+    if (Number.isFinite(declaredLength) && declaredLength > limits.maxBytes) {
       response.discard?.();
-      return fail('too-large', 'The reviewed resource exceeded the size limit.');
+      return fail('too-large', 'The reviewed resource exceeded the size limit.', {
+        host: url.hostname,
+      });
     }
     const chunks: Uint8Array[] = [];
     let size = 0;
     try {
       for await (const chunk of response.body) {
         size += chunk.byteLength;
-        if (size > this.#limits.maxBytes) {
+        if (size > limits.maxBytes) {
           response.discard?.();
-          return fail('too-large', 'The reviewed resource exceeded the size limit.');
+          return fail('too-large', 'The reviewed resource exceeded the size limit.', {
+            host: url.hostname,
+          });
         }
         chunks.push(chunk);
       }
     } catch {
-      return fail('network', 'The reviewed resource body could not be read.');
+      return fail('network', 'The reviewed resource body could not be read.', {
+        host: url.hostname,
+      });
     }
     // Useful page text, not raw markup: raw HTML truncated at the byte cap
     // used to deliver mostly <head> and no content (should-fix, round 2).

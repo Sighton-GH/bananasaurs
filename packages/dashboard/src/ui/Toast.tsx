@@ -16,6 +16,8 @@ export interface ToastInput {
   readonly tone: ToastTone;
   readonly title: string;
   readonly message?: string;
+  /** A small muted line under the message: `code · HTTP n · request id`. */
+  readonly detail?: string;
 }
 
 interface Toast extends ToastInput {
@@ -77,6 +79,7 @@ export function ToastProvider({ children }: { readonly children: ReactNode }): R
               </Button>
             </div>
             {t.message !== undefined && <p className="mt-1">{t.message}</p>}
+            {t.detail !== undefined && <p className="mt-1 text-xs text-ink-muted">{t.detail}</p>}
           </div>
         ))}
       </div>

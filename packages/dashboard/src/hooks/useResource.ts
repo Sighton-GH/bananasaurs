@@ -16,6 +16,8 @@ export type Resource<T> =
       readonly state: 'error';
       readonly request: string;
       readonly message: string;
+      /** The thrown value, so `DataState` can render the server's answer, not just its message. */
+      readonly error: unknown;
       readonly retry: () => void;
     }
   | { readonly state: 'ready'; readonly data: T; readonly degraded?: string };
@@ -46,7 +48,7 @@ export function useResource<T>(request: string, load: () => Promise<T>): UseReso
       (err: unknown) => {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
-        setResource({ state: 'error', request, message, retry: reload });
+        setResource({ state: 'error', request, message, error: err, retry: reload });
       },
     );
     return () => {

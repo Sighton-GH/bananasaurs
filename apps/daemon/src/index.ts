@@ -308,6 +308,17 @@ async function main(): Promise<void> {
     },
   });
 
+  // ADR 0080: every owner-edited instance setting, so a restart states what
+  // it is running with. Secret settings log `configured` only (hard rule 4).
+  for (const view of daemon.instanceSettings.list()) {
+    if (view.isDefault === false) {
+      log.info(
+        safeLogFields({ component: 'config', settingKey: view.key }),
+        `setting ${view.key} = ${view.display === 'secret' ? 'configured' : JSON.stringify(view.value)}`,
+      );
+    }
+  }
+
   // Started after `createDaemon` and before the gateway login, so the dashboard
   // is answering by the time anything can happen in Discord. It shares the
   // handle the daemon already holds; a second process would be a second writer.
@@ -331,6 +342,8 @@ async function main(): Promise<void> {
       // Task 8: the one process-wide ledger — the same instance every
       // guild's assistant loop shares — so the allowance pill agrees.
       assistantQuotaLedger: daemon.quotaLedger,
+      // ADR 0080: the owner-edited instance settings (AI tuning).
+      instanceSettings: daemon.instanceSettings,
     });
   } catch (err) {
     // A port already in use is the operator's to look at, like the socket and

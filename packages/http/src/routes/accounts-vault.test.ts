@@ -161,7 +161,7 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     const response = await reveal('mod', headers);
 
     expect(response.statusCode).toBe(401);
-    expect(response.json()).toEqual({ error: 'reauth-required' });
+    expect(response.json()).toMatchObject({ error: 'reauth-required' });
     expect(accountRevealPasswordSpy).not.toHaveBeenCalled();
   });
 
@@ -170,7 +170,7 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     const response = await reveal('mod', headers);
 
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'owner-only' });
+    expect(response.json()).toMatchObject({ error: 'owner-only' });
     expect(accountRevealPasswordSpy).not.toHaveBeenCalled();
   });
 
@@ -179,7 +179,7 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     const response = await reveal('other-owner', headers);
 
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'owner-protected' });
+    expect(response.json()).toMatchObject({ error: 'owner-protected' });
     expect(accountRevealPasswordSpy).not.toHaveBeenCalled();
   });
 
@@ -188,7 +188,7 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     const response = await reveal('nobody', headers);
 
     expect(response.statusCode).toBe(404);
-    expect(response.json()).toEqual({ error: 'no-such-account' });
+    expect(response.json()).toMatchObject({ error: 'no-such-account' });
   });
 
   it('an account with no sealed copy (or one that will not open) answers 409 not-revealable', async () => {
@@ -205,7 +205,7 @@ describe('POST /api/accounts/:username/reveal-password', () => {
     const response = await reveal('no-sealed-copy', headers);
 
     expect(response.statusCode).toBe(409);
-    expect(response.json()).toEqual({ error: 'not-revealable' });
+    expect(response.json()).toMatchObject({ error: 'not-revealable' });
   });
 
   it('does not audit a 404 or a 409', async () => {

@@ -148,7 +148,6 @@ describe('AssistantHistoryPage', () => {
   it('renders the error state naming the request when the load fails', async () => {
     stubFetch([]);
     renderWithSession(<AssistantHistoryPage />);
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('Could not load assistant history');
+    expect(await screen.findByText(/Could not load assistant history/)).toBeTruthy();
   });
 });

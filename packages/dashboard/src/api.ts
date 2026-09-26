@@ -27,6 +27,8 @@ export interface SessionInfo {
   readonly expiresAt: number;
   readonly reauthFresh: boolean;
   readonly readonly: boolean;
+  /** True when this account owns the instance. Absent on older servers. */
+  readonly instanceOwner?: boolean | undefined;
 }
 
 /** One entry of the login refusal's `choices` and the session's `reachableGuilds`. */
@@ -40,6 +42,16 @@ export interface NoSession {
   readonly reason: string;
 }
 
+/** The JSON body every non-2xx API answer carries (0078). */
+export interface ApiErrorBody {
+  readonly error: string;
+  readonly title?: string | undefined;
+  readonly message?: string | undefined;
+  readonly hint?: string | undefined;
+  readonly fields?: readonly { readonly path: string; readonly problem: string }[] | undefined;
+  readonly requestId?: string | undefined;
+}
+
 /**
  * Thrown for every non-2xx response except the two the caller is expected to
  * handle itself: 401 `reauth-required` (retried transparently by `apiFetch`)
@@ -49,13 +61,21 @@ export interface NoSession {
 export class ApiError extends Error {
   constructor(
     readonly status: number,
-    readonly body: { error: string; message?: string },
+    readonly body: ApiErrorBody,
   ) {
     super(body.message ?? body.error);
   }
 }
 
 export class ReadonlyError extends ApiError {}
+
+/** `fetch` itself threw: the browser could not reach the dashboard API. */
+export class OfflineError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = 'OfflineError';
+  }
+}
 
 const WRITE_METHODS = new Set(['POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -87,33 +107,58 @@ export const apiFetch = async <T>(
     }
   }
 
-  const response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' });
+  /**
+   * Reads an error body without ever crashing: a proxy page or a dead tunnel
+   * answers with HTML (or nothing at all), which becomes the
+   * `unreadable-response` code `describeError` knows how to explain.
+   */
+  const readErrorBody = async (response: Response): Promise<ApiErrorBody> => {
+    const parsed = await response.json().catch(() => undefined);
+    if (
+      typeof parsed === 'object' &&
+      parsed !== null &&
+      typeof (parsed as { error?: unknown }).error === 'string'
+    ) {
+      return parsed as ApiErrorBody;
+    }
+    return { error: 'unreadable-response' };
+  };
+
+  let response: Response;
+  try {
+    response = await fetch(url, { ...init, method, headers, credentials: 'same-origin' });
+  } catch (err) {
+    throw new OfflineError(String(err));
+  }
 
   if (response.status === 401) {
-    const body = (await response.json()) as { error: string };
+    const body = await readErrorBody(response);
     if (body.error === 'reauth-required') {
       const password = await onReauthRequired();
       if (password === undefined) throw new ApiError(401, body);
-      const reauth = await fetch('/api/reauth', {
-        method: 'POST',
-        credentials: 'same-origin',
-        headers: { [CSRF_HEADER]: csrfToken, 'content-type': 'application/json' },
-        body: JSON.stringify({ password }),
-      });
-      if (!reauth.ok) throw new ApiError(reauth.status, (await reauth.json()) as { error: string });
+      let reauth: Response;
+      try {
+        reauth = await fetch('/api/reauth', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { [CSRF_HEADER]: csrfToken, 'content-type': 'application/json' },
+          body: JSON.stringify({ password }),
+        });
+      } catch (err) {
+        throw new OfflineError(String(err));
+      }
+      if (!reauth.ok) throw new ApiError(reauth.status, await readErrorBody(reauth));
       return apiFetch(url, csrfToken, onReauthRequired, init);
     }
     throw new ApiError(401, body);
   }
 
   if (response.status === 503) {
-    const body = (await response.json()) as { error: string; message: string };
-    throw new ReadonlyError(503, body);
+    throw new ReadonlyError(503, await readErrorBody(response));
   }
 
   if (!response.ok) {
-    const body = (await response.json().catch(() => ({ error: 'unknown' }))) as { error: string };
-    throw new ApiError(response.status, body);
+    throw new ApiError(response.status, await readErrorBody(response));
   }
 
   if (response.status === 204) return undefined as T;

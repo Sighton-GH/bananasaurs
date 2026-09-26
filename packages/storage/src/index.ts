@@ -61,6 +61,8 @@ export * as effectRepo from './repos/effects.js';
 export * as assistantRepo from './repos/assistant.js';
 export * as assistantProviderRepo from './repos/assistant-provider.js';
 export * as assistantProvidersRepo from './repos/assistant-providers.js';
+export * as instanceSettingsRepo from './repos/instance-settings.js';
+export * as modelCallsRepo from './repos/model-calls.js';
 export * as traceRepo from './repos/traces.js';
 export * as conversationRepo from './repos/conversations.js';
 export * as jobRepo from './repos/jobs.js';

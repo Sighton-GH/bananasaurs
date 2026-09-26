@@ -118,7 +118,7 @@ describe('resource refresh timer', () => {
     );
   });
 
-  it('start() runs once immediately then every hour; stop() cancels the interval', () => {
+  it('start() runs once immediately, then ticks every minute with the bucket deciding when a sweep is due', () => {
     vi.useFakeTimers();
     seedResource(a);
     const timer = createResourceRefreshTimer(depsFor());
@@ -126,13 +126,37 @@ describe('resource refresh timer', () => {
     timer.start();
     expect(jobsFor(a)).toHaveLength(1);
 
+    // A minute later, still the same hour bucket: the tick runs but enqueues nothing new.
+    nowMs += 60_000;
+    vi.advanceTimersByTime(60_000);
+    expect(jobsFor(a)).toHaveLength(1);
+
+    // The next hour bucket: the tick enqueues again.
     nowMs += RESOURCE_REFRESH_INTERVAL_MS;
-    vi.advanceTimersByTime(RESOURCE_REFRESH_INTERVAL_MS);
+    vi.advanceTimersByTime(60_000);
     expect(jobsFor(a)).toHaveLength(2);
 
     timer.stop();
     nowMs += RESOURCE_REFRESH_INTERVAL_MS;
     vi.advanceTimersByTime(2 * RESOURCE_REFRESH_INTERVAL_MS);
     expect(jobsFor(a)).toHaveLength(2);
+  });
+
+  it('a 15-minute intervalMs enqueues once per 15-minute bucket', () => {
+    seedResource(a);
+    const timer = createResourceRefreshTimer(depsFor({ intervalMs: () => 15 * 60_000 }));
+
+    timer.runOnce();
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(1);
+
+    nowMs += 15 * 60_000;
+    timer.runOnce();
+    expect(jobsFor(a)).toHaveLength(2);
+
+    const bucket = Math.floor(nowMs / (15 * 60_000));
+    expect(jobsFor(a)[0]?.dedupeKey).toBe(
+      resourceRefreshDedupeKey({ reason: 'hourly', hourBucket: bucket }),
+    );
   });
 });

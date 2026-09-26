@@ -4,8 +4,9 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 import { bodyOf, renderWithSession, stubFetch, TEST_SESSION } from '../test-support.js';
+import type { SessionInfo } from '../api.js';
 import { NOT_BUILT } from '../pages/stub.js';
-import { NAV } from './routes.js';
+import { NAV, visibleNav } from './routes.js';
 import { Shell } from './Shell.js';
 import { ThemeProvider } from './theme.js';
 
@@ -18,7 +19,7 @@ const HEALTH = {
   oldestDueJobAtMs: undefined,
 };
 
-function renderAt(path: string) {
+function renderAt(path: string, session: SessionInfo = TEST_SESSION) {
   const mock = stubFetch([
     { url: '/api/health', body: HEALTH },
     { url: '/api/log-routes', body: { routes: [] } },
@@ -43,6 +44,7 @@ function renderAt(path: string) {
         <Shell />
       </Router>
     </ThemeProvider>,
+    { session },
   );
   return mock;
 }
@@ -74,17 +76,21 @@ describe('Shell', () => {
     expect(screen.queryByRole('link', { current: 'page' })).toBeNull();
   });
 
-  it('the rail groups every NAV entry and names the guild', async () => {
+  it('the rail groups every visible NAV entry and names the guild', async () => {
     renderAt('/');
     const nav = screen.getByRole('navigation', { name: 'Areas' });
     const labels = Array.from(nav.querySelectorAll('a')).map((a) =>
       a.textContent?.replace('Future', ''),
     );
     // Rendered order follows the rail groups (ADR 0051 D6), not the NAV
-    // array: every entry appears exactly once, in group order.
+    // array: every entry appears exactly once, in group order. The default
+    // test session is not the instance owner, so the owner-only AI tuning
+    // entry is hidden here (see the owner test below).
     const groupOrder = ['Start here', 'Moderation', 'Messages', 'Assistant', 'Advanced / System'];
     const expected = groupOrder.flatMap((group) =>
-      NAV.filter((n) => n.group === group).map((n) => n.label),
+      visibleNav(false)
+        .filter((n) => n.group === group)
+        .map((n) => n.label),
     );
     expect(labels).toEqual(expected);
     expect(within(nav).getByRole('heading', { name: 'Start here' })).toBeTruthy();
@@ -194,10 +200,12 @@ describe('Shell', () => {
   });
 
   // Task 19: Conversations is built — setup-first order, History moved in.
+  // Task 8 (errors-config-ratelimits): AI tuning follows AI setup, owner only.
   it('orders the Assistant group setup-first, with Conversations built', () => {
     const assistantNav = NAV.filter((entry) => entry.group === 'Assistant');
     expect(assistantNav.map((entry) => [entry.path, entry.label, entry.status])).toEqual([
       ['/assistant/setup', 'AI setup', 'built'],
+      ['/assistant/tuning', 'AI tuning', 'built'],
       ['/assistant', 'Behaviours', 'built'],
       ['/assistant/conversations', 'Conversations', 'built'],
       ['/assistant/history', 'History', 'built'],
@@ -227,6 +235,17 @@ describe('Shell', () => {
     renderAt('/');
     await screen.findByRole('heading', { level: 1, name: 'Overview' });
     expect(screen.queryByText('Future')).toBeNull();
+  });
+
+  it('hides AI tuning from anyone but the instance owner', async () => {
+    renderAt('/');
+    const nav = await screen.findByRole('navigation', { name: 'Areas' });
+    expect(within(nav).queryByRole('link', { name: 'AI tuning' })).toBeNull();
+    cleanup();
+    renderAt('/', { ...TEST_SESSION, instanceOwner: true });
+    const ownerNav = await screen.findByRole('navigation', { name: 'Areas' });
+    const link = within(ownerNav).getByRole('link', { name: 'AI tuning' });
+    expect(link.getAttribute('href')).toBe('/assistant/tuning');
   });
 
   it('opens and closes the mobile jump navigation without changing the page', async () => {

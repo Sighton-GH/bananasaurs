@@ -123,7 +123,7 @@ describe('GET /api/mod/cases', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('lists the newest cases first', async () => {
@@ -211,7 +211,7 @@ describe('GET /api/mod/cases/:caseId', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('returns the case with its events and member', async () => {
@@ -317,7 +317,7 @@ describe('GET /api/mod/members/:memberId/cases', () => {
       headers: { cookie },
     });
     expect(response.statusCode).toBe(403);
-    expect(response.json()).toEqual({ error: 'no-grant' });
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
 
   it('lists every case for the member', async () => {

@@ -7,7 +7,6 @@ import {
   type Capability,
 } from '@bananasaurs/core';
 import {
-  accountWriteErrorText,
   type Account,
   type AccountDeleteResult,
   type AccountDisableResult,
@@ -17,6 +16,7 @@ import {
   type AccountsResponse,
   type AccountSetPasswordResult,
 } from '../api/ops.js';
+import { fieldError } from '../api/describe-error.js';
 import { useSession, type Session } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
 import { Badge } from '../ui/Badge.js';
@@ -24,6 +24,7 @@ import { Button } from '../ui/Button.js';
 import { Card } from '../ui/Card.js';
 import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
 import { Field, Input } from '../ui/Field.js';
 import { PageHeader } from '../ui/PageHeader.js';
 import { PrintOnceDialog } from '../ui/PrintOnceDialog.js';
@@ -85,7 +86,7 @@ function PermissionsSection({
   const toast = useToast();
   const [role, setRole] = useState<AccountRoleId>(() => roleForCapabilities(held));
   const [customCaps, setCustomCaps] = useState<readonly Capability[]>(held);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const selected: readonly Capability[] =
@@ -126,7 +127,10 @@ function PermissionsSection({
       });
       onSaved();
     } catch (err) {
-      setError(accountWriteErrorText(err, 'The server refused this change.'));
+      // writeOrThrow lets the server's 400/409 answers through; everything
+      // else already became a toast. Render the answer rather than
+      // translating the refusal here.
+      setError(err);
     } finally {
       setBusy(false);
     }
@@ -143,9 +147,9 @@ function PermissionsSection({
         }}
       />
       {error !== undefined && (
-        <p role="alert" className="mt-2 text-sm text-danger">
-          {error}
-        </p>
+        <div className="mt-2">
+          <ErrorNotice error={error} />
+        </div>
       )}
       <div className="mt-3">
         <Button variant="primary" busy={busy} disabled={unchanged} onClick={() => void save()}>
@@ -169,14 +173,17 @@ function SetPasswordForm({
   const [choice, setChoice] = useState<'generate' | 'choose'>('generate');
   const [chosen, setChosen] = useState('');
   const [reset, setReset] = useState<AccountSetPasswordResult | undefined>(undefined);
-  const [error, setError] = useState<string | undefined>(undefined);
+  const [error, setError] = useState<unknown>(undefined);
   const [busy, setBusy] = useState(false);
 
   const ok = choice === 'generate' || chosen.length >= 12;
-  const fieldError =
+  // Client-side validation wins; the server's field problem shows once the
+  // shape is right but the value is refused.
+  const clientError =
     choice === 'generate' || chosen === '' || chosen.length >= 12
       ? undefined
       : 'Use at least 12 characters.';
+  const passwordProblem = clientError ?? fieldError(error, 'password');
 
   const submit = async (): Promise<void> => {
     if (!ok || busy) return;
@@ -193,7 +200,7 @@ function SetPasswordForm({
         setReset(result);
       }
     } catch (err) {
-      setError(accountWriteErrorText(err, 'The server refused this change.'));
+      setError(err);
     } finally {
       setBusy(false);
     }
@@ -227,7 +234,7 @@ function SetPasswordForm({
           <Field
             label="New password"
             hint="At least 12 characters."
-            {...(fieldError === undefined ? {} : { error: fieldError })}
+            {...(passwordProblem === undefined ? {} : { error: passwordProblem })}
           >
             <Input
               type="password"
@@ -239,9 +246,9 @@ function SetPasswordForm({
         </div>
       )}
       {error !== undefined && (
-        <p role="alert" className="mt-2 text-sm text-danger">
-          {error}
-        </p>
+        <div className="mt-2">
+          <ErrorNotice error={error} />
+        </div>
       )}
       <div className="mt-3">
         <Button variant="primary" busy={busy} disabled={!ok} onClick={() => void submit()}>
@@ -276,7 +283,7 @@ function PasswordSection({
   readonly onChanged: () => void;
 }) {
   const [revealed, setRevealed] = useState<AccountRevealResult | undefined>(undefined);
-  const [revealError, setRevealError] = useState<string | undefined>(undefined);
+  const [revealError, setRevealError] = useState<unknown>(undefined);
   const [revealBusy, setRevealBusy] = useState(false);
 
   const reveal = async (): Promise<void> => {
@@ -290,7 +297,7 @@ function PasswordSection({
       );
       if (result !== undefined) setRevealed(result);
     } catch (err) {
-      setRevealError(accountWriteErrorText(err, 'The server refused this change.'));
+      setRevealError(err);
     } finally {
       setRevealBusy(false);
     }
@@ -305,9 +312,9 @@ function PasswordSection({
               Reveal current password
             </Button>
             {revealError !== undefined && (
-              <p role="alert" className="mt-2 text-sm text-danger">
-                {revealError}
-              </p>
+              <div className="mt-2">
+                <ErrorNotice error={revealError} />
+              </div>
             )}
           </div>
         ) : (

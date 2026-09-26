@@ -118,4 +118,40 @@ describe('ConfigPage', () => {
     expect(posts).toHaveLength(1);
     expect(bodyOf(posts[0]!)).toEqual({ key: 'breaker_threshold', value: 9 });
   });
+
+  it('renders a 400 limits refusal with the server title, hint, request id and field problem', async () => {
+    stubFetch([
+      { url: '/api/health', body: HEALTH },
+      { url: '/api/config', body: CONFIG },
+      {
+        method: 'POST',
+        url: '/api/settings',
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'value', problem: 'too_big' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderPage();
+    const threshold = await screen.findByLabelText('Safety stop threshold');
+    fireEvent.change(threshold, { target: { value: '9' } });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }));
+    });
+    expect(await screen.findByText('The request was not valid')).toBeTruthy();
+    const notice = (await screen.findAllByRole('alert')).find((a) =>
+      a.textContent?.includes('The request was not valid'),
+    )!;
+    expect(notice.textContent).toContain('Fix the highlighted fields and try again.');
+    expect(notice.textContent).toContain('req-0a1b2c3d');
+    expect(notice.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');
+    expect((await screen.findAllByText('Too large.')).length).toBeGreaterThan(0);
+    // The code survives only inside the `code · HTTP n · request id` meta line.
+    expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
+  });
 });

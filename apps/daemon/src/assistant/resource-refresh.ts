@@ -41,6 +41,7 @@ export interface UpsertDocumentInput {
   readonly bytes: number;
   readonly status: 'ok' | 'error';
   readonly error?: string;
+  readonly errorCode?: string;
 }
 
 export interface ResourceRefreshRepo {
@@ -62,6 +63,18 @@ export interface ResourceRefreshDeps {
 }
 
 export type ResourceRefreshOutcome = 'ok' | 'not-modified' | 'error' | 'skipped';
+
+/**
+ * One resource's refresh, with enough failure detail for the job's log line:
+ * the stable fetch code plus the HTTP status and host when the fetcher
+ * reported them. Absent on success and skip paths.
+ */
+export interface ResourceRefreshResult {
+  readonly outcome: ResourceRefreshOutcome;
+  readonly code?: string;
+  readonly httpStatus?: number;
+  readonly host?: string;
+}
 
 const sha256Hex = (text: string): string => createHash('sha256').update(text, 'utf8').digest('hex');
 
@@ -87,13 +100,13 @@ export async function refreshResource(
   scope: GuildScope,
   resource: ClubResource,
   deps: ResourceRefreshDeps,
-): Promise<ResourceRefreshOutcome> {
+): Promise<ResourceRefreshResult> {
   // Task 17: GitHub kinds refresh through `github-refresh.ts` (routed by the
   // `resource_refresh` job) — never here, so a GitHub URL can never be
   // fetched website-style by accident.
   if (resource.kind === 'github-org' || resource.kind === 'github-repo')
     throw new Error('GitHub resources refresh through refreshGithubResource, not refreshResource.');
-  if (resource.kind === 'discord-channel') return 'skipped';
+  if (resource.kind === 'discord-channel') return { outcome: 'skipped' };
 
   const fetchedAt = deps.now();
 
@@ -121,7 +134,7 @@ export async function refreshResource(
       // The note's text is its URL, so an edit is a new doc id — drop the
       // document row the previous text hashed to, if it is still cached.
       deps.repo.deleteStaleDocuments(scope, resource.id, docId);
-      return 'not-modified';
+      return { outcome: 'not-modified' };
     }
     const path = `${resource.title || 'note'}.txt`;
     const chunks = chunkDocument({ text, mediaType: 'text/plain', path });
@@ -138,7 +151,7 @@ export async function refreshResource(
     });
     deps.repo.deleteStaleDocuments(scope, resource.id, docId);
     deps.repo.replaceChunks(scope, docId, resource.id, chunks);
-    return 'ok';
+    return { outcome: 'ok' };
   }
 
   // website / document / repository: a conditional fetch against the cache.
@@ -168,7 +181,7 @@ export async function refreshResource(
       });
       deps.repo.deleteStaleDocuments(scope, resource.id, docId);
     }
-    return 'not-modified';
+    return { outcome: 'not-modified' };
   }
 
   if (!result.ok) {
@@ -185,11 +198,17 @@ export async function refreshResource(
       bytes: existing?.bytes ?? 0,
       status: 'error',
       error: result.message,
+      errorCode: result.code,
     });
     // The old chunks are left exactly as they were — no replaceChunks call —
     // but documents cached under a previous URL for this resource still go.
     deps.repo.deleteStaleDocuments(scope, resource.id, docId);
-    return 'error';
+    return {
+      outcome: 'error',
+      code: result.code,
+      ...(result.httpStatus === undefined ? {} : { httpStatus: result.httpStatus }),
+      ...(result.host === undefined ? {} : { host: result.host }),
+    };
   }
 
   const text = result.evidence.text;
@@ -218,7 +237,7 @@ export async function refreshResource(
   if (existing !== undefined && existing.status === 'ok' && existing.contentHash === contentHash) {
     // The server didn't say 304, but the content is byte-identical to what
     // is already chunked — no point re-chunking unchanged text.
-    return 'not-modified';
+    return { outcome: 'not-modified' };
   }
   deps.repo.replaceChunks(
     scope,
@@ -226,7 +245,7 @@ export async function refreshResource(
     resource.id,
     chunkDocument({ text, mediaType: result.evidence.mediaType, path }),
   );
-  return 'ok';
+  return { outcome: 'ok' };
 }
 
 /** Every resource in `resources`, refreshed in turn. Independent failures — one resource's fetch error never stops the rest. */
@@ -237,8 +256,8 @@ export async function refreshAll(
 ): Promise<readonly { readonly resourceId: string; readonly outcome: ResourceRefreshOutcome }[]> {
   const results: { resourceId: string; outcome: ResourceRefreshOutcome }[] = [];
   for (const resource of resources) {
-    const outcome = await refreshResource(scope, resource, deps);
-    results.push({ resourceId: resource.id, outcome });
+    const result = await refreshResource(scope, resource, deps);
+    results.push({ resourceId: resource.id, outcome: result.outcome });
   }
   return results;
 }

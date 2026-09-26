@@ -11,6 +11,7 @@ import {
 } from '@bananasaurs/core';
 import { accountRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import type { SessionContext } from '../auth.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { isInstanceOwner } from './assistant.js';
@@ -237,7 +238,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'panels.manage', reply)) return reply;
 
     const body = panelCreateBodySchema.safeParse(request.body);
-    if (!body.success) return reply.status(400).send({ error: 'invalid-body' });
+    if (!body.success) return badRequest(reply, body.error, 'invalid-body');
 
     const parsed = panelDefinitionSchema.safeParse({ kind: 'managed', ...body.data });
     if (!parsed.success) {
@@ -374,7 +375,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = settingsBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     ports.applySetting(parsed.data);
@@ -423,7 +424,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'logging.manage', reply)) return reply;
 
     const parsed = z.object({ channelId: snowflakeIdSchema }).safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const added = ports.excludeChannel(parsed.data.channelId);
@@ -446,7 +447,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'logging.manage', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const removed = ports.unexcludeChannel(parsed.data);
@@ -470,7 +471,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = archiveEnableBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const outcome = ports.archiveEnableChannel(parsed.data);
@@ -496,7 +497,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.archiveDisableChannel(parsed.data);
@@ -525,7 +526,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = archiveCategoryBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const outcome = ports.archiveEnableCategory({
@@ -559,7 +560,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.archiveDisableCategory(parsed.data);
@@ -621,7 +622,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.messageId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.archivePreserve(parsed.data);
@@ -646,7 +647,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'moderation.act', reply)) return reply;
 
     const parsed = archiveLinkCaseBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const outcome = ports.archiveLinkCase(parsed.data);
@@ -672,7 +673,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       ports.enqueueArchiveBackfill(parsed.data);
@@ -712,7 +713,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'undo.execute', reply)) return reply;
 
     const parsed = undoBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const batch = ports.findBatch(parsed.data.batchId);
@@ -739,7 +740,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = sendAllowBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const outcome = ports.allowSendChannel(parsed.data);
@@ -765,7 +766,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const removed = ports.disallowSendChannel(parsed.data);
@@ -792,7 +793,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'config.write', reply)) return reply;
 
     const parsed = sendAllowBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const outcome = ports.allowSendCategory(parsed.data);
@@ -818,7 +819,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'config.write', reply)) return reply;
 
       const parsed = snowflakeIdSchema.safeParse(request.params.channelId);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.disallowSendCategory(parsed.data);
@@ -842,7 +843,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'roles.mutate', reply)) return reply;
 
     const parsed = adoptionAllowanceBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     const before = ports.adoptionAllowance();
@@ -888,7 +889,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'moderation.act', reply)) return reply;
 
       const parsed = signoffBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       if (ports.findAutomodRule(request.params.ruleId) === undefined) {
@@ -918,7 +919,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'moderation.act', reply)) return reply;
 
       const parsed = inviteAllowlistBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.addInviteAllowlistEntry({
@@ -977,7 +978,7 @@ export const registerOpsWriteRoutes = (
       if (!requireCapability(session, 'moderation.act', reply)) return reply;
 
       const parsed = linkDomainBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const result = ports.addLinkDomain({ ruleId: request.params.ruleId, ...parsed.data });
@@ -1102,7 +1103,7 @@ export const registerOpsWriteRoutes = (
     if (!TERMS_PROVIDERS.has(provider))
       return reply.status(404).send({ error: 'no-such-provider' });
     const parsed = providerTermsBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
     const beforeRow = eligibilityRepo.findEligibility(deps.scopes.instance(), provider);
     const before =
       beforeRow === undefined
@@ -1147,7 +1148,7 @@ export const registerOpsWriteRoutes = (
       if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const parsed = accountDisabledBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const result = deps.instance.accountSetDisabled(
         request.params.username,
@@ -1182,9 +1183,7 @@ export const registerOpsWriteRoutes = (
     if (!requireCapability(session, 'accounts.manage', reply)) return reply;
 
     const parsed = accountCreateSchema.safeParse(request.body);
-    if (!parsed.success) {
-      return reply.status(400).send({ error: 'bad-request', issues: parsed.error.issues });
-    }
+    if (!parsed.success) return badRequest(reply, parsed.error);
     if (
       parsed.data.password !== undefined &&
       parsed.data.password.length < MIN_CHOSEN_PASSWORD_LENGTH
@@ -1305,7 +1304,7 @@ export const registerOpsWriteRoutes = (
       // and nothing but that one response ever sees it — never an audit row,
       // never a log line (S13-D3/D4).
       const parsed = accountPasswordBodySchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const result = await deps.instance.accountSetPassword(request.params.username);
       if (result === 'no-such-account') {
@@ -1344,7 +1343,7 @@ export const registerOpsWriteRoutes = (
       }
 
       const parsed = accountPasswordSetSchema.safeParse(request.body);
-      if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+      if (!parsed.success) return badRequest(reply, parsed.error);
       if (
         parsed.data.password !== undefined &&
         parsed.data.password.length < MIN_CHOSEN_PASSWORD_LENGTH
@@ -1479,9 +1478,7 @@ export const registerOpsWriteRoutes = (
       if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const parsed = accountCapabilityGrantSchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply.status(400).send({ error: 'bad-request', issues: parsed.error.issues });
-      }
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.grantAccountCapability({
@@ -1531,9 +1528,7 @@ export const registerOpsWriteRoutes = (
       if (refuseIfOwner(deps, request.params.username, reply)) return reply;
 
       const parsed = z.enum(CAPABILITIES).safeParse(request.params.capability);
-      if (!parsed.success) {
-        return reply.status(400).send({ error: 'bad-request' });
-      }
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const ports = deps.portsFor(session.scope);
       const outcome = ports.revokeAccountCapability({

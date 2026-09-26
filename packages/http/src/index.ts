@@ -35,6 +35,11 @@ export {
   type TryAssistantDeps,
 } from './routes/assistant-try.js';
 export { registerAssistantProviderRoutes } from './routes/assistant-providers.js';
+export {
+  registerAssistantTuningRoutes,
+  type InstanceSettingsPort,
+  type TuningSetResult,
+} from './routes/assistant-tuning.js';
 export { registerAssistantTraceRoutes } from './routes/assistant-traces.js';
 export { registerAssistantResourceCacheRoutes } from './routes/assistant-resources-cache.js';
 export { registerAssistantConversationRoutes } from './routes/assistant-conversations.js';
@@ -50,3 +55,7 @@ export { registerWriteRoutes } from './routes/write.js';
 export { registerOAuthRoutes } from './routes/oauth.js';
 export { requireBearer, wwwAuthenticateFor, type BearerPrincipal } from './oauth/bearer.js';
 export { requireCapability } from './routes/capability.js';
+export { ERROR_CATALOG, explainError, type ErrorExplanation } from './errors/catalog.js';
+export { RESOURCE_FAILURE_TEXT } from './errors/resource-failures.js';
+export { badRequest, fieldsOf, type FieldProblem } from './errors/reply.js';
+export { isInstanceOwner } from './owner.js';

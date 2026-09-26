@@ -2,6 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { JOB_KINDS, resourceRefreshDedupeKey } from '@bananasaurs/core';
 import { assistantRepo, jobRepo, resourceCacheRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { RESOURCE_FAILURE_TEXT } from '../errors/resource-failures.js';
 import { dashboardAuditBase } from './audit-base.js';
 import { requireCapability } from './capability.js';
 
@@ -25,9 +26,16 @@ export const registerAssistantResourceCacheRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
-    return reply
-      .status(200)
-      .send({ freshness: resourceCacheRepo.resourceFreshness(session.scope) });
+    return reply.status(200).send({
+      freshness: resourceCacheRepo.resourceFreshness(session.scope).map((row) => {
+        const errorExplain =
+          row.errorCode === undefined ? undefined : RESOURCE_FAILURE_TEXT[row.errorCode];
+        return {
+          ...row,
+          ...(errorExplain === undefined ? {} : { errorExplain }),
+        };
+      }),
+    });
   });
 
   app.post<{ Params: { id: string } }>('/api/assistant/resources/:id/refresh', (request, reply) => {

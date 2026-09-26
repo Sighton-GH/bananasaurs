@@ -1,6 +1,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import type { HttpDeps, RouteGuard } from '../server.js';
+import { badRequest } from '../errors/reply.js';
 import { requireCapability } from './capability.js';
 
 /**
@@ -88,7 +89,7 @@ export const registerReadRoutes = (
     if (!requireCapability(session, 'audit.read', reply)) return reply;
 
     const parsed = auditQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     return reply
@@ -102,7 +103,7 @@ export const registerReadRoutes = (
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
     const parsed = jobsQuerySchema.safeParse(request.query);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ports = deps.portsFor(session.scope);
     return reply.status(200).send(

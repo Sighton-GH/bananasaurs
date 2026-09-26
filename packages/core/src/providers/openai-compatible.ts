@@ -8,6 +8,7 @@ import type {
   ToolCall,
 } from './contracts.js';
 import { ProviderError, type ProviderErrorKind } from './errors.js';
+import { netCodeOf } from './failure.js';
 import { assertOutboundRequestSafe } from './outbound-safety.js';
 
 const toolCallSchema = z.object({
@@ -247,6 +248,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
   public readonly id: 'openrouter' | 'nvidia-nim';
   private readonly apiKey: string;
   private readonly baseUrl: string;
+  private readonly host: string;
   private readonly fetchImpl: typeof globalThis.fetch;
   private readonly timeoutMs: number;
   private readonly extraHeaders: Readonly<Record<string, string>>;
@@ -256,6 +258,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
     this.id = options.id;
     this.apiKey = options.apiKey;
     this.baseUrl = options.baseUrl.replace(/\/$/, '');
+    this.host = new URL(this.baseUrl).host;
     this.fetchImpl = options.fetch ?? globalThis.fetch;
     this.timeoutMs = options.timeoutMs ?? 30_000;
     this.extraHeaders = options.extraHeaders ?? {};
@@ -307,11 +310,12 @@ export class OpenAiCompatibleProvider implements TextProvider {
       });
     } catch (error) {
       const timeout = error instanceof DOMException && error.name === 'TimeoutError';
+      const netCode = netCodeOf(error);
       throw new ProviderError(
         timeout ? 'timeout' : 'outage',
         `${this.id} request ${timeout ? 'timed out' : 'failed'}`,
         true,
-        { cause: error },
+        { cause: error, host: this.host, ...(netCode === undefined ? {} : { netCode }) },
       );
     }
     if (!response.ok) {
@@ -330,7 +334,12 @@ export class OpenAiCompatibleProvider implements TextProvider {
             ? `${this.id} free-model daily limit reached`
             : `${this.id} free-model daily limit reached (${reason})`,
           false,
-          { quotaScope: 'daily-free', ...(resetAt === undefined ? {} : { resetAt }) },
+          {
+            quotaScope: 'daily-free',
+            status: response.status,
+            host: this.host,
+            ...(resetAt === undefined ? {} : { resetAt }),
+          },
         );
       }
       const kind = statusKind(response.status);
@@ -340,6 +349,7 @@ export class OpenAiCompatibleProvider implements TextProvider {
           ? `${this.id} request failed with HTTP ${response.status}`
           : `${this.id} request failed with HTTP ${response.status} (${reason})`,
         kind === 'rate-limit' || kind === 'outage',
+        { status: response.status, host: this.host },
       );
     }
     const parsed = responseSchema.safeParse(await response.json());

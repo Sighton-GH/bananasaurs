@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import type { Resource } from '../hooks/useResource.js';
 import { Button } from './Button.js';
+import { ErrorNotice } from './ErrorNotice.js';
 
 export type { Resource };
 
@@ -29,11 +30,15 @@ export function DataState<T>({
     );
   }
   if (resource.state === 'error') {
+    // The notice itself carries `role="alert"`, so the wrapper stays
+    // role-less: two nested alerts would announce twice and break
+    // singular alert queries.
     return (
-      <div role="alert" className="rounded-sm border border-danger px-3 py-2 text-sm">
-        <p>
-          Could not load {resource.request}: {resource.message}
-        </p>
+      <div className="rounded-sm border border-danger px-3 py-2 text-sm">
+        <p>Could not load {resource.request}.</p>
+        <div className="mt-2">
+          <ErrorNotice error={resource.error} />
+        </div>
         <Button className="mt-2" onClick={resource.retry}>
           Try again
         </Button>

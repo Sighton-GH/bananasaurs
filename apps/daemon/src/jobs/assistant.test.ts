@@ -22,6 +22,7 @@ import type {
   AssistantInvocationResult,
 } from '../assistant/commands.js';
 import { assistantInvokeHandler } from './assistant.js';
+import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 
 const GUILD_ID = parseGuildId('111111111111111111');
 const USER_ID = '222222222222222222';
@@ -227,6 +228,44 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
   });
 
+  it('answers a local limit at once with the free-up time and no retry', async () => {
+    const availableAt = NOW + 15 * 60_000;
+    const calls: AssistantInvocation[] = [];
+    const svc = service(async () => {
+      throw new LocalLimitError(availableAt, 'local-rpm-limit');
+    }, calls);
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+
+    expect(calls).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.content).toBe(localLimitReply(availableAt, NOW, 'UTC'));
+    expect(sent[0]?.message.content).toBe(
+      'All AI models have reached the limits set for them. The next one frees up in about 15 minutes.',
+    );
+  });
+
+  it('does not throw RetryAfterError for a local limit, and logs the failure', async () => {
+    const availableAt = NOW + 5 * 3_600_000;
+    const svc = service(async () => {
+      throw new LocalLimitError(availableAt, 'local-rpd-limit');
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler({
+      ...deps,
+      logChannelId: () => '444444444444444444',
+      timeZone: () => 'America/Vancouver',
+    });
+
+    await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]?.message.content).toBe(localLimitReply(availableAt, NOW, 'America/Vancouver'));
+    expect(sent[0]?.message.content).toContain('frees up at ');
+  });
+
   it('still retries a transient 429 with the existing per-attempt delay', async () => {
     const svc = service(async () => {
       throw new ProviderError('rate-limit', 'HTTP 429', true);
@@ -239,6 +278,39 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     );
     expect(err).toBeInstanceOf(RetryAfterError);
     expect((err as RetryAfterError).retryAfterMs).toBe(10_000);
+  });
+
+  it('uses the injected retry delays: [5000] retries once at 5000 then answers busy', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('rate-limit', 'HTTP 429', true);
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler({ ...deps, retryDelaysMs: () => [5000] });
+
+    const err = await Promise.resolve(handler.run(payload, context({ attempts: 1 }))).catch(
+      (e: unknown) => e,
+    );
+    expect(err).toBeInstanceOf(RetryAfterError);
+    expect((err as RetryAfterError).retryAfterMs).toBe(5000);
+
+    await handler.run(payload, context({ attempts: 2 }));
+    expect(sent[0]?.message.content).toBe(
+      'The AI service is busy right now. Try again in a minute. No action was taken.',
+    );
+  });
+
+  it('with empty retry delays the first retryable failure answers the busy reply at once', async () => {
+    const svc = service(async () => {
+      throw new ProviderError('outage', 'HTTP 503', true);
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler({ ...deps, retryDelaysMs: () => [] });
+
+    await handler.run(payload, context({ attempts: 1 }));
+
+    expect(sent[0]?.message.content).toBe(
+      'The AI service is busy right now. Try again in a minute. No action was taken.',
+    );
   });
 
   it('answers BUSY_REPLY, not the daily-cap wording, for a genuine transient error past the retry ceiling', async () => {
@@ -759,5 +831,124 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       h.run(mention({ invocationId: 'inv-ty', messageId: '810000000000000021' })),
     ).resolves.toBeDefined();
     expect(h.sent).toHaveLength(1);
+  });
+});
+
+describe('Task 10 (c): ChainFailedError writes a trace per job attempt', () => {
+  const BOT_ID = '901234567890123456';
+
+  it('a ChainFailedError on attempt 1 inserts trace trace_<key>_a1 with retry:1 then throws RetryAfterError', async () => {
+    const { ChainFailedError } = await import('../assistant/chain-failed-error.js');
+    const t = openMigratedTestDatabase();
+    try {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+      const scope = t.scopes.forGuild(GUILD_ID);
+      const attempts = [
+        {
+          provider: 'openrouter',
+          model: 'm',
+          keyLabel: 'Key A',
+          outcome: 'busy' as const,
+          reason: 'outage',
+          code: 'provider-connect-timeout',
+          netCode: 'UND_ERR_CONNECT_TIMEOUT',
+          host: 'openrouter.ai',
+          ms: 5,
+        },
+      ];
+      const svc: AssistantCommandService = {
+        behavioursForGuild: async () => [behaviour],
+        invoke: async () => {
+          throw new ChainFailedError(
+            'outage',
+            'Every assistant model failed — openrouter/m: provider-connect-timeout',
+            true,
+            attempts,
+          );
+        },
+      };
+      const sent: { channelId: string; message: OutgoingMessage }[] = [];
+      const handler = assistantInvokeHandler({
+        guildId: GUILD_ID,
+        service: svc,
+        openToken: () => undefined,
+        respond: async () => undefined,
+        send: async (channelId: string, message: OutgoingMessage) => {
+          sent.push({ channelId, message });
+          return undefined;
+        },
+        logger: pino({ level: 'silent' }),
+        logChannelId: () => undefined,
+        now: () => NOW,
+        conversations: { scope, botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+      });
+      await expect(
+        handler.run(handler.payload.parse(payload), context({ attempts: 1 })),
+      ).rejects.toBeInstanceOf(RetryAfterError);
+      const stored = traceRepo.getTrace(scope, 'trace_inv-1_a1');
+      expect(stored).toBeDefined();
+      expect(stored?.flags).toEqual(['retry:1']);
+      expect(stored?.outcome).toBe('failed');
+      expect(stored?.attempts).toHaveLength(1);
+    } finally {
+      t.close();
+    }
+  });
+
+  it('on the last attempt it inserts trace_<key>_a<n> with gave-up and answers the busy reply', async () => {
+    const { ChainFailedError } = await import('../assistant/chain-failed-error.js');
+    const t = openMigratedTestDatabase();
+    try {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+      const scope = t.scopes.forGuild(GUILD_ID);
+      const attempts = [
+        {
+          provider: 'openrouter',
+          model: 'm',
+          keyLabel: 'Key A',
+          outcome: 'busy' as const,
+          reason: 'outage',
+          code: 'provider-connect-timeout',
+          netCode: 'UND_ERR_CONNECT_TIMEOUT',
+          host: 'openrouter.ai',
+          ms: 5,
+        },
+      ];
+      const svc: AssistantCommandService = {
+        behavioursForGuild: async () => [behaviour],
+        invoke: async () => {
+          throw new ChainFailedError(
+            'outage',
+            'Every assistant model failed — openrouter/m: provider-connect-timeout',
+            true,
+            attempts,
+          );
+        },
+      };
+      const sent: { channelId: string; message: OutgoingMessage }[] = [];
+      const handler = assistantInvokeHandler({
+        guildId: GUILD_ID,
+        service: svc,
+        openToken: () => undefined,
+        respond: async () => undefined,
+        send: async (channelId: string, message: OutgoingMessage) => {
+          sent.push({ channelId, message });
+          return undefined;
+        },
+        logger: pino({ level: 'silent' }),
+        logChannelId: () => undefined,
+        now: () => NOW,
+        conversations: { scope, botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+      });
+      await handler.run(handler.payload.parse(payload), context({ attempts: 4 }));
+      const stored = traceRepo.getTrace(scope, 'trace_inv-1_a4');
+      expect(stored).toBeDefined();
+      expect(stored?.flags).toEqual(['gave-up']);
+      expect(sent[0]?.message.content).toBe(
+        'The AI service is busy right now. Try again in a minute. No action was taken.',
+      );
+    } finally {
+      t.close();
+    }
   });
 });

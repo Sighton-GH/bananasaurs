@@ -149,6 +149,45 @@ describe('assistant resource cache routes', () => {
     expect(body.freshness).toEqual([expect.objectContaining({ resourceId: 'res-1', bytes: 42 })]);
   });
 
+  it('GET freshness explains a challenge failure with the resource-failure catalog text', async () => {
+    grant('config.read');
+    const { cookie } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, resource());
+    resourceCacheRepo.upsertDocument(scope, {
+      resourceId: 'res-1',
+      docId: 'd_test',
+      url: 'https://example.com/guide',
+      path: '/guide',
+      title: 'Guide',
+      contentHash: '',
+      fetchedAt: clock,
+      bytes: 0,
+      status: 'error',
+      error: "The site's Cloudflare bot protection challenged Bananasaurs.",
+      errorCode: 'challenge',
+    });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: '/api/assistant/resources/freshness',
+      headers: { cookie },
+    });
+    expect(res.statusCode).toBe(200);
+    const body = res.json<{
+      freshness: { resourceId: string; errorCode: string; errorExplain: { title: string } }[];
+    }>();
+    expect(body.freshness).toEqual([
+      expect.objectContaining({
+        resourceId: 'res-1',
+        errorCode: 'challenge',
+        errorExplain: expect.objectContaining({
+          title: "The site's bot protection blocked Bananasaurs",
+        }),
+      }),
+    ]);
+  });
+
   it('POST /:id/refresh enqueues a manual resource_refresh job for that resource and audits it, 404 for an unknown id', async () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();

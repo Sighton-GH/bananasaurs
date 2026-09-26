@@ -871,7 +871,7 @@ describe('switching guilds without logging out', () => {
       payload: { guildId: GUILD_C },
     });
     expect(refused.statusCode).toBe(403);
-    expect(refused.json()).toEqual({ error: 'no-guild-access' });
+    expect(refused.json()).toMatchObject({ error: 'no-guild-access' });
     const again = await app.inject({ method: 'GET', url: '/api/session', headers: { cookie } });
     expect(again.json()).toMatchObject({ authenticated: true, guildId: GUILD_A });
     const token = cookie.split('=')[1] ?? '';
@@ -895,7 +895,12 @@ describe('switching guilds without logging out', () => {
       payload: { guildId: GUILD_C },
     });
     expect(unknown.statusCode).toBe(403);
-    expect(unknown.json()).toEqual(unreachable.json());
+    // Enrichment adds a per-request `requestId`, so the no-oracle comparison
+    // overrides it on both sides: everything else must still be identical.
+    expect({ ...unknown.json(), requestId: expect.any(String) }).toEqual({
+      ...unreachable.json(),
+      requestId: expect.any(String),
+    });
   });
 
   it('answers 401 unauthenticated with no session', async () => {
@@ -917,7 +922,7 @@ describe('switching guilds without logging out', () => {
       payload: { guildId: GUILD_B },
     });
     expect(refused.statusCode).toBe(403);
-    expect(refused.json()).toEqual({ error: 'csrf' });
+    expect(refused.json()).toMatchObject({ error: 'csrf' });
   });
 
   it('switching to the guild already held is a 200 that writes no audit row', async () => {

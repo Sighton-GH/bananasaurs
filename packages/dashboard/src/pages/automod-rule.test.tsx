@@ -314,8 +314,7 @@ describe('AutomodRulePage', () => {
   it('renders the error state naming the rule when it does not exist', async () => {
     stubFetch([]);
     renderRule();
-    const alert = await screen.findByRole('alert');
-    expect(alert.textContent).toContain('rule kw-one');
+    expect(await screen.findByText(/Could not load rule kw-one/)).toBeTruthy();
   });
 
   it.each([
