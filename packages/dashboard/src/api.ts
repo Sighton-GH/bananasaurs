@@ -43,12 +43,6 @@ export interface NoSession {
 }
 
 /**
- * Thrown for every non-2xx response except the two the caller is expected to
- * handle itself: 401 `reauth-required` (retried transparently by `apiFetch`)
- * and 503 `read-only` (its `message` names `BANANASAURS_READONLY`, so callers
- * render it rather than a generic failure).
- */
-/**
  * The JSON body every non-2xx API answer carries (0078): the stable
  * kebab-case `error` code plus the server catalog's title, message and hint,
  * the Zod issue paths for a validation failure, and the request id that ties
@@ -63,6 +57,12 @@ export interface ApiErrorBody {
   readonly requestId?: string | undefined;
 }
 
+/**
+ * Thrown for every non-2xx response except the two the caller is expected to
+ * handle itself: 401 `reauth-required` (retried transparently by `apiFetch`)
+ * and 503 `read-only` (its `message` names `BANANASAURS_READONLY`, so callers
+ * render it rather than a generic failure).
+ */
 export class ApiError extends Error {
   constructor(
     readonly status: number,
