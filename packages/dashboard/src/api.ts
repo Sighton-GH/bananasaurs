@@ -42,12 +42,7 @@ export interface NoSession {
   readonly reason: string;
 }
 
-/**
- * The JSON body every non-2xx API answer carries (0078): the stable
- * kebab-case `error` code plus the server catalog's title, message and hint,
- * the Zod issue paths for a validation failure, and the request id that ties
- * the answer to its journal line.
- */
+/** The JSON body every non-2xx API answer carries (0078). */
 export interface ApiErrorBody {
   readonly error: string;
   readonly title?: string | undefined;
