@@ -112,6 +112,10 @@ beforeEach(async () => {
       fastify.get('/api/test/boom', () => {
         throw new Error('boom');
       });
+      // A non-dashboard-API error surface: the hook must leave it alone.
+      fastify.get('/probe-unauth', (_request, reply) => {
+        void reply.status(401).send({ error: 'unauthenticated' });
+      });
     },
   });
 });
@@ -188,8 +192,7 @@ describe('enriched error bodies', () => {
     expect(failed, 'expected a request failed log line with the same requestId').toBeDefined();
   });
 
-  it('(e) reports instanceOwner on /api/session', async () => {
-    const owner = await signInAs('owner');
+  it('(e) reports instanceOwner on /api/session', async () => {    const owner = await signInAs('owner');
     const asOwner = await app.inject({
       method: 'GET',
       url: '/api/session',
@@ -203,5 +206,11 @@ describe('enriched error bodies', () => {
       headers: { cookie: operator.cookie },
     });
     expect(asOperator.json<Record<string, unknown>>()['instanceOwner']).toBe(false);
+  });
+
+  it('(f) leaves a non-/api/ error body byte-identical', async () => {
+    const response = await app.inject({ method: 'GET', url: '/probe-unauth' });
+    expect(response.statusCode).toBe(401);
+    expect(response.json()).toEqual({ error: 'unauthenticated' });
   });
 });

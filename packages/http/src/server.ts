@@ -464,15 +464,23 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   });
 
   /**
-   * ADR 0078: every non-2xx JSON body carries its explanation. Fastify passes
-   * the already-serialized payload string here, so the hook parses it, fills
-   * in `title`, `message` (the catalog explanation), `hint` and `requestId`
-   * wherever the route left them absent, and re-serializes. A field the route
-   * set itself is never overwritten; anything that is not a JSON error body
-   * passes through untouched.
+   * ADR 0078: every non-2xx JSON body on the dashboard API carries its
+   * explanation. Fastify passes the already-serialized payload string here,
+   * so the hook parses it, fills in `title`, `message` (the catalog
+   * explanation), `hint` and `requestId` wherever the route left them
+   * absent, and re-serializes. A field the route set itself is never
+   * overwritten; anything that is not a JSON error body passes through
+   * untouched.
+   *
+   * Scope: `/api/` paths only. OAuth endpoints, `/.well-known/*`, `/mcp`
+   * and anything else are protocol surfaces read by machine clients
+   * (RFC 6749/9728 shapes must not change), so their bodies pass through
+   * byte-identical.
    */
   app.addHook('onSend', (request, reply, payload, done) => {
     try {
+      const path = request.url.split('?')[0] ?? '';
+      if (!path.startsWith('/api/')) return done(null, payload);
       if (reply.statusCode < 400) return done(null, payload);
       const contentType = reply.getHeader('content-type');
       if (typeof contentType !== 'string' || !contentType.startsWith('application/json')) {
