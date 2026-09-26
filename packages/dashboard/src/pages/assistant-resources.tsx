@@ -570,9 +570,22 @@ function ResourcesCard({
                     ` · ${String(row.chunks)} chunk${row.chunks === 1 ? '' : 's'}`}
                   {row !== undefined && ` · ${formatSize(row.bytes)}`}
                 </p>
-                {row?.lastError !== undefined && (
-                  <p className="mt-1 text-xs text-danger">{row.lastError}</p>
-                )}
+                {row?.lastError !== undefined &&
+                  (row.errorExplain === undefined ? (
+                    <p className="mt-1 text-xs text-danger">{row.lastError}</p>
+                  ) : (
+                    <div className="mt-1 text-xs">
+                      <p className="font-medium text-danger">{row.errorExplain.title}</p>
+                      <p className="text-ink-muted">{row.errorExplain.explanation}</p>
+                      <p className="text-ink-muted">What to do: {row.errorExplain.hint}</p>
+                      {row.errorCode !== undefined && (
+                        <p className="text-ink-muted">
+                          {row.errorCode}
+                          {row.httpStatus !== undefined ? ` · HTTP ${String(row.httpStatus)}` : ''}
+                        </p>
+                      )}
+                    </div>
+                  ))}
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
                   <Badge tone={resource.enabled ? 'ok' : 'neutral'}>
                     {resource.enabled ? 'enabled' : 'disabled'}

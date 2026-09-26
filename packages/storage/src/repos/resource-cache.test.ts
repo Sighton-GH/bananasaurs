@@ -456,9 +456,11 @@ describe('resourceFreshness', () => {
       bytes: 321,
       status: 'error',
       error: 'timeout: could not be retrieved safely.',
+      errorCode: 'timeout',
     });
     const [after] = resourceFreshness(a);
     expect(after?.lastError).toBe('timeout: could not be retrieved safely.');
+    expect(after?.errorCode).toBe('timeout');
   });
 });
 

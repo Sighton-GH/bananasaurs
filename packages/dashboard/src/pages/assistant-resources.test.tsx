@@ -100,6 +100,32 @@ describe('AssistantResourcesPage', () => {
     expect(screen.getByText('Never updated')).toBeTruthy();
   });
 
+  it('shows the catalog title, explanation and hint for a challenge failure', async () => {
+    renderPage(FULL, [
+      {
+        resourceId: 'handbook',
+        fetchedAt: 1790000000000,
+        chunks: 0,
+        bytes: 0,
+        lastError: "The site's Cloudflare bot protection challenged Bananasaurs.",
+        errorCode: 'challenge',
+        errorExplain: {
+          title: "The site's bot protection blocked Bananasaurs",
+          explanation:
+            'The site answered with a Cloudflare challenge page ("Just a moment…"), which only a browser can pass.',
+          hint: "Ask the site's owner to add a Cloudflare WAF Skip rule for the header set in AI tuning → Resources, or import the content from GitHub instead.",
+        },
+      },
+    ]);
+    expect(await screen.findByText('Needs attention')).toBeTruthy();
+    expect(screen.getByText("The site's bot protection blocked Bananasaurs")).toBeTruthy();
+    expect(
+      screen.getByText(/The site answered with a Cloudflare challenge page/),
+    ).toBeTruthy();
+    expect(screen.getByText(/What to do:/)).toBeTruthy();
+    expect(screen.getByText('challenge')).toBeTruthy();
+  });
+
   it('shows Off for a disabled resource even when its cache is current', async () => {
     renderPage({ ...FULL, resources: [{ ...FULL.resources[0]!, enabled: false }] });
     expect(await screen.findByText('Off')).toBeTruthy();

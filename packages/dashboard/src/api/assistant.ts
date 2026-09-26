@@ -308,12 +308,20 @@ export const decisionSaveUrl = (id: string) =>
   `/api/assistant/decisions/${encodeURIComponent(id)}/save`;
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
 /** ADR 0073: cached-document freshness per resource — fetchedAt/chunks/bytes/lastError, one row per resource that has ever been cached. */
+export interface ResourceErrorExplain {
+  readonly title: string;
+  readonly explanation: string;
+  readonly hint: string;
+}
 export interface ResourceFreshnessRow {
   readonly resourceId: string;
   readonly fetchedAt?: number;
   readonly chunks: number;
   readonly bytes: number;
   readonly lastError?: string;
+  readonly errorCode?: string;
+  readonly errorExplain?: ResourceErrorExplain;
+  readonly httpStatus?: number;
 }
 export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
 export const resourceRefreshUrl = (id: string) =>
