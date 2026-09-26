@@ -294,6 +294,9 @@ export function createDaemon(deps: DaemonDeps): Daemon {
   const resourceRefreshTimer = createResourceRefreshTimer({
     guilds: () => [...byGuild.values()].map(({ scope }) => ({ scope })),
     enqueue: (scope, input) => jobRepo.enqueue(scope, input),
+    // The owner's refresh interval from the AI tuning settings (live, so
+    // edits apply without a restart).
+    intervalMs: () => instanceSettings.get('resources.refreshIntervalMin') * 60_000,
     now,
     logger,
   });

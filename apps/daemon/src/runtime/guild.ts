@@ -79,6 +79,7 @@ import { undoBatchHandler } from '../jobs/undo.js';
 import { deliverRemindersHandler } from '../jobs/reminders.js';
 import { resourceRefreshHandler } from '../jobs/resource-refresh.js';
 import { ReviewedResourceFetcher } from '../assistant/resource-fetcher.js';
+import { websiteFetchHeaders } from '../assistant/website-fetch-headers.js';
 import { conversationPruneHandler } from '../jobs/conversation-prune.js';
 import { createGitHubClient } from '../assistant/github-client.js';
 import { createGithubFetch, githubGuard } from '../assistant/github-fetch.js';
@@ -864,7 +865,17 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         scope,
         listResources: assistantRepo.listResources,
         refresh: {
-          fetcher: new ReviewedResourceFetcher({ now }),
+          // The live fetch timeout and the owner's header (listed hosts
+          // only) from the AI tuning settings. Absent means today's 5 s
+          // default and no header.
+          fetcher:
+            settings === undefined
+              ? new ReviewedResourceFetcher({ now })
+              : new ReviewedResourceFetcher({
+                  now,
+                  limits: () => ({ timeoutMs: settings.get('resources.fetchTimeoutMs') }),
+                  headersFor: websiteFetchHeaders(settings),
+                }),
           repo: resourceCacheRepo,
           now,
         },
@@ -881,10 +892,20 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
           }),
           // Pinned to raw.githubusercontent.com: a redirect in a GitHub raw
           // download can never carry the refresh to another host (hard rule 8).
-          fetcher: new ReviewedResourceFetcher({
-            now,
-            allowedHosts: ['raw.githubusercontent.com'],
-          }),
+          // The live fetch timeout applies here too — but never headersFor:
+          // the owner's header goes to listed website hosts only, never to
+          // GitHub.
+          fetcher:
+            settings === undefined
+              ? new ReviewedResourceFetcher({
+                  now,
+                  allowedHosts: ['raw.githubusercontent.com'],
+                })
+              : new ReviewedResourceFetcher({
+                  now,
+                  allowedHosts: ['raw.githubusercontent.com'],
+                  limits: () => ({ timeoutMs: settings.get('resources.fetchTimeoutMs') }),
+                }),
           store: assistantRepo,
           cache: resourceCacheRepo,
           now,

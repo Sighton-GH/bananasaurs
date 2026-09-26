@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { parseGuildId, type ClubResource } from '@bananasaurs/core';
+import { parseGuildId, type ClubResource, type Logger } from '@bananasaurs/core';
 import type { GuildScope } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
@@ -120,5 +120,40 @@ describe('resourceRefreshHandler', () => {
     });
     expect(() => handler.payload.parse({ reason: 'not-a-reason' })).toThrow();
     expect(handler.payload.parse({ reason: 'hourly' })).toEqual({ reason: 'hourly' });
+  });
+
+  it('the single-resource log carries code and httpStatus for a failed fetch', async () => {
+    const info = vi.fn();
+    const capturing = { info, warn() {}, error() {}, debug() {}, fatal() {}, trace() {} } as unknown as Logger;
+    const fetch = vi.fn().mockResolvedValue({
+      ok: false,
+      code: 'challenge',
+      message: "The site's Cloudflare bot protection challenged Bananasaurs.",
+      httpStatus: 403,
+      host: 'example.com',
+    });
+    const repo = new FakeRepo();
+    const handler = resourceRefreshHandler({
+      scope: SCOPE,
+      listResources: () => [resource({ id: 'res-1', url: 'https://example.com/guide' })],
+      refresh: { fetcher: { fetch }, repo, now: () => 1_000 },
+      logger: capturing,
+    });
+
+    await handler.run({ resourceId: 'res-1', reason: 'manual' }, runCtx);
+
+    // The code persists on the document row.
+    const [doc] = [...repo.docs.values()];
+    expect(doc).toMatchObject({ status: 'error', errorCode: 'challenge' });
+    // And the log line names it: fields plus the "(challenge)" suffix.
+    expect(info).toHaveBeenCalledTimes(1);
+    const [fields, message] = info.mock.calls[0] as [Record<string, unknown>, string];
+    expect(fields).toMatchObject({
+      resourceId: 'res-1',
+      outcome: 'error',
+      code: 'challenge',
+      httpStatus: 403,
+    });
+    expect(message).toBe('resource cache: refreshed res-1 -> error (challenge) (reason=manual)');
   });
 });

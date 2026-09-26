@@ -80,12 +80,26 @@ export const resourceRefreshHandler = (deps: {
     }
     const resource = resources.find((r) => r.id === payload.resourceId);
     if (resource === undefined) return;
-    const outcome = isGithub(resource)
-      ? await refreshGithub(resource)
-      : await refreshResource(deps.scope, resource, deps.refresh);
+    if (isGithub(resource)) {
+      const outcome = await refreshGithub(resource);
+      deps.logger.info(
+        safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.resourceRefresh }),
+        `resource cache: refreshed ${resource.id} -> ${outcome} (reason=${payload.reason})`,
+      );
+      return;
+    }
+    const detail = await refreshResource(deps.scope, resource, deps.refresh);
     deps.logger.info(
-      safeLogFields({ component: 'jobs', jobKind: JOB_KINDS.resourceRefresh }),
-      `resource cache: refreshed ${resource.id} -> ${outcome} (reason=${payload.reason})`,
+      safeLogFields({
+        component: 'jobs',
+        jobKind: JOB_KINDS.resourceRefresh,
+        resourceId: resource.id,
+        outcome: detail.outcome,
+        ...(detail.code === undefined ? {} : { code: detail.code }),
+        ...(detail.httpStatus === undefined ? {} : { httpStatus: detail.httpStatus }),
+        ...(detail.host === undefined ? {} : { host: detail.host }),
+      }),
+      `resource cache: refreshed ${resource.id} -> ${detail.outcome}${detail.code !== undefined ? ` (${detail.code})` : ''} (reason=${payload.reason})`,
     );
   },
 });
