@@ -18,9 +18,7 @@ export const fieldsOf = (error: ZodError): FieldProblem[] =>
 
 /** A 400 that carries the code plus `fields`, so the page can highlight. */
 export const badRequest = (reply: FastifyReply, error?: ZodError, code?: string): FastifyReply =>
-  reply
-    .status(400)
-    .send({
-      error: code ?? 'bad-request',
-      ...(error === undefined ? {} : { fields: fieldsOf(error) }),
-    });
+  reply.status(400).send({
+    error: code ?? 'bad-request',
+    ...(error === undefined ? {} : { fields: fieldsOf(error) }),
+  });
