@@ -28,6 +28,7 @@ import { badRequest } from './errors/reply.js';
 import { isInstanceOwner } from './owner.js';
 import { secretsMatch } from './secrets.js';
 import type { GithubRouteClient } from './routes/assistant-github.js';
+import type { InstanceSettingsPort } from './routes/assistant-tuning.js';
 
 /**
  * The dashboard API.
@@ -194,6 +195,12 @@ export interface HttpDeps extends AuthDeps {
         channels: readonly { id: string; name: string }[];
       }>)
     | undefined;
+  /**
+   * ADR 0080: the daemon's instance settings store, for Assistant → AI
+   * tuning. Absent in isolated route tests, and then the tuning routes
+   * answer 503 `settings-unavailable`.
+   */
+  readonly instanceSettings?: InstanceSettingsPort | undefined;
   /**
    * ADR 0073: adding or editing a resource enqueues a cache refresh with
    * reason `added`, so a newly added resource has cached chunks before the
