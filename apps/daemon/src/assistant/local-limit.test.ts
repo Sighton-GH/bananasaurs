@@ -141,4 +141,27 @@ describe('reserveEntryCall and entryUsage', () => {
     expect(usage?.today).toBe(2);
     expect(usage?.availableAt).toBe(nextProviderDayStart('gemini', NOW + 2000));
   });
+
+  it('entryUsage with both limits frees up at the later of the RPM window and the next day start', () => {
+    const entry = {
+      keyId,
+      model: MODEL,
+      providerId: 'gemini' as const,
+      rpmLimit: 2,
+      rpdLimit: 2,
+    };
+    expect(reserveEntryCall(instance, entry, GUILD_ID, NOW)).toEqual({ ok: true });
+    expect(reserveEntryCall(instance, entry, GUILD_ID, NOW + 1000)).toEqual({ ok: true });
+    const at = NOW + 2000;
+    const usage = entryUsage(instance, entry, at);
+    const rpmCandidate = NOW + 60_000;
+    const rpdCandidate = nextProviderDayStart('gemini', at);
+    // NOW is just after the provider-local midnight, so the next day start is
+    // almost a full day away and wins over the one-minute RPM window.
+    expect(rpdCandidate).toBeGreaterThan(rpmCandidate);
+    expect(usage?.lastMinute).toBe(2);
+    expect(usage?.today).toBe(2);
+    expect(usage?.availableAt).toBe(Math.max(rpmCandidate, rpdCandidate));
+    expect(usage?.availableAt).toBe(rpdCandidate);
+  });
 });
