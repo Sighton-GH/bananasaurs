@@ -460,8 +460,8 @@ describe('ProvidersPage model order', () => {
     expect(put).toBeTruthy();
     expect(bodyOf(put!)).toEqual({
       entries: [
-        { keyId: 'key_b', model: 'some-open-model' },
-        { keyId: 'key_a', model: 'gemini-2.5-flash' },
+        { keyId: 'key_b', model: 'some-open-model', rpmLimit: null, rpdLimit: null },
+        { keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: null, rpdLimit: null },
       ],
     });
   });
@@ -486,8 +486,8 @@ describe('ProvidersPage model order', () => {
     );
     expect(bodyOf(put!)).toEqual({
       entries: [
-        { keyId: 'key_a', model: 'gemini-2.5-flash' },
-        { keyId: 'key_b', model: 'gemini-2.5-flash' },
+        { keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: null, rpdLimit: null },
+        { keyId: 'key_b', model: 'gemini-2.5-flash', rpmLimit: null, rpdLimit: null },
       ],
     });
     expect(screen.queryByText(/different model/)).toBeNull();
@@ -838,8 +838,7 @@ describe('ProvidersPage row test refusal', () => {
   });
 });
 
-describe('Task 10 (h): AI setup Test renders a classified failure', () => {
-  it('shows the failure title and hint', async () => {
+describe('Task 10 (h): AI setup Test renders a classified failure', () => {  it('shows the failure title and hint', async () => {
     stubFetch([
       { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
       { url: '/api/assistant', body: assistantBody() },
@@ -875,5 +874,127 @@ describe('Task 10 (h): AI setup Test renders a classified failure', () => {
     expect(alert.textContent).toContain('api.example.test');
     expect(alert.textContent).toContain('HTTP 504');
     expect(alert.textContent).toContain('ETIMEDOUT');
+  });
+});
+
+describe('per-entry RPM/RPD limits (ADR 0081)', () => {
+  const limitedRow = (overrides: Record<string, unknown> = {}) => ({
+    position: 0,
+    keyId: 'key_a',
+    keyLabel: 'Main key',
+    provider: 'gemini',
+    model: 'gemini-2.5-flash',
+    status: 'ready',
+    rpmLimit: 15,
+    rpdLimit: null,
+    usage: { lastMinute: 12, today: 180 },
+    ...overrides,
+  });
+
+  it('shows the saved limits in the inputs and the usage line', async () => {
+    stubPage(setupBody({ chain: [limitedRow()] }));
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    expect(inputOf(screen.getByLabelText('RPM limit for row 1')).value).toBe('15');
+    const rpd = inputOf(screen.getByLabelText('RPD limit for row 1'));
+    expect(rpd.value).toBe('');
+    expect(rpd.getAttribute('placeholder')).toBe('no limit');
+    expect(screen.getByText(/RPM 12 \/ 15 · today 180/)).toBeTruthy();
+  });
+
+  it('names when the entry frees up once it is at its limit', async () => {
+    stubPage(
+      setupBody({
+        chain: [
+          limitedRow({
+            rpdLimit: 1000,
+            usage: { lastMinute: 12, today: 180, availableAt: 1_700_000_000_000 },
+          }),
+        ],
+      }),
+    );
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    expect(screen.getByText(/frees up/)).toBeTruthy();
+  });
+
+  it('sends the edited limits with the order', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody({ chain: [limitedRow()] }) },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    fireEvent.change(inputOf(screen.getByLabelText('RPD limit for row 1')), {
+      target: { value: '20' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    const put = mock.mock.calls.find(
+      (c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT',
+    );
+    expect(put).toBeTruthy();
+    expect(bodyOf(put!)).toEqual({
+      entries: [{ keyId: 'key_a', model: 'gemini-2.5-flash', rpmLimit: 15, rpdLimit: 20 }],
+    });
+  });
+
+  it('shows a server field error under the RPM input', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'PUT',
+        url: MODEL_CHAIN_URL,
+        status: 400,
+        body: {
+          error: 'bad-request',
+          title: 'The request was not valid',
+          message: 'One or more fields were missing or had the wrong format.',
+          hint: 'Fix the highlighted fields and try again.',
+          fields: [{ path: 'entries.0.rpmLimit', problem: 'too_small' }],
+          requestId: 'req-0a1b2c3d',
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    const rpm = screen.getByLabelText('RPM limit for row 1');
+    expect(rpm.getAttribute('aria-invalid')).toBe('true');
+    expect(await screen.findByText('Too small.')).toBeTruthy();
+  });
+
+  it('refuses a zero limit before sending', async () => {
+    const mock = stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      { method: 'PUT', url: MODEL_CHAIN_URL, body: { ok: true, count: 1 } },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    fireEvent.change(inputOf(screen.getByLabelText('RPM limit for row 1')), {
+      target: { value: '0' },
+    });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Save order' }));
+    });
+    expect(
+      await screen.findByText(
+        'Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.',
+      ),
+    ).toBeTruthy();
+    expect(
+      mock.mock.calls.filter(
+        (c) => (c[0] as string) === MODEL_CHAIN_URL && c[1]?.method === 'PUT',
+      ),
+    ).toHaveLength(0);
   });
 });

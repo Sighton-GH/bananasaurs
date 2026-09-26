@@ -268,6 +268,13 @@ export interface SetupChainRow {
   readonly model: string;
   readonly status: ChainStatus;
   readonly allowanceResetsAt?: number;
+  readonly rpmLimit: number | null;
+  readonly rpdLimit: number | null;
+  readonly usage?: {
+    readonly lastMinute: number;
+    readonly today: number;
+    readonly availableAt?: number;
+  };
 }
 export interface AssistantSetupData {
   readonly providers: readonly SetupProviderRow[];

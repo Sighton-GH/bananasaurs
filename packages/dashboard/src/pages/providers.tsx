@@ -21,6 +21,7 @@ import {
   type SetupKeyRow,
 } from '../api/assistant.js';
 import type { EligibilityWarning, ProviderReviewResult } from '../api/ops.js';
+import { ApiError } from '../api.js';
 import { fieldError } from '../api/describe-error.js';
 import { useSession } from '../app/session.js';
 import { useResource } from '../hooks/useResource.js';
@@ -112,7 +113,12 @@ function ChecklistSection({
 interface ChainDraft {
   readonly keyId: string;
   readonly model: string;
+  readonly rpmLimit: string;
+  readonly rpdLimit: string;
 }
+
+/** A limit input is blank (no limit) or a whole number of 1 or more. */
+const validLimit = (text: string): boolean => text === '' || /^[1-9]\d*$/.test(text);
 
 interface TestOutcome {
   readonly ok: boolean;
@@ -141,11 +147,17 @@ function ModelOrderSection({
   const session = useSession();
   const toast = useToast();
   const [rows, setRows] = useState<readonly ChainDraft[]>(() =>
-    setup.chain.map((entry) => ({ keyId: entry.keyId, model: entry.model })),
+    setup.chain.map((entry) => ({
+      keyId: entry.keyId,
+      model: entry.model,
+      rpmLimit: entry.rpmLimit?.toString() ?? '',
+      rpdLimit: entry.rpdLimit?.toString() ?? '',
+    })),
   );
   const [geminiModels, setGeminiModels] = useState<readonly ModelInfo[] | undefined>(undefined);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | undefined>(undefined);
+  const [saveError, setSaveError] = useState<unknown>(undefined);
   const [testing, setTesting] = useState<number | undefined>(undefined);
   const [results, setResults] = useState<Readonly<Record<number, TestOutcome>>>({});
 
@@ -180,17 +192,35 @@ function ModelOrderSection({
       setError('Name a model and pick a key for every row.');
       return;
     }
+    if (rows.some((row) => !validLimit(row.rpmLimit) || !validLimit(row.rpdLimit))) {
+      setError('Limits must be whole numbers of 1 or more. Leave a limit blank for no limit.');
+      return;
+    }
     setError(undefined);
+    setSaveError(undefined);
     setSaving(true);
     try {
-      const result = await session.write<{ ok: boolean; count: number }>(
+      const result = await session.writeOrThrow<{ ok: boolean; count: number }>(
         MODEL_CHAIN_URL,
-        { entries: rows.map((row) => ({ keyId: row.keyId, model: row.model.trim() })) },
+        {
+          entries: rows.map((row) => ({
+            keyId: row.keyId,
+            model: row.model.trim(),
+            rpmLimit: row.rpmLimit === '' ? null : Number(row.rpmLimit),
+            rpdLimit: row.rpdLimit === '' ? null : Number(row.rpdLimit),
+          })),
+        },
         'PUT',
       );
       if (result === undefined) return;
       toast({ tone: 'ok', title: 'Model order saved' });
       onChanged();
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setSaveError(err);
+        return;
+      }
+      throw err;
     } finally {
       setSaving(false);
     }
@@ -252,6 +282,8 @@ function ModelOrderSection({
                   : saved.status === 'allowance-used'
                     ? `Free allowance used — resets ${new Date(saved.allowanceResetsAt ?? 0).toLocaleString()}`
                     : CHAIN_REASON[saved.status];
+            const rpmProblem = fieldError(saveError, `entries.${index}.rpmLimit`);
+            const rpdProblem = fieldError(saveError, `entries.${index}.rpdLimit`);
             return (
               <div className="grid gap-1.5">
                 <div className="flex flex-wrap items-center gap-2">
@@ -317,11 +349,60 @@ function ModelOrderSection({
                       />
                     </Field>
                   )}
+                  <div className="w-24">
+                    <Field label="RPM" {...(rpmProblem === undefined ? {} : { error: rpmProblem })}>
+                      <Input
+                        aria-label={`RPM limit for row ${number}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        placeholder="no limit"
+                        value={row.rpmLimit}
+                        onChange={(event) => {
+                          const rpmLimit = event.target.value;
+                          setRows((current) =>
+                            current.map((r, i) => (i === index ? { ...r, rpmLimit } : r)),
+                          );
+                        }}
+                      />
+                    </Field>
+                  </div>
+                  <div className="w-24">
+                    <Field label="RPD" {...(rpdProblem === undefined ? {} : { error: rpdProblem })}>
+                      <Input
+                        aria-label={`RPD limit for row ${number}`}
+                        type="number"
+                        min={1}
+                        step={1}
+                        inputMode="numeric"
+                        placeholder="no limit"
+                        value={row.rpdLimit}
+                        onChange={(event) => {
+                          const rpdLimit = event.target.value;
+                          setRows((current) =>
+                            current.map((r, i) => (i === index ? { ...r, rpdLimit } : r)),
+                          );
+                        }}
+                      />
+                    </Field>
+                  </div>
                 </div>
                 <div className="flex flex-wrap items-center gap-2 text-sm">
                   {pill}
                   {reason !== undefined && <span className="text-ink-muted">{reason}</span>}
                 </div>
+                {saved?.usage !== undefined && (
+                  <p className="text-xs text-ink-muted">
+                    RPM {saved.usage.lastMinute}
+                    {saved.rpmLimit !== null ? ` / ${saved.rpmLimit}` : ''} · today{' '}
+                    {saved.usage.today}
+                    {saved.rpdLimit !== null ? ` / ${saved.rpdLimit}` : ''}
+                    {saved.usage.availableAt !== undefined
+                      ? ` · frees up ${new Date(saved.usage.availableAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`
+                      : ''}
+                  </p>
+                )}
                 <div className="flex flex-wrap items-center gap-2">
                   <Button
                     busy={testing === index}
@@ -388,7 +469,10 @@ function ModelOrderSection({
       <div className="mt-3 flex flex-wrap items-center gap-2">
         <Button
           onClick={() =>
-            setRows((current) => [...current, { keyId: setup.keys[0]?.keyId ?? '', model: '' }])
+            setRows((current) => [
+              ...current,
+              { keyId: setup.keys[0]?.keyId ?? '', model: '', rpmLimit: '', rpdLimit: '' },
+            ])
           }
           disabled={setup.keys.length === 0}
           title={setup.keys.length === 0 ? 'Add a key first' : undefined}
@@ -398,6 +482,12 @@ function ModelOrderSection({
         <Button variant="primary" busy={saving} onClick={() => void save()}>
           Save order
         </Button>
+        {saveError !== undefined &&
+          !rows.some(
+            (_, index) =>
+              fieldError(saveError, `entries.${index}.rpmLimit`) !== undefined ||
+              fieldError(saveError, `entries.${index}.rpdLimit`) !== undefined,
+          ) && <ErrorNotice error={saveError} compact />}
       </div>
     </Card>
   );
@@ -1354,7 +1444,9 @@ function SetupBody({
   readonly assistant: AssistantData | undefined;
   readonly onChanged: () => void;
 }) {
-  const chainSignature = JSON.stringify(setup.chain.map((c) => [c.keyId, c.model]));
+  const chainSignature = JSON.stringify(
+    setup.chain.map((c) => [c.keyId, c.model, c.rpmLimit, c.rpdLimit]),
+  );
   return (
     <>
       <ChecklistSection setup={setup} assistant={assistant} />
