@@ -115,6 +115,12 @@ type TraceToolCall = AssistantTrace['toolCalls'][number];
 
 type LocalLimitCode = 'local-rpm-limit' | 'local-rpd-limit';
 
+type ReserveCall = (
+  entry: ChainEntry,
+) =>
+  | { readonly ok: true }
+  | { readonly ok: false; readonly code: LocalLimitCode; readonly availableAt: number };
+
 const skippedLocalLimitAttempt = (
   entry: ChainEntry,
   code: LocalLimitCode,
@@ -157,13 +163,7 @@ export const runToolLoop = async (input: {
   readonly tools?: LoopTools | undefined;
   readonly limits?: Partial<LoopLimits> | undefined;
   readonly quotaLedger?: QuotaLedger | undefined;
-  readonly reserveCall?: (entry: ChainEntry) =>
-    | { readonly ok: true }
-    | {
-        readonly ok: false;
-        readonly code: 'local-rpm-limit' | 'local-rpd-limit';
-        readonly availableAt: number;
-      };
+  readonly reserveCall?: ReserveCall | undefined;
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -391,15 +391,7 @@ const runEntry = async (deps: {
   readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: () => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
-  readonly reserveCall?:
-    | ((entry: ChainEntry) =>
-        | { readonly ok: true }
-        | {
-            readonly ok: false;
-            readonly code: 'local-rpm-limit' | 'local-rpd-limit';
-            readonly availableAt: number;
-          })
-    | undefined;
+  readonly reserveCall?: ReserveCall | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
 }): Promise<EntrySuccess | undefined> => {
@@ -592,22 +584,7 @@ const runEntry = async (deps: {
     if (response === undefined) return undefined;
     const calls = response.toolCalls ?? [];
     if (calls.length === 0) {
-      return finishEntry({
-        entry,
-        provider,
-        response,
-        messages,
-        deps: {
-          protectedText: deps.protectedText,
-          systemInstruction: deps.systemInstruction,
-          limits: deps.limits,
-          modelIds: deps.modelIds,
-          attempts: deps.attempts,
-          entryMs: deps.entryMs,
-          recordUsage: deps.recordUsage,
-          reserveCall: deps.reserveCall,
-        },
-      });
+      return finishEntry({ entry, provider, response, messages, deps });
     }
     // The assistant turn stays in the transcript so the next round sees what
     // was called; provider-specific parts are echoed back only within this
@@ -626,22 +603,7 @@ const runEntry = async (deps: {
   const extra: GenerationMessage = { role: 'user', text: ANSWER_INSTRUCTION };
   const final = await callProvider(0, [extra], false);
   if (final === undefined) return undefined;
-  return finishEntry({
-    entry,
-    provider,
-    response: final,
-    messages: [...messages, extra],
-    deps: {
-      protectedText: deps.protectedText,
-      systemInstruction: deps.systemInstruction,
-      limits: deps.limits,
-      modelIds: deps.modelIds,
-      attempts: deps.attempts,
-      entryMs: deps.entryMs,
-      recordUsage: deps.recordUsage,
-      reserveCall: deps.reserveCall,
-    },
-  });
+  return finishEntry({ entry, provider, response: final, messages: [...messages, extra], deps });
 };
 
 const finishEntry = async (deps: {
@@ -657,15 +619,7 @@ const finishEntry = async (deps: {
     readonly attempts: Attempt[];
     readonly entryMs: () => number;
     readonly recordUsage: (usage: GenerateTextResponse['usage']) => void;
-    readonly reserveCall?:
-      | ((entry: ChainEntry) =>
-          | { readonly ok: true }
-          | {
-              readonly ok: false;
-              readonly code: 'local-rpm-limit' | 'local-rpd-limit';
-              readonly availableAt: number;
-            })
-      | undefined;
+    readonly reserveCall?: ReserveCall | undefined;
   };
 }): Promise<EntrySuccess | undefined> => {
   const outer = deps.deps;
