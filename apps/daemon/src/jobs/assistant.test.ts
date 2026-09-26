@@ -22,6 +22,7 @@ import type {
   AssistantInvocationResult,
 } from '../assistant/commands.js';
 import { assistantInvokeHandler } from './assistant.js';
+import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 
 const GUILD_ID = parseGuildId('111111111111111111');
 const USER_ID = '222222222222222222';
@@ -225,6 +226,44 @@ describe('assistantInvokeHandler (ADR 0077)', () => {
     const handler = assistantInvokeHandler(deps);
 
     await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+  });
+
+  it('answers a local limit at once with the free-up time and no retry', async () => {
+    const availableAt = NOW + 15 * 60_000;
+    const calls: AssistantInvocation[] = [];
+    const svc = service(async () => {
+      throw new LocalLimitError(availableAt, 'local-rpm-limit');
+    }, calls);
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler(deps);
+
+    await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+
+    expect(calls).toHaveLength(1);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.message.content).toBe(localLimitReply(availableAt, NOW, 'UTC'));
+    expect(sent[0]?.message.content).toBe(
+      'All AI models have reached the limits set for them. The next one frees up in about 15 minutes.',
+    );
+  });
+
+  it('does not throw RetryAfterError for a local limit, and logs the failure', async () => {
+    const availableAt = NOW + 5 * 3_600_000;
+    const svc = service(async () => {
+      throw new LocalLimitError(availableAt, 'local-rpd-limit');
+    });
+    const { deps, sent } = baseDeps(svc, pino({ level: 'silent' }));
+    const handler = assistantInvokeHandler({
+      ...deps,
+      logChannelId: () => '444444444444444444',
+      timeZone: () => 'America/Vancouver',
+    });
+
+    await expect(handler.run(payload, context({ attempts: 1 }))).resolves.toBeUndefined();
+
+    expect(sent).toHaveLength(2);
+    expect(sent[0]?.message.content).toBe(localLimitReply(availableAt, NOW, 'America/Vancouver'));
+    expect(sent[0]?.message.content).toContain('frees up at ');
   });
 
   it('still retries a transient 429 with the existing per-attempt delay', async () => {

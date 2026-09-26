@@ -25,7 +25,13 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { assistantRepo, computeDocId, guildRepo, resourceCacheRepo } from '@bananasaurs/storage';
+import {
+  assistantProvidersRepo,
+  assistantRepo,
+  computeDocId,
+  guildRepo,
+  resourceCacheRepo,
+} from '@bananasaurs/storage';
 import { createAssistantService } from './service.js';
 
 const guildA = '234567890123456789';
@@ -337,6 +343,16 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
   beforeEach(() => {
     t = openMigratedTestDatabase();
     guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    // ADR 0081: the service reserves every provider call in the ledger, whose
+    // `key_id` references a stored key — so the `key_a` fixture entry runs on
+    // a real stored key instead of a bare id.
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
   });
   afterEach(() => t.close());
 

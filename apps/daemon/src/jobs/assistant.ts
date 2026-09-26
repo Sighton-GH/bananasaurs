@@ -25,6 +25,7 @@ import type {
   InvocationTrace,
 } from '../assistant/commands.js';
 import { BUSY_REPLY, dailyQuotaReply } from '../assistant/fallback-replies.js';
+import { LocalLimitError, localLimitReply } from '../assistant/local-limit.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
@@ -291,6 +292,11 @@ export const assistantInvokeHandler = (deps: {
    * defaults; empty means the first retryable failure answers at once.
    */
   readonly retryDelaysMs?: (() => readonly number[]) | undefined;
+  /**
+   * ADR 0081: the member-facing clock zone for the local-limit free-up time.
+   * Absent means UTC.
+   */
+  readonly timeZone?: (() => string) | undefined;
 }): JobHandler<AssistantInvokePayload> => ({
   kind: JOB_KINDS.assistantInvoke,
   payload: assistantInvokePayload,
@@ -571,6 +577,23 @@ export const assistantInvokeHandler = (deps: {
           deps.logger.warn(
             safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
             'assistant invocation hit a daily free-model quota cap; answering at once',
+          );
+          await answerSingle(text);
+          await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
+          return;
+        }
+        // ADR 0081: every entry at its owner-set limit is answered at once
+        // with the free-up time — no job retry, no RetryAfterError.
+        if (err instanceof LocalLimitError) {
+          const text = localLimitReply(err.availableAt, deps.now(), deps.timeZone?.() ?? 'UTC');
+          deps.logger.warn(
+            safeLogFields({
+              component: 'assistant-job',
+              guildId: deps.guildId,
+              code: err.code,
+              availableAt: err.availableAt,
+            }),
+            'every assistant model is at its configured limit; answering at once',
           );
           await answerSingle(text);
           await logFailure(text, PROVIDER_FAILURE_LOG_REASON);

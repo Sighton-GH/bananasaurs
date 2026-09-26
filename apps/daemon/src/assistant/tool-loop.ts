@@ -60,8 +60,10 @@ export interface LoopResult {
    * earliest free-up time. The caller answers the local-limit reply at once
    * with no retry (ADR 0081).
    */
-  readonly localLimit?:
-    | { readonly availableAt: number; readonly code: 'local-rpm-limit' | 'local-rpd-limit' };
+  readonly localLimit?: {
+    readonly availableAt: number;
+    readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+  };
   /**
    * The last attempt's original provider error, when any entry failed with
    * one. The service re-throws it so a non-guard failure keeps its kind
@@ -137,7 +139,13 @@ export const runToolLoop = async (input: {
   readonly tools?: LoopTools | undefined;
   readonly limits?: Partial<LoopLimits> | undefined;
   readonly quotaLedger?: QuotaLedger | undefined;
-  readonly reserveCall?: (entry: ChainEntry) => { readonly ok: true } | { readonly ok: false; readonly code: 'local-rpm-limit' | 'local-rpd-limit'; readonly availableAt: number };
+  readonly reserveCall?: (entry: ChainEntry) =>
+    | { readonly ok: true }
+    | {
+        readonly ok: false;
+        readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+        readonly availableAt: number;
+      };
   readonly now: () => number;
 }): Promise<LoopResult> => {
   const limits: LoopLimits = { ...DEFAULT_LIMITS, ...input.limits };
@@ -192,13 +200,16 @@ export const runToolLoop = async (input: {
    * the earliest free-up time and its code — so the caller answers at once
    * instead of retrying.
    */
-  const localLimitOf = (
-    list: readonly Attempt[],
-  ): LoopResult['localLimit'] => {
+  const localLimitOf = (list: readonly Attempt[]): LoopResult['localLimit'] => {
     if (list.length === 0) return undefined;
     if (!list.every((attempt) => attempt.outcome === 'skipped')) return undefined;
     const limited = list.filter(
-      (attempt): attempt is Attempt & { code: 'local-rpm-limit' | 'local-rpd-limit'; availableAt: number } =>
+      (
+        attempt,
+      ): attempt is Attempt & {
+        code: 'local-rpm-limit' | 'local-rpd-limit';
+        availableAt: number;
+      } =>
         (attempt.code === 'local-rpm-limit' || attempt.code === 'local-rpd-limit') &&
         typeof attempt.availableAt === 'number',
     );
@@ -362,7 +373,15 @@ const runEntry = async (deps: {
   readonly noteError: (err: ProviderError) => void;
   readonly recordWeb: () => void;
   readonly onDailyCap: (resetAt: number | undefined) => void;
-  readonly reserveCall?: ((entry: ChainEntry) => { readonly ok: true } | { readonly ok: false; readonly code: 'local-rpm-limit' | 'local-rpd-limit'; readonly availableAt: number }) | undefined;
+  readonly reserveCall?:
+    | ((entry: ChainEntry) =>
+        | { readonly ok: true }
+        | {
+            readonly ok: false;
+            readonly code: 'local-rpm-limit' | 'local-rpd-limit';
+            readonly availableAt: number;
+          })
+    | undefined;
   readonly now: () => number;
   readonly entryMs: () => number;
 }): Promise<EntrySuccess | undefined> => {

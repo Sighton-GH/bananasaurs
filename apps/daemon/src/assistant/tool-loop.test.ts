@@ -705,9 +705,7 @@ describe('runToolLoop local per-entry limits (ADR 0081)', () => {
     expect(result.text).toBe('Fresh answer.');
     expect(first.calls).toHaveLength(1);
     expect(second.calls).toHaveLength(1);
-    expect(second.calls[0]?.messages).toEqual([
-      { role: 'user', text: 'When is the meeting?' },
-    ]);
+    expect(second.calls[0]?.messages).toEqual([{ role: 'user', text: 'When is the meeting?' }]);
   });
 
   it('reserveCall runs once per provider call, including tool rounds', async () => {
