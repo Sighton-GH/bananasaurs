@@ -109,7 +109,7 @@ beforeEach(async () => {
     readonly: false,
     portsFor: (scope) => testPortsFor(scope, () => clock),
     instance: testInstanceFor(t.scopes.instance(), () => clock),
-    instanceSettings: fakePort() as unknown as HttpDeps['instanceSettings'],
+    instanceSettings: fakePort(),
   };
   guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'guild', now: clock });
   accountRepo.createAccount(t.scopes.instance(), {
@@ -218,7 +218,9 @@ describe('PUT /api/assistant/tuning/:key', () => {
       payload: { value: 6 },
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toMatchObject({ setting: { key: 'assistant.maxToolRounds', value: 6 } });
+    expect(response.json()).toMatchObject({
+      setting: { key: 'assistant.maxToolRounds', value: 6 },
+    });
     const rows = auditRows();
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -253,6 +255,21 @@ describe('PUT /api/assistant/tuning/:key', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.stringify(response.json())).not.toContain(SECRET);
     expect(JSON.stringify(auditRows())).not.toContain(SECRET);
+  });
+
+  it('answers 503 when the secret store cannot seal', async () => {
+    await app.close();
+    rebuild(fakePort({ sealedSecrets: false }));
+    app = createServer({ deps, registerRoutes: registerAssistantTuningRoutes });
+    const owner = await signInAs('owner');
+    const response = await app.inject({
+      method: 'PUT',
+      url: '/api/assistant/tuning/resources.fetchHeaderValue',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { value: SECRET },
+    });
+    expect(response.statusCode).toBe(503);
+    expect(response.json()).toMatchObject({ error: 'provider-secret-store-not-configured' });
   });
 
   it('answers 404 for an unknown key', async () => {

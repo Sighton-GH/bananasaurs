@@ -59,7 +59,6 @@ describe('instance settings store', () => {
   });
 
   it('falls back to the default on an invalid stored row and warns once', () => {
-    const store = createInstanceSettingsStore({ instance: t.scopes.instance(), logger });
     instanceSettingsRepo.upsertSetting(t.scopes.instance(), {
       key: 'assistant.maxToolRounds',
       valueJson: '"oops"',
@@ -95,9 +94,9 @@ describe('instance settings store', () => {
       'plain-SECRET-1',
     );
     expect(store.get('resources.fetchHeaderValue')).toBe('plain-SECRET-1');
-    expect(
-      store.list().find((s) => s.key === 'resources.fetchHeaderValue')?.value,
-    ).toEqual({ configured: true });
+    expect(store.list().find((s) => s.key === 'resources.fetchHeaderValue')?.value).toEqual({
+      configured: true,
+    });
     expect(JSON.stringify(store.list())).not.toContain('plain-SECRET-1');
   });
 

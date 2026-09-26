@@ -1,9 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import {
-  INSTANCE_SETTINGS,
-  isInstanceSettingKey,
-  settingDefinition,
-} from './instance-settings.js';
+import { INSTANCE_SETTINGS, isInstanceSettingKey, settingDefinition } from './instance-settings.js';
 
 describe('instance settings registry', () => {
   it('has 11 definitions and every default parses under its own schema', () => {
@@ -21,9 +17,7 @@ describe('instance settings registry', () => {
     const over = def?.schema.safeParse([60_000, 60_000, 60_001]);
     expect(over?.success).toBe(false);
     if (over !== undefined && !over.success) {
-      expect(over.error.issues[0]?.message).toBe(
-        'Retry delays must add up to 3 minutes or less.',
-      );
+      expect(over.error.issues[0]?.message).toBe('Retry delays must add up to 3 minutes or less.');
     }
     expect(def?.schema.safeParse([10_000, 10_000, 10_000, 10_000, 10_000]).success).toBe(false);
     expect(def?.schema.safeParse([500]).success).toBe(false);

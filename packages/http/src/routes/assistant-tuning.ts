@@ -1,5 +1,6 @@
 import type { FastifyInstance, FastifyReply } from 'fastify';
-import { z } from 'zod';
+import { z, type ZodError } from 'zod';
+import type { JsonValue } from '@bananasaurs/core';
 import type { HttpDeps, RouteGuard } from '../server.js';
 import { badRequest, fieldsOf } from '../errors/reply.js';
 import type { SessionContext } from '../auth.js';
@@ -22,7 +23,7 @@ export type TuningSetResult =
   | {
       readonly ok: false;
       readonly code: 'unknown-setting' | 'invalid-setting' | 'provider-secret-store-not-configured';
-      readonly error?: import('zod').ZodError;
+      readonly error?: ZodError;
     };
 
 const tuningBody = z.object({ value: z.unknown() }).strict();
@@ -84,8 +85,11 @@ export const registerAssistantTuningRoutes = (
       action: 'instance_setting.changed',
       subjectType: 'instance_setting',
       subjectId: key,
-      before: result.before,
-      after: result.after,
+      // View values by construction: parsed JSON, a registry default, or
+      // `{ configured }` — always JSON-shaped, hence the cast, never a cast
+      // that could carry a secret (views never hold one).
+      before: result.before as JsonValue | undefined,
+      after: result.after as JsonValue | undefined,
     });
     return reply.status(200).send({ setting: result.view });
   });
@@ -104,8 +108,8 @@ export const registerAssistantTuningRoutes = (
       action: 'instance_setting.changed',
       subjectType: 'instance_setting',
       subjectId: key,
-      before: result.before,
-      after: result.after,
+      before: result.before as JsonValue | undefined,
+      after: result.after as JsonValue | undefined,
     });
     return reply.status(200).send({ setting: result.view });
   });

@@ -9,11 +9,7 @@ export type SettingDisplay =
   | 'secret'
   | 'seconds-list'
   | 'host-list';
-export type SettingGroup =
-  | 'Assistant retries'
-  | 'Assistant tool loop'
-  | 'Network'
-  | 'Resources';
+export type SettingGroup = 'Assistant retries' | 'Assistant tool loop' | 'Network' | 'Resources';
 
 export interface SettingDefinition<T> {
   readonly key: string;
@@ -169,11 +165,7 @@ const fetchHeaderHosts: SettingDefinition<string[]> = {
   help: 'The header is sent only to these hosts, and never anywhere else.',
   display: 'host-list',
   schema: z
-    .array(
-      z
-        .string()
-        .regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/),
-    )
+    .array(z.string().regex(/^(?=.{1,253}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/))
     .max(10),
   defaultValue: [],
   bounds: { maxItems: 10 },
@@ -216,5 +208,4 @@ const BY_KEY = new Map<string, SettingDefinition<unknown>>(
 export const settingDefinition = (key: string): SettingDefinition<unknown> | undefined =>
   BY_KEY.get(key);
 
-export const isInstanceSettingKey = (key: string): key is InstanceSettingKey =>
-  BY_KEY.has(key);
+export const isInstanceSettingKey = (key: string): key is InstanceSettingKey => BY_KEY.has(key);

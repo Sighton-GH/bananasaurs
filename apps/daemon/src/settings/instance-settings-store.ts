@@ -27,7 +27,12 @@ export interface InstanceSettingView {
 }
 
 export type SetResult =
-  | { readonly ok: true; readonly before: unknown; readonly after: unknown; readonly view: InstanceSettingView }
+  | {
+      readonly ok: true;
+      readonly before: unknown;
+      readonly after: unknown;
+      readonly view: InstanceSettingView;
+    }
   | {
       readonly ok: false;
       readonly code: 'unknown-setting' | 'invalid-setting' | 'provider-secret-store-not-configured';
@@ -156,8 +161,7 @@ export const createInstanceSettingsStore = (deps: {
     },
     reset(key, _by, _now) {
       if (!isInstanceSettingKey(key)) return { ok: false, code: 'unknown-setting' };
-      if (settingDefinition(key) === undefined)
-        return { ok: false, code: 'unknown-setting' };
+      if (settingDefinition(key) === undefined) return { ok: false, code: 'unknown-setting' };
       const before = viewOf(key).value;
       instanceSettingsRepo.deleteSetting(instance, key);
       cache.delete(key);
