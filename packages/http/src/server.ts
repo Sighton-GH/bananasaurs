@@ -24,6 +24,7 @@ import {
 } from './policy.js';
 import { dashboardAuditBase } from './routes/audit-base.js';
 import { explainError } from './errors/catalog.js';
+import { badRequest } from './errors/reply.js';
 import { isInstanceOwner } from './owner.js';
 import { secretsMatch } from './secrets.js';
 import type { GithubRouteClient } from './routes/assistant-github.js';
@@ -587,7 +588,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (deps.readonly) return reply.status(READONLY_STATUS).send(READONLY_BODY);
 
     const parsed = loginBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const result = await login(deps, { ...parsed.data, ip: ipOf(request) });
     if (!result.ok) {
@@ -640,7 +641,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (session === undefined) return reply;
 
     const parsed = sessionGuildBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     // The target scope is built from the request body but trusted only after
     // `hasGuildAccess` confirms the account reaches it — this route is the one
@@ -699,7 +700,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
     if (session === undefined) return reply;
 
     const parsed = reauthBodySchema.safeParse(request.body);
-    if (!parsed.success) return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
 
     const ok = await reauthenticate(deps, session, parsed.data.password);
     if (!ok) return reply.status(401).send({ error: 'invalid-credentials' });
@@ -724,11 +725,7 @@ export function createServer(options: CreateServerOptions): FastifyInstance {
   if (bootstrapIsArmed(deps)) {
     app.post('/api/bootstrap', async (request, reply) => {
       const parsed = bootstrapBodySchema.safeParse(request.body);
-      if (!parsed.success) {
-        return reply
-          .status(400)
-          .send({ error: 'bad-request', issues: parsed.error.issues.map((i) => i.message) });
-      }
+      if (!parsed.success) return badRequest(reply, parsed.error);
 
       const result = await bootstrap(deps, { ...parsed.data, ip: ipOf(request) });
       if (!result.ok) return reply.status(400).send({ error: result.reason });

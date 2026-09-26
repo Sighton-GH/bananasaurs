@@ -172,6 +172,22 @@ describe('enriched error bodies', () => {
     expect(JSON.stringify(body)).not.toContain('sk-SECRET-VALUE-123');
   });
 
+  it('(c2) a malformed login 400 carries field paths only, never the password', async () => {
+    const response = await app.inject({
+      method: 'POST',
+      url: '/api/login',
+      payload: { username: 1, password: 'pw-SECRET-777' },
+    });
+    expect(response.statusCode).toBe(400);
+    const body = response.json<{
+      error?: string;
+      fields?: readonly { path: string; problem: string }[];
+    }>();
+    expect(body.error).toBe('bad-request');
+    expect(body.fields?.some((field) => field.path === 'username')).toBe(true);
+    expect(JSON.stringify(body)).not.toContain('pw-SECRET-777');
+  });
+
   it('(d) ties the 500 body to the request failed log line by requestId', async () => {
     const response = await app.inject({ method: 'GET', url: '/api/test/boom' });
     expect(response.statusCode).toBe(500);
