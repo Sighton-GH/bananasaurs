@@ -579,10 +579,7 @@ function ResourcesCard({
                       <p className="text-ink-muted">{row.errorExplain.explanation}</p>
                       <p className="text-ink-muted">What to do: {row.errorExplain.hint}</p>
                       {row.errorCode !== undefined && (
-                        <p className="text-ink-muted">
-                          {row.errorCode}
-                          {row.httpStatus !== undefined ? ` · HTTP ${String(row.httpStatus)}` : ''}
-                        </p>
+                        <p className="text-ink-muted">{row.errorCode}</p>
                       )}
                     </div>
                   ))}

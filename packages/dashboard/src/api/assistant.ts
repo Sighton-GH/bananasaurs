@@ -321,7 +321,6 @@ export interface ResourceFreshnessRow {
   readonly lastError?: string;
   readonly errorCode?: string;
   readonly errorExplain?: ResourceErrorExplain;
-  readonly httpStatus?: number;
 }
 export const RESOURCE_FRESHNESS_URL = '/api/assistant/resources/freshness';
 export const resourceRefreshUrl = (id: string) =>
