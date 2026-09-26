@@ -208,6 +208,7 @@ describe('POST /api/assistant/github/preview', () => {
     expect(response.json()).toEqual({
       target: { kind: 'repo', owner: 'acme', repo: 'widget', branch: 'main' },
       authenticated: true,
+      private: false,
       files: ['README.md', 'docs/guide.md'],
     });
     expect(client.calls.listTree).toBe(1);
@@ -229,7 +230,26 @@ describe('POST /api/assistant/github/preview', () => {
     expect(client.calls.listTree).toBe(0);
   });
 
-  it('previews an org: public repos with flags, private ones excluded', async () => {
+  it('previews a private repo with private: true', async () => {
+    const { cookie, csrf } = await signIn();
+    client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    client.tree = {
+      entries: [{ path: 'README.md', type: 'blob', size: 120 }],
+      truncated: false,
+    };
+    const response = await post(cookie, csrf, '/api/assistant/github/preview', {
+      url: 'https://github.com/acme/secret',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      target: { kind: 'repo', owner: 'acme', repo: 'secret', branch: 'main' },
+      authenticated: true,
+      private: true,
+      files: ['README.md'],
+    });
+  });
+
+  it('previews an org: every repo listed with its private flag', async () => {
     const { cookie, csrf } = await signIn();
     client.orgRepos = [
       summary('widget', { description: 'Does things' }),
@@ -244,8 +264,21 @@ describe('POST /api/assistant/github/preview', () => {
       target: { kind: 'org', owner: 'acme' },
       authenticated: true,
       repos: [
-        { name: 'widget', description: 'Does things', fork: false, archived: false },
-        { name: 'forked', description: 'forked description', fork: true, archived: false },
+        { name: 'widget', description: 'Does things', fork: false, archived: false, private: false },
+        {
+          name: 'forked',
+          description: 'forked description',
+          fork: true,
+          archived: false,
+          private: false,
+        },
+        {
+          name: 'secret',
+          description: 'secret description',
+          fork: false,
+          archived: false,
+          private: true,
+        },
       ],
       truncated: false,
     });
@@ -401,6 +434,46 @@ describe('POST /api/assistant/github/import', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ action: 'assistant_resource.github_imported' });
     expect(JSON.parse(rows[0]?.after as string)).toEqual({ kind: 'repo', created: 1 });
+  });
+
+  it('imports an org with a private repo, marking only the private child', async () => {
+    const { cookie, csrf } = await signIn();
+    client.orgRepos = [summary('widget'), summary('secret', { private: true })];
+    const response = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ created: 3 });
+    const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
+    const secret = resources.find((r) => r.id === 'gh-acme-secret');
+    expect(secret?.meta).toMatchObject({ owner: 'acme', repo: 'secret', private: true });
+    expect(resources.find((r) => r.id === 'gh-acme-widget')?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'main',
+    });
+  });
+
+  it('imports a private repo with meta.private: true, and omits the key for public repos', async () => {
+    const { cookie, csrf } = await signIn();
+    client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    const response = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme/secret',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ created: 1 });
+    const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
+    expect(resources).toHaveLength(1);
+    expect(resources[0]?.meta).toMatchObject({ owner: 'acme', repo: 'secret', private: true });
+
+    client.repoDetail = { defaultBranch: 'main', description: null, private: false };
+    const pub = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme/widget',
+    });
+    expect(pub.statusCode).toBe(200);
+    expect(assistantRepo.listResources(t.scopes.forGuild(GUILD)).find(
+      (r) => r.id === 'gh-acme-widget',
+    )?.meta).toEqual({ owner: 'acme', repo: 'widget', branch: 'main' });
   });
 
   it('answers 400 not-github and creates nothing', async () => {
