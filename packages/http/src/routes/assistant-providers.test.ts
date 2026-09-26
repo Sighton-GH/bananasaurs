@@ -775,16 +775,16 @@ describe('chain-test provider failures are fixed sentences', () => {
     expect(response.statusCode).toBe(200);
     const text = JSON.stringify(response.json());
     expect(text).not.toContain(SECRET);
-    expect(response.json()).toMatchObject({ ok: false, error: 'The test request failed.' });
+    expect(response.json()).toMatchObject({ ok: false, error: 'The provider request failed' });
   });
 
   it.each([
-    ['authentication', `HTTP 401 for key ${SECRET}`, 'The provider refused the key.'],
-    ['timeout', 'timed out after 30s', 'The provider did not answer in time.'],
-    ['invalid-request', 'no such model', 'The model is not available on this key.'],
-    ['capability-mismatch', 'no text support', 'The model is not available on this key.'],
-    ['outage', 'HTTP 503', 'The test request failed.'],
-  ])('maps %s to its fixed sentence', async (kind, message, sentence) => {
+    ['authentication', `HTTP 401 for key ${SECRET}`, 'The provider rejected the API key'],
+    ['timeout', 'timed out after 30s', 'The provider did not answer in time'],
+    ['invalid-request', 'no such model', 'This model is not available on this key'],
+    ['capability-mismatch', 'no text support', 'This model is not available on this key'],
+    ['outage', 'HTTP 503', 'The request to the provider failed'],
+  ])('maps %s to its classified title', async (kind, message, sentence) => {
     await rebuildWithThrower(
       new ProviderError(kind as 'authentication', `${message} ${SECRET}`, false),
     );
