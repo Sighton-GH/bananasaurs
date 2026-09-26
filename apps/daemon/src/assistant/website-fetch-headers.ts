@@ -8,7 +8,8 @@ import type { InstanceSettingsStore } from '../settings/instance-settings-store.
  * stored). The value travels only into the website fetcher's request headers:
  * never into logs, responses or stored rows.
  */
-export const websiteFetchHeaders = (settings: Pick<InstanceSettingsStore, 'get'>) =>
+export const websiteFetchHeaders =
+  (settings: Pick<InstanceSettingsStore, 'get'>) =>
   (host: string): Readonly<Record<string, string>> | undefined => {
     const name = settings.get('resources.fetchHeaderName');
     const value = settings.get('resources.fetchHeaderValue');

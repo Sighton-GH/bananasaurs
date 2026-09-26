@@ -246,8 +246,7 @@ export class ReviewedResourceFetcher {
   readonly #now: () => number;
   readonly #allowedHosts: readonly string[] | undefined;
   readonly #headersFor:
-    | ((host: string) => Readonly<Record<string, string>> | undefined)
-    | undefined;
+    ((host: string) => Readonly<Record<string, string>> | undefined) | undefined;
 
   constructor(
     options: {
@@ -274,8 +273,7 @@ export class ReviewedResourceFetcher {
        * for every redirect hop's hostname.
        */
       readonly headersFor?:
-        | ((host: string) => Readonly<Record<string, string>> | undefined)
-        | undefined;
+        ((host: string) => Readonly<Record<string, string>> | undefined) | undefined;
     } = {},
   ) {
     this.#resolve = options.resolve ?? resolvePublicAddress;

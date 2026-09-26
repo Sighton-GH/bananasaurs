@@ -124,7 +124,14 @@ describe('resourceRefreshHandler', () => {
 
   it('the single-resource log carries code and httpStatus for a failed fetch', async () => {
     const info = vi.fn();
-    const capturing = { info, warn() {}, error() {}, debug() {}, fatal() {}, trace() {} } as unknown as Logger;
+    const capturing = {
+      info,
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
     const fetch = vi.fn().mockResolvedValue({
       ok: false,
       code: 'challenge',

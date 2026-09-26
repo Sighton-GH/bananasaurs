@@ -119,9 +119,7 @@ describe('AssistantResourcesPage', () => {
     ]);
     expect(await screen.findByText('Needs attention')).toBeTruthy();
     expect(screen.getByText("The site's bot protection blocked Bananasaurs")).toBeTruthy();
-    expect(
-      screen.getByText(/The site answered with a Cloudflare challenge page/),
-    ).toBeTruthy();
+    expect(screen.getByText(/The site answered with a Cloudflare challenge page/)).toBeTruthy();
     expect(screen.getByText(/What to do:/)).toBeTruthy();
     expect(screen.getByText('challenge')).toBeTruthy();
   });

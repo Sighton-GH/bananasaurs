@@ -39,8 +39,7 @@ export const RESOURCE_FAILURE_TEXT: Readonly<
   },
   'private-address': {
     title: 'That address is not allowed',
-    explanation:
-      'The host resolves to a private network address, which Bananasaurs never fetches.',
+    explanation: 'The host resolves to a private network address, which Bananasaurs never fetches.',
     hint: "Use the site's public address.",
   },
   redirect: {
