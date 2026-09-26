@@ -228,6 +228,8 @@ export const createAssistantService = (
         provider: wrapped,
         skip: undefined,
         mayTrain: false,
+        rpmLimit: null,
+        rpdLimit: null,
       },
     ];
   };

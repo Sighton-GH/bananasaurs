@@ -427,6 +427,8 @@ describe('Task 16 golden: cached injection cannot steer a round-2 web_search', (
           provider: fake,
           skip: undefined,
           mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
         },
       ],
     );

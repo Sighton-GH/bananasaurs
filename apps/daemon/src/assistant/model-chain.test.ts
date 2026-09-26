@@ -328,6 +328,8 @@ describe('resolveModelChain', () => {
           provider: undefined,
           skip: 'key-unreadable',
           mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
         },
       ]);
     });

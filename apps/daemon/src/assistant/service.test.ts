@@ -294,6 +294,8 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
     ...over,
   });
 
@@ -305,6 +307,8 @@ describe('Task 12: service maps a failed tool loop to today\u2019s texts', () =>
     provider: undefined,
     skip,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   let t: MigratedTestDatabase;
@@ -552,6 +556,8 @@ describe('Task 16: cache catalogue, pre-retrieved evidence, no live fetch', () =
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   let t: MigratedTestDatabase;
@@ -852,6 +858,8 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   let t: MigratedTestDatabase;
@@ -1009,6 +1017,8 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     provider,
     skip: undefined,
     mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
   });
 
   const answering = (text: string): TextProvider => ({
@@ -1504,6 +1514,8 @@ describe('Task 7: loop limits from the AI tuning settings', () => {
           provider,
           skip: undefined,
           mayTrain: false,
+          rpmLimit: null,
+          rpdLimit: null,
         },
       ],
       undefined,
