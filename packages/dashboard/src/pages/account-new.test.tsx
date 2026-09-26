@@ -173,7 +173,17 @@ describe('AccountNewPage', () => {
   it('maps username-taken to a plain sentence and never offers guild-access opt-out', async () => {
     stubFetch([
       { url: '/api/accounts', body: NO_ACCOUNTS },
-      { method: 'POST', url: '/api/accounts', status: 409, body: { error: 'username-taken' } },
+      {
+        method: 'POST',
+        url: '/api/accounts',
+        status: 409,
+        body: {
+          error: 'username-taken',
+          title: 'That username is taken',
+          message: 'That username is already in use.',
+          hint: 'Choose another.',
+        },
+      },
     ]);
     renderNew();
     fireEvent.change(await screen.findByLabelText('Username'), { target: { value: 'sam' } });

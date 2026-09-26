@@ -274,7 +274,11 @@ describe('AccountEditPage', () => {
         method: 'POST',
         url: '/api/accounts/sam/reveal-password',
         status: 409,
-        body: { error: 'not-revealable' },
+        body: {
+          error: 'not-revealable',
+          title: "That password can't be shown",
+          message: "This password can't be shown. Set a new one instead.",
+        },
       },
     ]);
     await screen.findByText('sam');
