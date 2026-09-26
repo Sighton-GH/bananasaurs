@@ -107,21 +107,32 @@ export const rawGitHubUrl = (owner: string, repo: string, ref: string, path: str
   return `https://raw.githubusercontent.com/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/${encodeURIComponent(ref)}/${encodedPath}`;
 };
 
-const DEFAULT_EXCLUDE_PREFIXES = ['node_modules/', '.github/', 'vendor/'];
+const isExcluded = (path: string): boolean =>
+  path.split('/').some((segment) => {
+    if (segment.startsWith('.')) return true;
+    const lower = segment.toLowerCase();
+    return lower === 'node_modules' || lower === 'vendor';
+  });
 
 const isRootReadme = (path: string): boolean => /^README(\..+)?$/iu.test(path);
-const isRootContributing = (path: string): boolean => /^CONTRIBUTING(\..+)?$/iu.test(path);
 const isRootChangelog = (path: string): boolean => /^CHANGELOG(\..+)?$/iu.test(path);
-const isRootMarkdown = (path: string): boolean => !path.includes('/') && /\.md$/iu.test(path);
-const isDocsMarkdown = (path: string): boolean => /^docs\/.+\.md$/iu.test(path);
+const isDocsPath = (path: string): boolean => path.toLowerCase().startsWith('docs/');
+const isReadmeBasename = (path: string): boolean => {
+  const basename = path.split('/').pop() ?? path;
+  return /^README(\..+)?$/iu.test(basename);
+};
+const isDefaultCandidate = (path: string): boolean =>
+  isRootReadme(path) || /\.(md|markdown)$/iu.test(path);
 
-const DEFAULT_MATCHERS: readonly ((path: string) => boolean)[] = [
-  isRootReadme,
-  isDocsMarkdown,
-  isRootContributing,
-  isRootChangelog,
-  isRootMarkdown,
-];
+const rankOf = (path: string): number => {
+  if (isRootReadme(path)) return 0;
+  if (isDocsPath(path)) return 1;
+  if (isReadmeBasename(path)) return 2;
+  if (isRootChangelog(path)) return 4;
+  return 3;
+};
+
+const depthOf = (path: string): number => path.split('/').length - 1;
 
 const GLOB_ESCAPE_RE = /[.+^${}()|[\]\\]/gu;
 // A lone '*' becomes a within-segment wildcard; a '*' that is part of the
@@ -136,11 +147,14 @@ const globToRegExp = (glob: string): RegExp => {
 };
 
 /**
- * Picks which files of a repo tree to fetch: README, `docs/**\/*.md`,
- * CONTRIBUTING, CHANGELOG and root-level markdown by default (or a
- * caller-supplied set of glob `include` patterns), always excluding
- * `node_modules/`, `.github/` and `vendor/`, capped at 40 files, 200 KB per
- * file and 2 MB total, README first.
+ * Picks which files of a repo tree to fetch: the root README plus every
+ * `.md`/`.markdown` file by default (ADR 0082 decision 4), or a
+ * caller-supplied set of glob `include` patterns. Any path with a
+ * dot-segment (`.github/`, `.claude/`, …) or a `node_modules`/`vendor`
+ * segment is excluded from both selections. Candidates are ordered by rank
+ * (root README, then `docs/`, then other READMEs, then other files, with
+ * root CHANGELOG last), then by depth, then by path. Capped at 100 files,
+ * 200 KB per file and 2 MB total; oversize files are skipped, not fatal.
  */
 export const selectRepoFiles = (
   entries: readonly {
@@ -155,28 +169,27 @@ export const selectRepoFiles = (
     readonly maxTotalBytes?: number;
   },
 ): readonly string[] => {
-  const maxFiles = options?.maxFiles ?? 40;
+  const maxFiles = options?.maxFiles ?? 100;
   const maxFileBytes = options?.maxFileBytes ?? 200_000;
   const maxTotalBytes = options?.maxTotalBytes ?? 2_000_000;
   const includeMatchers = options?.include?.map(globToRegExp);
 
-  const isExcluded = (path: string): boolean =>
-    DEFAULT_EXCLUDE_PREFIXES.some((prefix) => path.toLowerCase().startsWith(prefix.toLowerCase()));
-
   const matchesSelection = (path: string): boolean =>
     includeMatchers !== undefined
       ? includeMatchers.some((re) => re.test(path))
-      : DEFAULT_MATCHERS.some((matcher) => matcher(path));
+      : isDefaultCandidate(path);
 
   const candidates = entries.filter(
     (entry) => entry.type === 'blob' && !isExcluded(entry.path) && matchesSelection(entry.path),
   );
 
-  const readmes = candidates
-    .filter((entry) => isRootReadme(entry.path))
-    .sort((a, b) => a.path.localeCompare(b.path));
-  const rest = candidates.filter((entry) => !isRootReadme(entry.path));
-  const ordered = [...readmes, ...rest];
+  const ordered = [...candidates].sort((a, b) => {
+    const rank = rankOf(a.path) - rankOf(b.path);
+    if (rank !== 0) return rank;
+    const depth = depthOf(a.path) - depthOf(b.path);
+    if (depth !== 0) return depth;
+    return a.path.localeCompare(b.path);
+  });
 
   const selected: string[] = [];
   let total = 0;
