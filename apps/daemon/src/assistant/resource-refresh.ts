@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { chunkDocument, type Chunk, type ClubResource } from '@bananasaurs/core';
+import { chunkDocument, isGithubWebHost, type Chunk, type ClubResource } from '@bananasaurs/core';
 import { computeDocId, type GuildScope } from '@bananasaurs/storage';
 import type { ConditionalResourceFetchResult, ResourceConditional } from './resource-fetcher.js';
 
@@ -155,6 +155,46 @@ export async function refreshResource(
   }
 
   // website / document / repository: a conditional fetch against the cache.
+  // A github.com page is GitHub's UI, not the repository's files (ADR 0082
+  // decision 5) — fail the refresh with no network call and drop the cached
+  // page-chrome chunks so they stop being searchable.
+  if (
+    resource.kind === 'website' ||
+    resource.kind === 'document' ||
+    resource.kind === 'repository'
+  ) {
+    let isGithubPage = false;
+    try {
+      isGithubPage = isGithubWebHost(new URL(resource.url).hostname);
+    } catch {
+      isGithubPage = false;
+    }
+    if (isGithubPage) {
+      const githubDocId = computeDocId(resource.url);
+      const githubExisting = deps.repo.getDocumentByUrl(scope, resource.url);
+      deps.repo.upsertDocument(scope, {
+        resourceId: resource.id,
+        docId: githubDocId,
+        url: resource.url,
+        path: githubExisting?.path ?? pathOfUrl(resource.url),
+        title: resource.title,
+        ...(githubExisting?.etag !== undefined ? { etag: githubExisting.etag } : {}),
+        ...(githubExisting?.lastModified !== undefined
+          ? { lastModified: githubExisting.lastModified }
+          : {}),
+        contentHash: '',
+        fetchedAt,
+        bytes: 0,
+        status: 'error',
+        error:
+          "A github.com page is GitHub's own website. Saved as a website, Bananasaurs would read GitHub's menus instead of your files.",
+        errorCode: 'github-url-needs-import',
+      });
+      deps.repo.replaceChunks(scope, githubDocId, resource.id, []);
+      deps.repo.deleteStaleDocuments(scope, resource.id, githubDocId);
+      return { outcome: 'error', code: 'github-url-needs-import' };
+    }
+  }
   const docId = computeDocId(resource.url);
   const existing = deps.repo.getDocumentByUrl(scope, resource.url);
   const conditional: ResourceConditional = {

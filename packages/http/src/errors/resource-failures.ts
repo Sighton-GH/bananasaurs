@@ -17,6 +17,12 @@ export const RESOURCE_FAILURE_TEXT: Readonly<
       'The site answered with a Cloudflare challenge page ("Just a moment…"), which only a browser can pass.',
     hint: "Ask the site's owner to add a Cloudflare WAF Skip rule for the header set in AI tuning → Resources, or import the content from GitHub instead.",
   },
+  'github-url-needs-import': {
+    title: 'Use "Add from GitHub" for GitHub links',
+    explanation:
+      "A github.com page is GitHub's own website. Saved as a website, Bananasaurs would read GitHub's menus instead of your files.",
+    hint: 'Add it with "Add from GitHub" on this page. For a single file, use its raw.githubusercontent.com link.',
+  },
   'http-status': {
     title: 'The site answered with an error',
     explanation: 'The site returned an HTTP error instead of the page.',
