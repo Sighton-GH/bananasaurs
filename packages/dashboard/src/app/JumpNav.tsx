@@ -1,7 +1,7 @@
 import * as Dialog from '@radix-ui/react-dialog';
 import { useCallback, useState, type ReactElement } from 'react';
 import { Link, useLocation } from 'wouter';
-import { GROUPS, NAV, type NavEntry } from './routes.js';
+import { GROUPS, NAV, visibleNav, type NavEntry } from './routes.js';
 import { useSession } from './session.js';
 import { GuildIdentity, ShellFooter } from './shell-chrome.js';
 
@@ -62,6 +62,7 @@ export function JumpNav(): ReactElement {
   const [open, setOpen] = useState(false);
   const current = currentNavEntry(location);
   const label = current?.label ?? 'Jump to';
+  const entries = visibleNav(session.info.instanceOwner === true);
 
   // Opening orients to the current area: when it sits below the fold, the
   // sheet scrolls just enough to show its "Current" badge. `nearest` leaves
@@ -105,8 +106,8 @@ export function JumpNav(): ReactElement {
           <div ref={scrollToCurrent} className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
             <nav aria-label="Areas" className="px-3 py-3">
               {GROUPS.map((group) => {
-                const entries = NAV.filter((entry) => entry.group === group);
-                if (entries.length === 0) return null;
+                const groupEntries = entries.filter((entry) => entry.group === group);
+                if (groupEntries.length === 0) return null;
                 return (
                   <section
                     key={group}
@@ -120,7 +121,7 @@ export function JumpNav(): ReactElement {
                       {group}
                     </h2>
                     <ul className="grid gap-0.5">
-                      {entries.map((entry) => {
+                      {groupEntries.map((entry) => {
                         const active = location === entry.path;
                         return (
                           <li key={entry.path}>
