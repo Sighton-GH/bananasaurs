@@ -16,7 +16,8 @@ import { ConfirmDialog } from '../ui/ConfirmDialog.js';
 import { DataState } from '../ui/DataState.js';
 import { DataTable } from '../ui/DataTable.js';
 import { EmptyState } from '../ui/EmptyState.js';
-import { ErrorNotice } from '../ui/ErrorNotice.js';import { PageHeader } from '../ui/PageHeader.js';
+import { ErrorNotice } from '../ui/ErrorNotice.js';
+import { PageHeader } from '../ui/PageHeader.js';
 import { useToast } from '../ui/Toast.js';
 import { PanelBuilder } from './panel-builder.js';
 

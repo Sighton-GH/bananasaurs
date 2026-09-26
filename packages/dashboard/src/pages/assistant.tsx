@@ -1,7 +1,8 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Link } from 'wouter';
 import { ApiError } from '../api.js';
-import { ASSISTANT_URL,
+import {
+  ASSISTANT_URL,
   BOT_TAG_URL,
   LOG_CHANNEL_URL,
   behaviourPreviewUrl,

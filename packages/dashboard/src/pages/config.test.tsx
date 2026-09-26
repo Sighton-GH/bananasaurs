@@ -144,9 +144,9 @@ describe('ConfigPage', () => {
       fireEvent.click(screen.getByRole('button', { name: 'Apply changes' }));
     });
     expect(await screen.findByText('The request was not valid')).toBeTruthy();
-    const notice = (
-      await screen.findAllByRole('alert')
-    ).find((a) => a.textContent?.includes('The request was not valid'))!;
+    const notice = (await screen.findAllByRole('alert')).find((a) =>
+      a.textContent?.includes('The request was not valid'),
+    )!;
     expect(notice.textContent).toContain('Fix the highlighted fields and try again.');
     expect(notice.textContent).toContain('req-0a1b2c3d');
     expect(notice.textContent).toContain('bad-request · HTTP 400 · request req-0a1b2c3d');

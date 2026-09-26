@@ -723,36 +723,30 @@ describe('AssistantPage: tagging @Bananasaurs (ADR 0063)', () => {
   });
 
   it('explains a refused save inline', async () => {
-    render(
-      withFlag(undefined),
-      {
-        status: 409,
-        body: {
-          error: 'behaviour-disabled',
-          title: 'That behaviour is off',
-          message: 'The behaviour this needs is disabled.',
-          hint: 'Turn the behaviour on first.',
-          requestId: 'req-0a1b2c3d',
-        },
+    render(withFlag(undefined), {
+      status: 409,
+      body: {
+        error: 'behaviour-disabled',
+        title: 'That behaviour is off',
+        message: 'The behaviour this needs is disabled.',
+        hint: 'Turn the behaviour on first.',
+        requestId: 'req-0a1b2c3d',
       },
-    );
+    });
     fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('That behaviour is off')).toBeTruthy();
     cleanup();
-    render(
-      withFlag(undefined),
-      {
-        status: 400,
-        body: {
-          error: 'bad-request',
-          title: 'The request was not valid',
-          message: 'One or more fields were missing or had the wrong format.',
-          hint: 'Fix the highlighted fields and try again.',
-          requestId: 'req-0a1b2c3d',
-        },
+    render(withFlag(undefined), {
+      status: 400,
+      body: {
+        error: 'bad-request',
+        title: 'The request was not valid',
+        message: 'One or more fields were missing or had the wrong format.',
+        hint: 'Fix the highlighted fields and try again.',
+        requestId: 'req-0a1b2c3d',
       },
-    );
+    });
     fireEvent.change(await screen.findByLabelText(LABEL), { target: { value: 'club' } });
     fireEvent.click(screen.getByRole('button', { name: 'Save' }));
     expect(await screen.findByText('The request was not valid')).toBeTruthy();

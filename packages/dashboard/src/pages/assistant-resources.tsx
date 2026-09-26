@@ -471,10 +471,7 @@ function ResourcesCard({
           }}
         >
           <div className="grid gap-3 md:grid-cols-2">
-            <Field
-              label="Title"
-              {...(titleProblem === undefined ? {} : { error: titleProblem })}
-            >
+            <Field label="Title" {...(titleProblem === undefined ? {} : { error: titleProblem })}>
               <Input value={title} onChange={(e) => setTitle(e.target.value)} required />
             </Field>
             <Field label="Kind" {...(kindProblem === undefined ? {} : { error: kindProblem })}>
