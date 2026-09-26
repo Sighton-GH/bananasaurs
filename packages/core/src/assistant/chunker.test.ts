@@ -285,6 +285,16 @@ describe('clipHeading', () => {
     expect(clipped).toHaveLength(50);
     expect(clipped.endsWith('…')).toBe(true);
   });
+
+  it('never cuts an emoji in half', () => {
+    const loneSurrogate = /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/u;
+    for (const max of [119, 120, 121]) {
+      const clipped = clipHeading('🚗'.repeat(70), max);
+      expect(clipped.length).toBeLessThanOrEqual(max);
+      expect(clipped.endsWith('…')).toBe(true);
+      expect(loneSurrogate.test(clipped)).toBe(false);
+    }
+  });
 });
 
 describe('chunkDocument — fenced code blocks', () => {

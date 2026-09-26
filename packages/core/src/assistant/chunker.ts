@@ -146,8 +146,14 @@ const isFenceClose = (line: string, char: '`' | '~', len: number): boolean => {
 };
 
 /** Clips a heading (or a whole heading path) to `max` characters, ending in "…" when cut. */
-export const clipHeading = (text: string, max = 120): string =>
-  text.length <= max ? text : `${text.slice(0, max - 1).trimEnd()}…`;
+export const clipHeading = (text: string, max = 120): string => {
+  if (text.length <= max) return text;
+  let cut = max - 1;
+  // Never end on the first half of a surrogate pair (most emoji): back off one unit.
+  const last = text.charCodeAt(cut - 1);
+  if (last >= 0xd800 && last <= 0xdbff) cut -= 1;
+  return `${text.slice(0, cut).trimEnd()}…`;
+};
 
 const splitSections = (text: string, path: string): readonly Section[] => {
   const lines = text.split('\n');

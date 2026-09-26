@@ -81,6 +81,17 @@ describe('reviewed resource fetcher', () => {
     );
   });
 
+  it('passes the body through whole: NULs removed, lines kept, never cut at 8,000 characters', async () => {
+    const long = `# Guide\n\n${'word '.repeat(4_000)}\n\n## Last section\n\nthe end`;
+    const request = vi.fn<PinnedRequest>(async () => response(200, `a\u0000b\n${long}`));
+    const fetcher = new ReviewedResourceFetcher({ resolve: publicDns, request, now: () => 10 });
+    const result = await fetcher.fetch('https://example.com/guide.md');
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+    expect(result.evidence.text).toBe(`ab\n${long}`);
+    expect(result.evidence.text.length).toBeGreaterThan(8_000);
+  });
+
   it('revalidates and re-resolves every redirect target', async () => {
     const resolve = vi.fn<ResolveHost>(async (hostname) =>
       hostname === 'one.example'

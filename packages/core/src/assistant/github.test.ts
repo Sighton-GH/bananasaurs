@@ -7,6 +7,11 @@ describe('isGithubWebHost', () => {
     expect(isGithubWebHost('WWW.GitHub.com')).toBe(true);
   });
 
+  it('is true for a trailing-dot hostname, which DNS resolves to the same host', () => {
+    expect(isGithubWebHost(new URL('https://github.com./acme/widget').hostname)).toBe(true);
+    expect(isGithubWebHost('www.github.com.')).toBe(true);
+  });
+
   it('is false for raw hosts, gists and other sites', () => {
     expect(isGithubWebHost('raw.githubusercontent.com')).toBe(false);
     expect(isGithubWebHost('gist.github.com')).toBe(false);

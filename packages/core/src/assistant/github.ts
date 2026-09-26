@@ -17,7 +17,8 @@ const GITHUB_HOSTS = new Set(['github.com', 'www.github.com']);
 
 /** True for GitHub's website hosts (github.com, www.github.com) — pages there are GitHub's UI, not a repository's files. */
 export const isGithubWebHost = (hostname: string): boolean =>
-  GITHUB_HOSTS.has(hostname.toLowerCase());
+  // A trailing dot ("github.com.") is the same host to DNS, so it must match too.
+  GITHUB_HOSTS.has(hostname.toLowerCase().replace(/\.+$/u, ''));
 
 // Top-level path segments that are GitHub site sections, not usernames or
 // organisation handles, so a URL like github.com/settings must never be

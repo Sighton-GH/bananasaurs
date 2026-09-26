@@ -11,6 +11,8 @@
  * hint that names the page or the action. Codes are never renamed — the
  * dashboard and the CLI branch on them.
  */
+
+import { GITHUB_URL_NEEDS_IMPORT_TEXT } from './resource-failures.js';
 export interface ErrorExplanation {
   readonly title: string;
   readonly explanation: string;
@@ -265,12 +267,7 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
     explanation: 'Resource links must be safe http or https addresses.',
     hint: 'Paste another link.',
   },
-  'github-url-needs-import': {
-    title: 'Use "Add from GitHub" for GitHub links',
-    explanation:
-      "A github.com page is GitHub's own website. Saved as a website, Bananasaurs would read GitHub's menus instead of your files.",
-    hint: 'Add it with "Add from GitHub" on this page. For a single file, use its raw.githubusercontent.com link.',
-  },
+  'github-url-needs-import': GITHUB_URL_NEEDS_IMPORT_TEXT,
   'not-eligible': {
     title: "The rule can't go live yet",
     explanation: "The rule did not pass its checks, so it can't be enabled.",
