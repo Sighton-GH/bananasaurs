@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { TOOL_CATALOGUE, type ClubResource } from '@bananasaurs/core';
+import { clipHeading, TOOL_CATALOGUE, type ClubResource } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
 
 const NOW = Date.UTC(2026, 8, 23, 19, 30); // 12:30 in Vancouver (PDT)
@@ -590,5 +590,134 @@ describe('cache tools (Task 16)', () => {
       cachePorts(),
     );
     expect(unknown.text).toContain('unknown id');
+  });
+
+  it('search_sources clips a 9000-char heading path so both hits still appear', async () => {
+    const longPath = 'H'.repeat(9_000);
+    const cacheSearch = vi.fn(() => [
+      {
+        chunkId: 'c_long',
+        docId: 'd_long',
+        resourceId: 'handbook',
+        headingPath: longPath,
+        snippet: 'first snippet here',
+      },
+      {
+        chunkId: 'c_short',
+        docId: 'd_short',
+        resourceId: 'handbook',
+        headingPath: 'Guide › Intro',
+        snippet: 'second snippet here',
+      },
+    ]);
+    const result = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care' } },
+      cachePorts({ cacheSearch }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('second snippet here');
+    expect(result.text).toContain('c_long');
+    expect(result.text).toContain('c_short');
+    const expected = clipHeading(longPath, 200);
+    expect(expected.endsWith('…')).toBe(true);
+    expect(expected.length).toBeLessThanOrEqual(200);
+    expect(result.text).toContain(expected);
+    expect(result.text).not.toContain(longPath);
+  });
+
+  it('search_sources skips an over-budget line instead of stopping', async () => {
+    const bigTitle = 'B'.repeat(2_100);
+    const big = resource({ id: 'big', title: bigTitle });
+    const cacheSearch = vi.fn(() => [
+      {
+        chunkId: 'c_big',
+        docId: 'd_big',
+        resourceId: 'big',
+        headingPath: 'Guide',
+        snippet: 'first snippet',
+      },
+      {
+        chunkId: 'c_small',
+        docId: 'd_small',
+        resourceId: 'handbook',
+        headingPath: 'Guide › Intro',
+        snippet: 'second snippet here',
+      },
+    ]);
+    const result = await runAssistantTool(
+      { name: 'search_sources', args: { query: 'battery care' } },
+      cachePorts({ resources: () => [big, resource()], cacheSearch }),
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).not.toBe('No matching passages. Try different words, or list_sources.');
+    expect(result.text).toContain('second snippet here');
+    expect(result.text).toContain('c_small');
+    expect(result.text).not.toContain('c_big');
+    expect(result.handles).toContain('c_small');
+    expect(result.handles).not.toContain('c_big');
+  });
+
+  it('outline and read_chunk clip a long heading path with an ellipsis', async () => {
+    const longPath = 'H'.repeat(9_000);
+    const outlineResult = await runAssistantTool(
+      { name: 'outline', args: { docId: 'd_abc' } },
+      cachePorts({
+        cacheOutline: () => [{ chunkId: 'c_long_0', headingPath: longPath }],
+        cacheDocument: () => ({ docId: 'd_abc', resourceId: 'handbook' }),
+      }),
+    );
+    expect(outlineResult.ok).toBe(true);
+    const expected = clipHeading(longPath, 200);
+    expect(expected.endsWith('…')).toBe(true);
+    expect(outlineResult.text).toContain(expected);
+    expect(outlineResult.text).not.toContain(longPath);
+
+    const readResult = await runAssistantTool(
+      { name: 'read_chunk', args: { chunkId: 'c_long_0' } },
+      cachePorts({
+        cacheChunk: () => ({
+          chunkId: 'c_long_0',
+          docId: 'd_abc',
+          resourceId: 'handbook',
+          headingPath: longPath,
+          text: 'some text',
+        }),
+        cacheNeighbours: () => [],
+      }),
+    );
+    expect(readResult.ok).toBe(true);
+    expect(readResult.text).toContain(expected);
+    expect(readResult.text).not.toContain(longPath);
+  });
+
+  it('open_resource clips a long heading path with an ellipsis', async () => {
+    const longPath = 'H'.repeat(9_000);
+    const result = await runAssistantTool(
+      { name: 'open_resource', args: { resourceId: 'handbook' } },
+      cachePorts({
+        cacheResourceDocs: () => [
+          {
+            docId: 'd_abc',
+            resourceId: 'handbook',
+            title: 'Club handbook',
+            url: 'https://example.com/handbook',
+          },
+        ],
+        cacheResourceChunks: () => [
+          {
+            chunkId: 'c_long_0',
+            docId: 'd_abc',
+            resourceId: 'handbook',
+            headingPath: longPath,
+            text: 'some text',
+          },
+        ],
+      }),
+    );
+    expect(result.ok).toBe(true);
+    const expected = clipHeading(longPath, 200);
+    expect(expected.endsWith('…')).toBe(true);
+    expect(result.text).toContain(expected);
+    expect(result.text).not.toContain(longPath);
   });
 });
