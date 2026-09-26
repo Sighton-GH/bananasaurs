@@ -1725,3 +1725,127 @@ describe('Task 7: loop limits from the AI tuning settings', () => {
     expect(seen[0]?.maxOutputTokens).toBe(300);
   });
 });
+
+describe('Task 10 (b): busy chain throws ChainFailedError', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const ask = {
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: MEMBER,
+    callerRoleIds: [CLUB_ROLE],
+    behaviour: direct,
+    command: 'ask' as const,
+    input: { question: 'when is the meeting?' },
+    source: 'slash-command' as const,
+    invocationId: 'int-chain-failed',
+  };
+
+  const connectTimeout = (): ProviderError =>
+    new ProviderError('outage', 'openrouter request failed', true, {
+      cause: new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+      }),
+      host: 'openrouter.ai',
+    });
+
+  const failingProvider = (): TextProvider => ({
+    id: 'fake',
+    capabilities: new Set(['text', 'tools'] as const),
+    generateText: async () => {
+      throw connectTimeout();
+    },
+  });
+
+  const usable = (provider: TextProvider, model: string): ChainEntry => ({
+    providerId: 'openrouter',
+    model,
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+  });
+
+  it('two connect-timeout entries throw ChainFailedError naming both', async () => {
+    const { ChainFailedError } = await import('./chain-failed-error.js');
+    let t: MigratedTestDatabase;
+    t = openMigratedTestDatabase();
+    try {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+      assistantProvidersRepo.addKey(t.scopes.instance(), {
+        provider: 'openrouter',
+        label: 'Key A',
+        apiKeyEnc: 'sealed-key-a',
+        now: NOW,
+        keyId: 'key_a',
+      });
+      assistantProvidersRepo.addKey(t.scopes.instance(), {
+        provider: 'openrouter',
+        label: 'Test provider',
+        apiKeyEnc: 'sealed-key-test',
+        now: NOW,
+        keyId: 'key_test',
+      });
+      assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+      const service = createAssistantService(
+        t.scopes.forGuild(GUILD),
+        t.scopes.instance(),
+        config,
+        () => NOW,
+        {},
+        undefined,
+        undefined,
+        undefined,
+        () => [usable(failingProvider(), 'model-a'), usable(failingProvider(), 'model-b')],
+      );
+      const err = await service.invoke(ask).then(
+        () => {
+          throw new Error('expected invoke to throw');
+        },
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ChainFailedError);
+      const chained = err as InstanceType<typeof ChainFailedError>;
+      expect(chained.code).toBe('chain-failed');
+      expect(chained.attempts).toHaveLength(2);
+      const occurrences = chained.summary.split('provider-connect-timeout').length - 1;
+      expect(occurrences).toBe(2);
+    } finally {
+      t.close();
+    }
+  });
+});

@@ -794,3 +794,104 @@ describe('chain-test provider failures are fixed sentences', () => {
     expect(response.json()).toMatchObject({ ok: false, error: sentence });
   });
 });
+
+describe('Task 10 (f): chain test classifies failures and honours reserveTestCall', () => {
+  const rebuildWithThrower = async (thrown: unknown): Promise<void> => {
+    const base = fakeStore();
+    const store = {
+      ...base,
+      chain: () =>
+        base.chain().map((entry) =>
+          entry.provider === undefined
+            ? entry
+            : {
+                ...entry,
+                provider: {
+                  ...entry.provider,
+                  generateText: async (): Promise<{ text: string; model: string }> => {
+                    throw thrown;
+                  },
+                },
+              },
+        ),
+    };
+    deps = {
+      ...deps,
+      assistantProviderConfig: store as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+  };
+
+  const testAt = async (position = 0) => {
+    const owner = await signInAs('owner');
+    return app.inject({
+      method: 'POST',
+      url: '/api/assistant/model-chain/test',
+      headers: { cookie: owner.cookie, [CSRF_HEADER]: owner.csrf },
+      payload: { position },
+    });
+  };
+
+  const connectTimeout = (): ProviderError =>
+    new ProviderError('outage', 'UPSTREAM-SAID-xyz', true, {
+      cause: new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+      }),
+      host: 'openrouter.ai',
+    });
+
+  it('classifies a connect-timeout without echoing provider text', async () => {
+    await rebuildWithThrower(connectTimeout());
+    const response = await testAt();
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      ok: boolean;
+      failure?: { code?: string };
+    }>();
+    expect(body.ok).toBe(false);
+    expect(body.failure?.code).toBe('provider-connect-timeout');
+    expect(JSON.stringify(body)).not.toContain('UPSTREAM-SAID-xyz');
+  });
+
+  it('a reserveTestCall refusal answers local-rpm-limit without calling the provider', async () => {
+    const base = fakeStore();
+    let calls = 0;
+    const store = {
+      ...base,
+      reserveTestCall: () => ({ ok: false, code: 'local-rpm-limit', availableAt: 123 }),
+      chain: () =>
+        base.chain().map((entry) =>
+          entry.provider === undefined
+            ? entry
+            : {
+                ...entry,
+                provider: {
+                  ...entry.provider,
+                  generateText: async (): Promise<{ text: string; model: string }> => {
+                    calls += 1;
+                    return { text: 'ready', model: 'm' };
+                  },
+                },
+              },
+        ),
+    };
+    deps = {
+      ...deps,
+      assistantProviderConfig: store as unknown as HttpDeps['assistantProviderConfig'],
+    };
+    await app.close();
+    app = createServer({ deps, registerRoutes: registerAssistantProviderRoutes });
+    const response = await testAt();
+    expect(response.statusCode).toBe(200);
+    const body = response.json<{
+      ok: boolean;
+      failure?: { code?: string };
+    }>();
+    expect(body.ok).toBe(false);
+    expect(body.failure?.code).toBe('local-rpm-limit');
+    expect(calls).toBe(0);
+  });
+});

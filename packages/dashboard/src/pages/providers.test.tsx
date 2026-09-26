@@ -785,3 +785,35 @@ describe('ProvidersPage row test refusal', () => {
     expect(screen.getByText('The test request failed.')).toBeTruthy();
   });
 });
+
+describe('Task 10 (h): AI setup Test renders a classified failure', () => {
+  it('shows the failure title and hint', async () => {
+    stubFetch([
+      { url: ASSISTANT_PROVIDERS_URL, body: setupBody() },
+      { url: '/api/assistant', body: assistantBody() },
+      { url: '/api/providers/eligibility', body: { warnings: [] } },
+      {
+        method: 'POST',
+        url: MODEL_CHAIN_TEST_URL,
+        body: {
+          ok: false,
+          latencyMs: 5,
+          error: 'Could not connect to the AI provider',
+          failure: {
+            code: 'provider-connect-timeout',
+            title: 'Could not connect to the AI provider',
+            explanation: 'The connection timed out.',
+            hint: 'Check the host VPN.',
+          },
+        },
+      },
+    ]);
+    renderWithSession(<ProvidersPage />);
+    await screen.findByRole('heading', { name: 'Model order' });
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Test gemini-2.5-flash on Main key' }));
+    });
+    expect(await screen.findByText('Could not connect to the AI provider')).toBeTruthy();
+    expect(screen.getByText('Check the host VPN.')).toBeTruthy();
+  });
+});

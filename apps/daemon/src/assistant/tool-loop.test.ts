@@ -858,3 +858,40 @@ describe('runToolLoop daily quota (Task Q)', () => {
     expect(result.dailyQuota).toEqual({ resetAt: undefined });
   });
 });
+
+describe('Task 10 (a): classified failure code and journal line', () => {
+  const connectTimeout = (): ProviderError =>
+    new ProviderError('outage', 'openrouter request failed', true, {
+      cause: new TypeError('fetch failed', {
+        cause: Object.assign(new Error('Connect Timeout Error'), {
+          code: 'UND_ERR_CONNECT_TIMEOUT',
+        }),
+      }),
+      host: 'openrouter.ai',
+    });
+
+  it('classifies a connect-timeout attempt and logs one journal line', async () => {
+    const { provider } = scripted([connectTimeout()]);
+    const warn = vi.fn();
+    const input = {
+      ...baseInput([
+        entry({ provider, providerId: 'openrouter', model: 'some-model', keyLabel: 'Key A' }),
+      ]),
+      logger: { warn },
+      guildId: '123456789012345678',
+    } as unknown as Parameters<typeof runToolLoop>[0];
+    const result = await runToolLoop(input);
+    expect(result.outcome).toBe('failed');
+    const attempt = result.attempts[0]!;
+    expect(attempt.code).toBe('provider-connect-timeout');
+    expect(attempt.netCode).toBe('UND_ERR_CONNECT_TIMEOUT');
+    expect(attempt.host).toBe('openrouter.ai');
+    expect(warn).toHaveBeenCalledTimes(1);
+    const [fields, message] = warn.mock.calls[0] as [Record<string, unknown>, string];
+    expect(message).toBe('provider attempt failed');
+    expect(fields).toMatchObject({
+      code: 'provider-connect-timeout',
+      providerMessage: 'openrouter request failed',
+    });
+  });
+});

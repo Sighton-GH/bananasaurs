@@ -833,3 +833,122 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(h.sent).toHaveLength(1);
   });
 });
+
+describe('Task 10 (c): ChainFailedError writes a trace per job attempt', () => {
+  const BOT_ID = '901234567890123456';
+
+  it('a ChainFailedError on attempt 1 inserts trace trace_<key>_a1 with retry:1 then throws RetryAfterError', async () => {
+    const { ChainFailedError } = await import('../assistant/chain-failed-error.js');
+    const t = openMigratedTestDatabase();
+    try {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+      const scope = t.scopes.forGuild(GUILD_ID);
+      const attempts = [
+        {
+          provider: 'openrouter',
+          model: 'm',
+          keyLabel: 'Key A',
+          outcome: 'busy' as const,
+          reason: 'outage',
+          code: 'provider-connect-timeout',
+          netCode: 'UND_ERR_CONNECT_TIMEOUT',
+          host: 'openrouter.ai',
+          ms: 5,
+        },
+      ];
+      const svc: AssistantCommandService = {
+        behavioursForGuild: async () => [behaviour],
+        invoke: async () => {
+          throw new ChainFailedError(
+            'outage',
+            'Every assistant model failed — openrouter/m: provider-connect-timeout',
+            true,
+            attempts,
+          );
+        },
+      };
+      const sent: { channelId: string; message: OutgoingMessage }[] = [];
+      const handler = assistantInvokeHandler({
+        guildId: GUILD_ID,
+        service: svc,
+        openToken: () => undefined,
+        respond: async () => undefined,
+        send: async (channelId: string, message: OutgoingMessage) => {
+          sent.push({ channelId, message });
+          return undefined;
+        },
+        logger: pino({ level: 'silent' }),
+        logChannelId: () => undefined,
+        now: () => NOW,
+        conversations: { scope, botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+      });
+      await expect(
+        handler.run(handler.payload.parse(payload), context({ attempts: 1 })),
+      ).rejects.toBeInstanceOf(RetryAfterError);
+      const stored = traceRepo.getTrace(scope, 'trace_inv-1_a1');
+      expect(stored).toBeDefined();
+      expect(stored?.flags).toEqual(['retry:1']);
+      expect(stored?.outcome).toBe('failed');
+      expect(stored?.attempts).toHaveLength(1);
+    } finally {
+      t.close();
+    }
+  });
+
+  it('on the last attempt it inserts trace_<key>_a<n> with gave-up and answers the busy reply', async () => {
+    const { ChainFailedError } = await import('../assistant/chain-failed-error.js');
+    const t = openMigratedTestDatabase();
+    try {
+      guildRepo.upsertGuild(t.scopes.forGuild(GUILD_ID), { name: 'fixture', now: NOW });
+      const scope = t.scopes.forGuild(GUILD_ID);
+      const attempts = [
+        {
+          provider: 'openrouter',
+          model: 'm',
+          keyLabel: 'Key A',
+          outcome: 'busy' as const,
+          reason: 'outage',
+          code: 'provider-connect-timeout',
+          netCode: 'UND_ERR_CONNECT_TIMEOUT',
+          host: 'openrouter.ai',
+          ms: 5,
+        },
+      ];
+      const svc: AssistantCommandService = {
+        behavioursForGuild: async () => [behaviour],
+        invoke: async () => {
+          throw new ChainFailedError(
+            'outage',
+            'Every assistant model failed — openrouter/m: provider-connect-timeout',
+            true,
+            attempts,
+          );
+        },
+      };
+      const sent: { channelId: string; message: OutgoingMessage }[] = [];
+      const handler = assistantInvokeHandler({
+        guildId: GUILD_ID,
+        service: svc,
+        openToken: () => undefined,
+        respond: async () => undefined,
+        send: async (channelId: string, message: OutgoingMessage) => {
+          sent.push({ channelId, message });
+          return undefined;
+        },
+        logger: pino({ level: 'silent' }),
+        logChannelId: () => undefined,
+        now: () => NOW,
+        conversations: { scope, botUserId: BOT_ID, botDisplayName: 'bananasaurs' },
+      });
+      await handler.run(handler.payload.parse(payload), context({ attempts: 4 }));
+      const stored = traceRepo.getTrace(scope, 'trace_inv-1_a4');
+      expect(stored).toBeDefined();
+      expect(stored?.flags).toEqual(['gave-up']);
+      expect(sent[0]?.message.content).toBe(
+        'The AI service is busy right now. Try again in a minute. No action was taken.',
+      );
+    } finally {
+      t.close();
+    }
+  });
+});

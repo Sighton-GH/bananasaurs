@@ -159,4 +159,38 @@ describe('AssistantHistoryDetailPage', () => {
     const alert = await screen.findByRole('alert');
     expect(alert.textContent).toContain('no run with this id is stored for this server');
   });
+
+  it('Task 10 (g): renders the Why title and hint for an explained attempt', async () => {
+    stubFetch([
+      {
+        url: '/api/assistant/traces/trace-1',
+        body: {
+          ...DETAIL,
+          trace: {
+            ...DETAIL.trace,
+            attempts: [
+              {
+                provider: 'openrouter',
+                model: 'm',
+                outcome: 'error',
+                reason: 'outage',
+                ms: 5,
+                code: 'provider-connect-timeout',
+                host: 'openrouter.ai',
+                netCode: 'UND_ERR_CONNECT_TIMEOUT',
+                explain: {
+                  title: 'Could not connect to the AI provider',
+                  explanation: 'The connection timed out.',
+                  hint: 'Check the host VPN.',
+                },
+              },
+            ],
+          },
+        },
+      },
+    ]);
+    renderDetail();
+    expect(await screen.findByText('Could not connect to the AI provider')).toBeTruthy();
+    expect(screen.getByText('Check the host VPN.')).toBeTruthy();
+  });
 });
