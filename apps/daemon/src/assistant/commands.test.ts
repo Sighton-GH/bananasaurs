@@ -57,6 +57,7 @@ const club: AssistantBehaviour = {
 const harness = (
   behaviours: readonly AssistantBehaviour[] = [direct, club],
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
+  reportEnqueued = true,
 ) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
@@ -111,6 +112,7 @@ const harness = (
       respond,
       enqueue: (input) => {
         queued.push(input.payload);
+        return { enqueued: reportEnqueued };
       },
       sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
@@ -334,6 +336,58 @@ describe('assistant command subscriber', () => {
     });
     expect(h.queued).toHaveLength(1);
     expect(h.sendTyping).toHaveBeenCalledWith(channelId);
+  });
+
+  it('starts typing once when the mention queues a new job', async () => {
+    const h = harness([direct, club], undefined, true);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012348',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    expect(h.sendTyping).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start typing when the mention was already queued', async () => {
+    const h = harness([direct, club], undefined, false);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012349',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    expect(h.sendTyping).not.toHaveBeenCalled();
   });
 
   it('does not start typing for an unaddressed or ambiguous mention', async () => {
