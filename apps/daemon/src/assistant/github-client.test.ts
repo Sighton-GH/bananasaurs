@@ -185,6 +185,23 @@ describe('createGitHubClient — listOrgRepos', () => {
     expect(repos.map((r) => r.name)).toEqual(['one']);
   });
 
+  it('a 404 on a later orgs page throws instead of falling back to users', async () => {
+    const fullPage = Array.from({ length: 100 }, (_, i) => repoItem(`repo-${i}`));
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(ok(fullPage))
+      .mockResolvedValueOnce(new Response('', { status: 404 }));
+    const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
+
+    const error = await client.listOrgRepos('acme').catch((e: unknown) => e);
+
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('not-found');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    for (const call of fetch.mock.calls)
+      expect(new URL(call[0] as string).pathname).toBe('/orgs/acme/repos');
+  });
+
   it('stops paginating after 5 pages even if every page is full', async () => {
     const fullPage = Array.from({ length: 100 }, (_, i) => repoItem(`repo-${i}`));
     // A fresh Response per call: Response.json() consumes the body stream,

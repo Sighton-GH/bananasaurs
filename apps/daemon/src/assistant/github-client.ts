@@ -208,10 +208,15 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
       archived: item.archived,
       private: item.private,
     });
+    // The latest /orgs/ page requested: only a 404 on the first page means
+    // the owner is a user account rather than an organisation. A 404 on a
+    // later page is a real failure and must throw instead of falling back.
+    let orgsPage = 0;
     const collectFrom = async (base: 'orgs' | 'users', type: string): Promise<GitHubOrgRepos> => {
       const repos: GitHubRepoSummary[] = [];
       let truncated = false;
       for (let page = 1; page <= MAX_PAGES; page++) {
+        if (base === 'orgs') orgsPage = page;
         const items = parseRepos(await request(buildUrl(base, type, page)));
         for (const item of items) repos.push(toSummary(item));
         if (items.length < PER_PAGE) break;
@@ -220,24 +225,13 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
       }
       return { repos, truncated };
     };
-    let firstItems: z.infer<typeof repoSummarySchema>[];
     try {
-      firstItems = parseRepos(await request(buildUrl('orgs', 'all', 1)));
+      return await collectFrom('orgs', 'all');
     } catch (error) {
-      if (!(error instanceof GitHubError) || error.kind !== 'not-found') throw error;
-      return await collectFrom('users', 'owner');
+      if (error instanceof GitHubError && error.kind === 'not-found' && orgsPage === 1)
+        return await collectFrom('users', 'owner');
+      throw error;
     }
-    const repos: GitHubRepoSummary[] = [];
-    for (const item of firstItems) repos.push(toSummary(item));
-    if (firstItems.length < PER_PAGE) return { repos, truncated: false };
-    let truncated = false;
-    for (let page = 2; page <= MAX_PAGES; page++) {
-      const items = parseRepos(await request(buildUrl('orgs', 'all', page)));
-      for (const item of items) repos.push(toSummary(item));
-      if (items.length < PER_PAGE) break;
-      if (page === MAX_PAGES) truncated = true;
-    }
-    return { repos, truncated };
   };
 
   const getRepo = async (owner: string, repo: string): Promise<GitHubRepoDetail> => {
