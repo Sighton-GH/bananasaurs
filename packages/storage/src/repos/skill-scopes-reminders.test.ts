@@ -7,8 +7,10 @@ import { upsertGuild } from './guilds.js';
 import {
   getReminder,
   insertReminder,
+  listBehaviours,
   listRemindersForCreator,
   listSkillGrants,
+  putBehaviour,
   putSkillGrant,
   rescheduleReminder,
   claimDueReminders,
