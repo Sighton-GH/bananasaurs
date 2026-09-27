@@ -12,6 +12,7 @@ import {
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
+import type { CitationRegistry } from './citations.js';
 import type { ChainEntry } from './model-chain.js';
 import type { QuotaLedger } from './quota-ledger.js';
 import type { AssistantToolResult, ToolSource } from './tools.js';
