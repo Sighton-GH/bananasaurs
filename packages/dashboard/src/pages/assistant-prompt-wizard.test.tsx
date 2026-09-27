@@ -140,6 +140,41 @@ describe('AssistantPromptWizardPage', () => {
     expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(false);
   });
 
+  it('disables Next when any identity field exceeds its limit', async () => {
+    renderWizard();
+    await screen.findByRole('textbox', { name: 'Club or server name' });
+    for (const [name, value] of [
+      ['Club or server name', 'x'.repeat(81)],
+      ['Bot name', 'x'.repeat(41)],
+      ['Personality in one line', 'x'.repeat(161)],
+    ] as const) {
+      fireEvent.change(screen.getByRole('textbox', { name }), { target: { value } });
+      expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(true);
+      fireEvent.change(screen.getByRole('textbox', { name }), { target: { value: '' } });
+    }
+  });
+
+  it('disables Next when channel guidance or the glossary exceeds its limit', async () => {
+    renderWizard();
+    await next();
+    await next();
+    await next();
+    await next();
+    fireEvent.change(screen.getByRole('textbox', { name: 'What the main channels are for' }), {
+      target: { value: 'x'.repeat(601) },
+    });
+    expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(true);
+
+    cleanup();
+    const glossary = Array.from({ length: 11 }, (_, index) => ({
+      term: `term-${index}`,
+      meaning: `meaning-${index}`,
+    }));
+    renderWizard([{ ...CLUB, promptWizard: { ...STORED, glossary } }]);
+    for (let i = 0; i < 4; i += 1) await next();
+    expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(true);
+  });
+
   it('restores the stored answers instead of the defaults', async () => {
     renderWizard();
     await next();
