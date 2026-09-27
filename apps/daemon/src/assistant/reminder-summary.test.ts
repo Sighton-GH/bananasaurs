@@ -113,7 +113,9 @@ describe('summaryField', () => {
 
   it('escapes Discord markdown characters', () => {
     expect(summaryField('x**y')).toBe('x\\*\\*y');
-    expect(summaryField('a\\b `c` _d_ ~e~ |f| >g')).toBe('a\\\\b \\`c\\` \\_d\\_ \\~e\\~ \\|f\\| \\>g');
+    expect(summaryField('a\\b `c` _d_ ~e~ |f| >g')).toBe(
+      'a\\\\b \\`c\\` \\_d\\_ \\~e\\~ \\|f\\| \\>g',
+    );
   });
 
   it('neutralises mass mentions in any case and mention syntax', () => {
