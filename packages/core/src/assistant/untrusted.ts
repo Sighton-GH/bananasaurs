@@ -18,11 +18,7 @@ export const neutraliseMarkers = (content: string): string =>
     .replace(/\[CURRENT MESSAGE/gi, '[current-message');
 
 // eslint-disable-next-line no-control-regex -- deliberately stripping control characters from member display names.
-// One backslash: the control ranges below are assembled from fragments so the
-// pattern covers U+0000-U+001F and U+007F, plus brackets, with no control
-// escape written out in the source.
-const BS = '\\';
-const CONTROL_OR_BRACKET = new RegExp(`[${BS}u0000-${BS}u001f${BS}u007f\\[\\]]`, 'g');
+const CONTROL_OR_BRACKET = /[\u0000-\u001f\u007f[\]]/g;
 
 /** A member-controlled display name made safe for labels, headers and the answer line. */
 export const safeDisplayName = (name: string | undefined): string | undefined => {
