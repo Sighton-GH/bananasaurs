@@ -357,7 +357,7 @@ describe('acting tools (B2a)', () => {
     return {
       p: ports({
         reminderStore: {
-          insert: (reminder: Reminder) => {
+          insert: (reminder: Omit<Reminder, 'guildId'>) => {
             if ([...rows.values()].some((r) => r.dedupeKey === reminder.dedupeKey))
               return 'duplicate';
             rows.set(reminder.id, storedReminder({ ...reminder }));
@@ -524,10 +524,10 @@ describe('acting tools (B2a)', () => {
   });
 
   it('is idempotent on the same invocation and unique across two calls', async () => {
-    const inserted: Reminder[] = [];
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
     const p = ports({
       reminderStore: {
-        insert: (reminder: Reminder) => {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
           if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
           inserted.push(reminder);
           return 'created';
@@ -547,7 +547,7 @@ describe('acting tools (B2a)', () => {
     const replay = ports({
       invocationKey: 'msg1',
       reminderStore: {
-        insert: (reminder: Reminder) => {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
           if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
           inserted.push(reminder);
           return 'created';
@@ -571,10 +571,10 @@ describe('acting tools (B2a)', () => {
   });
 
   it('builds a weekly recurrence from days', async () => {
-    const inserted: Reminder[] = [];
+    const inserted: Omit<Reminder, 'guildId'>[] = [];
     const p = ports({
       reminderStore: {
-        insert: (reminder: Reminder) => {
+        insert: (reminder: Omit<Reminder, 'guildId'>) => {
           inserted.push(reminder);
           return 'created';
         },
