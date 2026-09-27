@@ -311,6 +311,24 @@ describe('runAssistantTool', () => {
     expect(own.text).not.toContain('Someone else');
   });
 
+  it('records a my_reminders throw as failed', async () => {
+    const p = ports({
+      reminderStore: {
+        insert: () => 'created' as const,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => {
+          throw new Error('db down');
+        },
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool({ name: 'my_reminders', args: {} }, p);
+    expect(result).toMatchObject({ ok: false, text: 'The tool failed: db down' });
+    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'db down');
+  });
+
   it('gives the server card and the channels the member can view', async () => {
     const result = await runAssistantTool({ name: 'server_info', args: {} }, ports());
     expect(result.text).toContain('SFU Racerbot builds autonomous cars.');
