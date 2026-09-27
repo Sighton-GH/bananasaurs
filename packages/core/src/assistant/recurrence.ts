@@ -101,7 +101,7 @@ export const nextOccurrence = (
       (pattern.kind === 'weekdays' && weekday >= 1 && weekday <= 5) ||
       (pattern.kind === 'weekly' &&
         pattern.days.includes(weekday) &&
-        Math.floor((anchorWeek + offset - anchorWeek) / 7) % pattern.everyWeeks === 0) ||
+        Math.floor((anchorDayNumber + offset - anchorWeekStart) / 7) % pattern.everyWeeks === 0) ||
       (pattern.kind === 'monthly' &&
         day === Math.min(pattern.dayOfMonth, daysInMonth(year, month)));
     if (!matches) continue;
