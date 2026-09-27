@@ -1228,6 +1228,31 @@ describe('PUT /api/assistant/resources/:id/enabled (ADR 0084)', () => {
     expect(response.statusCode).toBe(403);
     expect(response.json()).toMatchObject({ error: 'no-grant' });
   });
+
+  it('disabling a github-repo with no meta rebuilds owner meta from its URL', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, {
+      id: 'gh-acme-widget',
+      guildId: GUILD,
+      title: 'acme/widget',
+      url: 'https://github.com/acme/widget',
+      kind: 'github-repo',
+      enabled: true,
+      reviewedAt: new Date(0).toISOString(),
+    });
+    expect((await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false })).statusCode).toBe(
+      200,
+    );
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: false });
+    expect(stored?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      disabledByOwner: true,
+    });
+  });
 });
 
 describe('GET /api/assistant/skills/:skillId', () => {

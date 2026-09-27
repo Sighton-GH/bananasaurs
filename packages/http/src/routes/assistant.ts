@@ -4,6 +4,7 @@ import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
   isGithubWebHost,
+  parseGitHubUrl,
   promptWizardAnswers,
   ProviderError,
   SAFETY_SUFFIX,
@@ -740,10 +741,28 @@ export const registerAssistantRoutes = (
     if (!isGithub) {
       assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
     } else if (enabled === false) {
-      // Spread keeps every other meta key; the cast only covers a GitHub
-      // resource stored without meta yet (no `owner` to spread).
-      const meta = { ...existing.meta, disabledByOwner: true as const } as ClubResource['meta'];
-      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta });
+      if (existing.meta === undefined) {
+        // A GitHub resource stored without meta has no `owner` to spread;
+        // rebuild the base meta from its URL so the strict schema reads it
+        // back. An unparseable URL keeps no meta rather than owner-less meta.
+        const target = parseGitHubUrl(existing.url);
+        if (target === undefined) {
+          assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: undefined });
+        } else {
+          assistantRepo.setResourceEnabled(session.scope, id, {
+            enabled,
+            meta: {
+              owner: target.owner,
+              ...(target.kind === 'repo' ? { repo: target.repo } : {}),
+              disabledByOwner: true as const,
+            },
+          });
+        }
+      } else {
+        // Spread keeps every other meta key.
+        const meta = { ...existing.meta, disabledByOwner: true as const } as ClubResource['meta'];
+        assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta });
+      }
     } else if (existing.meta === undefined) {
       assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
     } else {
