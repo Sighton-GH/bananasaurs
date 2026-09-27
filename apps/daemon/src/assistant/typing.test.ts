@@ -36,14 +36,25 @@ describe('startTyping', () => {
     expect(send).toHaveBeenCalledTimes(1);
   });
 
-  it('stops by itself after maxMs', () => {
+  it('sends exactly through the last interval before the default maxMs deadline', () => {
     const send = vi.fn(async () => undefined);
     const stop = startTyping(send, { onError: () => undefined });
-    vi.advanceTimersByTime(179_000);
-    const count = send.mock.calls.length;
-    expect(count).toBeGreaterThan(1);
-    vi.advanceTimersByTime(30_000);
-    expect(send.mock.calls.length).toBe(count);
+    vi.advanceTimersByTime(179_999);
+    expect(send).toHaveBeenCalledTimes(23);
+    vi.advanceTimersByTime(1);
+    expect(send).toHaveBeenCalledTimes(23);
+    vi.advanceTimersByTime(8_000);
+    expect(send).toHaveBeenCalledTimes(23);
+    stop();
+  });
+
+  it('does not send at a custom maxMs deadline', () => {
+    const send = vi.fn(async () => undefined);
+    const stop = startTyping(send, { intervalMs: 1_000, maxMs: 3_000, onError: () => undefined });
+    vi.advanceTimersByTime(2_999);
+    expect(send).toHaveBeenCalledTimes(3);
+    vi.advanceTimersByTime(1);
+    expect(send).toHaveBeenCalledTimes(3);
     stop();
   });
 
@@ -66,6 +77,18 @@ describe('startTyping', () => {
     const onError = vi.fn();
     expect(() => startTyping(send, { onError })).not.toThrow();
     expect(send).toHaveBeenCalledTimes(1);
+    expect(onError).toHaveBeenCalledTimes(1);
+  });
+
+  it('a throwing onError reporter does not escape startTyping or a rejected send', async () => {
+    const send = vi.fn(async () => {
+      throw new Error('send failed');
+    });
+    const onError = vi.fn(() => {
+      throw new Error('reporter failed');
+    });
+    expect(() => startTyping(send, { onError })).not.toThrow();
+    await vi.advanceTimersByTimeAsync(0);
     expect(onError).toHaveBeenCalledTimes(1);
   });
 
