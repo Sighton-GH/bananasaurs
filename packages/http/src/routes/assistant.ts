@@ -126,7 +126,7 @@ export const registerAssistantRoutes = (
     const reminders = assistantRepo.listReminders(session.scope);
     const decisions = assistantRepo.listDecisions(session.scope);
     const grantsBySkillId = new Map(skillGrants.map((grant) => [grant.skillId, grant] as const));
-    const skillScopes: Record<string, { mode: string; roleIds: string[]; isDefault: boolean }> =
+    const skillScopes: Record<string, { mode: SkillScopeMode; roleIds: string[]; isDefault: boolean }> =
       Object.fromEntries(
         CLUB_ASSISTANT_SKILLS.map((skill) => {
           const grant = grantsBySkillId.get(skill.id);
