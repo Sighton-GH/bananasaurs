@@ -171,6 +171,63 @@ describe('deliverDueReminders', () => {
     await deliverDueReminders(store, { send: vi.fn(async () => undefined) }, due);
     expect(store.complete).toHaveBeenCalledWith('r1');
   });
+
+  it('does not reclaim a rescheduled reminder before its next occurrence', async () => {
+    const due = Date.parse('2026-01-05T17:00:00Z');
+    const rows = new Map<string, Reminder>([
+      [
+        'r1',
+        reminder({
+          dueAt: due,
+          status: 'scheduled',
+          recurrence: reminderRecurrence.parse({ pattern: { kind: 'daily' }, timeZone: 'UTC' }),
+        }),
+      ],
+    ]);
+    const store: ReminderStore = {
+      create: async (entry) => {
+        rows.set(entry.id, { ...entry });
+      },
+      cancel: async () => false,
+      claimDue: async (now, limit) => {
+        const claimed: Reminder[] = [];
+        for (const entry of rows.values()) {
+          if (claimed.length >= limit) break;
+          if (entry.status === 'scheduled' && entry.dueAt <= now) {
+            const next = { ...entry, status: 'delivering' as const };
+            rows.set(entry.id, next);
+            claimed.push(next);
+          }
+        }
+        return claimed;
+      },
+      complete: async (id) => {
+        const entry = rows.get(id);
+        if (entry !== undefined)
+          rows.set(id, { ...entry, status: 'delivered' as const, deliveredCount: 1 });
+      },
+      reschedule: async (id, nextDueAt) => {
+        const entry = rows.get(id);
+        if (entry !== undefined)
+          rows.set(id, { ...entry, status: 'scheduled' as const, dueAt: nextDueAt });
+      },
+      fail: async (id) => {
+        const entry = rows.get(id);
+        if (entry !== undefined) rows.set(id, { ...entry, status: 'failed' as const });
+      },
+      retry: async (id, _reason, retryAt) => {
+        const entry = rows.get(id);
+        if (entry !== undefined)
+          rows.set(id, { ...entry, status: 'scheduled' as const, dueAt: retryAt });
+      },
+    };
+    await deliverDueReminders(store, { send: vi.fn(async () => undefined) }, due, 10);
+    expect(rows.get('r1')?.dueAt).toBe(due + 86_400_000);
+    expect(await store.claimDue(due + 3_600_000, 10, REMINDER_DELIVERY_STALE_MS)).toEqual([]);
+    expect(
+      (await store.claimDue(due + 86_400_000, 10, REMINDER_DELIVERY_STALE_MS)).map((entry) => entry.id),
+    ).toEqual(['r1']);
+  });
 });
 
 describe('reminder drafts', () => {
