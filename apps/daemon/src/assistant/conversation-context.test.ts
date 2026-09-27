@@ -132,6 +132,12 @@ describe('buildConversationContext', () => {
     expect(ctx.history[0]?.text).toBe('[Ama Smith, just now] first question');
   });
 
+  it('labels a turn stored under a bare user id as a member', () => {
+    expect(
+      labelUserTurn({ authorName: '123456789012345678', at: NOW, text: 'hello' }, NOW),
+    ).toBe('[a member, just now] hello');
+  });
+
   it('leaves an assistant turn unlabelled', () => {
     seedConversation('conv-1', [
       { role: 'user', authorId: AMA, authorName: 'Ama', text: 'first question' },

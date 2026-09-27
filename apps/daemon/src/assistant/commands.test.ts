@@ -282,6 +282,31 @@ describe('assistant command subscriber', () => {
     ]);
   });
 
+  it('carries the member display name into the mention payload as authorName', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012347',
+      authorId: userId,
+      authorDisplayName: 'Ama',
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued[0]).toMatchObject({ authorName: 'Ama' });
+  });
+
   it('starts typing after an addressed mention is queued', async () => {
     const h = harness();
     await h.subscriber.handle({

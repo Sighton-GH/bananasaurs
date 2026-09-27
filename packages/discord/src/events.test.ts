@@ -487,6 +487,27 @@ describe('messages', () => {
     ]);
   });
 
+  it('carries the member nickname as the display name when present', () => {
+    const h = harness();
+    h.packet('MessageCreate', messageCreatePacket({ member: { nick: 'Nick', roles: [] } }));
+    expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'Nick' });
+  });
+
+  it('falls back to the global name, then the username', () => {
+    const h = harness();
+    h.packet(
+      'MessageCreate',
+      messageCreatePacket({
+        id: '444444444444444445',
+        author: { id: USER, username: 'member', global_name: 'Global', discriminator: '0' },
+      }),
+    );
+    expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'Global' });
+
+    h.packet('MessageCreate', messageCreatePacket({ id: '444444444444444446' }));
+    expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'member' });
+  });
+
   /**
    * Automod must never process a bot's own output. The bot posts a
    * message-delete log entry that quotes the deleted content, discord.js

@@ -5,6 +5,7 @@ import {
   parseGuildId,
   ProviderError,
   RetryAfterError,
+  scanOutboundRequest,
   type AssistantBehaviour,
   type DiscordMessageRef,
   type JobContext,
@@ -521,6 +522,85 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
       }),
     );
     expect(h.inputs[0]?.askerName).toBe('Ama');
+  });
+
+  it('never stores or prints a bare user id as a speaker name', async () => {
+    // A 19-digit id that passes the Luhn check, so the outbound card-number
+    // detector would flag it if it ever reached a provider request as a name.
+    const luhnDigit = (prefix: string): string => {
+      for (let digit = 0; digit <= 9; digit += 1) {
+        const candidate = `${prefix}${String(digit)}`;
+        let sum = 0;
+        let double = false;
+        for (let index = candidate.length - 1; index >= 0; index -= 1) {
+          let value = candidate.charCodeAt(index) - 48;
+          if (double) {
+            value *= 2;
+            if (value > 9) value -= 9;
+          }
+          sum += value;
+          double = !double;
+        }
+        if (sum % 10 === 0) return String(digit);
+      }
+      throw new Error('no Luhn digit found');
+    };
+    const cardShapedId = `411111111111111111${luhnDigit('411111111111111111')}`;
+    expect(cardShapedId).toMatch(/^\d{19}$/);
+    const luhnValid = (digits: string): boolean => {
+      let sum = 0;
+      let double = false;
+      for (let index = digits.length - 1; index >= 0; index -= 1) {
+        let value = digits.charCodeAt(index) - 48;
+        if (double) {
+          value *= 2;
+          if (value > 9) value -= 9;
+        }
+        sum += value;
+        double = !double;
+      }
+      return sum % 10 === 0;
+    };
+    expect(luhnValid(cardShapedId)).toBe(true);
+
+    const h = harness((input) => ({
+      ok: true,
+      content: `answer to ${String((input.input as Record<string, string>).question)}`,
+    }));
+    const withoutName = (over: Record<string, unknown>): Record<string, unknown> => {
+      const { authorName: _dropped, ...rest } = mention(over);
+      void _dropped;
+      return { ...rest, userId: cardShapedId };
+    };
+    await h.run(
+      withoutName({
+        invocationId: 'inv-noid-1',
+        messageId: '810000000000000041',
+        input: { question: 'first question' },
+      }),
+    );
+    nowMs += 5 * 60_000;
+    await h.run(
+      withoutName({
+        invocationId: 'inv-noid-2',
+        messageId: '810000000000000042',
+        input: { question: 'second question' },
+      }),
+    );
+
+    expect(h.inputs).toHaveLength(2);
+    const history = h.inputs[1]?.history ?? [];
+    expect(history.length).toBeGreaterThan(0);
+    expect(history.every((message) => !/\d{17,}/.test(message.text))).toBe(true);
+    const request = {
+      model: 'test-model',
+      systemInstruction: '',
+      messages: [
+        ...history,
+        { role: 'user' as const, text: 'second question' },
+      ],
+    };
+    expect(scanOutboundRequest(request).safe).toBe(true);
   });
 
   it('a reply by another member to the bot answer continues the conversation with both speakers labelled', async () => {
