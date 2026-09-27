@@ -534,4 +534,96 @@ describe('POST /api/assistant/github/import', () => {
     expect(response.statusCode).toBe(400);
     expect(auditRows()).toHaveLength(0);
   });
+
+  it('re-importing an org never re-enables an owner-disabled child and creates newly listed repos enabled', async () => {
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    client.orgRepos = [summary('widget'), summary('gadget')];
+    expect(
+      (await post(cookie, csrf, '/api/assistant/github/import', { url: 'https://github.com/acme' }))
+        .statusCode,
+    ).toBe(200);
+    assistantRepo.setResourceEnabled(scope, 'gh-acme-gadget', {
+      enabled: false,
+      meta: { owner: 'acme', repo: 'gadget', branch: 'main', disabledByOwner: true },
+    });
+
+    client.orgRepos = [summary('widget'), summary('gadget'), summary('fresh')];
+    const second = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme',
+    });
+    expect(second.statusCode).toBe(200);
+
+    const resources = assistantRepo.listResources(scope);
+    const gadget = resources.find((r) => r.id === 'gh-acme-gadget');
+    expect(gadget).toMatchObject({ enabled: false });
+    expect(gadget?.meta).toEqual({
+      owner: 'acme',
+      repo: 'gadget',
+      branch: 'main',
+      disabledByOwner: true,
+    });
+    expect(resources.find((r) => r.id === 'gh-acme-widget')).toMatchObject({ enabled: true });
+    expect(resources.find((r) => r.id === 'gh-acme-fresh')).toMatchObject({ enabled: true });
+  });
+
+  it('re-importing a single owner-disabled repo keeps it disabled', async () => {
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect(
+      (
+        await post(cookie, csrf, '/api/assistant/github/import', {
+          url: 'https://github.com/acme/widget',
+        })
+      ).statusCode,
+    ).toBe(200);
+    assistantRepo.setResourceEnabled(scope, 'gh-acme-widget', {
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', disabledByOwner: true },
+    });
+
+    const second = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme/widget',
+    });
+    expect(second.statusCode).toBe(200);
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: false });
+    expect(stored?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'main',
+      disabledByOwner: true,
+    });
+  });
+
+  it('re-import still updates branch, include and private meta without dropping disabledByOwner', async () => {
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    client.orgRepos = [summary('widget', { defaultBranch: 'main' })];
+    expect(
+      (await post(cookie, csrf, '/api/assistant/github/import', { url: 'https://github.com/acme' }))
+        .statusCode,
+    ).toBe(200);
+    assistantRepo.setResourceEnabled(scope, 'gh-acme-widget', {
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', disabledByOwner: true },
+    });
+
+    client.orgRepos = [summary('widget', { defaultBranch: 'develop', private: true })];
+    const second = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme',
+      include: ['docs/**'],
+    });
+    expect(second.statusCode).toBe(200);
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: false });
+    expect(stored?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'develop',
+      include: ['docs/**'],
+      private: true,
+      disabledByOwner: true,
+    });
+  });
 });
