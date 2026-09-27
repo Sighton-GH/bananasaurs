@@ -433,7 +433,7 @@ export const assistantInvokeHandler = (deps: {
         }
         if (payload.channelId !== undefined && deps.sendTyping !== undefined) {
           stopTyping = startTyping(() => deps.sendTyping!(payload.channelId!), {
-            intervalMs: deps.typingIntervalMs,
+            ...(deps.typingIntervalMs === undefined ? {} : { intervalMs: deps.typingIntervalMs }),
             onError: (err) =>
               deps.logger.warn(
                 safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
