@@ -551,6 +551,9 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
           ...(message.allowedMentions.roles === undefined
             ? {}
             : { roles: [...message.allowedMentions.roles] }),
+          ...(message.allowedMentions.users === undefined
+            ? {}
+            : { users: [...message.allowedMentions.users] }),
         };
 
   return {
@@ -570,6 +573,7 @@ function toRestMessage(message: OutgoingMessage): Record<string, unknown> {
           allowed_mentions: {
             parse: allowedMentions?.parse ?? [],
             ...(allowedMentions?.roles === undefined ? {} : { roles: allowedMentions.roles }),
+            ...(allowedMentions?.users === undefined ? {} : { users: allowedMentions.users }),
             ...(message.replyTo === undefined ? {} : { replied_user: true }),
           },
         }),
