@@ -208,6 +208,57 @@ describe('createGitHubClient — listTree', () => {
   });
 });
 
+describe('createGitHubClient — getFileRaw', () => {
+  it('requests the contents URL with the raw accept type and the token', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('hello', { status: 200, headers: { etag: '"v1"' } }));
+    const client = createGitHubClient({ token: () => 'test-token', fetch, guard: noopGuard });
+    const result = await client.getFileRaw('acme', 'widget', 'main', 'docs/a b.md');
+    expect(fetch.mock.calls[0]?.[0]).toBe(
+      'https://api.github.com/repos/acme/widget/contents/docs/a%20b.md?ref=main',
+    );
+    const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers);
+    expect(headers.get('accept')).toBe('application/vnd.github.raw+json');
+    expect(headers.get('authorization')).toBe('Bearer test-token');
+    expect(headers.get('x-github-api-version')).toBe('2022-11-28');
+    expect(headers.get('user-agent')).toBe('Bananasaurs');
+    expect(result).toEqual({ notModified: false, text: 'hello', etag: '"v1"' });
+  });
+
+  it('omits Authorization when no token is set and sends if-none-match when an etag is given', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('hello', { status: 200 }));
+    const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
+    const result = await client.getFileRaw('acme', 'widget', 'main', 'README.md', '"v1"');
+    const headers = new Headers(fetch.mock.calls[0]?.[1]?.headers);
+    expect(headers.has('authorization')).toBe(false);
+    expect(headers.get('if-none-match')).toBe('"v1"');
+    expect(result).toEqual({ notModified: false, text: 'hello' });
+  });
+
+  it('maps a 304 to notModified', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue({ status: 304, headers: new Headers() } as Response);
+    const client = createGitHubClient({ token: () => 'test-token', fetch, guard: noopGuard });
+    await expect(client.getFileRaw('acme', 'widget', 'main', 'README.md', '"v1"')).resolves.toEqual(
+      { notModified: true },
+    );
+  });
+
+  it('maps a 404 to a not-found GitHubError', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(new Response('', { status: 404 }));
+    const client = createGitHubClient({ token: () => 'test-token', fetch, guard: noopGuard });
+    const error = await client.getFileRaw('acme', 'widget', 'main', 'missing.md').catch((e: unknown) => e);
+    expect(error).toBeInstanceOf(GitHubError);
+    expect((error as GitHubError).kind).toBe('not-found');
+  });
+});
+
 describe('createGitHubClient — errors', () => {
   it('maps a 404 to a not-found GitHubError', async () => {
     const fetch = vi

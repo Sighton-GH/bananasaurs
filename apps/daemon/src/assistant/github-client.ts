@@ -66,11 +66,23 @@ export interface GitHubOrgRepos {
   readonly truncated: boolean;
 }
 
+export type GitHubFileResult =
+  | { readonly notModified: true }
+  | { readonly notModified: false; readonly text: string; readonly etag?: string };
+
 export interface GitHubClient {
   listOrgRepos(owner: string): Promise<GitHubOrgRepos>;
   getRepo(owner: string, repo: string): Promise<GitHubRepoDetail>;
   listTree(owner: string, repo: string, ref: string): Promise<GitHubTreeResult>;
   readonly authenticated: boolean;
+  /** One file's raw bytes as UTF-8 text, through the authenticated API (private repositories). */
+  getFileRaw(
+    owner: string,
+    repo: string,
+    ref: string,
+    path: string,
+    etag?: string,
+  ): Promise<GitHubFileResult>;
 }
 
 export interface GitHubClientDeps {
@@ -118,12 +130,17 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
   const authenticated = token !== undefined && token !== '';
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const request = async (url: URL): Promise<unknown> => {
+  const send = async (
+    url: URL,
+    accept: string,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<Response> => {
     await deps.guard(url);
     const headers: Record<string, string> = {
-      accept: 'application/vnd.github+json',
+      accept,
       'x-github-api-version': API_VERSION,
       'user-agent': USER_AGENT,
+      ...extraHeaders,
     };
     // Re-read the token per request (never cached beyond this closure) and
     // only ever set the header when it is a real, non-empty string.
@@ -140,6 +157,7 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     } catch {
       throw new GitHubError('network', 'GitHub could not be reached.');
     }
+    if (response.status === 304) return response;
     if (response.status === 404) {
       throw new GitHubError('not-found', 'GitHub returned 404 for this URL.');
     }
@@ -152,6 +170,11 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     if (!response.ok) {
       throw new GitHubError('network', `GitHub returned HTTP ${String(response.status)}.`);
     }
+    return response;
+  };
+
+  const request = async (url: URL): Promise<unknown> => {
+    const response = await send(url, 'application/vnd.github+json');
     try {
       return await response.json();
     } catch {
@@ -224,5 +247,40 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     return { entries, truncated: parsed.data.truncated };
   };
 
-  return { listOrgRepos, getRepo, listTree, authenticated };
+  const getFileRaw = async (
+    owner: string,
+    repo: string,
+    ref: string,
+    path: string,
+    etag?: string,
+  ): Promise<GitHubFileResult> => {
+    const encodedPath = path
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const url = new URL(
+      `${API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`,
+    );
+    url.searchParams.set('ref', ref);
+    const response = await send(
+      url,
+      'application/vnd.github.raw+json',
+      etag !== undefined ? { 'if-none-match': etag } : {},
+    );
+    if (response.status === 304) return { notModified: true };
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      throw new GitHubError('network', 'GitHub could not be reached.');
+    }
+    const responseEtag = response.headers.get('etag');
+    return {
+      notModified: false,
+      text,
+      ...(responseEtag === null ? {} : { etag: responseEtag }),
+    };
+  };
+
+  return { listOrgRepos, getRepo, listTree, authenticated, getFileRaw };
 };
