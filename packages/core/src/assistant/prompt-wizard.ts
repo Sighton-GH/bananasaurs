@@ -19,7 +19,7 @@ export const promptWizardAnswers = z.object({
     ]),
   ),
   helpsWithOther: z.string().max(300).default(''),
-  tone: z.enum(['friendly', 'professional', 'playful']),
+  tone: z.enum(['friendly', 'professional', 'playful', 'casual']),
   length: z.enum(['short', 'balanced', 'detailed']),
   emoji: z.enum(['none', 'a-little']),
   language: z.string().min(2).max(40).default('Canadian English'),
@@ -39,6 +39,15 @@ export const promptWizardAnswers = z.object({
   examples: z
     .array(z.object({ question: z.string().max(300), answer: z.string().max(600) }))
     .max(3),
+  clubName: z.string().max(80).default(''),
+  serverType: z.enum(['club', 'team', 'friends']).default('club'),
+  botName: z.string().max(40).default(''),
+  personality: z.string().max(160).default(''),
+  channelGuide: z.string().max(600).default(''),
+  glossary: z
+    .array(z.object({ term: z.string().min(1).max(40), meaning: z.string().min(1).max(160) }))
+    .max(10)
+    .default([]),
 });
 
 export type PromptWizardAnswers = z.infer<typeof promptWizardAnswers>;
@@ -63,11 +72,25 @@ const neutraliseHeaderLookalikes = (text: string): string =>
     })
     .join('\n');
 
+const oneLine = (text: string): string => text.replace(/\s+/g, ' ').trim();
+
 const joinWithAnd = (items: readonly string[]): string => {
   if (items.length === 0) return '';
   if (items.length === 1) return items[0]!;
   if (items.length === 2) return `${items[0]!} and ${items[1]!}`;
   return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]!}`;
+};
+
+export const DEFAULT_PERSONALITY: Readonly<Record<PromptWizardAnswers['serverType'], string>> = {
+  club: 'a friendly senior member who knows how things work',
+  team: 'a helpful teammate',
+  friends: 'one of the group: relaxed, casual and quick',
+};
+
+const SERVER_TYPE_LABELS: Record<PromptWizardAnswers['serverType'], string> = {
+  club: 'a club',
+  team: 'a team',
+  friends: 'a group of friends',
 };
 
 const AUDIENCE_LABELS: Record<PromptWizardAnswers['audience'][number], string> = {
@@ -90,10 +113,11 @@ const TONE_LABELS: Record<PromptWizardAnswers['tone'], string> = {
   friendly: 'Friendly and approachable',
   professional: 'Professional and businesslike',
   playful: 'Playful and light',
+  casual: 'Casual, like chatting with friends: relaxed wording, lowercase is fine, nothing formal',
 };
 
 const LENGTH_LABELS: Record<PromptWizardAnswers['length'], string> = {
-  short: 'short, to the point',
+  short: 'short: one to three sentences, unless someone asks for steps',
   balanced: 'balanced — a couple of sentences unless more is needed',
   detailed: 'detailed and thorough',
 };
@@ -110,6 +134,37 @@ const OFF_TOPIC_LABELS: Record<PromptWizardAnswers['offTopic'], string> = {
     'For questions outside what you help with, say so and redirect the person to a more appropriate channel or person.',
 };
 
+const STYLE_EXAMPLE_PAIRS: Record<PromptWizardAnswers['tone'], readonly (readonly [string, string])[]> = {
+  friendly: [
+    ['thanks!', 'Anytime!'],
+    [
+      'is anyone around today?',
+      "I can't see who's around, sorry! Asking in the main channel is your best bet.",
+    ],
+  ],
+  professional: [
+    ['thanks!', "You're welcome."],
+    [
+      'is anyone around today?',
+      "I can't see who is available today. The main channel is the best place to ask.",
+    ],
+  ],
+  playful: [
+    ['thanks!', 'anytime!'],
+    [
+      'is anyone around today?',
+      "my crystal ball's out of order, so i can't see who's around. try the main channel!",
+    ],
+  ],
+  casual: [
+    ['thanks!', 'np!'],
+    [
+      'is anyone around today?',
+      "no idea tbh, i can't see who's in. try asking in the main channel",
+    ],
+  ],
+};
+
 interface Section {
   readonly header: string;
   readonly body: string;
@@ -120,9 +175,14 @@ const buildRoleSection = (
   context: { clubName: string; behaviourName: string },
 ): Section => {
   const audience = joinWithAnd(answers.audience.map((a) => AUDIENCE_LABELS[a]));
+  const name = oneLine(answers.botName) || context.behaviourName;
+  const club = oneLine(answers.clubName) || context.clubName;
+  const personality = neutraliseHeaderLookalikes(
+    oneLine(answers.personality) || DEFAULT_PERSONALITY[answers.serverType],
+  );
   return {
     header: 'ROLE',
-    body: `You are ${context.behaviourName}, part of Bananasaurs, helping ${audience} of ${context.clubName}.`,
+    body: `You are ${name}, the assistant in the Discord server of ${club}, ${SERVER_TYPE_LABELS[answers.serverType]}. You help ${audience}.\nPersonality: ${personality}.`,
   };
 };
 
@@ -148,15 +208,13 @@ const buildVoiceSection = (answers: PromptWizardAnswers): Section => {
 const buildSourcesSection = (answers: PromptWizardAnswers): Section | undefined => {
   const lines: string[] = [];
   if (answers.preferClubSources) {
-    lines.push(
-      "Search the club's resources before answering from general knowledge. Use search_sources first, then read_chunk for the best result.",
-    );
+    lines.push("Check the club's sources before answering from general knowledge.");
   }
   if (answers.citeSources) {
     lines.push('Cite the source (title or link) for any fact drawn from a club resource.');
   }
   if (lines.length === 0) return undefined;
-  return { header: 'USING SOURCES AND TOOLS', body: lines.join('\n') };
+  return { header: 'USING SOURCES', body: lines.join('\n') };
 };
 
 const buildWhenUnsureSection = (answers: PromptWizardAnswers): Section | undefined => {
@@ -173,6 +231,20 @@ const buildClubFactsSection = (answers: PromptWizardAnswers): Section | undefine
   const facts = answers.clubFacts.trim();
   if (facts === '') return undefined;
   return { header: 'CLUB FACTS', body: neutraliseHeaderLookalikes(facts) };
+};
+
+const buildGlossarySection = (answers: PromptWizardAnswers): Section | undefined => {
+  if (answers.glossary.length === 0) return undefined;
+  const body = neutraliseHeaderLookalikes(
+    answers.glossary.map((entry) => `- ${oneLine(entry.term)}: ${oneLine(entry.meaning)}`).join('\n'),
+  );
+  return { header: 'GLOSSARY', body };
+};
+
+const buildChannelsSection = (answers: PromptWizardAnswers): Section | undefined => {
+  const guide = answers.channelGuide.trim();
+  if (guide === '') return undefined;
+  return { header: 'CHANNELS', body: neutraliseHeaderLookalikes(guide) };
 };
 
 const buildBoundariesSection = (answers: PromptWizardAnswers): Section => {
@@ -196,6 +268,12 @@ const buildFormatSection = (answers: PromptWizardAnswers): Section | undefined =
   if (answers.format.sourcesLine) lines.push('- End with a Sources line listing what you used.');
   if (lines.length === 0) return undefined;
   return { header: 'FORMAT', body: lines.join('\n') };
+};
+
+const buildStyleExamplesSection = (answers: PromptWizardAnswers): Section => {
+  const pairs = STYLE_EXAMPLE_PAIRS[answers.tone];
+  const body = `These show tone only. They are not facts; never repeat them as facts.\n\n${pairs.map(([question, answer]) => `Q: ${question}\nA: ${answer}`).join('\n\n')}`;
+  return { header: 'STYLE EXAMPLES', body };
 };
 
 const buildExamplesSection = (answers: PromptWizardAnswers): Section | undefined => {
@@ -224,18 +302,34 @@ export const buildSystemPrompt = (
     buildSourcesSection(answers),
     buildWhenUnsureSection(answers),
     buildClubFactsSection(answers),
+    buildGlossarySection(answers),
+    buildChannelsSection(answers),
     buildBoundariesSection(answers),
     buildFormatSection(answers),
+    buildStyleExamplesSection(answers),
     buildExamplesSection(answers),
   ].flatMap((s) => (s === undefined ? [] : [s]));
 
   let compiled = assemble(sections);
   if (compiled.length <= MAX_PROMPT_CHARS) return compiled;
 
-  // Trim order: examples first (least essential to correctness), then club
-  // facts (truncated with an ellipsis). ROLE, VOICE and BOUNDARIES are never
+  // Trim order: style examples first, then owner examples, then channels,
+  // then glossary (least essential to correctness first), then club facts
+  // (truncated with an ellipsis). ROLE, VOICE and BOUNDARIES are never
   // removed or shortened.
+  sections = sections.filter((s) => s.header !== 'STYLE EXAMPLES');
+  compiled = assemble(sections);
+  if (compiled.length <= MAX_PROMPT_CHARS) return compiled;
+
   sections = sections.filter((s) => s.header !== 'EXAMPLES');
+  compiled = assemble(sections);
+  if (compiled.length <= MAX_PROMPT_CHARS) return compiled;
+
+  sections = sections.filter((s) => s.header !== 'CHANNELS');
+  compiled = assemble(sections);
+  if (compiled.length <= MAX_PROMPT_CHARS) return compiled;
+
+  sections = sections.filter((s) => s.header !== 'GLOSSARY');
   compiled = assemble(sections);
   if (compiled.length <= MAX_PROMPT_CHARS) return compiled;
 
@@ -261,7 +355,7 @@ const clubAnswers: PromptWizardAnswers = promptWizardAnswers.parse({
   audience: ['members'],
   helpsWith: ['club-questions', 'find-resources', 'events-meetings'],
   tone: 'friendly',
-  length: 'balanced',
+  length: 'short',
   emoji: 'a-little',
   language: 'Canadian English',
   preferClubSources: true,
