@@ -475,6 +475,7 @@ describe('messages', () => {
         isPrivateThread: false,
         messageId: MESSAGE,
         authorId: USER,
+        authorDisplayName: 'member',
         authorIsBot: false,
         content: 'hello',
         editedTimestampMs: undefined,
@@ -503,7 +504,10 @@ describe('messages', () => {
       }),
     );
     expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'Global' });
+  });
 
+  it('uses the username when there is no nickname or global name', () => {
+    const h = harness();
     h.packet('MessageCreate', messageCreatePacket({ id: '444444444444444446' }));
     expect(h.events.at(-1)).toMatchObject({ authorDisplayName: 'member' });
   });

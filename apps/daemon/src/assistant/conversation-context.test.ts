@@ -116,9 +116,9 @@ describe('buildConversationContext', () => {
     expect(ctx.history[0]?.text).toBe('[Ama, 3 min ago] first question');
   });
 
-  it('collapses a newline in an author name', () => {
+  it('strips a newline in an author name (control characters are removed, not spaced)', () => {
     expect(labelUserTurn({ authorName: 'Ama\nSmith', at: NOW, text: 'hello' }, NOW)).toBe(
-      '[Ama Smith, just now] hello',
+      '[AmaSmith, just now] hello',
     );
     seedConversation('conv-1', [
       { role: 'user', authorId: AMA, authorName: 'Ama\nSmith', text: 'first question' },
@@ -129,7 +129,7 @@ describe('buildConversationContext', () => {
       botDisplayName: 'bananasaurs',
       now: NOW,
     });
-    expect(ctx.history[0]?.text).toBe('[Ama Smith, just now] first question');
+    expect(ctx.history[0]?.text).toBe('[AmaSmith, just now] first question');
   });
 
   it('labels a turn stored under a bare user id as a member', () => {

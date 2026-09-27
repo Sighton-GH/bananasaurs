@@ -394,8 +394,8 @@ export const assistantInvokePayload = z.object({
   referencedAuthorId: z.string().min(1).optional(),
   /**
    * Task 14: the member's display name for history labels, when the producer
-   * knew one. The gateway events carry no name, so this is usually absent
-   * and the user id is stored instead — always best-effort, never fetched.
+   * knew one. The mention path carries the member's display name; other paths
+   * may omit it — always best-effort, never fetched.
    */
   authorName: z.string().min(1).max(200).optional(),
 });

@@ -388,6 +388,9 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         source: 'mention',
         invocationId: event.messageId,
         messageId: event.messageId,
+        ...(event.authorDisplayName === undefined
+          ? {}
+          : { authorName: event.authorDisplayName.slice(0, 200) }),
         ...(event.referencedMessageId === undefined
           ? {}
           : { referencedMessageId: event.referencedMessageId }),

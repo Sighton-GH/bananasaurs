@@ -539,7 +539,7 @@ export const assistantInvokeHandler = (deps: {
               at: nextAt(beforeUser),
               role: 'user',
               authorId: payload.userId,
-              authorName: payload.authorName ?? payload.userId,
+              authorName: payload.authorName ?? 'a member',
               text: strippedQuestion,
             });
           }

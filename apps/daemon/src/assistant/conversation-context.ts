@@ -1,5 +1,6 @@
 import {
   relativeAgo,
+  safeDisplayName,
   type ConversationResolution,
   type GenerationMessage,
 } from '@bananasaurs/core';
@@ -59,7 +60,10 @@ export const labelUserTurn = (
   turn: { readonly authorName: string; readonly at: number; readonly text: string },
   now: number,
 ): string => {
-  const speaker = turn.authorName.replace(/\s+/g, ' ').trim() || 'a member';
+  const cleaned = safeDisplayName(turn.authorName);
+  // Turns stored before display names existed hold the bare user id: never
+  // print it as a speaker name.
+  const speaker = cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
   return `[${speaker}, ${relativeAgo(turn.at, now)}] ${turn.text}`;
 };
 
