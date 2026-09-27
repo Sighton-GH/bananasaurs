@@ -331,6 +331,9 @@ export const decisionReviewUrl = (id: string) =>
 export const decisionSaveUrl = (id: string) =>
   `/api/assistant/decisions/${encodeURIComponent(id)}/save`;
 export const resourceUrl = (id: string) => `/api/assistant/resources/${encodeURIComponent(id)}`;
+/** ADR 0084: enable/disable for every kind — the whole-object save cannot carry GitHub kinds. */
+export const resourceEnabledUrl = (id: string) =>
+  `/api/assistant/resources/${encodeURIComponent(id)}/enabled`;
 /** ADR 0073: cached-document freshness per resource — fetchedAt/chunks/bytes/lastError, one row per resource that has ever been cached. */
 export interface ResourceErrorExplain {
   readonly title: string;

@@ -66,11 +66,23 @@ export interface GitHubOrgRepos {
   readonly truncated: boolean;
 }
 
+export type GitHubFileResult =
+  | { readonly notModified: true }
+  | { readonly notModified: false; readonly text: string; readonly etag?: string };
+
 export interface GitHubClient {
   listOrgRepos(owner: string): Promise<GitHubOrgRepos>;
   getRepo(owner: string, repo: string): Promise<GitHubRepoDetail>;
   listTree(owner: string, repo: string, ref: string): Promise<GitHubTreeResult>;
   readonly authenticated: boolean;
+  /** One file's raw bytes as UTF-8 text, through the authenticated API (private repositories). */
+  getFileRaw(
+    owner: string,
+    repo: string,
+    ref: string,
+    path: string,
+    etag?: string,
+  ): Promise<GitHubFileResult>;
 }
 
 export interface GitHubClientDeps {
@@ -114,16 +126,19 @@ const toTreeEntry = (entry: z.infer<typeof treeEntrySchema>): GitHubTreeEntry =>
 });
 
 export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
-  const token = deps.token();
-  const authenticated = token !== undefined && token !== '';
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
-  const request = async (url: URL): Promise<unknown> => {
+  const send = async (
+    url: URL,
+    accept: string,
+    extraHeaders: Record<string, string> = {},
+  ): Promise<Response> => {
     await deps.guard(url);
     const headers: Record<string, string> = {
-      accept: 'application/vnd.github+json',
+      accept,
       'x-github-api-version': API_VERSION,
       'user-agent': USER_AGENT,
+      ...extraHeaders,
     };
     // Re-read the token per request (never cached beyond this closure) and
     // only ever set the header when it is a real, non-empty string.
@@ -140,6 +155,7 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     } catch {
       throw new GitHubError('network', 'GitHub could not be reached.');
     }
+    if (response.status === 304) return response;
     if (response.status === 404) {
       throw new GitHubError('not-found', 'GitHub returned 404 for this URL.');
     }
@@ -152,6 +168,11 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     if (!response.ok) {
       throw new GitHubError('network', `GitHub returned HTTP ${String(response.status)}.`);
     }
+    return response;
+  };
+
+  const request = async (url: URL): Promise<unknown> => {
+    const response = await send(url, 'application/vnd.github+json');
     try {
       return await response.json();
     } catch {
@@ -163,33 +184,54 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
   };
 
   const listOrgRepos = async (owner: string): Promise<GitHubOrgRepos> => {
-    const repos: GitHubRepoSummary[] = [];
-    let truncated = false;
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const url = new URL(`${API_ROOT}/users/${encodeURIComponent(owner)}/repos`);
+    const buildUrl = (base: 'orgs' | 'users', type: string, page: number): URL => {
+      const url = new URL(`${API_ROOT}/${base}/${encodeURIComponent(owner)}/repos`);
       url.searchParams.set('per_page', String(PER_PAGE));
-      url.searchParams.set('type', 'owner');
+      url.searchParams.set('type', type);
       url.searchParams.set('page', String(page));
-      const body = await request(url);
+      return url;
+    };
+    const parseRepos = (body: unknown): z.infer<typeof repoSummarySchema>[] => {
       const parsed = z.array(repoSummarySchema).safeParse(body);
       if (!parsed.success) {
         throw new GitHubError('invalid-response', 'GitHub returned an unexpected repo list shape.');
       }
-      for (const item of parsed.data) {
-        repos.push({
-          name: item.name,
-          description: item.description,
-          defaultBranch: item.default_branch,
-          fork: item.fork,
-          archived: item.archived,
-          private: item.private,
-        });
+      return parsed.data;
+    };
+    const toSummary = (
+      item: z.infer<typeof repoSummarySchema>,
+    ): GitHubRepoSummary => ({
+      name: item.name,
+      description: item.description,
+      defaultBranch: item.default_branch,
+      fork: item.fork,
+      archived: item.archived,
+      private: item.private,
+    });
+    // The latest /orgs/ page requested: only a 404 on the first page means
+    // the owner is a user account rather than an organisation. A 404 on a
+    // later page is a real failure and must throw instead of falling back.
+    let orgsPage = 0;
+    const collectFrom = async (base: 'orgs' | 'users', type: string): Promise<GitHubOrgRepos> => {
+      const repos: GitHubRepoSummary[] = [];
+      let truncated = false;
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        if (base === 'orgs') orgsPage = page;
+        const items = parseRepos(await request(buildUrl(base, type, page)));
+        for (const item of items) repos.push(toSummary(item));
+        if (items.length < PER_PAGE) break;
+        // A full page on the last permitted page means more may exist.
+        if (page === MAX_PAGES) truncated = true;
       }
-      if (parsed.data.length < PER_PAGE) break;
-      // A full page on the last permitted page means more may exist.
-      if (page === MAX_PAGES) truncated = true;
+      return { repos, truncated };
+    };
+    try {
+      return await collectFrom('orgs', 'all');
+    } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found' && orgsPage === 1)
+        return await collectFrom('users', 'owner');
+      throw error;
     }
-    return { repos, truncated };
   };
 
   const getRepo = async (owner: string, repo: string): Promise<GitHubRepoDetail> => {
@@ -224,5 +266,52 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     return { entries, truncated: parsed.data.truncated };
   };
 
-  return { listOrgRepos, getRepo, listTree, authenticated };
+  const getFileRaw = async (
+    owner: string,
+    repo: string,
+    ref: string,
+    path: string,
+    etag?: string,
+  ): Promise<GitHubFileResult> => {
+    const encodedPath = path
+      .split('/')
+      .map((segment) => encodeURIComponent(segment))
+      .join('/');
+    const url = new URL(
+      `${API_ROOT}/repos/${encodeURIComponent(owner)}/${encodeURIComponent(repo)}/contents/${encodedPath}`,
+    );
+    url.searchParams.set('ref', ref);
+    const response = await send(
+      url,
+      'application/vnd.github.raw+json',
+      etag !== undefined ? { 'if-none-match': etag } : {},
+    );
+    if (response.status === 304) return { notModified: true };
+    let text: string;
+    try {
+      text = await response.text();
+    } catch {
+      throw new GitHubError('network', 'GitHub could not be reached.');
+    }
+    const responseEtag = response.headers.get('etag');
+    return {
+      notModified: false,
+      text,
+      ...(responseEtag === null ? {} : { etag: responseEtag }),
+    };
+  };
+
+  return {
+    listOrgRepos,
+    getRepo,
+    listTree,
+    // Read the token on every access (ADR 0084): the daemon builds one
+    // client per guild at startup, and a token saved later must take effect
+    // without a restart. Never logged or thrown, only compared here.
+    get authenticated() {
+      const current = deps.token();
+      return current !== undefined && current !== '';
+    },
+    getFileRaw,
+  };
 };

@@ -1069,6 +1069,166 @@ describe('PUT /api/assistant/resources/:id (ADR 0073 enqueue on add)', () => {
   });
 });
 
+describe('PUT /api/assistant/resources/:id/enabled (ADR 0084)', () => {
+  const putEnabled = (cookie: string, csrf: string, id: string, payload: unknown) =>
+    app.inject({
+      method: 'PUT',
+      url: `/api/assistant/resources/${id}/enabled`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+  const seedGithubChild = (over: Record<string, unknown> = {}) => {
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, {
+      id: 'gh-acme',
+      guildId: GUILD,
+      title: 'acme',
+      url: 'https://github.com/acme',
+      kind: 'github-org',
+      enabled: true,
+      reviewedAt: new Date(0).toISOString(),
+      meta: { owner: 'acme' },
+    });
+    assistantRepo.putResource(scope, {
+      id: 'gh-acme-widget',
+      guildId: GUILD,
+      title: 'acme/widget',
+      url: 'https://github.com/acme/widget',
+      kind: 'github-repo',
+      enabled: true,
+      reviewedAt: new Date(0).toISOString(),
+      parentId: 'gh-acme',
+      meta: { owner: 'acme', repo: 'widget', branch: 'main' },
+      ...over,
+    });
+    return scope;
+  };
+
+  it('disables a github-repo child, keeps its parentId and meta, and records disabledByOwner', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = seedGithubChild();
+    const response = await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ ok: true });
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: false, parentId: 'gh-acme' });
+    expect(stored?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'main',
+      disabledByOwner: true,
+    });
+  });
+
+  it('enabling a github-repo child clears disabledByOwner but keeps its other meta', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = seedGithubChild({
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', private: true, disabledByOwner: true },
+    });
+    const response = await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: true });
+    expect(response.statusCode).toBe(200);
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: true, parentId: 'gh-acme' });
+    expect(stored?.meta).toEqual({ owner: 'acme', repo: 'widget', branch: 'main', private: true });
+    expect(stored?.meta).not.toHaveProperty('disabledByOwner');
+  });
+
+  it('records disabledByOwner when a github-org is disabled', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = seedGithubChild();
+    expect(await putEnabled(cookie, csrf, 'gh-acme', { enabled: false })).toMatchObject({
+      statusCode: 200,
+    });
+    expect(
+      assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme')?.meta,
+    ).toEqual({ owner: 'acme', disabledByOwner: true });
+  });
+
+  it('toggles a website with no meta', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, {
+      id: 'res-1',
+      guildId: GUILD,
+      title: 'A resource',
+      url: 'https://example.com/guide',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(0).toISOString(),
+    });
+    expect((await putEnabled(cookie, csrf, 'res-1', { enabled: false })).statusCode).toBe(200);
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'res-1');
+    expect(stored).toMatchObject({ enabled: false });
+    expect(stored?.meta).toBeUndefined();
+    expect((await putEnabled(cookie, csrf, 'res-1', { enabled: true })).statusCode).toBe(200);
+    expect(assistantRepo.listResources(scope).find((r) => r.id === 'res-1')).toMatchObject({
+      enabled: true,
+    });
+  });
+
+  it('keeps fetch status and last-fetched time when toggling enabled', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = seedGithubChild();
+    assistantRepo.recordResourceFetch(scope, 'gh-acme-widget', {
+      status: 'ok',
+      at: 123,
+      detail: 'fresh evidence',
+    });
+    expect((await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false })).statusCode).toBe(
+      200,
+    );
+    expect(
+      assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget'),
+    ).toMatchObject({ enabled: false, fetchStatus: 'ok', lastFetchedAt: 123 });
+  });
+
+  it('records an audit row with before and after enabled', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seedGithubChild();
+    expect((await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false })).statusCode).toBe(
+      200,
+    );
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_resource.enabled_changed');
+    expect(row).toMatchObject({ subjectType: 'assistant_resource', subjectId: 'gh-acme-widget' });
+    expect(JSON.parse(row?.before as string)).toEqual({ enabled: true });
+    expect(JSON.parse(row?.after as string)).toEqual({ enabled: false });
+  });
+
+  it('answers 404 for an unknown id', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const response = await putEnabled(cookie, csrf, 'no-such-resource', { enabled: false });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: 'not-found' });
+  });
+
+  it('answers 400 for a bad body', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seedGithubChild();
+    const response = await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: 'yes' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'bad-request' });
+  });
+
+  it('requires config.write', async () => {
+    seedGithubChild();
+    const { cookie, csrf } = await signIn();
+    const response = await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false });
+    expect(response.statusCode).toBe(403);
+    expect(response.json()).toMatchObject({ error: 'no-grant' });
+  });
+});
+
 describe('GET /api/assistant/skills/:skillId', () => {
   const get = (cookie: string, skillId: string) =>
     app.inject({

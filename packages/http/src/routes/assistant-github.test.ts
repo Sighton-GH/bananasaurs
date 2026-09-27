@@ -353,15 +353,20 @@ describe('POST /api/assistant/github/preview', () => {
 describe('POST /api/assistant/github/import', () => {
   beforeEach(() => grant('config.write'));
 
-  it('imports an org with selected repos, enqueues a refresh for each, audits counts only', async () => {
+  it('imports an org with every listed repository, enqueues a refresh for each, audits counts only', async () => {
     const { cookie, csrf } = await signIn();
-    client.orgRepos = [summary('widget'), summary('gadget'), summary('forked', { fork: true })];
+    client.orgRepos = [
+      summary('widget'),
+      summary('gadget'),
+      summary('forked', { fork: true }),
+      summary('old', { archived: true }),
+      summary('secret', { private: true }),
+    ];
     const response = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme',
-      repos: ['widget', 'gadget'],
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ created: 3 });
+    expect(response.json()).toEqual({ created: 6 });
 
     const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
     const org = resources.find((r) => r.kind === 'github-org');
@@ -372,23 +377,36 @@ describe('POST /api/assistant/github/import', () => {
       enabled: true,
       meta: { owner: 'acme' },
     });
+    expect(org?.meta).toEqual({ owner: 'acme' });
     const children = resources.filter((r) => r.parentId === org?.id);
-    expect(children.map((c) => c.title).sort()).toEqual(['acme/gadget', 'acme/widget']);
-    expect(children[0]).toMatchObject({
+    expect(children.map((c) => c.title).sort()).toEqual([
+      'acme/forked',
+      'acme/gadget',
+      'acme/old',
+      'acme/secret',
+      'acme/widget',
+    ]);
+    expect(resources.find((r) => r.id === 'gh-acme-gadget')).toMatchObject({
       kind: 'github-repo',
       enabled: true,
       meta: { owner: 'acme', repo: 'gadget', branch: 'main' },
     });
-    expect(children[0]?.meta).not.toHaveProperty('autoDiscovered');
+    expect(resources.find((r) => r.id === 'gh-acme-gadget')?.meta).not.toHaveProperty(
+      'autoDiscovered',
+    );
+    expect(resources.find((r) => r.id === 'gh-acme-secret')?.meta).toMatchObject({ private: true });
     expect(enqueued).toEqual([
       { resourceId: 'gh-acme', reason: 'added' },
       { resourceId: 'gh-acme-widget', reason: 'added' },
       { resourceId: 'gh-acme-gadget', reason: 'added' },
+      { resourceId: 'gh-acme-forked', reason: 'added' },
+      { resourceId: 'gh-acme-old', reason: 'added' },
+      { resourceId: 'gh-acme-secret', reason: 'added' },
     ]);
 
     const rows = auditRows();
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0]?.after as string)).toEqual({ kind: 'org', created: 3 });
+    expect(JSON.parse(rows[0]?.after as string)).toEqual({ kind: 'org', created: 6 });
     const serialised = JSON.stringify(rows[0]);
     expect(serialised).not.toContain('widget');
     expect(serialised).not.toContain('github.com');
@@ -396,23 +414,17 @@ describe('POST /api/assistant/github/import', () => {
     expect(response.body.toLowerCase()).not.toContain('authorization');
   });
 
-  it('stores the forks/archived toggles and the include globs', async () => {
+  it('stores the include globs on each org child and keeps the org meta to owner only', async () => {
     const { cookie, csrf } = await signIn();
     client.orgRepos = [summary('forked', { fork: true }), summary('old', { archived: true })];
     const response = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme',
-      includeForks: true,
-      includeArchived: true,
       include: ['docs/**'],
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ created: 3 });
     const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
-    expect(resources.find((r) => r.kind === 'github-org')?.meta).toEqual({
-      owner: 'acme',
-      includeForks: true,
-      includeArchived: true,
-    });
+    expect(resources.find((r) => r.kind === 'github-org')?.meta).toEqual({ owner: 'acme' });
     for (const child of resources.filter((r) => r.kind === 'github-repo')) {
       expect(child.meta).toMatchObject({ include: ['docs/**'] });
     }
@@ -517,7 +529,7 @@ describe('POST /api/assistant/github/import', () => {
     const { cookie, csrf } = await signIn();
     const response = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme',
-      repos: 'widget',
+      include: 'docs/**',
     });
     expect(response.statusCode).toBe(400);
     expect(auditRows()).toHaveLength(0);

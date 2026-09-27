@@ -38,6 +38,16 @@ describe('parseResourceMeta (Task 17)', () => {
     });
   });
 
+  it('keeps disabledByOwner: true for a resource the owner turned off', () => {
+    expect(
+      parseResourceMeta('{"owner":"acme","repo":"w","disabledByOwner":true}'),
+    ).toEqual({
+      owner: 'acme',
+      repo: 'w',
+      disabledByOwner: true,
+    });
+  });
+
   it('reads null and undefined as undefined', () => {
     expect(parseResourceMeta(null)).toBeUndefined();
     expect(parseResourceMeta(undefined)).toBeUndefined();
