@@ -390,9 +390,8 @@ describe('resolveReminderTargets', () => {
   });
 
   it('resolves cached display-name matches when search rejects', async () => {
-    const search = vi.fn(
-      async (_options: { query: string; limit: number }) =>
-        Promise.reject(new Error('offline')),
+    const search = vi.fn(async (_options: { query: string; limit: number }) =>
+      Promise.reject(new Error('offline')),
     );
     const targets = ok(
       await resolveReminderTargets(makeGuild({ search }), request({ members: ['Alex'] })),
