@@ -443,6 +443,58 @@ describe('acting tools (B2a)', () => {
     ).resolves.toMatchObject({ ok: false });
   });
 
+  it('refuses an invalid repeat without storing anything', async () => {
+    const insert = vi.fn(() => 'created' as const);
+    const p = ports({
+      reminderStore: {
+        insert,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    await expect(
+      runAssistantTool(
+        {
+          name: 'set_reminder',
+          args: { text: 'hi', when: '2026-09-24T12:30:00-07:00', repeat: { kind: 'weekly' } },
+        },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false, text: 'The repeat pattern was not valid.' });
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it('refuses overlong text, members, roles and empty text without storing anything', async () => {
+    const insert = vi.fn(() => 'created' as const);
+    const p = ports({
+      reminderStore: {
+        insert,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const when = '2026-09-24T12:30:00-07:00';
+    const cases = [
+      { text: 'x'.repeat(1501), when },
+      { text: '', when },
+      { text: 'hi', when, members: Array(26).fill('user') },
+      { text: 'hi', when, roles: Array(11).fill('role') },
+    ];
+    for (const args of cases) {
+      await expect(runAssistantTool({ name: 'set_reminder', args }, p)).resolves.toMatchObject({
+        ok: false,
+        text: 'The tool arguments were not valid.',
+      });
+    }
+    expect(insert).not.toHaveBeenCalled();
+  });
+
   it('passes a target problem through without inserting', async () => {
     const insert = vi.fn(() => 'created' as const);
     const p = ports({
