@@ -1,4 +1,4 @@
-import type { ConversationResolution, GenerationMessage } from '@bananasaurs/core';
+import { relativeAgo, type ConversationResolution, type GenerationMessage } from '@bananasaurs/core';
 import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
 import { escapeUntrustedClose } from './untrusted.js';
 
@@ -36,6 +36,7 @@ export interface ConversationContextInput {
   readonly botDisplayName: string;
   /** The just-written current user turn: stored, but never history. */
   readonly excludeTurnId?: string | undefined;
+  readonly now: number;
 }
 
 export interface ConversationContext {
@@ -48,6 +49,15 @@ export interface ConversationContext {
 /** A quoted message as untrusted evidence inside the user turn. */
 export const quoteEnvelopeFor = (quoted: QuotedMessage): string =>
   `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(escapeUntrustedClose(quoted.authorName))}]\n${escapeUntrustedClose(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
+
+/** ADR 0085: every earlier user turn reads `[Name, 3 min ago] …`. */
+export const labelUserTurn = (
+  turn: { readonly authorName: string; readonly at: number; readonly text: string },
+  now: number,
+): string => {
+  const speaker = turn.authorName.replace(/\s+/g, ' ').trim() || 'a member';
+  return `[${speaker}, ${relativeAgo(turn.at, now)}] ${turn.text}`;
+};
 
 export const buildConversationContext = (input: ConversationContextInput): ConversationContext => {
   const conversationId =
@@ -94,7 +104,7 @@ export const buildConversationContext = (input: ConversationContextInput): Conve
     }
     return {
       role: 'user',
-      text: participants > 1 ? `${turn.authorName}: ${turn.text}` : turn.text,
+      text: labelUserTurn(turn, input.now),
     };
   });
 
