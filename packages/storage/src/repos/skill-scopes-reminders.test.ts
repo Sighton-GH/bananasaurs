@@ -119,8 +119,7 @@ describe('skill scopes and richer reminder storage', () => {
         .filter((line) => !line.trim().startsWith('--'))
         .join('\n')
         .trim();
-      if (statement.startsWith('UPDATE') || statement.startsWith('DELETE'))
-        t.raw.exec(statement);
+      if (statement.startsWith('UPDATE') || statement.startsWith('DELETE')) t.raw.exec(statement);
     }
     const byId = new Map(listBehaviours(a).map((entry) => [entry.id, entry.allowedSkillIds]));
     expect([...(byId.get('b1') ?? [])].sort()).toEqual(['reminders', 'search-club']);
@@ -187,13 +186,19 @@ describe('skill scopes and richer reminder storage', () => {
     const other = '555555555555555555';
     insertReminder(a, { ...reminder(A, 'mine'), creatorId: U, dueAt: 1000 });
     insertReminder(a, { ...reminder(A, 'theirs'), creatorId: other, dueAt: 1000 });
-    insertReminder(a, { ...reminder(A, 'finished'), creatorId: U, status: 'delivered', dueAt: 500 });
+    insertReminder(a, {
+      ...reminder(A, 'finished'),
+      creatorId: U,
+      status: 'delivered',
+      dueAt: 500,
+    });
     expect(listRemindersForCreator(a, U, { includeFinished: false }).map((r) => r.id)).toEqual([
       'mine',
     ]);
-    expect(
-      listRemindersForCreator(a, U, { includeFinished: true }).map((r) => r.id),
-    ).toEqual(['finished', 'mine']);
+    expect(listRemindersForCreator(a, U, { includeFinished: true }).map((r) => r.id)).toEqual([
+      'finished',
+      'mine',
+    ]);
     expect(listRemindersForCreator(a, other, { includeFinished: false }).map((r) => r.id)).toEqual([
       'theirs',
     ]);

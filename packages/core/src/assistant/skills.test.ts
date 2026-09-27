@@ -22,9 +22,7 @@ describe('assistant skill scopes', () => {
   });
 
   it('uses exactly the non-acting skills as starters', () => {
-    const nonActing = CLUB_ASSISTANT_SKILLS.filter((entry) => !entry.acts).map(
-      (entry) => entry.id,
-    );
+    const nonActing = CLUB_ASSISTANT_SKILLS.filter((entry) => !entry.acts).map((entry) => entry.id);
     expect(nonActing.length).toBeGreaterThan(0);
     expect([...STARTER_SKILL_IDS].sort()).toEqual([...nonActing].sort());
   });

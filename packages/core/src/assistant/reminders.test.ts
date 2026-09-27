@@ -225,7 +225,9 @@ describe('deliverDueReminders', () => {
     expect(rows.get('r1')?.dueAt).toBe(due + 86_400_000);
     expect(await store.claimDue(due + 3_600_000, 10, REMINDER_DELIVERY_STALE_MS)).toEqual([]);
     expect(
-      (await store.claimDue(due + 86_400_000, 10, REMINDER_DELIVERY_STALE_MS)).map((entry) => entry.id),
+      (await store.claimDue(due + 86_400_000, 10, REMINDER_DELIVERY_STALE_MS)).map(
+        (entry) => entry.id,
+      ),
     ).toEqual(['r1']);
   });
 });
