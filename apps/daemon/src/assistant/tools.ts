@@ -103,7 +103,8 @@ export interface AssistantToolPorts {
     request: Omit<ReminderTargetRequest, 'askerId' | 'currentChannelId'>,
   ) => Promise<ReminderTargetResult>;
   readonly reminderStore: {
-    insert(reminder: Reminder): 'created' | 'duplicate';
+    /** Guild scope stays out of the tool: B2b's closure adds `scope.guildId`. */
+    insert(reminder: Omit<Reminder, 'guildId'>): 'created' | 'duplicate';
     get(id: string): StoredReminder | undefined;
     update(id: string, patch: ReminderPatch): 'updated' | 'not-found' | 'not-editable';
     cancel(id: string): boolean;
@@ -574,9 +575,8 @@ export const runAssistantTool = async (
           if (!resolved.ok) return { ...evidence(name, resolved.problem), ok: false };
           const targets: ResolvedReminderTargets = resolved.targets;
           const n = nextInvocationIndex(ports);
-          const reminder: Reminder = {
+          const reminder: Omit<Reminder, 'guildId'> = {
             id: `rem_${ports.invocationKey}_${n}`,
-            guildId: '',
             creatorId: ports.userId,
             destinationId: targets.channelId,
             text: draft.text,
