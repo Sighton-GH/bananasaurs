@@ -127,6 +127,24 @@ describe('skill scopes and richer reminder storage', () => {
     t.close();
   });
 
+  it('reads bad mentions and recurrence JSON as absent defaults', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    insertReminder(a, reminder(A, 'bad'));
+    t.raw.exec(
+      `UPDATE assistant_reminders SET mentions_json = 'not-json', recurrence_json = 'not-json' WHERE guild_id = '${A}' AND reminder_id = 'bad'`,
+    );
+    expect(getReminder(a, 'bad')?.mentions).toEqual({
+      userIds: [],
+      roleIds: [],
+      everyone: false,
+      here: false,
+    });
+    expect(getReminder(a, 'bad')?.recurrence).toBeUndefined();
+    t.close();
+  });
+
   it('has the requested migration tag and data rewrite', () => {
     const journal = JSON.parse(
       readFileSync(
