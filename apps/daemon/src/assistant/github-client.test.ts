@@ -55,6 +55,20 @@ describe('createGitHubClient — auth and headers', () => {
     expect(client.authenticated).toBe(false);
   });
 
+  it('authenticated follows the current token, so a token saved later takes effect at once', async () => {
+    let token: string | undefined;
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValue(ok({ tree: [], truncated: false }));
+    const client = createGitHubClient({ token: () => token, fetch, guard: noopGuard });
+    expect(client.authenticated).toBe(false);
+    token = 'test-token';
+    expect(client.authenticated).toBe(true);
+    await client.listTree('acme', 'widget', 'main');
+    const init = fetch.mock.calls[0]?.[1];
+    expect(new Headers(init?.headers).get('authorization')).toBe('Bearer test-token');
+  });
+
   it('never logs or returns the token in an error', async () => {
     const fetch = vi
       .fn<typeof globalThis.fetch>()

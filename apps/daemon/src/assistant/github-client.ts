@@ -126,8 +126,6 @@ const toTreeEntry = (entry: z.infer<typeof treeEntrySchema>): GitHubTreeEntry =>
 });
 
 export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
-  const token = deps.token();
-  const authenticated = token !== undefined && token !== '';
   const timeoutMs = deps.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 
   const send = async (
@@ -309,5 +307,17 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
     };
   };
 
-  return { listOrgRepos, getRepo, listTree, authenticated, getFileRaw };
+  return {
+    listOrgRepos,
+    getRepo,
+    listTree,
+    // Read the token on every access (ADR 0084): the daemon builds one
+    // client per guild at startup, and a token saved later must take effect
+    // without a restart. Never logged or thrown, only compared here.
+    get authenticated() {
+      const current = deps.token();
+      return current !== undefined && current !== '';
+    },
+    getFileRaw,
+  };
 };
