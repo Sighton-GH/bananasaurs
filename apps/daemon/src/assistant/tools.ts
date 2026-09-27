@@ -554,7 +554,11 @@ export const runAssistantTool = async (
             recurrence = built.recurrence;
           }
           const draft = validateReminderDraft(
-            { dueAt, text: args.text, context: args.context },
+            {
+              dueAt,
+              text: args.text,
+              ...(args.context === undefined ? {} : { context: args.context }),
+            },
             ports.now(),
           );
           if (!draft.ok) return refused(name, draft.error);
@@ -639,11 +643,12 @@ export const runAssistantTool = async (
             recurrence = built.recurrence;
           }
           if (args.text !== undefined || dueAt !== undefined || args.context !== undefined) {
+            const context = args.context ?? stored.context;
             const draft = validateReminderDraft(
               {
                 dueAt: dueAt ?? stored.dueAt,
                 text: args.text ?? stored.text,
-                context: args.context ?? stored.context,
+                ...(context === undefined ? {} : { context }),
               },
               ports.now(),
             );
