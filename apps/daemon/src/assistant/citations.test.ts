@@ -11,6 +11,11 @@ describe('citation registry', () => {
     expect(registry.tag({ ...source, heading: 'Guide' })).toBe('S2');
   });
 
+  it('returns trimmed text with no cited sources when there are no tags', () => {
+    const registry = createCitationRegistry();
+    expect(applyCitations('  hello  ', registry)).toEqual({ text: 'hello', cited: [] });
+  });
+
   it('strips tags, deduplicates cited sources, and preserves order', () => {
     const registry = createCitationRegistry();
     const first = { title: 'First', url: 'https://example.com/1' };
