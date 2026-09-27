@@ -1,11 +1,11 @@
 import {
   relativeAgo,
   safeDisplayName,
+  neutraliseMarkers,
   type ConversationResolution,
   type GenerationMessage,
 } from '@bananasaurs/core';
 import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
-import { escapeUntrustedClose } from './untrusted.js';
 
 /**
  * Builds the conversation half of a provider request (Task 14, ADR 0072).
@@ -53,7 +53,7 @@ export interface ConversationContext {
 
 /** A quoted message as untrusted evidence inside the user turn. */
 export const quoteEnvelopeFor = (quoted: QuotedMessage): string =>
-  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(escapeUntrustedClose(quoted.authorName))}]\n${escapeUntrustedClose(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
+  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(safeDisplayName(quoted.authorName) ?? 'a member')}]\n${neutraliseMarkers(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
 
 /** ADR 0085: every earlier user turn reads `[Name, 3 min ago] …`. */
 export const labelUserTurn = (

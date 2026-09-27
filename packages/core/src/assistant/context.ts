@@ -2,6 +2,7 @@ import type { AssistantBehaviour, AssistantSkill } from './types.js';
 import type { ClubResource } from './resources.js';
 import { surfaceInstruction } from './behaviours.js';
 import { SAFETY_SUFFIX } from './safety-suffix.js';
+import { neutraliseMarkers } from './untrusted.js';
 
 export interface RetrievedEvidence {
   readonly sourceId: string;
@@ -85,11 +86,14 @@ export const compileAssistantContext = (input: {
   for (const item of evidence) {
     if (remaining <= 0) break;
     const citePrefix = item.citeTag === undefined ? '' : `cite=${item.citeTag} `;
+    // Neutralise before measuring: the escape grows `[/UNTRUSTED` markers,
+    // so measuring first would let a hostile body push the block over budget.
+    const title = neutraliseMarkers(item.title);
     const header =
       item.chunkId === undefined
-        ? `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(item.title)}]`
-        : `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(item.title)} chunk=${item.chunkId}]`;
-    const block = `${header}\n${clean(item.text, remaining)}\n[/UNTRUSTED CLUB EVIDENCE]`;
+        ? `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(title)}]`
+        : `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(title)} chunk=${item.chunkId}]`;
+    const block = `${header}\n${clean(neutraliseMarkers(item.text), remaining)}\n[/UNTRUSTED CLUB EVIDENCE]`;
     blocks.push(block);
     remaining -= block.length;
   }
