@@ -389,6 +389,18 @@ describe('resolveReminderTargets', () => {
     expect(result.mentions.userIds).toHaveLength(25);
   });
 
+  it('resolves cached display-name matches when search rejects', async () => {
+    const search = vi.fn(
+      async (_options: { query: string; limit: number }) =>
+        Promise.reject(new Error('offline')),
+    );
+    const targets = ok(
+      await resolveReminderTargets(makeGuild({ search }), request({ members: ['Alex'] })),
+    );
+    expect(targets.mentions.userIds).toEqual(['20000000000000001']);
+    expect(targets.memberNames).toEqual(['Alex']);
+  });
+
   it('fails closed for unavailable guild, bot, or asker and turns lookup errors into problems', async () => {
     const unavailable = "I can't check permissions right now, so I didn't set the reminder.";
     await expect(resolveReminderTargets(undefined, request())).resolves.toEqual({
