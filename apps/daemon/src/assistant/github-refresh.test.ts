@@ -144,6 +144,22 @@ class FakeStore implements GithubResourceStore {
   putResource(_scope: GuildScope, input: ClubResource): void {
     this.rows.set(input.id, input);
   }
+  setResourceEnabled(
+    _scope: GuildScope,
+    id: string,
+    input: { readonly enabled: boolean; readonly meta: ClubResource['meta'] },
+  ): boolean {
+    const row = this.rows.get(id);
+    if (row === undefined) return false;
+    const { meta: _dropped, ...rest } = row;
+    this.rows.set(
+      id,
+      input.meta === undefined
+        ? { ...rest, enabled: input.enabled }
+        : { ...rest, enabled: input.enabled, meta: input.meta },
+    );
+    return true;
+  }
   recordResourceFetch(
     _scope: GuildScope,
     id: string,
@@ -355,6 +371,36 @@ describe('refreshGithubOrg', () => {
     await refreshGithubOrg(SCOPE, current, d);
 
     expect(store.rows.get('widget-id')).toMatchObject({ enabled: true });
+  });
+
+  it('re-enabling a returned child does not reset its recorded fetch status', async () => {
+    const client = new FakeClient();
+    client.orgRepos = [summary('widget')];
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('no raw fetch');
+    });
+    const { deps: d, store } = deps(client, fetcher);
+    const current = org();
+    store.rows.set('gh-acme', current);
+    const returned = repo({
+      id: 'widget-id',
+      title: 'acme/widget',
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+      lastFetchedAt: 123,
+      fetchStatus: 'ok',
+    });
+    store.rows.set('widget-id', returned);
+
+    await refreshGithubOrg(SCOPE, current, d);
+
+    expect(store.rows.get('widget-id')).toMatchObject({
+      enabled: true,
+      fetchStatus: 'ok',
+      lastFetchedAt: 123,
+      title: 'acme/widget',
+      url: 'https://github.com/acme/widget',
+    });
   });
 
   it('disables auto-discovered children no longer listed, never deletes, and leaves owner children alone', async () => {

@@ -7,6 +7,7 @@ import {
   selectRepoFiles,
   type Chunk,
   type ClubResource,
+  type ResourceMeta,
 } from '@bananasaurs/core';
 import { computeDocId, type GuildScope } from '@bananasaurs/storage';
 import { GitHubError, type GitHubClient } from './github-client.js';
@@ -50,6 +51,11 @@ export interface StoredDoc {
 export interface GithubResourceStore {
   listResources(scope: GuildScope): readonly ClubResource[];
   putResource(scope: GuildScope, input: ClubResource): void;
+  setResourceEnabled(
+    scope: GuildScope,
+    id: string,
+    input: { readonly enabled: boolean; readonly meta: ResourceMeta | undefined },
+  ): boolean;
   recordResourceFetch(
     scope: GuildScope,
     id: string,
@@ -215,7 +221,7 @@ export async function refreshGithubOrg(
       // owner turned it off, in which case it stays off (ADR 0084). Nothing
       // else about an existing row is touched here; the owner may have
       // edited its title, URL or branch by hand.
-      deps.store.putResource(scope, { ...existing, enabled: true });
+      deps.store.setResourceEnabled(scope, existing.id, { enabled: true, meta: existing.meta });
     }
   }
 
@@ -226,7 +232,7 @@ export async function refreshGithubOrg(
       child.enabled &&
       (key === undefined || !eligibleNames.has(key))
     )
-      deps.store.putResource(scope, { ...child, enabled: false });
+      deps.store.setResourceEnabled(scope, child.id, { enabled: false, meta: child.meta });
   }
 
   deps.store.recordResourceFetch(scope, resource.id, {
@@ -263,7 +269,8 @@ export async function refreshGithubRepo(
     return fail(scope, resource, deps, 'This is not a GitHub repository URL.');
 
   const disableNotFound = (target: ClubResource): GithubRefreshOutcome => {
-    if (target.enabled) deps.store.putResource(scope, { ...target, enabled: false });
+    if (target.enabled)
+      deps.store.setResourceEnabled(scope, target.id, { enabled: false, meta: target.meta });
     return fail(
       scope,
       target,
@@ -282,7 +289,7 @@ export async function refreshGithubRepo(
       ...base,
       meta: isPrivate ? { ...rest, owner, private: true } : { ...rest, owner },
     };
-    deps.store.putResource(scope, next);
+    deps.store.setResourceEnabled(scope, base.id, { enabled: base.enabled, meta: next.meta });
     return next;
   };
 
@@ -325,7 +332,11 @@ export async function refreshGithubRepo(
     // decision 4): turn it off instead of caching its README in the open.
     // Nothing is fetched here — no public README, no API call.
     if (resource.meta?.private === true) {
-      if (resource.enabled) deps.store.putResource(scope, { ...resource, enabled: false });
+      if (resource.enabled)
+        deps.store.setResourceEnabled(scope, resource.id, {
+          enabled: false,
+          meta: resource.meta,
+        });
       return fail(
         scope,
         resource,
