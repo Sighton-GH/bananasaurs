@@ -1,4 +1,16 @@
+import { z } from 'zod';
+import { nextOccurrence, type ReminderRecurrence } from './recurrence.js';
+
 export type ReminderStatus = 'scheduled' | 'delivering' | 'delivered' | 'cancelled' | 'failed';
+export const snowflakeString = z.string().regex(/^\d{17,20}$/);
+export const reminderMentions = z.object({
+  userIds: z.array(snowflakeString).max(25).default([]),
+  roleIds: z.array(snowflakeString).max(10).default([]),
+  everyone: z.boolean().default(false),
+  here: z.boolean().default(false),
+}).strict();
+export type ReminderMentions = z.infer<typeof reminderMentions>;
+export const NO_MENTIONS: ReminderMentions = reminderMentions.parse({});
 export interface Reminder {
   readonly id: string;
   readonly guildId: string;
@@ -9,6 +21,11 @@ export interface Reminder {
   readonly createdAt: number;
   readonly status: ReminderStatus;
   readonly dedupeKey: string;
+  readonly mentions: ReminderMentions;
+  readonly recurrence?: ReminderRecurrence;
+  readonly context?: string;
+  readonly deliveredCount: number;
+  readonly updatedAt?: number;
 }
 export interface ReminderStore {
   create(reminder: Reminder): Promise<void>;
@@ -22,6 +39,7 @@ export interface ReminderStore {
    */
   claimDue(now: number, limit: number, staleMs: number): Promise<readonly Reminder[]>;
   complete(id: string): Promise<void>;
+  reschedule(id: string, nextDueAt: number): Promise<void>;
   fail(id: string, reason: string): Promise<void>;
   /**
    * Returns a claimed reminder to `scheduled` for a later pass, keeping the
@@ -90,7 +108,7 @@ export const REMINDER_DELIVERY_STALE_MS = 5 * 60_000;
  * Returns the error, or the trimmed text on success.
  */
 export const validateReminderDraft = (
-  input: { readonly dueAt: number; readonly text: string },
+  input: { readonly dueAt: number; readonly text: string; readonly context?: string },
   now: number,
 ):
   { readonly ok: true; readonly text: string } | { readonly ok: false; readonly error: string } => {
@@ -99,6 +117,8 @@ export const validateReminderDraft = (
   const text = input.text.trim();
   if (text.length === 0 || text.length > 1_500)
     return { ok: false, error: 'reminder text must be 1 to 1500 characters' };
+  if (input.context !== undefined && input.context.length > 300)
+    return { ok: false, error: 'reminder context must be at most 300 characters' };
   return { ok: true, text };
 };
 
@@ -153,7 +173,17 @@ export const deliverDueReminders = async (
   for (const reminder of await store.claimDue(now, limit, REMINDER_DELIVERY_STALE_MS)) {
     try {
       await delivery.send(reminder);
-      await store.complete(reminder.id);
+       if (reminder.recurrence === undefined) await store.complete(reminder.id);
+       else {
+         const next = nextOccurrence(
+           reminder.recurrence,
+           reminder.dueAt,
+           Math.max(now, reminder.dueAt),
+           reminder.deliveredCount + 1,
+         );
+         if (next === undefined) await store.complete(reminder.id);
+         else await store.reschedule(reminder.id, next);
+       }
       delivered += 1;
     } catch (error) {
       const reason = error instanceof Error ? error.message : 'delivery failed';
