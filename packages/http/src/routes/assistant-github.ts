@@ -166,6 +166,12 @@ export const registerAssistantGithubRoutes = (
     const enqueue = (resourceId: string): void => {
       deps.enqueueResourceRefresh?.(session.scope, resourceId, 'added');
     };
+    // Read once per request: re-import honours ADR 0084 — an existing row
+    // keeps its enabled flag and an existing `disabledByOwner` is carried
+    // into the rebuilt meta.
+    const existingById = new Map(
+      assistantRepo.listResources(session.scope).map((resource) => [resource.id, resource]),
+    );
 
     try {
       if (target.kind === 'org') {
@@ -175,26 +181,32 @@ export const registerAssistantGithubRoutes = (
         const selected = (await client.listOrgRepos(target.owner)).repos;
 
         const orgId = githubOrgId(target.owner);
+        const existingOrg = existingById.get(orgId);
+        const orgDisabled = existingOrg?.meta?.disabledByOwner === true;
         assistantRepo.putResource(session.scope, {
           id: orgId,
           guildId: session.guildId,
           title: target.owner,
           url: `https://github.com/${target.owner}`,
           kind: 'github-org',
-          enabled: true,
+          enabled: existingOrg?.enabled ?? true,
           reviewedAt: nowIso,
-          meta: { owner: target.owner },
+          meta: orgDisabled
+            ? { owner: target.owner, disabledByOwner: true }
+            : { owner: target.owner },
         });
         enqueue(orgId);
         for (const repo of selected) {
           const childId = githubChildId(target.owner, repo.name);
+          const existingChild = existingById.get(childId);
+          const childDisabled = existingChild?.meta?.disabledByOwner === true;
           assistantRepo.putResource(session.scope, {
             id: childId,
             guildId: session.guildId,
             title: `${target.owner}/${repo.name}`,
             url: `https://github.com/${target.owner}/${repo.name}`,
             kind: 'github-repo',
-            enabled: true,
+            enabled: existingChild?.enabled ?? true,
             reviewedAt: nowIso,
             parentId: orgId,
             meta: {
@@ -203,6 +215,7 @@ export const registerAssistantGithubRoutes = (
               branch: repo.defaultBranch,
               ...(include === undefined ? {} : { include }),
               ...(repo.private ? { private: true } : {}),
+              ...(childDisabled ? { disabledByOwner: true as const } : {}),
             },
           });
           enqueue(childId);
@@ -223,13 +236,15 @@ export const registerAssistantGithubRoutes = (
       const detail = await client.getRepo(target.owner, target.repo);
       const branch = target.ref ?? detail.defaultBranch;
       const repoId = githubChildId(target.owner, target.repo);
+      const existingRepo = existingById.get(repoId);
+      const repoDisabled = existingRepo?.meta?.disabledByOwner === true;
       assistantRepo.putResource(session.scope, {
         id: repoId,
         guildId: session.guildId,
         title: `${target.owner}/${target.repo}`,
         url: `https://github.com/${target.owner}/${target.repo}`,
         kind: 'github-repo',
-        enabled: true,
+        enabled: existingRepo?.enabled ?? true,
         reviewedAt: nowIso,
         meta: {
           owner: target.owner,
@@ -237,6 +252,7 @@ export const registerAssistantGithubRoutes = (
           branch,
           ...(include === undefined ? {} : { include }),
           ...(detail.private ? { private: true } : {}),
+          ...(repoDisabled ? { disabledByOwner: true as const } : {}),
         },
       });
       enqueue(repoId);
