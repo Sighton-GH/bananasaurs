@@ -735,11 +735,6 @@ export const runAssistantTool = async (
             timeZone: ports.timeZone,
             recurrence: stored.recurrence,
             context: stored.context,
-            channelName: stored.destinationId,
-            memberNames: [...stored.mentions.userIds],
-            roleNames: [...stored.mentions.roleIds],
-            everyone: stored.mentions.everyone,
-            here: stored.mentions.here,
           });
           return { ...evidence(name, summary), actionSummary: summary };
         } catch (err) {

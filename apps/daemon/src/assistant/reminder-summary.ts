@@ -41,11 +41,12 @@ export interface ReminderSummaryInput {
   readonly timeZone: string;
   readonly recurrence?: ReminderRecurrence | undefined;
   readonly context?: string | undefined;
-  readonly channelName: string;
-  readonly memberNames: readonly string[];
-  readonly roleNames: readonly string[];
-  readonly everyone: boolean;
-  readonly here: boolean;
+  /** Unused by the `cancelled` summary; omit it there instead of passing ids. */
+  readonly channelName?: string | undefined;
+  readonly memberNames?: readonly string[] | undefined;
+  readonly roleNames?: readonly string[] | undefined;
+  readonly everyone?: boolean | undefined;
+  readonly here?: boolean | undefined;
 }
 
 const formatWhen = (dueAt: number, timeZone: string): string => {
@@ -66,7 +67,12 @@ const formatWhen = (dueAt: number, timeZone: string): string => {
   return `${date}, ${time}`;
 };
 
-const formatPings = (input: ReminderSummaryInput): string => {
+const formatPings = (input: {
+  readonly memberNames: readonly string[];
+  readonly roleNames: readonly string[];
+  readonly everyone: boolean;
+  readonly here: boolean;
+}): string => {
   const parts: string[] = [];
   if (input.everyone) parts.push('@everyone');
   if (input.here) parts.push('@here');
@@ -114,8 +120,13 @@ export const reminderSummary = (
   const lines = [
     head,
     `• When: ${when}`,
-    `• Where: #${summaryField(input.channelName)}`,
-    `• Pings: ${formatPings(input)}`,
+    `• Where: #${summaryField(input.channelName ?? '')}`,
+    `• Pings: ${formatPings({
+      memberNames: input.memberNames ?? [],
+      roleNames: input.roleNames ?? [],
+      everyone: input.everyone ?? false,
+      here: input.here ?? false,
+    })}`,
   ];
   const why = input.context === undefined ? '' : summaryField(input.context);
   if (why.length > 0) lines.push(`• Why: ${why}`);
