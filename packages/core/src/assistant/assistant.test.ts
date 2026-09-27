@@ -6,6 +6,8 @@ import {
   createReminder,
   deliverDueReminders,
   enabledResourcesForGuild,
+  LEGACY_TOOL_SENTENCE,
+  OUTPUT_RULES,
   resolveAssistantBehaviour,
   SAFETY_SUFFIX,
   skillInstructionLine,
@@ -222,7 +224,7 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
       'PREFERRED RESOURCES (use these first)\nweb: Website - https://example.com/web',
     );
     expect(compiled.systemInstruction).toContain(
-      'OTHER CLUB RESOURCES (open them with the open_resource tool when useful)\nrules: Rules - https://example.com/rules',
+      'OTHER CLUB RESOURCES (you can open them when useful)\nrules: Rules - https://example.com/rules',
     );
   });
 
@@ -254,7 +256,7 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
       ],
     });
     expect(compiled.systemInstruction).toContain(
-      'CLUB SOURCES (search them with search_sources; open one with read_chunk, outline or open_resource)',
+      'CLUB SOURCES (you can look inside these when a question needs them)',
     );
     expect(compiled.systemInstruction).toContain('web · Website (website) · updated 2h ago');
     expect(compiled.systemInstruction).not.toContain('PREFERRED RESOURCES');
@@ -279,6 +281,92 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
     });
     expect(compiled.evidenceEnvelope).toContain('chunk=c_d_0');
     expect(compiled.evidenceEnvelope).toContain('[UNTRUSTED CLUB EVIDENCE');
+  });
+});
+
+describe('compileAssistantContext output rules (ADR 0085)', () => {
+  const resource = (id: string, title: string) => ({
+    id,
+    guildId: 'g1',
+    title,
+    url: `https://example.com/${id}`,
+    kind: 'website' as const,
+    enabled: true,
+    reviewedAt: '2026-09-01T00:00:00.000Z',
+  });
+  const forbidden = ['search_sources', 'read_chunk', 'outline', 'open_resource'];
+
+  it('places the output-rules section right after the safety suffix, outside protectedText', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    expect(compiled.sections.map((section) => section.name)).toEqual([
+      'surface',
+      'behaviour-prompt',
+      'safety-suffix',
+      'output-rules',
+      'evidence-rule',
+      'server-card',
+      'skills',
+    ]);
+    const byName = new Map(compiled.sections.map((section) => [section.name, section.text]));
+    expect(byName.get('output-rules')).toBe(OUTPUT_RULES);
+    expect(compiled.systemInstruction).toContain('OUTPUT RULES');
+    expect(compiled.systemInstruction).toContain('Never mention tools');
+    expect(compiled.protectedText).not.toContain('OUTPUT RULES');
+  });
+
+  it('names no tool in prose when the catalogue section is present', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [resource('rules', 'Rules')],
+      skills: [],
+      evidence: [],
+      toolsAvailable: true,
+      catalogueLines: ['web · Website (website) · updated 2h ago'],
+    });
+    for (const name of forbidden) expect(compiled.systemInstruction).not.toContain(name);
+  });
+
+  it('names no tool in prose when tools are available with id/title/url resources', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [resource('rules', 'Rules'), resource('web', 'Website')],
+      skills: [],
+      evidence: [],
+      toolsAvailable: true,
+    });
+    for (const name of forbidden) expect(compiled.systemInstruction).not.toContain(name);
+    expect(compiled.systemInstruction).toContain(
+      'OTHER CLUB RESOURCES (you can open them when useful)',
+    );
+  });
+
+  it('strips the legacy tool sentence from the behaviour prompt and protectedText', () => {
+    const legacyBehaviour = {
+      ...behaviour,
+      systemPrompt: `Search the club's resources before answering from general knowledge.${LEGACY_TOOL_SENTENCE}`,
+    };
+    const compiled = compileAssistantContext({
+      behaviour: legacyBehaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    const byName = new Map(compiled.sections.map((section) => [section.name, section.text]));
+    expect(byName.get('behaviour-prompt')).toBe(
+      "Search the club's resources before answering from general knowledge.",
+    );
+    expect(compiled.protectedText).not.toContain('search_sources');
+    expect(compiled.protectedText).not.toContain('read_chunk');
+    expect(compiled.systemInstruction).not.toContain('search_sources');
   });
 });
 
@@ -317,6 +405,7 @@ describe('compileAssistantContext safety suffix (ADR 0074)', () => {
       'surface',
       'behaviour-prompt',
       'safety-suffix',
+      'output-rules',
       'evidence-rule',
       'server-card',
       'resources',
