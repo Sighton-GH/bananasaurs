@@ -139,10 +139,12 @@ export const resolveReminderTargets = async (
         found = [await guild.members.fetch(id)];
       } else {
         let searched: ReminderTargetMember[];
+        let searchFailed = false;
         try {
           searched = [...(await guild.members.search({ query: value, limit: 5 })).values()];
         } catch {
-          return failure("I couldn't look up members right now, so I didn't set the reminder.");
+          searchFailed = true;
+          searched = [];
         }
         const allMatches = [
           ...new Map(
@@ -161,6 +163,9 @@ export const resolveReminderTargets = async (
             : allMatches.filter(
                 (candidate) => candidate.user.username.toLowerCase() === value.toLowerCase(),
               );
+        if (found.length === 0 && searchFailed) {
+          return failure("I couldn't look up members right now, so I didn't set the reminder.");
+        }
       }
       if (found.length === 0) return failure(`I can't find a member called "${raw}".`);
       if (found.length > 1)
