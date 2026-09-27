@@ -53,6 +53,26 @@ export const OUTPUT_RULES: string = `OUTPUT RULES
  */
 export const LEGACY_TOOL_SENTENCE =
   ' Use search_sources first, then read_chunk for the best result.';
+export const LEGACY_SOURCES_LINE = '- End with a Sources line listing what you used.';
+export const LEGACY_CITE_SENTENCE =
+  'Cite the source (title or link) for any fact drawn from a club resource.';
+
+/**
+ * The old wizard emitted the sources sentences as their own lines. The
+ * compiler drops each as a whole line — the line plus its trailing newline,
+ * or the preceding newline when it is the last line — so no blank line is
+ * left behind. The behaviour prompt is opaque text, not parsed sections, so
+ * beyond that the cleanup only avoids double blank lines.
+ */
+const dropLegacyLines = (text: string): string =>
+  text
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== LEGACY_SOURCES_LINE && trimmed !== LEGACY_CITE_SENTENCE;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
 
 /**
  * The exact line the compiler emits for one allowed skill, factored out so
@@ -120,7 +140,7 @@ export const compileAssistantContext = (input: {
             .join('\n\n');
         })();
   const behaviourPrompt = clean(
-    input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, ''),
+    dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
     4_000,
   );
   const skillsBlock =
