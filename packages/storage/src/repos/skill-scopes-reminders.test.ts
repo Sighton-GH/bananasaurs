@@ -147,6 +147,22 @@ describe('skill scopes and richer reminder storage', () => {
     t.close();
   });
 
+  it('counts deliveries on complete and moves due time on reschedule', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    insertReminder(a, reminder(A, 'done'));
+    claimDueReminders(a, 1000, 25, 300);
+    completeReminder(a, 'done');
+    expect(getReminder(a, 'done')?.deliveredCount).toBe(1);
+    insertReminder(a, reminder(A, 'moved'));
+    claimDueReminders(a, 1000, 25, 300);
+    rescheduleReminder(a, 'moved', 2000);
+    expect(getReminder(a, 'moved')?.dueAt).toBe(2000);
+    expect(getReminder(a, 'moved')?.deliveredCount).toBe(1);
+    t.close();
+  });
+
   it('has the requested migration tag and data rewrite', () => {
     const journal = JSON.parse(
       readFileSync(
