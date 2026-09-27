@@ -27,6 +27,7 @@ import {
   skillEffectLabel,
   toggleIn,
 } from './assistant-shared.js';
+import { SkillItemsCard } from './skill-items.js';
 
 /** Loaded (found or not): a 404 renders the empty state through `DataState`, not a thrown error. */
 type SkillDetailResource = { readonly found: false } | ({ readonly found: true } & SkillDetail);
