@@ -356,13 +356,17 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     message: OutgoingMessage;
   }
 
-  const harness = (answer: (input: AssistantInvocation) => AssistantInvocationResult) => {
+  const harness = (
+    answer: (
+      input: AssistantInvocation,
+    ) => AssistantInvocationResult | Promise<AssistantInvocationResult>,
+  ) => {
     const inputs: AssistantInvocation[] = [];
     const svc: AssistantCommandService = {
       behavioursForGuild: async () => [behaviour],
       invoke: async (input) => {
         inputs.push(input);
-        return answer(input);
+        return await answer(input);
       },
     };
     const sent: Posted[] = [];
