@@ -6,6 +6,7 @@ import {
   JOB_KINDS,
   parseGuildId,
   ProviderError,
+  reminderRecurrence,
   resourceRefreshDedupeKey,
   SAFETY_SUFFIX,
   SAFETY_SUFFIX_VERSION,
@@ -1932,5 +1933,119 @@ describe('GET /api/assistant skill scopes and item counts (Task E1)', () => {
     expect(parsed.skillItemCounts['propose-memory']).toBe(1);
     expect(parsed.skillItemCounts['record-decision']).toBe(1);
     expect(parsed.skillItemCounts['search-club']).toBe(0);
+  });
+});
+
+describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
+  const patch = (cookie: string, csrf: string, id: string, payload: unknown) =>
+    app.inject({
+      method: 'PATCH',
+      url: `/api/assistant/reminders/${encodeURIComponent(id)}`,
+      headers: { cookie, [CSRF_HEADER]: csrf },
+      payload: payload as Record<string, unknown>,
+    });
+  const seed = (id: string, over: Record<string, unknown> = {}): void => {
+    assistantRepo.insertReminder(t.scopes.forGuild(GUILD), {
+      id,
+      guildId: GUILD,
+      creatorId: ROLE_A,
+      destinationId: ROLE_B,
+      text: `text-${id}`,
+      dueAt: clock + 3_600_000,
+      createdAt: clock,
+      status: 'scheduled',
+      dedupeKey: `${GUILD}:${id}`,
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      deliveredCount: 0,
+      ...over,
+    });
+  };
+  const repeating = () =>
+    reminderRecurrence.parse({ pattern: { kind: 'daily' }, timeZone: 'America/Vancouver' });
+
+  it('edits the text and audits only the changed fields', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', { text: 'new text' });
+    expect(response.statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.text).toBe('new text');
+    const row = effectRepo
+      .tailAudit(t.scopes.forGuild(GUILD), {})
+      .find((r) => r.action === 'assistant_reminder.edited');
+    expect(row).toMatchObject({ subjectType: 'assistant_reminder', subjectId: 'r1' });
+    expect(JSON.parse(row?.before as string)).toEqual({ text: 'text-r1' });
+    expect(JSON.parse(row?.after as string)).toEqual({ text: 'new text' });
+  });
+
+  it('refuses a past dueAt without touching the row', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', { dueAt: clock - 1000 });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid-reminder' });
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.dueAt).toBe(clock + 3_600_000);
+  });
+
+  it('stops a repeat with null', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { recurrence: repeating() });
+    expect((await patch(cookie, csrf, 'r1', { recurrence: null })).statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toBeUndefined();
+  });
+
+  it('keeps the time zone when the pattern of a repeating reminder changes', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1', { recurrence: repeating() });
+    const response = await patch(cookie, csrf, 'r1', {
+      recurrence: { pattern: { kind: 'weekdays' } },
+    });
+    expect(response.statusCode).toBe(200);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toEqual(
+      reminderRecurrence.parse({ pattern: { kind: 'weekdays' }, timeZone: 'America/Vancouver' }),
+    );
+  });
+
+  it('refuses to add a repeat to a one-off reminder', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    const response = await patch(cookie, csrf, 'r1', {
+      recurrence: { pattern: { kind: 'daily' } },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({
+      error: 'recurrence-needs-time-zone',
+      message: `Repeating reminders are created from chat, where the club's time zone is known.`,
+    });
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.recurrence).toBeUndefined();
+  });
+
+  it('answers 409 for a cancelled reminder', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    expect(assistantRepo.cancelReminder(t.scopes.forGuild(GUILD), 'r1')).toBe(true);
+    const response = await patch(cookie, csrf, 'r1', { text: 'too late' });
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: 'invalid-transition' });
+  });
+
+  it('answers 404 for a missing id', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const response = await patch(cookie, csrf, 'nope', { text: 'nothing' });
+    expect(response.statusCode).toBe(404);
+    expect(response.json()).toMatchObject({ error: 'not-found' });
+  });
+
+  it('requires config.write', async () => {
+    grant('config.read');
+    const { cookie, csrf } = await signIn();
+    seed('r1');
+    expect((await patch(cookie, csrf, 'r1', { text: 'new text' })).statusCode).toBe(403);
   });
 });
