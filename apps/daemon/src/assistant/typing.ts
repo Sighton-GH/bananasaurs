@@ -9,10 +9,7 @@ export interface TypingOptions {
  * the returned stop function is called or `maxMs` has passed. Best-effort:
  * a failed send is reported to `onError` once and never throws.
  */
-export const startTyping = (
-  send: () => Promise<void>,
-  options: TypingOptions,
-): (() => void) => {
+export const startTyping = (send: () => Promise<void>, options: TypingOptions): (() => void) => {
   const intervalMs = options.intervalMs ?? 8_000;
   const maxMs = options.maxMs ?? 180_000;
   let stopped = false;
