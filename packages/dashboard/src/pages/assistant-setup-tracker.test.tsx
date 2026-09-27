@@ -56,6 +56,8 @@ function baseData(overrides: Partial<AssistantData> = {}): AssistantData {
         effect: 'read',
         requiredPermission: 'assistant.search',
         requiresConfirmation: false,
+        acts: false,
+        defaultScope: 'everyone',
       },
     ],
     activity: [],
