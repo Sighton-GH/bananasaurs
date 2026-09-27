@@ -646,10 +646,7 @@ function ResourcesCard({
                     </div>
                     <ul className="mt-2 grid gap-2">
                       {kids.map((kid) => (
-                        <li
-                          key={kid.id}
-                          className="rounded-md border border-line bg-canvas p-3"
-                        >
+                        <li key={kid.id} className="rounded-md border border-line bg-canvas p-3">
                           <ResourceRow
                             resource={kid}
                             freshnessRow={freshnessOf(kid.id)}

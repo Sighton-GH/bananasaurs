@@ -264,7 +264,8 @@ describe('resourceRefreshHandler — new org children refresh in the same run (A
     ): boolean {
       const row = this.rows.get(id);
       if (row === undefined) return false;
-      const { meta: _dropped, ...rest } = row;
+      const rest = { ...row };
+      delete rest.meta;
       this.rows.set(
         id,
         input.meta === undefined

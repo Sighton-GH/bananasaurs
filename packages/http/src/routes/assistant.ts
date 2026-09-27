@@ -747,7 +747,8 @@ export const registerAssistantRoutes = (
     } else if (existing.meta === undefined) {
       assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
     } else {
-      const { disabledByOwner: _omitted, ...rest } = existing.meta;
+      const rest = { ...existing.meta };
+      delete rest.disabledByOwner;
       assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: rest });
     }
     deps.portsFor(session.scope).recordAudit({

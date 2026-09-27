@@ -246,8 +246,7 @@ describe('AssistantResourcesPage', () => {
     fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
     const put = mock.mock.calls.find(
       (c) =>
-        (c[0] as string) === '/api/assistant/resources/handbook/enabled' &&
-        c[1]?.method === 'PUT',
+        (c[0] as string) === '/api/assistant/resources/handbook/enabled' && c[1]?.method === 'PUT',
     )!;
     expect(bodyOf(put)).toEqual({ enabled: true });
   });
@@ -657,7 +656,13 @@ describe('Add from GitHub', () => {
         ],
       },
       [],
-      [{ method: 'PUT', url: '/api/assistant/resources/gh-acme-widget/enabled', body: { ok: true } }],
+      [
+        {
+          method: 'PUT',
+          url: '/api/assistant/resources/gh-acme-widget/enabled',
+          body: { ok: true },
+        },
+      ],
     );
     const row = (await screen.findByText('acme/widget')).closest('li')!;
     fireEvent.click(within(row).getByRole('button', { name: 'Disable' }));

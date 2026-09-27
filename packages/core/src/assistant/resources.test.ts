@@ -39,9 +39,7 @@ describe('parseResourceMeta (Task 17)', () => {
   });
 
   it('keeps disabledByOwner: true for a resource the owner turned off', () => {
-    expect(
-      parseResourceMeta('{"owner":"acme","repo":"w","disabledByOwner":true}'),
-    ).toEqual({
+    expect(parseResourceMeta('{"owner":"acme","repo":"w","disabledByOwner":true}')).toEqual({
       owner: 'acme',
       repo: 'w',
       disabledByOwner: true,
