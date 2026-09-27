@@ -738,17 +738,17 @@ export const registerAssistantRoutes = (
     const { enabled } = parsed.data;
     const isGithub = existing.kind === 'github-repo' || existing.kind === 'github-org';
     if (!isGithub) {
-      assistantRepo.putResource(session.scope, { ...existing, enabled });
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
     } else if (enabled === false) {
       // Spread keeps every other meta key; the cast only covers a GitHub
       // resource stored without meta yet (no `owner` to spread).
       const meta = { ...existing.meta, disabledByOwner: true as const } as ClubResource['meta'];
-      assistantRepo.putResource(session.scope, { ...existing, enabled, meta });
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta });
     } else if (existing.meta === undefined) {
-      assistantRepo.putResource(session.scope, { ...existing, enabled });
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
     } else {
       const { disabledByOwner: _omitted, ...rest } = existing.meta;
-      assistantRepo.putResource(session.scope, { ...existing, enabled, meta: rest });
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: rest });
     }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),

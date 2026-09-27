@@ -1171,6 +1171,23 @@ describe('PUT /api/assistant/resources/:id/enabled (ADR 0084)', () => {
     });
   });
 
+  it('keeps fetch status and last-fetched time when toggling enabled', async () => {
+    grant('config.write');
+    const { cookie, csrf } = await signIn();
+    const scope = seedGithubChild();
+    assistantRepo.recordResourceFetch(scope, 'gh-acme-widget', {
+      status: 'ok',
+      at: 123,
+      detail: 'fresh evidence',
+    });
+    expect((await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false })).statusCode).toBe(
+      200,
+    );
+    expect(
+      assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget'),
+    ).toMatchObject({ enabled: false, fetchStatus: 'ok', lastFetchedAt: 123 });
+  });
+
   it('records an audit row with before and after enabled', async () => {
     grant('config.write');
     const { cookie, csrf } = await signIn();
