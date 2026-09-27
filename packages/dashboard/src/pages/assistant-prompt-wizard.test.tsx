@@ -238,6 +238,44 @@ describe('AssistantPromptWizardPage', () => {
     expect(sent.promptWizard).toEqual(promptWizardAnswers.parse(STORED));
   });
 
+  it('saves every new identity, channel and glossary field', async () => {
+    const mock = renderWizard();
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Club or server name' }), {
+      target: { value: 'Maker House' },
+    });
+    fireEvent.click(screen.getByRole('radio', { name: 'A group of friends' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Bot name' }), {
+      target: { value: 'Milo' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Personality in one line' }), {
+      target: { value: 'warm and concise' },
+    });
+    for (let i = 0; i < 4; i += 1) await next();
+    fireEvent.change(screen.getByRole('textbox', { name: 'What the main channels are for' }), {
+      target: { value: '#help for questions' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Term' }), { target: { value: 'AGM' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Meaning' }), {
+      target: { value: 'annual general meeting' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add term' }));
+    for (let i = 0; i < 2; i += 1) await next();
+    fireEvent.click(await screen.findByRole('button', { name: 'Save instructions' }));
+    await screen.findByText('Club assistant prompt saved');
+    const put = mock.mock.calls.find(
+      (c) => c[0] === '/api/assistant/behaviours/club' && (c[1] as RequestInit)?.method === 'PUT',
+    )!;
+    const sent = bodyOf(put) as { promptWizard: Record<string, unknown> };
+    expect(sent.promptWizard).toMatchObject({
+      clubName: 'Maker House',
+      serverType: 'friends',
+      botName: 'Milo',
+      personality: 'warm and concise',
+      channelGuide: '#help for questions',
+      glossary: [{ term: 'AGM', meaning: 'annual general meeting' }],
+    });
+  });
+
   it('captures server identity and reflects it in the generated prompt', async () => {
     renderWizard();
     expect(await screen.findByRole('textbox', { name: 'Club or server name' })).toBeTruthy();
