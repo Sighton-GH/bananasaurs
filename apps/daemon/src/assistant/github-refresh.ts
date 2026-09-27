@@ -10,7 +10,10 @@ import {
 } from '@bananasaurs/core';
 import { computeDocId, type GuildScope } from '@bananasaurs/storage';
 import { GitHubError, type GitHubClient } from './github-client.js';
-import type { ResourceConditional } from './resource-fetcher.js';
+import type {
+  ConditionalResourceFetchResult,
+  ResourceConditional,
+} from './resource-fetcher.js';
 import type {
   ResourceRefreshFetcher,
   ResourceRefreshOutcome,
@@ -131,10 +134,10 @@ const repoOwnerOf = (resource: ClubResource): string | undefined => {
 };
 
 /**
- * An org refresh: re-lists the owner's public repositories and reconciles
+ * An org refresh: re-lists the owner's repositories and reconciles
  * the child `github-repo` resources — missing ones are created (enabled,
- * `autoDiscovered`), auto-discovered ones that are gone (or now private, or
- * filtered out by the forks/archived toggles) are disabled, never deleted.
+ * `autoDiscovered`), auto-discovered ones that are gone (or filtered out by
+ * the forks/archived toggles) are disabled, never deleted.
  * The owner's own hand-picked children are left alone.
  */
 export async function refreshGithubOrg(
@@ -169,7 +172,7 @@ export async function refreshGithubOrg(
   const includeForks = resource.meta?.includeForks ?? false;
   const includeArchived = resource.meta?.includeArchived ?? false;
   const eligible = summaries.filter(
-    (s) => !s.private && (includeForks || !s.fork) && (includeArchived || !s.archived),
+    (s) => (includeForks || !s.fork) && (includeArchived || !s.archived),
   );
   const eligibleNames = new Set(eligible.map((s) => s.name.toLowerCase()));
 
@@ -203,6 +206,7 @@ export async function refreshGithubOrg(
           repo: summary.name,
           branch: summary.defaultBranch,
           autoDiscovered: true,
+          ...(summary.private ? { private: true as const } : {}),
         },
       });
     } else if (!existing.enabled) {
@@ -226,7 +230,7 @@ export async function refreshGithubOrg(
   deps.store.recordResourceFetch(scope, resource.id, {
     status: 'ok',
     at: deps.now(),
-    detail: `GitHub organisation refreshed: ${String(eligible.length)} public repositories.`,
+    detail: `GitHub organisation refreshed: ${String(eligible.length)} repositor${eligible.length === 1 ? 'y' : 'ies'}.`,
   });
   return 'ok';
 }
@@ -254,26 +258,48 @@ export async function refreshGithubRepo(
   if (owner === undefined || repo === undefined)
     return fail(scope, resource, deps, 'This is not a GitHub repository URL.');
 
+  const disableNotFound = (target: ClubResource): GithubRefreshOutcome => {
+    if (target.enabled) deps.store.putResource(scope, { ...target, enabled: false });
+    return fail(
+      scope,
+      target,
+      deps,
+      "GitHub can't find this repository, or the token can't read it. It has been turned off, so its cached text is no longer searched.",
+    );
+  };
+
+  const syncPrivateMeta = (
+    base: ClubResource,
+    isPrivate: boolean,
+  ): ClubResource => {
+    if (isPrivate === (base.meta?.private === true)) return base;
+    const { private: _dropped, ...rest } = base.meta ?? {};
+    const next: ClubResource = {
+      ...base,
+      meta: isPrivate ? { ...rest, owner, private: true } : { ...rest, owner },
+    };
+    deps.store.putResource(scope, next);
+    return next;
+  };
+
+  let current = resource;
   let ref = resource.meta?.branch;
   let files: readonly SelectedFile[];
+  let isPrivate = false;
+  let branch = '';
   if (deps.client.authenticated) {
     let defaultBranch: string;
     try {
       const detail = await deps.client.getRepo(owner, repo);
-      if (detail.private) {
-        if (resource.enabled) deps.store.putResource(scope, { ...resource, enabled: false });
-        return fail(
-          scope,
-          resource,
-          deps,
-          'This repository is private; only public repositories can be cached.',
-        );
-      }
+      current = syncPrivateMeta(current, detail.private);
+      isPrivate = detail.private;
       defaultBranch = detail.defaultBranch;
     } catch (error) {
+      if (error instanceof GitHubError && error.kind === 'not-found')
+        return disableNotFound(resource);
       return fail(scope, resource, deps, failDetail(error));
     }
-    const branch = ref ?? defaultBranch;
+    branch = ref ?? defaultBranch;
     ref = branch;
     let entries: readonly {
       readonly path: string;
@@ -283,9 +309,9 @@ export async function refreshGithubRepo(
     try {
       entries = (await deps.client.listTree(owner, repo, branch)).entries;
     } catch (error) {
-      return fail(scope, resource, deps, failDetail(error));
+      return fail(scope, current, deps, failDetail(error));
     }
-    const include = resource.meta?.include;
+    const include = current.meta?.include;
     files = selectRepoFiles(
       entries,
       include === undefined ? undefined : { include: [...include] },
@@ -294,23 +320,52 @@ export async function refreshGithubRepo(
     if (ref === undefined) {
       try {
         const detail = await deps.client.getRepo(owner, repo);
-        if (detail.private) {
-          if (resource.enabled) deps.store.putResource(scope, { ...resource, enabled: false });
-          return fail(
-            scope,
-            resource,
-            deps,
-            'This repository is private; only public repositories can be cached.',
-          );
-        }
+        current = syncPrivateMeta(current, detail.private);
+        isPrivate = detail.private;
         ref = detail.defaultBranch;
       } catch (error) {
+        if (error instanceof GitHubError && error.kind === 'not-found')
+          return disableNotFound(resource);
         return fail(scope, resource, deps, failDetail(error));
       }
     }
-    const branch = ref;
+    branch = ref;
     files = [{ path: 'README.md', url: rawGitHubUrl(owner, repo, branch, 'README.md') }];
   }
+
+  const fetchFile = (
+    file: SelectedFile,
+    conditional: ResourceConditional,
+  ): Promise<ConditionalResourceFetchResult> => {
+    if (!isPrivate) return deps.fetcher.fetch(file.url, conditional);
+    return (async (): Promise<ConditionalResourceFetchResult> => {
+      let raw: Awaited<ReturnType<GitHubClient['getFileRaw']>>;
+      try {
+        raw = await deps.client.getFileRaw(owner, repo, branch, file.path, conditional.etag);
+      } catch (error) {
+        if (error instanceof GitHubError) {
+          const message =
+            error.kind === 'rate-limited' ? rateLimitDetail(error) : error.message;
+          return { ok: false, code: 'http-status', message };
+        }
+        throw error;
+      }
+      if (raw.notModified) return { ok: true, notModified: true };
+      const text = raw.notModified === false ? raw.text.replaceAll('\u0000', '') : '';
+      return {
+        ok: true,
+        cache: 'miss',
+        evidence: {
+          url: file.url,
+          mediaType: 'text/plain',
+          text,
+          fetchedAt: deps.now(),
+          trust: 'untrusted-reviewed-resource',
+        },
+        ...(raw.notModified === false && raw.etag ? { etag: raw.etag } : {}),
+      };
+    })();
+  };
 
   const fetchedAt = deps.now();
   let fresh = false;
@@ -324,7 +379,7 @@ export async function refreshGithubRepo(
     };
     let result: Awaited<ReturnType<ResourceRefreshFetcher['fetch']>>;
     try {
-      result = await deps.fetcher.fetch(file.url, conditional);
+      result = await fetchFile(file, conditional);
     } catch (error) {
       firstFileError ??= error instanceof Error ? error.message : 'GitHub file fetch failed.';
       continue;
@@ -332,7 +387,7 @@ export async function refreshGithubRepo(
     if (result.ok && result.notModified === true) {
       if (existing !== undefined) {
         deps.cache.upsertDocument(scope, {
-          resourceId: resource.id,
+          resourceId: current.id,
           docId: existing.docId,
           url: file.url,
           path: existing.path,
@@ -356,7 +411,7 @@ export async function refreshGithubRepo(
     const bytes = Buffer.byteLength(text, 'utf8');
     const docId = computeDocId(file.url);
     deps.cache.upsertDocument(scope, {
-      resourceId: resource.id,
+      resourceId: current.id,
       docId,
       url: file.url,
       path: file.path,
@@ -374,17 +429,17 @@ export async function refreshGithubRepo(
     deps.cache.replaceChunks(
       scope,
       docId,
-      resource.id,
+      current.id,
       chunkDocument({ text, mediaType: result.evidence.mediaType, path: file.path }),
     );
   }
 
-  for (const doc of deps.cache.listDocuments(scope, resource.id)) {
+  for (const doc of deps.cache.listDocuments(scope, current.id)) {
     if (!wanted.has(doc.url)) deps.cache.deleteDocument(scope, doc.docId);
   }
 
-  if (firstFileError !== undefined) return fail(scope, resource, deps, firstFileError);
-  deps.store.recordResourceFetch(scope, resource.id, {
+  if (firstFileError !== undefined) return fail(scope, current, deps, firstFileError);
+  deps.store.recordResourceFetch(scope, current.id, {
     status: 'ok',
     at: fetchedAt,
     detail:
