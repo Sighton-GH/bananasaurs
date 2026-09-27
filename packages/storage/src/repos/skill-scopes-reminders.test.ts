@@ -61,7 +61,10 @@ describe('skill scopes and richer reminder storage', () => {
       context: 'why',
     });
     insertReminder(b, reminder(B, 'r1'));
-    expect(getReminder(a, 'r1')?.context).toBe('why');
+    const reread = getReminder(a, 'r1');
+    expect(reread?.context).toBe('why');
+    expect(reread?.mentions).toEqual({ userIds: [U], roleIds: [], everyone: false, here: false });
+    expect(reread?.recurrence).toEqual(reminderRecurrence.parse(repeating));
     expect(getReminder(b, 'r1')?.guildId).toBe(B);
     expect(listRemindersForCreator(a, U, { includeFinished: false })).toHaveLength(1);
     expect(updateReminder(a, 'r1', { text: 'changed' }, 4)).toBe('updated');
