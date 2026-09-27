@@ -28,7 +28,8 @@ export const describeRecurrence = (recurrence: ReminderRecurrence): string => {
     base =
       pattern.everyWeeks > 1 ? `every ${pattern.everyWeeks} weeks on ${names}` : `every ${names}`;
   }
-  if (recurrence.endAt !== undefined) base += ` until ${endDate(recurrence.endAt, recurrence.timeZone)}`;
+  if (recurrence.endAt !== undefined)
+    base += ` until ${endDate(recurrence.endAt, recurrence.timeZone)}`;
   else if (recurrence.maxCount !== undefined)
     base += ` for ${recurrence.maxCount} time${recurrence.maxCount === 1 ? '' : 's'}`;
   return base;
@@ -98,6 +99,7 @@ export const reminderSummary = (
     `• Where: #${input.channelName}`,
     `• Pings: ${formatPings(input)}`,
   ];
-  if (input.context !== undefined && input.context.length > 0) lines.push(`• Why: ${input.context}`);
+  if (input.context !== undefined && input.context.length > 0)
+    lines.push(`• Why: ${input.context}`);
   return lines.join('\n');
 };
