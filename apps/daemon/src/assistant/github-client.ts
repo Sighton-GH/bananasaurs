@@ -186,30 +186,57 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
   };
 
   const listOrgRepos = async (owner: string): Promise<GitHubOrgRepos> => {
-    const repos: GitHubRepoSummary[] = [];
-    let truncated = false;
-    for (let page = 1; page <= MAX_PAGES; page++) {
-      const url = new URL(`${API_ROOT}/users/${encodeURIComponent(owner)}/repos`);
+    const buildUrl = (base: 'orgs' | 'users', type: string, page: number): URL => {
+      const url = new URL(`${API_ROOT}/${base}/${encodeURIComponent(owner)}/repos`);
       url.searchParams.set('per_page', String(PER_PAGE));
-      url.searchParams.set('type', 'owner');
+      url.searchParams.set('type', type);
       url.searchParams.set('page', String(page));
-      const body = await request(url);
+      return url;
+    };
+    const parseRepos = (body: unknown): z.infer<typeof repoSummarySchema>[] => {
       const parsed = z.array(repoSummarySchema).safeParse(body);
       if (!parsed.success) {
         throw new GitHubError('invalid-response', 'GitHub returned an unexpected repo list shape.');
       }
-      for (const item of parsed.data) {
-        repos.push({
-          name: item.name,
-          description: item.description,
-          defaultBranch: item.default_branch,
-          fork: item.fork,
-          archived: item.archived,
-          private: item.private,
-        });
+      return parsed.data;
+    };
+    const toSummary = (
+      item: z.infer<typeof repoSummarySchema>,
+    ): GitHubRepoSummary => ({
+      name: item.name,
+      description: item.description,
+      defaultBranch: item.default_branch,
+      fork: item.fork,
+      archived: item.archived,
+      private: item.private,
+    });
+    const collectFrom = async (base: 'orgs' | 'users', type: string): Promise<GitHubOrgRepos> => {
+      const repos: GitHubRepoSummary[] = [];
+      let truncated = false;
+      for (let page = 1; page <= MAX_PAGES; page++) {
+        const items = parseRepos(await request(buildUrl(base, type, page)));
+        for (const item of items) repos.push(toSummary(item));
+        if (items.length < PER_PAGE) break;
+        // A full page on the last permitted page means more may exist.
+        if (page === MAX_PAGES) truncated = true;
       }
-      if (parsed.data.length < PER_PAGE) break;
-      // A full page on the last permitted page means more may exist.
+      return { repos, truncated };
+    };
+    let firstItems: z.infer<typeof repoSummarySchema>[];
+    try {
+      firstItems = parseRepos(await request(buildUrl('orgs', 'all', 1)));
+    } catch (error) {
+      if (!(error instanceof GitHubError) || error.kind !== 'not-found') throw error;
+      return await collectFrom('users', 'owner');
+    }
+    const repos: GitHubRepoSummary[] = [];
+    for (const item of firstItems) repos.push(toSummary(item));
+    if (firstItems.length < PER_PAGE) return { repos, truncated: false };
+    let truncated = false;
+    for (let page = 2; page <= MAX_PAGES; page++) {
+      const items = parseRepos(await request(buildUrl('orgs', 'all', page)));
+      for (const item of items) repos.push(toSummary(item));
+      if (items.length < PER_PAGE) break;
       if (page === MAX_PAGES) truncated = true;
     }
     return { repos, truncated };

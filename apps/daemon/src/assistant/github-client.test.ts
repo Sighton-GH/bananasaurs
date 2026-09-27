@@ -131,10 +131,44 @@ describe('createGitHubClient — listOrgRepos', () => {
       },
     ]);
     const url = new URL(fetch.mock.calls[0]?.[0] as string);
-    expect(url.pathname).toBe('/users/acme/repos');
+    expect(url.pathname).toBe('/orgs/acme/repos');
     expect(url.searchParams.get('per_page')).toBe('100');
-    expect(url.searchParams.get('type')).toBe('owner');
+    expect(url.searchParams.get('type')).toBe('all');
     expect(url.searchParams.get('page')).toBe('1');
+  });
+
+  it('returns private repos from the org path', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(ok([repoItem('secret', { private: true })]));
+    const client = createGitHubClient({ token: () => 'test-token', fetch, guard: noopGuard });
+    const { repos } = await client.listOrgRepos('acme');
+    expect(new URL(fetch.mock.calls[0]?.[0] as string).pathname).toBe('/orgs/acme/repos');
+    expect(repos).toEqual([
+      {
+        name: 'secret',
+        description: 'secret description',
+        defaultBranch: 'main',
+        fork: false,
+        archived: false,
+        private: true,
+      },
+    ]);
+  });
+
+  it('falls back to the users path when the orgs first page answers 404', async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(new Response('', { status: 404 }))
+      .mockResolvedValueOnce(ok([repoItem('one')]));
+    const client = createGitHubClient({ token: () => undefined, fetch, guard: noopGuard });
+    const { repos } = await client.listOrgRepos('acme');
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(new URL(fetch.mock.calls[0]?.[0] as string).pathname).toBe('/orgs/acme/repos');
+    const fallbackUrl = new URL(fetch.mock.calls[1]?.[0] as string);
+    expect(fallbackUrl.pathname).toBe('/users/acme/repos');
+    expect(fallbackUrl.searchParams.get('type')).toBe('owner');
+    expect(repos.map((r) => r.name)).toEqual(['one']);
   });
 
   it('stops paginating after 5 pages even if every page is full', async () => {
