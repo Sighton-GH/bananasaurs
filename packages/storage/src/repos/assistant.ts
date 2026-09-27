@@ -277,6 +277,7 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
       })
       .run();
   });
+
 /**
  * Changes only a resource's enabled flag and meta (ADR 0084): fetch status,
  * last-fetched time, title and URL are untouched. `meta: undefined` clears it.
