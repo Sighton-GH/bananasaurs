@@ -30,6 +30,7 @@ import { ChainFailedError } from '../assistant/chain-failed-error.js';
 import { buildConversationContext } from '../assistant/conversation-context.js';
 import { PROVIDER_FAILURE_LOG_REASON } from '../assistant/provider-failure.js';
 import { assistantLogMessage, type AssistantLogInput } from '../assistant/log-message.js';
+import { startTyping } from '../assistant/typing.js';
 
 /**
  * Runs one assistant invocation off the serial per-guild dispatch chain (B2).
@@ -285,6 +286,8 @@ export const assistantInvokeHandler = (deps: {
     | undefined;
   /** Task 14: the typing indicator. Best-effort; absent means no typing. */
   sendTyping?: ((channelId: string) => Promise<void>) | undefined;
+  /** Test-only override for the typing keepalive interval. */
+  typingIntervalMs?: number;
   /** Task 14: quoted-message fetch for unknown references. Absent means no quote. */
   fetchMessageContent?:
     | ((
@@ -418,6 +421,7 @@ export const assistantInvokeHandler = (deps: {
     if (prior !== undefined) {
       result = prior.result;
     } else {
+      let stopTyping = (): void => undefined;
       try {
         const behaviours = await deps.service.behavioursForGuild(deps.guildId);
         const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
@@ -427,16 +431,15 @@ export const assistantInvokeHandler = (deps: {
           await logFailure(text, 'The behaviour was deleted or turned off before the request ran.');
           return;
         }
-        // Typing first, best-effort: a failure here must never fail the job.
         if (payload.channelId !== undefined && deps.sendTyping !== undefined) {
-          try {
-            await deps.sendTyping(payload.channelId);
-          } catch (err) {
-            deps.logger.warn(
-              safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
-              'assistant typing indicator failed; continuing',
-            );
-          }
+          stopTyping = startTyping(() => deps.sendTyping!(payload.channelId!), {
+            ...(deps.typingIntervalMs === undefined ? {} : { intervalMs: deps.typingIntervalMs }),
+            onError: (err) =>
+              deps.logger.warn(
+                safeLogFields({ component: 'assistant-job', guildId: deps.guildId, err }),
+                'assistant typing indicator failed; continuing',
+              ),
+          });
         }
         // The conversation join: resolve, fetch an unknown quote, create the
         // row and the quote and user turns, then build the history. The ids derive from
@@ -553,20 +556,24 @@ export const assistantInvokeHandler = (deps: {
           history = built.history;
           quoteEnvelope = built.quoteEnvelope;
         }
-        result = await deps.service.invoke({
-          guildId: deps.guildId,
-          channelId: payload.channelId,
-          userId: payload.userId,
-          callerRoleIds: payload.callerRoleIds,
-          behaviour,
-          command: payload.command,
-          input: payload.input,
-          source: payload.source,
-          invocationId: payload.invocationId,
-          history,
-          ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
-          askerName: payload.authorName,
-        });
+        try {
+          result = await deps.service.invoke({
+            guildId: deps.guildId,
+            channelId: payload.channelId,
+            userId: payload.userId,
+            callerRoleIds: payload.callerRoleIds,
+            behaviour,
+            command: payload.command,
+            input: payload.input,
+            source: payload.source,
+            invocationId: payload.invocationId,
+            history,
+            ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
+            askerName: payload.authorName,
+          });
+        } finally {
+          stopTyping();
+        }
         invokeDoneAt = deps.now();
         // Task 20: flags the service attached to the result (currently only
         // `resources-unavailable`) join the job's own flags before the trace
@@ -576,6 +583,7 @@ export const assistantInvokeHandler = (deps: {
           if (!flags.includes(flag)) flags.push(flag);
         }
       } catch (err) {
+        stopTyping();
         const delays = deps.retryDelaysMs?.() ?? PROVIDER_RETRY_DELAYS_MS;
         const ceiling = delays.length + 1;
         /**
@@ -680,6 +688,11 @@ export const assistantInvokeHandler = (deps: {
         await answerSingle(text);
         await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
         return;
+      } finally {
+        // Backstop for every path after startTyping: the keepalive stops even
+        // if a pre-invoke step throws or a future path skips the immediate
+        // stop after invoke. Idempotent, so the normal stops are unaffected.
+        stopTyping();
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here
       // on retries with this cursor and never re-invokes.

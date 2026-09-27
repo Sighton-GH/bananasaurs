@@ -844,6 +844,87 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     ).resolves.toBeDefined();
     expect(h.sent).toHaveLength(1);
   });
+
+  it('keeps typing alive while invoke is pending and stops when it resolves', async () => {
+    vi.useFakeTimers();
+    try {
+      let resolveInvoke!: (result: AssistantInvocationResult) => void;
+      const h = harness(
+        () =>
+          new Promise<AssistantInvocationResult>((resolve) => {
+            resolveInvoke = resolve;
+          }),
+      );
+      const running = h.run(mention({ invocationId: 'inv-slow', messageId: '810000000000000030' }));
+      await vi.advanceTimersByTimeAsync(1);
+      expect(h.sendTyping).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(8_000);
+      expect(h.sendTyping).toHaveBeenCalledTimes(2);
+      resolveInvoke({ ok: true, content: 'slow answer' });
+      await running;
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(h.sendTyping).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops typing when invoke throws and a rejected typing send does not fail the job', async () => {
+    vi.useFakeTimers();
+    try {
+      let rejectInvoke!: (error: Error) => void;
+      const h = harness(
+        () =>
+          new Promise<AssistantInvocationResult>((_, reject) => {
+            rejectInvoke = reject;
+          }),
+      );
+      h.sendTyping.mockRejectedValue(new Error('typing failed'));
+      const running = h.run(
+        mention({ invocationId: 'inv-throw', messageId: '810000000000000031' }),
+      );
+      await vi.advanceTimersByTimeAsync(1);
+      rejectInvoke(new Error('invoke failed'));
+      await running;
+      const calls = h.sendTyping.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(16_000);
+      expect(h.sendTyping).toHaveBeenCalledTimes(calls);
+      expect(h.sent).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops typing when conversation preparation fails before invoke', async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness(() => ({ ok: true, content: 'unused' }));
+      const lookupMessage = vi.spyOn(conversationRepo, 'lookupMessage').mockImplementation(() => {
+        throw new Error('conversation lookup failed');
+      });
+      try {
+        const running = h.run(
+          mention({
+            invocationId: 'inv-pre-invoke-failure',
+            messageId: '810000000000000032',
+            referencedMessageId: '840000000000000001',
+            referencedAuthorId: OTHER_ID,
+          }),
+        );
+        await vi.advanceTimersByTimeAsync(1);
+        expect(h.sendTyping).toHaveBeenCalledTimes(1);
+        await running;
+        const typingCalls = h.sendTyping.mock.calls.length;
+        await vi.advanceTimersByTimeAsync(16_000);
+        expect(h.sendTyping).toHaveBeenCalledTimes(typingCalls);
+        expect(h.inputs).toHaveLength(0);
+      } finally {
+        lookupMessage.mockRestore();
+      }
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('Task 10 (c): ChainFailedError writes a trace per job attempt', () => {

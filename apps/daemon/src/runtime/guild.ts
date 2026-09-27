@@ -814,6 +814,7 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
       sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
       logger,
+      sendTyping: (channelId) => discord.sendTyping(guildId, channelId),
       lookupMessage: (messageId) => conversationRepo.lookupMessage(scope, messageId),
       // Task 20: member 👍/👎 on a bot answer sets feedback and a trace
       // flag; anything else (and the bot's own reactions) is ignored inside.

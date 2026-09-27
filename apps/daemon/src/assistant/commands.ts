@@ -180,6 +180,11 @@ export interface AssistantCommandDeps {
         readonly addTraceFlag: (traceId: string, flag: string) => boolean;
       }
     | undefined;
+  /**
+   * Best-effort typing indicator for mentions: fired without awaiting on the
+   * serial per-guild dispatch chain, so a slow Discord call never stalls it.
+   */
+  readonly sendTyping?: ((channelId: string) => Promise<void>) | undefined;
 }
 
 const COMMANDS = new Set<AssistantCommand>([
@@ -393,6 +398,23 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
       now: deps.now(),
     });
+    // Best-effort and never awaited: the dispatch chain must not stall on it.
+    const sendTyping = deps.sendTyping;
+    if (sendTyping !== undefined) {
+      try {
+        sendTyping(event.channelId).catch((err: unknown) => {
+          deps.logger.warn(
+            safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
+            'assistant typing indicator failed; continuing',
+          );
+        });
+      } catch (err) {
+        deps.logger.warn(
+          safeLogFields({ component: 'assistant-mention', guildId: event.guildId, err }),
+          'assistant typing indicator failed; continuing',
+        );
+      }
+    }
   } catch (err) {
     // Same rule: no unkeyed public reply from the subscriber. The enqueue
     // failure is local (storage), so the log line is the durable record.
