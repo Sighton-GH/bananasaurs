@@ -1082,11 +1082,11 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
       // the Discord path gets.
       const history: GenerationMessage[] = conversationRepo
         .recentTurns(scope, conversationId, { maxTurns: 12, maxChars: 6_000 })
-        .flatMap((turn) =>
+        .flatMap<GenerationMessage>((turn) =>
           turn.turnId === userTurnId || (turn.role !== 'user' && turn.role !== 'assistant')
             ? []
             : turn.role === 'user'
-              ? [{ role: 'user' as const, text: labelUserTurn(turn, now()) }]
+              ? [{ role: 'user', text: labelUserTurn(turn, now()) }]
               : [{ role: turn.role, text: turn.text }],
         );
       const sink: {
