@@ -1622,6 +1622,39 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(result.ok === true && result.content).toBe('Plain answer.');
   });
 
+  it('does not list pre-retrieved sources when the answer cites none', async () => {
+    seedResource('handbook', 'Handbook', ['battery care guide for the club']);
+    const service = serviceWith(answering('Plain answer.'));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-no-cited-sources',
+    });
+    expect(result.ok === true && result.content).toBe('Plain answer.');
+  });
+
+  it('removes a model-written Source line from the posted answer', async () => {
+    const service = serviceWith(answering('Answer.\nSource: unrelated'));
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'hi' },
+      source: 'slash-command',
+      invocationId: 'int-source-line',
+    });
+    expect(result.ok === true && result.content).toBe('Answer.');
+  });
+
   it('adds a sources line for a chunk the model opened, deduped', async () => {
     const docId = seedResource('handbook', 'Handbook', ['battery care guide for the club']);
     const chunk0 = `c_${docId}_0`;
@@ -1640,7 +1673,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
               { name: 'read_chunk', args: { chunkId: chunk0 } },
             ],
           };
-        return { text: 'Here is the care guide.', model: 'model-a' };
+        return { text: 'Here is the care guide. [S1]', model: 'model-a' };
       },
     };
     const service = serviceWith(provider);
@@ -1663,7 +1696,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
 
   it('adds a sources line with headings for pre-retrieved evidence', async () => {
     seedResource('handbook', 'Handbook', ['battery care guide for the club']);
-    const service = serviceWith(answering('Here is the care guide.'));
+    const service = serviceWith(answering('Here is the care guide. [S1]'));
     const result = await service.invoke({
       guildId: GUILD,
       channelId: '567890123456789012',
@@ -1683,7 +1716,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
   it('clips a 5000-char pre-retrieved heading in the sources line', async () => {
     seedResource('handbook', 'Handbook', ['battery care guide for the club']);
     const longHeading = 'H'.repeat(5_000);
-    const service = serviceWith(answering('Here is the care guide.'), {
+    const service = serviceWith(answering('Here is the care guide. [S1]'), {
       cacheSearch: () => [
         {
           resourceId: 'handbook',
@@ -1714,7 +1747,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(content).not.toContain(longHeading);
   });
 
-  it('dedupes sources by URL and never lists more than three', async () => {
+  it('dedupes sources by URL and never lists more than five', async () => {
     const ids = ['alpha', 'beta', 'gamma', 'delta'] as const;
     const docIds = ids.map((id, i) =>
       seedResource(id, id[0]!.toUpperCase() + id.slice(1), [`unique care text ${String(i)}`]),
@@ -1732,7 +1765,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
             model: 'model-a',
             toolCalls: chunks.map((chunkId) => ({ name: 'read_chunk', args: { chunkId } })),
           };
-        return { text: 'Done.', model: 'model-a' };
+        return { text: 'Done. [S1, S2, S3, S4]', model: 'model-a' };
       },
     };
     const service = serviceWith(provider);
@@ -1750,7 +1783,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     expect(result.ok).toBe(true);
     const content = result.ok === true ? result.content : '';
     const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
-    expect((line.match(/ · /g) ?? []).length).toBe(2);
+    expect((line.match(/ · /g) ?? []).length).toBe(3);
   });
 });
 
