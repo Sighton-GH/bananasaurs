@@ -217,7 +217,7 @@ const rateLimited = (resetAt?: number) =>
   new GitHubError('rate-limited', 'GitHub rate limit reached.', resetAt);
 
 describe('refreshGithubOrg', () => {
-  it('creates a missing child per public repo, skipping forks and archived by default', async () => {
+  it('creates a missing child per listed repo, forks and archived included', async () => {
     const client = new FakeClient();
     client.orgRepos = [
       summary('widget'),
@@ -235,14 +235,17 @@ describe('refreshGithubOrg', () => {
     expect(outcome).toBe('ok');
     expect(client.calls.listOrgRepos).toBe(1);
     const children = [...store.rows.values()].filter((r) => r.parentId === 'gh-acme');
-    expect(children.map((c) => c.title).sort()).toEqual(['acme/widget']);
-    expect(children[0]).toMatchObject({
-      kind: 'github-repo',
-      enabled: true,
-      parentId: 'gh-acme',
+    expect(children.map((c) => c.title).sort()).toEqual(
+      ['acme/forked', 'acme/old', 'acme/widget'].sort(),
+    );
+    for (const child of children) {
+      expect(child).toMatchObject({ kind: 'github-repo', enabled: true, parentId: 'gh-acme' });
+    }
+    const widget = children.find((c) => c.title === 'acme/widget');
+    expect(widget).toMatchObject({
       meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
     });
-    expect(children[0]?.url).toBe('https://github.com/acme/widget');
+    expect(widget?.url).toBe('https://github.com/acme/widget');
     expect(store.fetchRecords).toHaveLength(1);
     expect(store.fetchRecords[0]).toMatchObject({ id: 'gh-acme', status: 'ok' });
   });
@@ -275,7 +278,7 @@ describe('refreshGithubOrg', () => {
     });
   });
 
-  it('respects the includeForks and includeArchived toggles', async () => {
+  it('ignores the old includeForks and includeArchived toggles: every repo is included', async () => {
     const client = new FakeClient();
     client.orgRepos = [summary('forked', { fork: true }), summary('old', { archived: true })];
     const fetcher = new FakeFetcher(() => {
@@ -288,6 +291,70 @@ describe('refreshGithubOrg', () => {
     await refreshGithubOrg(SCOPE, withToggles, d);
 
     expect([...store.rows.values()].filter((r) => r.parentId === 'gh-acme')).toHaveLength(2);
+
+    // And without the toggles the same two repositories are still included.
+    const client2 = new FakeClient();
+    client2.orgRepos = [summary('forked', { fork: true }), summary('old', { archived: true })];
+    const second = deps(client2, fetcher);
+    second.store.rows.set('gh-acme', org());
+
+    await refreshGithubOrg(SCOPE, org(), second.deps);
+
+    expect([...second.store.rows.values()].filter((r) => r.parentId === 'gh-acme')).toHaveLength(2);
+  });
+
+  it('never re-enables a child the owner turned off', async () => {
+    const client = new FakeClient();
+    client.orgRepos = [summary('widget')];
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('no raw fetch');
+    });
+    const { deps: d, store } = deps(client, fetcher);
+    const current = org();
+    store.rows.set('gh-acme', current);
+    const off = repo({
+      id: 'widget-id',
+      title: 'acme/widget',
+      enabled: false,
+      meta: {
+        owner: 'acme',
+        repo: 'widget',
+        branch: 'main',
+        autoDiscovered: true,
+        disabledByOwner: true,
+      },
+    });
+    store.rows.set('widget-id', off);
+
+    await refreshGithubOrg(SCOPE, current, d);
+
+    expect(store.rows.get('widget-id')).toMatchObject({
+      enabled: false,
+      meta: { disabledByOwner: true },
+    });
+  });
+
+  it('re-enables a child that left the organisation and came back, unless the owner turned it off', async () => {
+    const client = new FakeClient();
+    client.orgRepos = [summary('widget')];
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('no raw fetch');
+    });
+    const { deps: d, store } = deps(client, fetcher);
+    const current = org();
+    store.rows.set('gh-acme', current);
+    // Disabled because it left the organisation: no disabledByOwner flag.
+    const returned = repo({
+      id: 'widget-id',
+      title: 'acme/widget',
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+    });
+    store.rows.set('widget-id', returned);
+
+    await refreshGithubOrg(SCOPE, current, d);
+
+    expect(store.rows.get('widget-id')).toMatchObject({ enabled: true });
   });
 
   it('disables auto-discovered children no longer listed, never deletes, and leaves owner children alone', async () => {

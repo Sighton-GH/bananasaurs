@@ -134,11 +134,13 @@ const repoOwnerOf = (resource: ClubResource): string | undefined => {
 };
 
 /**
- * An org refresh: re-lists the owner's repositories and reconciles
- * the child `github-repo` resources — missing ones are created (enabled,
- * `autoDiscovered`), auto-discovered ones that are gone (or filtered out by
- * the forks/archived toggles) are disabled, never deleted.
- * The owner's own hand-picked children are left alone.
+ * An org refresh: re-lists every repository the token can see (forks,
+ * archived and private alike, ADR 0084) and reconciles the child
+ * `github-repo` resources — missing ones are created (enabled,
+ * `autoDiscovered`), auto-discovered ones that left the organisation are
+ * disabled, never deleted. A child the owner turned off
+ * (`meta.disabledByOwner`) is never re-enabled here. The owner's own
+ * hand-picked children are left alone.
  */
 export async function refreshGithubOrg(
   scope: GuildScope,
@@ -169,11 +171,10 @@ export async function refreshGithubOrg(
     return fail(scope, resource, deps, failDetail(error));
   }
 
-  const includeForks = resource.meta?.includeForks ?? false;
-  const includeArchived = resource.meta?.includeArchived ?? false;
-  const eligible = summaries.filter(
-    (s) => (includeForks || !s.fork) && (includeArchived || !s.archived),
-  );
+  // Every repository the listing returns (ADR 0084): forks, archived and
+  // private alike. Old `includeForks`/`includeArchived` meta values are
+  // ignored here; the fields stay in the schema so old rows still parse.
+  const eligible = summaries;
   const eligibleNames = new Set(eligible.map((s) => s.name.toLowerCase()));
 
   const childKey = (child: ClubResource): string | undefined => {
@@ -209,8 +210,9 @@ export async function refreshGithubOrg(
           ...(summary.private ? { private: true as const } : {}),
         },
       });
-    } else if (!existing.enabled) {
-      // A repository that left and came back is usable again — but nothing
+    } else if (!existing.enabled && existing.meta?.disabledByOwner !== true) {
+      // A repository that left and came back is usable again — unless the
+      // owner turned it off, in which case it stays off (ADR 0084). Nothing
       // else about an existing row is touched here; the owner may have
       // edited its title, URL or branch by hand.
       deps.store.putResource(scope, { ...existing, enabled: true });
