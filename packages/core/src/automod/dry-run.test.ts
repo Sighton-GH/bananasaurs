@@ -92,6 +92,7 @@ const messageEvent = (over: Partial<MessageEvent> = {}): DomainEvent => ({
   isPrivateThread: false,
   messageId: MESSAGE,
   authorId: AUTHOR,
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: '',
   editedTimestampMs: undefined,

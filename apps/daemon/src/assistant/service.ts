@@ -77,11 +77,17 @@ export const sanitizeMentionsForProvider = (text: string): string =>
  * `context.ts` names them, plus `history` when history was sent (ruling).
  * The quoted envelope is user text, not a section — like the evidence
  * envelope it travels in the messages, never the system instruction.
+ *
+ * The trace's `user-message` section carries the same text minus the quoted
+ * message itself: the envelope arrives as its own part, so the trace swaps
+ * it for a placeholder while the provider request is unchanged.
  */
+const TRACE_QUOTE_PLACEHOLDER = '[quoted message: not kept in the trace]';
 const traceSections = (
   context: CompiledAssistantContext,
   history: readonly GenerationMessage[],
   userText: string,
+  quoteEnvelope?: string,
 ): AssistantTrace['sections'] => {
   const sections = context.sections.map((section) => ({
     name: section.name,
@@ -99,13 +105,17 @@ const traceSections = (
             { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
           ];
         })();
+  const tracedUserText =
+    quoteEnvelope === undefined || quoteEnvelope === ''
+      ? userText
+      : userText.replaceAll(quoteEnvelope, TRACE_QUOTE_PLACEHOLDER);
   return [
     ...withHistory,
     {
       name: 'user-message',
-      chars: userText.length,
-      estTokens: estimateTokens(userText),
-      text: userText,
+      chars: tracedUserText.length,
+      estTokens: estimateTokens(tracedUserText),
+      text: tracedUserText,
     },
   ];
 };
@@ -716,7 +726,7 @@ export const createAssistantService = (
        */
       const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
         const loopDetail = (): AssistantTraceDetail => ({
-          sections: traceSections(context, historyForLoop, userText),
+          sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
           history: historyForLoop,
           attempts: failed.attempts,
           toolCalls: failed.toolCalls,
@@ -826,6 +836,13 @@ export const createAssistantService = (
       // limited and never recorded.
       const reserveCall = (entry: ChainEntry) =>
         reserveEntryCall(instance, entry, scope.guildId, now());
+      // Task 20: the sources line contains only known resources whose tags the
+      // answer actually used. A web-only answer keeps just the Brave attribution.
+      const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
+      // The same check gates the loop's "Cite as" tags: only enabled,
+      // known resources are citable, so an untrusted title never prints raw.
+      const isKnownResource = (source: { title: string; url: string }): boolean =>
+        knownResource.has(`${source.title}${source.url}`);
       const loop = await runToolLoop({
         chain: chainEntries,
         systemInstruction:
@@ -857,6 +874,7 @@ export const createAssistantService = (
         guildId: scope.guildId,
         now,
         citations,
+        isCitable: isKnownResource,
       });
       // The loop records exactly one attempt per entry, in chain order, so
       // each attempt lines up with the entry that produced it.
@@ -881,9 +899,6 @@ export const createAssistantService = (
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
       const { text: citedText, cited } = applyCitations(loop.text, citations);
-      // Task 20: the sources line contains only known resources whose tags the
-      // answer actually used. A web-only answer keeps just the Brave attribution.
-      const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
       // The escalation summary is built from the loop text below — before
       // the sources line is appended — so a ticket never carries it. Only a
       // normal answer grows the line.
@@ -891,16 +906,14 @@ export const createAssistantService = (
       const answerText =
         baseAnswer +
         sourcesLine(
-          cited
-            .filter((source) => knownResource.has(`${source.title}${source.url}`))
-            .map((source) => ({
-              title: source.title,
-              url: source.url,
-              ...(source.heading === undefined ? {} : { heading: source.heading }),
-            })),
+          cited.filter(isKnownResource).map((source) => ({
+            title: source.title,
+            url: source.url,
+            ...(source.heading === undefined ? {} : { heading: source.heading }),
+          })),
         );
       sink.detail = {
-        sections: traceSections(context, historyForLoop, userText),
+        sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
         history: historyForLoop,
         attempts: loop.attempts,
         toolCalls: loop.toolCalls,

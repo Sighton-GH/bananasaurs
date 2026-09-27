@@ -427,6 +427,13 @@ function toMessageEvent(
     isPrivateThread: isThread && channel.type === ChannelType.PrivateThread,
     messageId: message.id,
     authorId: message.author?.id ?? undefined,
+    // GuildMember.nickname, User.globalName, User.username (discord.js
+    // typings): the nick wins, then the global name, then the username.
+    // Unknown author (an uncached delete) means no name at all.
+    authorDisplayName:
+      message.author === null || message.author === undefined
+        ? undefined
+        : (message.member?.nickname ?? message.author.globalName ?? message.author.username),
     // `?? false` rather than leaving it optional: an unknown author is not a
     // known bot, and a message automod cannot attribute is still a message it
     // should evaluate.

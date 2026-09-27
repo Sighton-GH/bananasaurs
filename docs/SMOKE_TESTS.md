@@ -230,7 +230,7 @@ Preconditions: the daemon is up on a build that includes Slice 11;
 Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model chain with at least one Ready entry; the test guild has an enabled behaviour whose tag (for example `@bananasaurs`) members may use.
 
 1. **Tag the bot.** Post a question in a visible channel tagging the bot (for example `@bananasaurs when is the next meeting?`).
-   What you should see: the bot posts its answer as a Discord reply to your message, and the answer ends with a short `-# Sources:` line naming what it read.
+   What you should see: the bot posts its answer as a Discord reply to your message, and if the answer uses a club source, it ends with a short `-# Sources:` line naming only that source; an answer that cites nothing has no Sources line.
 2. **Reply to its answer.** Use Discord's Reply on the bot's answer message and ask a follow-up (for example `and where?`).
    What you should see: the bot answers as a reply again, and the answer shows it continued the same conversation (it uses your first question's context without being told).
 3. **Quoted context from another member.** Have a second member post an ordinary message (for example `the lake meet moved to Sunday`). Reply to *that* message, tag the bot in the reply, and ask about it (for example `@bananasaurs what moved?`).
@@ -240,7 +240,7 @@ Preconditions: `bananasaurs doctor` is clean; the AI setup page shows the model 
 5. **"Update now".** On the Resources page, press "Update now" on one imported resource.
    What you should see: the resource refreshes (freshness timestamp advances, or a fetch error is recorded against that resource only) while the other resources are untouched.
 6. **Ask what the cache answers.** Back in Discord, tag the bot with a question the imported repository answers.
-   What you should see: the answer arrives as a reply and its `-# Sources:` line names the imported repository.
+   What you should see: the answer arrives as a reply and its `-# Sources:` line names the imported repository when the answer drew on it; an answer that cites nothing has no Sources line.
 7. **"Try it" on the behaviour.** On the Behaviours page, open the behaviour, type a question into "Try it" and submit; then submit a follow-up with the conversation continued.
    What you should see: the answer appears on the page with its trace id, and nothing is posted to Discord.
 8. **Conversations page and History trace.** Open the Conversations page and find the Discord conversation from steps 1–3; open its transcript, then follow the link to one of its traces on History.

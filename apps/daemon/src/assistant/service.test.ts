@@ -1128,6 +1128,25 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(sections.at(-1)?.name).toBe('user-message');
   });
 
+  it('keeps the quoted message out of the traced user message', async () => {
+    const { requests, service } = capturing();
+    const quoted = 'the hall opens at seven';
+    const result = await service.invoke(
+      ask({
+        quoteEnvelope: `[UNTRUSTED QUOTED MESSAGE author="Alex"]\n${quoted}\n[/UNTRUSTED QUOTED MESSAGE]`,
+      }),
+    );
+    expect(result.ok).toBe(true);
+    // The provider still gets the quote...
+    const lastText = requests[0]?.messages.at(-1)?.text ?? '';
+    expect(lastText).toContain(quoted);
+    // ...but the trace keeps a placeholder instead.
+    const sections = result.detail?.sections ?? [];
+    const userMessage = sections.find((section) => section.name === 'user-message');
+    expect(userMessage?.text).not.toContain(quoted);
+    expect(userMessage?.text).toContain('[quoted message: not kept in the trace]');
+  });
+
   it('returns trace detail with compiled sections plus a history section when history was sent', async () => {
     const { service } = capturing();
     const history = [{ role: 'user' as const, text: 'first question' }];
@@ -1640,7 +1659,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
   });
 
   it('removes a model-written Source line from the posted answer', async () => {
-    const service = serviceWith(answering('Answer.\nSource: unrelated'));
+    const service = serviceWith(answering('Answer.\nSource: https://x.test'));
     const result = await service.invoke({
       guildId: GUILD,
       channelId: '567890123456789012',

@@ -1,3 +1,5 @@
+import { neutraliseMarkers, safeDisplayName } from '@bananasaurs/core';
+
 export interface UserMessageInput {
   readonly question: string;
   readonly askerName?: string | undefined;
@@ -7,8 +9,8 @@ export interface UserMessageInput {
 
 /** ADR 0085: evidence, then the quoted message, then the current message, then who to answer. */
 export const buildUserMessage = (input: UserMessageInput): string => {
-  const name = (input.askerName ?? '').replace(/\s+/g, ' ').trim() || 'the member';
-  const question = input.question.replace(/\[\/CURRENT MESSAGE/gi, '[/current-message');
+  const name = safeDisplayName(input.askerName) ?? 'the member';
+  const question = neutraliseMarkers(input.question);
   const currentBlock = `[CURRENT MESSAGE from=${JSON.stringify(name)}]\n${question}\n[/CURRENT MESSAGE]`;
   const answerLine = `Answer ${name}'s current message.`;
   const parts: string[] = [];

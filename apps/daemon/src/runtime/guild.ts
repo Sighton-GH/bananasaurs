@@ -809,7 +809,11 @@ export function buildGuildRuntime(deps: GuildRuntimeDeps): GuildRuntime {
         await discord.respondToInteraction(guildId, ref, message);
       },
       enqueue: (input) => {
-        jobRepo.enqueue(scope, { ...input, payload: JSON.stringify(input.payload) });
+        const result = jobRepo.enqueue(scope, {
+          ...input,
+          payload: JSON.stringify(input.payload),
+        });
+        return { enqueued: result.enqueued };
       },
       sealToken: (ref) => interactionTokenSealer.seal(ref),
       now,
