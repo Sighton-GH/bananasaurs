@@ -15,22 +15,26 @@ export const startTyping = (send: () => Promise<void>, options: TypingOptions): 
   let stopped = false;
   let errorReported = false;
 
+  const reportError = (err: unknown): void => {
+    if (errorReported) return;
+    errorReported = true;
+    try {
+      options.onError(err);
+    } catch {
+      // Best-effort reporter: a throwing onError must never escape.
+    }
+  };
+
   const attempt = (): void => {
     let result: Promise<void>;
     try {
       result = send();
     } catch (err) {
-      if (!errorReported) {
-        errorReported = true;
-        options.onError(err);
-      }
+      reportError(err);
       return;
     }
     result.catch((err: unknown) => {
-      if (!errorReported) {
-        errorReported = true;
-        options.onError(err);
-      }
+      reportError(err);
     });
   };
 
