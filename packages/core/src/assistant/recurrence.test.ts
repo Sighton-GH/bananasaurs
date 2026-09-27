@@ -33,6 +33,33 @@ describe('nextOccurrence', () => {
       nextOccurrence(recurrence({ kind: 'weekly', days: [1], everyWeeks: 2 }), anchor, anchor, 0),
     ).toBe(at('2026-01-19T17:00:00Z'));
   });
+  it('counts biweekly weeks from the anchor Sunday when anchored Thursday', () => {
+    const anchor = at('2026-01-08T17:00:00Z');
+    const biweekly = reminderRecurrence.parse({
+      pattern: { kind: 'weekly', days: [1, 4], everyWeeks: 2 },
+      timeZone: 'UTC',
+    });
+    // The Monday right after the anchor week (Jan 12) is week 1 and is skipped.
+    expect(nextOccurrence(biweekly, anchor, anchor, 0)).toBe(at('2026-01-19T17:00:00Z'));
+  });
+  it('counts biweekly weeks from the anchor Sunday when anchored Sunday', () => {
+    const anchor = at('2026-01-04T17:00:00Z');
+    const biweekly = reminderRecurrence.parse({
+      pattern: { kind: 'weekly', days: [0], everyWeeks: 2 },
+      timeZone: 'UTC',
+    });
+    expect(nextOccurrence(biweekly, anchor, anchor, 0)).toBe(at('2026-01-18T17:00:00Z'));
+  });
+  it('counts biweekly weeks from the anchor Sunday when anchored Saturday', () => {
+    const anchor = at('2026-01-10T17:00:00Z');
+    const biweekly = reminderRecurrence.parse({
+      pattern: { kind: 'weekly', days: [6, 0], everyWeeks: 2 },
+      timeZone: 'UTC',
+    });
+    // The Sunday right after a Saturday anchor (Jan 11) belongs to the next
+    // week, so it must not fire; the series resumes Jan 18.
+    expect(nextOccurrence(biweekly, anchor, anchor, 0)).toBe(at('2026-01-18T17:00:00Z'));
+  });
   it('clamps monthly dates', () => {
     const anchor = at('2026-01-31T17:00:00Z');
     const monthly = recurrence({ kind: 'monthly', dayOfMonth: 31 });

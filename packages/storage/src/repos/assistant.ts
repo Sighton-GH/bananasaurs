@@ -890,7 +890,13 @@ export const addRolesToSkillGrants = (
           },
         })
         .run();
-      result.push({ skillId, roleIds, userIds: [...currentUserIds] });
+      const mode = row?.mode ?? null;
+      result.push({
+        skillId,
+        roleIds,
+        userIds: [...currentUserIds],
+        ...(mode === null ? {} : { mode: mode as SkillScopeMode }),
+      });
       bySkillId.set(skillId, {
         guildId: scope.guildId,
         skillId,

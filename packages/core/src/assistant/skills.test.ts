@@ -21,12 +21,16 @@ describe('assistant skill scopes', () => {
       expect(entry.defaultScope).toBe(entry.acts ? 'owner' : 'everyone');
   });
 
-  it('does not include acting skills in starters', () => {
-    expect(STARTER_SKILL_IDS).not.toEqual(
-      expect.arrayContaining(
-        CLUB_ASSISTANT_SKILLS.filter((entry) => entry.acts).map((entry) => entry.id),
-      ),
-    );
+  it('uses exactly the non-acting skills as starters', () => {
+    const nonActing = CLUB_ASSISTANT_SKILLS.filter((entry) => !entry.acts).map((entry) => entry.id);
+    expect(nonActing.length).toBeGreaterThan(0);
+    expect([...STARTER_SKILL_IDS].sort()).toEqual([...nonActing].sort());
+  });
+
+  it('defaults the reminders skill to owner scope', () => {
+    const remindersSkill = CLUB_ASSISTANT_SKILLS.find((entry) => entry.id === 'reminders');
+    if (remindersSkill === undefined) throw new Error('reminders skill missing');
+    expect(effectiveSkillScope(remindersSkill, undefined)).toEqual({ mode: 'owner' });
   });
 
   it('uses the stored scope when present and the default otherwise', () => {

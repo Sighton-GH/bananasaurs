@@ -5,10 +5,14 @@ import { reminderRecurrence, type Reminder } from '@bananasaurs/core';
 import { openMigratedTestDatabase } from '../test-support.js';
 import { upsertGuild } from './guilds.js';
 import {
+  cancelReminder,
+  completeReminder,
   getReminder,
   insertReminder,
+  listBehaviours,
   listRemindersForCreator,
   listSkillGrants,
+  putBehaviour,
   putSkillGrant,
   rescheduleReminder,
   claimDueReminders,
@@ -59,13 +63,163 @@ describe('skill scopes and richer reminder storage', () => {
       context: 'why',
     });
     insertReminder(b, reminder(B, 'r1'));
-    expect(getReminder(a, 'r1')?.context).toBe('why');
+    const reread = getReminder(a, 'r1');
+    expect(reread?.context).toBe('why');
+    expect(reread?.mentions).toEqual({ userIds: [U], roleIds: [], everyone: false, here: false });
+    expect(reread?.recurrence).toEqual(reminderRecurrence.parse(repeating));
     expect(getReminder(b, 'r1')?.guildId).toBe(B);
     expect(listRemindersForCreator(a, U, { includeFinished: false })).toHaveLength(1);
     expect(updateReminder(a, 'r1', { text: 'changed' }, 4)).toBe('updated');
     claimDueReminders(a, 1000, 1, 300);
     rescheduleReminder(a, 'r1', 2000);
     expect(getReminder(a, 'r1')?.dueAt).toBe(2000);
+    t.close();
+  });
+
+  it('executes the 0049 data SQL against seeded rows', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    const behaviour = (id: string, skillIds: readonly string[]) =>
+      putBehaviour(
+        a,
+        {
+          id,
+          guildId: A,
+          surface: 'bananasaurs',
+          name: id,
+          systemPrompt: 'prompt',
+          promptVersion: 1,
+          allowedSkillIds: [...skillIds],
+          callerRoleIds: [],
+          reviewerRoleIds: [],
+          resourceIds: [],
+          enabled: true,
+        },
+        1,
+      );
+    behaviour('b1', ['search-club', 'create-reminder']);
+    behaviour('b2', ['create-reminder', 'send-reminder', 'draft-agenda']);
+    behaviour('b3', ['search-club']);
+    putSkillGrant(
+      a,
+      { skillId: 'create-reminder', roleIds: ['555555555555555555'], userIds: [] },
+      2,
+    );
+    putSkillGrant(a, { skillId: 'send-reminder', roleIds: [], userIds: [] }, 2);
+    const sql = readFileSync(
+      fileURLToPath(
+        new URL('../../../../drizzle/0049_skill_scopes_and_reminder_fields.sql', import.meta.url),
+      ),
+      'utf8',
+    );
+    for (const chunk of sql.split('--> statement-breakpoint')) {
+      const statement = chunk
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('--'))
+        .join('\n')
+        .trim();
+      if (statement.startsWith('UPDATE') || statement.startsWith('DELETE')) t.raw.exec(statement);
+    }
+    const byId = new Map(listBehaviours(a).map((entry) => [entry.id, entry.allowedSkillIds]));
+    expect([...(byId.get('b1') ?? [])].sort()).toEqual(['reminders', 'search-club']);
+    expect([...(byId.get('b2') ?? [])].sort()).toEqual(['draft-agenda', 'reminders']);
+    expect((byId.get('b2') ?? []).filter((id) => id === 'reminders')).toHaveLength(1);
+    expect(byId.get('b3')).toEqual(['search-club']);
+    expect(listSkillGrants(a)).toEqual([
+      { skillId: 'reminders', roleIds: ['555555555555555555'], userIds: [] },
+    ]);
+    t.close();
+  });
+
+  it('reads bad mentions and recurrence JSON as absent defaults', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    insertReminder(a, reminder(A, 'bad'));
+    t.raw.exec(
+      `UPDATE assistant_reminders SET mentions_json = 'not-json', recurrence_json = 'not-json' WHERE guild_id = '${A}' AND reminder_id = 'bad'`,
+    );
+    expect(getReminder(a, 'bad')?.mentions).toEqual({
+      userIds: [],
+      roleIds: [],
+      everyone: false,
+      here: false,
+    });
+    expect(getReminder(a, 'bad')?.recurrence).toBeUndefined();
+    t.close();
+  });
+
+  it('counts deliveries on complete and moves due time on reschedule', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    insertReminder(a, reminder(A, 'done'));
+    claimDueReminders(a, 1000, 25, 300);
+    completeReminder(a, 'done');
+    expect(getReminder(a, 'done')?.deliveredCount).toBe(1);
+    insertReminder(a, reminder(A, 'moved'));
+    claimDueReminders(a, 1000, 25, 300);
+    rescheduleReminder(a, 'moved', 2000);
+    expect(getReminder(a, 'moved')?.dueAt).toBe(2000);
+    expect(getReminder(a, 'moved')?.deliveredCount).toBe(1);
+    t.close();
+  });
+
+  it('updates scheduled reminders and refuses the rest', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    insertReminder(a, reminder(A, 'editable'));
+    expect(updateReminder(a, 'editable', { text: 'changed' }, 4)).toBe('updated');
+    expect(getReminder(a, 'editable')?.text).toBe('changed');
+    insertReminder(a, reminder(A, 'gone', 'cancelled'));
+    expect(updateReminder(a, 'gone', { text: 'changed' }, 5)).toBe('not-editable');
+    expect(updateReminder(a, 'missing', { text: 'changed' }, 6)).toBe('not-found');
+    t.close();
+  });
+
+  it('filters creator reminders by finished status', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    const other = '555555555555555555';
+    insertReminder(a, { ...reminder(A, 'mine'), creatorId: U, dueAt: 1000 });
+    insertReminder(a, { ...reminder(A, 'theirs'), creatorId: other, dueAt: 1000 });
+    insertReminder(a, {
+      ...reminder(A, 'finished'),
+      creatorId: U,
+      status: 'delivered',
+      dueAt: 500,
+    });
+    expect(listRemindersForCreator(a, U, { includeFinished: false }).map((r) => r.id)).toEqual([
+      'mine',
+    ]);
+    expect(listRemindersForCreator(a, U, { includeFinished: true }).map((r) => r.id)).toEqual([
+      'finished',
+      'mine',
+    ]);
+    expect(listRemindersForCreator(a, other, { includeFinished: false }).map((r) => r.id)).toEqual([
+      'theirs',
+    ]);
+    t.close();
+  });
+
+  it('keeps every reminder function inside its guild', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    const b = t.scopes.forGuild(B);
+    upsertGuild(a, { name: 'a', now: 1 });
+    upsertGuild(b, { name: 'b', now: 1 });
+    insertReminder(b, reminder(B, 'secret'));
+    expect(getReminder(a, 'secret')).toBeUndefined();
+    expect(updateReminder(a, 'secret', { text: 'x' }, 2)).toBe('not-found');
+    expect(cancelReminder(a, 'secret')).toBe(false);
+    expect(listRemindersForCreator(a, U, { includeFinished: true })).toEqual([]);
+    expect(claimDueReminders(a, 1000, 25, 300)).toEqual([]);
+    expect(() => completeReminder(a, 'secret')).toThrow();
+    expect(() => rescheduleReminder(a, 'secret', 2000)).toThrow();
+    expect(getReminder(b, 'secret')?.guildId).toBe(B);
     t.close();
   });
 
