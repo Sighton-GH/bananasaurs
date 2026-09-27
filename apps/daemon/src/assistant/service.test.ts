@@ -2147,3 +2147,207 @@ describe('Task 10 (b): busy chain throws ChainFailedError', () => {
     }
   });
 });
+
+/**
+ * B2b step 1: each skill is gated by the behaviour allowlist and its
+ * per-skill scope, checked in code against the asker's live roles. The owner
+ * passes every scope; try-it counts as the owner.
+ */
+describe('B2b: per-skill scopes gate chat skills', () => {
+  const GUILD = parseGuildId('234567890123456789');
+  const MEMBER = '456789012345678901';
+  const CHANNEL = '567890123456789012';
+  const CLUB_ROLE = '678901234567890123';
+  const SPECIAL_ROLE = '789012345678901234';
+  const OWNER = '345678901234567890';
+  const NOW = 1_800_000_000_000;
+
+  const config = parseConfig({
+    DISCORD_BOT_TOKEN: 'test-token',
+    DISCORD_APPLICATION_ID: '123456789012345678',
+    BANANASAURS_GUILD_ALLOWLIST: GUILD,
+    BANANASAURS_OWNER_USER_ID: OWNER,
+    AI_PROVIDER: 'off',
+    AI_MODEL: 'fixture-model',
+    AI_PROFILE_COST_CLASS: 'free',
+  });
+
+  const direct = {
+    id: 'direct',
+    guildId: GUILD,
+    surface: 'direct-command' as const,
+    name: 'Club',
+    systemPrompt: 'Canadian English.',
+    promptVersion: 1,
+    callerRoleIds: [CLUB_ROLE],
+    reviewerRoleIds: [],
+    allowedSkillIds: ['search-club', 'reminders'],
+    resourceIds: [],
+    enabled: true,
+  };
+
+  const usable = (provider: TextProvider): ChainEntry => ({
+    providerId: 'gemini',
+    model: 'model-a',
+    keyId: 'key_a',
+    keyLabel: 'Key A',
+    provider,
+    skip: undefined,
+    mayTrain: false,
+    rpmLimit: null,
+    rpdLimit: null,
+  });
+
+  let t: MigratedTestDatabase;
+  beforeEach(() => {
+    t = openMigratedTestDatabase();
+    guildRepo.upsertGuild(t.scopes.forGuild(GUILD), { name: 'fixture', now: NOW });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Key A',
+      apiKeyEnc: 'sealed-key-a',
+      now: NOW,
+      keyId: 'key_a',
+    });
+    assistantProvidersRepo.addKey(t.scopes.instance(), {
+      provider: 'gemini',
+      label: 'Test provider',
+      apiKeyEnc: 'sealed-key-test',
+      now: NOW,
+      keyId: 'key_test',
+    });
+    assistantRepo.putBehaviour(t.scopes.forGuild(GUILD), direct, NOW);
+    assistantRepo.putSkillGrant(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', roleIds: [CLUB_ROLE], userIds: [] },
+      NOW,
+    );
+  });
+  afterEach(() => t.close());
+
+  const serviceWith = (generateText: (req: { systemInstruction?: string }) => Promise<GenerateTextResponse>) => {
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: generateText as TextProvider['generateText'],
+    };
+    return createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [usable(provider)],
+    );
+  };
+
+  const ask = (over: Record<string, unknown> = {}) => ({
+    guildId: GUILD,
+    channelId: CHANNEL,
+    userId: MEMBER,
+    callerRoleIds: [CLUB_ROLE],
+    behaviour: direct,
+    command: 'ask' as const,
+    input: { question: 'when is the meeting?' },
+    source: 'slash-command' as const,
+    invocationId: 'int-scope-1',
+    ...over,
+  });
+
+  it('a member without the scoped role is refused, one with it passes', async () => {
+    assistantRepo.setSkillScope(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', mode: 'roles', roleIds: [SPECIAL_ROLE] },
+      NOW,
+    );
+    const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
+    const service = serviceWith(generateText);
+    const refused = await service.invoke(ask());
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.content).toBe(
+      "You don't have access to that assistant skill. No action was taken.",
+    );
+    expect(generateText).not.toHaveBeenCalled();
+    expect(assistantRepo.listSkillActivity(t.scopes.forGuild(GUILD), 10)[0]).toMatchObject({
+      skillId: 'search-club',
+      outcome: 'denied',
+    });
+    const allowed = await service.invoke(
+      ask({ callerRoleIds: [CLUB_ROLE, SPECIAL_ROLE], invocationId: 'int-scope-2' }),
+    );
+    expect(allowed.ok).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('an owner-scoped skill passes for the owner and is refused for a member', async () => {
+    assistantRepo.setSkillScope(
+      t.scopes.forGuild(GUILD),
+      { skillId: 'search-club', mode: 'owner', roleIds: [] },
+      NOW,
+    );
+    const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
+    const service = serviceWith(generateText);
+    const refused = await service.invoke(ask({ invocationId: 'int-scope-owner-1' }));
+    expect(refused.ok).toBe(false);
+    expect(refused.ok === false && refused.content).toBe(
+      "You don't have access to that assistant skill. No action was taken.",
+    );
+    const allowed = await service.invoke(
+      ask({ userId: OWNER, callerRoleIds: [], invocationId: 'int-scope-owner-2' }),
+    );
+    expect(allowed.ok).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(1);
+  });
+
+  it('the default scopes apply with no stored grant: reminders owner-only, search-club everyone', async () => {
+    const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
+    const service = serviceWith(generateText);
+    const search = await service.invoke(ask({ invocationId: 'int-scope-default-1' }));
+    expect(search.ok).toBe(true);
+    const remindInput = {
+      when: new Date(NOW + 60_000).toISOString(),
+      text: 'Bring batteries',
+    };
+    const memberRemind = await service.invoke(
+      ask({ command: 'remind', input: remindInput, invocationId: 'int-scope-default-2' }),
+    );
+    expect(memberRemind.ok).toBe(false);
+    expect(memberRemind.ok === false && memberRemind.content).toBe(
+      "You don't have access to that assistant skill. No action was taken.",
+    );
+    const ownerRemind = await service.invoke(
+      ask({
+        command: 'remind',
+        input: remindInput,
+        userId: OWNER,
+        callerRoleIds: [],
+        invocationId: 'int-scope-default-3',
+      }),
+    );
+    expect(ownerRemind.ok).toBe(true);
+    expect(generateText).toHaveBeenCalledTimes(2);
+  });
+
+  it('a skill outside the behaviour allowlist is refused even for the owner', async () => {
+    const generateText = vi.fn(async () => ({ text: 'done', model: 'model-a' }));
+    const service = serviceWith(generateText);
+    const result = await service.invoke(
+      ask({
+        behaviour: { ...direct, id: 'narrow', allowedSkillIds: ['search-club'] },
+        command: 'remember',
+        input: { request: 'remember this' },
+        userId: OWNER,
+        callerRoleIds: [],
+        invocationId: 'int-scope-allowlist',
+      }),
+    );
+    expect(result.ok).toBe(false);
+    expect(result.ok === false && result.content).toBe(
+      'This behaviour is not allowed to use propose-memory. No action was taken.',
+    );
+    expect(generateText).not.toHaveBeenCalled();
+  });
+});
