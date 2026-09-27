@@ -621,6 +621,26 @@ describe('acting tools (B2a)', () => {
     expect(again).toMatchObject({ ok: false, text: "That reminder can't be cancelled now." });
   });
 
+  it("refuses a cancel by another member and keeps the reminder scheduled", async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', text: 'Bring the charger' }));
+    const stranger = ports({
+      userId: '999999999999999999',
+      reminderStore: p.reminderStore,
+    });
+    await expect(
+      runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'rem1' } }, stranger),
+    ).resolves.toMatchObject({ ok: false, text: 'You can only change reminders you set.' });
+    expect(rows.get('rem1')?.status).toBe('scheduled');
+  });
+
+  it('refuses a cancel for a missing id', async () => {
+    const { p } = reminderPorts();
+    await expect(
+      runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'missing' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
+  });
+
   it('files memory and decision proposals with review wording', async () => {
     const proposed: { id: string; kind: string; summary: string }[] = [];
     const p = ports({
