@@ -66,5 +66,5 @@ export const applyCitations = (
   });
   while (cleaned.length > 0 && cleaned.at(-1)?.trim() === '') cleaned.pop();
   if (cleaned.length > 0 && SOURCE_LINE.test(cleaned.at(-1)!)) cleaned.pop();
-  return { text: cleaned.join('\n').trimEnd(), cited };
+  return { text: cleaned.join('\n').trim(), cited };
 };

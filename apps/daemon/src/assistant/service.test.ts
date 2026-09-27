@@ -1696,7 +1696,24 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
 
   it('adds a sources line with headings for pre-retrieved evidence', async () => {
     seedResource('handbook', 'Handbook', ['battery care guide for the club']);
-    const service = serviceWith(answering('Here is the care guide. [S1]'));
+    seedResource('alpha', 'Alpha', ['alpha care notes for the club']);
+    seedResource('beta', 'Beta', ['beta care notes for the club']);
+    seedResource('gamma', 'Gamma', ['gamma care notes for the club']);
+    const hit = (resourceId: string, snippet: string) => ({
+      resourceId,
+      chunkId: `c_${resourceId}_0`,
+      docId: `d_${resourceId}`,
+      headingPath: 'Guide › Part 0',
+      snippet,
+    });
+    const service = serviceWith(answering('Here is the care guide. [S1]'), {
+      cacheSearch: () => [
+        hit('handbook', 'battery care guide'),
+        hit('alpha', 'alpha care notes'),
+        hit('beta', 'beta care notes'),
+        hit('gamma', 'gamma care notes'),
+      ],
+    });
     const result = await service.invoke({
       guildId: GUILD,
       channelId: '567890123456789012',
@@ -1710,7 +1727,12 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     });
     expect(result.ok).toBe(true);
     const content = result.ok === true ? result.content : '';
-    expect(content).toContain('-# Sources: Handbook › Guide › Part 0');
+    const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
+    expect(line).toBe('-# Sources: Handbook › Guide › Part 0');
+    expect(content).not.toContain('Alpha');
+    expect(content).not.toContain('Beta');
+    expect(content).not.toContain('Gamma');
+    expect(content).not.toContain('[S');
   });
 
   it('clips a 5000-char pre-retrieved heading in the sources line', async () => {
@@ -1784,6 +1806,89 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
     const content = result.ok === true ? result.content : '';
     const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
     expect((line.match(/ · /g) ?? []).length).toBe(3);
+  });
+
+  it('lists exactly five entries when the answer cites six known sources', async () => {
+    const ids = ['alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta'] as const;
+    const docIds = ids.map((id, i) =>
+      seedResource(id, id[0]!.toUpperCase() + id.slice(1), [`unique care text ${String(i)}`]),
+    );
+    const chunks = docIds.map((docId) => `c_${docId}_0`);
+    let round = 0;
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        if (round === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: chunks.map((chunkId) => ({ name: 'read_chunk', args: { chunkId } })),
+          };
+        return { text: 'Done. [S1, S2, S3, S4, S5, S6]', model: 'model-a' };
+      },
+    };
+    const service = serviceWith(provider);
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'zzzz no cache match' },
+      source: 'slash-command',
+      invocationId: 'int-six-cited-cap',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
+    expect((line.match(/ · /g) ?? []).length).toBe(4);
+    expect(line).toContain('Epsilon');
+    expect(line).not.toContain('Zeta');
+    expect(content).not.toContain('[S');
+  });
+
+  it('lists only the known source when the answer also cites a web result', async () => {
+    seedResource('handbook', 'Handbook', ['battery care guide for the club']);
+    let round = 0;
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text', 'tools']),
+      generateText: async () => {
+        round += 1;
+        if (round === 1)
+          return {
+            text: '',
+            model: 'model-a',
+            toolCalls: [{ name: 'web_search', args: { query: 'battery care' } }],
+          };
+        return { text: 'Both used. [S1, S2]', model: 'model-a' };
+      },
+    };
+    const service = serviceWith(provider, {
+      webSearch: async () => [
+        { title: 'Web Guide', url: 'https://web.example/guide', description: 'Web care.' },
+      ],
+    });
+    const result = await service.invoke({
+      guildId: GUILD,
+      channelId: '567890123456789012',
+      userId: '456789012345678901',
+      callerRoleIds: [CLUB_ROLE],
+      behaviour: direct,
+      command: 'ask',
+      input: { question: 'battery care' },
+      source: 'slash-command',
+      invocationId: 'int-known-plus-web',
+    });
+    expect(result.ok).toBe(true);
+    const content = result.ok === true ? result.content : '';
+    const line = content.split('\n').find((l) => l.startsWith('-# Sources:')) ?? '';
+    expect(line).toBe('-# Sources: Handbook › Guide › Part 0');
+    expect(content).not.toContain('Web Guide');
+    expect(content).not.toContain('[S');
   });
 });
 

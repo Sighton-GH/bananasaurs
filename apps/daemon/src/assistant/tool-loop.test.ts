@@ -192,6 +192,9 @@ describe('runToolLoop citations', () => {
     );
     const toolText = calls[1]?.messages.find((message) => message.role === 'tool')?.text ?? '';
     expect(toolText).toContain('Cite as: [S1] Handbook; [S2] Roster');
+    expect(toolText.endsWith('Cite as: [S1] Handbook; [S2] Roster\n[/UNTRUSTED TOOL RESULT]')).toBe(
+      true,
+    );
     expect(registry.get('S1')).toEqual(sourceA);
     expect(registry.get('S2')).toEqual(sourceB);
   });
