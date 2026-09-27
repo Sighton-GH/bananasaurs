@@ -3,6 +3,7 @@ import { z } from 'zod';
 import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  effectiveSkillScope,
   isGithubWebHost,
   parseGitHubUrl,
   promptWizardAnswers,
@@ -180,6 +181,46 @@ export const registerAssistantRoutes = (
         : await deps.assistantDirectories(session.guildId).catch(() => undefined);
     const behaviours = assistantRepo.listBehaviours(session.scope);
     const skillGrants = assistantRepo.listSkillGrants(session.scope);
+    const reminders = assistantRepo.listReminders(session.scope);
+    const decisions = assistantRepo.listDecisions(session.scope);
+    const grantsBySkillId = new Map(skillGrants.map((grant) => [grant.skillId, grant] as const));
+    const skillScopeOf = (skillId: string) => {
+      const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === skillId);
+      const grant = grantsBySkillId.get(skillId);
+      // `skill` is always defined here: every key comes from the catalogue.
+      const effective = effectiveSkillScope(
+        skill ?? CLUB_ASSISTANT_SKILLS[0]!,
+        grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
+      );
+      return {
+        mode: effective.mode,
+        roleIds: effective.mode === 'roles' ? [...effective.roleIds] : [],
+        isDefault: grant?.mode === undefined,
+      };
+    };
+    const skillScopes: Record<string, { mode: string; roleIds: string[]; isDefault: boolean }> =
+      Object.fromEntries(CLUB_ASSISTANT_SKILLS.map((skill) => [skill.id, skillScopeOf(skill.id)]));
+    const liveReminders = reminders.filter(
+      (reminder) => reminder.status === 'scheduled' || reminder.status === 'delivering',
+    ).length;
+    const draftMemories = decisions.filter(
+      (decision) => decision.kind === 'memory' && decision.status === 'draft',
+    ).length;
+    const draftDecisions = decisions.filter(
+      (decision) => decision.kind !== 'memory' && decision.status === 'draft',
+    ).length;
+    const skillItemCounts: Record<string, number> = Object.fromEntries(
+      CLUB_ASSISTANT_SKILLS.map((skill) => [
+        skill.id,
+        skill.id === 'reminders'
+          ? liveReminders
+          : skill.id === 'propose-memory'
+            ? draftMemories
+            : skill.id === 'record-decision'
+              ? draftDecisions
+              : 0,
+      ]),
+    );
     const aiStatus = deps.assistantProviderConfig?.status() ??
       deps.assistantAiStatus ?? {
         provider: 'unknown',
@@ -205,12 +246,14 @@ export const registerAssistantRoutes = (
         },
       })),
       resources: assistantRepo.listResources(session.scope),
-      reminders: assistantRepo.listReminders(session.scope),
+      reminders,
       skills: CLUB_ASSISTANT_SKILLS,
+      skillScopes,
+      skillItemCounts,
       activity: assistantRepo.listSkillActivity(session.scope, 100),
       skillGrants,
       tickets: assistantRepo.listTickets(session.scope),
-      decisions: assistantRepo.listDecisions(session.scope),
+      decisions,
       serverCard: assistantRepo.getServerCard(session.scope),
       memories: assistantRepo.listMemories(session.scope),
       settings: assistantRepo.getAssistantSettings(session.scope),
@@ -576,32 +619,46 @@ export const registerAssistantRoutes = (
     });
     return reply.status(200).send({ skillIds: STARTER_SKILL_IDS });
   });
-  app.put('/api/assistant/skill-grants/:id', (request, reply) => {
+  // Task E1: one scope per skill, server-wide (ADR 0086 decision 1). The
+  // stored row keeps its role/user ids; only the mode and role ids move.
+  app.put('/api/assistant/skills/:skillId/scope', (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.write', reply)) return reply;
-    const id = (request.params as { id: string }).id;
+    const skillId = (request.params as { skillId: string }).skillId;
+    const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === skillId);
+    if (skill === undefined) return reply.status(404).send({ error: 'not-found' });
     const parsed = z
-      .object({ roleIds: z.array(snowflake).max(100), userIds: z.array(snowflake).max(100) })
+      .object({ mode: z.enum(['everyone', 'roles', 'owner']), roleIds: z.array(snowflake).max(100) })
+      .strict()
       .safeParse(request.body);
-    const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === id);
-    if (!parsed.success || skill === undefined || skill.ownerOnly === true)
-      return reply.status(400).send({ error: 'bad-request' });
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    if (parsed.data.mode === 'roles' && parsed.data.roleIds.length === 0)
+      return badRequest(reply);
+    const roleIds = parsed.data.mode === 'roles' ? parsed.data.roleIds : [];
+    const stored = assistantRepo
+      .listSkillGrants(session.scope)
+      .find((item) => item.skillId === skillId);
+    const beforeEffective = effectiveSkillScope(
+      skill,
+      stored === undefined ? undefined : { mode: stored.mode, roleIds: stored.roleIds },
+    );
+    const before = {
+      mode: beforeEffective.mode,
+      roleIds: beforeEffective.mode === 'roles' ? [...beforeEffective.roleIds] : [],
+      isDefault: stored?.mode === undefined,
+    };
+    assistantRepo.setSkillScope(session.scope, { skillId, mode: parsed.data.mode, roleIds }, deps.now());
+    const after = { mode: parsed.data.mode, roleIds, isDefault: false };
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
-      action: 'assistant_skill_grant.saved',
-      subjectType: 'assistant_skill_grant',
-      subjectId: id,
-      before: (() => {
-        const grant = assistantRepo
-          .listSkillGrants(session.scope)
-          .find((item) => item.skillId === id);
-        return grant === undefined ? undefined : { roleIds: grant.roleIds, userIds: grant.userIds };
-      })(),
-      after: { roleIds: parsed.data.roleIds, userIds: parsed.data.userIds },
+      action: 'assistant_skill_scope.saved',
+      subjectType: 'assistant_skill',
+      subjectId: skillId,
+      before,
+      after,
     });
-    assistantRepo.putSkillGrant(session.scope, { skillId: id, ...parsed.data }, deps.now());
-    return reply.status(200).send({ ok: true });
+    return reply.status(200).send({ ok: true, scope: after });
   });
   app.post('/api/assistant/reminders/:id/cancel', (request, reply) => {
     const session = guard.require(request, reply);
