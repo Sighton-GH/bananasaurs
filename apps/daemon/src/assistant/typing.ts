@@ -12,6 +12,7 @@ export interface TypingOptions {
 export const startTyping = (send: () => Promise<void>, options: TypingOptions): (() => void) => {
   const intervalMs = options.intervalMs ?? 8_000;
   const maxMs = options.maxMs ?? 180_000;
+  const deadline = Date.now() + maxMs;
   let stopped = false;
   let errorReported = false;
 
@@ -43,15 +44,15 @@ export const startTyping = (send: () => Promise<void>, options: TypingOptions): 
 
   const interval = setInterval(() => {
     if (stopped) return;
+    if (Date.now() >= deadline) {
+      stopped = true;
+      clearInterval(interval);
+      return;
+    }
     attempt();
   }, intervalMs);
-  const timeout = setTimeout(() => {
-    stopped = true;
-    clearInterval(interval);
-  }, maxMs);
   // A long keepalive must not hold the process open on its own.
   if (typeof interval.unref === 'function') interval.unref();
-  if (typeof timeout.unref === 'function') timeout.unref();
 
   let called = false;
   return () => {
@@ -59,6 +60,5 @@ export const startTyping = (send: () => Promise<void>, options: TypingOptions): 
     called = true;
     stopped = true;
     clearInterval(interval);
-    clearTimeout(timeout);
   };
 };
