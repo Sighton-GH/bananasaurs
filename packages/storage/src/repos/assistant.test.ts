@@ -712,7 +712,7 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
     expect(getTrace(other, 'mine')).toBeDefined();
   });
 
-  it("deletes every conversation trace where the member took part, not just their own", () => {
+  it('deletes every conversation trace where the member took part, not just their own', () => {
     const OTHER_GUILD = parseGuildId('999999999999999999');
     guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
     const s = t.scopes.forGuild(G);
@@ -744,7 +744,10 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
       authorName: 'Member B',
       text: 'second question',
     });
-    insertTrace(s, traceFixture({ traceId: 'trace-a1', userId: MEMBER, conversationId: 'conv-c1' }));
+    insertTrace(
+      s,
+      traceFixture({ traceId: 'trace-a1', userId: MEMBER, conversationId: 'conv-c1' }),
+    );
     insertTrace(s, traceFixture({ traceId: 'trace-b1', userId: OTHER, conversationId: 'conv-c1' }));
     insertTrace(s, traceFixture({ traceId: 'trace-b2', userId: OTHER, conversationId: 'conv-c2' }));
     insertTrace(

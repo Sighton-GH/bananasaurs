@@ -85,9 +85,10 @@ describe('citation registry', () => {
     const registry = createCitationRegistry();
     const known = { title: 'Known', url: 'https://example.com/known' };
     registry.tag(known);
-    expect(
-      applyCitations('Answer [S1]\n\nSources:\n- Handbook\n- Web page', registry),
-    ).toEqual({ text: 'Answer', cited: [known] });
+    expect(applyCitations('Answer [S1]\n\nSources:\n- Handbook\n- Web page', registry)).toEqual({
+      text: 'Answer',
+      cited: [known],
+    });
     expect(applyCitations('Answer\nSources: https://x.test', registry).text).toBe('Answer');
     expect(applyCitations('Answer\nSource: ask the treasurer', registry).text).toBe(
       'Answer\nSource: ask the treasurer',

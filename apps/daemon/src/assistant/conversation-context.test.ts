@@ -5,7 +5,11 @@ import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
-import { buildConversationContext, labelUserTurn, quoteEnvelopeFor } from './conversation-context.js';
+import {
+  buildConversationContext,
+  labelUserTurn,
+  quoteEnvelopeFor,
+} from './conversation-context.js';
 
 const GUILD = parseGuildId('111111111111111111');
 const CHANNEL = '333333333333333333';
@@ -133,9 +137,9 @@ describe('buildConversationContext', () => {
   });
 
   it('labels a turn stored under a bare user id as a member', () => {
-    expect(
-      labelUserTurn({ authorName: '123456789012345678', at: NOW, text: 'hello' }, NOW),
-    ).toBe('[a member, just now] hello');
+    expect(labelUserTurn({ authorName: '123456789012345678', at: NOW, text: 'hello' }, NOW)).toBe(
+      '[a member, just now] hello',
+    );
   });
 
   it('leaves an assistant turn unlabelled', () => {

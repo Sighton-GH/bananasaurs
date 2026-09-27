@@ -595,10 +595,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     const request = {
       model: 'test-model',
       systemInstruction: '',
-      messages: [
-        ...history,
-        { role: 'user' as const, text: 'second question' },
-      ],
+      messages: [...history, { role: 'user' as const, text: 'second question' }],
     };
     expect(scanOutboundRequest(request).safe).toBe(true);
   });
