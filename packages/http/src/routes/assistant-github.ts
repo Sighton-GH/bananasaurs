@@ -191,7 +191,9 @@ export const registerAssistantGithubRoutes = (
           kind: 'github-org',
           enabled: existingOrg?.enabled ?? true,
           reviewedAt: nowIso,
-          meta: orgDisabled ? { owner: target.owner, disabledByOwner: true } : { owner: target.owner },
+          meta: orgDisabled
+            ? { owner: target.owner, disabledByOwner: true }
+            : { owner: target.owner },
         });
         enqueue(orgId);
         for (const repo of selected) {
