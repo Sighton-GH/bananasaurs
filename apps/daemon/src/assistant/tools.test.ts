@@ -1,6 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
-import { clipHeading, TOOL_CATALOGUE, type ClubResource } from '@bananasaurs/core';
+import { clipHeading, TOOL_CATALOGUE, type ClubResource, type Reminder } from '@bananasaurs/core';
 import { runAssistantTool, toolDeclarations, type AssistantToolPorts } from './tools.js';
+import type { assistantRepo } from '@bananasaurs/storage';
+
+type StoredReminder = assistantRepo.StoredReminder;
 
 const NOW = Date.UTC(2026, 8, 23, 19, 30); // 12:30 in Vancouver (PDT)
 const MEMBER = '456789012345678901';
@@ -16,10 +19,49 @@ const resource = (over: Partial<ClubResource> = {}): ClubResource => ({
   ...over,
 });
 
+const storedReminder = (over: Partial<StoredReminder> = {}): StoredReminder => ({
+  id: 'rem_msg1_0',
+  guildId: '234567890123456789',
+  creatorId: MEMBER,
+  destinationId: '111111111111111111',
+  text: 'Bring the charger',
+  dueAt: NOW + 3_600_000,
+  createdAt: NOW,
+  status: 'scheduled',
+  dedupeKey: 'reminder:msg1:0',
+  mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+  deliveredCount: 0,
+  ...over,
+});
+
 const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   userId: MEMBER,
   now: () => NOW,
   timeZone: 'America/Vancouver',
+  isOwner: false,
+  skillAllowed: () => true,
+  invocationKey: 'msg1',
+  currentChannelId: '111111111111111111',
+  resolveReminderTargets: vi.fn(async () => ({
+    ok: true as const,
+    targets: {
+      channelId: '111111111111111111',
+      channelName: 'general',
+      mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+      memberNames: [],
+      roleNames: [],
+    },
+  })),
+  reminderStore: {
+    insert: () => 'created' as const,
+    get: () => undefined,
+    update: () => 'not-found' as const,
+    cancel: () => false,
+    listForCreator: () => [],
+    listAll: () => [],
+  },
+  proposeDraft: () => 'created' as const,
+  recordSkillActivity: vi.fn(),
   searchArchive: vi.fn(async () => [
     {
       channelId: '111111111111111111',
@@ -54,30 +96,6 @@ const ports = (over: Partial<AssistantToolPorts> = {}): AssistantToolPorts => ({
   cacheResourceChunks: () => [],
   cacheFreshness: () => [],
   enqueueRefresh: () => true,
-  reminders: () => [
-    {
-      id: 'r1',
-      guildId: '234567890123456789',
-      creatorId: MEMBER,
-      destinationId: '111111111111111111',
-      text: 'Bring the charger',
-      dueAt: NOW + 3_600_000,
-      createdAt: NOW,
-      status: 'scheduled',
-      dedupeKey: 'k1',
-    },
-    {
-      id: 'r2',
-      guildId: '234567890123456789',
-      creatorId: '999999999999999999',
-      destinationId: '111111111111111111',
-      text: 'Someone else',
-      dueAt: NOW + 3_600_000,
-      createdAt: NOW,
-      status: 'scheduled',
-      dedupeKey: 'k2',
-    },
-  ],
   ...over,
 });
 
@@ -91,6 +109,11 @@ describe('toolDeclarations', () => {
       'server_info',
       'current_time',
       'my_reminders',
+      'set_reminder',
+      'edit_reminder',
+      'cancel_reminder',
+      'propose_memory',
+      'propose_decision',
       'list_sources',
       'search_sources',
       'read_chunk',
@@ -98,6 +121,21 @@ describe('toolDeclarations', () => {
       'refresh_source',
     ]);
     expect(names(ports({ webSearch: undefined }))).not.toContain('web_search');
+  });
+
+  it('hides acting tools when their skill is not allowed', () => {
+    const p = ports({ skillAllowed: (skill) => skill !== 'reminders' });
+    const names = toolDeclarations(p).map((tool) => tool.name);
+    expect(names).not.toContain('set_reminder');
+    expect(names).not.toContain('edit_reminder');
+    expect(names).not.toContain('cancel_reminder');
+    expect(names).not.toContain('my_reminders');
+    expect(names).toContain('propose_memory');
+    const q = ports({ skillAllowed: () => false });
+    const hidden = toolDeclarations(q).map((tool) => tool.name);
+    expect(hidden).not.toContain('propose_memory');
+    expect(hidden).not.toContain('propose_decision');
+    expect(hidden).toContain('search_archive');
   });
 
   it('never drifts from TOOL_CATALOGUE: every declaration equals its catalogue entry', () => {
@@ -222,10 +260,47 @@ describe('runAssistantTool', () => {
     expect(result.text).toContain('America/Vancouver');
   });
 
-  it("lists only the asking member's own upcoming reminders", async () => {
-    const result = await runAssistantTool({ name: 'my_reminders', args: {} }, ports());
+  it("lists only the asking member's own unfinished reminders", async () => {
+    const mine = storedReminder({ id: 'r1', text: 'Bring the charger' });
+    const theirs = storedReminder({ id: 'r2', creatorId: '999999999999999999', text: 'Someone else' });
+    const finished = storedReminder({ id: 'r3', status: 'delivered', text: 'Done already' });
+    const p = ports({
+      reminderStore: {
+        insert: () => 'created' as const,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [mine, finished],
+        listAll: () => [mine, theirs, finished],
+      },
+    });
+    const result = await runAssistantTool({ name: 'my_reminders', args: {} }, p);
+    expect(result.ok).toBe(true);
     expect(result.text).toContain('Bring the charger');
     expect(result.text).not.toContain('Someone else');
+    expect(result.text).not.toContain('Done already');
+    expect(result.text).toContain('r1 ·');
+  });
+
+  it('lets the owner list everyone with all=true, members see only their own', async () => {
+    const mine = storedReminder({ id: 'r1', text: 'Bring the charger' });
+    const theirs = storedReminder({ id: 'r2', creatorId: '999999999999999999', text: 'Someone else' });
+    const store = {
+      insert: () => 'created' as const,
+      get: () => undefined,
+      update: () => 'not-found' as const,
+      cancel: () => false,
+      listForCreator: () => [mine],
+      listAll: () => [mine, theirs],
+    };
+    const owner = ports({ isOwner: true, reminderStore: store });
+    const all = await runAssistantTool({ name: 'my_reminders', args: { all: true } }, owner);
+    expect(all.text).toContain('Bring the charger');
+    expect(all.text).toContain('Someone else');
+    const member = ports({ isOwner: false, reminderStore: store });
+    const own = await runAssistantTool({ name: 'my_reminders', args: { all: true } }, member);
+    expect(own.text).toContain('Bring the charger');
+    expect(own.text).not.toContain('Someone else');
   });
 
   it('gives the server card and the channels the member can view', async () => {
@@ -247,6 +322,319 @@ describe('runAssistantTool', () => {
       expect(result.ok).toBe(true);
       expect(result.handles).toBeUndefined();
     }
+  });
+});
+
+describe('acting tools (B2a)', () => {
+  const reminderPorts = (over: Partial<AssistantToolPorts> = {}) => {
+    const rows = new Map<string, StoredReminder>();
+    return {
+      p: ports({
+        reminderStore: {
+          insert: (reminder: Reminder) => {
+            if ([...rows.values()].some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
+            rows.set(reminder.id, storedReminder({ ...reminder }));
+            return 'created';
+          },
+          get: (id: string) => rows.get(id),
+          update: (id: string, patch: Record<string, unknown>) => {
+            const row = rows.get(id);
+            if (row === undefined) return 'not-found' as const;
+            if (row.status !== 'scheduled') return 'not-editable' as const;
+            const next = storedReminder({ ...row, ...(patch as object), updatedAt: NOW });
+            if ((patch as { recurrence?: unknown }).recurrence === null) {
+              const { recurrence: _dropped, ...rest } = next;
+              rows.set(id, storedReminder(rest));
+            } else rows.set(id, next);
+            return 'updated' as const;
+          },
+          cancel: (id: string) => {
+            const row = rows.get(id);
+            if (row === undefined || row.status !== 'scheduled') return false;
+            rows.set(id, storedReminder({ ...row, status: 'cancelled' }));
+            return true;
+          },
+          listForCreator: (creatorId: string) =>
+            [...rows.values()].filter((r) => r.creatorId === creatorId),
+          listAll: () => [...rows.values()],
+        },
+        ...over,
+      }),
+      rows,
+    };
+  };
+
+  it('refuses a gated call and records it as denied', async () => {
+    const p = ports({ skillAllowed: () => false });
+    const result = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'hi', when: '2026-09-24T12:30:00-07:00' } },
+      p,
+    );
+    expect(result).toMatchObject({ ok: false, text: "You're not allowed to use that here." });
+    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'denied');
+  });
+
+  it('sets a reminder with a code-written summary', async () => {
+    const { p } = reminderPorts();
+    const result = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' } },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.text).toContain('✅ Reminder set: **Bring the charger**');
+    expect(result.actionSummary).toBe(result.text);
+    expect(result.actionSummary).toContain('#general');
+    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'completed');
+  });
+
+  it('refuses a when without an offset, a past time and an overlong context', async () => {
+    const { p } = reminderPorts();
+    await expect(
+      runAssistantTool(
+        { name: 'set_reminder', args: { text: 'hi', when: '2026-09-24 12:30:00' } },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false, text: 'Give the time as ISO 8601 with its UTC offset.' });
+    await expect(
+      runAssistantTool(
+        { name: 'set_reminder', args: { text: 'hi', when: '2026-09-20T12:30:00-07:00' } },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false });
+    await expect(
+      runAssistantTool(
+        {
+          name: 'set_reminder',
+          args: { text: 'hi', when: '2026-09-24T12:30:00-07:00', context: 'x'.repeat(301) },
+        },
+        p,
+      ),
+    ).resolves.toMatchObject({ ok: false });
+  });
+
+  it('passes a target problem through without inserting', async () => {
+    const insert = vi.fn(() => 'created' as const);
+    const p = ports({
+      reminderStore: {
+        insert,
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+      resolveReminderTargets: vi.fn(async () => ({
+        ok: false as const,
+        problem: 'I can\'t find a channel called "nope".',
+      })),
+    });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: { text: 'hi', when: '2026-09-24T12:30:00-07:00', channel: 'nope' },
+      },
+      p,
+    );
+    expect(result.ok).toBe(false);
+    expect(result.text).toContain("can't find a channel");
+    expect(insert).not.toHaveBeenCalled();
+  });
+
+  it('is idempotent on the same invocation and unique across two calls', async () => {
+    const inserted: Reminder[] = [];
+    const p = ports({
+      reminderStore: {
+        insert: (reminder: Reminder) => {
+          if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const args = { text: 'hi', when: '2026-09-24T12:30:00-07:00' };
+    const first = await runAssistantTool({ name: 'set_reminder', args }, p);
+    expect(first.ok).toBe(true);
+    expect(inserted).toHaveLength(1);
+    // A replay with a fresh ports object but the same key hits the dedupe key.
+    const replay = ports({
+      invocationKey: 'msg1',
+      reminderStore: {
+        insert: (reminder: Reminder) => {
+          if (inserted.some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const second = await runAssistantTool({ name: 'set_reminder', args }, replay);
+    expect(second.text).toBe('That reminder is already set.');
+    expect(second.actionSummary).toBeUndefined();
+    expect(inserted).toHaveLength(1);
+    // Two calls in one invocation get different ids.
+    const third = await runAssistantTool({ name: 'set_reminder', args }, p);
+    expect(third.ok).toBe(true);
+    expect(inserted).toHaveLength(2);
+    expect(inserted[0]?.id).not.toBe(inserted[1]?.id);
+  });
+
+  it('builds a weekly recurrence from days', async () => {
+    const inserted: Reminder[] = [];
+    const p = ports({
+      reminderStore: {
+        insert: (reminder: Reminder) => {
+          inserted.push(reminder);
+          return 'created';
+        },
+        get: () => undefined,
+        update: () => 'not-found' as const,
+        cancel: () => false,
+        listForCreator: () => [],
+        listAll: () => [],
+      },
+    });
+    const result = await runAssistantTool(
+      {
+        name: 'set_reminder',
+        args: {
+          text: 'Standup',
+          when: '2026-09-24T12:30:00-07:00',
+          repeat: { kind: 'weekly', days: [2, 4] },
+        },
+      },
+      p,
+    );
+    expect(result.ok).toBe(true);
+    expect(inserted[0]?.recurrence?.pattern).toMatchObject({ kind: 'weekly', days: [2, 4] });
+    expect(result.actionSummary).toContain('every Tuesday and Thursday');
+  });
+
+  it('refuses an edit by a non-creator and allows the owner', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', creatorId: MEMBER, text: 'old' }));
+    const stranger = ports({
+      userId: '999999999999999999',
+      reminderStore: p.reminderStore,
+    });
+    await expect(
+      runAssistantTool({ name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } }, stranger),
+    ).resolves.toMatchObject({ ok: false, text: 'You can only change reminders you set.' });
+    const owner = ports({
+      userId: '999999999999999999',
+      isOwner: true,
+      reminderStore: p.reminderStore,
+    });
+    const result = await runAssistantTool(
+      { name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } },
+      owner,
+    );
+    expect(result.ok).toBe(true);
+    expect(result.actionSummary).toContain('✏️ Reminder updated: **new**');
+    await expect(
+      runAssistantTool({ name: 'edit_reminder', args: { reminderId: 'missing', text: 'x' } }, p),
+    ).resolves.toMatchObject({ ok: false, text: "I couldn't find that reminder." });
+  });
+
+  it('stops repeating and maps not-editable', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set(
+      'repeating',
+      storedReminder({
+        id: 'repeating',
+        recurrence: {
+          pattern: { kind: 'daily' },
+          timeZone: 'America/Vancouver',
+        },
+      }),
+    );
+    const stopped = await runAssistantTool(
+      { name: 'edit_reminder', args: { reminderId: 'repeating', stopRepeating: true } },
+      p,
+    );
+    expect(stopped.ok).toBe(true);
+    expect(rows.get('repeating')?.recurrence).toBeUndefined();
+    rows.set('gone', storedReminder({ id: 'gone', status: 'delivered' }));
+    await expect(
+      runAssistantTool({ name: 'edit_reminder', args: { reminderId: 'gone', text: 'x' } }, p),
+    ).resolves.toMatchObject({
+      ok: false,
+      text: 'That reminder is already being sent or has finished.',
+    });
+  });
+
+  it('cancels an owned reminder and refuses a finished one', async () => {
+    const { p, rows } = reminderPorts();
+    rows.set('rem1', storedReminder({ id: 'rem1', text: 'Bring the charger' }));
+    const result = await runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'rem1' } }, p);
+    expect(result.ok).toBe(true);
+    expect(result.actionSummary).toContain('🗑️ Reminder cancelled: **Bring the charger**');
+    const again = await runAssistantTool(
+      { name: 'cancel_reminder', args: { reminderId: 'rem1' } },
+      p,
+    );
+    expect(again).toMatchObject({ ok: false, text: "That reminder can't be cancelled now." });
+  });
+
+  it('files memory and decision proposals with review wording', async () => {
+    const proposed: { id: string; kind: string; summary: string }[] = [];
+    const p = ports({
+      proposeDraft: (input: { id: string; kind: 'memory' | 'decision' | 'review-plan'; summary: string }) => {
+        if (proposed.some((d) => d.id === input.id)) return 'duplicate';
+        proposed.push({ ...input });
+        return 'created';
+      },
+    });
+    const memory = await runAssistantTool(
+      { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
+      p,
+    );
+    expect(memory.actionSummary).toBe(
+      '📝 Memory proposal filed for owner review. Nothing is remembered until it is approved.',
+    );
+    expect(proposed[0]?.summary).toBe('team: Ava leads the pit crew');
+    const decision = await runAssistantTool(
+      { name: 'propose_decision', args: { summary: 'Race on Sunday', kind: 'decision' } },
+      p,
+    );
+    expect(decision.actionSummary).toBe(
+      '📝 Draft filed for owner review. It is not club policy until an owner saves it.',
+    );
+    expect(proposed[1]?.id).toContain('decision-msg1-');
+    const replay = await runAssistantTool(
+      { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
+      ports({
+        invocationKey: 'msg1',
+        proposeDraft: (input: { id: string; kind: 'memory' | 'decision' | 'review-plan'; summary: string }) => {
+          if (proposed.some((d) => d.id === input.id)) return 'duplicate';
+          proposed.push({ ...input });
+          return 'created';
+        },
+      }),
+    );
+    expect(replay.actionSummary).toBe(memory.actionSummary);
+  });
+
+  it('records a throw as failed', async () => {
+    const p = ports({
+      resolveReminderTargets: vi.fn(async () => {
+        throw new Error('discord down');
+      }),
+    });
+    const result = await runAssistantTool(
+      { name: 'set_reminder', args: { text: 'hi', when: '2026-09-24T12:30:00-07:00' } },
+      p,
+    );
+    expect(result.ok).toBe(false);
+    expect(p.recordSkillActivity).toHaveBeenCalledWith('reminders', 'failed', 'discord down');
   });
 });
 
