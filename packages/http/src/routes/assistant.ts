@@ -717,7 +717,7 @@ export const registerAssistantRoutes = (
         ...(parsed.data.context === undefined
           ? {}
           : parsed.data.context === null
-            ? { context: null as unknown as string }
+            ? { context: null }
             : { context: parsed.data.context }),
         ...(parsed.data.dueAt === undefined ? {} : { dueAt: parsed.data.dueAt }),
         ...(recurrence === undefined ? {} : { recurrence }),
