@@ -33,6 +33,7 @@ export interface AssistantBehaviour {
 }
 
 export type AssistantSkillEffect = 'read' | 'draft' | 'schedule' | 'send';
+export type SkillScopeMode = 'everyone' | 'roles' | 'owner';
 
 export interface AssistantSkill {
   readonly id: string;
@@ -40,6 +41,8 @@ export interface AssistantSkill {
   readonly description: string;
   readonly effect: AssistantSkillEffect;
   readonly requiredPermission: string;
+  readonly acts: boolean;
+  readonly defaultScope: 'everyone' | 'owner';
   readonly ownerOnly?: boolean;
   readonly requiresConfirmation: boolean;
 }
