@@ -257,6 +257,22 @@ describe('resourceRefreshHandler — new org children refresh in the same run (A
     putResource(_scope: GuildScope, input: ClubResource): void {
       this.rows.set(input.id, input);
     }
+    setResourceEnabled(
+      _scope: GuildScope,
+      id: string,
+      input: { readonly enabled: boolean; readonly meta: ClubResource['meta'] },
+    ): boolean {
+      const row = this.rows.get(id);
+      if (row === undefined) return false;
+      const { meta: _dropped, ...rest } = row;
+      this.rows.set(
+        id,
+        input.meta === undefined
+          ? { ...rest, enabled: input.enabled }
+          : { ...rest, enabled: input.enabled, meta: input.meta },
+      );
+      return true;
+    }
     recordResourceFetch(
       _scope: GuildScope,
       id: string,
