@@ -284,7 +284,8 @@ export async function refreshGithubRepo(
     isPrivate: boolean,
   ): ClubResource => {
     if (isPrivate === (base.meta?.private === true)) return base;
-    const { private: _dropped, ...rest } = base.meta ?? {};
+    const rest: Partial<ResourceMeta> = { ...(base.meta ?? {}) };
+    delete rest.private;
     const next: ClubResource = {
       ...base,
       meta: isPrivate ? { ...rest, owner, private: true } : { ...rest, owner },

@@ -56,13 +56,13 @@ describe('createGitHubClient — auth and headers', () => {
   });
 
   it('authenticated follows the current token, so a token saved later takes effect at once', async () => {
-    let token: string | undefined;
+    const tokenBox = { current: undefined as string | undefined };
     const fetch = vi
       .fn<typeof globalThis.fetch>()
       .mockResolvedValue(ok({ tree: [], truncated: false }));
-    const client = createGitHubClient({ token: () => token, fetch, guard: noopGuard });
+    const client = createGitHubClient({ token: () => tokenBox.current, fetch, guard: noopGuard });
     expect(client.authenticated).toBe(false);
-    token = 'test-token';
+    tokenBox.current = 'test-token';
     expect(client.authenticated).toBe(true);
     await client.listTree('acme', 'widget', 'main');
     const init = fetch.mock.calls[0]?.[1];

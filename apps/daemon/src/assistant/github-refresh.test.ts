@@ -77,7 +77,7 @@ class FakeClient {
   orgRepos: unknown[] | Error = [];
   repoDetail: unknown = { defaultBranch: 'main', description: null, private: false };
   tree: unknown = { entries: [], truncated: false };
-  fileRaw: unknown | Error = { notModified: false, text: 'private file text', etag: '"v1"' };
+  fileRaw: unknown = { notModified: false, text: 'private file text', etag: '"v1"' };
   readonly calls = { listOrgRepos: 0, getRepo: 0, listTree: 0, getFileRaw: 0 };
   readonly fileRawCalls: {
     owner: string;
@@ -151,7 +151,8 @@ class FakeStore implements GithubResourceStore {
   ): boolean {
     const row = this.rows.get(id);
     if (row === undefined) return false;
-    const { meta: _dropped, ...rest } = row;
+    const rest = { ...row };
+    delete rest.meta;
     this.rows.set(
       id,
       input.meta === undefined
@@ -639,7 +640,7 @@ describe('refreshGithubRepo (authenticated)', () => {
   });
 
   it('a public repo still uses the raw fetcher and never getFileRaw', async () => {
-    const { deps: d, cache, store, client, fetcher } = setup();
+    const { deps: d, cache, client, fetcher } = setup();
 
     const outcome = await refreshGithubRepo(SCOPE, repo(), d);
 
