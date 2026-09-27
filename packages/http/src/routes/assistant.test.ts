@@ -1608,7 +1608,7 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
     expect(response.json()).toMatchObject({ error: 'not-found' });
   });
 
-  it('returns the seven sections in order with sizes, and never member memories', async () => {
+  it('returns the eight sections in order with sizes, and never member memories', async () => {
     grant('config.read');
     grant('config.write');
     const { cookie, csrf } = await signIn();
@@ -1639,6 +1639,7 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
       'surface',
       'behaviour-prompt',
       'safety-suffix',
+      'output-rules',
       'evidence-rule',
       'server-card',
       'resources',
@@ -1652,6 +1653,9 @@ describe('GET /api/assistant/behaviours/:id/preview (Task 18)', () => {
     expect(parsed.totalChars).toBe(parsed.sections.reduce((sum, s) => sum + s.chars, 0));
     expect(parsed.totalEstTokens).toBe(Math.ceil(parsed.totalChars / 4));
     expect(parsed.sections.find((s) => s.name === 'safety-suffix')?.text).toBe(SAFETY_SUFFIX);
+    expect(
+      parsed.sections.find((s) => s.name === 'output-rules')?.text?.startsWith('OUTPUT RULES'),
+    ).toBe(true);
     expect(parsed.sections.find((s) => s.name === 'behaviour-prompt')?.text).toBe('Be helpful.');
     expect(JSON.stringify(parsed)).not.toContain('Loves pineapple pizza');
   });
