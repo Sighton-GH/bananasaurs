@@ -41,6 +41,8 @@ export const resourceMetaSchema = z
     includeArchived: z.boolean().optional(),
     /** True when GitHub reported the repository as private (ADR 0083). Absent means public. */
     private: z.boolean().optional(),
+    /** The owner turned this GitHub resource off; an organisation refresh never turns it back on (ADR 0084). */
+    disabledByOwner: z.boolean().optional(),
   })
   .strict();
 
