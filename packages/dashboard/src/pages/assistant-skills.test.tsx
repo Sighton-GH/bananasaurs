@@ -3,6 +3,7 @@ import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { AssistantSkillsPage } from './assistant-skills.js';
+import { scopeLabel } from './assistant-shared.js';
 
 afterEach(cleanup);
 afterEach(() => vi.unstubAllGlobals());
