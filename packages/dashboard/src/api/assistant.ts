@@ -101,11 +101,66 @@ export interface TicketRow {
   readonly at: number;
 }
 
+/** One skill's server-wide scope (ADR 0086 decision 1). */
+export interface SkillScopeView {
+  readonly mode: 'everyone' | 'roles' | 'owner';
+  readonly roleIds: readonly string[];
+  readonly isDefault: boolean;
+}
+
+export type SkillScopeMode = SkillScopeView['mode'];
+
+export interface ReminderMentionsView {
+  readonly userIds: readonly string[];
+  readonly roleIds: readonly string[];
+  readonly everyone: boolean;
+  readonly here: boolean;
+}
+
+export type ReminderRecurrencePatternView =
+  | { readonly kind: 'daily' }
+  | { readonly kind: 'weekdays' }
+  | { readonly kind: 'weekly'; readonly days: readonly number[]; readonly everyWeeks: number }
+  | { readonly kind: 'monthly'; readonly dayOfMonth: number };
+
+export interface ReminderRecurrenceView {
+  readonly pattern: ReminderRecurrencePatternView;
+  readonly timeZone: string;
+  readonly endAt?: number;
+  readonly maxCount?: number;
+}
+
+/** One live reminder as `GET /api/assistant/skills/:skillId` reports it (Task E2). */
+export interface ReminderView {
+  readonly id: string;
+  readonly creatorId: string;
+  readonly creatorName?: string;
+  readonly destinationId: string;
+  readonly destinationName?: string;
+  readonly text: string;
+  readonly context?: string;
+  readonly dueAt: number;
+  readonly status: 'scheduled' | 'delivering' | 'delivered' | 'cancelled' | 'failed';
+  readonly recurrence?: ReminderRecurrenceView;
+  readonly mentions: ReminderMentionsView;
+  readonly deliveredCount: number;
+  readonly failureReason?: string;
+}
+
+/** One skill's live items as `GET /api/assistant/skills/:skillId` reports them (Task E2). */
+export type SkillItems =
+  | { readonly kind: 'reminders'; readonly reminders: readonly ReminderView[] }
+  | { readonly kind: 'memory-proposals'; readonly proposals: readonly DecisionRow[] }
+  | { readonly kind: 'decisions'; readonly decisions: readonly DecisionRow[] }
+  | { readonly kind: 'none' };
+
 export interface AssistantData {
   readonly behaviours: readonly AssistantBehaviourView[];
   readonly resources: readonly ClubResource[];
   readonly reminders: readonly ReminderRow[];
   readonly skills: readonly AssistantSkill[];
+  readonly skillScopes?: Record<string, SkillScopeView>;
+  readonly skillItemCounts?: Record<string, number>;
   readonly activity: readonly ActivityRow[];
   readonly roles?: readonly GuildRoleInfo[];
   readonly members?: readonly GuildMemberInfo[];
@@ -326,6 +381,9 @@ export interface SafetySuffix {
 }
 export const reminderCancelUrl = (id: string) =>
   `/api/assistant/reminders/${encodeURIComponent(id)}/cancel`;
+export const reminderUrl = (id: string) => `/api/assistant/reminders/${encodeURIComponent(id)}`;
+export const skillScopeUrl = (skillId: string) =>
+  `/api/assistant/skills/${encodeURIComponent(skillId)}/scope`;
 export const decisionReviewUrl = (id: string) =>
   `/api/assistant/decisions/${encodeURIComponent(id)}/review`;
 export const decisionSaveUrl = (id: string) =>
@@ -422,8 +480,9 @@ export interface SkillDetail {
   readonly skill: AssistantSkill;
   readonly instructionLine: string;
   readonly behaviours: readonly SkillBehaviourRow[];
+  readonly scope: SkillScopeView;
   readonly whoCanUse: string;
   readonly tools: readonly SkillTool[];
-  readonly command?: SkillCommand;
+  readonly items: SkillItems;
   readonly recentRuns: readonly ActivityRow[];
 }

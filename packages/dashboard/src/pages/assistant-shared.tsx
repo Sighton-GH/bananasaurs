@@ -34,16 +34,23 @@ export const toggleIn = (list: readonly string[], id: string): readonly string[]
   list.includes(id) ? list.filter((x) => x !== id) : [...list, id];
 
 /** Plain words for what a skill does, shared by the create form and the allowlist editor. */
-export const skillEffectLabel = (skill: AssistantSkill): string => {
-  const word =
-    skill.effect === 'read'
-      ? 'Reads'
-      : skill.effect === 'draft'
-        ? 'Drafts, never sends'
-        : skill.effect === 'schedule'
-          ? 'Schedules'
-          : 'Sends';
-  return skill.requiresConfirmation ? `${word} · you confirm first` : word;
+export const skillEffectLabel = (skill: AssistantSkill): string =>
+  skill.effect === 'read'
+    ? 'Reads'
+    : skill.effect === 'draft'
+      ? 'Drafts, never sends'
+      : skill.effect === 'schedule'
+        ? 'Schedules'
+        : 'Sends';
+
+/** Plain words for one skill's scope, shared by the skills list and the scope editor. */
+export const scopeLabel = (
+  scope: { readonly mode: 'everyone' | 'roles' | 'owner'; readonly roleIds: readonly string[] },
+  roleName: (id: string) => string | undefined,
+): string => {
+  if (scope.mode === 'everyone') return 'Everyone who can ask';
+  if (scope.mode === 'owner') return 'Owner only';
+  return `Roles: ${scope.roleIds.map((id) => `@${roleName(id) ?? id}`).join(', ')}`;
 };
 
 /** The body PUT /api/assistant/behaviours/:id accepts: every stored field, whole. */
