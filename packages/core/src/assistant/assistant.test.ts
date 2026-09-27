@@ -439,6 +439,37 @@ describe('compileAssistantContext output rules (ADR 0085)', () => {
     expect(compiled.protectedText).not.toContain('read_chunk');
     expect(compiled.systemInstruction).not.toContain('search_sources');
   });
+
+  it('strips the legacy sources lines from an old-wizard behaviour prompt', () => {
+    const legacyBehaviour = {
+      ...behaviour,
+      systemPrompt: [
+        'ROLE',
+        'You are Clubby.',
+        '',
+        'FORMAT',
+        '- Use bullet points for lists.',
+        '- End with a Sources line listing what you used.',
+        '',
+        'USING SOURCES AND TOOLS',
+        'Cite the source (title or link) for any fact drawn from a club resource. Use search_sources first, then read_chunk for the best result.',
+      ].join('\n'),
+    };
+    const compiled = compileAssistantContext({
+      behaviour: legacyBehaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [],
+    });
+    const byName = new Map(compiled.sections.map((section) => [section.name, section.text]));
+    const prompt = byName.get('behaviour-prompt') ?? '';
+    expect(prompt).not.toContain('End with a Sources line listing what you used.');
+    expect(prompt).not.toContain('Cite the source (title or link)');
+    expect(prompt).not.toContain('search_sources');
+    expect(prompt).not.toMatch(/\n{3,}/);
+    expect(prompt).toContain('FORMAT\n- Use bullet points for lists.');
+  });
 });
 
 describe('compileAssistantContext safety suffix (ADR 0074)', () => {
