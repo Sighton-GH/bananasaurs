@@ -353,8 +353,7 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
   },
   {
     name: 'propose_decision',
-    description:
-      'Propose a club decision. It is saved as a draft for owner review.',
+    description: 'Propose a club decision. It is saved as a draft for owner review.',
     parameters: {
       type: 'object',
       properties: {
