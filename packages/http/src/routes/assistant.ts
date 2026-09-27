@@ -126,19 +126,21 @@ export const registerAssistantRoutes = (
     const reminders = assistantRepo.listReminders(session.scope);
     const decisions = assistantRepo.listDecisions(session.scope);
     const grantsBySkillId = new Map(skillGrants.map((grant) => [grant.skillId, grant] as const));
-    const skillScopes: Record<string, { mode: SkillScopeMode; roleIds: string[]; isDefault: boolean }> =
-      Object.fromEntries(
-        CLUB_ASSISTANT_SKILLS.map((skill) => {
-          const grant = grantsBySkillId.get(skill.id);
-          return [
-            skill.id,
-            skillScopeView(
-              skill,
-              grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
-            ),
-          ];
-        }),
-      );
+    const skillScopes: Record<
+      string,
+      { mode: SkillScopeMode; roleIds: string[]; isDefault: boolean }
+    > = Object.fromEntries(
+      CLUB_ASSISTANT_SKILLS.map((skill) => {
+        const grant = grantsBySkillId.get(skill.id);
+        return [
+          skill.id,
+          skillScopeView(
+            skill,
+            grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
+          ),
+        ];
+      }),
+    );
     const liveReminders = reminders.filter(
       (reminder) => reminder.status === 'scheduled' || reminder.status === 'delivering',
     ).length;
