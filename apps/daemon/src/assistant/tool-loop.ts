@@ -539,6 +539,9 @@ const runEntry = async (deps: {
     calls: readonly ToolCall[],
   ): Promise<readonly GenerationMessage[]> => {
     const toolMessages: GenerationMessage[] = [];
+    // Hoisted so the tag call below needs no assertion: a `const` keeps its
+    // narrowing inside the citation closure.
+    const citations = deps.citations;
     for (let index = 0; index < calls.length; index += 1) {
       const call = calls[index]!;
       const traceBase = { round, name: call.name, args: call.args ?? {} };
@@ -633,7 +636,7 @@ const runEntry = async (deps: {
         preview: result.text.slice(0, TOOL_RESULT_PREVIEW_CHARS),
       });
       const citationText =
-        result.ok && deps.citations !== undefined
+        result.ok && citations !== undefined
           ? (() => {
               const entries: string[] = [];
               for (const source of result.sources) {
@@ -641,7 +644,7 @@ const runEntry = async (deps: {
                 // only when the caller says it is citable, and the printed
                 // title is neutralised, bracket-free, single-line and capped.
                 if (deps.isCitable?.(source) !== true) continue;
-                const tag = deps.citations!.tag({ title: source.title, url: source.url });
+                const tag = citations.tag({ title: source.title, url: source.url });
                 entries.push(`[${tag}] ${cleanCitationTitle(source.title)}`);
               }
               return entries.length === 0 ? '' : `\n\nCite as: ${entries.join('; ')}`;
