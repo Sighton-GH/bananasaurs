@@ -116,6 +116,7 @@ const messageCreate = (over: Partial<MessageEvent> = {}): DomainEvent => ({
   isPrivateThread: false,
   messageId: MESSAGE,
   authorId: AUTHOR,
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: 'this message has badword in it',
   editedTimestampMs: undefined,

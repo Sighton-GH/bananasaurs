@@ -72,6 +72,7 @@ const message = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   channelId,
   messageId: '890123456789012345',
   authorId: userId,
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: `<@&${bananaRole}> Where is the handbook?`,
   editedTimestampMs: undefined,
