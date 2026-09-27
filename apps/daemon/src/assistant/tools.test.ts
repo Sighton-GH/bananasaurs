@@ -673,7 +673,7 @@ describe('acting tools (B2a)', () => {
     expect(again).toMatchObject({ ok: false, text: "That reminder can't be cancelled now." });
   });
 
-  it("refuses a cancel by another member and keeps the reminder scheduled", async () => {
+  it('refuses a cancel by another member and keeps the reminder scheduled', async () => {
     const { p, rows } = reminderPorts();
     rows.set('rem1', storedReminder({ id: 'rem1', text: 'Bring the charger' }));
     const stranger = ports({
