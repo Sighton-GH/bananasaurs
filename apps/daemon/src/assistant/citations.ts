@@ -36,6 +36,8 @@ export const createCitationRegistry = (): CitationRegistry => {
 
 const CITATION_GROUP = /[ \t]*(\[S\d{1,3}(?:,[ \t]*S\d{1,3})*\])/g;
 const SOURCE_LINE = /^\s*(?:-#\s*)?\**\s*sources?\s*\**\s*:/i;
+const FENCE_LINE = /^\s*(```|~~~)/;
+const LIST_ITEM = /^\s*([-*•]|\d+\.)\s+/;
 
 /** Strips citation tags from the answer and returns the known sources it cited, in order of first appearance, deduplicated. */
 export const applyCitations = (
@@ -44,15 +46,8 @@ export const applyCitations = (
 ): { readonly text: string; readonly cited: readonly CitableSource[] } => {
   const cited: CitableSource[] = [];
   const seen = new Set<CitableSource>();
-  const lines = text.split('\n');
-  let inFence = false;
-  const cleaned = lines.map((line) => {
-    if (line.startsWith('```')) {
-      inFence = !inFence;
-      return line;
-    }
-    if (inFence) return line;
-    return line.replace(CITATION_GROUP, (_match, group: string) => {
+  const stripTags = (line: string): string =>
+    line.replace(CITATION_GROUP, (_match, group: string) => {
       const tags = group.slice(1, -1).split(/,[ \t]*/);
       for (const tag of tags) {
         const source = registry.get(tag);
@@ -63,8 +58,46 @@ export const applyCitations = (
       }
       return '';
     });
+  const lines = text.split('\n');
+  // A fence closes only on its own opening marker: ``` code containing a
+  // ~~~ line (or the reverse) stays fenced.
+  let fence: string | undefined;
+  const cleaned = lines.map((line) => {
+    const fenceMatch = line.match(FENCE_LINE);
+    if (fenceMatch !== null) {
+      if (fence === undefined) fence = fenceMatch[1];
+      else if (fenceMatch[1] === fence) fence = undefined;
+      return line;
+    }
+    if (fence !== undefined) return line;
+    // Inline-code spans keep their tags; only prose is stripped.
+    return line
+      .split(/(`[^`]*`)/)
+      .map((part, index) => (index % 2 === 1 ? part : stripTags(part)))
+      .join('');
   });
   while (cleaned.length > 0 && cleaned.at(-1)?.trim() === '') cleaned.pop();
-  if (cleaned.length > 0 && SOURCE_LINE.test(cleaned.at(-1)!)) cleaned.pop();
+  if (cleaned.length > 0) {
+    const last = cleaned[cleaned.length - 1] ?? '';
+    if (SOURCE_LINE.test(last)) {
+      // One trailing line: removed only when it names something link- or
+      // tag-shaped (or nothing) — `Source: ask the treasurer` is a prose
+      // sentence and stays.
+      const afterColon = last.slice(last.indexOf(':') + 1);
+      if (afterColon.trim() === '' || /http|\[|S\d/.test(afterColon)) cleaned.pop();
+    } else {
+      // Otherwise the trailing block is a source section only when walking
+      // back over list items and blanks reaches a SOURCE_LINE head.
+      let head = cleaned.length - 1;
+      while (head > 0) {
+        const line = cleaned[head] ?? '';
+        if (line.trim() !== '' && !LIST_ITEM.test(line)) break;
+        head -= 1;
+      }
+      if (head < cleaned.length - 1 && SOURCE_LINE.test(cleaned[head] ?? '')) {
+        cleaned.splice(head);
+      }
+    }
+  }
   return { text: cleaned.join('\n').trim(), cited };
 };

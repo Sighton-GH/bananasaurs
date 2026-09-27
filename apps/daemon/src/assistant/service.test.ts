@@ -1640,7 +1640,7 @@ describe('Task 20: tryIt, sources line and friendly failures', () => {
   });
 
   it('removes a model-written Source line from the posted answer', async () => {
-    const service = serviceWith(answering('Answer.\nSource: unrelated'));
+    const service = serviceWith(answering('Answer.\nSource: https://x.test'));
     const result = await service.invoke({
       guildId: GUILD,
       channelId: '567890123456789012',
