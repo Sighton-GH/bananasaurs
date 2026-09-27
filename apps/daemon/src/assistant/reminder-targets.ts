@@ -135,7 +135,10 @@ export const resolveReminderTargets = async (
           (candidate) => candidate.displayName.toLowerCase() === value.toLowerCase(),
         );
         const cachedByUsername =
-          cached.length === 0
+          cached.length === 0 &&
+          cachedMembers.some(
+            (candidate) => candidate.user.username.toLowerCase() === value.toLowerCase(),
+          )
             ? cachedMembers.filter(
                 (candidate) => candidate.user.username.toLowerCase() === value.toLowerCase(),
               )

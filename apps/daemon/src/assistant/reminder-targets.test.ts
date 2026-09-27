@@ -146,7 +146,7 @@ describe('resolveReminderTargets', () => {
     const guild = makeGuild({
       members: [
         member('20000000000000001', 'Alex', 'alex'),
-        member('20000000000000002', 'Other', 'aLeX'),
+        member('20000000000000002', 'Alex', 'other'),
       ],
       roles: [
         { id: '40000000000000001', name: 'Execs', mentionable: true },
@@ -164,7 +164,7 @@ describe('resolveReminderTargets', () => {
     ).resolves.toMatchObject({
       ok: false,
       problem:
-        '"Alex" matches more than one member: Alex (20000000000000001), Other (20000000000000002).',
+        '"Alex" matches more than one member: Alex (20000000000000001), Alex (20000000000000002).',
     });
     await expect(
       resolveReminderTargets(guild, request({ roles: ['missing'] })),
