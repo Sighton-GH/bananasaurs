@@ -114,7 +114,11 @@ describe('skill scopes and richer reminder storage', () => {
       'utf8',
     );
     for (const chunk of sql.split('--> statement-breakpoint')) {
-      const statement = chunk.trim();
+      const statement = chunk
+        .split('\n')
+        .filter((line) => !line.trim().startsWith('--'))
+        .join('\n')
+        .trim();
       if (statement.startsWith('UPDATE') || statement.startsWith('DELETE'))
         t.raw.exec(statement);
     }
