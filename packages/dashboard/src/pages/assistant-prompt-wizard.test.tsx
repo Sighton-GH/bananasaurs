@@ -298,6 +298,47 @@ describe('AssistantPromptWizardPage', () => {
     expect(prompt.value).toContain('warm and concise');
   });
 
+  it('picking friends relaxes a default tone to casual', async () => {
+    renderWizard();
+    fireEvent.click(await screen.findByRole('radio', { name: 'A group of friends' }));
+    await next();
+    await next();
+    expect(
+      inputOf(screen.getByRole('radio', { name: 'Casual, like chatting with friends' })).checked,
+    ).toBe(true);
+  });
+
+  it('picking friends keeps an explicitly chosen tone, and club/team leave the tone alone', async () => {
+    renderWizard();
+    await next();
+    await next();
+    fireEvent.click(await screen.findByRole('radio', { name: 'Professional and businesslike' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'A group of friends' }));
+    await next();
+    await next();
+    expect(
+      inputOf(screen.getByRole('radio', { name: 'Professional and businesslike' })).checked,
+    ).toBe(true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'A team' }));
+    await next();
+    await next();
+    expect(
+      inputOf(screen.getByRole('radio', { name: 'Professional and businesslike' })).checked,
+    ).toBe(true);
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    fireEvent.click(await screen.findByRole('button', { name: 'Back' }));
+    fireEvent.click(await screen.findByRole('radio', { name: 'A club' }));
+    await next();
+    await next();
+    expect(
+      inputOf(screen.getByRole('radio', { name: 'Professional and businesslike' })).checked,
+    ).toBe(true);
+  });
+
   it('uses the friends personality default and supports the casual tone', async () => {
     renderWizard();
     fireEvent.click(await screen.findByRole('radio', { name: 'A group of friends' }));
