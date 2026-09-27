@@ -70,10 +70,27 @@ const formatPings = (input: ReminderSummaryInput): string => {
   const parts: string[] = [];
   if (input.everyone) parts.push('@everyone');
   if (input.here) parts.push('@here');
-  for (const role of input.roleNames) parts.push(`@${role}`);
-  for (const member of input.memberNames) parts.push(`@${member}`);
+  for (const role of input.roleNames) parts.push(`@${summaryField(role)}`);
+  for (const member of input.memberNames) parts.push(`@${summaryField(member)}`);
   return parts.length === 0 ? 'nobody' : parts.join(', ');
 };
+
+/**
+ * Makes free text safe to interpolate into a summary line, which the reply
+ * posts verbatim: collapses every whitespace run (no smuggled newlines),
+ * escapes Discord markdown, and neutralises mass mentions and mention
+ * syntax so model text or a member nickname cannot ping or reformat the
+ * summary. The `@everyone`/`@here` in `formatPings` stay literal: those
+ * come from boolean flags, never from interpolated text.
+ */
+export const summaryField = (value: string): string =>
+  value
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\\/g, '\\\\')
+    .replace(/([*_~`|>])/g, '\\$1')
+    .replace(/@(?=everyone|here)/gi, '@\u200b')
+    .replace(/<(?=[@#/])/g, '<\u200b');
 
 /**
  * The code-written confirmation after a reminder is set, changed or
@@ -88,18 +105,19 @@ export const reminderSummary = (
     input.recurrence === undefined
       ? formatWhen(input.dueAt, input.timeZone)
       : `${formatWhen(input.dueAt, input.timeZone)}, repeats ${describeRecurrence(input.recurrence)}`;
-  if (action === 'cancelled') return `🗑️ Reminder cancelled: **${input.text}** (${when})`;
+  if (action === 'cancelled')
+    return `🗑️ Reminder cancelled: **${summaryField(input.text)}** (${when})`;
   const head =
     action === 'set'
-      ? `✅ Reminder set: **${input.text.slice(0, 200)}**`
-      : `✏️ Reminder updated: **${input.text.slice(0, 200)}**`;
+      ? `✅ Reminder set: **${summaryField(input.text).slice(0, 200)}**`
+      : `✏️ Reminder updated: **${summaryField(input.text).slice(0, 200)}**`;
   const lines = [
     head,
     `• When: ${when}`,
-    `• Where: #${input.channelName}`,
+    `• Where: #${summaryField(input.channelName)}`,
     `• Pings: ${formatPings(input)}`,
   ];
-  if (input.context !== undefined && input.context.length > 0)
-    lines.push(`• Why: ${input.context}`);
+  const why = input.context === undefined ? '' : summaryField(input.context);
+  if (why.length > 0) lines.push(`• Why: ${why}`);
   return lines.join('\n');
 };

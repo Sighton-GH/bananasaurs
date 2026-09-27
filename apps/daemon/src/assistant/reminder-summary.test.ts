@@ -120,7 +120,7 @@ describe('summaryField', () => {
     expect(summaryField('@everyone up')).toBe('@\u200beveryone up');
     expect(summaryField('@HERE we go')).toBe('@\u200bHERE we go');
     expect(summaryField('hi <@123> <#456> </cmd:789>')).toBe(
-      'hi <\u200b@123> <\u200b#456> <\u200b/cmd:789>',
+      'hi <\u200b@123\\> <\u200b#456\\> <\u200b/cmd:789\\>',
     );
   });
 
