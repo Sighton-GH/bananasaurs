@@ -688,6 +688,11 @@ export const assistantInvokeHandler = (deps: {
         await answerSingle(text);
         await logFailure(text, PROVIDER_FAILURE_LOG_REASON);
         return;
+      } finally {
+        // Backstop for every path after startTyping: the keepalive stops even
+        // if a pre-invoke step throws or a future path skips the immediate
+        // stop after invoke. Idempotent, so the normal stops are unaffected.
+        stopTyping();
       }
       // Persist BEFORE the first delivery attempt: a delivery throw from here
       // on retries with this cursor and never re-invokes.
