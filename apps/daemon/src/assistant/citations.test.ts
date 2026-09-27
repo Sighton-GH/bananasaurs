@@ -32,10 +32,12 @@ describe('citation registry', () => {
     const registry = createCitationRegistry();
     registry.tag({ title: 'Known', url: 'https://example.com/known' });
     expect(applyCitations('Answer [S99]\nSource: unrelated', registry)).toEqual({
-      text: 'Answer',
+      text: 'Answer\nSource: unrelated',
       cited: [],
     });
-    expect(applyCitations('Answer\n-# Sources: unrelated', registry).text).toBe('Answer');
+    expect(applyCitations('Answer\n-# Sources: unrelated', registry).text).toBe(
+      'Answer\n-# Sources: unrelated',
+    );
     expect(applyCitations('Sources are useful\nAnswer', registry).text).toBe(
       'Sources are useful\nAnswer',
     );
@@ -48,5 +50,47 @@ describe('citation registry', () => {
       text: '```\nexample [S1]\n```\nAnswer',
       cited: [],
     });
+  });
+
+  it('keeps tags inside indented and tilde fences, closed only by the same marker', () => {
+    const registry = createCitationRegistry();
+    const known = { title: 'Known', url: 'https://example.com/known' };
+    registry.tag(known);
+    expect(applyCitations('  ```\nexample [S1]\n  ```\nAnswer [S1]', registry)).toEqual({
+      text: '```\nexample [S1]\n  ```\nAnswer',
+      cited: [known],
+    });
+    expect(applyCitations('~~~\nexample [S1]\n~~~\nAnswer [S1]', registry)).toEqual({
+      text: '~~~\nexample [S1]\n~~~\nAnswer',
+      cited: [known],
+    });
+    // A ``` line inside a ~~~ fence does not close it.
+    expect(applyCitations('~~~\ncode [S1]\n```\nmore [S1]\n~~~\nAnswer [S1]', registry)).toEqual({
+      text: '~~~\ncode [S1]\n```\nmore [S1]\n~~~\nAnswer',
+      cited: [known],
+    });
+  });
+
+  it('keeps tags inside inline code spans', () => {
+    const registry = createCitationRegistry();
+    const known = { title: 'Known', url: 'https://example.com/known' };
+    registry.tag(known);
+    expect(applyCitations('Use `[S1]` for facts [S1]', registry)).toEqual({
+      text: 'Use `[S1]` for facts',
+      cited: [known],
+    });
+  });
+
+  it('removes a trailing multi-line sources block but keeps a prose source sentence', () => {
+    const registry = createCitationRegistry();
+    const known = { title: 'Known', url: 'https://example.com/known' };
+    registry.tag(known);
+    expect(
+      applyCitations('Answer [S1]\n\nSources:\n- Handbook\n- Web page', registry),
+    ).toEqual({ text: 'Answer', cited: [known] });
+    expect(applyCitations('Answer\nSources: https://x.test', registry).text).toBe('Answer');
+    expect(applyCitations('Answer\nSource: ask the treasurer', registry).text).toBe(
+      'Answer\nSource: ask the treasurer',
+    );
   });
 });
