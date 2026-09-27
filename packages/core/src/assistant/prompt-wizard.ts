@@ -214,7 +214,7 @@ const buildSourcesSection = (answers: PromptWizardAnswers): Section | undefined 
     lines.push("Check the club's sources before answering from general knowledge.");
   }
   if (answers.citeSources) {
-    lines.push('Cite the source (title or link) for any fact drawn from a club resource.');
+    lines.push("Tag each fact you take from a club source with that source's tag.");
   }
   if (lines.length === 0) return undefined;
   return { header: 'USING SOURCES', body: lines.join('\n') };
@@ -270,7 +270,6 @@ const buildFormatSection = (answers: PromptWizardAnswers): Section | undefined =
   if (answers.format.bullets) lines.push('- Use bullet points for lists.');
   if (answers.format.codeBlocks) lines.push('- Use fenced code blocks for code.');
   if (answers.format.oneMessage) lines.push('- Keep the whole answer in one Discord message.');
-  if (answers.format.sourcesLine) lines.push('- End with a Sources line listing what you used.');
   if (lines.length === 0) return undefined;
   return { header: 'FORMAT', body: lines.join('\n') };
 };

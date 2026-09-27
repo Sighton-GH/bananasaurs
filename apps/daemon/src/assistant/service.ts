@@ -58,6 +58,7 @@ import {
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
 import { buildUserMessage } from './user-message.js';
 import { labelUserTurn } from './conversation-context.js';
+import { applyCitations, createCitationRegistry } from './citations.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -140,7 +141,7 @@ interface AnswerSource {
 }
 
 /**
- * Task 20: the short line ending an answer — at most three entries, deduped
+ * Task 20: the short line ending an answer — at most five entries, deduped
  * by URL, each a resource title (plus `› heading` when the evidence names
  * one). Empty when nothing chunk/resource-backed was used, in which case the
  * caller appends nothing.
@@ -156,7 +157,7 @@ const sourcesLine = (sources: readonly AnswerSource[]): string => {
         ? source.title
         : `${source.title} › ${clipHeading(source.heading, 120)}`,
     );
-    if (entries.length >= 3) break;
+    if (entries.length >= 5) break;
   }
   if (entries.length === 0) return '';
   return `\n\n-# Sources: ${entries.join(' · ')}`;
@@ -308,6 +309,7 @@ export const createAssistantService = (
     {
       const currentConfig = liveConfig();
       const chainEntries = currentChain();
+      const citations = createCitationRegistry();
       const commandSkill: Record<AssistantInvocation['command'], string> = {
         ask: 'search-club',
         find: 'search-club',
@@ -563,6 +565,11 @@ export const createAssistantService = (
           text,
           accessible: true,
           chunkId: hit.chunkId,
+          citeTag: citations.tag({
+            title: resource?.title ?? hit.resourceId,
+            url: resource?.url ?? '',
+            heading: hit.headingPath,
+          }),
         };
       });
       const context = compileAssistantContext({
@@ -849,6 +856,7 @@ export const createAssistantService = (
         logger,
         guildId: scope.guildId,
         now,
+        citations,
       });
       // The loop records exactly one attempt per entry, in chain order, so
       // each attempt lines up with the entry that produced it.
@@ -872,27 +880,25 @@ export const createAssistantService = (
       });
       if (loop.outcome === 'failed') return mapLoopFailure(loop);
       const BRAVE_ATTRIBUTION = '\n\n-# Powered by Brave Search';
-      // Task 20: the sources line — only chunk/resource-backed evidence: the
-      // pre-retrieved snippets (with their headings) plus tool results that
-      // opened a known enabled resource. A web-only answer keeps just the
-      // Brave attribution and grows no line.
+      const { text: citedText, cited } = applyCitations(loop.text, citations);
+      // Task 20: the sources line contains only known resources whose tags the
+      // answer actually used. A web-only answer keeps just the Brave attribution.
       const knownResource = new Set(resources.map((r) => `${r.title}${r.url}`));
       // The escalation summary is built from the loop text below — before
       // the sources line is appended — so a ticket never carries it. Only a
       // normal answer grows the line.
-      const baseAnswer = loop.web ? `${loop.text}${BRAVE_ATTRIBUTION}` : loop.text;
+      const baseAnswer = loop.web ? `${citedText}${BRAVE_ATTRIBUTION}` : citedText;
       const answerText =
         baseAnswer +
-        sourcesLine([
-          ...preRetrieved.map((hit) => ({
-            title: byResourceId.get(hit.resourceId)?.title ?? hit.resourceId,
-            url: byResourceId.get(hit.resourceId)?.url ?? '',
-            heading: hit.headingPath,
-          })),
-          ...loop.sources
+        sourcesLine(
+          cited
             .filter((source) => knownResource.has(`${source.title}${source.url}`))
-            .map((source) => ({ title: source.title, url: source.url })),
-        ]);
+            .map((source) => ({
+              title: source.title,
+              url: source.url,
+              ...(source.heading === undefined ? {} : { heading: source.heading }),
+            })),
+        );
       sink.detail = {
         sections: traceSections(context, historyForLoop, userText),
         history: historyForLoop,

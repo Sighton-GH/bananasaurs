@@ -13,6 +13,7 @@ import type { ChainEntry } from './model-chain.js';
 import { QuotaLedger } from './quota-ledger.js';
 import { ID_TOOL_ARGS, runToolLoop, type LoopTools } from './tool-loop.js';
 import type { AssistantToolResult } from './tools.js';
+import { createCitationRegistry } from './citations.js';
 
 const NOW = 1_800_000_000_000;
 const ANSWER_INSTRUCTION = 'Answer now using the results above. Do not call tools.';
@@ -168,6 +169,31 @@ describe('runToolLoop direct answers', () => {
     expect(result.outcome).toBe('answered');
     expect(result.text).toBe('Answered.');
     expect(result.toolCalls).toMatchObject([{ ok: false, refused: 'tools not offered' }]);
+  });
+});
+
+describe('runToolLoop citations', () => {
+  it('adds Cite as tags to tool results and registers their sources', async () => {
+    const { provider, calls } = scripted([
+      toolAnswer([{ name: 'search_sources', args: { query: 'x' } }]),
+      textAnswer('done'),
+    ]);
+    const registry = createCitationRegistry();
+    const sourceA = { title: 'Handbook', url: 'https://example.com/handbook' };
+    const sourceB = { title: 'Roster', url: 'https://example.com/roster' };
+    await runToolLoop(
+      baseInput([entry({ provider })], {
+        citations: registry,
+        tools: loopTools(async (call) => ({
+          ...okResult(call.name),
+          sources: [sourceA, sourceB],
+        })),
+      }),
+    );
+    const toolText = calls[1]?.messages.find((message) => message.role === 'tool')?.text ?? '';
+    expect(toolText).toContain('Cite as: [S1] Handbook; [S2] Roster');
+    expect(registry.get('S1')).toEqual(sourceA);
+    expect(registry.get('S2')).toEqual(sourceB);
   });
 });
 

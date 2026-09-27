@@ -282,6 +282,56 @@ describe('compileAssistantContext resources (ADR 0067)', () => {
     expect(compiled.evidenceEnvelope).toContain('chunk=c_d_0');
     expect(compiled.evidenceEnvelope).toContain('[UNTRUSTED CLUB EVIDENCE');
   });
+
+  it('evidence header without citeTag carries no cite=', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [
+        {
+          sourceId: 'handbook',
+          title: 'Handbook',
+          text: 'Meetings Mondays.',
+          accessible: true,
+          chunkId: 'c_d_0',
+        },
+      ],
+    });
+    expect(compiled.evidenceEnvelope).toContain(
+      '[UNTRUSTED CLUB EVIDENCE source=handbook title="Handbook" chunk=c_d_0]',
+    );
+    expect(compiled.evidenceEnvelope).not.toContain('cite=');
+  });
+
+  it('evidence header with citeTag starts with cite=', () => {
+    const compiled = compileAssistantContext({
+      behaviour,
+      serverCard: 'card',
+      resources: [],
+      skills: [],
+      evidence: [
+        {
+          sourceId: 'handbook',
+          title: 'Handbook',
+          text: 'Meetings Mondays.',
+          accessible: true,
+          chunkId: 'c_d_0',
+          citeTag: 'S2',
+        },
+      ],
+    });
+    expect(compiled.evidenceEnvelope).toContain(
+      '[UNTRUSTED CLUB EVIDENCE cite=S2 source=handbook title="Handbook" chunk=c_d_0]',
+    );
+  });
+
+  it('OUTPUT_RULES tells the model to tag only what it used and never write a Sources line', () => {
+    expect(OUTPUT_RULES).toContain(
+      "- When a sentence uses something from a club source, end it with that source's tag, such as [S2]. Tag only sources you actually used. Never write a Sources or Source line yourself; it is added for you.",
+    );
+  });
 });
 
 describe('compileAssistantContext output rules (ADR 0085)', () => {
