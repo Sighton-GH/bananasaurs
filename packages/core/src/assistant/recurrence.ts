@@ -86,7 +86,9 @@ export const nextOccurrence = (
   if (recurrence.maxCount !== undefined && deliveredCount >= recurrence.maxCount) return undefined;
   const anchor = localParts(anchorAt, recurrence.timeZone);
   const anchorDate = Date.UTC(Number(anchor.year), Number(anchor.month) - 1, Number(anchor.day));
-  const anchorWeek = Math.floor(anchorDate / 86_400_000);
+  const anchorDayNumber = Math.floor(anchorDate / 86_400_000);
+  const anchorWeekday = new Date(anchorDate).getUTCDay();
+  const anchorWeekStart = anchorDayNumber - anchorWeekday;
   for (let offset = 0; offset <= 800; offset += 1) {
     const date = new Date(anchorDate + offset * 86_400_000);
     const year = date.getUTCFullYear();
