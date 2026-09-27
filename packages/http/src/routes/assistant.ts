@@ -45,7 +45,8 @@ const snowflake = z.string().regex(/^\d{17,20}$/);
  */
 const skillScopeView = (
   skill: AssistantSkill,
-  stored: { readonly mode?: SkillScopeMode | undefined; readonly roleIds: readonly string[] } | undefined,
+  stored:
+    { readonly mode?: SkillScopeMode | undefined; readonly roleIds: readonly string[] } | undefined,
 ): {
   readonly mode: SkillScopeMode;
   readonly roleIds: readonly string[];
@@ -567,12 +568,14 @@ export const registerAssistantRoutes = (
     const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === skillId);
     if (skill === undefined) return reply.status(404).send({ error: 'not-found' });
     const parsed = z
-      .object({ mode: z.enum(['everyone', 'roles', 'owner']), roleIds: z.array(snowflake).max(100) })
+      .object({
+        mode: z.enum(['everyone', 'roles', 'owner']),
+        roleIds: z.array(snowflake).max(100),
+      })
       .strict()
       .safeParse(request.body);
     if (!parsed.success) return badRequest(reply, parsed.error);
-    if (parsed.data.mode === 'roles' && parsed.data.roleIds.length === 0)
-      return badRequest(reply);
+    if (parsed.data.mode === 'roles' && parsed.data.roleIds.length === 0) return badRequest(reply);
     const roleIds = parsed.data.mode === 'roles' ? parsed.data.roleIds : [];
     const stored = assistantRepo
       .listSkillGrants(session.scope)
@@ -581,7 +584,11 @@ export const registerAssistantRoutes = (
       skill,
       stored === undefined ? undefined : { mode: stored.mode, roleIds: stored.roleIds },
     );
-    assistantRepo.setSkillScope(session.scope, { skillId, mode: parsed.data.mode, roleIds }, deps.now());
+    assistantRepo.setSkillScope(
+      session.scope,
+      { skillId, mode: parsed.data.mode, roleIds },
+      deps.now(),
+    );
     const after = { mode: parsed.data.mode, roleIds, isDefault: false };
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
@@ -648,7 +655,8 @@ export const registerAssistantRoutes = (
       { dueAt: parsed.data.dueAt ?? existing.dueAt, text: parsed.data.text ?? existing.text },
       deps.now(),
     );
-    if (!draft.ok) return reply.status(400).send({ error: 'invalid-reminder', message: draft.error });
+    if (!draft.ok)
+      return reply.status(400).send({ error: 'invalid-reminder', message: draft.error });
     // The dashboard never learns the club's time zone: a non-null repeat is
     // only an edit of an existing repeat, keeping its stored time zone.
     const recurrence =
@@ -668,7 +676,11 @@ export const registerAssistantRoutes = (
                   ? {}
                   : { maxCount: parsed.data.recurrence.maxCount }),
               };
-    if (parsed.data.recurrence !== undefined && parsed.data.recurrence !== null && recurrence === undefined)
+    if (
+      parsed.data.recurrence !== undefined &&
+      parsed.data.recurrence !== null &&
+      recurrence === undefined
+    )
       return reply.status(400).send({
         error: 'recurrence-needs-time-zone',
         message: `Repeating reminders are created from chat, where the club's time zone is known.`,
@@ -941,8 +953,7 @@ export const registerAssistantRoutes = (
               );
               const finished = all
                 .filter(
-                  (reminder) =>
-                    reminder.status !== 'scheduled' && reminder.status !== 'delivering',
+                  (reminder) => reminder.status !== 'scheduled' && reminder.status !== 'delivering',
                 )
                 .sort((a, b) => b.dueAt - a.dueAt)
                 .slice(0, 50);

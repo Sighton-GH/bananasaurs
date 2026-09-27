@@ -1351,9 +1351,9 @@ describe('GET /api/assistant/skills/:skillId', () => {
       isDefault: true,
     });
     // Roles mode names directory roles and marks the ones that left.
-    expect((await putScope('search-club', { mode: 'roles', roleIds: [ROLE_A, ROLE_B] })).statusCode).toBe(
-      200,
-    );
+    expect(
+      (await putScope('search-club', { mode: 'roles', roleIds: [ROLE_A, ROLE_B] })).statusCode,
+    ).toBe(200);
     const withoutDirectory = await get(cookie, 'search-club');
     expect(withoutDirectory.json<{ whoCanUse: string }>().whoCanUse).toBe(
       '@a role that left the server, @a role that left the server (among those who can ask), and the server owner.',
@@ -1785,9 +1785,11 @@ describe('PUT /api/assistant/skills/:skillId/scope (Task E1)', () => {
       scope: { mode: 'roles', roleIds: [ROLE_A], isDefault: false },
     });
     const read = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
-    expect(
-      read.json<{ skillScopes: Record<string, unknown> }>().skillScopes['reminders'],
-    ).toEqual({ mode: 'roles', roleIds: [ROLE_A], isDefault: false });
+    expect(read.json<{ skillScopes: Record<string, unknown> }>().skillScopes['reminders']).toEqual({
+      mode: 'roles',
+      roleIds: [ROLE_A],
+      isDefault: false,
+    });
     // Extra role ids do not survive a non-roles mode.
     const everyone = await putScope(cookie, csrf, 'reminders', {
       mode: 'everyone',
@@ -1886,7 +1888,8 @@ describe('GET /api/assistant skill scopes and item counts (Task E1)', () => {
       provenance: 'test',
       at: clock,
     });
-    if (status !== 'draft') expect(assistantRepo.transitionDecision(scope, id, 'draft', 'reviewed')).toBe(true);
+    if (status !== 'draft')
+      expect(assistantRepo.transitionDecision(scope, id, 'draft', 'reviewed')).toBe(true);
     if (status === 'saved')
       expect(assistantRepo.transitionDecision(scope, id, 'reviewed', 'saved')).toBe(true);
   };
@@ -1894,13 +1897,21 @@ describe('GET /api/assistant skill scopes and item counts (Task E1)', () => {
   it('reports default scopes and zero counts on a fresh guild', async () => {
     grant('config.read');
     const { cookie } = await signIn();
-    const response = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant',
+      headers: { cookie },
+    });
     expect(response.statusCode).toBe(200);
     const parsed: {
       skillScopes: Record<string, { mode: string; roleIds: string[]; isDefault: boolean }>;
       skillItemCounts: Record<string, number>;
     } = response.json();
-    expect(parsed.skillScopes['reminders']).toEqual({ mode: 'owner', roleIds: [], isDefault: true });
+    expect(parsed.skillScopes['reminders']).toEqual({
+      mode: 'owner',
+      roleIds: [],
+      isDefault: true,
+    });
     expect(parsed.skillScopes['search-club']).toEqual({
       mode: 'everyone',
       roleIds: [],
@@ -1927,7 +1938,11 @@ describe('GET /api/assistant skill scopes and item counts (Task E1)', () => {
     seedDecision('dec-draft', 'decision', 'draft');
     seedDecision('plan-reviewed', 'review-plan', 'reviewed');
     seedDecision('dec-saved', 'decision', 'saved');
-    const response = await app.inject({ method: 'GET', url: '/api/assistant', headers: { cookie } });
+    const response = await app.inject({
+      method: 'GET',
+      url: '/api/assistant',
+      headers: { cookie },
+    });
     const parsed: { skillItemCounts: Record<string, number> } = response.json();
     expect(parsed.skillItemCounts['reminders']).toBe(2);
     expect(parsed.skillItemCounts['propose-memory']).toBe(1);
@@ -1985,7 +2000,9 @@ describe('PATCH /api/assistant/reminders/:id (Task E1)', () => {
     const response = await patch(cookie, csrf, 'r1', { dueAt: clock - 1000 });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'invalid-reminder' });
-    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.dueAt).toBe(clock + 3_600_000);
+    expect(assistantRepo.getReminder(t.scopes.forGuild(GUILD), 'r1')?.dueAt).toBe(
+      clock + 3_600_000,
+    );
   });
 
   it('stops a repeat with null', async () => {
