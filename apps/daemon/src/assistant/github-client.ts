@@ -198,9 +198,7 @@ export const createGitHubClient = (deps: GitHubClientDeps): GitHubClient => {
       }
       return parsed.data;
     };
-    const toSummary = (
-      item: z.infer<typeof repoSummarySchema>,
-    ): GitHubRepoSummary => ({
+    const toSummary = (item: z.infer<typeof repoSummarySchema>): GitHubRepoSummary => ({
       name: item.name,
       description: item.description,
       defaultBranch: item.default_branch,

@@ -107,7 +107,15 @@ class FakeClient {
     this.fileRawCalls.push({ owner, repo, ref, path, ...(etag === undefined ? {} : { etag }) });
     if (this.fileRaw instanceof Error) throw this.fileRaw;
     if (typeof this.fileRaw === 'function')
-      return (this.fileRaw as (args: { owner: string; repo: string; ref: string; path: string; etag?: string }) => unknown)({ owner, repo, ref, path, ...(etag === undefined ? {} : { etag }) }) as never;
+      return (
+        this.fileRaw as (args: {
+          owner: string;
+          repo: string;
+          ref: string;
+          path: string;
+          etag?: string;
+        }) => unknown
+      )({ owner, repo, ref, path, ...(etag === undefined ? {} : { etag }) }) as never;
     return this.fileRaw as never;
   }
 }

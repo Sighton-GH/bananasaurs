@@ -11,10 +11,7 @@ import {
 } from '@bananasaurs/core';
 import { computeDocId, type GuildScope } from '@bananasaurs/storage';
 import { GitHubError, type GitHubClient } from './github-client.js';
-import type {
-  ConditionalResourceFetchResult,
-  ResourceConditional,
-} from './resource-fetcher.js';
+import type { ConditionalResourceFetchResult, ResourceConditional } from './resource-fetcher.js';
 import type {
   ResourceRefreshFetcher,
   ResourceRefreshOutcome,
@@ -279,10 +276,7 @@ export async function refreshGithubRepo(
     );
   };
 
-  const syncPrivateMeta = (
-    base: ClubResource,
-    isPrivate: boolean,
-  ): ClubResource => {
+  const syncPrivateMeta = (base: ClubResource, isPrivate: boolean): ClubResource => {
     if (isPrivate === (base.meta?.private === true)) return base;
     const rest: Partial<ResourceMeta> = { ...(base.meta ?? {}) };
     delete rest.private;
@@ -372,8 +366,7 @@ export async function refreshGithubRepo(
         raw = await deps.client.getFileRaw(owner, repo, branch, file.path, conditional.etag);
       } catch (error) {
         if (error instanceof GitHubError) {
-          const message =
-            error.kind === 'rate-limited' ? rateLimitDetail(error) : error.message;
+          const message = error.kind === 'rate-limited' ? rateLimitDetail(error) : error.message;
           return { ok: false, code: 'http-status', message };
         }
         throw error;

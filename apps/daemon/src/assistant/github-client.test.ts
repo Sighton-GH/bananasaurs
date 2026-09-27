@@ -318,7 +318,9 @@ describe('createGitHubClient — getFileRaw', () => {
       .fn<typeof globalThis.fetch>()
       .mockResolvedValue(new Response('', { status: 404 }));
     const client = createGitHubClient({ token: () => 'test-token', fetch, guard: noopGuard });
-    const error = await client.getFileRaw('acme', 'widget', 'main', 'missing.md').catch((e: unknown) => e);
+    const error = await client
+      .getFileRaw('acme', 'widget', 'main', 'missing.md')
+      .catch((e: unknown) => e);
     expect(error).toBeInstanceOf(GitHubError);
     expect((error as GitHubError).kind).toBe('not-found');
   });

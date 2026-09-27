@@ -1143,9 +1143,10 @@ describe('PUT /api/assistant/resources/:id/enabled (ADR 0084)', () => {
     expect(await putEnabled(cookie, csrf, 'gh-acme', { enabled: false })).toMatchObject({
       statusCode: 200,
     });
-    expect(
-      assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme')?.meta,
-    ).toEqual({ owner: 'acme', disabledByOwner: true });
+    expect(assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme')?.meta).toEqual({
+      owner: 'acme',
+      disabledByOwner: true,
+    });
   });
 
   it('toggles a website with no meta', async () => {
@@ -1183,9 +1184,9 @@ describe('PUT /api/assistant/resources/:id/enabled (ADR 0084)', () => {
     expect((await putEnabled(cookie, csrf, 'gh-acme-widget', { enabled: false })).statusCode).toBe(
       200,
     );
-    expect(
-      assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget'),
-    ).toMatchObject({ enabled: false, fetchStatus: 'ok', lastFetchedAt: 123 });
+    expect(assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget')).toMatchObject(
+      { enabled: false, fetchStatus: 'ok', lastFetchedAt: 123 },
+    );
   });
 
   it('records an audit row with before and after enabled', async () => {
