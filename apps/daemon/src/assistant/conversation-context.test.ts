@@ -117,9 +117,9 @@ describe('buildConversationContext', () => {
   });
 
   it('collapses a newline in an author name', () => {
-    expect(
-      labelUserTurn({ authorName: 'Ama\nSmith', at: NOW, text: 'hello' }, NOW),
-    ).toBe('[Ama Smith, just now] hello');
+    expect(labelUserTurn({ authorName: 'Ama\nSmith', at: NOW, text: 'hello' }, NOW)).toBe(
+      '[Ama Smith, just now] hello',
+    );
     seedConversation('conv-1', [
       { role: 'user', authorId: AMA, authorName: 'Ama\nSmith', text: 'first question' },
     ]);

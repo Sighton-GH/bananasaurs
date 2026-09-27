@@ -56,6 +56,8 @@ import {
   type WebResult,
 } from './tools.js';
 import type { ReviewedResourceFetcher } from './resource-fetcher.js';
+import { buildUserMessage } from './user-message.js';
+import { labelUserTurn } from './conversation-context.js';
 const textOf = (input: Readonly<Record<string, string>>): string => Object.values(input).join('\n');
 /**
  * Raw Discord mention snowflakes carry no meaning to a provider and trip the
@@ -78,6 +80,7 @@ export const sanitizeMentionsForProvider = (text: string): string =>
 const traceSections = (
   context: CompiledAssistantContext,
   history: readonly GenerationMessage[],
+  userText: string,
 ): AssistantTrace['sections'] => {
   const sections = context.sections.map((section) => ({
     name: section.name,
@@ -85,11 +88,24 @@ const traceSections = (
     estTokens: estimateTokens(section.text),
     text: section.text,
   }));
-  if (history.length === 0) return sections;
-  const text = history.map((message) => `${message.role}: ${message.text}`).join('\n\n');
+  const withHistory =
+    history.length === 0
+      ? sections
+      : (() => {
+          const text = history.map((message) => `${message.role}: ${message.text}`).join('\n\n');
+          return [
+            ...sections,
+            { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
+          ];
+        })();
   return [
-    ...sections,
-    { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
+    ...withHistory,
+    {
+      name: 'user-message',
+      chars: userText.length,
+      estTokens: estimateTokens(userText),
+      text: userText,
+    },
   ];
 };
 export interface AssistantServiceTestPorts {
@@ -693,7 +709,7 @@ export const createAssistantService = (
        */
       const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
         const loopDetail = (): AssistantTraceDetail => ({
-          sections: traceSections(context, historyForLoop),
+          sections: traceSections(context, historyForLoop, userText),
           history: historyForLoop,
           attempts: failed.attempts,
           toolCalls: failed.toolCalls,
@@ -791,6 +807,12 @@ export const createAssistantService = (
       // Task 14: the job-built conversation history travels ahead of the
       // current user text. Absent (or empty) means a history-free request.
       const historyForLoop: readonly GenerationMessage[] = input.history ?? [];
+      const userText = buildUserMessage({
+        question: sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
+        askerName: input.askerName,
+        evidenceEnvelope: context.evidenceEnvelope,
+        quoteEnvelope: input.quoteEnvelope,
+      });
       // ADR 0081: every provider call is reserved against its chain entry's
       // owner-set RPM/RPD limits first; a refused entry is skipped without
       // being called. The `.env` seed has no stored key, so it is never
@@ -809,13 +831,7 @@ export const createAssistantService = (
             : ''),
         protectedText: context.protectedText,
         history: historyForLoop,
-        userText: [
-          sanitizeMentionsForProvider(stripNewTopic(textOf(input.input))),
-          context.evidenceEnvelope,
-          ...(input.quoteEnvelope === undefined ? [] : [input.quoteEnvelope]),
-        ]
-          .filter(Boolean)
-          .join('\n\n'),
+        userText,
         // Task 16: every catalogue id plus the pre-retrieved chunk and doc
         // ids may be opened in a follow-up round.
         initialHandles: [
@@ -878,7 +894,7 @@ export const createAssistantService = (
             .map((source) => ({ title: source.title, url: source.url })),
         ]);
       sink.detail = {
-        sections: traceSections(context, historyForLoop),
+        sections: traceSections(context, historyForLoop, userText),
         history: historyForLoop,
         attempts: loop.attempts,
         toolCalls: loop.toolCalls,
@@ -1069,7 +1085,9 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
         .flatMap((turn) =>
           turn.turnId === userTurnId || (turn.role !== 'user' && turn.role !== 'assistant')
             ? []
-            : [{ role: turn.role, text: turn.text }],
+            : turn.role === 'user'
+              ? [{ role: 'user' as const, text: labelUserTurn(turn, now()) }]
+              : [{ role: turn.role, text: turn.text }],
         );
       const sink: {
         trace?: Omit<InvocationTrace, 'latencyMs'>;
@@ -1095,6 +1113,7 @@ Draft ID: ${id}. This is analysis, not club policy. An owner must review and sav
             source: 'slash-command',
             invocationId: userTurnId,
             history,
+            askerName: input.accountUsername,
           },
           sink,
           { skipCallerGate: true, skipMemberMemories: true, skipTicketWrite: true },

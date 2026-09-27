@@ -54,6 +54,8 @@ export interface AssistantInvocation {
    * text by the service — never to the system instruction.
    */
   readonly quoteEnvelope?: string | undefined;
+  /** The asker's display name, for the current-message label. */
+  readonly askerName?: string | undefined;
 }
 
 /** What the AI log channel reports about one request (ADR 0065). Never member-facing. */

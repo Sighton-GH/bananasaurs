@@ -1051,12 +1051,81 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     const { requests, service } = capturing();
     const quoteEnvelope =
       '[UNTRUSTED QUOTED MESSAGE author="Alex"]\nthe hall opens at seven\n[/UNTRUSTED QUOTED MESSAGE]';
-    const result = await service.invoke(ask({ quoteEnvelope }));
+    const result = await service.invoke(ask({ quoteEnvelope, askerName: 'Ama' }));
     expect(result.ok).toBe(true);
     const first = requests[0];
-    expect(first?.messages.at(-1)?.text).toContain(quoteEnvelope);
+    const lastText = first?.messages.at(-1)?.text ?? '';
+    expect(lastText).toContain(quoteEnvelope);
+    expect(lastText.indexOf(quoteEnvelope)).toBeLessThan(
+      lastText.indexOf('[CURRENT MESSAGE from="Ama"]'),
+    );
     expect(first?.systemInstruction).not.toContain('UNTRUSTED QUOTED MESSAGE');
     expect(first?.systemInstruction).not.toContain('the hall opens at seven');
+  });
+
+  it('ends the user message with the current-message block and the answer line', async () => {
+    const { requests, service } = capturing();
+    const result = await service.invoke(ask({ askerName: 'Ama' }));
+    expect(result.ok).toBe(true);
+    const lastText = requests[0]?.messages.at(-1)?.text ?? '';
+    expect(lastText).toContain('[CURRENT MESSAGE from="Ama"]\nsecond question\n[/CURRENT MESSAGE]');
+    expect(lastText.endsWith("[/CURRENT MESSAGE]\n\nAnswer Ama's current message.")).toBe(true);
+  });
+
+  it('places pre-retrieved evidence before the current-message block', async () => {
+    const scope = t.scopes.forGuild(GUILD);
+    assistantRepo.putResource(scope, {
+      id: 'handbook',
+      guildId: GUILD,
+      title: 'Handbook',
+      url: 'https://example.com/handbook',
+      kind: 'website',
+      enabled: true,
+      reviewedAt: new Date(NOW).toISOString(),
+    });
+    const url = 'https://example.com/handbook';
+    const docId = computeDocId(url);
+    resourceCacheRepo.upsertDocument(scope, {
+      resourceId: 'handbook',
+      docId,
+      url,
+      path: '/guide',
+      title: 'handbook',
+      contentHash: 'hash-handbook',
+      fetchedAt: NOW - 3_600_000,
+      bytes: 100,
+      status: 'ok',
+    });
+    resourceCacheRepo.replaceChunks(scope, docId, 'handbook', [
+      {
+        ordinal: 0,
+        headingPath: 'Guide',
+        lineStart: 1,
+        lineEnd: 1,
+        text: 'battery care guide for the club',
+      },
+    ]);
+    const { requests, service } = capturing();
+    const result = await service.invoke(
+      ask({ input: { question: 'battery care' }, askerName: 'Ama' }),
+    );
+    expect(result.ok).toBe(true);
+    const lastText = requests[0]?.messages.at(-1)?.text ?? '';
+    expect(lastText).toContain('chunk=');
+    expect(lastText.indexOf('chunk=')).toBeLessThan(
+      lastText.indexOf('[CURRENT MESSAGE from="Ama"]'),
+    );
+  });
+
+  it('stores the user message as a user-message trace section with the exact text', async () => {
+    const { requests, service } = capturing();
+    const result = await service.invoke(ask({ askerName: 'Ama' }));
+    expect(result.ok).toBe(true);
+    const lastText = requests[0]?.messages.at(-1)?.text ?? '';
+    const sections = result.detail?.sections ?? [];
+    const userMessage = sections.find((section) => section.name === 'user-message');
+    expect(userMessage?.text).toBe(lastText);
+    expect(sections.at(-1)?.name).toBe('user-message');
   });
 
   it('returns trace detail with compiled sections plus a history section when history was sent', async () => {
@@ -1085,6 +1154,45 @@ describe('Task 14: conversation history, quoted envelope and trace detail', () =
     expect(result.ok).toBe(true);
     const sections = result.detail?.sections.map((section) => section.name) ?? [];
     expect(sections).not.toContain('history');
+    expect(sections.at(-1)).toBe('user-message');
+  });
+
+  it('labels try-it history user turns', async () => {
+    const seen: { role: string; text: string }[][] = [];
+    const provider: TextProvider = {
+      id: 'fake',
+      capabilities: new Set(['text']),
+      generateText: async (req) => {
+        seen.push(req.messages.map((message) => ({ role: message.role, text: message.text })));
+        return { text: 'done', model: 'model-a' };
+      },
+    };
+    const service = createAssistantService(
+      t.scopes.forGuild(GUILD),
+      t.scopes.instance(),
+      config,
+      () => NOW,
+      {},
+      undefined,
+      undefined,
+      { memberChannels: async () => [] },
+      () => [usable(provider)],
+    );
+    const first = await service.tryIt({
+      behaviourId: 'direct',
+      question: 'first question',
+      accountUsername: 'owner-name',
+    });
+    await service.tryIt({
+      behaviourId: 'direct',
+      question: 'second question',
+      conversationId: first.conversationId,
+      accountUsername: 'owner-name',
+    });
+    const secondMessages = seen[1] ?? [];
+    const historyUser = secondMessages.filter((message) => message.role === 'user').slice(0, -1);
+    expect(historyUser.length).toBeGreaterThan(0);
+    expect(historyUser[0]?.text).toMatch(/^\[owner-name, .+\] first question$/);
   });
 });
 

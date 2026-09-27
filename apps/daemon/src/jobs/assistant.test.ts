@@ -503,8 +503,20 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
 
     expect(h.inputs).toHaveLength(2);
     const history = h.inputs[1]?.history ?? [];
-    expect(history[0]?.text).toBe('first question');
+    expect(history[0]?.text).toMatch(/^\[Ama, .+\] first question$/);
     expect(history[1]?.text).toBe('answer to first question');
+  });
+
+  it('passes the payload authorName to the service as askerName', async () => {
+    const h = harness(() => ({ ok: true, content: 'hello' }));
+    await h.run(
+      mention({
+        invocationId: 'inv-asker',
+        messageId: '810000000000000030',
+        input: { question: 'first question' },
+      }),
+    );
+    expect(h.inputs[0]?.askerName).toBe('Ama');
   });
 
   it('a reply by another member to the bot answer continues the conversation with both speakers labelled', async () => {
@@ -537,7 +549,7 @@ describe('assistantInvokeHandler (Task 14: conversations, replies, typing, trace
     expect(second?.conversationId).toBe(first?.conversationId);
     const secondInput = h.inputs[1];
     const history = secondInput?.history ?? [];
-    expect(history[0]?.text).toBe('Ama: first question');
+    expect(history[0]?.text).toMatch(/^\[Ama, .+\] first question$/);
     // The just-written user turn is not history: the model gets the current
     // question exactly once, as the request's user text.
     expect(history.at(-1)?.text).toBe('answer to first question');

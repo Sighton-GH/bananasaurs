@@ -17,8 +17,15 @@ describe('buildUserMessage', () => {
 
   it('omits evidence and quote when empty or undefined', () => {
     expect(
-      buildUserMessage({ question: 'hi', askerName: 'Ama', evidenceEnvelope: '', quoteEnvelope: '' }),
-    ).toBe('[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.');
+      buildUserMessage({
+        question: 'hi',
+        askerName: 'Ama',
+        evidenceEnvelope: '',
+        quoteEnvelope: '',
+      }),
+    ).toBe(
+      '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.',
+    );
     expect(buildUserMessage({ question: 'hi', askerName: 'Ama' })).toBe(
       '[CURRENT MESSAGE from="Ama"]\nhi\n[/CURRENT MESSAGE]\n\nAnswer Ama\'s current message.',
     );

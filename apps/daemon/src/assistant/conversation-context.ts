@@ -1,4 +1,8 @@
-import { relativeAgo, type ConversationResolution, type GenerationMessage } from '@bananasaurs/core';
+import {
+  relativeAgo,
+  type ConversationResolution,
+  type GenerationMessage,
+} from '@bananasaurs/core';
 import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
 import { escapeUntrustedClose } from './untrusted.js';
 

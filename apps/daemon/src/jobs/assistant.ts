@@ -548,6 +548,7 @@ export const assistantInvokeHandler = (deps: {
             // The turn just written above is stored, never history: the
             // question reaches the model once, as the request's user text.
             excludeTurnId: userTurnId,
+            now: deps.now(),
           });
           history = built.history;
           quoteEnvelope = built.quoteEnvelope;
@@ -564,6 +565,7 @@ export const assistantInvokeHandler = (deps: {
           invocationId: payload.invocationId,
           history,
           ...(quoteEnvelope === undefined ? {} : { quoteEnvelope }),
+          askerName: payload.authorName,
         });
         invokeDoneAt = deps.now();
         // Task 20: flags the service attached to the result (currently only
