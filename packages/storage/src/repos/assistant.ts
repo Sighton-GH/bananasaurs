@@ -996,6 +996,30 @@ export const insertDecisionDraft = (scope: GuildScope, input: NewAssistantDecisi
       })
       .run();
   });
+export type InsertDecisionDraftOnceResult = 'created' | 'duplicate';
+export const insertDecisionDraftOnce = (
+  scope: GuildScope,
+  input: NewAssistantDecision,
+): InsertDecisionDraftOnceResult =>
+  write(scope, ({ db }) => {
+    const inserted = db
+      .insert(assistantDecisions)
+      .values({
+        guildId: scope.guildId,
+        decisionId: input.id,
+        kind: input.kind,
+        summary: input.summary,
+        status: 'draft',
+        requesterId: input.requesterId,
+        provenance: input.provenance,
+        createdAt: input.at,
+      })
+      .onConflictDoNothing({
+        target: [assistantDecisions.guildId, assistantDecisions.decisionId],
+      })
+      .run().changes;
+    return inserted === 0 ? 'duplicate' : 'created';
+  });
 export const saveMemoryProposal = (
   scope: GuildScope,
   id: string,
