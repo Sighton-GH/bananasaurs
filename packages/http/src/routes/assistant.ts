@@ -14,7 +14,9 @@ import {
   STARTER_SKILL_IDS,
   TOOL_CATALOGUE,
   validateResourceUrl,
+  type AssistantSkill,
   type ClubResource,
+  type SkillScopeMode,
 } from '@bananasaurs/core';
 import { assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
@@ -25,90 +27,6 @@ import { requireCapability } from './capability.js';
 import { computeAssistantSetup } from './assistant-setup.js';
 
 /**
- * A slash command shown on a skill's detail page, hand-kept in sync with
- * `RELEASE_3_COMMANDS` (`packages/discord/src/rest/commands.ts`) rather than
- * imported from `@bananasaurs/discord`: that package depends on `discord.js`,
- * and this HTTP package deliberately does not (`packages/http/package.json`
- * lists only `core`, `storage`, `fastify`, `zod` and `@node-rs/argon2`).
- * `assistant.test.ts` cross-checks every entry here against the live command
- * definitions so a renamed or removed command cannot go stale silently.
- */
-const SKILL_COMMANDS: Readonly<
-  Record<
-    string,
-    {
-      readonly name: string;
-      readonly options: readonly {
-        readonly name: string;
-        readonly required: boolean;
-        readonly description: string;
-      }[];
-    }
-  >
-> = {
-  'search-club': {
-    name: 'find',
-    options: [{ name: 'query', required: true, description: 'What to find' }],
-  },
-  'create-reminder': {
-    name: 'remind',
-    options: [
-      {
-        name: 'when',
-        required: true,
-        description: 'When to send it, including date or time zone',
-      },
-      { name: 'text', required: true, description: 'Reminder text' },
-    ],
-  },
-  'propose-memory': {
-    name: 'remember',
-    options: [
-      {
-        name: 'request',
-        required: true,
-        description: 'What the assistant should consider remembering',
-      },
-    ],
-  },
-  'record-decision': {
-    name: 'decision',
-    options: [
-      { name: 'topic', required: true, description: 'Decision topic' },
-      { name: 'context', required: false, description: 'Optional context or constraints' },
-    ],
-  },
-  'review-plan': {
-    name: 'review-plan',
-    options: [{ name: 'plan', required: true, description: 'Plan to review' }],
-  },
-  'onboarding-guide': {
-    name: 'onboard',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'draft-agenda': {
-    name: 'agenda',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'summarise-meeting': {
-    name: 'summarise',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'draft-announcement': {
-    name: 'announce',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'event-checklist': {
-    name: 'checklist',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-  'draft-handoff': {
-    name: 'handoff',
-    options: [{ name: 'request', required: true, description: 'What you need' }],
-  },
-};
-
-/**
  * Instance owner, read from the account row rather than any capability: the
  * provider's cost statement and terms record are facts about the whole
  * daemon (ADR 0061), and no per-guild grant can confer them.
@@ -117,6 +35,27 @@ const SKILL_COMMANDS: Readonly<
 export { isInstanceOwner };
 
 const snowflake = z.string().regex(/^\d{17,20}$/);
+
+/**
+ * Task E1: the dashboard view of one skill's scope (ADR 0086 decision 1).
+ * `isDefault` is true when no stored mode exists; non-roles modes carry no
+ * role ids.
+ */
+const skillScopeView = (
+  skill: AssistantSkill,
+  stored: { readonly mode?: SkillScopeMode | undefined; readonly roleIds: readonly string[] } | undefined,
+): {
+  readonly mode: SkillScopeMode;
+  readonly roleIds: readonly string[];
+  readonly isDefault: boolean;
+} => {
+  const effective = effectiveSkillScope(skill, stored);
+  return {
+    mode: effective.mode,
+    roleIds: effective.mode === 'roles' ? [...effective.roleIds] : [],
+    isDefault: stored?.mode === undefined,
+  };
+};
 const behaviour = z.object({
   id: z.string().min(1).max(64),
   surface: z.enum(['bananasaurs', 'it-services', 'help', 'direct-command']),
@@ -184,22 +123,19 @@ export const registerAssistantRoutes = (
     const reminders = assistantRepo.listReminders(session.scope);
     const decisions = assistantRepo.listDecisions(session.scope);
     const grantsBySkillId = new Map(skillGrants.map((grant) => [grant.skillId, grant] as const));
-    const skillScopeOf = (skillId: string) => {
-      const skill = CLUB_ASSISTANT_SKILLS.find((item) => item.id === skillId);
-      const grant = grantsBySkillId.get(skillId);
-      // `skill` is always defined here: every key comes from the catalogue.
-      const effective = effectiveSkillScope(
-        skill ?? CLUB_ASSISTANT_SKILLS[0]!,
-        grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
-      );
-      return {
-        mode: effective.mode,
-        roleIds: effective.mode === 'roles' ? [...effective.roleIds] : [],
-        isDefault: grant?.mode === undefined,
-      };
-    };
     const skillScopes: Record<string, { mode: string; roleIds: string[]; isDefault: boolean }> =
-      Object.fromEntries(CLUB_ASSISTANT_SKILLS.map((skill) => [skill.id, skillScopeOf(skill.id)]));
+      Object.fromEntries(
+        CLUB_ASSISTANT_SKILLS.map((skill) => {
+          const grant = grantsBySkillId.get(skill.id);
+          return [
+            skill.id,
+            skillScopeView(
+              skill,
+              grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
+            ),
+          ];
+        }),
+      );
     const liveReminders = reminders.filter(
       (reminder) => reminder.status === 'scheduled' || reminder.status === 'delivering',
     ).length;
@@ -639,15 +575,10 @@ export const registerAssistantRoutes = (
     const stored = assistantRepo
       .listSkillGrants(session.scope)
       .find((item) => item.skillId === skillId);
-    const beforeEffective = effectiveSkillScope(
+    const before = skillScopeView(
       skill,
       stored === undefined ? undefined : { mode: stored.mode, roleIds: stored.roleIds },
     );
-    const before = {
-      mode: beforeEffective.mode,
-      roleIds: beforeEffective.mode === 'roles' ? [...beforeEffective.roleIds] : [],
-      isDefault: stored?.mode === undefined,
-    };
     assistantRepo.setSkillScope(session.scope, { skillId, mode: parsed.data.mode, roleIds }, deps.now());
     const after = { mode: parsed.data.mode, roleIds, isDefault: false };
     deps.portsFor(session.scope).recordAudit({
@@ -838,7 +769,9 @@ export const registerAssistantRoutes = (
     return reply.status(200).send({ ok: true });
   });
   // Task 9: one skill in full - the exact instruction the model receives,
-  // its tools, who can use it, its slash command and its recent runs.
+  // its scope, who can use it, its tools, its live items and its recent runs.
+  // Task E1: the slash command is gone (ADR 0086 decision 8) and who-can-use
+  // reads the skill scope, not the behaviours' caller roles.
   app.get('/api/assistant/skills/:skillId', async (request, reply) => {
     const session = guard.require(request, reply);
     if (session === undefined) return reply;
@@ -852,20 +785,105 @@ export const registerAssistantRoutes = (
         ? undefined
         : await deps.assistantDirectories(session.guildId).catch(() => undefined);
     const roleName = (id: string) => directories?.roles.find((r) => r.id === id)?.name;
-    const allowedOn = behaviours.filter((b) => b.allowedSkillIds.includes(skill.id));
-    const roleIds = [...new Set(allowedOn.flatMap((b) => b.callerRoleIds ?? []))];
-    const roleLabels = roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`);
+    const grant = assistantRepo
+      .listSkillGrants(session.scope)
+      .find((item) => item.skillId === skill.id);
+    const scope = skillScopeView(
+      skill,
+      grant === undefined ? undefined : { mode: grant.mode, roleIds: grant.roleIds },
+    );
     const whoCanUse =
-      skill.ownerOnly === true
+      scope.mode === 'owner'
         ? 'Only the server owner.'
-        : roleLabels.length === 0
-          ? 'Only the server owner, until a behaviour that allows it has Who can ask roles.'
-          : `${roleLabels.join(', ')}, and the server owner`;
+        : scope.mode === 'everyone'
+          ? 'Everyone who can ask a behaviour that allows this skill, and the server owner.'
+          : `${scope.roleIds.map((id) => `@${roleName(id) ?? 'a role that left the server'}`).join(', ')} (among those who can ask), and the server owner.`;
     const recentRuns = assistantRepo
       .listSkillActivity(session.scope, 500)
       .filter((row) => row.skillId === skill.id)
       .slice(0, 50);
-    const command = SKILL_COMMANDS[skill.id];
+    // Task E1: each skill's live items. Active reminders keep their
+    // due-date order; the finished ones are the 50 most recently due first.
+    const items =
+      skill.id === 'reminders'
+        ? {
+            kind: 'reminders' as const,
+            reminders: ((): readonly {
+              readonly id: string;
+              readonly creatorId: string;
+              readonly creatorName?: string;
+              readonly destinationId: string;
+              readonly destinationName?: string;
+              readonly text: string;
+              readonly context?: string;
+              readonly dueAt: number;
+              readonly status: string;
+              readonly recurrence?: unknown;
+              readonly mentions: unknown;
+              readonly deliveredCount: number;
+              readonly failureReason?: string;
+            }[] => {
+              const all = assistantRepo.listReminders(session.scope);
+              const live = all.filter(
+                (reminder) => reminder.status === 'scheduled' || reminder.status === 'delivering',
+              );
+              const finished = all
+                .filter(
+                  (reminder) =>
+                    reminder.status !== 'scheduled' && reminder.status !== 'delivering',
+                )
+                .sort((a, b) => b.dueAt - a.dueAt)
+                .slice(0, 50);
+              const memberName = (id: string) =>
+                directories?.members.find((m) => m.id === id)?.name;
+              const channelName = (id: string) =>
+                directories?.channels.find((c) => c.id === id)?.name;
+              return [...live, ...finished].map((reminder) => ({
+                id: reminder.id,
+                creatorId: reminder.creatorId,
+                ...(memberName(reminder.creatorId) === undefined
+                  ? {}
+                  : { creatorName: memberName(reminder.creatorId) as string }),
+                destinationId: reminder.destinationId,
+                ...(channelName(reminder.destinationId) === undefined
+                  ? {}
+                  : { destinationName: channelName(reminder.destinationId) as string }),
+                text: reminder.text,
+                ...(reminder.context === undefined ? {} : { context: reminder.context }),
+                dueAt: reminder.dueAt,
+                status: reminder.status,
+                ...(reminder.recurrence === undefined ? {} : { recurrence: reminder.recurrence }),
+                mentions: reminder.mentions,
+                deliveredCount: reminder.deliveredCount,
+                ...(reminder.failureReason === undefined
+                  ? {}
+                  : { failureReason: reminder.failureReason }),
+              }));
+            })(),
+          }
+        : skill.id === 'propose-memory'
+          ? {
+              kind: 'memory-proposals' as const,
+              proposals: assistantRepo
+                .listDecisions(session.scope)
+                .filter(
+                  (decision) =>
+                    decision.kind === 'memory' &&
+                    (decision.status === 'draft' || decision.status === 'reviewed'),
+                ),
+            }
+          : skill.id === 'record-decision'
+            ? {
+                kind: 'decisions' as const,
+                decisions: assistantRepo
+                  .listDecisions(session.scope)
+                  .filter(
+                    (decision) =>
+                      decision.kind !== 'memory' &&
+                      (decision.status === 'draft' || decision.status === 'reviewed'),
+                  ),
+              }
+            : { kind: 'none' as const };
     return reply.status(200).send({
       skill,
       instructionLine: skillInstructionLine(skill),
@@ -874,9 +892,10 @@ export const registerAssistantRoutes = (
         name: b.name,
         allowed: b.allowedSkillIds.includes(skill.id),
       })),
+      scope,
       whoCanUse,
       tools: TOOL_CATALOGUE.filter((tool) => tool.skills.includes(skill.id)),
-      ...(command === undefined ? {} : { command }),
+      items,
       recentRuns,
     });
   });
