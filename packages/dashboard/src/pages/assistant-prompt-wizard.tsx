@@ -3,6 +3,8 @@ import { Link, useLocation, useParams } from 'wouter';
 import {
   buildSystemPrompt,
   DEFAULT_WIZARD_ANSWERS,
+  DEFAULT_PERSONALITY,
+  promptWizardAnswers,
   type PromptWizardAnswers,
 } from '@bananasaurs/core';
 import { ApiError } from '../api.js';
@@ -58,6 +60,7 @@ const TONE_OPTIONS: readonly {
   readonly value: PromptWizardAnswers['tone'];
   readonly label: string;
 }[] = [
+  { value: 'casual', label: 'Casual, like chatting with friends' },
   { value: 'friendly', label: 'Friendly and approachable' },
   { value: 'professional', label: 'Professional and businesslike' },
   { value: 'playful', label: 'Playful and light' },
@@ -95,13 +98,12 @@ const FORMAT_OPTIONS: readonly {
   { key: 'bullets', label: 'Use bullet points for lists' },
   { key: 'codeBlocks', label: 'Use fenced code blocks for code' },
   { key: 'oneMessage', label: 'Keep the whole answer in one Discord message' },
-  { key: 'sourcesLine', label: 'End with a Sources line' },
 ];
 
 const STEPS: readonly { readonly heading: string; readonly purpose: string }[] = [
   {
-    heading: 'Who it helps',
-    purpose: 'Pick who this behaviour answers. You can pick more than one.',
+    heading: 'Your server and who it helps',
+    purpose: 'Tell the assistant where it lives, what it is called, and who it answers.',
   },
   {
     heading: 'What it helps with',
@@ -110,8 +112,9 @@ const STEPS: readonly { readonly heading: string; readonly purpose: string }[] =
   { heading: 'Voice', purpose: 'How the assistant sounds when it answers.' },
   { heading: 'Sources', purpose: 'Where answers come from, and what to say when unsure.' },
   {
-    heading: 'Club facts',
-    purpose: 'Facts the assistant should always know, like meeting times or dues.',
+    heading: 'Club facts and terms',
+    purpose:
+      'Facts the assistant should always know, what your channels are for, and words your club uses.',
   },
   {
     heading: 'Boundaries',
@@ -123,7 +126,12 @@ const STEPS: readonly { readonly heading: string; readonly purpose: string }[] =
 const stepValid = (step: number, answers: PromptWizardAnswers): boolean => {
   switch (step) {
     case 0:
-      return answers.audience.length >= 1;
+      return (
+        answers.audience.length >= 1 &&
+        answers.clubName.length <= 80 &&
+        answers.botName.length <= 40 &&
+        answers.personality.length <= 160
+      );
     case 1:
       return answers.helpsWithOther.length <= 300;
     case 2: {
@@ -133,7 +141,11 @@ const stepValid = (step: number, answers: PromptWizardAnswers): boolean => {
     case 3:
       return answers.whenUnsure.suggest.length <= 120;
     case 4:
-      return answers.clubFacts.length <= 1200;
+      return (
+        answers.clubFacts.length <= 1200 &&
+        answers.channelGuide.length <= 600 &&
+        answers.glossary.length <= 10
+      );
     case 5:
       return (
         answers.avoidTopics.length <= 10 &&
@@ -202,17 +214,20 @@ function Wizard({
   const toast = useToast();
   const [, navigate] = useLocation();
   const [step, setStep] = useState(0);
-  const [answers, setAnswers] = useState<PromptWizardAnswers>(
-    () =>
+  const [answers, setAnswers] = useState<PromptWizardAnswers>(() =>
+    promptWizardAnswers.parse(
       behaviour.promptWizard ??
-      (behaviour.surface === 'it-services'
-        ? DEFAULT_WIZARD_ANSWERS['it-services']
-        : DEFAULT_WIZARD_ANSWERS.club),
+        (behaviour.surface === 'it-services'
+          ? DEFAULT_WIZARD_ANSWERS['it-services']
+          : DEFAULT_WIZARD_ANSWERS.club),
+    ),
   );
   const [editedPrompt, setEditedPrompt] = useState<string | undefined>(undefined);
   const [busy, setBusy] = useState(false);
   const [topicDraft, setTopicDraft] = useState('');
   const [claimDraft, setClaimDraft] = useState('');
+  const [glossaryTermDraft, setGlossaryTermDraft] = useState('');
+  const [glossaryMeaningDraft, setGlossaryMeaningDraft] = useState('');
   const [exampleQuestion, setExampleQuestion] = useState('');
   const [exampleAnswer, setExampleAnswer] = useState('');
 
@@ -287,24 +302,76 @@ function Wizard({
       <Card title={meta.heading}>
         <p className="mb-3 text-sm text-ink-muted">{meta.purpose}</p>
         {step === 0 && (
-          <ul className="grid gap-1 sm:grid-cols-2">
-            {AUDIENCE_OPTIONS.map((option) => (
-              <CheckRow
-                key={option.value}
-                label={option.label}
-                checked={answers.audience.includes(option.value)}
-                onToggle={() =>
-                  update({
-                    ...answers,
-                    audience: toggleIn(
-                      answers.audience,
-                      option.value,
-                    ) as PromptWizardAnswers['audience'],
-                  })
-                }
+          <div className="grid gap-4">
+            <Field label="Club or server name" hint="Leave blank to use the Discord server name.">
+              <Input
+                value={answers.clubName}
+                maxLength={80}
+                placeholder={clubName}
+                onChange={(e) => update({ ...answers, clubName: e.target.value })}
               />
-            ))}
-          </ul>
+            </Field>
+            <section aria-label="Kind of server">
+              <h3 className="text-sm font-medium">Kind of server</h3>
+              <ul className="mt-1 grid gap-1 sm:grid-cols-3">
+                <RadioRow
+                  name="wizard-server-type"
+                  label="A club"
+                  checked={answers.serverType === 'club'}
+                  onPick={() => update({ ...answers, serverType: 'club' })}
+                />
+                <RadioRow
+                  name="wizard-server-type"
+                  label="A team"
+                  checked={answers.serverType === 'team'}
+                  onPick={() => update({ ...answers, serverType: 'team' })}
+                />
+                <RadioRow
+                  name="wizard-server-type"
+                  label="A group of friends"
+                  checked={answers.serverType === 'friends'}
+                  onPick={() => update({ ...answers, serverType: 'friends' })}
+                />
+              </ul>
+            </section>
+            <Field label="Bot name" hint="Leave blank to use the behaviour name.">
+              <Input
+                value={answers.botName}
+                maxLength={40}
+                placeholder={behaviour.name}
+                onChange={(e) => update({ ...answers, botName: e.target.value })}
+              />
+            </Field>
+            <Field
+              label="Personality in one line"
+              hint="How it should come across. Leave blank for the default shown."
+            >
+              <Input
+                value={answers.personality}
+                maxLength={160}
+                placeholder={DEFAULT_PERSONALITY[answers.serverType]}
+                onChange={(e) => update({ ...answers, personality: e.target.value })}
+              />
+            </Field>
+            <ul className="grid gap-1 sm:grid-cols-2">
+              {AUDIENCE_OPTIONS.map((option) => (
+                <CheckRow
+                  key={option.value}
+                  label={option.label}
+                  checked={answers.audience.includes(option.value)}
+                  onToggle={() =>
+                    update({
+                      ...answers,
+                      audience: toggleIn(
+                        answers.audience,
+                        option.value,
+                      ) as PromptWizardAnswers['audience'],
+                    })
+                  }
+                />
+              ))}
+            </ul>
+          </div>
         )}
         {step === 1 && (
           <>
@@ -445,17 +512,99 @@ function Wizard({
           </div>
         )}
         {step === 4 && (
-          <Field
-            label="Club facts"
-            hint="Meeting times, dues, room numbers — anything members ask about often. At most 1,200 characters."
-          >
-            <textarea
-              value={answers.clubFacts}
-              maxLength={1200}
-              onChange={(e) => update({ ...answers, clubFacts: e.target.value })}
-              className="mt-1 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
-            />
-          </Field>
+          <div className="grid gap-4">
+            <Field
+              label="Club facts"
+              hint="Meeting times, dues, room numbers — anything members ask about often. At most 1,200 characters."
+            >
+              <textarea
+                value={answers.clubFacts}
+                maxLength={1200}
+                onChange={(e) => update({ ...answers, clubFacts: e.target.value })}
+                className="mt-1 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
+              />
+            </Field>
+            <Field
+              label="What the main channels are for"
+              hint="For example: #build-log for progress updates, #help for questions. At most 600 characters."
+            >
+              <textarea
+                value={answers.channelGuide}
+                maxLength={600}
+                onChange={(e) => update({ ...answers, channelGuide: e.target.value })}
+                className="mt-1 min-h-32 w-full rounded-sm border border-line bg-canvas p-2 text-sm text-ink"
+              />
+            </Field>
+            <section aria-label="Glossary">
+              <h3 className="text-sm font-medium">Glossary</h3>
+              <div className="mt-1 grid gap-2 sm:grid-cols-[1fr_2fr_auto] sm:items-end">
+                <Field label="Term">
+                  <Input
+                    aria-label="Term"
+                    value={glossaryTermDraft}
+                    maxLength={40}
+                    onChange={(e) => setGlossaryTermDraft(e.target.value)}
+                  />
+                </Field>
+                <Field label="Meaning">
+                  <Input
+                    aria-label="Meaning"
+                    value={glossaryMeaningDraft}
+                    maxLength={160}
+                    onChange={(e) => setGlossaryMeaningDraft(e.target.value)}
+                  />
+                </Field>
+                <Button
+                  disabled={
+                    glossaryTermDraft.trim() === '' ||
+                    glossaryMeaningDraft.trim() === '' ||
+                    answers.glossary.length >= 10
+                  }
+                  onClick={() => {
+                    const term = glossaryTermDraft.trim();
+                    const meaning = glossaryMeaningDraft.trim();
+                    update({
+                      ...answers,
+                      glossary: [
+                        ...answers.glossary.filter((entry) => entry.term !== term),
+                        { term, meaning },
+                      ],
+                    });
+                    setGlossaryTermDraft('');
+                    setGlossaryMeaningDraft('');
+                  }}
+                >
+                  Add term
+                </Button>
+              </div>
+              {answers.glossary.length > 0 && (
+                <ul className="mt-2 grid gap-1">
+                  {answers.glossary.map((entry) => (
+                    <li
+                      key={entry.term}
+                      className="flex items-center justify-between gap-2 rounded-sm border border-line bg-panel px-2 py-1 text-sm"
+                    >
+                      <span>
+                        {entry.term} — {entry.meaning}
+                      </span>
+                      <Button
+                        className="px-1.5 py-0 text-xs"
+                        aria-label={`Remove ${entry.term}`}
+                        onClick={() =>
+                          update({
+                            ...answers,
+                            glossary: answers.glossary.filter((item) => item.term !== entry.term),
+                          })
+                        }
+                      >
+                        Remove
+                      </Button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </div>
         )}
         {step === 5 && (
           <div className="grid gap-4">
