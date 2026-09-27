@@ -3,6 +3,7 @@ import { cleanup, fireEvent, screen } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { Route, Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
+import { DEFAULT_PERSONALITY, promptWizardAnswers } from '@bananasaurs/core';
 import { bodyOf, renderWithSession, stubFetch } from '../test-support.js';
 import { AssistantPromptWizardPage } from './assistant-prompt-wizard.js';
 
@@ -99,7 +100,9 @@ const next = async () => {
 describe('AssistantPromptWizardPage', () => {
   it('walks seven steps with a Step N of 7 progress line', async () => {
     renderWizard();
-    expect(await screen.findByRole('heading', { name: 'Who it helps' })).toBeTruthy();
+    expect(
+      await screen.findByRole('heading', { name: 'Your server and who it helps' }),
+    ).toBeTruthy();
     expect(screen.getByText('Step 1 of 7')).toBeTruthy();
     await next();
     expect(await screen.findByRole('heading', { name: 'What it helps with' })).toBeTruthy();
@@ -110,7 +113,7 @@ describe('AssistantPromptWizardPage', () => {
     await next();
     expect(await screen.findByRole('heading', { name: 'Sources' })).toBeTruthy();
     await next();
-    expect(await screen.findByRole('heading', { name: 'Club facts' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Club facts and terms' })).toBeTruthy();
     await next();
     expect(await screen.findByRole('heading', { name: 'Boundaries' })).toBeTruthy();
     await next();
@@ -137,13 +140,48 @@ describe('AssistantPromptWizardPage', () => {
     expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(false);
   });
 
+  it('disables Next when any identity field exceeds its limit', async () => {
+    renderWizard();
+    await screen.findByRole('textbox', { name: 'Club or server name' });
+    for (const [name, value] of [
+      ['Club or server name', 'x'.repeat(81)],
+      ['Bot name', 'x'.repeat(41)],
+      ['Personality in one line', 'x'.repeat(161)],
+    ] as const) {
+      fireEvent.change(screen.getByRole('textbox', { name }), { target: { value } });
+      expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(true);
+      fireEvent.change(screen.getByRole('textbox', { name }), { target: { value: '' } });
+    }
+  });
+
+  it('disables Next when channel guidance or the glossary exceeds its limit', async () => {
+    renderWizard();
+    await next();
+    await next();
+    await next();
+    await next();
+    fireEvent.change(screen.getByRole('textbox', { name: 'What the main channels are for' }), {
+      target: { value: 'x'.repeat(601) },
+    });
+    expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(true);
+
+    cleanup();
+    const glossary = Array.from({ length: 11 }, (_, index) => ({
+      term: `term-${index}`,
+      meaning: `meaning-${index}`,
+    }));
+    renderWizard([{ ...CLUB, promptWizard: { ...STORED, glossary } }]);
+    for (let i = 0; i < 4; i += 1) await next();
+    expect(buttonOf(screen.getByRole('button', { name: 'Next' })).disabled).toBe(true);
+  });
+
   it('restores the stored answers instead of the defaults', async () => {
     renderWizard();
     await next();
     await next();
     await next();
     await next();
-    expect(await screen.findByRole('heading', { name: 'Club facts' })).toBeTruthy();
+    expect(await screen.findByRole('heading', { name: 'Club facts and terms' })).toBeTruthy();
     expect(textAreaOf(screen.getByRole('textbox', { name: 'Club facts' })).value).toBe(
       'Meetings are Tuesdays at 6 pm.',
     );
@@ -197,7 +235,127 @@ describe('AssistantPromptWizardPage', () => {
     };
     expect(sent.promptVersion).toBe(1);
     expect(sent.systemPrompt).toContain('Meetings are Tuesdays at 6 pm.');
-    expect(sent.promptWizard).toEqual(STORED);
+    expect(sent.promptWizard).toEqual(promptWizardAnswers.parse(STORED));
+  });
+
+  it('saves every new identity, channel and glossary field', async () => {
+    const mock = renderWizard();
+    fireEvent.change(await screen.findByRole('textbox', { name: 'Club or server name' }), {
+      target: { value: 'Maker House' },
+    });
+    fireEvent.click(screen.getByRole('radio', { name: 'A group of friends' }));
+    fireEvent.change(screen.getByRole('textbox', { name: 'Bot name' }), {
+      target: { value: 'Milo' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Personality in one line' }), {
+      target: { value: 'warm and concise' },
+    });
+    for (let i = 0; i < 4; i += 1) await next();
+    fireEvent.change(screen.getByRole('textbox', { name: 'What the main channels are for' }), {
+      target: { value: '#help for questions' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Term' }), { target: { value: 'AGM' } });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Meaning' }), {
+      target: { value: 'annual general meeting' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: 'Add term' }));
+    for (let i = 0; i < 2; i += 1) await next();
+    fireEvent.click(await screen.findByRole('button', { name: 'Save instructions' }));
+    await screen.findByText('Club assistant prompt saved');
+    const put = mock.mock.calls.find(
+      (c) => c[0] === '/api/assistant/behaviours/club' && (c[1] as RequestInit)?.method === 'PUT',
+    )!;
+    const sent = bodyOf(put) as { promptWizard: Record<string, unknown> };
+    expect(sent.promptWizard).toMatchObject({
+      clubName: 'Maker House',
+      serverType: 'friends',
+      botName: 'Milo',
+      personality: 'warm and concise',
+      channelGuide: '#help for questions',
+      glossary: [{ term: 'AGM', meaning: 'annual general meeting' }],
+    });
+  });
+
+  it('captures server identity and reflects it in the generated prompt', async () => {
+    renderWizard();
+    expect(await screen.findByRole('textbox', { name: 'Club or server name' })).toBeTruthy();
+    expect(screen.getByRole('radio', { name: 'A club' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Bot name' })).toBeTruthy();
+    expect(screen.getByRole('textbox', { name: 'Personality in one line' })).toBeTruthy();
+    fireEvent.change(screen.getByRole('textbox', { name: 'Club or server name' }), {
+      target: { value: 'Maker House' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Bot name' }), {
+      target: { value: 'Milo' },
+    });
+    fireEvent.change(screen.getByRole('textbox', { name: 'Personality in one line' }), {
+      target: { value: 'warm and concise' },
+    });
+    for (let i = 0; i < 6; i += 1) await next();
+    const prompt = textAreaOf(await screen.findByRole('textbox', { name: 'Instructions to save' }));
+    expect(prompt.value).toContain('Maker House');
+    expect(prompt.value).toContain('Milo');
+    expect(prompt.value).toContain('warm and concise');
+  });
+
+  it('uses the friends personality default and supports the casual tone', async () => {
+    renderWizard();
+    fireEvent.click(await screen.findByRole('radio', { name: 'A group of friends' }));
+    expect(
+      inputOf(screen.getByRole('textbox', { name: 'Personality in one line' })).placeholder,
+    ).toBe(DEFAULT_PERSONALITY.friends);
+    await next();
+    await next();
+    expect(screen.getByRole('radio', { name: 'Casual, like chatting with friends' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('radio', { name: 'Casual, like chatting with friends' }));
+    for (let i = 0; i < 4; i += 1) await next();
+    const prompt = textAreaOf(await screen.findByRole('textbox', { name: 'Instructions to save' }));
+    expect(prompt.value).toContain(DEFAULT_PERSONALITY.friends);
+    expect(prompt.value).toContain('np!');
+  });
+
+  it('adds, replaces, caps and removes glossary terms and previews channel guidance', async () => {
+    renderWizard();
+    for (let i = 0; i < 4; i += 1) await next();
+    fireEvent.change(screen.getByRole('textbox', { name: 'What the main channels are for' }), {
+      target: { value: '#help is for questions' },
+    });
+    const term = screen.getByRole('textbox', { name: 'Term' });
+    const meaning = screen.getByRole('textbox', { name: 'Meaning' });
+    fireEvent.change(term, { target: { value: 'AGM' } });
+    fireEvent.change(meaning, { target: { value: 'annual general meeting' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add term' }));
+    expect(screen.getByText('AGM — annual general meeting')).toBeTruthy();
+    fireEvent.change(term, { target: { value: 'AGM' } });
+    fireEvent.change(meaning, { target: { value: 'updated meeting' } });
+    fireEvent.click(screen.getByRole('button', { name: 'Add term' }));
+    expect(screen.getByText('AGM — updated meeting')).toBeTruthy();
+    expect(screen.queryByText('AGM — annual general meeting')).toBeNull();
+    for (let i = 0; i < 9; i += 1) {
+      fireEvent.change(term, { target: { value: `term-${i}` } });
+      fireEvent.change(meaning, { target: { value: `meaning-${i}` } });
+      fireEvent.click(screen.getByRole('button', { name: 'Add term' }));
+    }
+    expect(buttonOf(screen.getByRole('button', { name: 'Add term' })).disabled).toBe(true);
+    fireEvent.click(screen.getByRole('button', { name: 'Remove AGM' }));
+    expect(screen.queryByText('AGM — updated meeting')).toBeNull();
+    for (let i = 0; i < 2; i += 1) await next();
+    const prompt = textAreaOf(await screen.findByRole('textbox', { name: 'Instructions to save' }));
+    expect(prompt.value).toContain('CHANNELS\n#help is for questions');
+    expect(prompt.value).toContain('GLOSSARY');
+  });
+
+  it('loads an old stored prompt wizard without the new fields', async () => {
+    renderWizard([{ ...CLUB, promptWizard: STORED }]);
+    expect(await screen.findByRole('textbox', { name: 'Club or server name' })).toBeTruthy();
+    expect(inputOf(screen.getByRole('textbox', { name: 'Club or server name' })).value).toBe('');
+  });
+
+  it('does not show a Sources-line checkbox in Format', async () => {
+    renderWizard();
+    for (let i = 0; i < 6; i += 1) await next();
+    expect(await screen.findByRole('heading', { name: 'Review' })).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'End with a Sources line' })).toBeNull();
   });
 
   it('shows the changed-elsewhere flow on a 409 instead of losing the draft', async () => {
