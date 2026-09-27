@@ -2,6 +2,7 @@ import {
   DiscordApiError,
   ReminderDeliveryError,
   type DiscordPort,
+  type OutgoingMessage,
   type Reminder,
   type ReminderDelivery,
   type ReminderStore,
@@ -41,6 +42,10 @@ export const reminderStoreFor = (scope: GuildScope): ReminderStore => ({
   },
   retry: (id, reason, retryAt) => {
     assistantRepo.retryReminder(scope, id, reason, retryAt);
+    return Promise.resolve();
+  },
+  reschedule: (id, nextDueAt) => {
+    assistantRepo.rescheduleReminder(scope, id, nextDueAt);
     return Promise.resolve();
   },
 });
