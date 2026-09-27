@@ -8,11 +8,13 @@ import {
   parseGitHubUrl,
   promptWizardAnswers,
   ProviderError,
+  reminderRecurrence,
   SAFETY_SUFFIX,
   SAFETY_SUFFIX_VERSION,
   skillInstructionLine,
   STARTER_SKILL_IDS,
   TOOL_CATALOGUE,
+  validateReminderDraft,
   validateResourceUrl,
   type AssistantSkill,
   type ClubResource,
@@ -609,6 +611,116 @@ export const registerAssistantRoutes = (
           ? undefined
           : { text: reminder.text, dueAt: reminder.dueAt, status: reminder.status },
       after: { status: 'cancelled' },
+    });
+    return reply.status(200).send({ ok: true });
+  });
+  // Task E1: edit a reminder's text, context, due time or repeat from the
+  // skill page. The repeat keeps the time zone it was created with in chat;
+  // a one-off reminder cannot gain one here (ADR 0086 decision 5).
+  app.patch('/api/assistant/reminders/:id', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const id = (request.params as { id: string }).id;
+    const parsed = z
+      .object({
+        text: z.string().optional(),
+        context: z.string().max(300).nullable().optional(),
+        dueAt: z.number().int().optional(),
+        recurrence: z
+          .union([
+            z.null(),
+            z
+              .object({
+                pattern: reminderRecurrence.shape.pattern,
+                endAt: z.number().int().positive().optional(),
+                maxCount: z.number().int().min(1).max(1000).optional(),
+              })
+              .strict(),
+          ])
+          .optional(),
+      })
+      .safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    const existing = assistantRepo.getReminder(session.scope, id);
+    if (existing === undefined) return reply.status(404).send({ error: 'not-found' });
+    const draft = validateReminderDraft(
+      { dueAt: parsed.data.dueAt ?? existing.dueAt, text: parsed.data.text ?? existing.text },
+      deps.now(),
+    );
+    if (!draft.ok) return reply.status(400).send({ error: 'invalid-reminder', message: draft.error });
+    // The dashboard never learns the club's time zone: a non-null repeat is
+    // only an edit of an existing repeat, keeping its stored time zone.
+    const recurrence =
+      parsed.data.recurrence === undefined
+        ? undefined
+        : parsed.data.recurrence === null
+          ? null
+          : existing.recurrence === undefined
+            ? undefined
+            : {
+                pattern: parsed.data.recurrence.pattern,
+                timeZone: existing.recurrence.timeZone,
+                ...(parsed.data.recurrence.endAt === undefined
+                  ? {}
+                  : { endAt: parsed.data.recurrence.endAt }),
+                ...(parsed.data.recurrence.maxCount === undefined
+                  ? {}
+                  : { maxCount: parsed.data.recurrence.maxCount }),
+              };
+    if (parsed.data.recurrence !== undefined && parsed.data.recurrence !== null && recurrence === undefined)
+      return reply.status(400).send({
+        error: 'recurrence-needs-time-zone',
+        message: `Repeating reminders are created from chat, where the club's time zone is known.`,
+      });
+    const before: Record<string, unknown> = {};
+    const after: Record<string, unknown> = {};
+    if (parsed.data.text !== undefined && parsed.data.text !== existing.text) {
+      before['text'] = existing.text;
+      after['text'] = parsed.data.text;
+    }
+    if (
+      parsed.data.context !== undefined &&
+      (parsed.data.context ?? null) !== (existing.context ?? null)
+    ) {
+      before['context'] = existing.context ?? null;
+      after['context'] = parsed.data.context;
+    }
+    if (parsed.data.dueAt !== undefined && parsed.data.dueAt !== existing.dueAt) {
+      before['dueAt'] = existing.dueAt;
+      after['dueAt'] = parsed.data.dueAt;
+    }
+    if (
+      parsed.data.recurrence !== undefined &&
+      JSON.stringify(recurrence ?? null) !== JSON.stringify(existing.recurrence ?? null)
+    ) {
+      before['recurrence'] = existing.recurrence ?? null;
+      after['recurrence'] = recurrence;
+    }
+    const result = assistantRepo.updateReminder(
+      session.scope,
+      id,
+      {
+        ...(parsed.data.text === undefined ? {} : { text: parsed.data.text }),
+        ...(parsed.data.context === undefined
+          ? {}
+          : parsed.data.context === null
+            ? { context: null as unknown as string }
+            : { context: parsed.data.context }),
+        ...(parsed.data.dueAt === undefined ? {} : { dueAt: parsed.data.dueAt }),
+        ...(recurrence === undefined ? {} : { recurrence }),
+      },
+      deps.now(),
+    );
+    if (result === 'not-found') return reply.status(404).send({ error: 'not-found' });
+    if (result === 'not-editable') return reply.status(409).send({ error: 'invalid-transition' });
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_reminder.edited',
+      subjectType: 'assistant_reminder',
+      subjectId: id,
+      before,
+      after,
     });
     return reply.status(200).send({ ok: true });
   });
