@@ -346,27 +346,28 @@ export interface StoredReminder extends Reminder {
   /** When the current delivery pass claimed the row; undefined before any claim. */
   readonly claimedAt?: number;
 }
-const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder => ({
-  id: r.reminderId,
-  guildId: r.guildId,
-  creatorId: r.creatorId,
-  destinationId: r.destinationId,
-  text: r.text,
-  dueAt: r.dueAt,
-  createdAt: r.createdAt,
-  status: r.status as ReminderStatus,
-  dedupeKey: r.dedupeKey,
-  mentions: toJson(r.mentionsJson, reminderMentions) ?? NO_MENTIONS,
-  ...(toJson(r.recurrenceJson, reminderRecurrence) === undefined
-    ? {}
-    : { recurrence: toJson(r.recurrenceJson, reminderRecurrence) }),
-  ...(r.context === null ? {} : { context: r.context }),
-  deliveredCount: r.deliveredCount,
-  ...(r.updatedAt === null ? {} : { updatedAt: r.updatedAt }),
-  ...(r.failureReason === null ? {} : { failureReason: r.failureReason }),
-  ...(r.nextAttemptAt === null ? {} : { nextAttemptAt: r.nextAttemptAt }),
-  ...(r.claimedAt === null ? {} : { claimedAt: r.claimedAt }),
-});
+const toReminder = (r: typeof assistantReminders.$inferSelect): StoredReminder => {
+  const recurrence = toJson(r.recurrenceJson, reminderRecurrence);
+  return {
+    id: r.reminderId,
+    guildId: r.guildId,
+    creatorId: r.creatorId,
+    destinationId: r.destinationId,
+    text: r.text,
+    dueAt: r.dueAt,
+    createdAt: r.createdAt,
+    status: r.status as ReminderStatus,
+    dedupeKey: r.dedupeKey,
+    mentions: toJson(r.mentionsJson, reminderMentions) ?? NO_MENTIONS,
+    ...(recurrence === undefined ? {} : { recurrence }),
+    ...(r.context === null ? {} : { context: r.context }),
+    deliveredCount: r.deliveredCount,
+    ...(r.updatedAt === null ? {} : { updatedAt: r.updatedAt }),
+    ...(r.failureReason === null ? {} : { failureReason: r.failureReason }),
+    ...(r.nextAttemptAt === null ? {} : { nextAttemptAt: r.nextAttemptAt }),
+    ...(r.claimedAt === null ? {} : { claimedAt: r.claimedAt }),
+  };
+};
 export const listReminders = (scope: GuildScope): readonly StoredReminder[] =>
   read(scope, (db) =>
     db
