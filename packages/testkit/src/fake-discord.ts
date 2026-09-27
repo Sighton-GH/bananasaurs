@@ -379,6 +379,8 @@ export class FakeDiscord implements DiscordPort {
     content: string;
     /** Defaults to the bot's own id being the only bot in the fixture. */
     authorIsBot?: boolean;
+    /** The member's display name; absent unless a test needs it. */
+    authorDisplayName?: string | undefined;
     /** Every attachment on a `messageCreate` carries an id (PR-71). */
     attachments?: ReadonlyArray<{
       attachmentId: Snowflake;
@@ -403,6 +405,7 @@ export class FakeDiscord implements DiscordPort {
       isPrivateThread: p.isPrivateThread ?? false,
       messageId: p.messageId,
       authorId: p.authorId,
+      authorDisplayName: p.authorDisplayName,
       authorIsBot: p.authorIsBot ?? p.authorId === BOT_USER_ID,
       content: p.content,
       editedTimestampMs: undefined,
@@ -428,6 +431,8 @@ export class FakeDiscord implements DiscordPort {
     authorId: Snowflake;
     content: string;
     editedTimestampMs: number;
+    /** The member's display name; absent unless a test needs it. */
+    authorDisplayName?: string | undefined;
   }): Promise<void> {
     const m = this.mustMessage(p);
     m.content = p.content;
@@ -442,6 +447,7 @@ export class FakeDiscord implements DiscordPort {
       isPrivateThread: p.isPrivateThread ?? false,
       messageId: p.messageId,
       authorId: p.authorId,
+      authorDisplayName: p.authorDisplayName,
       authorIsBot: p.authorId === BOT_USER_ID,
       content: p.content,
       editedTimestampMs: p.editedTimestampMs,
@@ -480,6 +486,9 @@ export class FakeDiscord implements DiscordPort {
       isPrivateThread: p.isPrivateThread ?? false,
       messageId: p.messageId,
       authorId,
+      // A delete carries no author name: an uncached message names nobody,
+      // and even a cached one reports ids only.
+      authorDisplayName: undefined,
       authorIsBot: authorId === BOT_USER_ID,
       content: undefined,
       editedTimestampMs: undefined,
@@ -842,6 +851,9 @@ export class FakeDiscord implements DiscordPort {
       // discord.js fills the author in from its cache when it has one, so an
       // uncached message names nobody.
       authorId: message.cached ? message.authorId : undefined,
+      // A delete carries no author name: an uncached message names nobody,
+      // and even a cached one reports ids only.
+      authorDisplayName: undefined,
       authorIsBot: message.cached && message.authorId === BOT_USER_ID,
       content: undefined,
       editedTimestampMs: undefined,
