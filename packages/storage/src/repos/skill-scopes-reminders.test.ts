@@ -163,6 +163,19 @@ describe('skill scopes and richer reminder storage', () => {
     t.close();
   });
 
+  it('updates scheduled reminders and refuses the rest', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    insertReminder(a, reminder(A, 'editable'));
+    expect(updateReminder(a, 'editable', { text: 'changed' }, 4)).toBe('updated');
+    expect(getReminder(a, 'editable')?.text).toBe('changed');
+    insertReminder(a, reminder(A, 'gone', 'cancelled'));
+    expect(updateReminder(a, 'gone', { text: 'changed' }, 5)).toBe('not-editable');
+    expect(updateReminder(a, 'missing', { text: 'changed' }, 6)).toBe('not-found');
+    t.close();
+  });
+
   it('has the requested migration tag and data rewrite', () => {
     const journal = JSON.parse(
       readFileSync(
