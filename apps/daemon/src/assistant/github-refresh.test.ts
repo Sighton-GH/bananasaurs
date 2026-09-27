@@ -77,7 +77,15 @@ class FakeClient {
   orgRepos: unknown[] | Error = [];
   repoDetail: unknown = { defaultBranch: 'main', description: null, private: false };
   tree: unknown = { entries: [], truncated: false };
-  readonly calls = { listOrgRepos: 0, getRepo: 0, listTree: 0 };
+  fileRaw: unknown | Error = { notModified: false, text: 'private file text', etag: '"v1"' };
+  readonly calls = { listOrgRepos: 0, getRepo: 0, listTree: 0, getFileRaw: 0 };
+  readonly fileRawCalls: {
+    owner: string;
+    repo: string;
+    ref: string;
+    path: string;
+    etag?: string;
+  }[] = [];
 
   async listOrgRepos(_owner: string) {
     this.calls.listOrgRepos += 1;
@@ -93,6 +101,14 @@ class FakeClient {
     this.calls.listTree += 1;
     if (this.tree instanceof Error) throw this.tree;
     return this.tree as never;
+  }
+  async getFileRaw(owner: string, repo: string, ref: string, path: string, etag?: string) {
+    this.calls.getFileRaw += 1;
+    this.fileRawCalls.push({ owner, repo, ref, path, ...(etag === undefined ? {} : { etag }) });
+    if (this.fileRaw instanceof Error) throw this.fileRaw;
+    if (typeof this.fileRaw === 'function')
+      return (this.fileRaw as (args: { owner: string; repo: string; ref: string; path: string; etag?: string }) => unknown)({ owner, repo, ref, path, ...(etag === undefined ? {} : { etag }) }) as never;
+    return this.fileRaw as never;
   }
 }
 
@@ -229,6 +245,34 @@ describe('refreshGithubOrg', () => {
     expect(children[0]?.url).toBe('https://github.com/acme/widget');
     expect(store.fetchRecords).toHaveLength(1);
     expect(store.fetchRecords[0]).toMatchObject({ id: 'gh-acme', status: 'ok' });
+  });
+
+  it('creates enabled children for private repos with meta.private', async () => {
+    const client = new FakeClient();
+    client.orgRepos = [summary('widget'), summary('secret', { private: true })];
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('raw fetches never happen for an org');
+    });
+    const { deps: d, store } = deps(client, fetcher);
+    store.rows.set('gh-acme', org());
+
+    const outcome = await refreshGithubOrg(SCOPE, org(), d);
+
+    expect(outcome).toBe('ok');
+    const children = [...store.rows.values()].filter((r) => r.parentId === 'gh-acme');
+    expect(children.map((c) => c.title).sort()).toEqual(['acme/secret', 'acme/widget']);
+    for (const child of children) expect(child.enabled).toBe(true);
+    const secret = children.find((c) => c.title === 'acme/secret');
+    expect(secret).toMatchObject({
+      meta: { owner: 'acme', repo: 'secret', branch: 'main', autoDiscovered: true, private: true },
+    });
+    const widget = children.find((c) => c.title === 'acme/widget');
+    expect(widget?.meta?.private).toBeUndefined();
+    expect(store.fetchRecords[0]).toMatchObject({
+      id: 'gh-acme',
+      status: 'ok',
+      detail: 'GitHub organisation refreshed: 2 repositories.',
+    });
   });
 
   it('respects the includeForks and includeArchived toggles', async () => {
@@ -445,17 +489,107 @@ describe('refreshGithubRepo (authenticated)', () => {
     expect(cache.chunkCalls).toHaveLength(1);
   });
 
-  it('a private repo disables the resource and keeps old chunks', async () => {
-    const { deps: d, store, cache, client } = setup();
+  it('a private repo with a token caches via getFileRaw and stores meta.private', async () => {
+    const client = new FakeClient();
+    client.tree = { entries: treeEntries, truncated: false };
     client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    client.fileRaw = ({ path }: { path: string }) => ({
+      notModified: false,
+      text: `# text for ${path}`,
+      etag: '"v1"',
+    });
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('public fetcher never runs for a private repo');
+    });
+    const { deps: d, store, cache } = deps(client, fetcher);
+    store.rows.set('gh-acme-widget', repo());
+
+    const outcome = await refreshGithubRepo(SCOPE, repo(), d);
+
+    expect(outcome).toBe('ok');
+    expect(client.calls.getFileRaw).toBeGreaterThan(0);
+    expect(fetcher.calls).toHaveLength(0);
+    expect(client.fileRawCalls.map((c) => c.path).sort()).toEqual(
+      ['README.md', 'docs/guide.md'].sort(),
+    );
+    expect(client.fileRawCalls[0]).toMatchObject({
+      owner: 'acme',
+      repo: 'widget',
+      ref: 'main',
+    });
+    expect(store.rows.get('gh-acme-widget')).toMatchObject({
+      enabled: true,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', private: true },
+    });
+    expect(cache.chunkCalls.length).toBeGreaterThan(0);
+    expect(store.fetchRecords[0]).toMatchObject({ id: 'gh-acme-widget', status: 'ok' });
+  });
+
+  it('a public repo still uses the raw fetcher and never getFileRaw', async () => {
+    const { deps: d, cache, store, client, fetcher } = setup();
+
+    const outcome = await refreshGithubRepo(SCOPE, repo(), d);
+
+    expect(outcome).toBe('ok');
+    expect(fetcher.calls.length).toBeGreaterThan(0);
+    expect(client.calls.getFileRaw).toBe(0);
+    expect(cache.chunkCalls.length).toBeGreaterThan(0);
+  });
+
+  it('a private getFileRaw 304 keeps the existing document', async () => {
+    const client = new FakeClient();
+    client.tree = {
+      entries: [{ path: 'README.md', type: 'blob' as const, size: 120 }],
+      truncated: false,
+    };
+    client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    client.fileRaw = ({ path }: { path: string }) => ({
+      notModified: false,
+      text: `# text for ${path}`,
+      etag: '"v1"',
+    });
+    const fetcher = new FakeFetcher(() => {
+      throw new Error('public fetcher never runs for a private repo');
+    });
+    const first = deps(client, fetcher, new FakeStore(), new FakeCache(), () => 1_000);
+    first.store.rows.set('gh-acme-widget', repo());
+    expect(await refreshGithubRepo(SCOPE, repo(), first.deps)).toBe('ok');
+    expect(first.cache.chunkCalls).toHaveLength(1);
+
+    client.fileRaw = { notModified: true };
+    const secondFetcher = new FakeFetcher(() => {
+      throw new Error('public fetcher never runs for a private repo');
+    });
+    const second = deps(client, secondFetcher, first.store, first.cache, () => 2_000);
+    const outcome = await refreshGithubRepo(SCOPE, repo(), second.deps);
+
+    expect(outcome).toBe('not-modified');
+    expect(secondFetcher.calls).toHaveLength(0);
+    expect(first.cache.chunkCalls).toHaveLength(1);
+    const docId = computeDocId('https://raw.githubusercontent.com/acme/widget/main/README.md');
+    expect(first.cache.docs.get(docId)?.fetchedAt).toBe(2_000);
+    expect(client.fileRawCalls.at(-1)).toMatchObject({ path: 'README.md', etag: '"v1"' });
+  });
+
+  it('a not-found getRepo disables the resource with the lost-access detail', async () => {
+    const client = new FakeClient();
+    client.repoDetail = new GitHubError('not-found', 'GitHub returned 404 for this URL.');
+    const fetcher = new FakeFetcher(async (url: string) => okFile(url, 'text'));
+    const { deps: d, store, cache } = deps(client, fetcher);
     store.rows.set('gh-acme-widget', repo());
 
     const outcome = await refreshGithubRepo(SCOPE, repo(), d);
 
     expect(outcome).toBe('error');
     expect(store.rows.get('gh-acme-widget')).toMatchObject({ enabled: false });
+    expect(fetcher.calls).toHaveLength(0);
     expect(cache.chunkCalls).toHaveLength(0);
-    expect(store.fetchRecords[0]?.status).toBe('failed');
+    expect(store.fetchRecords[0]).toMatchObject({
+      id: 'gh-acme-widget',
+      status: 'failed',
+      detail:
+        "GitHub can't find this repository, or the token can't read it. It has been turned off, so its cached text is no longer searched.",
+    });
   });
 
   it('rate-limited: records the retry sentence and keeps old chunks', async () => {
@@ -587,20 +721,27 @@ describe('refreshGithubRepo (unauthenticated)', () => {
     expect(cache.chunkCalls).toHaveLength(1);
   });
 
-  it('a missing repo records an error and keeps old chunks', async () => {
+  it('a missing repo disables the resource with the lost-access detail and keeps old chunks', async () => {
     const client = new FakeClient();
     client.authenticated = false;
     client.repoDetail = new GitHubError('not-found', 'GitHub returned 404 for this URL.');
     const fetcher = new FakeFetcher(async (url: string) => okFile(url, 'readme text'));
     const { deps: d, store, cache } = deps(client, fetcher);
     const noBranch = repo({ meta: { owner: 'acme', repo: 'missing' } });
+    store.rows.set('gh-acme-widget', noBranch);
 
     const outcome = await refreshGithubRepo(SCOPE, noBranch, d);
 
     expect(outcome).toBe('error');
+    expect(store.rows.get('gh-acme-widget')).toMatchObject({ enabled: false });
     expect(fetcher.calls).toHaveLength(0);
     expect(cache.chunkCalls).toHaveLength(0);
-    expect(store.fetchRecords[0]).toMatchObject({ id: 'gh-acme-widget', status: 'failed' });
+    expect(store.fetchRecords[0]).toMatchObject({
+      id: 'gh-acme-widget',
+      status: 'failed',
+      detail:
+        "GitHub can't find this repository, or the token can't read it. It has been turned off, so its cached text is no longer searched.",
+    });
   });
 });
 
