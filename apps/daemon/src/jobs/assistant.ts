@@ -421,6 +421,7 @@ export const assistantInvokeHandler = (deps: {
     if (prior !== undefined) {
       result = prior.result;
     } else {
+      let stopTyping = (): void => undefined;
       try {
         const behaviours = await deps.service.behavioursForGuild(deps.guildId);
         const behaviour = behaviours.find((b) => b.id === payload.behaviourId);
@@ -430,7 +431,6 @@ export const assistantInvokeHandler = (deps: {
           await logFailure(text, 'The behaviour was deleted or turned off before the request ran.');
           return;
         }
-        let stopTyping = (): void => undefined;
         if (payload.channelId !== undefined && deps.sendTyping !== undefined) {
           stopTyping = startTyping(() => deps.sendTyping!(payload.channelId!), {
             intervalMs: deps.typingIntervalMs,
@@ -583,6 +583,7 @@ export const assistantInvokeHandler = (deps: {
           if (!flags.includes(flag)) flags.push(flag);
         }
       } catch (err) {
+        stopTyping();
         const delays = deps.retryDelaysMs?.() ?? PROVIDER_RETRY_DELAYS_MS;
         const ceiling = delays.length + 1;
         /**
