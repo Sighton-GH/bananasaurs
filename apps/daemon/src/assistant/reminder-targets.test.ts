@@ -35,12 +35,30 @@ const makeGuild = (
     asker?: ReminderTargetMember;
     me?: ReminderTargetMember | null;
     fetch?: (id: string) => Promise<ReminderTargetMember>;
-    search?: (query: string, limit: number) => Promise<ReadonlyMap<string, ReminderTargetMember>>;
+    search?: (options: {
+      query: string;
+      limit: number;
+    }) => Promise<ReadonlyMap<string, ReminderTargetMember>>;
+    visibleChannelIds?: readonly string[];
   } = {},
 ): ReminderTargetGuild => {
   const channels = overrides.channels ?? [channel('10000000000000001', 'general')];
   const members = overrides.members ?? [member('20000000000000001', 'Alex', 'alex')];
   const asker = overrides.asker ?? member('30000000000000001', 'Asker');
+  const visibleChannelIds = overrides.visibleChannelIds;
+  const withChannelPermissions = (target: ReminderTargetMember) => ({
+    ...target,
+    permissionsIn: (targetChannel: { readonly id: string }) => {
+      const permissions = target.permissionsIn(targetChannel);
+      return {
+        has: (requested: bigint) =>
+          permissions.has(requested) &&
+          (requested !== permission.ViewChannel ||
+            visibleChannelIds === undefined ||
+            visibleChannelIds.includes(targetChannel.id)),
+      };
+    },
+  });
   const memberCache = new Map(members.map((entry) => [entry.id, entry]));
   return {
     channels: { cache: new Map(channels.map((entry) => [entry.id, entry])) },
@@ -52,16 +70,21 @@ const makeGuild = (
       ),
     },
     members: {
-      me: overrides.me === undefined ? member('50000000000000001', 'Bot') : overrides.me,
+      me:
+        overrides.me === null
+          ? null
+          : withChannelPermissions(overrides.me ?? member('50000000000000001', 'Bot')),
       cache: memberCache,
-      fetch: overrides.fetch ?? (async (id) => (id === asker.id ? asker : memberCache.get(id))!),
+      fetch:
+        overrides.fetch ??
+        (async (id) => withChannelPermissions((id === asker.id ? asker : memberCache.get(id))!)),
       search:
         overrides.search ??
         (async (options: { query: string; limit: number }) => {
-          const matches = [...memberCache.values()].filter((entry) =>
-            `${entry.displayName} ${entry.user.username}`
-              .toLowerCase()
-              .includes(options.query.toLowerCase()),
+          const matches = [...memberCache.values()].filter(
+            (entry) =>
+              entry.displayName.toLowerCase().startsWith(options.query.toLowerCase()) ||
+              entry.user.username.toLowerCase().startsWith(options.query.toLowerCase()),
           );
           return new Map(matches.slice(0, options.limit).map((entry) => [entry.id, entry]));
         }),
@@ -124,6 +147,70 @@ describe('resolveReminderTargets', () => {
     });
   });
 
+  it.each(['general', '10000000000000001', '<#10000000000000001>'])(
+    'does not disclose an invisible channel when requested by %s',
+    async (target) => {
+      const guild = makeGuild({ visibleChannelIds: [] });
+      await expect(resolveReminderTargets(guild, request({ channel: target }))).resolves.toEqual({
+        ok: false,
+        problem: `I can't find a channel called "${target}".`,
+      });
+    },
+  );
+
+  it('omits invisible channels from ambiguity candidates', async () => {
+    const guild = makeGuild({
+      channels: [channel('10000000000000001', 'general'), channel('10000000000000002', 'GENERAL')],
+      visibleChannelIds: ['10000000000000001'],
+    });
+    expect(ok(await resolveReminderTargets(guild, request({ channel: 'general' }))).channelId).toBe(
+      '10000000000000001',
+    );
+  });
+
+  it('filters channel types before deciding name matches', async () => {
+    const guild = makeGuild({
+      channels: [
+        channel('10000000000000002', 'general', { text: false }),
+        channel('10000000000000001', 'general'),
+      ],
+    });
+    expect(ok(await resolveReminderTargets(guild, request({ channel: 'general' }))).channelId).toBe(
+      '10000000000000001',
+    );
+    await expect(
+      resolveReminderTargets(
+        makeGuild({ channels: [channel('10000000000000002', 'voice', { text: false })] }),
+        request({ channel: 'voice' }),
+      ),
+    ).resolves.toEqual({ ok: false, problem: "I can't post reminders in #voice." });
+  });
+
+  it('does not disclose a channel when the bot cannot view it', async () => {
+    const guild = makeGuild({
+      me: member('50000000000000001', 'Bot', 'Bot', permission.SendMessages),
+    });
+    await expect(resolveReminderTargets(guild, request())).resolves.toEqual({
+      ok: false,
+      problem: "I don't have permission to send messages in #general.",
+    });
+  });
+
+  it('truncates channel ambiguity candidates to five', async () => {
+    const channels = Array.from({ length: 6 }, (_, index) =>
+      channel(`1000000000000000${index + 1}`, 'general'),
+    );
+    const result = await resolveReminderTargets(
+      makeGuild({ channels }),
+      request({ channel: 'general' }),
+    );
+    expect(result).toMatchObject({
+      ok: false,
+      problem: expect.stringContaining('general (10000000000000005).'),
+    });
+    if (!result.ok) expect(result.problem).not.toContain('10000000000000006');
+  });
+
   it.each(['20000000000000001', '<@20000000000000001>', '<@!20000000000000001>', 'Alex', '@Alex'])(
     'resolves member form %s',
     async (target) => {
@@ -179,6 +266,17 @@ describe('resolveReminderTargets', () => {
       problem:
         '"Execs" matches more than one role: Execs (40000000000000001), execs (40000000000000002).',
     });
+  });
+
+  it('prefers display-name matches over username matches across cache and search', async () => {
+    const displayMatch = member('20000000000000001', 'Sam', 'different');
+    const usernameMatch = member('20000000000000002', 'Different', 'sam');
+    const guild = makeGuild({
+      members: [usernameMatch],
+      search: async () => new Map([[displayMatch.id, displayMatch]]),
+    });
+    const targets = ok(await resolveReminderTargets(guild, request({ members: ['Sam'] })));
+    expect(targets.mentions.userIds).toEqual([displayMatch.id]);
   });
 
   it('checks asker and bot send permissions in the target channel', async () => {
@@ -247,14 +345,28 @@ describe('resolveReminderTargets', () => {
   });
 
   it('enforces member and role limits and deduplicates in first-seen order', async () => {
+    const tooManyMembers = Array.from({ length: 26 }, (_, index) =>
+      member(`20000000000000${100 + index}`, `Member${index}`),
+    );
     expect(
-      await resolveReminderTargets(makeGuild(), request({ members: Array(26).fill('Alex') })),
+      await resolveReminderTargets(
+        makeGuild({ members: tooManyMembers }),
+        request({ members: tooManyMembers.map((entry) => entry.id) }),
+      ),
     ).toMatchObject({
       ok: false,
       problem: "That's more than 25 people for one reminder.",
     });
+    const tooManyRoles = Array.from({ length: 11 }, (_, index) => ({
+      id: `40000000000000${String(1 + index).padStart(3, '0')}`,
+      name: `Role${index}`,
+      mentionable: true,
+    }));
     expect(
-      await resolveReminderTargets(makeGuild(), request({ roles: Array(11).fill('Execs') })),
+      await resolveReminderTargets(
+        makeGuild({ roles: tooManyRoles }),
+        request({ roles: tooManyRoles.map((role) => role.id) }),
+      ),
     ).toMatchObject({
       ok: false,
       problem: "That's more than 10 roles for one reminder.",
@@ -267,6 +379,14 @@ describe('resolveReminderTargets', () => {
     );
     expect(targets.mentions.userIds).toEqual(['20000000000000001']);
     expect(targets.mentions.roleIds).toEqual(['40000000000000001']);
+  });
+
+  it('applies member limits after deduplicating resolved ids', async () => {
+    const ids = Array.from({ length: 25 }, (_, index) => `20000000000000${100 + index}`);
+    const members = ids.map((id) => member(id, `Member ${id}`));
+    const guild = makeGuild({ members });
+    const result = ok(await resolveReminderTargets(guild, request({ members: [...ids, ids[0]] })));
+    expect(result.mentions.userIds).toHaveLength(25);
   });
 
   it('fails closed for unavailable guild, bot, or asker and turns lookup errors into problems', async () => {
