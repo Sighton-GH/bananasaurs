@@ -82,30 +82,38 @@ export const resolveReminderTargets = async (
   try {
     if (guild === undefined || guild.members.me === null) return failure(UNAVAILABLE);
 
+    const asker = await guild.members.fetch(request.askerId);
     const requestedChannel = request.channel ?? request.currentChannelId;
     const channelId =
       mentionId(requestedChannel, /^<#(\d{17,20})>$/) ??
       (ID_PATTERN.test(requestedChannel) ? requestedChannel : undefined);
     const channelQuery = channelId === undefined ? requestedChannel.replace(/^#/, '') : undefined;
-    const channelMatches = [...guild.channels.cache.values()].filter((candidate) => {
+    const matchingChannels = [...guild.channels.cache.values()].filter((candidate) => {
       if (channelId !== undefined) return candidate.id === channelId;
       return candidate.name.toLowerCase() === channelQuery?.toLowerCase();
     });
-    if (
-      channelMatches.length === 0 ||
-      !channelMatches[0]?.isTextBased() ||
-      channelMatches[0].isThread()
-    ) {
-      if (channelMatches.length === 0)
-        return failure(`I can't find a channel called "${requestedChannel}".`);
-      return failure(`I can't post reminders in #${channelMatches[0]?.name}.`);
+    const visibleChannels = matchingChannels.filter((candidate) =>
+      asker.permissionsIn(candidate).has(PermissionsBitField.Flags.ViewChannel),
+    );
+    const usableChannels = visibleChannels.filter(
+      (candidate) => candidate.isTextBased() && !candidate.isThread(),
+    );
+    if (usableChannels.length === 0) {
+      const visibleNonText = visibleChannels.find(
+        (candidate) => !candidate.isTextBased() || candidate.isThread(),
+      );
+      if (visibleNonText !== undefined) {
+        return failure(`I can't post reminders in #${visibleNonText.name}.`);
+      }
+      return failure(`I can't find a channel called "${requestedChannel}".`);
     }
-    if (channelMatches.length > 1)
-      return failure(ambiguousProblem('channel', requestedChannel, channelMatches));
-    const channel = channelMatches[0];
-    if (channel === undefined) return failure(UNAVAILABLE);
+    if (usableChannels.length > 1)
+      return failure(ambiguousProblem('channel', requestedChannel, usableChannels));
+    const channel = usableChannels[0];
+    if (channel === undefined) {
+      return failure(`I can't find a channel called "${requestedChannel}".`);
+    }
 
-    const asker = await guild.members.fetch(request.askerId);
     const bot = guild.members.me;
     const view = PermissionsBitField.Flags.ViewChannel;
     const send = PermissionsBitField.Flags.SendMessages;
@@ -118,7 +126,7 @@ export const resolveReminderTargets = async (
       return failure(`I don't have permission to send messages in #${channel.name}.`);
     }
 
-    if (request.members.length > 25) return failure("That's more than 25 people for one reminder.");
+    if (request.members.length > 50) return failure("That's more than 25 people for one reminder.");
     const userIds: string[] = [];
     const memberNames: string[] = [];
     const seenUsers = new Set<string>();
@@ -130,41 +138,29 @@ export const resolveReminderTargets = async (
       if (id !== undefined) {
         found = [await guild.members.fetch(id)];
       } else {
-        const cachedMembers = [...guild.members.cache.values()];
-        const cached = cachedMembers.filter(
-          (candidate) => candidate.displayName.toLowerCase() === value.toLowerCase(),
-        );
-        const cachedByUsername =
-          cached.length === 0 &&
-          cachedMembers.some(
-            (candidate) => candidate.user.username.toLowerCase() === value.toLowerCase(),
-          )
-            ? cachedMembers.filter(
-                (candidate) => candidate.user.username.toLowerCase() === value.toLowerCase(),
-              )
-            : [];
-        let searched: ReminderTargetMember[] = [];
-        if (cached.length === 0 && cachedByUsername.length === 0) {
-          try {
-            searched = [
-              ...(await guild.members.search({ query: value, limit: 5 })).values(),
-            ].filter(
-              (candidate) =>
-                candidate.displayName.toLowerCase() === value.toLowerCase() ||
-                candidate.user.username.toLowerCase() === value.toLowerCase(),
-            );
-          } catch {
-            return failure("I couldn't look up members right now, so I didn't set the reminder.");
-          }
+        let searched: ReminderTargetMember[];
+        try {
+          searched = [...(await guild.members.search({ query: value, limit: 5 })).values()];
+        } catch {
+          return failure("I couldn't look up members right now, so I didn't set the reminder.");
         }
-        found = [
+        const allMatches = [
           ...new Map(
-            [...cached, ...cachedByUsername, ...searched].map((candidate) => [
+            [...guild.members.cache.values(), ...searched].map((candidate) => [
               candidate.id,
               candidate,
             ]),
           ).values(),
         ];
+        const displayMatches = allMatches.filter(
+          (candidate) => candidate.displayName.toLowerCase() === value.toLowerCase(),
+        );
+        found =
+          displayMatches.length > 0
+            ? displayMatches
+            : allMatches.filter(
+                (candidate) => candidate.user.username.toLowerCase() === value.toLowerCase(),
+              );
       }
       if (found.length === 0) return failure(`I can't find a member called "${raw}".`);
       if (found.length > 1)
@@ -180,10 +176,11 @@ export const resolveReminderTargets = async (
         seenUsers.add(resolved.id);
         userIds.push(resolved.id);
         memberNames.push(resolved.displayName);
+        if (userIds.length > 25) return failure("That's more than 25 people for one reminder.");
       }
     }
 
-    if (request.roles.length > 10) return failure("That's more than 10 roles for one reminder.");
+    if (request.roles.length > 20) return failure("That's more than 10 roles for one reminder.");
     const roleIds: string[] = [];
     const roleNames: string[] = [];
     const seenRoles = new Set<string>();
@@ -212,6 +209,7 @@ export const resolveReminderTargets = async (
         seenRoles.add(role.id);
         roleIds.push(role.id);
         roleNames.push(role.name);
+        if (roleIds.length > 10) return failure("That's more than 10 roles for one reminder.");
         if (!role.mentionable) nonMentionableRole ??= role.name;
       }
     }
