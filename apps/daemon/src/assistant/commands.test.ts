@@ -71,6 +71,7 @@ const harness = (
   const defer = vi.fn(async () => undefined);
   const respond = vi.fn(async () => undefined);
   const send = vi.fn(async () => undefined);
+  const sendTyping = vi.fn(async () => undefined);
   const queued: AssistantInvokePayload[] = [];
   const sealer = createInteractionTokenSealer();
   const handler = assistantInvokeHandler({
@@ -79,6 +80,7 @@ const harness = (
     openToken: (token) => sealer.open(token),
     respond,
     send,
+    sendTyping,
     logger: pino({ level: 'silent' }),
     logChannelId: () => undefined,
     now: () => 1,
@@ -98,6 +100,7 @@ const harness = (
     defer,
     respond,
     send,
+    sendTyping,
     queued,
     flush,
     subscriber: createAssistantCommandSubscriber({
@@ -112,6 +115,7 @@ const harness = (
       sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
       logger: pino({ level: 'silent' }),
+      sendTyping,
       ...(lookupMessage === undefined ? {} : { lookupMessage }),
     }),
   };
@@ -278,6 +282,109 @@ describe('assistant command subscriber', () => {
     ]);
   });
 
+  it('starts typing after an addressed mention is queued', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012346',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    expect(h.sendTyping).toHaveBeenCalledWith(channelId);
+  });
+
+  it('does not start typing for an unaddressed or ambiguous mention', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012348',
+      authorId: userId,
+      authorIsBot: false,
+      content: 'hello',
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.sendTyping).not.toHaveBeenCalled();
+
+    const itBehaviour: AssistantBehaviour = {
+      ...club,
+      id: 'it',
+      mentionRoleId: '789012345678901234',
+    };
+    const ambiguous = harness([direct, club, itBehaviour]);
+    await ambiguous.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012349',
+      authorId: userId,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> <@&${itBehaviour.mentionRoleId}> help`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!, itBehaviour.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(ambiguous.sendTyping).not.toHaveBeenCalled();
+  });
+
+  it('does not delay or fail the mention when typing rejects', async () => {
+    const h = harness();
+    h.sendTyping.mockRejectedValueOnce(new Error('typing failed'));
+    await expect(
+      h.subscriber.handle({
+        kind: 'messageCreate',
+        parentChannelId: undefined,
+        categoryId: undefined,
+        isPrivateThread: false,
+        guildId,
+        receivedAtMs: 1,
+        channelId,
+        messageId: '890123456789012350',
+        authorId: userId,
+        authorIsBot: false,
+        content: `<@&${club.mentionRoleId}> where is the handbook?`,
+        editedTimestampMs: undefined,
+        mentionedUserIds: [],
+        authorRoleIds: [],
+        mentionedRoleIds: [club.mentionRoleId!],
+        mentionsEveryone: false,
+        attachments: [],
+      }),
+    ).resolves.toBeUndefined();
+    expect(h.queued).toHaveLength(1);
+  });
+
   it('routes an untagged Discord Reply to a known bot answer, via lookupMessage (ADR 0072)', async () => {
     const repliedTo = '890123456789012399';
     const lookupMessage = (id: string): KnownMessage | undefined =>
@@ -380,6 +487,7 @@ describe('assistant command subscriber', () => {
   });
 
   it('swallows an enqueue failure without posting or throwing', async () => {
+    const sendTyping = vi.fn(async () => undefined);
     const subscriber = createAssistantCommandSubscriber({
       botUserId: '901234567890123456',
       guildId,
@@ -392,6 +500,7 @@ describe('assistant command subscriber', () => {
       sealToken: (token) => token,
       now: () => 1,
       logger: pino({ level: 'silent' }),
+      sendTyping,
     });
     const handled = subscriber.handle({
       kind: 'messageCreate',
@@ -415,6 +524,7 @@ describe('assistant command subscriber', () => {
     // The subscriber no longer has a send port at all (hard rule 6), so the
     // only observable is that the failure does not escape into the chain.
     await expect(handled).resolves.toBeUndefined();
+    expect(sendTyping).not.toHaveBeenCalled();
   });
 });
 
