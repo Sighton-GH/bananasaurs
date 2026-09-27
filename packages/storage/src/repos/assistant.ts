@@ -896,6 +896,7 @@ export const addRolesToSkillGrants = (
         skillId,
         roleIdsJson: JSON.stringify(roleIds),
         userIdsJson: JSON.stringify(currentUserIds),
+        mode: row?.mode ?? null,
         updatedAt: now,
       });
     }
