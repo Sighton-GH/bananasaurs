@@ -5,6 +5,8 @@ import { reminderRecurrence, type Reminder } from '@bananasaurs/core';
 import { openMigratedTestDatabase } from '../test-support.js';
 import { upsertGuild } from './guilds.js';
 import {
+  cancelReminder,
+  completeReminder,
   getReminder,
   insertReminder,
   listBehaviours,
