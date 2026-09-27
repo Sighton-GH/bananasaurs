@@ -10,6 +10,7 @@ import type {
 import { parseResourceMeta, promptWizardAnswers } from '@bananasaurs/core';
 import {
   assistantBehaviours,
+  assistantConversationTurns,
   assistantReminders,
   assistantResources,
   assistantSkillActivity,
@@ -22,7 +23,7 @@ import {
   assistantSettings,
 } from '../schema.js';
 import { forgetAuthor } from './conversations.js';
-import { deleteTracesForUser } from './traces.js';
+import { deleteTracesForConversations, deleteTracesForUser } from './traces.js';
 import type { GuildScope } from '../scope.js';
 import { read, write } from '../write.js';
 
@@ -985,6 +986,10 @@ export const setMemoryOptOut = (
  * hold their question and answer. Each delete runs as its own write right
  * after, in the same function — `write()` forbids nesting one transaction
  * inside another, so they cannot share one.
+ *
+ * A run's trace also carries the other side of the conversation, so forgetting
+ * deletes the diagnostic traces of every conversation the member took part
+ * in — not just the runs stored under their own user id.
  */
 export const forgetMember = (scope: GuildScope, userId: string, now: number): number => {
   const removed = write(scope, ({ db }) => {
@@ -1001,7 +1006,19 @@ export const forgetMember = (scope: GuildScope, userId: string, now: number): nu
       .run();
     return deleted;
   });
+  // Collected before the turn delete forgets who took part where.
+  const conversationIds = read(scope, (db) =>
+    db
+      .selectDistinct({ conversationId: assistantConversationTurns.conversationId })
+      .from(assistantConversationTurns)
+      .where(
+        scope.only(assistantConversationTurns, eq(assistantConversationTurns.authorId, userId)),
+      )
+      .all()
+      .map((row) => row.conversationId),
+  );
   forgetAuthor(scope, userId);
   deleteTracesForUser(scope, userId);
+  deleteTracesForConversations(scope, conversationIds);
   return removed;
 };

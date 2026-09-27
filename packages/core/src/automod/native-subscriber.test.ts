@@ -53,6 +53,7 @@ describe('native automod subscriber', () => {
       isPrivateThread: false,
       messageId: '555555555555555555',
       authorId: '333333333333333333',
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: 'hello',
       editedTimestampMs: undefined,

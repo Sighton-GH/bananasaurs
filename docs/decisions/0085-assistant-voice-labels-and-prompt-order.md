@@ -41,6 +41,14 @@ is `docs/research/2026-09-26-memory-context-tools-research.md`.
    naming who to answer. The trace records this text as a `user-message`
    section, so the History page shows what the model was asked.
 
+## Addendum (slice 1 build)
+
+- Citation tags `[S#]` are per request and stripped from the answer before posting.
+- The Sources line lists only sources the answer cited, at most 5, and is omitted when nothing is cited.
+- The typing indicator starts when a mention is queued (new jobs only) and is re-sent every 8 s for up to 180 s.
+- Display names are sanitised (no brackets or control characters, 32 characters), and earlier turns without a name read "a member".
+- Evidence, quotes and titles have every block marker neutralised.
+
 ## Consequences
 
 Replies follow the owner's voice settings with a stable, cacheable system

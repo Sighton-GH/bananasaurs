@@ -49,6 +49,7 @@ const messageEvent = (
   isPrivateThread: false,
   messageId: '333333333333333333',
   authorId: '444444444444444444',
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: undefined,
   editedTimestampMs: undefined,

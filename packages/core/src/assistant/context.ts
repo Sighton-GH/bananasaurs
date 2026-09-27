@@ -2,6 +2,7 @@ import type { AssistantBehaviour, AssistantSkill } from './types.js';
 import type { ClubResource } from './resources.js';
 import { surfaceInstruction } from './behaviours.js';
 import { SAFETY_SUFFIX } from './safety-suffix.js';
+import { neutraliseMarkers } from './untrusted.js';
 
 export interface RetrievedEvidence {
   readonly sourceId: string;
@@ -52,6 +53,26 @@ export const OUTPUT_RULES: string = `OUTPUT RULES
  */
 export const LEGACY_TOOL_SENTENCE =
   ' Use search_sources first, then read_chunk for the best result.';
+export const LEGACY_SOURCES_LINE = '- End with a Sources line listing what you used.';
+export const LEGACY_CITE_SENTENCE =
+  'Cite the source (title or link) for any fact drawn from a club resource.';
+
+/**
+ * The old wizard emitted the sources sentences as their own lines. The
+ * compiler drops each as a whole line — the line plus its trailing newline,
+ * or the preceding newline when it is the last line — so no blank line is
+ * left behind. The behaviour prompt is opaque text, not parsed sections, so
+ * beyond that the cleanup only avoids double blank lines.
+ */
+const dropLegacyLines = (text: string): string =>
+  text
+    .split('\n')
+    .filter((line) => {
+      const trimmed = line.trim();
+      return trimmed !== LEGACY_SOURCES_LINE && trimmed !== LEGACY_CITE_SENTENCE;
+    })
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n');
 
 /**
  * The exact line the compiler emits for one allowed skill, factored out so
@@ -85,11 +106,14 @@ export const compileAssistantContext = (input: {
   for (const item of evidence) {
     if (remaining <= 0) break;
     const citePrefix = item.citeTag === undefined ? '' : `cite=${item.citeTag} `;
+    // Neutralise before measuring: the escape grows `[/UNTRUSTED` markers,
+    // so measuring first would let a hostile body push the block over budget.
+    const title = neutraliseMarkers(item.title);
     const header =
       item.chunkId === undefined
-        ? `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(item.title)}]`
-        : `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(item.title)} chunk=${item.chunkId}]`;
-    const block = `${header}\n${clean(item.text, remaining)}\n[/UNTRUSTED CLUB EVIDENCE]`;
+        ? `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(title)}]`
+        : `[UNTRUSTED CLUB EVIDENCE ${citePrefix}source=${item.sourceId} title=${JSON.stringify(title)} chunk=${item.chunkId}]`;
+    const block = `${header}\n${clean(neutraliseMarkers(item.text), remaining)}\n[/UNTRUSTED CLUB EVIDENCE]`;
     blocks.push(block);
     remaining -= block.length;
   }
@@ -116,7 +140,7 @@ export const compileAssistantContext = (input: {
             .join('\n\n');
         })();
   const behaviourPrompt = clean(
-    input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, ''),
+    dropLegacyLines(input.behaviour.systemPrompt.replaceAll(LEGACY_TOOL_SENTENCE, '')),
     4_000,
   );
   const skillsBlock =

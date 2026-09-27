@@ -26,6 +26,7 @@ const messageEditEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   isPrivateThread: false,
   messageId: MESSAGE,
   authorId: AUTHOR,
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: 'hello world',
   editedTimestampMs: 2,

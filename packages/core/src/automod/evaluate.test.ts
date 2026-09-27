@@ -57,6 +57,7 @@ const messageEvent = (over: Partial<MessageEvent> = {}): MessageEvent => ({
   isPrivateThread: false,
   messageId: '300000000000000001',
   authorId: '400000000000000001',
+  authorDisplayName: undefined,
   authorIsBot: false,
   content: 'hello world',
   editedTimestampMs: undefined,

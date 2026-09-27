@@ -1,10 +1,11 @@
 import {
   relativeAgo,
+  safeDisplayName,
+  neutraliseMarkers,
   type ConversationResolution,
   type GenerationMessage,
 } from '@bananasaurs/core';
 import { conversationRepo, type GuildScope } from '@bananasaurs/storage';
-import { escapeUntrustedClose } from './untrusted.js';
 
 /**
  * Builds the conversation half of a provider request (Task 14, ADR 0072).
@@ -52,14 +53,17 @@ export interface ConversationContext {
 
 /** A quoted message as untrusted evidence inside the user turn. */
 export const quoteEnvelopeFor = (quoted: QuotedMessage): string =>
-  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(escapeUntrustedClose(quoted.authorName))}]\n${escapeUntrustedClose(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
+  `[UNTRUSTED QUOTED MESSAGE author=${JSON.stringify(safeDisplayName(quoted.authorName) ?? 'a member')}]\n${neutraliseMarkers(quoted.content)}\n[/UNTRUSTED QUOTED MESSAGE]`;
 
 /** ADR 0085: every earlier user turn reads `[Name, 3 min ago] …`. */
 export const labelUserTurn = (
   turn: { readonly authorName: string; readonly at: number; readonly text: string },
   now: number,
 ): string => {
-  const speaker = turn.authorName.replace(/\s+/g, ' ').trim() || 'a member';
+  const cleaned = safeDisplayName(turn.authorName);
+  // Turns stored before display names existed hold the bare user id: never
+  // print it as a speaker name.
+  const speaker = cleaned === undefined || /^\d{17,20}$/.test(cleaned) ? 'a member' : cleaned;
   return `[${speaker}, ${relativeAgo(turn.at, now)}] ${turn.text}`;
 };
 

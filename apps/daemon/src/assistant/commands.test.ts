@@ -57,6 +57,7 @@ const club: AssistantBehaviour = {
 const harness = (
   behaviours: readonly AssistantBehaviour[] = [direct, club],
   lookupMessage?: (messageId: string) => KnownMessage | undefined,
+  reportEnqueued = true,
 ) => {
   const invoke = vi.fn<AssistantCommandService['invoke']>(
     async (): Promise<AssistantInvocationResult> => ({
@@ -111,6 +112,7 @@ const harness = (
       respond,
       enqueue: (input) => {
         queued.push(input.payload);
+        return { enqueued: reportEnqueued };
       },
       sealToken: (ref) => sealer.seal(ref),
       now: () => 1,
@@ -192,6 +194,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId}> where is the handbook?`,
       editedTimestampMs: undefined,
@@ -232,6 +235,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId}> reset it`,
       editedTimestampMs: undefined,
@@ -263,6 +267,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012346',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: '<@901234567890123456> when is the meeting?',
       editedTimestampMs: undefined,
@@ -282,6 +287,31 @@ describe('assistant command subscriber', () => {
     ]);
   });
 
+  it('carries the member display name into the mention payload as authorName', async () => {
+    const h = harness();
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012347',
+      authorId: userId,
+      authorDisplayName: 'Ama',
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued[0]).toMatchObject({ authorName: 'Ama' });
+  });
+
   it('starts typing after an addressed mention is queued', async () => {
     const h = harness();
     await h.subscriber.handle({
@@ -294,6 +324,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012346',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId}> where is the handbook?`,
       editedTimestampMs: undefined,
@@ -305,6 +336,58 @@ describe('assistant command subscriber', () => {
     });
     expect(h.queued).toHaveLength(1);
     expect(h.sendTyping).toHaveBeenCalledWith(channelId);
+  });
+
+  it('starts typing once when the mention queues a new job', async () => {
+    const h = harness([direct, club], undefined, true);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012348',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    expect(h.sendTyping).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not start typing when the mention was already queued', async () => {
+    const h = harness([direct, club], undefined, false);
+    await h.subscriber.handle({
+      kind: 'messageCreate',
+      parentChannelId: undefined,
+      categoryId: undefined,
+      isPrivateThread: false,
+      guildId,
+      receivedAtMs: 1,
+      channelId,
+      messageId: '890123456789012349',
+      authorId: userId,
+      authorDisplayName: undefined,
+      authorIsBot: false,
+      content: `<@&${club.mentionRoleId}> where is the handbook?`,
+      editedTimestampMs: undefined,
+      mentionedUserIds: [],
+      authorRoleIds: [],
+      mentionedRoleIds: [club.mentionRoleId!],
+      mentionsEveryone: false,
+      attachments: [],
+    });
+    expect(h.queued).toHaveLength(1);
+    expect(h.sendTyping).not.toHaveBeenCalled();
   });
 
   it('does not start typing for an unaddressed or ambiguous mention', async () => {
@@ -319,6 +402,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012348',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: 'hello',
       editedTimestampMs: undefined,
@@ -346,6 +430,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012349',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId}> <@&${itBehaviour.mentionRoleId}> help`,
       editedTimestampMs: undefined,
@@ -372,6 +457,7 @@ describe('assistant command subscriber', () => {
         channelId,
         messageId: '890123456789012350',
         authorId: userId,
+        authorDisplayName: undefined,
         authorIsBot: false,
         content: `<@&${club.mentionRoleId}> where is the handbook?`,
         editedTimestampMs: undefined,
@@ -402,6 +488,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012347',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: 'and what about parking?',
       editedTimestampMs: undefined,
@@ -450,6 +537,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId}> <@&${it.mentionRoleId}> help`,
       editedTimestampMs: undefined,
@@ -474,6 +562,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId}> <@&${it.mentionRoleId}> help`,
       editedTimestampMs: undefined,
@@ -512,6 +601,7 @@ describe('assistant command subscriber', () => {
       channelId,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId!}> where is the handbook?`,
       editedTimestampMs: undefined,
@@ -542,6 +632,7 @@ describe('assistant mention failure path', () => {
       isPrivateThread: false,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId!}> where is the handbook?`,
       editedTimestampMs: undefined,
@@ -572,6 +663,7 @@ describe('assistant mention failure path', () => {
       isPrivateThread: false,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId!}> where is the handbook?`,
       editedTimestampMs: undefined,
@@ -635,6 +727,7 @@ describe('assistant mention failure path', () => {
       isPrivateThread: false,
       messageId: '890123456789012345',
       authorId: userId,
+      authorDisplayName: undefined,
       authorIsBot: false,
       content: `<@&${club.mentionRoleId!}> where is the handbook?`,
       editedTimestampMs: undefined,
