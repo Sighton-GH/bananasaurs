@@ -7,7 +7,6 @@ import {
   deliverDueReminders,
   enabledResourcesForGuild,
   resolveAssistantBehaviour,
-  extractEvidenceText,
   SAFETY_SUFFIX,
   skillInstructionLine,
   validateResourceUrl,
@@ -106,19 +105,6 @@ describe('resources and context', () => {
       // outcome (not refused), not the spelling.
       expect(() => validateResourceUrl(url), url).not.toThrow();
     }
-  });
-
-  it('reduces fetched HTML to useful page text (should-fix, round 2)', () => {
-    const html = `<!doctype html><html><head><title>Handbook</title><style>body{color:red}</style></head>
-      <body><h1>Club handbook</h1><script>steal()</script><p>Batteries must be &lt;approved&gt;.</p></body></html>`;
-    const text = extractEvidenceText('text/html', html);
-    expect(text).toContain('Club handbook');
-    expect(text).toContain('Batteries must be <approved>.');
-    expect(text).not.toContain('steal');
-    expect(text).not.toContain('color:red');
-    expect(text).not.toContain('<title>');
-    // Plain text passes through.
-    expect(extractEvidenceText('text/plain', '  hello   world ')).toBe('hello world');
   });
 
   it('redacts personal data, secrets and injection phrases in evidence, continuing the request', () => {

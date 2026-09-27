@@ -25,6 +25,7 @@ import {
   transitionDecision,
   listDecisions,
   recordResourceFetch,
+  setResourceEnabled,
   putServerCard,
   getServerCard,
   putMemory,
@@ -709,5 +710,64 @@ describe('forgetMember removes conversation turns (Task 19)', () => {
     expect(getTrace(s, 'mine')).toBeUndefined();
     expect(getTrace(s, 'theirs')).toBeDefined();
     expect(getTrace(other, 'mine')).toBeDefined();
+  });
+});
+
+describe('setResourceEnabled (Task 8c)', () => {
+  const OTHER_GUILD = parseGuildId('999999999999999999');
+  const resource = {
+    id: 'web',
+    guildId: G,
+    title: 'Site',
+    url: 'https://one.example',
+    kind: 'website' as const,
+    enabled: true,
+    reviewedAt: new Date(10).toISOString(),
+  };
+
+  it('toggles enabled and meta without touching fetch status', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, resource);
+    recordResourceFetch(s, 'web', { status: 'ok', at: 123, detail: 'fresh evidence' });
+    expect(
+      setResourceEnabled(s, 'web', {
+        enabled: false,
+        meta: { owner: 'acme', disabledByOwner: true },
+      }),
+    ).toBe(true);
+    expect(listResources(s)[0]).toMatchObject({
+      id: 'web',
+      enabled: false,
+      meta: { owner: 'acme', disabledByOwner: true },
+      fetchStatus: 'ok',
+      lastFetchedAt: 123,
+      title: 'Site',
+      url: 'https://one.example',
+    });
+  });
+
+  it('is guild-scoped: another guild is untouched and an unknown id returns false', () => {
+    guildRepo.upsertGuild(t.scopes.forGuild(OTHER_GUILD), { name: 'other', now: 1 });
+    const s = t.scopes.forGuild(G);
+    const other = t.scopes.forGuild(OTHER_GUILD);
+    putResource(s, resource);
+    recordResourceFetch(s, 'web', { status: 'ok', at: 123, detail: 'fresh evidence' });
+    putResource(other, { ...resource, guildId: OTHER_GUILD });
+    expect(setResourceEnabled(other, 'web', { enabled: false, meta: undefined })).toBe(true);
+    expect(listResources(other)[0]).toMatchObject({ enabled: false });
+    expect(listResources(s)[0]).toMatchObject({ enabled: true, fetchStatus: 'ok' });
+    expect(setResourceEnabled(other, 'missing', { enabled: false, meta: undefined })).toBe(false);
+    expect(listResources(other)).toHaveLength(1);
+    expect(listResources(s)).toHaveLength(1);
+  });
+
+  it('clears meta with meta: undefined and keeps fetch status', () => {
+    const s = t.scopes.forGuild(G);
+    putResource(s, { ...resource, meta: { owner: 'acme' } });
+    recordResourceFetch(s, 'web', { status: 'ok', at: 123, detail: 'fresh evidence' });
+    expect(setResourceEnabled(s, 'web', { enabled: true, meta: undefined })).toBe(true);
+    const row = listResources(s)[0];
+    expect(row?.meta).toBeUndefined();
+    expect(row).toMatchObject({ fetchStatus: 'ok', lastFetchedAt: 123 });
   });
 });

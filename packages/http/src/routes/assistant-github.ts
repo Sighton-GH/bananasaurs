@@ -65,10 +65,7 @@ const previewBody = z.object({ url: z.string().min(1).max(2_000) });
 
 const importBody = z.object({
   url: z.string().min(1).max(2_000),
-  repos: z.array(z.string().min(1).max(200)).max(500).optional(),
   include: z.array(z.string().min(1).max(300)).max(40).optional(),
-  includeForks: z.boolean().optional(),
-  includeArchived: z.boolean().optional(),
 });
 
 /** Reads the GitHub error kind structurally — the real `GitHubError` carries `kind`, and so do test doubles. */
@@ -107,12 +104,12 @@ export const registerAssistantGithubRoutes = (
     try {
       if (target.kind === 'org') {
         const listed = await client.listOrgRepos(target.owner);
-        const publicRepos = listed.repos.filter((s) => !s.private);
-        const repos = publicRepos.slice(0, PREVIEW_LIMIT).map((s) => ({
+        const repos = listed.repos.slice(0, PREVIEW_LIMIT).map((s) => ({
           name: s.name,
           description: s.description,
           fork: s.fork,
           archived: s.archived,
+          private: s.private,
         }));
         return reply.status(200).send({
           target: { kind: 'org', owner: target.owner },
@@ -136,6 +133,7 @@ export const registerAssistantGithubRoutes = (
       return reply.status(200).send({
         target: { kind: 'repo', owner: target.owner, repo: target.repo, branch },
         authenticated: true,
+        private: detail.private,
         files: selectRepoFiles(tree.entries),
       });
     } catch (error) {
@@ -163,51 +161,52 @@ export const registerAssistantGithubRoutes = (
     const client = clientFor();
     if (client === undefined) return reply.status(503).send({ error: 'github-not-configured' });
 
-    const includeForks = parsed.data.includeForks ?? false;
-    const includeArchived = parsed.data.includeArchived ?? false;
     const include = parsed.data.include === undefined ? undefined : [...parsed.data.include];
     const nowIso = new Date(deps.now()).toISOString();
     const enqueue = (resourceId: string): void => {
       deps.enqueueResourceRefresh?.(session.scope, resourceId, 'added');
     };
+    // Read once per request: re-import honours ADR 0084 — an existing row
+    // keeps its enabled flag and an existing `disabledByOwner` is carried
+    // into the rebuilt meta.
+    const existingById = new Map(
+      assistantRepo.listResources(session.scope).map((resource) => [resource.id, resource]),
+    );
 
     try {
       if (target.kind === 'org') {
-        const summaries = (await client.listOrgRepos(target.owner)).repos;
-        const eligible = summaries.filter(
-          (s) => !s.private && (includeForks || !s.fork) && (includeArchived || !s.archived),
-        );
-        const wanted =
-          parsed.data.repos === undefined
-            ? new Set(eligible.map((s) => s.name.toLowerCase()))
-            : new Set(parsed.data.repos.map((name) => name.toLowerCase()));
-        const selected = eligible.filter((s) => wanted.has(s.name.toLowerCase()));
+        // ADR 0084: every repository the token can see is imported — forks,
+        // archived and private alike. There is no per-repository selection:
+        // the hourly refresh adds every repository anyway.
+        const selected = (await client.listOrgRepos(target.owner)).repos;
 
         const orgId = githubOrgId(target.owner);
+        const existingOrg = existingById.get(orgId);
+        const orgDisabled = existingOrg?.meta?.disabledByOwner === true;
         assistantRepo.putResource(session.scope, {
           id: orgId,
           guildId: session.guildId,
           title: target.owner,
           url: `https://github.com/${target.owner}`,
           kind: 'github-org',
-          enabled: true,
+          enabled: existingOrg?.enabled ?? true,
           reviewedAt: nowIso,
-          meta: {
-            owner: target.owner,
-            ...(includeForks ? { includeForks: true } : {}),
-            ...(includeArchived ? { includeArchived: true } : {}),
-          },
+          meta: orgDisabled
+            ? { owner: target.owner, disabledByOwner: true }
+            : { owner: target.owner },
         });
         enqueue(orgId);
         for (const repo of selected) {
           const childId = githubChildId(target.owner, repo.name);
+          const existingChild = existingById.get(childId);
+          const childDisabled = existingChild?.meta?.disabledByOwner === true;
           assistantRepo.putResource(session.scope, {
             id: childId,
             guildId: session.guildId,
             title: `${target.owner}/${repo.name}`,
             url: `https://github.com/${target.owner}/${repo.name}`,
             kind: 'github-repo',
-            enabled: true,
+            enabled: existingChild?.enabled ?? true,
             reviewedAt: nowIso,
             parentId: orgId,
             meta: {
@@ -215,6 +214,8 @@ export const registerAssistantGithubRoutes = (
               repo: repo.name,
               branch: repo.defaultBranch,
               ...(include === undefined ? {} : { include }),
+              ...(repo.private ? { private: true } : {}),
+              ...(childDisabled ? { disabledByOwner: true as const } : {}),
             },
           });
           enqueue(childId);
@@ -235,19 +236,23 @@ export const registerAssistantGithubRoutes = (
       const detail = await client.getRepo(target.owner, target.repo);
       const branch = target.ref ?? detail.defaultBranch;
       const repoId = githubChildId(target.owner, target.repo);
+      const existingRepo = existingById.get(repoId);
+      const repoDisabled = existingRepo?.meta?.disabledByOwner === true;
       assistantRepo.putResource(session.scope, {
         id: repoId,
         guildId: session.guildId,
         title: `${target.owner}/${target.repo}`,
         url: `https://github.com/${target.owner}/${target.repo}`,
         kind: 'github-repo',
-        enabled: true,
+        enabled: existingRepo?.enabled ?? true,
         reviewedAt: nowIso,
         meta: {
           owner: target.owner,
           repo: target.repo,
           branch,
           ...(include === undefined ? {} : { include }),
+          ...(detail.private ? { private: true } : {}),
+          ...(repoDisabled ? { disabledByOwner: true as const } : {}),
         },
       });
       enqueue(repoId);

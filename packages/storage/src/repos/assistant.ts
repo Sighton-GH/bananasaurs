@@ -5,6 +5,7 @@ import type {
   PromptWizardAnswers,
   Reminder,
   ReminderStatus,
+  ResourceMeta,
 } from '@bananasaurs/core';
 import { parseResourceMeta, promptWizardAnswers } from '@bananasaurs/core';
 import {
@@ -275,6 +276,28 @@ export const putResource = (scope: GuildScope, input: ClubResource): void =>
         },
       })
       .run();
+  });
+
+/**
+ * Changes only a resource's enabled flag and meta (ADR 0084): fetch status,
+ * last-fetched time, title and URL are untouched. `meta: undefined` clears it.
+ * Returns false when this guild has no resource with that id.
+ */
+export const setResourceEnabled = (
+  scope: GuildScope,
+  id: string,
+  input: { readonly enabled: boolean; readonly meta: ResourceMeta | undefined },
+): boolean =>
+  write(scope, ({ db }) => {
+    const result = db
+      .update(assistantResources)
+      .set({
+        enabled: input.enabled ? 1 : 0,
+        metaJson: input.meta === undefined ? null : JSON.stringify(input.meta),
+      })
+      .where(scope.only(assistantResources, eq(assistantResources.resourceId, id)))
+      .run();
+    return result.changes === 1;
   });
 export const recordResourceFetch = (
   scope: GuildScope,

@@ -26,6 +26,7 @@ export const registerAssistantResourceCacheRoutes = (
     if (session === undefined) return reply;
     if (!requireCapability(session, 'config.read', reply)) return reply;
 
+    const tokenState = deps.assistantProviderConfig?.githubTokenConfigured?.();
     return reply.status(200).send({
       freshness: resourceCacheRepo.resourceFreshness(session.scope).map((row) => {
         const errorExplain =
@@ -35,6 +36,7 @@ export const registerAssistantResourceCacheRoutes = (
           ...(errorExplain === undefined ? {} : { errorExplain }),
         };
       }),
+      ...(tokenState === undefined ? {} : { githubTokenConfigured: tokenState }),
     });
   });
 

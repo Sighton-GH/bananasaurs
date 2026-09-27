@@ -380,10 +380,78 @@ const rawOf = (db: Db): Database.Database =>
  */
 const WORD_RE = /[\p{L}\p{N}_]+/gu;
 
+/** Words too common to narrow a search; dropped from queries unless nothing else is left. */
+const FTS_STOPWORDS: ReadonlySet<string> = new Set([
+  'a',
+  'an',
+  'and',
+  'are',
+  'as',
+  'at',
+  'be',
+  'but',
+  'by',
+  'can',
+  'could',
+  'do',
+  'does',
+  'for',
+  'from',
+  'get',
+  'have',
+  'how',
+  'i',
+  'if',
+  'in',
+  'into',
+  'is',
+  'it',
+  'its',
+  'me',
+  'my',
+  'of',
+  'on',
+  'or',
+  'please',
+  'should',
+  'so',
+  'that',
+  'the',
+  'their',
+  'then',
+  'there',
+  'these',
+  'this',
+  'to',
+  'want',
+  'was',
+  'we',
+  'what',
+  'when',
+  'where',
+  'which',
+  'who',
+  'why',
+  'will',
+  'with',
+  'would',
+  'you',
+  'your',
+]);
+
 /** Quoted tokens joined by `OR` — every token an FTS5 string literal, never operator syntax. Empty for a query with no word characters. */
 export const sanitiseFtsQuery = (raw: string): string => {
   const words = raw.match(WORD_RE) ?? [];
-  return words.map((w) => `"${w}"`).join(' OR ');
+  const kept = words.filter((w) => !FTS_STOPWORDS.has(w.toLowerCase()));
+  const narrowed = kept.length > 0 ? kept : words;
+  const seen = new Set<string>();
+  const deduped = narrowed.filter((w) => {
+    const key = w.toLowerCase();
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return deduped.map((w) => `"${w}"`).join(' OR ');
 };
 
 const SNIPPET_MAX_CHARS = 300;

@@ -76,7 +76,9 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   replied-to message is sent to the AI provider as context for the answer.
 - Content from GitHub repositories and organisations the owner adds is fetched
   from GitHub and cached on the club's server so the assistant can answer
-  from it.
+  from it. This includes private repositories that the owner's GitHub token
+  can read: any member who can ask the assistant may get answers drawn from
+  them, and excerpts are sent to the AI provider like any other source.
 - The owner can reveal dashboard account passwords from an encrypted copy
   kept on the server. Every reveal is recorded in the audit log without the
   password itself.

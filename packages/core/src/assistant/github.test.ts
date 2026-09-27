@@ -1,5 +1,23 @@
 import { describe, expect, it } from 'vitest';
-import { parseGitHubUrl, rawGitHubUrl, selectRepoFiles } from './github.js';
+import { isGithubWebHost, parseGitHubUrl, rawGitHubUrl, selectRepoFiles } from './github.js';
+
+describe('isGithubWebHost', () => {
+  it('is true for github.com and case-insensitive www.github.com', () => {
+    expect(isGithubWebHost('github.com')).toBe(true);
+    expect(isGithubWebHost('WWW.GitHub.com')).toBe(true);
+  });
+
+  it('is true for a trailing-dot hostname, which DNS resolves to the same host', () => {
+    expect(isGithubWebHost(new URL('https://github.com./acme/widget').hostname)).toBe(true);
+    expect(isGithubWebHost('www.github.com.')).toBe(true);
+  });
+
+  it('is false for raw hosts, gists and other sites', () => {
+    expect(isGithubWebHost('raw.githubusercontent.com')).toBe(false);
+    expect(isGithubWebHost('gist.github.com')).toBe(false);
+    expect(isGithubWebHost('example.com')).toBe(false);
+  });
+});
 
 describe('parseGitHubUrl', () => {
   it('parses a bare org/user URL as kind org', () => {
@@ -151,12 +169,12 @@ describe('selectRepoFiles', () => {
     expect(selected).not.toContain('vendor/lib/README.md');
   });
 
-  it('caps at 40 files', () => {
-    const entries = Array.from({ length: 60 }, (_, i) => ({
+  it('caps at 100 files', () => {
+    const entries = Array.from({ length: 120 }, (_, i) => ({
       path: `docs/page-${String(i).padStart(2, '0')}.md`,
       type: 'blob' as const,
     }));
-    expect(selectRepoFiles(entries)).toHaveLength(40);
+    expect(selectRepoFiles(entries)).toHaveLength(100);
   });
 
   it('drops files over 200 KB and stops adding once the 2 MB total is reached', () => {
@@ -186,5 +204,80 @@ describe('selectRepoFiles', () => {
     expect(selected).toEqual(expect.arrayContaining(['src/app.ts', 'src/lib.ts']));
     expect(selected).not.toContain('README.md');
     expect(selected).not.toContain('node_modules/dep/index.ts');
+  });
+
+  it('selects nested markdown outside docs/ but never images', () => {
+    const entries = [
+      { path: 'README.md', type: 'blob' as const },
+      { path: 'CONTRIBUTING.md', type: 'blob' as const },
+      { path: 'labs/lab-1/LAB-1.md', type: 'blob' as const },
+      { path: 'notes/LECTURE-1.md', type: 'blob' as const },
+      { path: 'resources/WORKFLOW.md', type: 'blob' as const },
+      { path: 'assets/module-a/lecture-1/ppc.png', type: 'blob' as const },
+    ];
+    const selected = selectRepoFiles(entries);
+    expect(selected).toEqual(
+      expect.arrayContaining([
+        'README.md',
+        'CONTRIBUTING.md',
+        'labs/lab-1/LAB-1.md',
+        'notes/LECTURE-1.md',
+        'resources/WORKFLOW.md',
+      ]),
+    );
+    expect(selected).not.toContain('assets/module-a/lecture-1/ppc.png');
+  });
+
+  it('orders root README, docs/, nested READMEs, other markdown, CHANGELOG last', () => {
+    const entries = [
+      { path: 'README.md', type: 'blob' as const },
+      { path: 'docs/operations.md', type: 'blob' as const },
+      { path: 'src/gap_follow/README.md', type: 'blob' as const },
+      { path: 'src/gap_follow/gap_follow/gap_logic.py', type: 'blob' as const },
+      { path: '.claude/skills/novice-docs/SKILL.md', type: 'blob' as const },
+      { path: 'src/f1tenth_system/.github/ISSUE_TEMPLATE/bug_report.md', type: 'blob' as const },
+      { path: 'CHANGELOG.md', type: 'blob' as const },
+      { path: 'AGENTS.md', type: 'blob' as const },
+    ];
+    expect(selectRepoFiles(entries)).toEqual([
+      'README.md',
+      'docs/operations.md',
+      'src/gap_follow/README.md',
+      'AGENTS.md',
+      'CHANGELOG.md',
+    ]);
+  });
+
+  it('orders shallower READMEs before deeper ones within a rank', () => {
+    const entries = [
+      { path: 'src/a/b/README.md', type: 'blob' as const },
+      { path: 'src/z/README.md', type: 'blob' as const },
+    ];
+    expect(selectRepoFiles(entries)).toEqual(['src/z/README.md', 'src/a/b/README.md']);
+  });
+
+  it('drops the lowest priority files first when over the file cap', () => {
+    const entries = [
+      { path: 'README.md', type: 'blob' as const },
+      ...Array.from({ length: 99 }, (_, i) => ({
+        path: `docs/page-${String(i).padStart(2, '0')}.md`,
+        type: 'blob' as const,
+      })),
+      { path: 'src/x/README.md', type: 'blob' as const },
+      { path: 'NOTES.md', type: 'blob' as const },
+    ];
+    const selected = selectRepoFiles(entries);
+    expect(selected).toHaveLength(100);
+    expect(selected).not.toContain('src/x/README.md');
+    expect(selected).not.toContain('NOTES.md');
+  });
+
+  it('excludes dot-segments and vendor/ from caller-supplied include globs', () => {
+    const entries = [
+      { path: 'src/a.py', type: 'blob' as const },
+      { path: 'src/.hidden/b.py', type: 'blob' as const },
+      { path: 'vendor/c.py', type: 'blob' as const },
+    ];
+    expect(selectRepoFiles(entries, { include: ['src/**/*.py'] })).toEqual(['src/a.py']);
   });
 });

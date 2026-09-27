@@ -1,11 +1,25 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { pino } from 'pino';
-import { parseGuildId, type ClubResource, type Logger } from '@bananasaurs/core';
+import { parseGuildId, type Chunk, type ClubResource, type Logger } from '@bananasaurs/core';
 import type { GuildScope } from '@bananasaurs/storage';
 import {
   openMigratedTestDatabase,
   type MigratedTestDatabase,
 } from '@bananasaurs/storage/test-support';
+import type {
+  GitHubClient,
+  GitHubFileResult,
+  GitHubOrgRepos,
+  GitHubRepoDetail,
+  GitHubRepoSummary,
+  GitHubTreeResult,
+} from '../assistant/github-client.js';
+import type {
+  GithubCacheStore,
+  GithubRefreshDeps,
+  GithubResourceStore,
+  StoredDoc,
+} from '../assistant/github-refresh.js';
 import type {
   ResourceRefreshDeps,
   ResourceRefreshFetcher,
@@ -190,5 +204,213 @@ describe('resourceRefreshHandler', () => {
     const [fields, message] = info.mock.calls[0] as [Record<string, unknown>, string];
     expect(fields).toMatchObject({ resourceId: 'gh-1', outcome: 'skipped' });
     expect(message).toBe('resource cache: refreshed gh-1 -> skipped (reason=manual)');
+  });
+});
+
+describe('resourceRefreshHandler — new org children refresh in the same run (ADR 0084)', () => {
+  const ghOrg = (over: Partial<ClubResource> = {}): ClubResource =>
+    resource({
+      id: 'gh-acme',
+      title: 'acme',
+      url: 'https://github.com/acme',
+      kind: 'github-org',
+      meta: { owner: 'acme' },
+      ...over,
+    });
+
+  const repoSummary = (name: string): GitHubRepoSummary => ({
+    name,
+    description: `${name} description`,
+    defaultBranch: 'main',
+    fork: false,
+    archived: false,
+    private: false,
+  });
+
+  class FakeGithubClient implements GitHubClient {
+    authenticated = true;
+    orgRepos: GitHubRepoSummary[] = [];
+    readonly repoCalls: string[] = [];
+
+    async listOrgRepos(_owner: string): Promise<GitHubOrgRepos> {
+      return { repos: this.orgRepos, truncated: false };
+    }
+    async getRepo(_owner: string, repo: string): Promise<GitHubRepoDetail> {
+      this.repoCalls.push(repo);
+      return { defaultBranch: 'main', description: null, private: false };
+    }
+    async listTree(): Promise<GitHubTreeResult> {
+      return { entries: [], truncated: false };
+    }
+    async getFileRaw(): Promise<GitHubFileResult> {
+      throw new Error('public repos never use getFileRaw');
+    }
+  }
+
+  class FakeGithubStore implements GithubResourceStore {
+    readonly rows = new Map<string, ClubResource>();
+    readonly fetchRecords: string[] = [];
+
+    listResources(_scope: GuildScope): readonly ClubResource[] {
+      return [...this.rows.values()];
+    }
+    putResource(_scope: GuildScope, input: ClubResource): void {
+      this.rows.set(input.id, input);
+    }
+    setResourceEnabled(
+      _scope: GuildScope,
+      id: string,
+      input: { readonly enabled: boolean; readonly meta: ClubResource['meta'] },
+    ): boolean {
+      const row = this.rows.get(id);
+      if (row === undefined) return false;
+      const rest = { ...row };
+      delete rest.meta;
+      this.rows.set(
+        id,
+        input.meta === undefined
+          ? { ...rest, enabled: input.enabled }
+          : { ...rest, enabled: input.enabled, meta: input.meta },
+      );
+      return true;
+    }
+    recordResourceFetch(
+      _scope: GuildScope,
+      id: string,
+      _input: {
+        readonly status: 'ok' | 'failed' | 'blocked';
+        readonly at: number;
+        readonly detail: string;
+      },
+    ): void {
+      this.fetchRecords.push(id);
+    }
+  }
+
+  class FakeGithubCache implements GithubCacheStore {
+    getDocumentByUrl(_scope: GuildScope, _url: string): StoredDoc | undefined {
+      return undefined;
+    }
+    listDocuments(_scope: GuildScope, _resourceId: string): readonly StoredDoc[] {
+      return [];
+    }
+    upsertDocument(): void {
+      /* not asserted here */
+    }
+    replaceChunks(
+      _scope: GuildScope,
+      _docId: string,
+      _resourceId: string,
+      _chunks: readonly Chunk[],
+    ): void {
+      /* not asserted here */
+    }
+    deleteDocument(): void {
+      /* not asserted here */
+    }
+  }
+
+  const capturingLogger = () => {
+    const info = vi.fn();
+    const capturing = {
+      info,
+      warn() {},
+      error() {},
+      debug() {},
+      fatal() {},
+      trace() {},
+    } as unknown as Logger;
+    return { info, capturing };
+  };
+
+  const setup = () => {
+    const client = new FakeGithubClient();
+    client.orgRepos = [repoSummary('widget')];
+    const store = new FakeGithubStore();
+    store.rows.set('gh-acme', ghOrg());
+    const github: GithubRefreshDeps = {
+      client,
+      fetcher: { fetch: (url: string) => Promise.resolve(okResult(url)) },
+      store,
+      cache: new FakeGithubCache(),
+      now: () => 1_000,
+    };
+    return { client, store, github };
+  };
+
+  it('a sweep refreshes an org-created child in the same run and counts it', async () => {
+    const { info, capturing } = capturingLogger();
+    const { client, store, github } = setup();
+    const handler = resourceRefreshHandler({
+      scope: SCOPE,
+      listResources: (scope) => store.listResources(scope),
+      refresh: { fetcher: { fetch: vi.fn() }, repo: new FakeRepo(), now: () => 1_000 },
+      github,
+      logger: capturing,
+    });
+
+    await handler.run({ reason: 'hourly' }, runCtx);
+
+    expect(store.rows.has('gh-acme-widget')).toBe(true);
+    // The new child was refreshed in this same run, not left for the next sweep.
+    expect(client.repoCalls).toEqual(['widget']);
+    expect(store.fetchRecords).toEqual(['gh-acme', 'gh-acme-widget']);
+    expect(info).toHaveBeenCalledTimes(1);
+    const [fields, message] = info.mock.calls[0] as [Record<string, unknown>, string];
+    expect(fields).toMatchObject({ count: 2 });
+    expect(message).toBe('resource cache: refreshed 2 resource(s) (reason=hourly)');
+  });
+
+  it('an existing child is not refreshed twice in one sweep', async () => {
+    const { client, store, github } = setup();
+    store.rows.set(
+      'gh-acme-widget',
+      resource({
+        id: 'gh-acme-widget',
+        title: 'acme/widget',
+        url: 'https://github.com/acme/widget',
+        kind: 'github-repo',
+        parentId: 'gh-acme',
+        meta: { owner: 'acme', repo: 'widget', branch: 'main', autoDiscovered: true },
+      }),
+    );
+    const handler = resourceRefreshHandler({
+      scope: SCOPE,
+      listResources: (scope) => store.listResources(scope),
+      refresh: { fetcher: { fetch: vi.fn() }, repo: new FakeRepo(), now: () => 1_000 },
+      github,
+      logger,
+    });
+
+    await handler.run({ reason: 'hourly' }, runCtx);
+
+    // Once from the sweep loop; the new-children pass skips it.
+    expect(client.repoCalls).toEqual(['widget']);
+    expect(store.fetchRecords).toEqual(['gh-acme', 'gh-acme-widget']);
+  });
+
+  it('a single-org refresh refreshes the new child in the same run', async () => {
+    const { info, capturing } = capturingLogger();
+    const { client, store, github } = setup();
+    const handler = resourceRefreshHandler({
+      scope: SCOPE,
+      listResources: (scope) => store.listResources(scope),
+      refresh: { fetcher: { fetch: vi.fn() }, repo: new FakeRepo(), now: () => 1_000 },
+      github,
+      logger: capturing,
+    });
+
+    await handler.run({ resourceId: 'gh-acme', reason: 'manual' }, runCtx);
+
+    expect(store.rows.has('gh-acme-widget')).toBe(true);
+    expect(client.repoCalls).toEqual(['widget']);
+    expect(info).toHaveBeenCalledTimes(2);
+    const [, orgMessage] = info.mock.calls[0] as [Record<string, unknown>, string];
+    const [childFields, childMessage] = info.mock.calls[1] as [Record<string, unknown>, string];
+    expect(orgMessage).toBe('resource cache: refreshed gh-acme -> ok (reason=manual)');
+    expect(childFields).toMatchObject({ resourceId: 'gh-acme-widget' });
+    expect(childMessage).toBe(
+      'resource cache: refreshed gh-acme-widget -> not-modified (reason=manual)',
+    );
   });
 });

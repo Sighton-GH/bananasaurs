@@ -208,6 +208,7 @@ describe('POST /api/assistant/github/preview', () => {
     expect(response.json()).toEqual({
       target: { kind: 'repo', owner: 'acme', repo: 'widget', branch: 'main' },
       authenticated: true,
+      private: false,
       files: ['README.md', 'docs/guide.md'],
     });
     expect(client.calls.listTree).toBe(1);
@@ -229,7 +230,26 @@ describe('POST /api/assistant/github/preview', () => {
     expect(client.calls.listTree).toBe(0);
   });
 
-  it('previews an org: public repos with flags, private ones excluded', async () => {
+  it('previews a private repo with private: true', async () => {
+    const { cookie, csrf } = await signIn();
+    client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    client.tree = {
+      entries: [{ path: 'README.md', type: 'blob', size: 120 }],
+      truncated: false,
+    };
+    const response = await post(cookie, csrf, '/api/assistant/github/preview', {
+      url: 'https://github.com/acme/secret',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      target: { kind: 'repo', owner: 'acme', repo: 'secret', branch: 'main' },
+      authenticated: true,
+      private: true,
+      files: ['README.md'],
+    });
+  });
+
+  it('previews an org: every repo listed with its private flag', async () => {
     const { cookie, csrf } = await signIn();
     client.orgRepos = [
       summary('widget', { description: 'Does things' }),
@@ -244,8 +264,27 @@ describe('POST /api/assistant/github/preview', () => {
       target: { kind: 'org', owner: 'acme' },
       authenticated: true,
       repos: [
-        { name: 'widget', description: 'Does things', fork: false, archived: false },
-        { name: 'forked', description: 'forked description', fork: true, archived: false },
+        {
+          name: 'widget',
+          description: 'Does things',
+          fork: false,
+          archived: false,
+          private: false,
+        },
+        {
+          name: 'forked',
+          description: 'forked description',
+          fork: true,
+          archived: false,
+          private: false,
+        },
+        {
+          name: 'secret',
+          description: 'secret description',
+          fork: false,
+          archived: false,
+          private: true,
+        },
       ],
       truncated: false,
     });
@@ -314,15 +353,20 @@ describe('POST /api/assistant/github/preview', () => {
 describe('POST /api/assistant/github/import', () => {
   beforeEach(() => grant('config.write'));
 
-  it('imports an org with selected repos, enqueues a refresh for each, audits counts only', async () => {
+  it('imports an org with every listed repository, enqueues a refresh for each, audits counts only', async () => {
     const { cookie, csrf } = await signIn();
-    client.orgRepos = [summary('widget'), summary('gadget'), summary('forked', { fork: true })];
+    client.orgRepos = [
+      summary('widget'),
+      summary('gadget'),
+      summary('forked', { fork: true }),
+      summary('old', { archived: true }),
+      summary('secret', { private: true }),
+    ];
     const response = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme',
-      repos: ['widget', 'gadget'],
     });
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({ created: 3 });
+    expect(response.json()).toEqual({ created: 6 });
 
     const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
     const org = resources.find((r) => r.kind === 'github-org');
@@ -333,23 +377,36 @@ describe('POST /api/assistant/github/import', () => {
       enabled: true,
       meta: { owner: 'acme' },
     });
+    expect(org?.meta).toEqual({ owner: 'acme' });
     const children = resources.filter((r) => r.parentId === org?.id);
-    expect(children.map((c) => c.title).sort()).toEqual(['acme/gadget', 'acme/widget']);
-    expect(children[0]).toMatchObject({
+    expect(children.map((c) => c.title).sort()).toEqual([
+      'acme/forked',
+      'acme/gadget',
+      'acme/old',
+      'acme/secret',
+      'acme/widget',
+    ]);
+    expect(resources.find((r) => r.id === 'gh-acme-gadget')).toMatchObject({
       kind: 'github-repo',
       enabled: true,
       meta: { owner: 'acme', repo: 'gadget', branch: 'main' },
     });
-    expect(children[0]?.meta).not.toHaveProperty('autoDiscovered');
+    expect(resources.find((r) => r.id === 'gh-acme-gadget')?.meta).not.toHaveProperty(
+      'autoDiscovered',
+    );
+    expect(resources.find((r) => r.id === 'gh-acme-secret')?.meta).toMatchObject({ private: true });
     expect(enqueued).toEqual([
       { resourceId: 'gh-acme', reason: 'added' },
       { resourceId: 'gh-acme-widget', reason: 'added' },
       { resourceId: 'gh-acme-gadget', reason: 'added' },
+      { resourceId: 'gh-acme-forked', reason: 'added' },
+      { resourceId: 'gh-acme-old', reason: 'added' },
+      { resourceId: 'gh-acme-secret', reason: 'added' },
     ]);
 
     const rows = auditRows();
     expect(rows).toHaveLength(1);
-    expect(JSON.parse(rows[0]?.after as string)).toEqual({ kind: 'org', created: 3 });
+    expect(JSON.parse(rows[0]?.after as string)).toEqual({ kind: 'org', created: 6 });
     const serialised = JSON.stringify(rows[0]);
     expect(serialised).not.toContain('widget');
     expect(serialised).not.toContain('github.com');
@@ -357,23 +414,17 @@ describe('POST /api/assistant/github/import', () => {
     expect(response.body.toLowerCase()).not.toContain('authorization');
   });
 
-  it('stores the forks/archived toggles and the include globs', async () => {
+  it('stores the include globs on each org child and keeps the org meta to owner only', async () => {
     const { cookie, csrf } = await signIn();
     client.orgRepos = [summary('forked', { fork: true }), summary('old', { archived: true })];
     const response = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme',
-      includeForks: true,
-      includeArchived: true,
       include: ['docs/**'],
     });
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ created: 3 });
     const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
-    expect(resources.find((r) => r.kind === 'github-org')?.meta).toEqual({
-      owner: 'acme',
-      includeForks: true,
-      includeArchived: true,
-    });
+    expect(resources.find((r) => r.kind === 'github-org')?.meta).toEqual({ owner: 'acme' });
     for (const child of resources.filter((r) => r.kind === 'github-repo')) {
       expect(child.meta).toMatchObject({ include: ['docs/**'] });
     }
@@ -401,6 +452,47 @@ describe('POST /api/assistant/github/import', () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ action: 'assistant_resource.github_imported' });
     expect(JSON.parse(rows[0]?.after as string)).toEqual({ kind: 'repo', created: 1 });
+  });
+
+  it('imports an org with a private repo, marking only the private child', async () => {
+    const { cookie, csrf } = await signIn();
+    client.orgRepos = [summary('widget'), summary('secret', { private: true })];
+    const response = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ created: 3 });
+    const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
+    const secret = resources.find((r) => r.id === 'gh-acme-secret');
+    expect(secret?.meta).toMatchObject({ owner: 'acme', repo: 'secret', private: true });
+    expect(resources.find((r) => r.id === 'gh-acme-widget')?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'main',
+    });
+  });
+
+  it('imports a private repo with meta.private: true, and omits the key for public repos', async () => {
+    const { cookie, csrf } = await signIn();
+    client.repoDetail = { defaultBranch: 'main', description: null, private: true };
+    const response = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme/secret',
+    });
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ created: 1 });
+    const resources = assistantRepo.listResources(t.scopes.forGuild(GUILD));
+    expect(resources).toHaveLength(1);
+    expect(resources[0]?.meta).toMatchObject({ owner: 'acme', repo: 'secret', private: true });
+
+    client.repoDetail = { defaultBranch: 'main', description: null, private: false };
+    const pub = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme/widget',
+    });
+    expect(pub.statusCode).toBe(200);
+    expect(
+      assistantRepo.listResources(t.scopes.forGuild(GUILD)).find((r) => r.id === 'gh-acme-widget')
+        ?.meta,
+    ).toEqual({ owner: 'acme', repo: 'widget', branch: 'main' });
   });
 
   it('answers 400 not-github and creates nothing', async () => {
@@ -437,9 +529,101 @@ describe('POST /api/assistant/github/import', () => {
     const { cookie, csrf } = await signIn();
     const response = await post(cookie, csrf, '/api/assistant/github/import', {
       url: 'https://github.com/acme',
-      repos: 'widget',
+      include: 'docs/**',
     });
     expect(response.statusCode).toBe(400);
     expect(auditRows()).toHaveLength(0);
+  });
+
+  it('re-importing an org never re-enables an owner-disabled child and creates newly listed repos enabled', async () => {
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    client.orgRepos = [summary('widget'), summary('gadget')];
+    expect(
+      (await post(cookie, csrf, '/api/assistant/github/import', { url: 'https://github.com/acme' }))
+        .statusCode,
+    ).toBe(200);
+    assistantRepo.setResourceEnabled(scope, 'gh-acme-gadget', {
+      enabled: false,
+      meta: { owner: 'acme', repo: 'gadget', branch: 'main', disabledByOwner: true },
+    });
+
+    client.orgRepos = [summary('widget'), summary('gadget'), summary('fresh')];
+    const second = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme',
+    });
+    expect(second.statusCode).toBe(200);
+
+    const resources = assistantRepo.listResources(scope);
+    const gadget = resources.find((r) => r.id === 'gh-acme-gadget');
+    expect(gadget).toMatchObject({ enabled: false });
+    expect(gadget?.meta).toEqual({
+      owner: 'acme',
+      repo: 'gadget',
+      branch: 'main',
+      disabledByOwner: true,
+    });
+    expect(resources.find((r) => r.id === 'gh-acme-widget')).toMatchObject({ enabled: true });
+    expect(resources.find((r) => r.id === 'gh-acme-fresh')).toMatchObject({ enabled: true });
+  });
+
+  it('re-importing a single owner-disabled repo keeps it disabled', async () => {
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    expect(
+      (
+        await post(cookie, csrf, '/api/assistant/github/import', {
+          url: 'https://github.com/acme/widget',
+        })
+      ).statusCode,
+    ).toBe(200);
+    assistantRepo.setResourceEnabled(scope, 'gh-acme-widget', {
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', disabledByOwner: true },
+    });
+
+    const second = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme/widget',
+    });
+    expect(second.statusCode).toBe(200);
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: false });
+    expect(stored?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'main',
+      disabledByOwner: true,
+    });
+  });
+
+  it('re-import still updates branch, include and private meta without dropping disabledByOwner', async () => {
+    const { cookie, csrf } = await signIn();
+    const scope = t.scopes.forGuild(GUILD);
+    client.orgRepos = [summary('widget', { defaultBranch: 'main' })];
+    expect(
+      (await post(cookie, csrf, '/api/assistant/github/import', { url: 'https://github.com/acme' }))
+        .statusCode,
+    ).toBe(200);
+    assistantRepo.setResourceEnabled(scope, 'gh-acme-widget', {
+      enabled: false,
+      meta: { owner: 'acme', repo: 'widget', branch: 'main', disabledByOwner: true },
+    });
+
+    client.orgRepos = [summary('widget', { defaultBranch: 'develop', private: true })];
+    const second = await post(cookie, csrf, '/api/assistant/github/import', {
+      url: 'https://github.com/acme',
+      include: ['docs/**'],
+    });
+    expect(second.statusCode).toBe(200);
+    const stored = assistantRepo.listResources(scope).find((r) => r.id === 'gh-acme-widget');
+    expect(stored).toMatchObject({ enabled: false });
+    expect(stored?.meta).toEqual({
+      owner: 'acme',
+      repo: 'widget',
+      branch: 'develop',
+      include: ['docs/**'],
+      private: true,
+      disabledByOwner: true,
+    });
   });
 });

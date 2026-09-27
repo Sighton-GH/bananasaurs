@@ -1,4 +1,5 @@
 import { useCallback, useState } from 'react';
+import { Link } from 'wouter';
 import type { ClubResource } from '@bananasaurs/core';
 import {
   ASSISTANT_URL,
@@ -6,11 +7,13 @@ import {
   GITHUB_PREVIEW_URL,
   RESOURCE_FRESHNESS_URL,
   RESOURCE_REFRESH_ALL_URL,
+  resourceEnabledUrl,
   resourceRefreshUrl,
   resourceUrl,
   type AssistantData,
   type GithubImportResult,
   type GithubPreview,
+  type ResourceFreshnessResponse,
   type ResourceFreshnessRow,
 } from '../api/assistant.js';
 import { useSession, type Session } from '../app/session.js';
@@ -94,16 +97,12 @@ function GithubPanel({
   const [importBusy, setImportBusy] = useState(false);
   const [checkedFiles, setCheckedFiles] = useState<readonly string[] | undefined>(undefined);
   const [fileFilter, setFileFilter] = useState('');
-  const [checkedRepos, setCheckedRepos] = useState<readonly string[] | undefined>(undefined);
-  const [includeForks, setIncludeForks] = useState(false);
-  const [includeArchived, setIncludeArchived] = useState(false);
 
   const runPreview = async () => {
     setPreviewBusy(true);
     setError(undefined);
     setPreview(undefined);
     setCheckedFiles(undefined);
-    setCheckedRepos(undefined);
     setFileFilter('');
     try {
       const result = await session.writeOrThrow<GithubPreview>(GITHUB_PREVIEW_URL, { url }, 'POST');
@@ -111,7 +110,6 @@ function GithubPanel({
       if (result === undefined) return;
       setPreview(result);
       if (result.files !== undefined) setCheckedFiles(result.files);
-      if (result.repos !== undefined) setCheckedRepos(result.repos.map((r) => r.name));
     } catch (err) {
       setError(err);
     } finally {
@@ -155,11 +153,12 @@ function GithubPanel({
       : files.filter((path) => path.toLowerCase().includes(fileFilter.trim().toLowerCase()));
   const allFiles = preview?.files ?? [];
   const filesSelection = checkedFiles ?? allFiles;
-  const shownRepos = (preview?.repos ?? []).filter(
-    (repo) => (includeForks || !repo.fork) && (includeArchived || !repo.archived),
-  );
-  const shownNames = new Set(shownRepos.map((repo) => repo.name));
-  const reposSelection = (checkedRepos ?? []).filter((name) => shownNames.has(name));
+  // ADR 0084: an organisation import takes every repository the token can
+  // see. The preview list is read-only — no forks/archived toggles and no
+  // per-repository checkboxes.
+  const orgRepos = preview?.repos ?? [];
+  const showsPrivateNotice =
+    preview?.private === true || (preview?.repos ?? []).some((repo) => repo.private === true);
   const urlProblem = fieldError(error, 'url');
 
   return (
@@ -167,7 +166,7 @@ function GithubPanel({
       <div className="grid gap-3">
         <Field
           label="GitHub URL"
-          hint="A public repository or organisation, for example https://github.com/acme/widget."
+          hint="A repository or organisation, for example https://github.com/acme/widget. Private repositories need a GitHub token that can read them."
           {...(urlProblem === undefined ? {} : { error: urlProblem })}
         >
           <Input
@@ -192,62 +191,46 @@ function GithubPanel({
       )}
       {preview !== undefined && (
         <div className="mt-3">
+          {showsPrivateNotice && (
+            <p role="note" className="text-sm">
+              Private repositories: club members will be able to ask about them, and their text is
+              sent to your AI providers, which may train on it.
+            </p>
+          )}
           {!preview.authenticated && (
             <p className="text-sm text-ink-muted">
-              <HelpTip label="GitHub token limits">
-                Without a GitHub token only README files are read and organisations refresh once a
-                day. Add a token on the AI setup page.
-              </HelpTip>
+              Without a GitHub token, only the README is read and organisations refresh once a day.
+              Add a token on the{' '}
+              <Link href="/assistant/setup" className="underline">
+                AI setup page
+              </Link>
+              .
             </p>
           )}
           {isOrg ? (
             <>
               <p className="text-sm">
-                {`${String(preview.repos?.length ?? 0)} public repositor${(preview.repos?.length ?? 0) === 1 ? 'y' : 'ies'}`}
+                {`${String(orgRepos.length)} repositor${orgRepos.length === 1 ? 'y' : 'ies'}. All of them are added, and new ones are added automatically.`}
               </p>
               {preview.truncated === true && (
                 <p className="text-sm text-ink-muted">Showing the first 500 repositories.</p>
               )}
-              {(preview.repos?.length ?? 0) === 0 ? (
-                <p className="mt-2 text-sm">This organisation has no public repositories.</p>
+              {orgRepos.length === 0 ? (
+                <p className="mt-2 text-sm">
+                  This organisation has no repositories this token can see.
+                </p>
               ) : (
                 <>
-                  <div className="mt-2 flex flex-wrap gap-4 text-sm">
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={includeForks}
-                        onChange={(e) => setIncludeForks(e.target.checked)}
-                      />
-                      Include forks
-                    </label>
-                    <label className="flex items-center gap-2">
-                      <input
-                        type="checkbox"
-                        checked={includeArchived}
-                        onChange={(e) => setIncludeArchived(e.target.checked)}
-                      />
-                      Include archived
-                    </label>
-                  </div>
                   <ul className="mt-2 grid gap-1">
-                    {shownRepos.map((repo) => (
-                      <li key={repo.name}>
-                        <label className="flex items-center gap-2 text-sm">
-                          <input
-                            type="checkbox"
-                            checked={(checkedRepos ?? []).includes(repo.name)}
-                            onChange={() =>
-                              setCheckedRepos(toggleIn(checkedRepos ?? [], repo.name))
-                            }
-                          />
-                          <span>{repo.name}</span>
-                          {repo.description !== null && (
-                            <span className="text-ink-muted">{repo.description}</span>
-                          )}
-                          {repo.fork && <span className="text-ink-muted">fork</span>}
-                          {repo.archived && <span className="text-ink-muted">archived</span>}
-                        </label>
+                    {orgRepos.map((repo) => (
+                      <li key={repo.name} className="flex flex-wrap items-center gap-2 text-sm">
+                        <span>{repo.name}</span>
+                        {repo.private === true && <Badge tone="hold">Private</Badge>}
+                        {repo.description !== null && (
+                          <span className="text-ink-muted">{repo.description}</span>
+                        )}
+                        {repo.fork && <span className="text-ink-muted">fork</span>}
+                        {repo.archived && <span className="text-ink-muted">archived</span>}
                       </li>
                     ))}
                   </ul>
@@ -255,17 +238,9 @@ function GithubPanel({
                     <Button
                       variant="primary"
                       busy={importBusy}
-                      disabled={reposSelection.length === 0}
-                      onClick={() =>
-                        void runImport({
-                          url,
-                          repos: reposSelection,
-                          includeForks,
-                          includeArchived,
-                        })
-                      }
+                      onClick={() => void runImport({ url })}
                     >
-                      Add
+                      Import organisation
                     </Button>
                   </div>
                 </>
@@ -320,15 +295,101 @@ function GithubPanel({
   );
 }
 
+/** One resource row, shared by top-level items and organisation children (ADR 0084). */
+function ResourceRow({
+  resource,
+  freshnessRow,
+  githubTokenConfigured,
+  refreshingId,
+  onUpdateNow,
+  onEdit,
+  onToggleEnabled,
+}: {
+  readonly resource: ClubResource;
+  readonly freshnessRow: ResourceFreshnessRow | undefined;
+  readonly githubTokenConfigured: boolean | undefined;
+  readonly refreshingId: string | undefined;
+  readonly onUpdateNow: (resource: ClubResource) => void;
+  readonly onEdit: (resource: ClubResource) => void;
+  readonly onToggleEnabled: (resource: ClubResource) => void;
+}) {
+  const row = freshnessRow;
+  const status = cacheStatusOf(resource, row);
+  // GitHub rows have no Edit button: their title, URL and files come from GitHub.
+  const editable = resource.kind !== 'github-repo' && resource.kind !== 'github-org';
+  return (
+    <>
+      <div className="flex items-start justify-between gap-2">
+        <p className="min-w-0 font-medium">{resource.title}</p>
+        <StatusPill status={status} />
+      </div>
+      {resource.meta?.autoDiscovered === true && (
+        <p className="mt-1">
+          <Badge tone="neutral">New — found automatically</Badge>
+        </p>
+      )}
+      {resource.meta?.private === true && (
+        <p className="mt-1">
+          <Badge tone="hold">Private</Badge>
+        </p>
+      )}
+      {(resource.kind === 'github-repo' || resource.kind === 'github-org') &&
+        githubTokenConfigured === false && (
+          <p className="mt-1">
+            <Badge tone="hold">README only</Badge>
+          </p>
+        )}
+      <p className="mt-1 break-all text-xs text-ink-muted">{resource.url}</p>
+      <p className="mt-1 text-xs text-ink-muted">
+        {resource.kind} · reviewed {new Date(resource.reviewedAt).toLocaleDateString('en-CA')}
+      </p>
+      <p className="mt-1 text-xs text-ink-muted">
+        {row?.fetchedAt === undefined
+          ? 'Never updated'
+          : `Updated ${relativeTime(row.fetchedAt, Date.now())}`}
+        {row !== undefined && ` · ${String(row.chunks)} chunk${row.chunks === 1 ? '' : 's'}`}
+        {row !== undefined && ` · ${formatSize(row.bytes)}`}
+      </p>
+      {row?.lastError !== undefined &&
+        (row.errorExplain === undefined ? (
+          <p className="mt-1 text-xs text-danger">{row.lastError}</p>
+        ) : (
+          <div className="mt-1 text-xs">
+            <p className="font-medium text-danger">{row.errorExplain.title}</p>
+            <p className="text-ink-muted">{row.errorExplain.explanation}</p>
+            <p className="text-ink-muted">What to do: {row.errorExplain.hint}</p>
+            {row.errorCode !== undefined && <p className="text-ink-muted">{row.errorCode}</p>}
+          </div>
+        ))}
+      <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
+        <Badge tone={resource.enabled ? 'ok' : 'neutral'}>
+          {resource.enabled ? 'enabled' : 'disabled'}
+        </Badge>
+        <span className="flex flex-wrap gap-1">
+          <Button busy={refreshingId === resource.id} onClick={() => void onUpdateNow(resource)}>
+            Update now
+          </Button>
+          {editable && <Button onClick={() => onEdit(resource)}>Edit</Button>}
+          <Button onClick={() => void onToggleEnabled(resource)}>
+            {resource.enabled ? 'Disable' : 'Enable'}
+          </Button>
+        </span>
+      </div>
+    </>
+  );
+}
+
 /** Reviewed resources: add, edit, enable, and the persistent cache's health per resource (ADR 0073). */
 function ResourcesCard({
   resources,
   freshness,
+  githubTokenConfigured,
   session,
   onSaved,
 }: {
   readonly resources: readonly ClubResource[];
   readonly freshness: readonly ResourceFreshnessRow[];
+  readonly githubTokenConfigured: boolean | undefined;
   readonly session: Session;
   readonly onSaved: () => void;
 }) {
@@ -391,8 +452,8 @@ function ResourcesCard({
 
   const toggleEnabled = async (resource: ClubResource) => {
     const result = await session.write(
-      resourceUrl(resource.id),
-      { ...resource, enabled: !resource.enabled },
+      resourceEnabledUrl(resource.id),
+      { enabled: !resource.enabled },
       'PUT',
     );
     if (result !== undefined) onSaved();
@@ -435,6 +496,18 @@ function ResourcesCard({
   const titleProblem = fieldError(error, 'title');
   const kindProblem = fieldError(error, 'kind');
   const urlProblem = fieldError(error, 'url');
+  const showReadmeOnlyWarning =
+    githubTokenConfigured === false &&
+    resources.some((r) => r.kind === 'github-repo' || r.kind === 'github-org');
+  // ADR 0084: an organisation is a folder of its child repositories.
+  // Top level holds resources with no parent, plus any child whose parent
+  // names no existing resource — so nothing is ever hidden.
+  const resourceIds = new Set(resources.map((r) => r.id));
+  const topLevelResources = resources.filter(
+    (r) => r.parentId === undefined || !resourceIds.has(r.parentId),
+  );
+  const childResourcesOf = (id: string): readonly ClubResource[] =>
+    resources.filter((r) => r.parentId === id);
 
   return (
     <Card title="Reviewed sources">
@@ -524,6 +597,19 @@ function ResourcesCard({
           </div>
         </form>
       )}
+      {showReadmeOnlyWarning && (
+        <div role="status" className="mt-3 rounded-md border border-hold p-3 text-sm">
+          <p className="font-medium">GitHub repositories are caching their README only</p>
+          <p className="mt-1 text-ink-muted">
+            Without a GitHub token, Bananasaurs reads only each repository's README. Docs, notes and
+            other Markdown files are skipped. Add a fine-grained token on the{' '}
+            <Link href="/assistant/setup" className="underline">
+              AI setup page
+            </Link>
+            . For public repositories it needs no permissions.
+          </p>
+        </div>
+      )}
       {resources.length === 0 ? (
         <div className="mt-3">
           <EmptyState
@@ -534,72 +620,60 @@ function ResourcesCard({
         </div>
       ) : (
         <ul className="mt-3 grid gap-3 md:grid-cols-3">
-          {resources.map((resource) => {
-            const row = freshnessOf(resource.id);
-            const status = cacheStatusOf(resource, row);
-            const childCount =
-              resource.kind === 'github-org'
-                ? resources.filter((r) => r.parentId === resource.id).length
-                : undefined;
+          {topLevelResources.map((resource) => {
+            if (resource.kind === 'github-org') {
+              const kids = childResourcesOf(resource.id);
+              const privateCount = kids.filter((kid) => kid.meta?.private === true).length;
+              const offCount = kids.filter((kid) => !kid.enabled).length;
+              return (
+                <li key={resource.id} className="rounded-md border border-line bg-canvas p-3">
+                  <details>
+                    <summary>
+                      {`${resource.title} — ${String(kids.length)} repositor${kids.length === 1 ? 'y' : 'ies'}`}
+                      {privateCount > 0 && ` · ${String(privateCount)} private`}
+                      {offCount > 0 && ` · ${String(offCount)} turned off`}
+                    </summary>
+                    <div className="mt-2">
+                      <ResourceRow
+                        resource={resource}
+                        freshnessRow={freshnessOf(resource.id)}
+                        githubTokenConfigured={githubTokenConfigured}
+                        refreshingId={refreshingId}
+                        onUpdateNow={(item) => void updateNow(item)}
+                        onEdit={openForm}
+                        onToggleEnabled={(item) => void toggleEnabled(item)}
+                      />
+                    </div>
+                    <ul className="mt-2 grid gap-2">
+                      {kids.map((kid) => (
+                        <li key={kid.id} className="rounded-md border border-line bg-canvas p-3">
+                          <ResourceRow
+                            resource={kid}
+                            freshnessRow={freshnessOf(kid.id)}
+                            githubTokenConfigured={githubTokenConfigured}
+                            refreshingId={refreshingId}
+                            onUpdateNow={(item) => void updateNow(item)}
+                            onEdit={openForm}
+                            onToggleEnabled={(item) => void toggleEnabled(item)}
+                          />
+                        </li>
+                      ))}
+                    </ul>
+                  </details>
+                </li>
+              );
+            }
             return (
               <li key={resource.id} className="rounded-md border border-line bg-canvas p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <p className="min-w-0 font-medium">{resource.title}</p>
-                  <StatusPill status={status} />
-                </div>
-                {resource.meta?.autoDiscovered === true && (
-                  <p className="mt-1">
-                    <Badge tone="neutral">New — found automatically</Badge>
-                  </p>
-                )}
-                <p className="mt-1 break-all text-xs text-ink-muted">{resource.url}</p>
-                <p className="mt-1 text-xs text-ink-muted">
-                  {resource.kind} · reviewed{' '}
-                  {new Date(resource.reviewedAt).toLocaleDateString('en-CA')}
-                </p>
-                {childCount !== undefined && (
-                  <p className="mt-1 text-xs text-ink-muted">
-                    {`${String(childCount)} repositor${childCount === 1 ? 'y' : 'ies'}`}
-                  </p>
-                )}
-                <p className="mt-1 text-xs text-ink-muted">
-                  {row?.fetchedAt === undefined
-                    ? 'Never updated'
-                    : `Updated ${relativeTime(row.fetchedAt, Date.now())}`}
-                  {row !== undefined &&
-                    ` · ${String(row.chunks)} chunk${row.chunks === 1 ? '' : 's'}`}
-                  {row !== undefined && ` · ${formatSize(row.bytes)}`}
-                </p>
-                {row?.lastError !== undefined &&
-                  (row.errorExplain === undefined ? (
-                    <p className="mt-1 text-xs text-danger">{row.lastError}</p>
-                  ) : (
-                    <div className="mt-1 text-xs">
-                      <p className="font-medium text-danger">{row.errorExplain.title}</p>
-                      <p className="text-ink-muted">{row.errorExplain.explanation}</p>
-                      <p className="text-ink-muted">What to do: {row.errorExplain.hint}</p>
-                      {row.errorCode !== undefined && (
-                        <p className="text-ink-muted">{row.errorCode}</p>
-                      )}
-                    </div>
-                  ))}
-                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                  <Badge tone={resource.enabled ? 'ok' : 'neutral'}>
-                    {resource.enabled ? 'enabled' : 'disabled'}
-                  </Badge>
-                  <span className="flex flex-wrap gap-1">
-                    <Button
-                      busy={refreshingId === resource.id}
-                      onClick={() => void updateNow(resource)}
-                    >
-                      Update now
-                    </Button>
-                    <Button onClick={() => openForm(resource)}>Edit</Button>
-                    <Button onClick={() => void toggleEnabled(resource)}>
-                      {resource.enabled ? 'Disable' : 'Enable'}
-                    </Button>
-                  </span>
-                </div>
+                <ResourceRow
+                  resource={resource}
+                  freshnessRow={freshnessOf(resource.id)}
+                  githubTokenConfigured={githubTokenConfigured}
+                  refreshingId={refreshingId}
+                  onUpdateNow={(item) => void updateNow(item)}
+                  onEdit={openForm}
+                  onToggleEnabled={(item) => void toggleEnabled(item)}
+                />
               </li>
             );
           })}
@@ -619,7 +693,7 @@ export function AssistantResourcesPage() {
   const load = useCallback(() => session.read<AssistantData>(ASSISTANT_URL), [session]);
   const assistant = useResource('assistant resources', load);
   const loadFreshness = useCallback(
-    () => session.read<{ freshness: readonly ResourceFreshnessRow[] }>(RESOURCE_FRESHNESS_URL),
+    () => session.read<ResourceFreshnessResponse>(RESOURCE_FRESHNESS_URL),
     [session],
   );
   const freshness = useResource('resource cache freshness', loadFreshness);
@@ -631,6 +705,10 @@ export function AssistantResourcesPage() {
 
   const freshnessRows =
     freshness.resource.state === 'ready' ? freshness.resource.data.freshness : [];
+  const githubTokenConfigured =
+    freshness.resource.state === 'ready'
+      ? freshness.resource.data.githubTokenConfigured
+      : undefined;
 
   return (
     <>
@@ -645,6 +723,7 @@ export function AssistantResourcesPage() {
           <ResourcesCard
             resources={[]}
             freshness={freshnessRows}
+            githubTokenConfigured={githubTokenConfigured}
             session={session}
             onSaved={reloadBoth}
           />
@@ -654,6 +733,7 @@ export function AssistantResourcesPage() {
           <ResourcesCard
             resources={data.resources}
             freshness={freshnessRows}
+            githubTokenConfigured={githubTokenConfigured}
             session={session}
             onSaved={reloadBoth}
           />

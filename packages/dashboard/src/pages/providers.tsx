@@ -1034,6 +1034,11 @@ function GithubSection({
           Without a token GitHub allows 60 requests an hour, so organisations refresh once a day and
           only README files are read.
         </p>
+        <p className="text-sm text-ink-muted">
+          To include private repositories, create a fine-grained token with Contents: Read-only
+          access to the repositories you choose. Club members can then ask about those repositories,
+          and their text is sent to your AI providers.
+        </p>
         {tokenConfigured && (
           <p className="text-sm text-ink-muted">Saved. Saving a new token replaces it.</p>
         )}

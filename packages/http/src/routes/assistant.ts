@@ -3,6 +3,8 @@ import { z } from 'zod';
 import {
   CLUB_ASSISTANT_SKILLS,
   compileAssistantContext,
+  isGithubWebHost,
+  parseGitHubUrl,
   promptWizardAnswers,
   ProviderError,
   SAFETY_SUFFIX,
@@ -11,6 +13,7 @@ import {
   STARTER_SKILL_IDS,
   TOOL_CATALOGUE,
   validateResourceUrl,
+  type ClubResource,
 } from '@bananasaurs/core';
 import { assistantRepo, eligibilityRepo } from '@bananasaurs/storage';
 import type { HttpDeps, RouteGuard } from '../server.js';
@@ -680,6 +683,14 @@ export const registerAssistantRoutes = (
     } catch {
       return reply.status(400).send({ error: 'unsafe-resource-url' });
     }
+    if (
+      (parsed.data.kind === 'website' ||
+        parsed.data.kind === 'document' ||
+        parsed.data.kind === 'repository') &&
+      isGithubWebHost(new URL(parsed.data.url).hostname)
+    ) {
+      return reply.status(400).send({ error: 'github-url-needs-import' });
+    }
     deps.portsFor(session.scope).recordAudit({
       ...dashboardAuditBase(session, deps.now()),
       action: 'assistant_resource.saved',
@@ -710,6 +721,63 @@ export const registerAssistantRoutes = (
     // or edited resource is refreshed through the injected enqueue — absent
     // in isolated route tests, in which case nothing is enqueued.
     deps.enqueueResourceRefresh?.(session.scope, parsed.data.id, 'added');
+    return reply.status(200).send({ ok: true });
+  });
+  // ADR 0084: enable/disable for every kind. The whole-object save above
+  // cannot carry `github-repo` / `github-org` (its schema predates them),
+  // so this route changes only the enabled flag. Disabling a GitHub
+  // resource records `meta.disabledByOwner`; enabling clears it.
+  app.put('/api/assistant/resources/:id/enabled', (request, reply) => {
+    const session = guard.require(request, reply);
+    if (session === undefined) return reply;
+    if (!requireCapability(session, 'config.write', reply)) return reply;
+    const parsed = z.object({ enabled: z.boolean() }).strict().safeParse(request.body);
+    if (!parsed.success) return badRequest(reply, parsed.error);
+    const id = (request.params as { id: string }).id;
+    const existing = assistantRepo.listResources(session.scope).find((item) => item.id === id);
+    if (existing === undefined) return reply.status(404).send({ error: 'not-found' });
+    const { enabled } = parsed.data;
+    const isGithub = existing.kind === 'github-repo' || existing.kind === 'github-org';
+    if (!isGithub) {
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
+    } else if (enabled === false) {
+      if (existing.meta === undefined) {
+        // A GitHub resource stored without meta has no `owner` to spread;
+        // rebuild the base meta from its URL so the strict schema reads it
+        // back. An unparseable URL keeps no meta rather than owner-less meta.
+        const target = parseGitHubUrl(existing.url);
+        if (target === undefined) {
+          assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: undefined });
+        } else {
+          assistantRepo.setResourceEnabled(session.scope, id, {
+            enabled,
+            meta: {
+              owner: target.owner,
+              ...(target.kind === 'repo' ? { repo: target.repo } : {}),
+              disabledByOwner: true as const,
+            },
+          });
+        }
+      } else {
+        // Spread keeps every other meta key.
+        const meta = { ...existing.meta, disabledByOwner: true as const } as ClubResource['meta'];
+        assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta });
+      }
+    } else if (existing.meta === undefined) {
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: existing.meta });
+    } else {
+      const rest = { ...existing.meta };
+      delete rest.disabledByOwner;
+      assistantRepo.setResourceEnabled(session.scope, id, { enabled, meta: rest });
+    }
+    deps.portsFor(session.scope).recordAudit({
+      ...dashboardAuditBase(session, deps.now()),
+      action: 'assistant_resource.enabled_changed',
+      subjectType: 'assistant_resource',
+      subjectId: id,
+      before: { enabled: existing.enabled },
+      after: { enabled },
+    });
     return reply.status(200).send({ ok: true });
   });
   // Task 9: one skill in full - the exact instruction the model receives,

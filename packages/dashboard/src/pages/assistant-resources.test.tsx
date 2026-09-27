@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { cleanup, fireEvent, screen } from '@testing-library/react';
+import { cleanup, fireEvent, screen, within } from '@testing-library/react';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { bodyOf, renderWithSession, stubFetch, type StubRoute } from '../test-support.js';
 import { AssistantResourcesPage } from './assistant-resources.js';
@@ -37,13 +37,14 @@ const FRESH_ROW = { resourceId: 'handbook', fetchedAt: 1790000000000, chunks: 4,
 
 function renderPage(
   body: unknown = FULL,
-  freshness: readonly unknown[] = [FRESH_ROW],
+  freshness: readonly unknown[] | Record<string, unknown> = [FRESH_ROW],
   extraRoutes: readonly StubRoute[] = [],
 ) {
+  const freshnessBody = Array.isArray(freshness) ? { freshness } : freshness;
   const mock = stubFetch([
     { url: '/api/assistant', body },
-    { url: '/api/assistant/resources/freshness', body: { freshness } },
-    { method: 'PUT', url: '/api/assistant/resources/handbook', body: { ok: true } },
+    { url: '/api/assistant/resources/freshness', body: freshnessBody },
+    { method: 'PUT', url: '/api/assistant/resources/handbook/enabled', body: { ok: true } },
     { method: 'POST', url: '/api/assistant/resources/handbook/refresh', body: { ok: true } },
     { method: 'POST', url: '/api/assistant/resources/refresh', body: { ok: true } },
     ...extraRoutes,
@@ -237,16 +238,17 @@ describe('AssistantResourcesPage', () => {
     expect(screen.getAllByText(/bad-request/)).toHaveLength(1);
   });
 
-  it('enables a disabled resource with a whole-object write', async () => {
+  it('enables a disabled resource through the enabled route', async () => {
     const mock = renderPage({
       ...FULL,
       resources: [{ ...FULL.resources[0]!, enabled: false }],
     });
     fireEvent.click(await screen.findByRole('button', { name: 'Enable' }));
     const put = mock.mock.calls.find(
-      (c) => (c[0] as string) === '/api/assistant/resources/handbook' && c[1]?.method === 'PUT',
+      (c) =>
+        (c[0] as string) === '/api/assistant/resources/handbook/enabled' && c[1]?.method === 'PUT',
     )!;
-    expect((bodyOf(put) as { enabled: boolean }).enabled).toBe(true);
+    expect(bodyOf(put)).toEqual({ enabled: true });
   });
 
   it('shows the empty state with an Add resource action when nothing is reviewed yet', async () => {
@@ -336,33 +338,136 @@ describe('Add from GitHub', () => {
     expect(bodyOf(post)).toEqual({ url: 'https://github.com/acme/widget' });
   });
 
-  it('previews an org with a count, hides forks until toggled, and imports the checked repos', async () => {
-    const mock = renderGithub(ORG_PREVIEW, { created: 3 });
+  it('previews an org read-only with every repository and imports the whole organisation', async () => {
+    const mock = renderGithub(ORG_PREVIEW, { created: 4 });
     await openGithubPanel('https://github.com/acme');
-    await screen.findByText('3 public repositories');
+    expect(
+      await screen.findByText(
+        '3 repositories. All of them are added, and new ones are added automatically.',
+      ),
+    ).toBeTruthy();
+    // The list is read-only: names, descriptions and fork markers, no checkboxes.
     expect(screen.getByText('widget')).toBeTruthy();
-    expect(screen.queryByText('forked')).toBeNull();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'Include forks' }));
+    expect(screen.getByText('gadget')).toBeTruthy();
     expect(screen.getByText('forked')).toBeTruthy();
-    fireEvent.click(screen.getByRole('checkbox', { name: 'gadget' }));
-    fireEvent.click(screen.getByRole('button', { name: 'Add' }));
+    expect(screen.getByText('fork')).toBeTruthy();
+    expect(screen.queryByRole('checkbox', { name: 'Include forks' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'Include archived' })).toBeNull();
+    expect(screen.queryByRole('checkbox', { name: 'gadget' })).toBeNull();
+    fireEvent.click(screen.getByRole('button', { name: 'Import organisation' }));
     await screen.findByText('GitHub import added');
     const post = mock.mock.calls
       .filter((c) => (c[0] as string) === '/api/assistant/github/import' && c[1]?.method === 'POST')
       .at(-1)!;
-    expect(bodyOf(post)).toEqual({
-      url: 'https://github.com/acme',
-      repos: ['widget', 'forked'],
-      includeForks: true,
-      includeArchived: false,
-    });
+    expect(bodyOf(post)).toEqual({ url: 'https://github.com/acme' });
   });
 
-  it('shows an empty org with no Add button', async () => {
+  it('shows an empty org with no Import button', async () => {
     renderGithub({ ...ORG_PREVIEW, repos: [] });
     await openGithubPanel('https://github.com/acme');
-    expect(await screen.findByText('This organisation has no public repositories.')).toBeTruthy();
-    expect(screen.queryByRole('button', { name: 'Add' })).toBeNull();
+    expect(
+      await screen.findByText('This organisation has no repositories this token can see.'),
+    ).toBeTruthy();
+    expect(screen.queryByRole('button', { name: 'Import organisation' })).toBeNull();
+  });
+
+  it('shows the URL hint with the private-repository token note', async () => {
+    renderGithub(REPO_PREVIEW);
+    fireEvent.click(await screen.findByRole('button', { name: 'Add from GitHub' }));
+    expect(
+      screen.getByText(
+        'A repository or organisation, for example https://github.com/acme/widget. Private repositories need a GitHub token that can read them.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('marks a private repo in the org list and discloses the private-repository terms', async () => {
+    renderGithub({
+      ...ORG_PREVIEW,
+      repos: [
+        {
+          name: 'widget',
+          description: 'Does things',
+          fork: false,
+          archived: false,
+          private: false,
+        },
+        { name: 'secret', description: null, fork: false, archived: false, private: true },
+      ],
+    });
+    await openGithubPanel('https://github.com/acme');
+    expect(
+      await screen.findByText(
+        '2 repositories. All of them are added, and new ones are added automatically.',
+      ),
+    ).toBeTruthy();
+    expect(screen.getByText('Private')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Private repositories: club members will be able to ask about them, and their text is sent to your AI providers, which may train on it.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('discloses the private-repository terms for a private repo preview', async () => {
+    renderGithub({ ...REPO_PREVIEW, private: true });
+    await openGithubPanel();
+    expect(await screen.findByText('README.md')).toBeTruthy();
+    expect(
+      screen.getByText(
+        'Private repositories: club members will be able to ask about them, and their text is sent to your AI providers, which may train on it.',
+      ),
+    ).toBeTruthy();
+  });
+
+  it('shows no private disclosure for an all-public org preview', async () => {
+    renderGithub(ORG_PREVIEW);
+    await openGithubPanel('https://github.com/acme');
+    expect(
+      await screen.findByText(
+        '3 repositories. All of them are added, and new ones are added automatically.',
+      ),
+    ).toBeTruthy();
+    expect(screen.queryByText('Private')).toBeNull();
+    expect(
+      screen.queryByText(
+        'Private repositories: club members will be able to ask about them, and their text is sent to your AI providers, which may train on it.',
+      ),
+    ).toBeNull();
+  });
+
+  it('badges a private resource and not a public one', async () => {
+    renderPage(
+      {
+        ...FULL,
+        resources: [
+          {
+            id: 'gh-acme-secret',
+            guildId: '1540816150026518620',
+            title: 'acme/secret',
+            url: 'https://github.com/acme/secret',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme', repo: 'secret', branch: 'main', private: true },
+          },
+          {
+            id: 'gh-acme-widget',
+            guildId: '1540816150026518620',
+            title: 'acme/widget',
+            url: 'https://github.com/acme/widget',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme', repo: 'widget', branch: 'main' },
+          },
+        ],
+      },
+      [],
+    );
+    expect(await screen.findByText('acme/secret')).toBeTruthy();
+    expect(screen.getByText('Private')).toBeTruthy();
+    expect(screen.getAllByText('Private')).toHaveLength(1);
   });
 
   it('notes a truncated org list', async () => {
@@ -371,16 +476,13 @@ describe('Add from GitHub', () => {
     expect(await screen.findByText('Showing the first 500 repositories.')).toBeTruthy();
   });
 
-  it('explains the no-token limits with a HelpTip', async () => {
+  it('states the no-token limits as visible text with a setup link', async () => {
     renderGithub({ ...REPO_PREVIEW, authenticated: false });
     await openGithubPanel();
     await screen.findByText('README.md');
-    fireEvent.click(screen.getByRole('button', { name: 'Help: GitHub token limits' }));
-    expect(
-      await screen.findByText(
-        'Without a GitHub token only README files are read and organisations refresh once a day. Add a token on the AI setup page.',
-      ),
-    ).toBeTruthy();
+    expect(screen.getByText(/Without a GitHub token, only the README is read/)).toBeTruthy();
+    const link = screen.getByRole('link', { name: 'AI setup page' });
+    expect(link.getAttribute('href')?.endsWith('/assistant/setup')).toBe(true);
     // README-only preview still offers the Add button.
     expect(screen.getByRole('button', { name: 'Add' })).toBeTruthy();
   });
@@ -414,7 +516,7 @@ describe('Add from GitHub', () => {
     ).toBeTruthy();
   });
 
-  it('marks auto-discovered children and counts an org’s repositories', async () => {
+  it('marks auto-discovered children and summarises the org folder', async () => {
     renderPage(
       {
         ...FULL,
@@ -445,6 +547,247 @@ describe('Add from GitHub', () => {
       [],
     );
     expect(await screen.findByText('New — found automatically')).toBeTruthy();
-    expect(screen.getByText('1 repository')).toBeTruthy();
+    expect(screen.getByText('acme — 1 repository')).toBeTruthy();
+  });
+
+  it('groups an org as a collapsible folder without repeating its children at the top level', async () => {
+    renderPage(
+      {
+        ...FULL,
+        resources: [
+          {
+            id: 'gh-acme',
+            guildId: '1540816150026518620',
+            title: 'acme',
+            url: 'https://github.com/acme',
+            kind: 'github-org',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme' },
+          },
+          {
+            id: 'gh-acme-widget',
+            guildId: '1540816150026518620',
+            title: 'acme/widget',
+            url: 'https://github.com/acme/widget',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            parentId: 'gh-acme',
+            meta: { owner: 'acme', repo: 'widget', branch: 'main' },
+          },
+          {
+            id: 'gh-acme-secret',
+            guildId: '1540816150026518620',
+            title: 'acme/secret',
+            url: 'https://github.com/acme/secret',
+            kind: 'github-repo',
+            enabled: false,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            parentId: 'gh-acme',
+            meta: { owner: 'acme', repo: 'secret', branch: 'main', private: true },
+          },
+        ],
+      },
+      [],
+    );
+    expect(
+      await screen.findByText('acme — 2 repositories · 1 private · 1 turned off'),
+    ).toBeTruthy();
+    const folder = document.querySelector('details')!;
+    expect(folder.textContent).toContain('acme/widget');
+    expect(folder.textContent).toContain('acme/secret');
+    // Each child renders once: inside the folder, never at the top level.
+    expect(screen.getAllByText('acme/widget')).toHaveLength(1);
+    expect(screen.getAllByText('acme/secret')).toHaveLength(1);
+  });
+
+  it('still shows an orphan child at the top level when its parent is missing', async () => {
+    renderPage(
+      {
+        ...FULL,
+        resources: [
+          {
+            id: 'gh-acme',
+            guildId: '1540816150026518620',
+            title: 'acme',
+            url: 'https://github.com/acme',
+            kind: 'github-org',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme' },
+          },
+          {
+            id: 'gh-acme-lost',
+            guildId: '1540816150026518620',
+            title: 'acme/lost',
+            url: 'https://github.com/acme/lost',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            parentId: 'gh-missing',
+            meta: { owner: 'acme', repo: 'lost', branch: 'main' },
+          },
+        ],
+      },
+      [],
+    );
+    expect(await screen.findByText('acme — 0 repositories')).toBeTruthy();
+    expect(screen.getByText('acme/lost')).toBeTruthy();
+    expect(document.querySelector('details')!.textContent).not.toContain('acme/lost');
+  });
+
+  it('disables a github-repo through the enabled route', async () => {
+    const mock = renderPage(
+      {
+        ...FULL,
+        resources: [
+          {
+            id: 'gh-acme-widget',
+            guildId: '1540816150026518620',
+            title: 'acme/widget',
+            url: 'https://github.com/acme/widget',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            parentId: 'gh-acme',
+            meta: { owner: 'acme', repo: 'widget', branch: 'main' },
+          },
+        ],
+      },
+      [],
+      [
+        {
+          method: 'PUT',
+          url: '/api/assistant/resources/gh-acme-widget/enabled',
+          body: { ok: true },
+        },
+      ],
+    );
+    const row = (await screen.findByText('acme/widget')).closest('li')!;
+    fireEvent.click(within(row).getByRole('button', { name: 'Disable' }));
+    const put = mock.mock.calls.find(
+      (c) =>
+        (c[0] as string) === '/api/assistant/resources/gh-acme-widget/enabled' &&
+        c[1]?.method === 'PUT',
+    )!;
+    expect(bodyOf(put)).toEqual({ enabled: false });
+  });
+
+  it('shows no Edit button on GitHub rows but keeps it for other kinds', async () => {
+    renderPage(
+      {
+        ...FULL,
+        resources: [
+          FULL.resources[0]!,
+          {
+            id: 'gh-acme',
+            guildId: '1540816150026518620',
+            title: 'acme',
+            url: 'https://github.com/acme',
+            kind: 'github-org',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            meta: { owner: 'acme' },
+          },
+          {
+            id: 'gh-acme-widget',
+            guildId: '1540816150026518620',
+            title: 'acme/widget',
+            url: 'https://github.com/acme/widget',
+            kind: 'github-repo',
+            enabled: true,
+            reviewedAt: '2026-09-01T12:00:00.000Z',
+            parentId: 'gh-acme',
+            meta: { owner: 'acme', repo: 'widget', branch: 'main' },
+          },
+        ],
+      },
+      [],
+    );
+    await screen.findByText('acme — 1 repository');
+    const folder = document.querySelector('details')!;
+    expect(within(folder).queryByRole('button', { name: 'Edit' })).toBeNull();
+    // The website row still offers Edit.
+    expect(screen.getAllByRole('button', { name: 'Edit' })).toHaveLength(1);
+  });
+});
+
+const GITHUB_REPO_RESOURCE = {
+  id: 'gh-acme-widget',
+  guildId: '1540816150026518620',
+  title: 'acme/widget',
+  url: 'https://github.com/acme/widget',
+  kind: 'github-repo',
+  enabled: true,
+  reviewedAt: '2026-09-01T12:00:00.000Z',
+};
+
+const GITHUB_FRESH_ROW = {
+  resourceId: 'gh-acme-widget',
+  fetchedAt: 1790000000000,
+  chunks: 4,
+  bytes: 2048,
+};
+
+const README_ONLY_TITLE = 'GitHub repositories are caching their README only';
+
+describe('README-only warning', () => {
+  it('shows the warning and a README only badge for a GitHub repo without a token', async () => {
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+        githubTokenConfigured: false,
+      },
+    );
+    expect(await screen.findByText(README_ONLY_TITLE)).toBeTruthy();
+    expect(screen.getByText(README_ONLY_TITLE).closest('[role="status"]')).toBeTruthy();
+    expect(screen.getByText('README only')).toBeTruthy();
+  });
+
+  it('shows neither the warning nor the badge when a token is configured', async () => {
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+        githubTokenConfigured: true,
+      },
+    );
+    expect(await screen.findByText('acme/widget')).toBeTruthy();
+    expect(screen.queryByText(README_ONLY_TITLE)).toBeNull();
+    expect(screen.queryByText('README only')).toBeNull();
+  });
+
+  it('shows neither the warning nor the badge when the server cannot tell', async () => {
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+      },
+    );
+    expect(await screen.findByText('acme/widget')).toBeTruthy();
+    expect(screen.queryByText(README_ONLY_TITLE)).toBeNull();
+    expect(screen.queryByText('README only')).toBeNull();
+  });
+
+  it('shows no warning without a token when there are no GitHub resources', async () => {
+    renderPage(FULL, { freshness: [FRESH_ROW], githubTokenConfigured: false });
+    expect(await screen.findByText('Club handbook')).toBeTruthy();
+    expect(screen.queryByText(README_ONLY_TITLE)).toBeNull();
+    expect(screen.queryByText('README only')).toBeNull();
+  });
+
+  it('links the warning to the AI setup page', async () => {
+    renderPage(
+      { ...FULL, resources: [GITHUB_REPO_RESOURCE] },
+      {
+        freshness: [GITHUB_FRESH_ROW],
+        githubTokenConfigured: false,
+      },
+    );
+    await screen.findByText(README_ONLY_TITLE);
+    const link = screen.getByRole('link', { name: 'AI setup page' });
+    expect(link.getAttribute('href')?.endsWith('/assistant/setup')).toBe(true);
   });
 });

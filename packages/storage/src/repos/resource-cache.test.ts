@@ -473,11 +473,25 @@ describe('sanitiseFtsQuery', () => {
     // Every character FTS5 would otherwise parse as query syntax — quotes,
     // NEAR, parentheses, `-`, `*` — is dropped by the word-token extraction;
     // only the word-shaped pieces survive, each safely quoted.
-    expect(sanitiseFtsQuery('a" OR 1=1 --')).toBe('"a" OR "OR" OR "1" OR "1"');
+    expect(sanitiseFtsQuery('a" OR 1=1 --')).toBe('"1"');
     expect(sanitiseFtsQuery('"unbalanced')).toBe('"unbalanced"');
     expect(sanitiseFtsQuery('NEAR(foo, bar)')).toBe('"NEAR" OR "foo" OR "bar"');
     expect(sanitiseFtsQuery('foo* -bar')).toBe('"foo" OR "bar"');
     expect(sanitiseFtsQuery('***')).toBe('');
+  });
+
+  it('drops filler words but keeps every token quoted', () => {
+    expect(sanitiseFtsQuery('i want the steps to run follow the gap on car 2')).toBe(
+      '"steps" OR "run" OR "follow" OR "gap" OR "car" OR "2"',
+    );
+  });
+
+  it('keeps an all-stopword query unchanged', () => {
+    expect(sanitiseFtsQuery('how do I')).toBe('"how" OR "do" OR "I"');
+  });
+
+  it('drops case-insensitive duplicates, keeping the first spelling', () => {
+    expect(sanitiseFtsQuery('Gap gap GAP')).toBe('"Gap"');
   });
 });
 
@@ -601,5 +615,28 @@ describe('searchChunks', () => {
   it('returns no results and raises no error for a query with no word characters', () => {
     seedResource(a, 'res-1', 'https://example.com/guide');
     expect(searchChunks(a, { query: '*** ---', limit: 10 })).toEqual([]);
+  });
+
+  it('ignores filler words: "the gap" matches only the chunk about gaps', () => {
+    seedResource(a, 'res-1', 'https://example.com/guide');
+    const docId = computeDocId('https://example.com/guide');
+    upsertDocument(a, {
+      resourceId: 'res-1',
+      docId,
+      url: 'https://example.com/guide',
+      path: '/guide',
+      title: 'Guide',
+      contentHash: 'h',
+      fetchedAt: 1,
+      bytes: 1,
+      status: 'ok',
+    });
+    replaceChunks(a, docId, 'res-1', [
+      chunk({ ordinal: 0, headingPath: 'filler', text: 'the to of and the to of and' }),
+      chunk({ ordinal: 1, headingPath: 'follow the gap', text: 'gap follow steering command' }),
+    ]);
+    const hits = searchChunks(a, { query: 'the gap', limit: 10 });
+    expect(hits).toHaveLength(1);
+    expect(hits[0]?.headingPath).toBe('follow the gap');
   });
 });

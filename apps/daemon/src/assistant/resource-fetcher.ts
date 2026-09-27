@@ -2,12 +2,7 @@ import type { IncomingMessage } from 'node:http';
 import { lookup as dnsLookup } from 'node:dns/promises';
 import { request as httpsRequest } from 'node:https';
 import { isIP } from 'node:net';
-import {
-  embeddedIpv4,
-  extractEvidenceText,
-  ipv6Bytes,
-  validateResourceUrl,
-} from '@bananasaurs/core';
+import { embeddedIpv4, ipv6Bytes, validateResourceUrl } from '@bananasaurs/core';
 
 export const DEFAULT_RESOURCE_FETCH_LIMITS = {
   maxBytes: 1_000_000,
@@ -478,12 +473,9 @@ export class ReviewedResourceFetcher {
         host: url.hostname,
       });
     }
-    // Useful page text, not raw markup: raw HTML truncated at the byte cap
-    // used to deliver mostly <head> and no content (should-fix, round 2).
-    const text = extractEvidenceText(
-      mediaType,
-      Buffer.concat(chunks).toString('utf8').replaceAll('\u0000', ''),
-    );
+    // The body passes through whole; the chunker converts HTML and splits
+    // it, and the 1 MB byte cap above bounds it.
+    const text = Buffer.concat(chunks).toString('utf8').replaceAll('\u0000', '');
     const etag = response.headers.etag;
     const lastModified = response.headers['last-modified'];
     return {
