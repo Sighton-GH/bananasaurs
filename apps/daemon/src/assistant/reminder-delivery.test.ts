@@ -1,17 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import {
-  parseGuildId,
-  ReminderDeliveryError,
-  type Reminder,
-} from '@bananasaurs/core';
+import { parseGuildId, ReminderDeliveryError, type Reminder } from '@bananasaurs/core';
 import { assistantRepo, guildRepo, type GuildScope } from '@bananasaurs/storage';
 import { openMigratedTestDatabase } from '@bananasaurs/storage/test-support';
 import { FakeDiscord } from '@bananasaurs/testkit';
-import {
-  createReminderDelivery,
-  reminderStoreFor,
-  renderReminder,
-} from './reminder-delivery.js';
+import { createReminderDelivery, reminderStoreFor, renderReminder } from './reminder-delivery.js';
 
 /**
  * Reminder delivery renders exactly the stored pings (ADR 0086 decisions 5
