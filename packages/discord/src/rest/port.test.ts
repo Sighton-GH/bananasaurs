@@ -405,6 +405,43 @@ describe('messages and reactions', () => {
     });
   });
 
+  it('carries parse everyone, users and roles to the wire as snake_case', async () => {
+    // Task C: reminder delivery pings exactly the stored targets — `parse:
+    // ['everyone']` plus explicit user and role id lists.
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: '@everyone <@&222222222222222222> <@111111111111111111> standup',
+      allowedMentions: {
+        parse: ['everyone'],
+        users: ['111111111111111111'],
+        roles: ['222222222222222222'],
+      },
+    });
+    expect(last(requests).body).toMatchObject({
+      allowed_mentions: {
+        parse: ['everyone'],
+        users: ['111111111111111111'],
+        roles: ['222222222222222222'],
+      },
+    });
+  });
+
+  it('sends no users key at all when the message does not set it', async () => {
+    const { port, requests } = harness([
+      { status: 200, body: { id: MESSAGE, channel_id: CHANNEL } },
+    ]);
+    await port.sendMessage(GUILD, CHANNEL, {
+      content: 'hello',
+      allowedMentions: { parse: [] },
+    });
+    expect(last(requests).body).toMatchObject({ allowed_mentions: { parse: [] } });
+    expect(
+      (last(requests).body as { allowed_mentions: Record<string, unknown> }).allowed_mentions,
+    ).not.toHaveProperty('users');
+  });
+
   it('sends no allowed_mentions key at all when the message does not set it (M5-D2)', async () => {
     // Opt-in: panel posts and log messages never set `allowedMentions`, and a
     // default here would change what they send while two guilds are observed.
