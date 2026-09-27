@@ -7,7 +7,9 @@ import {
   ReminderDeliveryError,
   type Reminder,
   type ReminderStore,
+  createReminder,
 } from './reminders.js';
+import { reminderRecurrence } from './recurrence.js';
 
 /**
  * The delivery pass's own contract: classification, retry timing and the
@@ -28,6 +30,8 @@ const reminder = (over: Partial<Reminder> = {}): Reminder => ({
   createdAt: NOW - 60_000,
   status: 'delivering',
   dedupeKey: 'reminder:g1:r1',
+  mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+  deliveredCount: 0,
   ...over,
 });
 
@@ -36,6 +40,7 @@ const storeFor = (claimed: readonly Reminder[]) => ({
   cancel: vi.fn(),
   claimDue: vi.fn(async () => claimed),
   complete: vi.fn(async () => undefined),
+  reschedule: vi.fn(async () => undefined),
   fail: vi.fn(async () => undefined),
   retry: vi.fn(async () => undefined),
 });
@@ -51,6 +56,7 @@ describe('deliverDueReminders', () => {
     });
     expect(store.claimDue).toHaveBeenCalledWith(NOW, 10, REMINDER_DELIVERY_STALE_MS);
     expect(store.complete).toHaveBeenCalledWith('r1');
+    expect(store.reschedule).not.toHaveBeenCalled();
     expect(store.fail).not.toHaveBeenCalled();
     expect(store.retry).not.toHaveBeenCalled();
   });
@@ -137,6 +143,53 @@ describe('deliverDueReminders', () => {
     });
     expect(store.fail).toHaveBeenCalledWith('r1', 'Missing Access');
     expect(store.complete).toHaveBeenCalledWith('r2');
+  });
+
+  it('reschedules repeating reminders to the next future occurrence', async () => {
+    const due = Date.parse('2026-01-05T17:00:00Z');
+    const repeating = reminder({
+      dueAt: due,
+      recurrence: reminderRecurrence.parse({ pattern: { kind: 'daily' }, timeZone: 'UTC' }),
+    });
+    const store = storeFor([repeating]);
+    await deliverDueReminders(store, { send: vi.fn(async () => undefined) }, due + 3 * 86_400_000);
+    expect(store.reschedule).toHaveBeenCalledWith('r1', due + 4 * 86_400_000);
+  });
+
+  it('completes a repeating series at its end', async () => {
+    const due = Date.parse('2026-01-05T17:00:00Z');
+    const store = storeFor([
+      reminder({
+        dueAt: due,
+        recurrence: reminderRecurrence.parse({
+          pattern: { kind: 'daily' },
+          timeZone: 'UTC',
+          maxCount: 1,
+        }),
+      }),
+    ]);
+    await deliverDueReminders(store, { send: vi.fn(async () => undefined) }, due);
+    expect(store.complete).toHaveBeenCalledWith('r1');
+  });
+});
+
+describe('reminder drafts', () => {
+  it('rejects overlong context', async () => {
+    await expect(
+      createReminder(
+        { ...reminder(), dueAt: Date.now() + 60_000, context: 'x'.repeat(301) },
+        storeFor([]),
+      ),
+    ).rejects.toThrow('reminder context must be at most 300 characters');
+  });
+
+  it('validates mentions', async () => {
+    const { reminderMentions } = await import('./reminders.js');
+    expect(reminderMentions.safeParse({ userIds: ['bad'] }).success).toBe(false);
+    expect(
+      reminderMentions.safeParse({ userIds: Array.from({ length: 26 }, () => '11111111111111111') })
+        .success,
+    ).toBe(false);
   });
 });
 

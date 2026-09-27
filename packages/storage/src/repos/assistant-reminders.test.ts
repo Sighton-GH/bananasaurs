@@ -38,6 +38,8 @@ const reminder = (id: string, over: Partial<Reminder> = {}): Reminder => ({
   createdAt: 500,
   status: 'scheduled',
   dedupeKey: `reminder:${G}:${id}`,
+  mentions: { userIds: [], roleIds: [], everyone: false, here: false },
+  deliveredCount: 0,
   ...over,
 });
 

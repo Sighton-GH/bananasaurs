@@ -2069,6 +2069,13 @@ export const assistantReminders = sqliteTable(
     status: text('status').notNull().default('scheduled'),
     dedupeKey: text('dedupe_key').notNull(),
     failureReason: text('failure_reason'),
+    mentionsJson: text('mentions_json')
+      .notNull()
+      .default('{"userIds":[],"roleIds":[],"everyone":false,"here":false}'),
+    recurrenceJson: text('recurrence_json'),
+    context: text('context'),
+    deliveredCount: integer('delivered_count').notNull().default(0),
+    updatedAt: integer('updated_at'),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.reminderId] }),
@@ -2113,12 +2120,17 @@ export const assistantSkillGrants = sqliteTable(
     skillId: text('skill_id').notNull(),
     roleIdsJson: text('role_ids_json').notNull().default('[]'),
     userIdsJson: text('user_ids_json').notNull().default('[]'),
+    mode: text('mode'),
     updatedAt: integer('updated_at').notNull(),
   },
   (t) => [
     primaryKey({ columns: [t.guildId, t.skillId] }),
     foreignKey({ columns: [t.guildId], foreignColumns: [guilds.guildId] }).onDelete('cascade'),
     check('assistant_skill_grants_guild_id_snowflake', snowflakeCheck(t.guildId)),
+    check(
+      'assistant_skill_grants_mode',
+      sql`${t.mode} IS NULL OR ${t.mode} IN ('everyone','roles','owner')`,
+    ),
   ],
 );
 
