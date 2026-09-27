@@ -146,14 +146,15 @@ export interface AssistantCommandDeps {
   /**
    * Hands the invocation to the job queue (B2). The provider call is far too
    * slow for the serial per-guild dispatch chain: awaiting it here would
-   * stall reaction roles, automod and /mod behind one /ask.
+   * stall reaction roles, automod and /mod behind one /ask. Reports whether
+   * the queue took the job, so a duplicate mention skips its typing indicator.
    */
   readonly enqueue: (input: {
     kind: typeof JOB_KINDS.assistantInvoke;
     payload: AssistantInvokePayload;
     dedupeKey: string;
     now: number;
-  }) => void;
+  }) => { readonly enqueued: boolean };
   readonly now: () => number;
   readonly logger: Logger;
   /**
@@ -376,7 +377,7 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
   // identity the job needs — the message id for the reply and the link, and
   // the reply reference for the conversation resolver.
   try {
-    deps.enqueue({
+    const queued = deps.enqueue({
       kind: JOB_KINDS.assistantInvoke,
       payload: {
         channelId: event.channelId,
@@ -388,20 +389,22 @@ async function handleMention(deps: AssistantCommandDeps, event: MessageEvent): P
         source: 'mention',
         invocationId: event.messageId,
         messageId: event.messageId,
-        ...(event.authorDisplayName === undefined
-          ? {}
-          : { authorName: event.authorDisplayName.slice(0, 200) }),
         ...(event.referencedMessageId === undefined
           ? {}
           : { referencedMessageId: event.referencedMessageId }),
         ...(event.referencedAuthorId === undefined
           ? {}
           : { referencedAuthorId: event.referencedAuthorId }),
+        ...(event.authorDisplayName === undefined
+          ? {}
+          : { authorName: event.authorDisplayName.slice(0, 200) }),
       },
       dedupeKey: assistantInvokeDedupeKey(event.messageId),
       now: deps.now(),
     });
     // Best-effort and never awaited: the dispatch chain must not stall on it.
+    // A duplicate already in the queue restarts nothing, so it gets no typing.
+    if (!queued.enqueued) return;
     const sendTyping = deps.sendTyping;
     if (sendTyping !== undefined) {
       try {
