@@ -12,6 +12,11 @@ describe('TOOL_CATALOGUE', () => {
       'server_info',
       'current_time',
       'my_reminders',
+      'set_reminder',
+      'edit_reminder',
+      'cancel_reminder',
+      'propose_memory',
+      'propose_decision',
       'list_sources',
       'search_sources',
       'read_chunk',
@@ -34,16 +39,100 @@ describe('TOOL_CATALOGUE', () => {
     }
   });
 
-  it('lists only real skill ids, and the search skill on every tool (it uses all read tools)', () => {
+  it('lists only real skill ids, and the search skill on every read tool', () => {
     const skillIds = new Set(CLUB_ASSISTANT_SKILLS.map((skill) => skill.id));
     for (const tool of TOOL_CATALOGUE) {
       for (const skillId of tool.skills) {
-        const catalogueId =
-          skillId === 'create-reminder' || skillId === 'send-reminder' ? 'reminders' : skillId;
-        expect(skillIds.has(catalogueId), skillId).toBe(true);
+        expect(skillIds.has(skillId), skillId).toBe(true);
       }
-      expect(tool.skills).toContain('search-club');
+      if (tool.actsForSkill === undefined) expect(tool.skills).toContain('search-club');
     }
+  });
+
+  it('names no legacy create-reminder skill anywhere', () => {
+    for (const tool of TOOL_CATALOGUE) {
+      expect(tool.skills).not.toContain('create-reminder');
+      expect(tool.skills).not.toContain('send-reminder');
+    }
+    expect(TOOL_CATALOGUE.map((tool) => tool.name)).not.toContain('create-reminder');
+  });
+
+  it('declares the six acting and listing tools round-first with their acting skill', () => {
+    const expected: Readonly<Record<string, string>> = {
+      my_reminders: 'reminders',
+      set_reminder: 'reminders',
+      edit_reminder: 'reminders',
+      cancel_reminder: 'reminders',
+      propose_memory: 'propose-memory',
+      propose_decision: 'record-decision',
+    };
+    for (const [name, skill] of Object.entries(expected)) {
+      const entry = TOOL_CATALOGUE.find((tool) => tool.name === name);
+      expect(entry, name).toBeDefined();
+      expect(entry?.rounds).toBe('first');
+      expect(entry?.actsForSkill).toBe(skill);
+    }
+    const idTools = new Set(['read_chunk', 'outline', 'open_resource']);
+    for (const name of Object.keys(expected)) expect(idTools.has(name)).toBe(false);
+  });
+
+  it('gives my_reminders an optional all flag for the owner', () => {
+    const mine = TOOL_CATALOGUE.find((tool) => tool.name === 'my_reminders')!;
+    expect(mine.skills).toEqual(['search-club', 'reminders']);
+    expect(mine.description).toBe(
+      "The asking member's own reminders that have not finished, with ids for edit_reminder and cancel_reminder. The server owner may pass all=true to see everyone's.",
+    );
+    expect(mine.parameters.properties.all).toMatchObject({ type: 'boolean' });
+    expect(mine.parameters.required ?? []).not.toContain('all');
+  });
+
+  it('bounds set_reminder text, context, members, roles and repeat', () => {
+    const set = TOOL_CATALOGUE.find((tool) => tool.name === 'set_reminder')!;
+    expect(set.parameters.properties.text).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 1500,
+    });
+    expect(set.parameters.properties.when).toMatchObject({ type: 'string' });
+    expect(set.parameters.properties.context?.maxLength).toBe(300);
+    expect(set.parameters.properties.members).toMatchObject({ type: 'array', maxItems: 25 });
+    expect(set.parameters.properties.roles).toMatchObject({ type: 'array', maxItems: 10 });
+    expect(set.parameters.required).toEqual(expect.arrayContaining(['text', 'when']));
+    const repeat = set.parameters.properties.repeat;
+    expect(repeat?.type).toBe('object');
+    expect(repeat?.properties?.kind?.enum).toEqual(['daily', 'weekdays', 'weekly', 'monthly']);
+    expect(repeat?.properties?.days?.maxItems).toBe(7);
+    expect(repeat?.properties?.everyWeeks).toMatchObject({ minimum: 1, maximum: 12 });
+    expect(repeat?.properties?.dayOfMonth).toMatchObject({ minimum: 1, maximum: 31 });
+    expect(repeat?.properties?.count).toMatchObject({ minimum: 1, maximum: 1000 });
+  });
+
+  it('bounds edit_reminder, cancel_reminder and the proposal tools', () => {
+    const edit = TOOL_CATALOGUE.find((tool) => tool.name === 'edit_reminder')!;
+    expect(edit.parameters.required).toEqual(expect.arrayContaining(['reminderId']));
+    expect(edit.parameters.properties.text).toMatchObject({ minLength: 1, maxLength: 1500 });
+    expect(edit.parameters.properties.context?.maxLength).toBe(300);
+    expect(edit.parameters.properties.members).toMatchObject({ type: 'array', maxItems: 25 });
+    expect(edit.parameters.properties.roles).toMatchObject({ type: 'array', maxItems: 10 });
+    expect(edit.parameters.properties.stopRepeating).toMatchObject({ type: 'boolean' });
+    const cancel = TOOL_CATALOGUE.find((tool) => tool.name === 'cancel_reminder')!;
+    expect(cancel.parameters.required).toEqual(['reminderId']);
+    const memory = TOOL_CATALOGUE.find((tool) => tool.name === 'propose_memory')!;
+    expect(memory.parameters.properties.content).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 1000,
+    });
+    expect(memory.parameters.properties.section?.maxLength).toBe(100);
+    expect(memory.description.toLowerCase()).toContain('owner');
+    const decision = TOOL_CATALOGUE.find((tool) => tool.name === 'propose_decision')!;
+    expect(decision.parameters.properties.summary).toMatchObject({
+      type: 'string',
+      minLength: 1,
+      maxLength: 4000,
+    });
+    expect(decision.parameters.properties.kind?.enum).toEqual(['decision', 'review-plan']);
+    expect(decision.description.toLowerCase()).toContain('draft');
   });
 
   it('gives search_archive a bounded query string and open_resource a bounded id', () => {

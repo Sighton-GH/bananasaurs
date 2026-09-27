@@ -8,8 +8,10 @@ import {
   cancelReminder,
   completeReminder,
   getReminder,
+  insertDecisionDraftOnce,
   insertReminder,
   listBehaviours,
+  listDecisions,
   listRemindersForCreator,
   listSkillGrants,
   putBehaviour,
@@ -220,6 +222,25 @@ describe('skill scopes and richer reminder storage', () => {
     expect(() => completeReminder(a, 'secret')).toThrow();
     expect(() => rescheduleReminder(a, 'secret', 2000)).toThrow();
     expect(getReminder(b, 'secret')?.guildId).toBe(B);
+    t.close();
+  });
+
+  it('inserts a decision draft once: the second insert is a duplicate and keeps the row', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    upsertGuild(a, { name: 'a', now: 1 });
+    const input = {
+      id: 'draft-1',
+      kind: 'decision' as const,
+      summary: 'first',
+      requesterId: U,
+      provenance: 'chat',
+      at: 10,
+    };
+    expect(insertDecisionDraftOnce(a, input)).toBe('created');
+    expect(insertDecisionDraftOnce(a, { ...input, summary: 'second', at: 20 })).toBe('duplicate');
+    expect(listDecisions(a)).toHaveLength(1);
+    expect(listDecisions(a)[0]).toMatchObject({ id: 'draft-1', summary: 'first' });
     t.close();
   });
 

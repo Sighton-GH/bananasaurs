@@ -3,13 +3,24 @@ import {
   clipHeading,
   humaniseDuration,
   redactEvidenceText,
+  reminderRecurrence,
   scanOutboundRequest,
   TOOL_CATALOGUE,
+  validateReminderDraft,
   type ClubResource,
   type Reminder,
+  type ReminderMentions,
+  type ReminderRecurrence,
   type ToolCall,
   type ToolDeclaration,
 } from '@bananasaurs/core';
+import type { assistantRepo } from '@bananasaurs/storage';
+import type {
+  ReminderTargetRequest,
+  ReminderTargetResult,
+  ResolvedReminderTargets,
+} from './reminder-targets.js';
+import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 
 /**
@@ -62,11 +73,53 @@ export interface CacheStoredDoc {
   readonly url: string;
 }
 
+type StoredReminder = assistantRepo.StoredReminder;
+/**
+ * The patch `updateReminder` takes. Re-declared structurally here:
+ * `packages/storage` does not export a named patch type, only the inline
+ * parameter of `updateReminder`.
+ */
+export interface ReminderPatch {
+  readonly text?: string;
+  readonly context?: string;
+  readonly dueAt?: number;
+  readonly destinationId?: string;
+  readonly mentions?: ReminderMentions;
+  readonly recurrence?: ReminderRecurrence | null;
+}
+
 /** Everything a tool can reach, already scoped to one guild and one asking member. */
 export interface AssistantToolPorts {
   readonly userId: string;
   readonly now: () => number;
   readonly timeZone: string;
+  readonly isOwner: boolean;
+  /** True when the behaviour allows the skill and the asker passes its scope (B2b computes it). */
+  readonly skillAllowed: (skillId: string) => boolean;
+  /** Stable per invocation (the Discord message id); idempotency keys derive from it. */
+  readonly invocationKey: string;
+  readonly currentChannelId: string | undefined;
+  readonly resolveReminderTargets: (
+    request: Omit<ReminderTargetRequest, 'askerId' | 'currentChannelId'>,
+  ) => Promise<ReminderTargetResult>;
+  readonly reminderStore: {
+    insert(reminder: Reminder): 'created' | 'duplicate';
+    get(id: string): StoredReminder | undefined;
+    update(id: string, patch: ReminderPatch): 'updated' | 'not-found' | 'not-editable';
+    cancel(id: string): boolean;
+    listForCreator(creatorId: string): readonly StoredReminder[];
+    listAll(): readonly StoredReminder[];
+  };
+  readonly proposeDraft: (input: {
+    id: string;
+    kind: 'memory' | 'decision' | 'review-plan';
+    summary: string;
+  }) => 'created' | 'duplicate';
+  readonly recordSkillActivity: (
+    skillId: string,
+    outcome: 'completed' | 'denied' | 'failed',
+    detail?: string,
+  ) => void;
   /** Archive-enabled channels the member can view; the port enforces that. */
   readonly searchArchive: (query: string) => Promise<readonly ArchiveHit[]>;
   readonly resources: () => readonly ClubResource[];
@@ -75,7 +128,6 @@ export interface AssistantToolPorts {
   readonly webSearch?: ((query: string) => Promise<readonly WebResult[]>) | undefined;
   readonly serverCard: () => string;
   readonly visibleChannels: () => Promise<readonly { id: string; name: string }[]>;
-  readonly reminders: () => readonly Reminder[];
   /** Guild-scoped cache reads (hard rule 2: the closures capture the request scope). */
   readonly cacheSearch: (input: {
     readonly query: string;
@@ -114,17 +166,72 @@ export interface AssistantToolResult {
    * they actually showed; every other tool returns none.
    */
   readonly handles?: readonly string[];
+  /** Code-written confirmation the reply ends with (B2b appends it verbatim). */
+  readonly actionSummary?: string;
 }
 
 const query = z.object({ query: z.string().trim().min(1).max(200) }).strict();
 const none = z.object({}).strict();
+const reminderText = z.string().trim().min(1).max(1500);
+const reminderContext = z.string().max(300).optional();
+const reminderChannel = z.string().min(1).max(128).optional();
+const reminderMembers = z.array(z.string().min(1).max(128)).max(25).optional();
+const reminderRoles = z.array(z.string().min(1).max(128)).max(10).optional();
+const repeatPattern = z
+  .object({
+    kind: z.enum(['daily', 'weekdays', 'weekly', 'monthly']),
+    days: z.array(z.number().int().min(0).max(6)).min(1).max(7).optional(),
+    everyWeeks: z.number().int().min(1).max(12).optional(),
+    dayOfMonth: z.number().int().min(1).max(31).optional(),
+    until: z.string().min(1).max(64).optional(),
+    count: z.number().int().min(1).max(1000).optional(),
+  })
+  .strict()
+  .optional();
 const schemas = {
   search_archive: query,
   open_resource: z.object({ resourceId: z.string().min(1).max(64) }).strict(),
   web_search: query,
   server_info: none,
   current_time: none,
-  my_reminders: none,
+  my_reminders: z.object({ all: z.boolean().optional() }).strict(),
+  set_reminder: z
+    .object({
+      text: reminderText,
+      when: z.string().min(1).max(64),
+      context: reminderContext,
+      channel: reminderChannel,
+      members: reminderMembers,
+      roles: reminderRoles,
+      repeat: repeatPattern,
+    })
+    .strict(),
+  edit_reminder: z
+    .object({
+      reminderId: z.string().min(1).max(128),
+      text: reminderText.optional(),
+      when: z.string().min(1).max(64).optional(),
+      context: reminderContext,
+      channel: reminderChannel,
+      members: reminderMembers,
+      roles: reminderRoles,
+      repeat: repeatPattern,
+      stopRepeating: z.boolean().optional(),
+    })
+    .strict(),
+  cancel_reminder: z.object({ reminderId: z.string().min(1).max(128) }).strict(),
+  propose_memory: z
+    .object({
+      content: z.string().trim().min(1).max(1000),
+      section: z.string().trim().min(1).max(100).optional(),
+    })
+    .strict(),
+  propose_decision: z
+    .object({
+      summary: z.string().trim().min(1).max(4000),
+      kind: z.enum(['decision', 'review-plan']),
+    })
+    .strict(),
   list_sources: z.object({ filter: z.string().trim().min(1).max(80).optional() }).strict(),
   search_sources: z
     .object({
@@ -149,10 +256,13 @@ type ToolName = keyof typeof schemas;
  * can never drift from what the skill detail page shows (a test asserts
  * every entry here equals its catalogue entry). `web_search` is the one
  * conditional entry: it drops out entirely while search is off (ADR 0066).
+ * Acting entries drop out while their skill is not allowed (B2a).
  */
 export const toolDeclarations = (ports: AssistantToolPorts): ToolDeclaration[] =>
   TOOL_CATALOGUE.filter(
-    (entry) => entry.name !== 'web_search' || ports.webSearch !== undefined,
+    (entry) =>
+      (entry.name !== 'web_search' || ports.webSearch !== undefined) &&
+      (entry.actsForSkill === undefined || ports.skillAllowed(entry.actsForSkill)),
   ).map((entry) => ({
     name: entry.name,
     description: entry.description,
@@ -176,6 +286,81 @@ const refused = (name: string, text: string): AssistantToolResult => ({
   text,
   sources: [],
 });
+
+/** ISO 8601 date-time with a `Z` or `±hh:mm` offset (the `when`/`until` rule). */
+const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const OFFSET_REFUSAL = 'Give the time as ISO 8601 with its UTC offset.';
+
+/** Per-invocation idempotency counter shared by set_reminder and the proposals. */
+const invocationCounters = new WeakMap<AssistantToolPorts, number>();
+const nextInvocationIndex = (ports: AssistantToolPorts): number => {
+  const current = invocationCounters.get(ports) ?? 0;
+  invocationCounters.set(ports, current + 1);
+  return current;
+};
+
+interface RepeatArgs {
+  readonly kind: 'daily' | 'weekdays' | 'weekly' | 'monthly';
+  readonly days?: readonly number[] | undefined;
+  readonly everyWeeks?: number | undefined;
+  readonly dayOfMonth?: number | undefined;
+  readonly until?: string | undefined;
+  readonly count?: number | undefined;
+}
+
+const buildRecurrence = (repeat: RepeatArgs, timeZone: string): unknown => {
+  let pattern: unknown;
+  if (repeat.kind === 'daily') pattern = { kind: 'daily' };
+  else if (repeat.kind === 'weekdays') pattern = { kind: 'weekdays' };
+  else if (repeat.kind === 'weekly') {
+    if (repeat.days === undefined) return undefined;
+    pattern = {
+      kind: 'weekly',
+      days: [...repeat.days],
+      ...(repeat.everyWeeks === undefined ? {} : { everyWeeks: repeat.everyWeeks }),
+    };
+  } else {
+    if (repeat.dayOfMonth === undefined) return undefined;
+    pattern = { kind: 'monthly', dayOfMonth: repeat.dayOfMonth };
+  }
+  let endAt: number | undefined;
+  if (repeat.until !== undefined) {
+    if (!ISO_WITH_OFFSET.test(repeat.until)) return undefined;
+    const parsed = Date.parse(repeat.until);
+    if (!Number.isFinite(parsed)) return undefined;
+    endAt = parsed;
+  }
+  return {
+    pattern,
+    timeZone,
+    ...(endAt === undefined ? {} : { endAt }),
+    ...(repeat.count === undefined ? {} : { maxCount: repeat.count }),
+  };
+};
+
+const parseRecurrence = (
+  repeat: RepeatArgs,
+  timeZone: string,
+): { ok: true; recurrence: ReminderRecurrence } | { ok: false } => {
+  const parsed = reminderRecurrence.safeParse(buildRecurrence(repeat, timeZone));
+  return parsed.success ? { ok: true, recurrence: parsed.data } : { ok: false };
+};
+
+const requireSkill = (
+  ports: AssistantToolPorts,
+  name: string,
+  skill: string,
+): AssistantToolResult | undefined => {
+  if (ports.skillAllowed(skill)) return undefined;
+  ports.recordSkillActivity(skill, 'denied');
+  return refused(name, "You're not allowed to use that here.");
+};
+
+const failed = (ports: AssistantToolPorts, name: string, skill: string, err: unknown) => {
+  const message = err instanceof Error ? err.message : 'unknown error';
+  ports.recordSkillActivity(skill, 'failed', message);
+  return refused(name, `The tool failed: ${message}`);
+};
 
 const clock = (ports: AssistantToolPorts, at: number): string =>
   new Intl.DateTimeFormat('en-CA', {
@@ -317,14 +502,278 @@ export const runAssistantTool = async (
       case 'current_time':
         return evidence(name, `${clock(ports, ports.now())} (${ports.timeZone})`);
       case 'my_reminders': {
-        const mine = ports
-          .reminders()
-          .filter(
-            (r) =>
-              r.creatorId === ports.userId && r.status === 'scheduled' && r.dueAt >= ports.now(),
+        const gate = requireSkill(ports, name, 'reminders');
+        if (gate !== undefined) return gate;
+        const { all } = parsed.data as { all?: boolean };
+        const rows =
+          all === true && ports.isOwner
+            ? ports.reminderStore.listAll()
+            : ports.reminderStore.listForCreator(ports.userId);
+        const unfinished = rows.filter(
+          (r) => r.status === 'scheduled' || r.status === 'delivering',
+        );
+        if (unfinished.length === 0) return evidence(name, 'No upcoming reminders.');
+        return evidence(
+          name,
+          unfinished
+            .map((r) => {
+              const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
+              if (r.recurrence !== undefined)
+                parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
+              const pings =
+                r.mentions.userIds.length +
+                r.mentions.roleIds.length +
+                (r.mentions.everyone ? 1 : 0) +
+                (r.mentions.here ? 1 : 0);
+              parts.push(`pings ${pings}`);
+              return parts.join(' · ');
+            })
+            .join('\n'),
+        );
+      }
+      case 'set_reminder': {
+        const gate = requireSkill(ports, name, 'reminders');
+        if (gate !== undefined) return gate;
+        try {
+          const args = parsed.data as {
+            text: string;
+            when: string;
+            context?: string;
+            channel?: string;
+            members?: string[];
+            roles?: string[];
+            repeat?: RepeatArgs;
+          };
+          if (!ISO_WITH_OFFSET.test(args.when)) return refused(name, OFFSET_REFUSAL);
+          const dueAt = Date.parse(args.when);
+          if (!Number.isFinite(dueAt)) return refused(name, OFFSET_REFUSAL);
+          let recurrence: ReminderRecurrence | undefined;
+          if (args.repeat !== undefined) {
+            const built = parseRecurrence(args.repeat, ports.timeZone);
+            if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
+            recurrence = built.recurrence;
+          }
+          const draft = validateReminderDraft(
+            { dueAt, text: args.text, context: args.context },
+            ports.now(),
           );
-        if (mine.length === 0) return evidence(name, 'No upcoming reminders.');
-        return evidence(name, mine.map((r) => `${clock(ports, r.dueAt)}: ${r.text}`).join('\n'));
+          if (!draft.ok) return refused(name, draft.error);
+          const resolved = await ports.resolveReminderTargets({
+            channel: args.channel,
+            members: args.members ?? [],
+            roles: args.roles ?? [],
+          });
+          if (!resolved.ok) return { ...evidence(name, resolved.problem), ok: false };
+          const targets: ResolvedReminderTargets = resolved.targets;
+          const n = nextInvocationIndex(ports);
+          const reminder: Reminder = {
+            id: `rem_${ports.invocationKey}_${n}`,
+            guildId: '',
+            creatorId: ports.userId,
+            destinationId: targets.channelId,
+            text: draft.text,
+            dueAt,
+            createdAt: ports.now(),
+            status: 'scheduled',
+            dedupeKey: `reminder:${ports.invocationKey}:${n}`,
+            mentions: {
+              userIds: [...targets.mentions.userIds],
+              roleIds: [...targets.mentions.roleIds],
+              everyone: targets.mentions.everyone,
+              here: targets.mentions.here,
+            },
+            ...(recurrence === undefined ? {} : { recurrence }),
+            ...(args.context === undefined ? {} : { context: args.context }),
+            deliveredCount: 0,
+          };
+          const inserted = ports.reminderStore.insert(reminder);
+          if (inserted === 'duplicate') return evidence(name, 'That reminder is already set.');
+          ports.recordSkillActivity('reminders', 'completed');
+          const summary = reminderSummary('set', {
+            text: reminder.text,
+            dueAt,
+            timeZone: ports.timeZone,
+            recurrence,
+            context: reminder.context,
+            channelName: targets.channelName,
+            memberNames: targets.memberNames,
+            roleNames: targets.roleNames,
+            everyone: targets.mentions.everyone,
+            here: targets.mentions.here,
+          });
+          return { ...evidence(name, summary), actionSummary: summary };
+        } catch (err) {
+          return failed(ports, name, 'reminders', err);
+        }
+      }
+      case 'edit_reminder': {
+        const gate = requireSkill(ports, name, 'reminders');
+        if (gate !== undefined) return gate;
+        try {
+          const args = parsed.data as {
+            reminderId: string;
+            text?: string;
+            when?: string;
+            context?: string;
+            channel?: string;
+            members?: string[];
+            roles?: string[];
+            repeat?: RepeatArgs;
+            stopRepeating?: boolean;
+          };
+          const stored = ports.reminderStore.get(args.reminderId);
+          if (stored === undefined) return refused(name, "I couldn't find that reminder.");
+          if (stored.creatorId !== ports.userId && !ports.isOwner)
+            return refused(name, 'You can only change reminders you set.');
+          let dueAt: number | undefined;
+          if (args.when !== undefined) {
+            if (!ISO_WITH_OFFSET.test(args.when)) return refused(name, OFFSET_REFUSAL);
+            dueAt = Date.parse(args.when);
+            if (!Number.isFinite(dueAt)) return refused(name, OFFSET_REFUSAL);
+          }
+          let recurrence: ReminderRecurrence | null | undefined;
+          if (args.stopRepeating === true) recurrence = null;
+          else if (args.repeat !== undefined) {
+            const built = parseRecurrence(args.repeat, ports.timeZone);
+            if (!built.ok) return refused(name, 'The repeat pattern was not valid.');
+            recurrence = built.recurrence;
+          }
+          if (args.text !== undefined || dueAt !== undefined || args.context !== undefined) {
+            const draft = validateReminderDraft(
+              {
+                dueAt: dueAt ?? stored.dueAt,
+                text: args.text ?? stored.text,
+                context: args.context ?? stored.context,
+              },
+              ports.now(),
+            );
+            if (!draft.ok) return refused(name, draft.error);
+          }
+          let targets: ResolvedReminderTargets | undefined;
+          if (
+            args.channel !== undefined ||
+            args.members !== undefined ||
+            args.roles !== undefined
+          ) {
+            const rolesParam = args.roles ?? [
+              ...stored.mentions.roleIds,
+              ...(stored.mentions.everyone ? ['everyone'] : []),
+              ...(stored.mentions.here ? ['here'] : []),
+            ];
+            const resolved = await ports.resolveReminderTargets({
+              channel: args.channel ?? stored.destinationId,
+              members: args.members ?? [...stored.mentions.userIds],
+              roles: rolesParam,
+            });
+            if (!resolved.ok) return { ...evidence(name, resolved.problem), ok: false };
+            targets = resolved.targets;
+          }
+          const patch: ReminderPatch = {
+            ...(args.text === undefined ? {} : { text: args.text.trim() }),
+            ...(args.context === undefined ? {} : { context: args.context }),
+            ...(dueAt === undefined ? {} : { dueAt }),
+            ...(targets === undefined
+              ? {}
+              : {
+                  destinationId: targets.channelId,
+                  mentions: {
+                    userIds: [...targets.mentions.userIds],
+                    roleIds: [...targets.mentions.roleIds],
+                    everyone: targets.mentions.everyone,
+                    here: targets.mentions.here,
+                  },
+                }),
+            ...(recurrence === undefined ? {} : { recurrence }),
+          };
+          const updated = ports.reminderStore.update(args.reminderId, patch);
+          if (updated === 'not-found') return refused(name, "I couldn't find that reminder.");
+          if (updated === 'not-editable')
+            return refused(name, 'That reminder is already being sent or has finished.');
+          ports.recordSkillActivity('reminders', 'completed');
+          const after = ports.reminderStore.get(args.reminderId) ?? stored;
+          const summary = reminderSummary('updated', {
+            text: after.text,
+            dueAt: after.dueAt,
+            timeZone: ports.timeZone,
+            recurrence: after.recurrence ?? undefined,
+            context: after.context,
+            channelName: targets?.channelName ?? after.destinationId,
+            memberNames: targets?.memberNames ?? [...after.mentions.userIds],
+            roleNames: targets?.roleNames ?? [...after.mentions.roleIds],
+            everyone: after.mentions.everyone,
+            here: after.mentions.here,
+          });
+          return { ...evidence(name, summary), actionSummary: summary };
+        } catch (err) {
+          return failed(ports, name, 'reminders', err);
+        }
+      }
+      case 'cancel_reminder': {
+        const gate = requireSkill(ports, name, 'reminders');
+        if (gate !== undefined) return gate;
+        try {
+          const args = parsed.data as { reminderId: string };
+          const stored = ports.reminderStore.get(args.reminderId);
+          if (stored === undefined) return refused(name, "I couldn't find that reminder.");
+          if (stored.creatorId !== ports.userId && !ports.isOwner)
+            return refused(name, 'You can only change reminders you set.');
+          const cancelled = ports.reminderStore.cancel(args.reminderId);
+          if (!cancelled) return refused(name, "That reminder can't be cancelled now.");
+          ports.recordSkillActivity('reminders', 'completed');
+          const summary = reminderSummary('cancelled', {
+            text: stored.text,
+            dueAt: stored.dueAt,
+            timeZone: ports.timeZone,
+            recurrence: stored.recurrence,
+            context: stored.context,
+            channelName: stored.destinationId,
+            memberNames: [...stored.mentions.userIds],
+            roleNames: [...stored.mentions.roleIds],
+            everyone: stored.mentions.everyone,
+            here: stored.mentions.here,
+          });
+          return { ...evidence(name, summary), actionSummary: summary };
+        } catch (err) {
+          return failed(ports, name, 'reminders', err);
+        }
+      }
+      case 'propose_memory': {
+        const gate = requireSkill(ports, name, 'propose-memory');
+        if (gate !== undefined) return gate;
+        try {
+          const args = parsed.data as { content: string; section?: string };
+          const n = nextInvocationIndex(ports);
+          ports.proposeDraft({
+            id: `memory-${ports.invocationKey}-${n}`,
+            kind: 'memory',
+            summary: args.section === undefined ? args.content : `${args.section}: ${args.content}`,
+          });
+          ports.recordSkillActivity('propose-memory', 'completed');
+          const actionSummary =
+            '📝 Memory proposal filed for owner review. Nothing is remembered until it is approved.';
+          return { ...evidence(name, actionSummary), actionSummary };
+        } catch (err) {
+          return failed(ports, name, 'propose-memory', err);
+        }
+      }
+      case 'propose_decision': {
+        const gate = requireSkill(ports, name, 'record-decision');
+        if (gate !== undefined) return gate;
+        try {
+          const args = parsed.data as { summary: string; kind: 'decision' | 'review-plan' };
+          const n = nextInvocationIndex(ports);
+          ports.proposeDraft({
+            id: `${args.kind}-${ports.invocationKey}-${n}`,
+            kind: args.kind,
+            summary: args.summary,
+          });
+          ports.recordSkillActivity('record-decision', 'completed');
+          const actionSummary =
+            '📝 Draft filed for owner review. It is not club policy until an owner saves it.';
+          return { ...evidence(name, actionSummary), actionSummary };
+        } catch (err) {
+          return failed(ports, name, 'record-decision', err);
+        }
       }
       case 'list_sources': {
         const { filter } = parsed.data as { filter?: string };

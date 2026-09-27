@@ -16,8 +16,14 @@ export interface JSONSchemaProperty {
   readonly minimum?: number;
   readonly maximum?: number;
   readonly enum?: readonly (string | number)[];
-  readonly items?: { readonly type: 'string' };
+  readonly items?: {
+    readonly type: 'string' | 'integer' | 'number';
+    readonly minimum?: number;
+    readonly maximum?: number;
+  };
   readonly maxItems?: number;
+  readonly properties?: Readonly<Record<string, JSONSchemaProperty>>;
+  readonly required?: readonly string[];
 }
 
 /**
@@ -42,6 +48,8 @@ export interface ToolCatalogueEntry {
   readonly outputLimit: string;
   /** Ids of every skill (`CLUB_ASSISTANT_SKILLS`) whose use involves this tool. */
   readonly skills: readonly string[];
+  /** The acting skill that must be allowed for the tool to be declared (B2a). */
+  readonly actsForSkill?: string;
 }
 
 const QUERY_PARAMETERS: JSONSchema = {
@@ -116,15 +124,256 @@ export const TOOL_CATALOGUE: readonly ToolCatalogueEntry[] = [
     parameters: NO_PARAMETERS,
     rounds: 'first',
     outputLimit: RESULT_LIMIT,
-    skills: ['search-club', 'create-reminder', 'send-reminder'],
+    skills: ['search-club', 'reminders'],
   },
   {
     name: 'my_reminders',
-    description: "The asking member's own upcoming reminders.",
-    parameters: NO_PARAMETERS,
+    description:
+      "The asking member's own reminders that have not finished, with ids for edit_reminder and cancel_reminder. The server owner may pass all=true to see everyone's.",
+    parameters: {
+      type: 'object',
+      properties: {
+        all: {
+          type: 'boolean',
+          description: "Owner only: list everyone's unfinished reminders.",
+        },
+      },
+      required: [],
+    },
     rounds: 'first',
     outputLimit: RESULT_LIMIT,
-    skills: ['search-club', 'create-reminder'],
+    skills: ['search-club', 'reminders'],
+    actsForSkill: 'reminders',
+  },
+  {
+    name: 'set_reminder',
+    description:
+      "Set a reminder. Only when the member asks for one. If the time, the channel or who to ping is unclear, ask the member instead of calling this. `when` is ISO 8601 with its UTC offset, in the club's time zone (use current_time first if you need today's date).",
+    parameters: {
+      type: 'object',
+      properties: {
+        text: {
+          type: 'string',
+          description: 'What the reminder says.',
+          minLength: 1,
+          maxLength: 1500,
+        },
+        when: {
+          type: 'string',
+          description: 'ISO 8601 date-time with its UTC offset.',
+        },
+        context: {
+          type: 'string',
+          description: 'Why it was set, in a few words.',
+          maxLength: 300,
+        },
+        channel: {
+          type: 'string',
+          description: 'A channel name, #name or id; omit for this channel.',
+        },
+        members: {
+          type: 'array',
+          description: 'Names or ids to ping (at most 25).',
+          items: { type: 'string' },
+          maxItems: 25,
+        },
+        roles: {
+          type: 'array',
+          description: 'Role names or ids; "everyone" or "here" for those pings (at most 10).',
+          items: { type: 'string' },
+          maxItems: 10,
+        },
+        repeat: {
+          type: 'object',
+          description: 'Repeat pattern for the reminder.',
+          properties: {
+            kind: {
+              type: 'string',
+              enum: ['daily', 'weekdays', 'weekly', 'monthly'],
+            },
+            days: {
+              type: 'array',
+              description: 'Weekdays for weekly (0-6, Sunday=0).',
+              items: { type: 'integer', minimum: 0, maximum: 6 },
+              maxItems: 7,
+            },
+            everyWeeks: {
+              type: 'integer',
+              description: 'Every N weeks (1-12).',
+              minimum: 1,
+              maximum: 12,
+            },
+            dayOfMonth: {
+              type: 'integer',
+              description: 'Day of month for monthly (1-31).',
+              minimum: 1,
+              maximum: 31,
+            },
+            until: {
+              type: 'string',
+              description: 'ISO 8601 date-time with offset; repeats stop after it.',
+            },
+            count: {
+              type: 'integer',
+              description: 'Stop after this many deliveries (1-1000).',
+              minimum: 1,
+              maximum: 1000,
+            },
+          },
+          required: ['kind'],
+        },
+      },
+      required: ['text', 'when'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['reminders'],
+    actsForSkill: 'reminders',
+  },
+  {
+    name: 'edit_reminder',
+    description: 'Change one of your reminders by its id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reminderId: {
+          type: 'string',
+          description: 'The reminder id from my_reminders.',
+          minLength: 1,
+          maxLength: 128,
+        },
+        text: {
+          type: 'string',
+          description: 'New reminder text.',
+          minLength: 1,
+          maxLength: 1500,
+        },
+        when: {
+          type: 'string',
+          description: 'New due time, ISO 8601 with its UTC offset.',
+        },
+        context: {
+          type: 'string',
+          description: 'New reason line.',
+          maxLength: 300,
+        },
+        channel: {
+          type: 'string',
+          description: 'A channel name, #name or id.',
+        },
+        members: {
+          type: 'array',
+          description: 'Names or ids to ping (at most 25).',
+          items: { type: 'string' },
+          maxItems: 25,
+        },
+        roles: {
+          type: 'array',
+          description: 'Role names or ids (at most 10).',
+          items: { type: 'string' },
+          maxItems: 10,
+        },
+        repeat: {
+          type: 'object',
+          description: 'New repeat pattern.',
+          properties: {
+            kind: {
+              type: 'string',
+              enum: ['daily', 'weekdays', 'weekly', 'monthly'],
+            },
+            days: {
+              type: 'array',
+              items: { type: 'integer', minimum: 0, maximum: 6 },
+              maxItems: 7,
+            },
+            everyWeeks: { type: 'integer', minimum: 1, maximum: 12 },
+            dayOfMonth: { type: 'integer', minimum: 1, maximum: 31 },
+            until: { type: 'string' },
+            count: { type: 'integer', minimum: 1, maximum: 1000 },
+          },
+          required: ['kind'],
+        },
+        stopRepeating: {
+          type: 'boolean',
+          description: 'True to make a repeating reminder one-off.',
+        },
+      },
+      required: ['reminderId'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['reminders'],
+    actsForSkill: 'reminders',
+  },
+  {
+    name: 'cancel_reminder',
+    description: 'Cancel one of your reminders by its id.',
+    parameters: {
+      type: 'object',
+      properties: {
+        reminderId: {
+          type: 'string',
+          description: 'The reminder id from my_reminders.',
+          minLength: 1,
+          maxLength: 128,
+        },
+      },
+      required: ['reminderId'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['reminders'],
+    actsForSkill: 'reminders',
+  },
+  {
+    name: 'propose_memory',
+    description:
+      'Propose something for the club to remember. An owner reviews it before anything is remembered.',
+    parameters: {
+      type: 'object',
+      properties: {
+        content: {
+          type: 'string',
+          description: 'What should be remembered.',
+          minLength: 1,
+          maxLength: 1000,
+        },
+        section: {
+          type: 'string',
+          description: 'Memory section for the proposal.',
+          maxLength: 100,
+        },
+      },
+      required: ['content'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['propose-memory'],
+    actsForSkill: 'propose-memory',
+  },
+  {
+    name: 'propose_decision',
+    description: 'Propose a club decision. It is saved as a draft for owner review.',
+    parameters: {
+      type: 'object',
+      properties: {
+        summary: {
+          type: 'string',
+          description: 'What was decided.',
+          minLength: 1,
+          maxLength: 4000,
+        },
+        kind: {
+          type: 'string',
+          enum: ['decision', 'review-plan'],
+        },
+      },
+      required: ['summary', 'kind'],
+    },
+    rounds: 'first',
+    outputLimit: RESULT_LIMIT,
+    skills: ['record-decision'],
+    actsForSkill: 'record-decision',
   },
   {
     name: 'list_sources',
