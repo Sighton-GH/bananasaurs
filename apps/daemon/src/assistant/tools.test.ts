@@ -262,7 +262,11 @@ describe('runAssistantTool', () => {
 
   it("lists only the asking member's own unfinished reminders", async () => {
     const mine = storedReminder({ id: 'r1', text: 'Bring the charger' });
-    const theirs = storedReminder({ id: 'r2', creatorId: '999999999999999999', text: 'Someone else' });
+    const theirs = storedReminder({
+      id: 'r2',
+      creatorId: '999999999999999999',
+      text: 'Someone else',
+    });
     const finished = storedReminder({ id: 'r3', status: 'delivered', text: 'Done already' });
     const p = ports({
       reminderStore: {
@@ -284,7 +288,11 @@ describe('runAssistantTool', () => {
 
   it('lets the owner list everyone with all=true, members see only their own', async () => {
     const mine = storedReminder({ id: 'r1', text: 'Bring the charger' });
-    const theirs = storedReminder({ id: 'r2', creatorId: '999999999999999999', text: 'Someone else' });
+    const theirs = storedReminder({
+      id: 'r2',
+      creatorId: '999999999999999999',
+      text: 'Someone else',
+    });
     const store = {
       insert: () => 'created' as const,
       get: () => undefined,
@@ -332,7 +340,8 @@ describe('acting tools (B2a)', () => {
       p: ports({
         reminderStore: {
           insert: (reminder: Reminder) => {
-            if ([...rows.values()].some((r) => r.dedupeKey === reminder.dedupeKey)) return 'duplicate';
+            if ([...rows.values()].some((r) => r.dedupeKey === reminder.dedupeKey))
+              return 'duplicate';
             rows.set(reminder.id, storedReminder({ ...reminder }));
             return 'created';
           },
@@ -377,7 +386,10 @@ describe('acting tools (B2a)', () => {
   it('sets a reminder with a code-written summary', async () => {
     const { p } = reminderPorts();
     const result = await runAssistantTool(
-      { name: 'set_reminder', args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' } },
+      {
+        name: 'set_reminder',
+        args: { text: 'Bring the charger', when: '2026-09-24T12:30:00-07:00' },
+      },
       p,
     );
     expect(result.ok).toBe(true);
@@ -526,7 +538,10 @@ describe('acting tools (B2a)', () => {
       reminderStore: p.reminderStore,
     });
     await expect(
-      runAssistantTool({ name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } }, stranger),
+      runAssistantTool(
+        { name: 'edit_reminder', args: { reminderId: 'rem1', text: 'new' } },
+        stranger,
+      ),
     ).resolves.toMatchObject({ ok: false, text: 'You can only change reminders you set.' });
     const owner = ports({
       userId: '999999999999999999',
@@ -574,7 +589,10 @@ describe('acting tools (B2a)', () => {
   it('cancels an owned reminder and refuses a finished one', async () => {
     const { p, rows } = reminderPorts();
     rows.set('rem1', storedReminder({ id: 'rem1', text: 'Bring the charger' }));
-    const result = await runAssistantTool({ name: 'cancel_reminder', args: { reminderId: 'rem1' } }, p);
+    const result = await runAssistantTool(
+      { name: 'cancel_reminder', args: { reminderId: 'rem1' } },
+      p,
+    );
     expect(result.ok).toBe(true);
     expect(result.actionSummary).toContain('🗑️ Reminder cancelled: **Bring the charger**');
     const again = await runAssistantTool(
@@ -587,7 +605,11 @@ describe('acting tools (B2a)', () => {
   it('files memory and decision proposals with review wording', async () => {
     const proposed: { id: string; kind: string; summary: string }[] = [];
     const p = ports({
-      proposeDraft: (input: { id: string; kind: 'memory' | 'decision' | 'review-plan'; summary: string }) => {
+      proposeDraft: (input: {
+        id: string;
+        kind: 'memory' | 'decision' | 'review-plan';
+        summary: string;
+      }) => {
         if (proposed.some((d) => d.id === input.id)) return 'duplicate';
         proposed.push({ ...input });
         return 'created';
@@ -613,7 +635,11 @@ describe('acting tools (B2a)', () => {
       { name: 'propose_memory', args: { content: 'Ava leads the pit crew', section: 'team' } },
       ports({
         invocationKey: 'msg1',
-        proposeDraft: (input: { id: string; kind: 'memory' | 'decision' | 'review-plan'; summary: string }) => {
+        proposeDraft: (input: {
+          id: string;
+          kind: 'memory' | 'decision' | 'review-plan';
+          summary: string;
+        }) => {
           if (proposed.some((d) => d.id === input.id)) return 'duplicate';
           proposed.push({ ...input });
           return 'created';
