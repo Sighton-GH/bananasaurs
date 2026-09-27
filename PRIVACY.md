@@ -74,6 +74,8 @@ That is the whole list. Bananasaurs does not profile members, score them, rank t
   12 months, or keep forever; the default is 6 months).
 - When someone tags Bananasaurs in a reply to another person's message, that
   replied-to message is sent to the AI provider as context for the answer.
+- Forgetting a member also deletes the diagnostic traces of every conversation
+  they took part in, and traces never store quoted messages.
 - Content from GitHub repositories and organisations the owner adds is fetched
   from GitHub and cached on the club's server so the assistant can answer
   from it. This includes private repositories that the owner's GitHub token

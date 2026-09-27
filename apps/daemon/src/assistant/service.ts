@@ -77,11 +77,17 @@ export const sanitizeMentionsForProvider = (text: string): string =>
  * `context.ts` names them, plus `history` when history was sent (ruling).
  * The quoted envelope is user text, not a section — like the evidence
  * envelope it travels in the messages, never the system instruction.
+ *
+ * The trace's `user-message` section carries the same text minus the quoted
+ * message itself: the envelope arrives as its own part, so the trace swaps
+ * it for a placeholder while the provider request is unchanged.
  */
+const TRACE_QUOTE_PLACEHOLDER = '[quoted message: not kept in the trace]';
 const traceSections = (
   context: CompiledAssistantContext,
   history: readonly GenerationMessage[],
   userText: string,
+  quoteEnvelope?: string,
 ): AssistantTrace['sections'] => {
   const sections = context.sections.map((section) => ({
     name: section.name,
@@ -99,13 +105,17 @@ const traceSections = (
             { name: 'history', chars: text.length, estTokens: estimateTokens(text), text },
           ];
         })();
+  const tracedUserText =
+    quoteEnvelope === undefined || quoteEnvelope === ''
+      ? userText
+      : userText.replaceAll(quoteEnvelope, TRACE_QUOTE_PLACEHOLDER);
   return [
     ...withHistory,
     {
       name: 'user-message',
-      chars: userText.length,
-      estTokens: estimateTokens(userText),
-      text: userText,
+      chars: tracedUserText.length,
+      estTokens: estimateTokens(tracedUserText),
+      text: tracedUserText,
     },
   ];
 };
@@ -716,7 +726,7 @@ export const createAssistantService = (
        */
       const mapLoopFailure = (failed: LoopResult): AssistantInvocationResult => {
         const loopDetail = (): AssistantTraceDetail => ({
-          sections: traceSections(context, historyForLoop, userText),
+          sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
           history: historyForLoop,
           attempts: failed.attempts,
           toolCalls: failed.toolCalls,
@@ -903,7 +913,7 @@ export const createAssistantService = (
           })),
         );
       sink.detail = {
-        sections: traceSections(context, historyForLoop, userText),
+        sections: traceSections(context, historyForLoop, userText, input.quoteEnvelope),
         history: historyForLoop,
         attempts: loop.attempts,
         toolCalls: loop.toolCalls,
