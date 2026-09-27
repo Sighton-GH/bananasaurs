@@ -15,7 +15,11 @@ import {
   type ToolDeclaration,
 } from '@bananasaurs/core';
 import type { assistantRepo } from '@bananasaurs/storage';
-import type { ReminderTargetRequest, ReminderTargetResult, ResolvedReminderTargets } from './reminder-targets.js';
+import type {
+  ReminderTargetRequest,
+  ReminderTargetResult,
+  ResolvedReminderTargets,
+} from './reminder-targets.js';
 import { describeRecurrence, reminderSummary } from './reminder-summary.js';
 import type { ResourceFetchResult } from './resource-fetcher.js';
 
@@ -106,9 +110,11 @@ export interface AssistantToolPorts {
     listForCreator(creatorId: string): readonly StoredReminder[];
     listAll(): readonly StoredReminder[];
   };
-  readonly proposeDraft: (
-    input: { id: string; kind: 'memory' | 'decision' | 'review-plan'; summary: string },
-  ) => 'created' | 'duplicate';
+  readonly proposeDraft: (input: {
+    id: string;
+    kind: 'memory' | 'decision' | 'review-plan';
+    summary: string;
+  }) => 'created' | 'duplicate';
   readonly recordSkillActivity: (
     skillId: string,
     outcome: 'completed' | 'denied' | 'failed',
@@ -282,8 +288,7 @@ const refused = (name: string, text: string): AssistantToolResult => ({
 });
 
 /** ISO 8601 date-time with a `Z` or `±hh:mm` offset (the `when`/`until` rule). */
-const ISO_WITH_OFFSET =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
+const ISO_WITH_OFFSET = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})$/;
 const OFFSET_REFUSAL = 'Give the time as ISO 8601 with its UTC offset.';
 
 /** Per-invocation idempotency counter shared by set_reminder and the proposals. */
@@ -504,19 +509,17 @@ export const runAssistantTool = async (
           all === true && ports.isOwner
             ? ports.reminderStore.listAll()
             : ports.reminderStore.listForCreator(ports.userId);
-        const unfinished = rows.filter((r) => r.status === 'scheduled' || r.status === 'delivering');
+        const unfinished = rows.filter(
+          (r) => r.status === 'scheduled' || r.status === 'delivering',
+        );
         if (unfinished.length === 0) return evidence(name, 'No upcoming reminders.');
         return evidence(
           name,
           unfinished
             .map((r) => {
-              const parts = [
-                r.id,
-                clock(ports, r.dueAt),
-                `#${r.destinationId}`,
-                r.text,
-              ];
-              if (r.recurrence !== undefined) parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
+              const parts = [r.id, clock(ports, r.dueAt), `#${r.destinationId}`, r.text];
+              if (r.recurrence !== undefined)
+                parts.push(`repeats ${describeRecurrence(r.recurrence)}`);
               const pings =
                 r.mentions.userIds.length +
                 r.mentions.roleIds.length +
@@ -647,14 +650,16 @@ export const runAssistantTool = async (
             if (!draft.ok) return refused(name, draft.error);
           }
           let targets: ResolvedReminderTargets | undefined;
-          if (args.channel !== undefined || args.members !== undefined || args.roles !== undefined) {
-            const rolesParam =
-              args.roles ??
-              [
-                ...stored.mentions.roleIds,
-                ...(stored.mentions.everyone ? ['everyone'] : []),
-                ...(stored.mentions.here ? ['here'] : []),
-              ];
+          if (
+            args.channel !== undefined ||
+            args.members !== undefined ||
+            args.roles !== undefined
+          ) {
+            const rolesParam = args.roles ?? [
+              ...stored.mentions.roleIds,
+              ...(stored.mentions.everyone ? ['everyone'] : []),
+              ...(stored.mentions.here ? ['here'] : []),
+            ];
             const resolved = await ports.resolveReminderTargets({
               channel: args.channel ?? stored.destinationId,
               members: args.members ?? [...stored.mentions.userIds],
