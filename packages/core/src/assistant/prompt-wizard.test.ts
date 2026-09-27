@@ -9,8 +9,7 @@ import {
 
 const CONTEXT = { clubName: 'Racer Club', behaviourName: 'Racerbot' };
 
-const hasHeader = (prompt: string, header: string): boolean =>
-  prompt.split('\n').includes(header);
+const hasHeader = (prompt: string, header: string): boolean => prompt.split('\n').includes(header);
 
 const minimalAnswers: PromptWizardAnswers = promptWizardAnswers.parse({
   audience: ['members'],
@@ -189,9 +188,18 @@ describe('buildSystemPrompt — glossary and channels', () => {
 
 describe('buildSystemPrompt — STYLE EXAMPLES', () => {
   const expected: Record<PromptWizardAnswers['tone'], readonly [string, string]> = {
-    friendly: ['Anytime!', "I can't see who's around, sorry! Asking in the main channel is your best bet."],
-    professional: ["You're welcome.", "I can't see who is available today. The main channel is the best place to ask."],
-    playful: ['anytime!', "my crystal ball's out of order, so i can't see who's around. try the main channel!"],
+    friendly: [
+      'Anytime!',
+      "I can't see who's around, sorry! Asking in the main channel is your best bet.",
+    ],
+    professional: [
+      "You're welcome.",
+      "I can't see who is available today. The main channel is the best place to ask.",
+    ],
+    playful: [
+      'anytime!',
+      "my crystal ball's out of order, so i can't see who's around. try the main channel!",
+    ],
     casual: ['np!', "no idea tbh, i can't see who's in. try asking in the main channel"],
   };
 
@@ -203,7 +211,9 @@ describe('buildSystemPrompt — STYLE EXAMPLES', () => {
       const answers = promptWizardAnswers.parse({ ...minimalAnswers, tone });
       const prompt = buildSystemPrompt(answers, CONTEXT);
       expect(hasHeader(prompt, 'STYLE EXAMPLES')).toBe(true);
-      expect(prompt).toContain('These show tone only. They are not facts; never repeat them as facts.');
+      expect(prompt).toContain(
+        'These show tone only. They are not facts; never repeat them as facts.',
+      );
       expect(prompt).toContain(`Q: thanks!\nA: ${thanks}`);
       expect(prompt).toContain(`Q: is anyone around today?\nA: ${around}`);
     });

@@ -134,7 +134,10 @@ const OFF_TOPIC_LABELS: Record<PromptWizardAnswers['offTopic'], string> = {
     'For questions outside what you help with, say so and redirect the person to a more appropriate channel or person.',
 };
 
-const STYLE_EXAMPLE_PAIRS: Record<PromptWizardAnswers['tone'], readonly (readonly [string, string])[]> = {
+const STYLE_EXAMPLE_PAIRS: Record<
+  PromptWizardAnswers['tone'],
+  readonly (readonly [string, string])[]
+> = {
   friendly: [
     ['thanks!', 'Anytime!'],
     [
@@ -236,7 +239,9 @@ const buildClubFactsSection = (answers: PromptWizardAnswers): Section | undefine
 const buildGlossarySection = (answers: PromptWizardAnswers): Section | undefined => {
   if (answers.glossary.length === 0) return undefined;
   const body = neutraliseHeaderLookalikes(
-    answers.glossary.map((entry) => `- ${oneLine(entry.term)}: ${oneLine(entry.meaning)}`).join('\n'),
+    answers.glossary
+      .map((entry) => `- ${oneLine(entry.term)}: ${oneLine(entry.meaning)}`)
+      .join('\n'),
   );
   return { header: 'GLOSSARY', body };
 };
