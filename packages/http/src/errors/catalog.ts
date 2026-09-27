@@ -144,7 +144,8 @@ export const ERROR_CATALOG: Readonly<Record<string, ErrorExplanation>> = {
   },
   'invalid-reminder': {
     title: 'Reminder not saved',
-    explanation: "The reminder's text, time or context isn't valid. The message says what to change.",
+    explanation:
+      "The reminder's text, time or context isn't valid. The message says what to change.",
   },
   'recurrence-needs-time-zone': {
     title: "Can't add a repeat here",
