@@ -78,8 +78,8 @@ describe('deliverRemindersHandler', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0]?.args[1]).toBe(CHANNEL);
     const message = calls[0]?.args[2] as { content: string; allowedMentions: { parse: [] } };
-    expect(message.content).toBe('Reminder: text due');
-    expect(message.allowedMentions.parse).toEqual([]);
+    expect(message.content).toBe(`⏰ text due\n-# Set by <@${CREATOR}>`);
+    expect(message.allowedMentions).toEqual({ parse: [] });
     expect(statusOf('due')?.status).toBe('delivered');
     expect(statusOf('later')?.status).toBe('scheduled');
 
