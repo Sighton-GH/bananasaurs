@@ -65,10 +65,7 @@ const previewBody = z.object({ url: z.string().min(1).max(2_000) });
 
 const importBody = z.object({
   url: z.string().min(1).max(2_000),
-  repos: z.array(z.string().min(1).max(200)).max(500).optional(),
   include: z.array(z.string().min(1).max(300)).max(40).optional(),
-  includeForks: z.boolean().optional(),
-  includeArchived: z.boolean().optional(),
 });
 
 /** Reads the GitHub error kind structurally — the real `GitHubError` carries `kind`, and so do test doubles. */
@@ -164,8 +161,6 @@ export const registerAssistantGithubRoutes = (
     const client = clientFor();
     if (client === undefined) return reply.status(503).send({ error: 'github-not-configured' });
 
-    const includeForks = parsed.data.includeForks ?? false;
-    const includeArchived = parsed.data.includeArchived ?? false;
     const include = parsed.data.include === undefined ? undefined : [...parsed.data.include];
     const nowIso = new Date(deps.now()).toISOString();
     const enqueue = (resourceId: string): void => {
@@ -174,15 +169,10 @@ export const registerAssistantGithubRoutes = (
 
     try {
       if (target.kind === 'org') {
-        const summaries = (await client.listOrgRepos(target.owner)).repos;
-        const eligible = summaries.filter(
-          (s) => (includeForks || !s.fork) && (includeArchived || !s.archived),
-        );
-        const wanted =
-          parsed.data.repos === undefined
-            ? new Set(eligible.map((s) => s.name.toLowerCase()))
-            : new Set(parsed.data.repos.map((name) => name.toLowerCase()));
-        const selected = eligible.filter((s) => wanted.has(s.name.toLowerCase()));
+        // ADR 0084: every repository the token can see is imported — forks,
+        // archived and private alike. There is no per-repository selection:
+        // the hourly refresh adds every repository anyway.
+        const selected = (await client.listOrgRepos(target.owner)).repos;
 
         const orgId = githubOrgId(target.owner);
         assistantRepo.putResource(session.scope, {
@@ -193,11 +183,7 @@ export const registerAssistantGithubRoutes = (
           kind: 'github-org',
           enabled: true,
           reviewedAt: nowIso,
-          meta: {
-            owner: target.owner,
-            ...(includeForks ? { includeForks: true } : {}),
-            ...(includeArchived ? { includeArchived: true } : {}),
-          },
+          meta: { owner: target.owner },
         });
         enqueue(orgId);
         for (const repo of selected) {
