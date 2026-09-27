@@ -196,6 +196,24 @@ describe('skill scopes and richer reminder storage', () => {
     t.close();
   });
 
+  it('keeps every reminder function inside its guild', () => {
+    const t = openMigratedTestDatabase();
+    const a = t.scopes.forGuild(A);
+    const b = t.scopes.forGuild(B);
+    upsertGuild(a, { name: 'a', now: 1 });
+    upsertGuild(b, { name: 'b', now: 1 });
+    insertReminder(b, reminder(B, 'secret'));
+    expect(getReminder(a, 'secret')).toBeUndefined();
+    expect(updateReminder(a, 'secret', { text: 'x' }, 2)).toBe('not-found');
+    expect(cancelReminder(a, 'secret')).toBe(false);
+    expect(listRemindersForCreator(a, U, { includeFinished: true })).toEqual([]);
+    expect(claimDueReminders(a, 1000, 25, 300)).toEqual([]);
+    expect(() => completeReminder(a, 'secret')).toThrow();
+    expect(() => rescheduleReminder(a, 'secret', 2000)).toThrow();
+    expect(getReminder(b, 'secret')?.guildId).toBe(B);
+    t.close();
+  });
+
   it('has the requested migration tag and data rewrite', () => {
     const journal = JSON.parse(
       readFileSync(
