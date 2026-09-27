@@ -76,16 +76,62 @@ export const classifyReminderSendError = (error: unknown): ReminderDeliveryError
   return new ReminderDeliveryError(message, false);
 };
 
-const renderReminder = (reminder: Reminder): string => `Reminder: ${reminder.text}`.slice(0, 2_000);
+/**
+ * Renders one reminder for its destination channel.
+ *
+ * The pings line lists exactly the stored, permission-checked targets (ADR
+ * 0086 decision 6): `@everyone`, `@here`, `<@&role>` per stored role and
+ * `<@user>` per stored member, in that order — omitted when there are no
+ * pings. `allowedMentions` lists exactly those stored ids, so text typed
+ * into the reminder can never ping: `@everyone` in the text stays plain
+ * text unless `everyone` (or `here`) was stored. The "Set by" line names
+ * the creator without pinging them — their id reaches `users` only when it
+ * is already in `mentions.userIds`.
+ */
+export const renderReminder = (
+  reminder: Reminder,
+): { content: string; allowedMentions: NonNullable<OutgoingMessage['allowedMentions']> } => {
+  const pings: string[] = [];
+  if (reminder.mentions.everyone) pings.push('@everyone');
+  if (reminder.mentions.here) pings.push('@here');
+  for (const roleId of reminder.mentions.roleIds) pings.push(`<@&${roleId}>`);
+  for (const userId of reminder.mentions.userIds) pings.push(`<@${userId}>`);
+  const pingsLine = pings.join(' ');
+  const contextLine = reminder.context === undefined ? undefined : `-# ${reminder.context}`;
+  const setByLine = `-# Set by <@${reminder.creatorId}>`;
+  // Everything except the reminder text itself. The 2,000-character cap
+  // truncates the text, never the pings.
+  const fixedLength =
+    (pingsLine === '' ? 0 : pingsLine.length + 1) +
+    '⏰ '.length +
+    1 +
+    (contextLine === undefined ? 0 : contextLine.length + 1) +
+    setByLine.length;
+  const text = reminder.text.slice(0, Math.max(0, 2_000 - fixedLength));
+  const lines = [
+    ...(pingsLine === '' ? [] : [pingsLine]),
+    `⏰ ${text}`,
+    ...(contextLine === undefined ? [] : [contextLine]),
+    setByLine,
+  ];
+  return {
+    content: lines.join('\n'),
+    allowedMentions: {
+      parse: reminder.mentions.everyone || reminder.mentions.here ? ['everyone'] : [],
+      ...(reminder.mentions.roleIds.length > 0 ? { roles: [...reminder.mentions.roleIds] } : {}),
+      ...(reminder.mentions.userIds.length > 0 ? { users: [...reminder.mentions.userIds] } : {}),
+    },
+  };
+};
 
 /**
  * Sends one reminder to its destination channel.
  *
- * Mentions stay disabled exactly as on every other assistant output: the
- * reminder text is member-authored content, and a reminder that pings
- * `@everyone` because someone typed it into `/remind` would be an abuse
- * vector the bot built for them. The text is capped at creation (1,500
- * characters) and the render is capped at Discord's 2,000 regardless.
+ * Pings are allowed now, but only the stored, permission-checked targets
+ * (ADR 0086 decision 6): `renderReminder` puts exactly the stored ids in
+ * `allowedMentions`, so text typed into the reminder can never ping. The
+ * text is capped at creation (1,500 characters) and the render is capped
+ * at Discord's 2,000 regardless.
  */
 export const createReminderDelivery = (
   guildId: string,
@@ -93,9 +139,10 @@ export const createReminderDelivery = (
 ): ReminderDelivery => ({
   async send(reminder) {
     try {
+      const rendered = renderReminder(reminder);
       await discord.sendMessage(guildId, reminder.destinationId, {
-        content: renderReminder(reminder),
-        allowedMentions: { parse: [] },
+        content: rendered.content,
+        allowedMentions: rendered.allowedMentions,
       });
     } catch (error) {
       throw classifyReminderSendError(error);
